@@ -44,8 +44,16 @@ timer-free poll and MUST NOT be rounded onto Tokio's millisecond timer wheel.
 The completion-edge timer MUST be armed early enough that timer-wheel rounding
 does not intentionally extend the logical two-millisecond budget.
 
-Only work that still requires at least two physical transactions after that
-coalescing MAY use one bounded durability epoch.
+Work that still requires at least two physical transactions after that
+coalescing MAY use one bounded durability epoch. In addition, one already
+selected standard-profile physical command group containing at least two
+commands MAY use a closed single-subgroup epoch when same-host mechanics
+evidence shows that applying the complete group once with `Durability::None`
+and immediately fencing it with an empty `Durability::Immediate` transaction is
+materially cheaper than committing the same complete group directly with
+`Durability::Immediate`. This fast path adds no collection delay, does not merge
+logical or compatibility groups, and retains every epoch bound and publication
+rule below. A singleton remains on the direct Immediate path.
 An epoch contains one or more ordinary FIFO command subgroups. Each subgroup
 retains the existing compatible or transaction-local serial rules and commits
 one complete atomic command graph through redb `Durability::None`. A final
@@ -126,6 +134,9 @@ retry outcomes.
 - Once the deferred-epoch follow-up is implemented, burst and import commands
   can share one fsync when dependency or conflict rules produce multiple
   already-accepted redb transactions.
+- A non-singleton standard group may also use one unpublished application root
+  plus an immediate empty tail when that reduces redb commit work; this changes
+  neither its logical membership nor its acknowledgement boundary.
 - That follow-up keeps reads concurrent by using redb MVCC at the last durable
   frontier rather than blocking behind the writer epoch.
 - Standard-profile crash semantics and acknowledgement durability are
@@ -183,9 +194,21 @@ frontier, accumulated transient-index publication, and Immediate tail seal.
 Coordinator epoch selection and response retention remain disabled until a
 later package composes this mechanism through the ordinary writer lane.
 
+WP-469 composes the typestate for the narrow single-subgroup case. A temporary
+32-command complete-graph engine comparison measured 10.23 milliseconds for
+one-phase Immediate groups and 6.99 milliseconds for non-durable application
+groups plus an Immediate tail, a 31.7 percent reduction. The production path is
+therefore permitted only for already-selected groups of at least two commands;
+it adds no timer and retains direct singleton and hardened paths.
+
 ## Acceptance reference
 
 The maintainer explicitly approved the bounded redb durability-epoch design on
 2026-08-06 after review of the tri-backend results and the proposed
 last-durable MVCC visibility boundary, deferred response/publication rules,
 Immediate tail fence, crash behavior, and retained hardened oracle.
+
+The maintainer explicitly approved the WP-469 single-subgroup amendment on
+2026-08-06 after reviewing the direct-Immediate versus unpublished-plus-tail
+mechanics result and the unchanged response, visibility, singleton, hardened,
+and uncertainty boundaries.

@@ -24,22 +24,23 @@ use riffdb_storage_api::{
     CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
-    CatalogRepository, CommitScanPageV1, CommitScanRequest, EventConsumerRepository,
-    EventConsumerSnapshotV1, EventConsumerTransitionResultV1, EventConsumerTransitionV1,
-    EventRouteScanRequestV1, EventRouteScanV1, ExecutionFailureAdmissionResult,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
-    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
-    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
-    OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
-    PartitionEventRouteReader, PendingOutboxScanV1, ProjectionApplyRequestV1,
-    ProjectionApplyResult, ProjectionApplySnapshot, ProjectionApplySnapshotReader,
-    ProjectionApplySnapshotRequest, ProjectionControlOperation, ProjectionControlResult,
-    ProjectionControlScanV1, ProjectionMutationRepository, ProjectionQueryReader,
-    ProjectionQueryRequest, ProjectionQueryResult, ProjectionRecoveryPageLimit,
-    ProjectionRecoveryRepository, ProjectionRecoveryValidationRequestV1,
-    ProjectionRecoveryValidationResultV1, ProjectionStatus, QueryModuleActivationIntentV1,
-    QueryModuleActivationResult, QueryModuleAdministrationRepository, QueryModuleRepository,
+    CatalogRepository, CommitScanPageV1, CommitScanRequest, DeferredCommandEpochPort,
+    EventConsumerRepository, EventConsumerSnapshotV1, EventConsumerTransitionResultV1,
+    EventConsumerTransitionV1, EventRouteScanRequestV1, EventRouteScanV1,
+    ExecutionFailureAdmissionResult, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IdempotencyLookupCandidatesV1, OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit,
+    OutboxRenewV1, OutboxRepository, OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1,
+    OutboxTransitionResultV1, PartitionEventRouteReader, PendingOutboxScanV1,
+    ProjectionApplyRequestV1, ProjectionApplyResult, ProjectionApplySnapshot,
+    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlOperation,
+    ProjectionControlResult, ProjectionControlScanV1, ProjectionMutationRepository,
+    ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
+    ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
+    ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
+    QueryModuleActivationIntentV1, QueryModuleActivationResult,
+    QueryModuleAdministrationRepository, QueryModuleRepository,
     ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
     ReactiveModulePublicationResult, ReactiveModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
@@ -758,6 +759,14 @@ impl ApplicationCommandTransactionPort for SharedRedbOperationalPorts {
 
     fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError> {
         ApplicationCommandTransactionPort::begin_empty_batch(&self.shared)
+    }
+}
+
+impl DeferredCommandEpochPort for SharedRedbOperationalPorts {
+    type Epoch = <RedbOperationalPorts as DeferredCommandEpochPort>::Epoch;
+
+    fn begin_deferred_command_epoch(&self) -> Result<Self::Epoch, StorageError> {
+        DeferredCommandEpochPort::begin_deferred_command_epoch(&self.shared)
     }
 }
 

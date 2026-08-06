@@ -25,6 +25,113 @@ use support::{
     start_group_coordinator_with_notifications,
 };
 
+#[test]
+fn audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail() {
+    let database = UniqueUserDatabase::create("audited-deferred-group");
+    let controller = RedbTestController::observe_index_migration();
+    let ports = database.open_with_controller(controller.clone());
+    let organization =
+        database.prepare_organization_for(&ports, [0x83; 16], "audit-blocker", 0x83, 0x93);
+    let first =
+        database.prepare_audited_organization_for(&ports, [0x84; 16], "audit-first", 0x84, 0x94);
+    let second =
+        database.prepare_audited_organization_for(&ports, [0x85; 16], "audit-second", 0x85, 0x95);
+    let blocker = ports.begin_empty_batch().expect("hold writer admission");
+    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let provenance_source = Arc::new(IncrementingProvenanceSource::new(0xa4));
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_group_coordinator_with_notifications(
+        ports,
+        Arc::clone(&admission_clock),
+        provenance_source,
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (first, second) = runtime().block_on(async {
+        let organization = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve organization")
+            .submit(organization)
+            .expect("submit organization");
+        for _ in 0..10_000 {
+            if admission_clock.calls() == 1 {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(admission_clock.calls(), 1);
+
+        let first = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first audited command")
+            .submit(first)
+            .expect("submit first audited command");
+        let second = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second audited command")
+            .submit(second)
+            .expect("submit second audited command");
+        blocker.rollback();
+
+        assert!(matches!(
+            organization
+                .completion()
+                .await
+                .expect("organization completion"),
+            CommandExecutionResult::Committed(_)
+        ));
+        (
+            first.completion().await.expect("first audited completion"),
+            second
+                .completion()
+                .await
+                .expect("second audited completion"),
+        )
+    });
+
+    let CommandExecutionResult::Committed(first) = first else {
+        panic!("first audited command commits");
+    };
+    let CommandExecutionResult::Committed(second) = second else {
+        panic!("second audited command commits");
+    };
+    assert_ne!(
+        first.stored_outcome().identity(),
+        second.stored_outcome().identity()
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+            CommitSequence::new(3).expect("third sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain grouped coordinator");
+    let transitions = controller
+        .events()
+        .into_iter()
+        .filter(|event| event.phase() == RedbTestPhase::BeforeEngineCommit)
+        .filter(|event| event.operation() != RedbTestOperation::ValidatedPrefixCheckpoint)
+        .map(|event| event.operation())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        transitions,
+        vec![
+            RedbTestOperation::CommandBatch,
+            RedbTestOperation::DeferredCommandBatch,
+            RedbTestOperation::CommandEpochTail,
+        ],
+        "the singleton stays direct and the audited non-singleton uses one private root plus tail"
+    );
+}
+
 /// Counts CommitCallCompleted samples that feed durable-flush histograms.
 struct FlushCountingTelemetry {
     commits: AtomicUsize,
@@ -44,19 +151,21 @@ impl CommitTelemetry for FlushCountingTelemetry {
 }
 
 #[test]
-fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_results() {
-    let database = UniqueUserDatabase::create("grouped-disjoint");
+fn hardened_audited_group_stays_direct_and_keeps_independent_results() {
+    let database = UniqueUserDatabase::create("hardened-grouped-disjoint");
     let controller = RedbTestController::observe_index_migration();
     let ports = database.open_with_controller(controller.clone());
     let organization =
         database.prepare_organization_for(&ports, [0x80; 16], "group-blocker", 0x80, 0x90);
-    let first = database.prepare_organization_for(&ports, [0x81; 16], "group-first", 0x81, 0x91);
-    let second = database.prepare_organization_for(&ports, [0x82; 16], "group-second", 0x82, 0x92);
+    let first =
+        database.prepare_audited_organization_for(&ports, [0x81; 16], "group-first", 0x81, 0x91);
+    let second =
+        database.prepare_audited_organization_for(&ports, [0x82; 16], "group-second", 0x82, 0x92);
     let blocker = ports.begin_empty_batch().expect("hold writer admission");
     let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
     let provenance_source = Arc::new(IncrementingProvenanceSource::new(0xa1));
     let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
-    let coordinator = start_group_coordinator_with_notifications(
+    let coordinator = start_coordinator_with_notifications(
         ports,
         Arc::clone(&admission_clock),
         provenance_source,
@@ -129,11 +238,11 @@ fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_result
     );
     assert_eq!(
         first.stored_outcome().durability_mode(),
-        riffdb_storage_api::DurabilityMode::Group
+        riffdb_storage_api::DurabilityMode::Sync
     );
     assert_eq!(
         second.stored_outcome().durability_mode(),
-        riffdb_storage_api::DurabilityMode::Group
+        riffdb_storage_api::DurabilityMode::Sync
     );
     assert_eq!(
         notifications.sequences(),
@@ -160,7 +269,7 @@ fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_result
             RedbTestOperation::CommandBatch,
             RedbTestOperation::CommandBatch,
         ],
-        "fresh commands persist only their fused terminal transitions"
+        "hardened commands persist their fused terminal transitions directly"
     );
 }
 

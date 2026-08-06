@@ -10,7 +10,8 @@ use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditedAdmissionRepository,
     CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DurabilityMode, EmptyCommandBatch,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DeferredCommandEpoch,
+    DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode, EmptyCommandBatch,
     EntityTarget, ExecutionFailureTransitionPort, NonEmptyCommandBatch, SnapshotReader,
     StorageError, StorageErrorKind, TransactionLocalCommandBatch,
 };
@@ -216,6 +217,7 @@ pub(super) trait RepeatableCommandBatchPort:
     + AuditedAdmissionRepository
     + SnapshotReader
     + ApplicationCommandTransactionPort
+    + DeferredCommandEpochPort
     + ExecutionFailureTransitionPort
 {
     #[allow(clippy::too_many_arguments)]
@@ -239,9 +241,13 @@ where
         + AuditedAdmissionRepository
         + SnapshotReader
         + ApplicationCommandTransactionPort
+        + DeferredCommandEpochPort
         + ExecutionFailureTransitionPort,
+    <P as DeferredCommandEpochPort>::Epoch:
+        DeferredCommandEpoch<EmptyBatch = <P as ApplicationCommandTransactionPort>::EmptyBatch>,
     <P as ApplicationCommandTransactionPort>::EmptyBatch: TransactionLocalCommandBatch,
-    FirstStagedBatch<P>: NonEmptyCommandBatch + TransactionLocalCommandBatch,
+    FirstStagedBatch<P>:
+        NonEmptyCommandBatch + DeferredNonEmptyCommandBatch + TransactionLocalCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -628,9 +634,13 @@ where
         + AuditedAdmissionRepository
         + SnapshotReader
         + ApplicationCommandTransactionPort
+        + DeferredCommandEpochPort
         + ExecutionFailureTransitionPort,
+    <P as DeferredCommandEpochPort>::Epoch:
+        DeferredCommandEpoch<EmptyBatch = <P as ApplicationCommandTransactionPort>::EmptyBatch>,
     <P as ApplicationCommandTransactionPort>::EmptyBatch: TransactionLocalCommandBatch,
-    FirstStagedBatch<P>: NonEmptyCommandBatch + TransactionLocalCommandBatch,
+    FirstStagedBatch<P>:
+        NonEmptyCommandBatch + DeferredNonEmptyCommandBatch + TransactionLocalCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -704,6 +714,13 @@ where
         elapsed: compatibility_started.elapsed(),
     });
     if serial_eligible {
+        let use_deferred_tail = durability == CoordinatorDurability::Group
+            && groups.iter().all(|group| {
+                group
+                    .items
+                    .iter()
+                    .all(|(_, state)| state.has_audited_lifecycle())
+            });
         let serial = groups
             .into_iter()
             .flat_map(|group| group.items)
@@ -716,6 +733,7 @@ where
             durability,
             lifecycle,
             telemetry,
+            use_deferred_tail,
             serial,
         )
         .await;
@@ -732,6 +750,11 @@ where
     }
     for group in groups {
         if group.items.len() > 1 {
+            let use_deferred_tail = durability == CoordinatorDurability::Group
+                && group
+                    .items
+                    .iter()
+                    .all(|(_, state)| state.has_audited_lifecycle());
             let grouped = drive_compatible_pending_group(
                 port,
                 conflicts,
@@ -741,6 +764,7 @@ where
                 lifecycle,
                 telemetry,
                 evaluation_pool,
+                use_deferred_tail,
                 group.items,
                 group.shared_conflict_lease,
             )
@@ -1229,15 +1253,20 @@ async fn drive_transaction_local_serial_pending_group<P>(
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
+    use_deferred_tail: bool,
     pending: Vec<(usize, PendingCommandAttempts)>,
 ) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
 where
     P: AdmissionRepository
         + SnapshotReader
         + ApplicationCommandTransactionPort
+        + DeferredCommandEpochPort
         + ExecutionFailureTransitionPort,
+    <P as DeferredCommandEpochPort>::Epoch:
+        DeferredCommandEpoch<EmptyBatch = <P as ApplicationCommandTransactionPort>::EmptyBatch>,
     <P as ApplicationCommandTransactionPort>::EmptyBatch: TransactionLocalCommandBatch,
-    FirstStagedBatch<P>: NonEmptyCommandBatch + TransactionLocalCommandBatch,
+    FirstStagedBatch<P>:
+        NonEmptyCommandBatch + DeferredNonEmptyCommandBatch + TransactionLocalCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -1274,7 +1303,12 @@ where
         return Vec::new();
     };
 
-    let empty = match port.begin_empty_batch() {
+    let empty = match if use_deferred_tail {
+        port.begin_deferred_command_epoch()
+            .and_then(DeferredCommandEpoch::begin_empty_batch)
+    } else {
+        port.begin_empty_batch()
+    } {
         Ok(empty) => empty,
         Err(error) => {
             let mut completed = vec![(first_index, Err(storage_error(error, lifecycle)))];
@@ -1671,6 +1705,7 @@ where
         administration_clock,
         lifecycle,
         telemetry,
+        use_deferred_tail,
         staged,
         staged_indices,
     )
@@ -1681,12 +1716,13 @@ fn commit_transaction_local_serial_group<P, B>(
     administration_clock: &dyn crate::AdministrationClock,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
+    use_deferred_tail: bool,
     staged: CheckedStagedCommand<B>,
     staged_indices: Vec<usize>,
 ) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
 where
     P: AdmissionRepository,
-    B: NonEmptyCommandBatch,
+    B: NonEmptyCommandBatch + DeferredNonEmptyCommandBatch,
 {
     let audits = {
         let audited_count = staged.audited_starts().filter(Option::is_some).count();
@@ -1754,7 +1790,14 @@ where
 
     let batch_size = staged.len();
     let commit_started_at = Instant::now();
-    let commit_result = staged.commit_group(audits);
+    let commit_result = if use_deferred_tail {
+        match audits {
+            Some(audits) => staged.commit_group_deferred(audits),
+            None => CheckedCommandGroupCommitResult::Integrity,
+        }
+    } else {
+        staged.commit_group(audits)
+    };
     telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
         terminal: group_commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
@@ -1895,6 +1938,7 @@ async fn drive_compatible_pending_group<P>(
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
     evaluation_pool: Option<&CommandEvaluationPool>,
+    use_deferred_tail: bool,
     pending: Vec<(usize, PendingCommandAttempts)>,
     shared_conflict_lease: bool,
 ) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
@@ -1902,8 +1946,11 @@ where
     P: AdmissionRepository
         + SnapshotReader
         + ApplicationCommandTransactionPort
+        + DeferredCommandEpochPort
         + ExecutionFailureTransitionPort,
-    FirstStagedBatch<P>: NonEmptyCommandBatch,
+    <P as DeferredCommandEpochPort>::Epoch:
+        DeferredCommandEpoch<EmptyBatch = <P as ApplicationCommandTransactionPort>::EmptyBatch>,
+    FirstStagedBatch<P>: NonEmptyCommandBatch + DeferredNonEmptyCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -2089,13 +2136,14 @@ where
     let (first_index, first) = evaluated
         .pop_front()
         .expect("compatible command group is nonempty");
-    let mut staged = match stage_first_evaluated_command(
+    let mut staged = match stage_first_evaluated_command_with_tail_policy(
         port,
         provenance,
         Some(administration_clock),
         durability,
         lifecycle,
         telemetry,
+        use_deferred_tail,
         first,
     ) {
         Ok(staged) => staged,
@@ -2268,7 +2316,14 @@ where
         elapsed: staging_started.elapsed(),
     });
     let commit_started_at = Instant::now();
-    let commit_result = staged.commit_group(audits);
+    let commit_result = if use_deferred_tail {
+        match audits {
+            Some(audits) => staged.commit_group_deferred(audits),
+            None => CheckedCommandGroupCommitResult::Integrity,
+        }
+    } else {
+        staged.commit_group(audits)
+    };
     telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
         terminal: group_commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
@@ -2820,6 +2875,60 @@ where
         lifecycle,
         telemetry,
         begin_bound_command_candidate(port, attempt),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_first_evaluated_command_with_tail_policy<P>(
+    port: &P,
+    provenance: &dyn ProvenanceIdSource,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    use_deferred_tail: bool,
+    attempt: EvaluatedCommandAttempt,
+) -> Result<CheckedStagedCommand<FirstStagedBatch<P>>, CommandDriverContinuation>
+where
+    P: ApplicationCommandTransactionPort
+        + DeferredCommandEpochPort
+        + ExecutionFailureTransitionPort
+        + riffdb_storage_api::AdmissionRepository,
+    <P as DeferredCommandEpochPort>::Epoch:
+        DeferredCommandEpoch<EmptyBatch = <P as ApplicationCommandTransactionPort>::EmptyBatch>,
+{
+    if !use_deferred_tail {
+        return stage_first_evaluated_command(
+            port,
+            provenance,
+            administration_clock,
+            durability,
+            lifecycle,
+            telemetry,
+            attempt,
+        );
+    }
+    let empty = match port
+        .begin_deferred_command_epoch()
+        .and_then(DeferredCommandEpoch::begin_empty_batch)
+    {
+        Ok(empty) => empty,
+        Err(error) => {
+            drop(attempt);
+            return Err(CommandDriverContinuation::Failed(storage_error(
+                error, lifecycle,
+            )));
+        }
+    };
+    stage_first_evaluated_command_on_empty(
+        port,
+        empty,
+        provenance,
+        administration_clock,
+        durability,
+        lifecycle,
+        telemetry,
+        attempt,
     )
 }
 

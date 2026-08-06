@@ -134,6 +134,12 @@ impl PendingCommandAttempts {
         self.terminal_admission
     }
 
+    /// Returns whether the complete public service lifecycle is retained so a
+    /// fenced subgroup can atomically stage both audit phases before its tail.
+    pub(crate) const fn has_audited_lifecycle(&self) -> bool {
+        self.audited_lifecycle.is_some()
+    }
+
     pub(crate) fn idempotency_identity(&self) -> &riffdb_storage_api::IdempotencyIdentity {
         self.commit_context.pending().identity()
     }
