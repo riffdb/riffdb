@@ -13,7 +13,7 @@ use riffdb_bench_root::{
     sweep_stale,
 };
 use riffdb_storage_redb::benchmark_support::{
-    EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
+    EngineDurability, EngineMechanicsProfile, EngineStagingOrder, ServiceAuditGrowthHarness,
     authoritative_table_inventory_v1, initialize_engine_mechanics, measure_clean_startup,
     measure_clean_startup_linear, measure_engine_reopen, run_engine_mechanics_window,
 };
@@ -234,6 +234,30 @@ fn run() -> Result<bool, ()> {
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"commit_profile_summary\",\"standard_profile\":\"immediate_one_phase\",\"hardened_profile\":\"immediate_two_phase\",\"standard_elapsed_ns\":{},\"hardened_elapsed_ns\":{},\"standard_vs_hardened_basis_points\":{standard_vs_hardened_basis_points},\"semantic_contract\":\"acknowledgement_survives_crash\",\"perf_009_passed\":{perf_009_passed}}}",
         comparison.standard_elapsed_ns, comparison.hardened_elapsed_ns,
     );
+    let table_major_vs_command_major_basis_points = comparison
+        .table_major_elapsed_ns
+        .checked_mul(10_000)
+        .ok_or(())?
+        / comparison.grouped_standard_elapsed_ns.max(1);
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"staging_order_summary\",\"engine_durability\":\"immediate_one_phase\",\"group_commands\":{},\"command_major_elapsed_ns\":{},\"table_major_elapsed_ns\":{},\"table_major_vs_command_major_basis_points\":{table_major_vs_command_major_basis_points},\"reps\":{}}}",
+        comparison.group_commands,
+        comparison.grouped_standard_elapsed_ns,
+        comparison.table_major_elapsed_ns,
+        configuration.reps,
+    );
+    let deferred_vs_immediate_basis_points = comparison
+        .deferred_group_elapsed_ns
+        .checked_mul(10_000)
+        .ok_or(())?
+        / comparison.grouped_standard_elapsed_ns.max(1);
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"deferred_group_summary\",\"group_commands\":{},\"deferred_groups_plus_tail_ns\":{},\"immediate_groups_ns\":{},\"deferred_vs_immediate_basis_points\":{deferred_vs_immediate_basis_points},\"acknowledgement_note\":\"deferred sample has one final durable tail and is not a production acknowledgement path\",\"reps\":{}}}",
+        comparison.group_commands,
+        comparison.deferred_group_elapsed_ns,
+        comparison.grouped_standard_elapsed_ns,
+        configuration.reps,
+    );
     let perf_012_passed = preflight_passed;
     println!(
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"generation_summary\",\"identity\":\"partition_index\",\"maximum_advances_per_distinct_pair_per_command\":1,\"prefix_fanout\":false,\"semantic_preflight\":\"{}\",\"perf_012_passed\":{perf_012_passed}}}",
@@ -272,9 +296,12 @@ fn run() -> Result<bool, ()> {
 }
 
 struct GroupComparison {
+    deferred_group_elapsed_ns: u64,
     sync_elapsed_ns: u64,
     group_elapsed_ns: u64,
     standard_elapsed_ns: u64,
+    grouped_standard_elapsed_ns: u64,
+    table_major_elapsed_ns: u64,
     hardened_elapsed_ns: u64,
     commands: usize,
     group_commands: usize,
@@ -285,16 +312,45 @@ struct GroupComparison {
 fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<GroupComparison, ()> {
     let commands = if checked { 128 } else { 32 };
     let mut sync_elapsed_ns = None;
+    let mut deferred_group_elapsed_ns = None;
     let mut group_elapsed_ns = None;
     let mut standard_elapsed_ns = None;
+    let mut grouped_standard_elapsed_ns = None;
+    let mut table_major_elapsed_ns = None;
     let mut hardened_elapsed_ns = None;
     let mut grouped_standard_database_bytes_per_command = None;
-    for (ordinal, (durability, group)) in [
-        (EngineDurability::None, 1),
-        (EngineDurability::ImmediateOnePhase, 1),
-        (EngineDurability::ImmediateOnePhase, 16),
-        (EngineDurability::ImmediateTwoPhase, 1),
-        (EngineDurability::ImmediateTwoPhase, 16),
+    for (ordinal, (durability, group, staging_order)) in [
+        (EngineDurability::None, 1, EngineStagingOrder::CommandMajor),
+        (
+            EngineDurability::None,
+            16,
+            EngineStagingOrder::CommandMajor,
+        ),
+        (
+            EngineDurability::ImmediateOnePhase,
+            1,
+            EngineStagingOrder::CommandMajor,
+        ),
+        (
+            EngineDurability::ImmediateOnePhase,
+            16,
+            EngineStagingOrder::CommandMajor,
+        ),
+        (
+            EngineDurability::ImmediateOnePhase,
+            16,
+            EngineStagingOrder::TableMajor,
+        ),
+        (
+            EngineDurability::ImmediateTwoPhase,
+            1,
+            EngineStagingOrder::CommandMajor,
+        ),
+        (
+            EngineDurability::ImmediateTwoPhase,
+            16,
+            EngineStagingOrder::CommandMajor,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -302,12 +358,20 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
         let path = root.join(format!("mechanics-{ordinal}.redb"));
         initialize_engine_mechanics(&path).map_err(|_| ())?;
         let initial_file_bytes = fs::metadata(&path).map_err(|_| ())?.len();
-        let profile = EngineMechanicsProfile::new(durability, group).map_err(|_| ())?;
+        let profile = EngineMechanicsProfile::new(durability, group)
+            .map_err(|_| ())?
+            .with_staging_order(staging_order);
         let sample = run_engine_mechanics_window(&path, 1, commands, profile).map_err(|_| ())?;
         let elapsed_ns = u64::try_from(sample.elapsed().as_nanos()).map_err(|_| ())?;
-        if durability == EngineDurability::ImmediateOnePhase && group == 1 {
+        if durability == EngineDurability::None && group == 16 {
+            deferred_group_elapsed_ns = Some(elapsed_ns);
+        } else if durability == EngineDurability::ImmediateOnePhase && group == 1 {
             standard_elapsed_ns = Some(elapsed_ns);
-        } else if durability == EngineDurability::ImmediateOnePhase && group == 16 {
+        } else if durability == EngineDurability::ImmediateOnePhase
+            && group == 16
+            && staging_order == EngineStagingOrder::CommandMajor
+        {
+            grouped_standard_elapsed_ns = Some(elapsed_ns);
             let per_command = sample.file_bytes() / u64::try_from(commands).map_err(|_| ())?.max(1);
             grouped_standard_database_bytes_per_command = Some(per_command);
             println!(
@@ -328,6 +392,11 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
                     table.fragmented_bytes(),
                 );
             }
+        } else if durability == EngineDurability::ImmediateOnePhase
+            && group == 16
+            && staging_order == EngineStagingOrder::TableMajor
+        {
+            table_major_elapsed_ns = Some(elapsed_ns);
         } else if durability == EngineDurability::ImmediateTwoPhase && group == 1 {
             sync_elapsed_ns = Some(elapsed_ns);
             hardened_elapsed_ns = Some(elapsed_ns);
@@ -335,8 +404,9 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
             group_elapsed_ns = Some(elapsed_ns);
         }
         println!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"mechanics_comparison\",\"rep\":{rep},\"engine_durability\":\"{}\",\"group_commands\":{},\"commands\":{},\"elapsed_ns\":{},\"admission_table_page_work_ns\":{},\"admission_commit_and_flush_ns\":{},\"terminal_table_page_work_ns\":{},\"terminal_commit_and_flush_ns\":{}}}",
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"mechanics_comparison\",\"rep\":{rep},\"engine_durability\":\"{}\",\"staging_order\":\"{}\",\"group_commands\":{},\"commands\":{},\"elapsed_ns\":{},\"admission_table_page_work_ns\":{},\"admission_commit_and_flush_ns\":{},\"terminal_table_page_work_ns\":{},\"terminal_commit_and_flush_ns\":{}}}",
             durability.label(),
+            staging_order.label(),
             profile.group_commands(),
             commands,
             elapsed_ns,
@@ -347,9 +417,12 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
         );
     }
     Ok(GroupComparison {
+        deferred_group_elapsed_ns: deferred_group_elapsed_ns.ok_or(())?,
         sync_elapsed_ns: sync_elapsed_ns.ok_or(())?,
         group_elapsed_ns: group_elapsed_ns.ok_or(())?,
         standard_elapsed_ns: standard_elapsed_ns.ok_or(())?,
+        grouped_standard_elapsed_ns: grouped_standard_elapsed_ns.ok_or(())?,
+        table_major_elapsed_ns: table_major_elapsed_ns.ok_or(())?,
         hardened_elapsed_ns: hardened_elapsed_ns.ok_or(())?,
         commands,
         group_commands: 16,
@@ -398,6 +471,12 @@ fn median_group(values: &[GroupComparison]) -> Result<GroupComparison, ()> {
     }
     let mid = values.len() / 2;
     Ok(GroupComparison {
+        deferred_group_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.deferred_group_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
         sync_elapsed_ns: median_u64(&values.iter().map(|v| v.sync_elapsed_ns).collect::<Vec<_>>()),
         group_elapsed_ns: median_u64(
             &values
@@ -409,6 +488,18 @@ fn median_group(values: &[GroupComparison]) -> Result<GroupComparison, ()> {
             &values
                 .iter()
                 .map(|v| v.standard_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        grouped_standard_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.grouped_standard_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        table_major_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.table_major_elapsed_ns)
                 .collect::<Vec<_>>(),
         ),
         hardened_elapsed_ns: median_u64(

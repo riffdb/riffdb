@@ -7,7 +7,7 @@
   `PERF-009`, `PERF-010`
 - **Related work packages:** `WP-456`
 - **Amends:** ADR-0058, ADR-0059, ADR-0060, ADR-0094, ADR-0095
-- **Amended by:** ADR-0097
+- **Amended by:** ADR-0097, ADR-0098
 
 ## Context
 

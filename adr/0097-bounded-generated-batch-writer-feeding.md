@@ -8,6 +8,7 @@
   `PERF-010`
 - **Related work packages:** `WP-457`
 - **Amends:** ADR-0056, ADR-0058, ADR-0059, ADR-0060, ADR-0084, ADR-0096
+- **Amended by:** ADR-0098
 
 ## Context
 

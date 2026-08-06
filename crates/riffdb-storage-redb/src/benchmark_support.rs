@@ -176,6 +176,26 @@ pub enum EngineDurability {
     ImmediateTwoPhase,
 }
 
+/// Experimental durable-record staging order used only by the benchmark harness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineStagingOrder {
+    /// Applies one command's complete table graph before the next command.
+    CommandMajor,
+    /// Opens each table once and applies the complete command group to that table.
+    TableMajor,
+}
+
+impl EngineStagingOrder {
+    /// Stable report label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CommandMajor => "command_major",
+            Self::TableMajor => "table_major",
+        }
+    }
+}
+
 impl EngineDurability {
     /// Stable report label.
     #[must_use]
@@ -193,6 +213,7 @@ impl EngineDurability {
 pub struct EngineMechanicsProfile {
     durability: EngineDurability,
     group_commands: usize,
+    staging_order: EngineStagingOrder,
 }
 
 impl EngineMechanicsProfile {
@@ -207,7 +228,15 @@ impl EngineMechanicsProfile {
         Ok(Self {
             durability,
             group_commands,
+            staging_order: EngineStagingOrder::CommandMajor,
         })
+    }
+
+    /// Selects the benchmark-only record staging order.
+    #[must_use]
+    pub const fn with_staging_order(mut self, staging_order: EngineStagingOrder) -> Self {
+        self.staging_order = staging_order;
+        self
     }
 
     /// Returns the selected durability.
@@ -220,6 +249,12 @@ impl EngineMechanicsProfile {
     #[must_use]
     pub const fn group_commands(self) -> usize {
         self.group_commands
+    }
+
+    /// Returns the selected durable-record staging order.
+    #[must_use]
+    pub const fn staging_order(self) -> EngineStagingOrder {
+        self.staging_order
     }
 }
 
@@ -580,7 +615,14 @@ pub fn run_engine_mechanics_window(
             .begin_write()
             .map_err(|_| EngineBenchmarkError::Engine)?;
         configure(&mut transaction, profile.durability)?;
-        stage_terminals(&transaction, first_sequence, group_start, group_end)?;
+        match profile.staging_order {
+            EngineStagingOrder::CommandMajor => {
+                stage_terminals(&transaction, first_sequence, group_start, group_end)?;
+            }
+            EngineStagingOrder::TableMajor => {
+                stage_terminals_table_major(&transaction, first_sequence, group_start, group_end)?;
+            }
+        }
         terminal_work = terminal_work.saturating_add(work_started.elapsed());
         let commit_started = Instant::now();
         transaction
@@ -1018,6 +1060,183 @@ fn stage_terminals(
                     .to_be_bytes()
                     .as_slice(),
             )
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+    }
+    Ok(())
+}
+
+fn stage_terminals_table_major(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
+    {
+        let mut pending = transaction
+            .open_table(IDEMPOTENCY_PENDING)
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        for offset in start..end {
+            let sequence = sequence_at(first_sequence, offset)?;
+            let key = record_key(sequence, 0x59);
+            if pending
+                .remove(key.as_slice())
+                .map_err(|_| EngineBenchmarkError::Engine)?
+                .is_none()
+            {
+                return Err(EngineBenchmarkError::Engine);
+            }
+        }
+    }
+    insert_record_group(
+        transaction,
+        ENTITIES,
+        first_sequence,
+        start,
+        end,
+        0x45,
+        ENTITY_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        SECONDARY_INDEXES,
+        first_sequence,
+        start,
+        end,
+        0x49,
+        INDEX_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        INDEX_EPOCHS,
+        first_sequence,
+        start,
+        end,
+        0x58,
+        EPOCH_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        PROVENANCE,
+        first_sequence,
+        start,
+        end,
+        0x50,
+        PROVENANCE_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        EVENTS,
+        first_sequence,
+        start,
+        end,
+        0x56,
+        EVENT_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        EVENT_ROUTES,
+        first_sequence,
+        start,
+        end,
+        0x52,
+        EVENT_ROUTE_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        OUTBOX,
+        first_sequence,
+        start,
+        end,
+        0x4f,
+        OUTBOX_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        COMMITS,
+        first_sequence,
+        start,
+        end,
+        0x43,
+        COMMIT_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        IDEMPOTENCY,
+        first_sequence,
+        start,
+        end,
+        0x59,
+        OUTCOME_VALUE_BYTES,
+    )?;
+    {
+        let mut audit = transaction
+            .open_table(AUDIT)
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        for offset in start..end {
+            let sequence = sequence_at(first_sequence, offset)?;
+            for tag in [0xa1, 0xa2] {
+                let key = record_key(sequence, tag);
+                let value = record_value(sequence, AUDIT_VALUE_BYTES, tag);
+                audit
+                    .insert(key.as_slice(), value.as_slice())
+                    .map_err(|_| EngineBenchmarkError::Engine)?;
+            }
+        }
+    }
+    {
+        let mut audit_by_request = transaction
+            .open_table(AUDIT_BY_REQUEST)
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        for offset in start..end {
+            let sequence = sequence_at(first_sequence, offset)?;
+            for tag in [0xb1, 0xb2] {
+                let key = record_key(sequence, tag);
+                let value = record_value(sequence, AUDIT_REQUEST_VALUE_BYTES, tag);
+                audit_by_request
+                    .insert(key.as_slice(), value.as_slice())
+                    .map_err(|_| EngineBenchmarkError::Engine)?;
+            }
+        }
+    }
+    let last_sequence = sequence_at(
+        first_sequence,
+        end.checked_sub(1)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    )?;
+    transaction
+        .open_table(META)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .insert(
+            META_APPLICATION_SEQUENCE,
+            last_sequence
+                .checked_add(1)
+                .ok_or(EngineBenchmarkError::Engine)?
+                .to_be_bytes()
+                .as_slice(),
+        )
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_record_group(
+    transaction: &WriteTransaction,
+    definition: redb::TableDefinition<&[u8], &[u8]>,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+    tag: u8,
+    bytes: usize,
+) -> Result<(), EngineBenchmarkError> {
+    let mut table = transaction
+        .open_table(definition)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    for offset in start..end {
+        let sequence = sequence_at(first_sequence, offset)?;
+        let key = record_key(sequence, tag);
+        let value = record_value(sequence, bytes, tag);
+        table
+            .insert(key.as_slice(), value.as_slice())
             .map_err(|_| EngineBenchmarkError::Engine)?;
     }
     Ok(())

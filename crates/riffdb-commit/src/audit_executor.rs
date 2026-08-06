@@ -324,6 +324,18 @@ const SUBMISSION_COUNT_MASK: usize = !SUBMISSION_GATE_CLOSED;
 const MAX_QUEUED_COMMAND_BYTES: usize = 32 * 1_024 * 1_024;
 const QUEUED_COMMAND_BYTE_UNIT: usize = 1_024;
 const OLDEST_GROUPABLE_TRANSITION_MAX_AGE: Duration = Duration::from_micros(200);
+/// Contention-only completion-edge window. Unlike the fresh unary window, this
+/// opens only when a prior writer unit left at least two commands already
+/// queued and no barrier is present. It lets clients released by the prior
+/// commit contribute to the same next atomic redb group without penalizing an
+/// idle singleton.
+const POST_COMMIT_COALESCE_BUDGET: Duration = Duration::from_millis(2);
+/// Tokio rounds timer deadlines to its millisecond wheel. Arm one tick early so
+/// that rounding does not intentionally extend the accepted logical budget.
+const POST_COMMIT_COALESCE_TIMER_GUARD: Duration = Duration::from_millis(1);
+/// Prefixes above this size already amortize the durable fence sufficiently;
+/// delaying them reduced saturated throughput in retained c128 evidence.
+const POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS: usize = 32;
 
 /// Exact number of coordinator workload messages admitted independently of shutdown.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1603,6 +1615,7 @@ impl RunningCommandCoordinator {
             .try_reserve_owned()
             .map_err(|_| CoordinatorStartError::ShutdownCapacityUnavailable)?;
         let runtime = runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .map_err(|_| CoordinatorStartError::RuntimeUnavailable)?;
         let lifecycle = Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING));
@@ -2380,9 +2393,9 @@ impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications
     }
 }
 
-/// ADR-0060 MAY-window is subsumed by the event-driven in-flight-commit formation
-/// window: while the writer fsyncs unit N, the intake actor accumulates arrivals and
-/// forms unit N+1 only at the completion edge (no timer-based group wait).
+/// ADR-0060's sub-millisecond MAY-window is subsumed by event-driven
+/// in-flight-commit formation. ADR-0098 additionally permits one real
+/// two-millisecond deadline at a contended completion edge.
 enum WorkUnit {
     CommandGroup(Vec<CommandGroupItem>),
     AuditGroup(Vec<AuditGroupItem>),
@@ -2446,6 +2459,23 @@ fn command_prefix_can_grow(pending: &VecDeque<CoordinatorMessage>) -> bool {
     true
 }
 
+fn post_commit_command_window_eligible(pending: &VecDeque<CoordinatorMessage>) -> bool {
+    if !command_prefix_can_grow(pending) {
+        return false;
+    }
+    let commands = pending
+        .iter()
+        .filter(|message| {
+            matches!(
+                command_grouping_class(message),
+                CommandGroupingClass::Command
+            )
+        })
+        .take(POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS.saturating_add(1))
+        .count();
+    (2..=POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS).contains(&commands)
+}
+
 fn collect_until_group_deadline(
     receiver: &mut mpsc::Receiver<CoordinatorMessage>,
     pending: &mut VecDeque<CoordinatorMessage>,
@@ -2468,6 +2498,36 @@ fn collect_until_group_deadline(
     }
 }
 
+async fn collect_until_coalesce_deadline(
+    receiver: &mut mpsc::Receiver<CoordinatorMessage>,
+    pending: &mut VecDeque<CoordinatorMessage>,
+    workload_capacity: usize,
+    deadline: Instant,
+    shutting_down: &mut bool,
+) {
+    let park_deadline = deadline
+        .checked_sub(POST_COMMIT_COALESCE_TIMER_GUARD)
+        .unwrap_or(deadline);
+    while pending.len() < workload_capacity
+        && command_prefix_can_grow(pending)
+        && Instant::now() < deadline
+    {
+        tokio::select! {
+            biased;
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(park_deadline)) => return,
+            message = receiver.recv() => {
+                match message {
+                    Some(message) => pending.push_back(message),
+                    None => {
+                        *shutting_down = true;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl CommandCoordinatorActor {
     async fn run(
         mut self,
@@ -2479,6 +2539,7 @@ impl CommandCoordinatorActor {
         let mut shutting_down = false;
         let mut formation_anchor = Instant::now();
         let mut formation_deadline = None;
+        let mut completion_edge_coalescing = false;
         loop {
             if !writer_busy {
                 // Formation edge: drain ready channel messages into pending while
@@ -2524,13 +2585,24 @@ impl CommandCoordinatorActor {
                     );
                 }
                 if !shutting_down && let Some(deadline) = formation_deadline {
-                    collect_until_group_deadline(
-                        &mut self.receiver,
-                        &mut pending,
-                        workload_capacity,
-                        deadline,
-                        &mut shutting_down,
-                    );
+                    if completion_edge_coalescing {
+                        collect_until_coalesce_deadline(
+                            &mut self.receiver,
+                            &mut pending,
+                            workload_capacity,
+                            deadline,
+                            &mut shutting_down,
+                        )
+                        .await;
+                    } else {
+                        collect_until_group_deadline(
+                            &mut self.receiver,
+                            &mut pending,
+                            workload_capacity,
+                            deadline,
+                            &mut shutting_down,
+                        );
+                    }
                 }
 
                 if let Some((unit, reason)) = form_next_unit(&mut pending) {
@@ -2579,6 +2651,7 @@ impl CommandCoordinatorActor {
                     // duplicate boundary, or hard barrier. It is not granted a
                     // fresh delay when it reaches the front.
                     formation_deadline = None;
+                    completion_edge_coalescing = false;
                     #[cfg(test)]
                     {
                         let target = TEST_PANIC_LIFECYCLE.load(Ordering::Acquire);
@@ -2631,6 +2704,15 @@ impl CommandCoordinatorActor {
                                     }
                                     return;
                                 }
+                                if post_commit_command_window_eligible(&pending) {
+                                    formation_anchor = Instant::now();
+                                    completion_edge_coalescing = true;
+                                    formation_deadline = Some(
+                                        formation_anchor
+                                            .checked_add(POST_COMMIT_COALESCE_BUDGET)
+                                            .unwrap_or(formation_anchor),
+                                    );
+                                }
                             }
                             None => {
                                 self.lifecycle.stop();
@@ -2648,6 +2730,7 @@ impl CommandCoordinatorActor {
                                 // First message of a new collection after idle.
                                 if pending.is_empty() {
                                     formation_anchor = Instant::now();
+                                    completion_edge_coalescing = false;
                                     formation_deadline = Some(
                                         formation_anchor
                                             .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
@@ -2664,6 +2747,7 @@ impl CommandCoordinatorActor {
                 match self.receiver.recv().await {
                     Some(message) => {
                         formation_anchor = Instant::now();
+                        completion_edge_coalescing = false;
                         formation_deadline = Some(
                             formation_anchor
                                 .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
@@ -3220,7 +3304,8 @@ impl CommandWriter {
 ///
 /// Front-only consumption preserves ADR-0058 anti-starvation and ADR-0060's
 /// deferred-before-new / barrier-overtaking prohibitions. The caller performs
-/// ADR-0060's bounded timer-free collection before invoking this pure kernel.
+/// ADR-0060's bounded sub-millisecond collection, and ADR-0098's contended
+/// completion-edge collection, before invoking this pure kernel.
 fn form_next_unit(
     pending: &mut VecDeque<CoordinatorMessage>,
 ) -> Option<(WorkUnit, CommitGroupDispatchReason)> {
