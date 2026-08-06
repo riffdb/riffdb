@@ -147,6 +147,31 @@ fn command_staging_retains_and_checks_the_exact_candidate_graph() {
 }
 
 #[test]
+fn atomic_record_reciprocity_and_staged_evidence_materialize_no_comparison_vectors() {
+    let records = include_str!("../src/records.rs");
+    let constructor = records
+        .split_once("impl AtomicCommandRecordSet {")
+        .expect("atomic command record implementation")
+        .1
+        .split_once(
+            "    /// Returns allocator metadata after assigning this record set's sequence.",
+        )
+        .expect("atomic command record constructor boundary")
+        .0;
+    assert!(!constructor.contains("collect::<Vec<_>>()"));
+
+    let evidence = records
+        .split_once("    pub fn into_staged_evidence(self) -> StagedCommandEvidenceV1 {")
+        .expect("staged evidence boundary")
+        .1
+        .split_once("    /// Proves this graph exactly matches")
+        .expect("staged evidence end")
+        .0;
+    assert!(evidence.contains("event_ids: provenance.event_ids"));
+    assert!(!evidence.contains("collect"));
+}
+
+#[test]
 fn aggregate_cap_exceedance_requires_a_codec_minted_origin() {
     assert!(
         PROTO_CODEC_BOUNDS.contains(
