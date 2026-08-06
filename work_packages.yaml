@@ -1,4 +1,4 @@
-spec_version: '0.75'
+spec_version: '0.76'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8575,4 +8575,52 @@ work_packages:
   exit_gate: Every readable revision retains exact bytes, event-table authority, semantic result,
     corruption classification, and recovery behavior, while same-host evidence reduces current
     commit materialization CPU or total seed without a material unary regression.
+  human_review_triggers: *id001
+- id: WP-473
+  name: Sealed command-audit link evidence
+  depends_on: [WP-364, WP-458, WP-459, WP-470, WP-472]
+  objective: Reuse the move-only checked evidence produced by a complete command graph staged in
+    the same redb transaction to validate its linked terminal service-audit row without re-reading
+    and decoding that transaction's commit, event, and provenance rows, while retaining the full
+    authoritative decoder for every independently submitted, recovered, migrated, or external link.
+  requirements: [PERF-004, PERF-008, TXN-041, TXN-042, TXN-043, TXN-044]
+  required_adrs: [ADR-0007, ADR-0009, ADR-0021, ADR-0058, ADR-0060]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, tests/service_audit/**, tests/command_semantics/**,
+    tests/storage_recovery/**, docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Consuming one completely validated AtomicCommandRecordSet after successful physical staging
+    retains its exact outcome-owned commit sequence and provenance identity as unforgeable
+    move-only command-link evidence
+  - The audited command commit path requires exactly one checked evidence item for every Command
+    audit link, in command order, and rejects missing, extra, duplicate, reordered, or mismatched
+    evidence before appending any audit row
+  - The same-transaction sealed path performs no commit, event, or provenance table read/decode for
+    terminal-link validation; it does not skip lifecycle, allocator, audit-tail, request-index,
+    canonical audit encoding, or staged command-graph validation
+  - Standalone service-audit and all independently supplied links retain complete commit-with-events
+    and provenance decoding plus exact reciprocal identity checks
+  - Unknown framing, malformed bytes, absent or mismatched authoritative rows, and recovery/startup
+    validation remain fail closed; the sealed path is unavailable after process or transaction loss
+  - Durable schemas, record bytes, keys, transaction membership, ordering, acknowledgement,
+    uncertainty, and application/transport public interfaces remain unchanged
+  - Full public seed evidence records validation/encoding/staging CPU, total seed, commit/fence time,
+    and representative unary latency, with revert required for a material regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --test service_audit_orchestration --test service_audit_ordering
+      --test service_audit_recovery --all-features
+  - cargo +1.97.0 test --test command_concurrency --test lost_response_replay --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Same-transaction command audit links use only exact sealed staging evidence, every other
+    link retains full authoritative decoding, all audit/command/recovery semantics pass, and
+    same-host evidence reduces validation/staging CPU or total seed without a material unary
+    regression.
   human_review_triggers: *id001

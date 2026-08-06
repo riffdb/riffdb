@@ -22,16 +22,18 @@ use riffdb_storage_api::{
     IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyLookupCandidatesV1,
     IndexEntryMutationV1, IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch,
     PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot,
-    ReadSnapshotBuilder, SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1,
-    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
-    StoredExecutionFailedV1, StoredPendingAdmissionV1, TransactionCurrentState,
-    TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
-    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
+    ReadSnapshotBuilder, SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1,
+    StagedCommandEvidenceV1, StorageError, StorageErrorKind, StorageValueError,
+    StoredAdmissionStateV1, StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
+    UniqueIndexOccupancy, UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
     encode_atomic_command_record_set_v1,
 };
-use riffdb_types::ProvenanceId;
+use riffdb_types::{EventId, ProvenanceId};
 
-use crate::administration::stage_service_audit_group_in_write;
+use crate::administration::{
+    stage_command_service_audit_group_in_write, stage_service_audit_group_in_write,
+};
 use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_entity_record_v1,
     decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
@@ -72,6 +74,29 @@ impl BatchCore {
             metrics: None,
         })
     }
+}
+
+fn consume_staged_command_evidence(
+    staged: Vec<StagedCommandEvidenceV1>,
+) -> (
+    Vec<StoredOutcomeV1>,
+    Vec<EventId>,
+    Vec<StagedCommandAuditLinkEvidenceV1>,
+) {
+    let event_count = staged
+        .iter()
+        .map(|evidence| evidence.event_ids().len())
+        .sum();
+    let mut outcomes = Vec::with_capacity(staged.len());
+    let mut pending_events = Vec::with_capacity(event_count);
+    let mut command_links = Vec::with_capacity(staged.len());
+    for evidence in staged {
+        let (outcome, event_ids, command_link) = evidence.into_parts_with_command_audit_link();
+        outcomes.push(outcome);
+        pending_events.extend(event_ids);
+        command_links.push(command_link);
+    }
+    (outcomes, pending_events, command_links)
 }
 
 /// Empty redb command batch. This state has no commit operation.
@@ -274,18 +299,8 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let pending_events = self
-            .core
-            .staged
-            .iter()
-            .flat_map(|evidence| evidence.event_ids().iter().copied())
-            .collect::<Vec<_>>();
-        let outcomes = self
-            .core
-            .staged
-            .into_iter()
-            .map(|evidence| evidence.into_parts().0)
-            .collect();
+        let (outcomes, pending_events, command_links) =
+            consume_staged_command_evidence(self.core.staged);
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let mut terminal_positions = Vec::with_capacity(transitions.len());
         let mut intents = Vec::with_capacity(transitions.len().saturating_mul(2));
@@ -294,7 +309,11 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             intents.extend(rows);
             terminal_positions.push(intents.len() - 1);
         }
-        let records = stage_service_audit_group_in_write(&self.core.access, &intents)?;
+        let records = stage_command_service_audit_group_in_write(
+            &self.core.access,
+            &intents,
+            &command_links,
+        )?;
         let terminal_records = terminal_positions
             .into_iter()
             .map(|index| records[index].clone())
@@ -338,18 +357,8 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let metrics = self.metrics();
-        let pending_events = self
-            .core
-            .staged
-            .iter()
-            .flat_map(|evidence| evidence.event_ids().iter().copied())
-            .collect::<Vec<_>>();
-        let outcomes = self
-            .core
-            .staged
-            .into_iter()
-            .map(|evidence| evidence.into_parts().0)
-            .collect();
+        let (outcomes, pending_events, command_links) =
+            consume_staged_command_evidence(self.core.staged);
         let mut terminal_positions = Vec::with_capacity(transitions.len());
         let mut intents = Vec::with_capacity(transitions.len().saturating_mul(2));
         for transition in transitions {
@@ -357,7 +366,11 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
             intents.extend(rows);
             terminal_positions.push(intents.len() - 1);
         }
-        let records = stage_service_audit_group_in_write(&self.core.access, &intents)?;
+        let records = stage_command_service_audit_group_in_write(
+            &self.core.access,
+            &intents,
+            &command_links,
+        )?;
         let terminals = terminal_positions
             .into_iter()
             .map(|index| records[index].clone())

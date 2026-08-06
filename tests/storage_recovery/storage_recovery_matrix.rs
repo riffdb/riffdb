@@ -754,6 +754,14 @@ fn apply_unpublished_command_fixture(
 }
 
 fn commit_command_group(ports: &RedbOperationalPorts, fixtures: &[CommandFixture]) {
+    try_commit_command_group(ports, fixtures, fixtures).expect("commit complete command group");
+}
+
+fn try_commit_command_group(
+    ports: &RedbOperationalPorts,
+    fixtures: &[CommandFixture],
+    audit_fixtures: &[CommandFixture],
+) -> Result<(), riffdb_storage_api::StorageError> {
     let (first, remaining) = fixtures.split_first().expect("non-empty recovery group");
     let candidate = ports
         .begin_empty_batch()
@@ -820,9 +828,12 @@ fn commit_command_group(ports: &RedbOperationalPorts, fixtures: &[CommandFixture
     batch
         .commit_with_service_audit_transitions(
             DurabilityMode::Sync,
-            fixtures.iter().map(command_audit_transition).collect(),
+            audit_fixtures
+                .iter()
+                .map(command_audit_transition)
+                .collect(),
         )
-        .expect("commit complete command group and audit lifecycles");
+        .map(|_| ())
 }
 
 fn command_audit_transition(
@@ -2073,6 +2084,28 @@ fn crash_after_initialization_commit_preserves_the_durable_database_identity() {
         DatabaseIdentityProbe::Existing(database_id())
     );
     assert_eq!(complete_structural_open(store).database_id(), database_id());
+}
+
+#[test]
+fn sealed_command_audit_links_reject_reordered_staging_evidence_atomically() {
+    let path = TestDatabasePath::new("reordered-command-audit-links");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let first = command_fixture_at(1);
+    let second = command_fixture_at(2);
+    let fixtures = [first.clone(), second.clone()];
+    let reordered_audits = [second, first];
+
+    let error = try_commit_command_group(&ports, &fixtures, &reordered_audits)
+        .expect_err("audit links cannot be reordered relative to staged graphs");
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    assert!(command_audit_phases(&ports).is_empty());
+    for fixture in &fixtures {
+        assert_precommit_command_state(&ports, fixture);
+    }
 }
 
 #[test]

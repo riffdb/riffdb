@@ -25,11 +25,12 @@ use riffdb_storage_api::{
     ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
     ReactiveModulePublicationResult, ReactiveModuleRepository, SequenceAllocationError,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
-    StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
-    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
-    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredContractMigrationRecordV1,
-    StoredQueryModuleAdministrationV1, StoredQueryModuleV1, StoredReactiveModuleAdministrationV1,
-    StoredReactiveModuleV1, StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
+    StagedCommandAuditLinkEvidenceV1, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
+    StoredCatalogAdministrationV1, StoredContractBundleV1, StoredContractMigrationEdgeV1,
+    StoredContractMigrationRecordV1, StoredQueryModuleAdministrationV1, StoredQueryModuleV1,
+    StoredReactiveModuleAdministrationV1, StoredReactiveModuleV1, StoredServiceAuditRecordV1,
+    TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractBundleHash,
@@ -1901,6 +1902,24 @@ pub(crate) fn stage_service_audit_group_in_write(
     access: &crate::store::RedbWriteAccess,
     intents: &[ServiceAuditAppendIntentV1],
 ) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
+    stage_service_audit_group_with_command_evidence(access, intents, None)
+}
+
+/// Stages linked command audit rows using evidence that can only be produced
+/// by consuming complete command graphs already written to this transaction.
+pub(crate) fn stage_command_service_audit_group_in_write(
+    access: &crate::store::RedbWriteAccess,
+    intents: &[ServiceAuditAppendIntentV1],
+    staged_commands: &[StagedCommandAuditLinkEvidenceV1],
+) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
+    stage_service_audit_group_with_command_evidence(access, intents, Some(staged_commands))
+}
+
+fn stage_service_audit_group_with_command_evidence(
+    access: &crate::store::RedbWriteAccess,
+    intents: &[ServiceAuditAppendIntentV1],
+    staged_commands: Option<&[StagedCommandAuditLinkEvidenceV1]>,
+) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
     let maximum_rows = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
         .checked_mul(2)
         .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -1918,12 +1937,23 @@ pub(crate) fn stage_service_audit_group_in_write(
     let transaction = access.transaction()?;
     let allocator = validate_administration_tail(transaction)?;
     let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
-    // A successful command group links every terminal row to records staged in
-    // this same transaction. Keep one handle per authoritative table while
-    // retaining the complete per-link decode and reciprocal identity checks.
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
+    // Independently submitted links retain the complete table decode. The
+    // command path instead supplies move-only evidence produced only after the
+    // complete graph was checked, encoded, and inserted in this transaction.
+    let authoritative_command_tables = if staged_commands.is_none()
+        && intents
+            .iter()
+            .any(|intent| matches!(intent.link(), ServiceAuditLinkV1::Command { .. }))
+    {
+        Some((
+            transaction.open_table(COMMITS).map_err(table_error)?,
+            transaction.open_table(EVENTS).map_err(table_error)?,
+            transaction.open_table(PROVENANCE).map_err(table_error)?,
+        ))
+    } else {
+        None
+    };
+    let mut staged_commands = staged_commands.unwrap_or(&[]).iter();
     let mut fused_starts: BTreeMap<riffdb_types::RequestId, ServiceAuditAppendIntentV1> =
         BTreeMap::new();
     for intent in intents {
@@ -1973,13 +2003,23 @@ pub(crate) fn stage_service_audit_group_in_write(
             ServiceAuditLinkV1::Command {
                 commit_sequence,
                 provenance_id,
-            } => command_service_link_is_valid(
-                &commits,
-                &events,
-                &provenance,
-                commit_sequence,
-                provenance_id,
-            )?,
+            } => {
+                if let Some(evidence) = staged_commands.next() {
+                    evidence.matches(commit_sequence, provenance_id)
+                } else if let Some((commits, events, provenance)) =
+                    authoritative_command_tables.as_ref()
+                {
+                    command_service_link_is_valid(
+                        commits,
+                        events,
+                        provenance,
+                        commit_sequence,
+                        provenance_id,
+                    )?
+                } else {
+                    false
+                }
+            }
             ServiceAuditLinkV1::None | ServiceAuditLinkV1::ControlPlane { .. } => {
                 service_link_is_valid(transaction, intent)?
             }
@@ -1988,7 +2028,7 @@ pub(crate) fn stage_service_audit_group_in_write(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
     }
-    if !fused_starts.is_empty() {
+    if !fused_starts.is_empty() || staged_commands.next().is_some() {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
 
@@ -2012,9 +2052,7 @@ pub(crate) fn stage_service_audit_group_in_write(
         records.push(record);
     }
     drop(audit);
-    drop(commits);
-    drop(events);
-    drop(provenance);
+    drop(authoritative_command_tables);
     // Durable AUDIT_BY_REQUEST rows must land in the same write as fused AUDIT
     // appends; the transient ServiceAudit delta is not an index authority.
     let mut request_index = transaction

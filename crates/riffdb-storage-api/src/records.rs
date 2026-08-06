@@ -1988,6 +1988,20 @@ pub struct StagedCommandEvidenceV1 {
     event_ids: Vec<EventId>,
 }
 
+/// Move-only exact command-link proof derived while consuming staged evidence.
+pub struct StagedCommandAuditLinkEvidenceV1 {
+    commit_sequence: CommitSequence,
+    provenance_id: ProvenanceId,
+}
+
+impl StagedCommandAuditLinkEvidenceV1 {
+    /// Proves one terminal audit link names the consumed staged graph.
+    #[must_use]
+    pub fn matches(&self, commit_sequence: CommitSequence, provenance_id: ProvenanceId) -> bool {
+        self.commit_sequence == commit_sequence && self.provenance_id == provenance_id
+    }
+}
+
 impl StagedCommandEvidenceV1 {
     /// Borrows the exact checked terminal outcome.
     #[must_use]
@@ -2005,6 +2019,23 @@ impl StagedCommandEvidenceV1 {
     #[must_use]
     pub fn into_parts(self) -> (StoredOutcomeV1, Vec<EventId>) {
         (self.outcome, self.event_ids)
+    }
+
+    /// Consumes the evidence into commit publication values plus the exact
+    /// move-only terminal-audit link proof derived from the same outcome.
+    #[must_use]
+    pub fn into_parts_with_command_audit_link(
+        self,
+    ) -> (
+        StoredOutcomeV1,
+        Vec<EventId>,
+        StagedCommandAuditLinkEvidenceV1,
+    ) {
+        let link = StagedCommandAuditLinkEvidenceV1 {
+            commit_sequence: self.outcome.commit_sequence(),
+            provenance_id: self.outcome.provenance_id(),
+        };
+        (self.outcome, self.event_ids, link)
     }
 }
 
@@ -2853,6 +2884,7 @@ redacted_debug!(
     ValidatedCommandWriteSetShapeV1,
     CommandWriteSetPlanV1,
     AtomicCommandRecordSet,
+    StagedCommandAuditLinkEvidenceV1,
     StagedCommandEvidenceV1,
 );
 
@@ -2932,6 +2964,29 @@ mod tests {
 
         assert_eq!(outcome, expected_outcome);
         assert_eq!(event_ids, expected_event_ids);
+    }
+
+    #[test]
+    fn staged_command_evidence_matches_only_its_exact_command_audit_link() {
+        let records = atomic_record_set(8, &[5, 7]).expect("valid record graph");
+        let sequence = records.commit().commit_sequence();
+        let provenance_id = records.provenance().provenance_id();
+        let (_, _, link) = records
+            .into_staged_evidence()
+            .into_parts_with_command_audit_link();
+        assert!(link.matches(sequence, provenance_id));
+        assert!(!link.matches(
+            sequence.checked_next().expect("next sequence"),
+            provenance_id,
+        ));
+        assert!(!link.matches(
+            sequence,
+            ProvenanceId::from_bytes(uuid_bytes(0x66)).expect("other provenance"),
+        ));
+        assert_eq!(
+            format!("{link:?}"),
+            "StagedCommandAuditLinkEvidenceV1([REDACTED])"
+        );
     }
 
     #[test]

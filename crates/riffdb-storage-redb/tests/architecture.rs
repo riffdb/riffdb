@@ -329,6 +329,54 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
 }
 
 #[test]
+fn sealed_command_audit_evidence_is_confined_to_post_staging_application_commits() {
+    let source_dir = crate_root().join("src");
+    let application = without_whitespace(&production_source(source_dir.join("application.rs")));
+    let stage = application
+        .split_once("fnstage(self,records:AtomicCommandRecordSet)")
+        .expect("command stage typestate")
+        .1
+        .split_once("impl_candidate_chain!(RedbEmptyBatch)")
+        .expect("command stage end")
+        .0;
+    let physical_insert = stage
+        .find("apply_record_set(core.access.transaction()?,&records,&encoded)?")
+        .expect("complete graph physical insert");
+    let sealed_evidence = stage
+        .find("core.staged.push(records.into_staged_evidence())")
+        .expect("sealed post-staging evidence");
+    assert!(physical_insert < sealed_evidence);
+    assert_eq!(
+        application
+            .matches("stage_command_service_audit_group_in_write(")
+            .count(),
+        2,
+        "only direct and deferred successful command commits use sealed links"
+    );
+
+    let administration =
+        without_whitespace(&production_source(source_dir.join("administration.rs")));
+    let sealed_entry = administration
+        .split_once("fnstage_command_service_audit_group_in_write(")
+        .expect("sealed audit entry")
+        .1
+        .split_once("fnstage_service_audit_group_with_command_evidence(")
+        .expect("sealed audit entry end")
+        .0;
+    assert!(!sealed_entry.contains("decode_commit_with_event_table"));
+    assert!(!sealed_entry.contains("decode_provenance_record_v1"));
+
+    let all_sources = without_whitespace(&rust_sources());
+    assert_eq!(
+        all_sources
+            .matches("stage_command_service_audit_group_in_write(")
+            .count(),
+        3,
+        "one definition and exactly two application call sites"
+    );
+}
+
+#[test]
 fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
     let administration = without_whitespace(&production_source(
         crate_root().join("src/administration.rs"),
