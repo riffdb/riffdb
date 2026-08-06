@@ -100,7 +100,7 @@ item results plus a checkpoint. TypeScript emits
 sync and async `create_ticket_batch` methods. Each uses a bounded worker or
 transport pool and records either the typed result or the public error for each
 item. All three reject zero items, more than 4,096 items, and concurrency
-outside `1..=128` before submitting work. This SDK ceiling is distinct from
+outside `1..=384` before submitting work. This SDK ceiling is distinct from
 the CLI's operator-facing `1..=32` bound documented above.
 
 Both bindings report a monotonically increasing completed count and the largest
@@ -117,9 +117,11 @@ key, typed outcome, and uncertainty classification. A whole-RPC failure or a
 retryable per-item error re-enters only the affected ordinary commands through
 the same-key recovery path. The server may also physically group compatible
 durable transitions; callers still receive independent per-item results.
-At SDK concurrency 128, Rust opens at most eight simultaneous transport
-exchanges of at most 16 items each; the setting never creates a 128-item RPC or an
-application-visible transaction.
+At SDK concurrency 384, Rust opens at most 24 simultaneous transport exchanges
+of at most 16 items each; the setting never creates a 384-item RPC or an
+application-visible transaction. The coordinator remains independently bounded
+at 512 queued messages and 32 MiB, and one physical transaction remains bounded
+at 256 commands and 16 MiB.
 
 ## Per-item results and recovery
 

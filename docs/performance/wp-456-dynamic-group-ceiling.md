@@ -58,7 +58,7 @@ claim a throughput win or regression.
 ## Result
 
 The larger ceiling is valid bounded headroom, but it does not reach the
-sub-3-second seed target under the current public client limit of 128 in-flight
+sub-3-second seed target under the then-current public client limit of 128 in-flight
 commands. The writer is fed dynamically; at that concurrency it does not have
 enough simultaneously ready eligible work to approach 256. Widening the public
 generated-batch concurrency is a separate application-interface decision and

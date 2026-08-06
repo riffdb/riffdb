@@ -1884,7 +1884,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }}\n\
          export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
          export interface CommandBatchProgress {{ readonly completed: number; readonly total: number; readonly checkpoint: number; }}\n\
-         export const MAX_COMMAND_BATCH_CONCURRENCY = 128;\n\
+         export const MAX_COMMAND_BATCH_CONCURRENCY = 384;\n\
          export interface CommandBatchOptions {{ readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }}\n\
          export interface CommandBatchItem<T> {{ readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }}\n\
          export interface CommandBatchResult<T> {{ readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }}\n\
@@ -3133,7 +3133,7 @@ mod tests {
         assert!(generated.contains("pub use riffdb_client_rust::QueryOptions;"));
         assert!(generated.contains("pub async fn item_page_after_commit("));
         assert!(generated.contains("QueryOptions::new().read_after_commit(commit_sequence)"));
-        assert!(generated_typescript.contains("MAX_COMMAND_BATCH_CONCURRENCY = 128"));
+        assert!(generated_typescript.contains("MAX_COMMAND_BATCH_CONCURRENCY = 384"));
         assert!(
             generated_typescript.contains("options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY")
         );
