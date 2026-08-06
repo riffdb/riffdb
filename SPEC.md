@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.64
+**Version:** 0.65
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 5 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.65 | 2026-08-05 | Planned WP-462 under PERF-008: sequence-free write reservations sum exact bounded Protobuf field lengths directly instead of allocating intermediate length vectors, preserving the same conservative cap, final exact-encoding check, durable bytes, and fail-closed overflow behavior. |
 | 0.64 | 2026-08-05 | Planned WP-461 under PERF-008: the complete checked command graph uses its authoritative commit record as the single in-memory owner of the durable-event collection, removing one redundant event-descriptor vector while preserving reciprocal validation, current durable bytes, outbox evidence, recovery, writer ordering, and acknowledgement durability. |
 | 0.63 | 2026-08-05 | Planned WP-460 under PERF-008: complete command-record reciprocal validation compares bounded entity and event identities without materializing temporary vectors, and post-staging evidence moves the already-validated provenance event identities instead of allocating a replacement, with validation strength, durable bytes, writer ordering, recovery, and acknowledgement durability unchanged. |
 | 0.62 | 2026-08-05 | Planned WP-459 under PERF-008: backends consume complete checked command graphs into minimal post-staging outcome and event-identity evidence, removing redundant graph retention and outcome clones while preserving pre-commit result validation, durable bytes, writer ordering, recovery, and acknowledgement durability. |

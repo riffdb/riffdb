@@ -35,6 +35,20 @@ const MODULES: &[(&str, &str)] = &[
 const PROTO_CODEC_BOUNDS: &str = include_str!("../src/proto_codec/bounds.rs");
 
 #[test]
+fn sequence_free_wire_reservation_materializes_no_length_vectors() {
+    let sizing = PROTO_CODEC_BOUNDS
+        .split_once("pub fn command_write_set_upper_bound_v1(")
+        .expect("sequence-free reservation")
+        .1
+        .split_once("fn finish_upper_bound(")
+        .expect("sequence-free reservation end")
+        .0;
+
+    assert!(!sizing.contains("collect::<Result<Vec<_>"));
+    assert!(!sizing.contains("collect::<Vec<_>>"));
+}
+
+#[test]
 fn only_projection_schema_names_contract_ir() {
     for (name, source) in MODULES {
         if *name == "projection_schema.rs" {
