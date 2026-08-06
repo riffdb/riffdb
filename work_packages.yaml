@@ -1,4 +1,4 @@
-spec_version: '0.67'
+spec_version: '0.68'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8208,4 +8208,39 @@ work_packages:
   exit_gate: ExecuteBatch authenticates once while every item remains an ordinary independently
     authorized command, cancellation and per-item carriage remain exact, no outer Tokio item task
     remains, durable and public bytes are unchanged, and the retained full seed does not regress.
+  human_review_triggers: *id001
+- id: WP-465
+  name: Shared immutable capability grant collections
+  depends_on: [WP-378, WP-464]
+  objective: Remove repeated deep cloning of already canonical and validated capability permission,
+    field-visibility, and approval collections across authentication and authorization handoffs by
+    sharing their immutable storage, without changing public construction, bounded validation,
+    policy decisions, semantic bytes, durable encoding, or fail-closed behavior.
+  requirements: [PERF-008, AAA-006, AAA-007]
+  required_adrs: [ADR-0009, ADR-0060, ADR-0097]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-types/**,
+    benchmarks/run-app-baseline, docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Arc-backed immutable storage for canonical permission atoms, per-entity visible fields,
+    field-visibility entries, and approval-required permission kinds after all existing bounded
+    sorting, duplicate rejection, subset validation, and payload-size validation complete
+  - Unchanged public constructors and slice accessors, value equality, canonical order,
+    semantic-byte output, capability codecs, authentication, authorization, and redaction behavior
+  - Unit tests prove clones share the checked backing allocations while independently constructed
+    equal grants remain value-equal and emit byte-identical semantic encodings
+  - Before/after full public seed evidence at retained concurrency 128; retain only if authorization
+    CPU and total seed do not materially regress, physical grouping remains bounded and equivalent,
+    and representative unary latency does not materially regress
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types --all-features
+  - cargo +1.97.0 test -p riffdb-auth --all-features
+  - cargo +1.97.0 test -p riffdb-policy --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Capability-grant clones share only immutable already-validated collections; canonical
+    bytes, codecs, value equality, authorization, and redaction remain exact; all type, auth, and
+    policy suites pass; and the retained public seed shows no material total or unary regression.
   human_review_triggers: *id001
