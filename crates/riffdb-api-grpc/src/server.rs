@@ -11,7 +11,10 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
-use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
+use riffdb_auth::{
+    AuthenticatedPrincipal, AuthenticationContext, CapabilityDigestKeyProvider,
+    CredentialAuthenticator,
+};
 use riffdb_errors::{ApplicationOperation, PublicErrorKind};
 use riffdb_proto::{
     MAX_CONTRACT_MIGRATION_REQUEST_BYTES, MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES,
@@ -61,37 +64,6 @@ use crate::projected_query_conversion::{
 };
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
-
-struct BatchTaskAbortGuard {
-    handles: Vec<tokio::task::AbortHandle>,
-    armed: bool,
-}
-
-impl BatchTaskAbortGuard {
-    fn new<T>(tasks: &[tokio::task::JoinHandle<T>]) -> Self {
-        Self {
-            handles: tasks
-                .iter()
-                .map(tokio::task::JoinHandle::abort_handle)
-                .collect(),
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for BatchTaskAbortGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            for handle in &self.handles {
-                handle.abort();
-            }
-        }
-    }
-}
 
 /// Server-owned atomic route across initializing and activated service stages.
 pub trait GrpcLifecycleRoute: Send + Sync {
@@ -611,6 +583,41 @@ impl GrpcApplication {
         ))
     }
 
+    /// Admits and authenticates one already bounded transport batch.
+    ///
+    /// Authentication establishes only the transport principal. Every item
+    /// receives independent request control and still traverses every ordinary
+    /// API-neutral current-policy and response-release authorization safe point.
+    fn normal_batch_invocation_with(
+        &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
+        operation: ServiceOperationV1,
+        metadata: &MetadataMap,
+    ) -> Result<(Arc<dyn ApplicationService>, AuthenticatedPrincipal, Instant), Status> {
+        let telemetry = lifecycle.read_stage_telemetry();
+        let admission_started = Instant::now();
+        let (service, security) = self.normal_admission(lifecycle, operation)?;
+        let deadline = self.limits.deadline(metadata)?;
+        let authn_started = Instant::now();
+        let principal = authenticate_normal_request(
+            metadata,
+            security.authenticator.as_ref(),
+            &security.authentication,
+        )?;
+        let authn_elapsed = authn_started.elapsed();
+        if let Some(telemetry) = telemetry.as_ref() {
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::Authn,
+                elapsed: authn_elapsed,
+            });
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::AdmissionContext,
+                elapsed: admission_started.elapsed().saturating_sub(authn_elapsed),
+            });
+        }
+        Ok((service, principal, deadline))
+    }
+
     fn normal_invocation(
         &self,
         operation: ServiceOperationV1,
@@ -937,6 +944,14 @@ impl Drop for CancellationGuard {
     fn drop(&mut self) {
         self.0.cancel();
     }
+}
+
+async fn retain_batch_item_cancellation<T, F>(cancellation: CancellationGuard, future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    let _cancellation = cancellation;
+    future.await
 }
 
 fn split_request<T>(request: Request<T>) -> (MetadataMap, Option<SocketAddr>, T) {
@@ -1274,38 +1289,50 @@ impl CommandService for GrpcApplication {
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        // StrictProstCodec has already validated the complete bounded batch.
-        // Prepare every transport context before any semantic work begins.
-        let mut invocations = Vec::with_capacity(message.commands.len());
+        // StrictProstCodec has already bounded the complete batch. Decode every
+        // item before authentication or semantic work so malformed carriage
+        // cannot leave a detached sibling invocation running.
+        let mut decoded = Vec::with_capacity(message.commands.len());
         for command in message.commands {
             let (request_id, request) = execute_command_request_from_proto(command)?;
-            let (service, context, cancellation) = self.normal_invocation_with(
-                lifecycle.as_ref(),
-                ServiceOperationV1::ExecuteCommand,
-                &metadata,
+            decoded.push((request_id, request));
+        }
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ExecuteCommand,
+            &metadata,
+        )?;
+        let mut invocations = Vec::with_capacity(decoded.len());
+        for (request_id, request) in decoded {
+            let (control, cancellation) = RequestControl::new(deadline);
+            let context = RequestContext::from_authenticated_grpc(
                 request_id,
-            )?;
+                principal.clone(),
+                control,
+                None,
+            );
+            let service = Arc::clone(&service);
             // Per-item carriage names the batch operation (ADR-0084).
             let item_error_context =
                 ApplicationErrorContextBuilder::new(ApplicationOperation::BatchCommand, request_id);
-            invocations.push(tokio::spawn(async move {
-                let _cancellation = cancellation;
-                batch_item_from_service_result(
-                    service.execute_command(context, request).await,
-                    &item_error_context,
-                    history_incarnation,
-                )
-            }));
+            invocations.push(retain_batch_item_cancellation(
+                CancellationGuard(cancellation),
+                async move {
+                    batch_item_from_service_result(
+                        service.execute_command(context, request).await,
+                        &item_error_context,
+                        history_incarnation,
+                    )
+                },
+            ));
         }
-        let mut abort_on_drop = BatchTaskAbortGuard::new(&invocations);
         // Await every independently admitted command even when a sibling
         // fails, so the transport never cancels an already-started item merely
         // to provide fail-fast batch behavior.
         let results = join_all(invocations).await;
-        abort_on_drop.disarm();
         let mut items = Vec::with_capacity(results.len());
         for result in results {
-            items.push(result.map_err(|_| Status::internal("application batch worker stopped"))??);
+            items.push(result?);
         }
         Ok(Response::new(assemble_execute_batch_response(items)?))
     }
@@ -2593,6 +2620,22 @@ mod tests {
     use tonic::metadata::MetadataValue;
 
     struct CountingAuthenticator(AtomicUsize);
+
+    #[test]
+    fn dropping_an_unfinished_batch_item_future_cancels_its_independent_control() {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .expect("bounded deadline");
+        let (control, cancellation) = RequestControl::new(deadline);
+        let future = retain_batch_item_cancellation(
+            CancellationGuard(cancellation),
+            std::future::pending::<()>(),
+        );
+
+        drop(future);
+
+        assert!(control.is_cancelled());
+    }
 
     impl CredentialAuthenticator for CountingAuthenticator {
         fn authenticate(
