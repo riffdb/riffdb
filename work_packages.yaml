@@ -1,4 +1,4 @@
-spec_version: '0.74'
+spec_version: '0.75'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8532,4 +8532,47 @@ work_packages:
   exit_gate: All three readable commit revisions retain exact semantic and compatibility behavior,
     every corruption and recovery suite passes, and same-host evidence reduces current commit
     materialization CPU or total seed without a material unary regression.
+  human_review_triggers: *id001
+- id: WP-472
+  name: Single-pass commit materialization
+  depends_on: [WP-065, WP-070, WP-460, WP-471]
+  objective: Retain the already canonical, revision-witnessed commit payload through the
+    authoritative event-table join and finish complete semantic construction without decoding the
+    same durable envelope and Protobuf payload a second time, while preserving every compatibility,
+    canonicality, event-reference, semantic-record, corruption, and recovery check.
+  requirements: [STO-002, PERF-008, TXN-041, TXN-042, TXN-044]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0009, ADR-0021, ADR-0058]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, tests/storage_recovery/**, docs/SUMMARY.md,
+    docs/performance/**]
+  deliverables:
+  - The exact readable decode produces one move-only prepared current-V3, historical-V2, or
+    legacy-V1 commit value plus its ordered checked event references and complete envelope charge
+  - Prepared debug output exposes only the closed revision and bounded reference count, never
+    payloads, event identities, hashes, actor values, or business data
+  - Redb loads the same authoritative event rows in the same order, performs the same exact
+    reference/hash comparisons, and consumes the prepared value plus loaded events once
+  - V3 and V2 finish all existing field conversion and StoredCommitRecordV1 construction checks;
+    legacy V1 retains its complete embedded-event equality comparison
+  - Unknown type, malformed envelope, checksum, schema, noncanonical bytes, malformed payload,
+    missing event, mismatched reference/hash, and semantic invalidity remain fail-closed corruption
+  - Direct V3, V2, and legacy decoders remain available for compatibility tests and produce records
+    exactly equal to prepared materialization with the same encoded charge
+  - Durable schemas, record registry, bytes, keys, transaction ordering, acknowledgement, audit
+    linking, and application/transport public interfaces remain unchanged
+  - Full public seed evidence records validation/encoding/staging CPU, total seed, and representative
+    unary latency, with revert required for a material regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every readable revision retains exact bytes, event-table authority, semantic result,
+    corruption classification, and recovery behavior, while same-host evidence reduces current
+    commit materialization CPU or total seed without a material unary regression.
   human_review_triggers: *id001

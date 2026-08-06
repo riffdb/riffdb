@@ -96,6 +96,7 @@
 - [WP-469 Fenced Single-Subgroup Commit](performance/wp-469-fenced-single-subgroup.md)
 - [WP-470 Batched Command-Audit Table Access](performance/wp-470-batched-command-audit-tables.md)
 - [WP-471 Revision-Aware Commit Materialization](performance/wp-471-revision-aware-commit.md)
+- [WP-472 Single-Pass Commit Materialization](performance/wp-472-single-pass-commit.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference
