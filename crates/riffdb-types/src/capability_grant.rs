@@ -1,6 +1,6 @@
 //! Canonical bounded capability grants shared by authentication and policy.
 
-use std::{error::Error, fmt, num::NonZeroU16};
+use std::{error::Error, fmt, num::NonZeroU16, sync::Arc};
 
 use crate::{
     ApplicationRoleHash, CommandId, ContractLineage, EntityTypeId, FieldId, IndexId, PartitionKey,
@@ -327,7 +327,7 @@ impl CapabilityPermissionV1 {
 
 /// Canonical permission set.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CapabilityPermissionsV1(Vec<CapabilityPermissionV1>);
+pub struct CapabilityPermissionsV1(Arc<[CapabilityPermissionV1]>);
 
 impl CapabilityPermissionsV1 {
     /// Sorts by canonical bytes and rejects duplicates or excessive counts.
@@ -346,7 +346,7 @@ impl CapabilityPermissionsV1 {
         {
             return Err(CapabilityGrantError::Duplicate);
         }
-        Ok(Self(values))
+        Ok(Self(values.into()))
     }
 
     /// Returns atoms in canonical order.
@@ -454,7 +454,7 @@ impl PartitionScopeV1 {
 pub struct EntityFieldVisibilityV1 {
     lineage: ContractLineage,
     entity_type: EntityTypeId,
-    fields: Vec<FieldId>,
+    fields: Arc<[FieldId]>,
 }
 
 impl EntityFieldVisibilityV1 {
@@ -477,7 +477,7 @@ impl EntityFieldVisibilityV1 {
         Ok(Self {
             lineage,
             entity_type,
-            fields,
+            fields: fields.into(),
         })
     }
 
@@ -513,9 +513,9 @@ pub struct CapabilityGrantV1 {
     tenant_scope: TenantScope,
     partition_scope: PartitionScopeV1,
     permissions: CapabilityPermissionsV1,
-    field_visibility: Vec<EntityFieldVisibilityV1>,
+    field_visibility: Arc<[EntityFieldVisibilityV1]>,
     max_scan_rows: NonZeroU16,
-    approval_required: Vec<CapabilityPermissionKindV1>,
+    approval_required: Arc<[CapabilityPermissionKindV1]>,
 }
 
 impl CapabilityGrantV1 {
@@ -565,9 +565,9 @@ impl CapabilityGrantV1 {
             tenant_scope,
             partition_scope,
             permissions,
-            field_visibility,
+            field_visibility: field_visibility.into(),
             max_scan_rows,
-            approval_required,
+            approval_required: approval_required.into(),
         };
         validate_capability_payload_bytes(value.semantic_bytes()?)?;
         Ok(value)
@@ -849,6 +849,62 @@ mod tests {
             CapabilityPermissionsV1::new(vec![duplicate.clone(), duplicate]),
             Err(CapabilityGrantError::Duplicate)
         );
+    }
+
+    #[test]
+    fn capability_grant_clones_share_only_checked_immutable_collections() {
+        fn grant() -> CapabilityGrantV1 {
+            let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+            let permissions = CapabilityPermissionsV1::new(vec![
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadContract)
+                    .expect("permission"),
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                    .expect("permission"),
+            ])
+            .expect("permissions");
+            let visibility = EntityFieldVisibilityV1::new(
+                lineage,
+                EntityTypeId::first(),
+                vec![FieldId::first()],
+            )
+            .expect("visibility");
+            CapabilityGrantV1::new(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                permissions,
+                vec![visibility],
+                NonZeroU16::new(10).expect("nonzero"),
+                vec![CapabilityPermissionKindV1::ReadContract],
+            )
+            .expect("grant")
+        }
+
+        let original = grant();
+        let cloned = original.clone();
+        assert!(Arc::ptr_eq(&original.permissions.0, &cloned.permissions.0));
+        assert!(Arc::ptr_eq(
+            &original.field_visibility,
+            &cloned.field_visibility
+        ));
+        assert!(Arc::ptr_eq(
+            &original.field_visibility[0].fields,
+            &cloned.field_visibility[0].fields
+        ));
+        assert!(Arc::ptr_eq(
+            &original.approval_required,
+            &cloned.approval_required
+        ));
+
+        let independently_built = grant();
+        assert_eq!(original, independently_built);
+        assert_eq!(
+            original.semantic_bytes(),
+            independently_built.semantic_bytes()
+        );
+        assert!(!Arc::ptr_eq(
+            &original.permissions.0,
+            &independently_built.permissions.0
+        ));
     }
 
     #[test]
