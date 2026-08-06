@@ -2114,21 +2114,31 @@ impl AtomicCommandRecordSet {
                 .iter()
                 .zip(&events)
                 .any(|(intent, event)| intent.event() != event)
-            || commit.outbox_event_ids()
-                != outbox_intents
-                    .iter()
-                    .map(StoredOutboxIntentV1::event_id)
-                    .collect::<Vec<_>>()
+            || !commit
+                .outbox_event_ids()
+                .iter()
+                .copied()
+                .eq(outbox_intents.iter().map(StoredOutboxIntentV1::event_id))
         {
             return Err(StorageValueError::IdentityMismatch);
         }
 
-        let affected: Vec<_> = entities
-            .iter()
-            .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))
-            .collect();
-        let event_ids: Vec<_> = events.iter().map(StoredDurableEventV1::event_id).collect();
-        if provenance.affected_entities() != affected || provenance.event_ids() != event_ids {
+        if provenance.affected_entities().len() != entities.len()
+            || provenance
+                .affected_entities()
+                .iter()
+                .zip(&entities)
+                .any(|(affected, mutation)| {
+                    affected != &AffectedEntityV1::from_record(mutation.post_image())
+                })
+            || provenance.event_ids().len() != events.len()
+            || provenance
+                .event_ids()
+                .iter()
+                .copied()
+                .zip(events.iter().map(StoredDurableEventV1::event_id))
+                .any(|(provenance, event)| provenance != event)
+        {
             return Err(StorageValueError::IdentityMismatch);
         }
 
@@ -2254,14 +2264,14 @@ impl AtomicCommandRecordSet {
     /// immutable evidence required to finish or recover the engine commit.
     #[must_use]
     pub fn into_staged_evidence(self) -> StagedCommandEvidenceV1 {
-        let event_ids = self
-            .events
-            .iter()
-            .map(StoredDurableEventV1::event_id)
-            .collect();
+        let Self {
+            stored_outcome,
+            provenance,
+            ..
+        } = self;
         StagedCommandEvidenceV1 {
-            outcome: self.stored_outcome,
-            event_ids,
+            outcome: stored_outcome,
+            event_ids: provenance.event_ids,
         }
     }
 
@@ -2913,6 +2923,7 @@ mod tests {
     fn staged_record_graph_consumption_preserves_only_outcome_and_event_identity() {
         let records = atomic_record_set(8, &[5, 7]).expect("valid record graph");
         let expected_outcome = records.stored_outcome().clone();
+        let checked_event_ids_allocation = records.provenance().event_ids().as_ptr();
         let expected_event_ids = records
             .events()
             .iter()
@@ -2920,6 +2931,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let evidence = records.into_staged_evidence();
+        assert_eq!(evidence.event_ids().as_ptr(), checked_event_ids_allocation);
         let (outcome, event_ids) = evidence.into_parts();
 
         assert_eq!(outcome, expected_outcome);
