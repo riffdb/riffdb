@@ -29,15 +29,38 @@ const MAX_QUERY_MODULE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ITEMS: usize = 4_096;
 const MAX_CONFLICT_HASHES: usize = 2_046;
 const MAX_PACKED_ITEMS: usize = 65_535 + 19;
+const MAX_SHAPE_RULES: usize = 16;
+const MAX_SHAPE_FIELD_NUMBER: usize = 20;
 
 const RECORD_REGISTRY_V2_RULES: [Rule; 1] = [fixed_bytes(1, 32)];
-const RECORD_REGISTRY_V2: Shape = Shape {
-    rules: &RECORD_REGISTRY_V2_RULES,
-};
+const RECORD_REGISTRY_V2: Shape = Shape::new(&RECORD_REGISTRY_V2_RULES);
 
 #[derive(Clone, Copy)]
 struct Shape {
     rules: &'static [Rule],
+    rule_slots: [u8; MAX_SHAPE_FIELD_NUMBER + 1],
+}
+
+impl Shape {
+    const fn new(rules: &'static [Rule]) -> Self {
+        assert!(rules.len() <= MAX_SHAPE_RULES);
+        let mut rule_slots = [0_u8; MAX_SHAPE_FIELD_NUMBER + 1];
+        let mut index = 0;
+        while index < rules.len() {
+            let number = rules[index].number as usize;
+            assert!(number > 0 && number <= MAX_SHAPE_FIELD_NUMBER);
+            assert!(rule_slots[number] == 0);
+            rule_slots[number] = (index + 1) as u8;
+            index += 1;
+        }
+        Self { rules, rule_slots }
+    }
+
+    fn rule(&self, number: u32) -> Option<(usize, &Rule)> {
+        let slot = self.rule_slots.get(number as usize).copied().unwrap_or(0);
+        let index = usize::from(slot).checked_sub(1)?;
+        self.rules.get(index).map(|rule| (index, rule))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -128,7 +151,7 @@ const fn packed_varints(number: u32, maximum_items: usize) -> Rule {
 
 macro_rules! shape {
     ($name:ident [$($rule:expr),* $(,)?]) => {
-        static $name: Shape = Shape { rules: &[$($rule),*] };
+        static $name: Shape = Shape::new(&[$($rule),*]);
     };
 }
 
@@ -628,18 +651,35 @@ shape!(PROJECTION_CONTROL [
     message(4, &GENERATION_POSITION),
     message(7, &PROJECTION_FAILURE),
 ]);
+shape!(ROOT_EMPTY []);
+shape!(ROOT_DATABASE_ID[fixed_bytes(1, 16)]);
+shape!(ROOT_OPTIONAL_UNIT_FIELD_TWO[message(2, &UNIT)]);
+shape!(ROOT_VALIDATED_PREFIX_CHECKPOINT [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    fixed_bytes(14, 32),
+    fixed_bytes(19, 32),
+    fixed_bytes(20, 32),
+]);
+shape!(ROOT_RETENTION_WATERMARK [
+    fixed_bytes(3, 32),
+    fixed_bytes(4, 32),
+]);
+shape!(ROOT_HISTORY_TOMBSTONE [
+    fixed_bytes(7, 32),
+    fixed_bytes(8, 32),
+    fixed_bytes(9, 32),
+]);
+shape!(ROOT_RETENTION_ADMINISTRATION [
+    string(4, MAX_TEXT_ID_BYTES),
+    message(5, &TIMESTAMP),
+]);
 
 const ROOTS: [&Shape; 57] = [
-    &Shape { rules: &[] },
-    &Shape {
-        rules: &[fixed_bytes(1, 16)],
-    },
-    &Shape {
-        rules: &[message(2, &UNIT)],
-    },
-    &Shape {
-        rules: &[message(2, &UNIT)],
-    },
+    &ROOT_EMPTY,
+    &ROOT_DATABASE_ID,
+    &ROOT_OPTIONAL_UNIT_FIELD_TWO,
+    &ROOT_OPTIONAL_UNIT_FIELD_TWO,
     &CONTRACT_BUNDLE,
     &ACTIVE_CATALOG,
     &CATALOG_ADMINISTRATION,
@@ -671,11 +711,9 @@ const ROOTS: [&Shape; 57] = [
     &OUTBOX_INTENT_V2,
     &INDEX_GENERATION_V2,
     // StoredHistoryIncarnationV1 is a single scalar varint; preflight ignores wire-type 0.
-    &Shape { rules: &[] },
+    &ROOT_EMPTY,
     // StoredServiceAuditRequestIndexV1: fixed 16-byte request id; sequence is wire-type 0.
-    &Shape {
-        rules: &[fixed_bytes(1, 16)],
-    },
+    &ROOT_DATABASE_ID,
     &EVENT_ROUTE_V1,
     &COMMIT_V3,
     &CONTRACT_MIGRATION_JOURNAL_V1,
@@ -684,31 +722,17 @@ const ROOTS: [&Shape; 57] = [
     &RETIRED_ENTITY_RECORD_V1,
     &CAPABILITY_RECORD_V2,
     // StoredValidatedPrefixCheckpointV1: fixed digests/hashes plus scalar counters.
-    &Shape {
-        rules: &[
-            fixed_bytes(1, 16),
-            fixed_bytes(3, 32),
-            fixed_bytes(14, 32),
-            fixed_bytes(19, 32),
-            fixed_bytes(20, 32),
-        ],
-    },
+    &ROOT_VALIDATED_PREFIX_CHECKPOINT,
     // StoredRetentionWatermarkV1: self-hash and recorded chain-root registry
     // digest are fixed 32 bytes; sequences are wire-type 0.
-    &Shape {
-        rules: &[fixed_bytes(3, 32), fixed_bytes(4, 32)],
-    },
+    &ROOT_RETENTION_WATERMARK,
     // StoredRetentionHoldsV1: repeated holds with string fields — no fixed-length roots.
-    &Shape { rules: &[] },
+    &ROOT_EMPTY,
     // StoredHistoryTombstoneV1: content digest + hashes fixed 32; counts/sequences wire-type 0.
-    &Shape {
-        rules: &[fixed_bytes(7, 32), fixed_bytes(8, 32), fixed_bytes(9, 32)],
-    },
+    &ROOT_HISTORY_TOMBSTONE,
     // StoredRetentionAdministrationV1: reason string + timestamp message;
     // sequence/action/projection-id are wire-type 0.
-    &Shape {
-        rules: &[string(4, MAX_TEXT_ID_BYTES), message(5, &TIMESTAMP)],
-    },
+    &ROOT_RETENTION_ADMINISTRATION,
     &REACTIVE_MODULE,
     &REACTIVE_MODULE_ADMINISTRATION,
     &EVENT_CONSUMER,
@@ -766,20 +790,15 @@ fn preflight(
     depth: usize,
     budget: &mut Budget,
 ) -> Result<(), DurablePreflightError> {
-    if depth > MAX_PREFLIGHT_DEPTH || shape.rules.len() > 16 {
+    if depth > MAX_PREFLIGHT_DEPTH || shape.rules.len() > MAX_SHAPE_RULES {
         return Err(DurablePreflightError::LimitExceeded);
     }
-    let mut occurrences = [0_usize; 16];
-    let mut packed_items = [0_usize; 16];
+    let mut occurrences = [0_usize; MAX_SHAPE_RULES];
+    let mut packed_items = [0_usize; MAX_SHAPE_RULES];
     let mut cursor = Cursor::new(input);
     while let Some(field) = cursor.next()? {
         budget.claim(1)?;
-        let Some((rule_index, rule)) = shape
-            .rules
-            .iter()
-            .enumerate()
-            .find(|(_, rule)| rule.number == field.number)
-        else {
+        let Some((rule_index, rule)) = shape.rule(field.number) else {
             continue;
         };
         if field.wire_type != 2 {
@@ -838,6 +857,34 @@ mod tests {
 
     use super::*;
     use crate::storage::v1;
+
+    fn assert_exact_rule_dispatch(shape: &Shape, depth: usize) {
+        assert!(depth <= MAX_PREFLIGHT_DEPTH);
+        for number in 0..=(MAX_SHAPE_FIELD_NUMBER as u32 + 1) {
+            let expected = shape
+                .rules
+                .iter()
+                .enumerate()
+                .find(|(_, rule)| rule.number == number)
+                .map(|(index, rule)| (index, rule.number));
+            let actual = shape.rule(number).map(|(index, rule)| (index, rule.number));
+            assert_eq!(actual, expected, "field {number} at depth {depth}");
+        }
+        assert!(shape.rule(u32::MAX).is_none());
+
+        for rule in shape.rules {
+            if let Kind::Message(nested) = rule.kind {
+                assert_exact_rule_dispatch(nested, depth + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn every_durable_shape_has_exact_constant_time_rule_dispatch() {
+        for shape in ROOTS {
+            assert_exact_rule_dispatch(shape, 0);
+        }
+    }
 
     #[test]
     fn every_migration_v1_record_has_a_real_structural_preflight_shape() {
