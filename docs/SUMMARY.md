@@ -84,6 +84,7 @@
 - [WP-452 Write Amplification](performance/wp-452-write-amplification.md)
 - [WP-457 Writer Feeding](performance/wp-457-writer-feeding.md)
 - [WP-458 Shared Command Intent](performance/wp-458-shared-command-intent.md)
+- [WP-459 Consumed Staged Graphs](performance/wp-459-consumed-staged-graphs.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

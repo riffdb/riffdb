@@ -1,4 +1,4 @@
-spec_version: '0.61'
+spec_version: '0.62'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -7998,4 +7998,45 @@ work_packages:
   exit_gate: Command-context and intent clones share immutable checked allocations; every existing
     semantic, recovery, byte-compatibility, and backend test passes; and the full public seed shows
     no material total, staging, or unary regression against the WP-457 retained point.
+  human_review_triggers: *id001
+- id: WP-459
+  name: Consume staged command graphs after physical staging
+  depends_on: [WP-452, WP-458]
+  objective: Stop retaining and repeatedly deep-cloning the complete authoritative command graph
+    after a backend has physically staged it by consuming the graph into minimal immutable commit
+    evidence, without moving validation after commit or changing durable bytes, transaction
+    ordering, authorization, recovery, or acknowledgement durability.
+  requirements: [PERF-008]
+  required_adrs: [ADR-0059, ADR-0060, ADR-0095, ADR-0097]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    tests/command_semantics/**, tests/recovery/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - A consuming AtomicCommandRecordSet boundary that yields only the already-validated terminal
+    outcome and ordered event identities needed after physical staging
+  - Memory and redb batches retain minimal staged evidence instead of complete entity, index,
+    event, outbox, provenance, commit, and write-plan graphs after their writes are applied
+  - CommittedBatchV1 remains completely constructed and validated before the durable commit, while
+    grouped integrity comparison borrows retained expected outcomes without a second clone vector
+  - Unchanged durable codecs, backend writes, transaction-local reads, uncertain-commit evidence,
+    replay behavior, and all-or-absent recovery
+  - Before/after full public seed evidence at retained concurrency 128; retain only if total seed,
+    validation/encoding/staging, and representative unary latency do not materially regress
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --test lost_response_replay
+      --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Backends retain only minimal post-staging evidence, grouped comparison creates no
+    cloned expected-outcome vector, all semantic, recovery, and byte-compatibility suites pass, and
+    the full public seed shows no material total, staging, or unary regression against WP-458.
   human_review_triggers: *id001

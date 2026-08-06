@@ -27,10 +27,10 @@ use riffdb_storage_api::{
     MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES, NonEmptyCommandBatch,
     PartitionEventRouteReader, PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies,
     ReadDependency, ReadSnapshot, ReadSnapshotBuilder, RetainedMetadataV1, SnapshotReader,
-    SnapshotRequest, StagedBatchMetrics, StorageError, StorageErrorKind, StorageValueError,
-    StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, TransactionCurrentState,
+    SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1, StorageError, StorageErrorKind,
+    StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, TransactionCurrentState,
     TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
     UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
 };
@@ -120,7 +120,7 @@ impl ApplicationOverlay {
 struct BatchCore {
     access: MemoryAccess,
     overlay: ApplicationOverlay,
-    staged: Vec<AtomicCommandRecordSet>,
+    staged: Vec<StagedCommandEvidenceV1>,
     metrics: Option<StagedBatchMetrics>,
 }
 
@@ -280,15 +280,15 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
             .core
             .staged
             .iter()
-            .any(|records| !records.matches_durability_mode(durability))
+            .any(|evidence| evidence.outcome().durability_mode() != durability)
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let outcomes = self
             .core
             .staged
-            .iter()
-            .map(|records| records.stored_outcome().clone())
+            .into_iter()
+            .map(|evidence| evidence.into_parts().0)
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let BatchCore {
@@ -312,15 +312,15 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
                 .core
                 .staged
                 .iter()
-                .any(|records| !records.matches_durability_mode(durability))
+                .any(|evidence| evidence.outcome().durability_mode() != durability)
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let outcomes = self
             .core
             .staged
-            .iter()
-            .map(|records| records.stored_outcome().clone())
+            .into_iter()
+            .map(|evidence| evidence.into_parts().0)
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let BatchCore {
@@ -1375,7 +1375,7 @@ macro_rules! impl_candidate_chain {
                 let mut core = self.prior.core;
                 apply_record_set(&mut core.overlay, &records, self.charges)?;
                 core.metrics = Some(metrics_after(core.metrics, &records)?);
-                core.staged.push(records);
+                core.staged.push(records.into_staged_evidence());
                 Ok(MemoryNonEmptyBatch { core })
             }
         }
