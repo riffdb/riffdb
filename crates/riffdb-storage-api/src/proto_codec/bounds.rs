@@ -218,43 +218,6 @@ pub fn command_write_set_upper_bound_v1(
     let plan = evaluated.plan();
     let schema_binding = binding_to_proto(&DurableKeySchemaBindingV1::from_plan(plan));
     let schema_binding_len = schema_binding.encoded_len();
-    let entity_payload_lens = evaluated
-        .mutations()
-        .iter()
-        .map(|mutation| sizing_entity_len(mutation, schema_binding_len))
-        .collect::<Result<Vec<_>, _>>()?;
-    let event_payload_lens = evaluated
-        .event_intents()
-        .iter()
-        .enumerate()
-        .map(|(ordinal, event)| {
-            let event_ordinal =
-                u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
-            sizing_event_len(
-                event.event_type_id().get(),
-                event.payload_encoded_len(),
-                event_ordinal,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let event_id_lens = (0..evaluated.event_intents().len())
-        .map(|ordinal| {
-            let ordinal = u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
-            Ok(sizing_event_id_len(ordinal))
-        })
-        .collect::<Result<Vec<_>, DurableCodecError>>()?;
-    let event_route_lens = evaluated
-        .event_intents()
-        .iter()
-        .zip(&event_id_lens)
-        .map(|(event, event_id_len)| {
-            sum_proto_fields([
-                message_field_len(1, *event_id_len),
-                varint_field_len(2, event.event_type_id().get()),
-                bytes_field_len(3, SIZING_EVENT_HASH.len()),
-            ])
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     let read_dependencies = storage_result(StoredReadDependenciesV1::from_live(
         evaluated.read_dependencies(),
     ))?;
@@ -269,11 +232,6 @@ pub fn command_write_set_upper_bound_v1(
     let canonical_input_hash_len = pending.canonical_input_hash().as_bytes().len();
     let partition_hash_len = intent.partition_hash().as_bytes().len();
     let provenance_id_len = intent.provenance_id().as_bytes().len();
-    let conflict_hash_lens = intent
-        .conflict_hashes()
-        .iter()
-        .map(|hash| hash.as_bytes().len())
-        .collect::<Vec<_>>();
     let outcome_len = sizing_outcome_len(
         identity_len,
         plan_len,
@@ -286,17 +244,15 @@ pub fn command_write_set_upper_bound_v1(
         partition_hash_len,
         provenance_id_len,
         pending.partition_key().as_bytes().len(),
-        &conflict_hash_lens,
+        intent
+            .conflict_hashes()
+            .iter()
+            .map(|hash| Ok(hash.as_bytes().len())),
     )?;
     let causation_len = pending
         .causation()
         .map(|value| causation_to_proto(value).encoded_len());
     let outcome_len = sizing_successor_len(outcome_len, causation_len)?;
-    let affected_entity_lens = evaluated
-        .mutations()
-        .iter()
-        .map(|mutation| sizing_affected_entity_len(mutation, MAXIMUM_WIDTH_U64))
-        .collect::<Result<Vec<_>, _>>()?;
     let provenance_len = sizing_provenance_len(
         identity_len,
         plan_len,
@@ -307,25 +263,30 @@ pub fn command_write_set_upper_bound_v1(
         canonical_input_hash_len,
         partition_hash_len,
         provenance_id_len,
-        &conflict_hash_lens,
-        &affected_entity_lens,
-        &event_id_lens,
+        intent
+            .conflict_hashes()
+            .iter()
+            .map(|hash| Ok(hash.as_bytes().len())),
+        evaluated
+            .mutations()
+            .iter()
+            .map(|mutation| sizing_affected_entity_len(mutation, MAXIMUM_WIDTH_U64)),
+        (0..evaluated.event_intents().len()).map(|ordinal| {
+            let ordinal = u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
+            Ok(sizing_event_id_len(ordinal))
+        }),
     )?;
     let provenance_len = sizing_successor_len(provenance_len, causation_len)?;
-    let event_reference_lens = event_id_lens
-        .iter()
-        .map(|event_id_len| {
+    let event_reference_lens = || {
+        (0..evaluated.event_intents().len()).map(|ordinal| {
+            let ordinal = u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
+            let event_id_len = sizing_event_id_len(ordinal);
             sum_proto_fields([
-                message_field_len(1, *event_id_len),
+                message_field_len(1, event_id_len),
                 bytes_field_len(2, SIZING_EVENT_HASH.len()),
             ])
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let entity_reference_lens = evaluated
-        .mutations()
-        .iter()
-        .map(|mutation| conservative_entity_reference_payload_len(mutation.post_image().target()))
-        .collect::<Result<Vec<_>, _>>()?;
+    };
     let commit_len = sizing_commit_len(
         plan_len,
         actor_len,
@@ -336,11 +297,43 @@ pub fn command_write_set_upper_bound_v1(
         canonical_input_hash_len,
         partition_hash_len,
         provenance_id_len,
-        &conflict_hash_lens,
-        &entity_reference_lens,
-        &event_reference_lens,
-        &event_id_lens,
+        intent
+            .conflict_hashes()
+            .iter()
+            .map(|hash| Ok(hash.as_bytes().len())),
+        evaluated.mutations().iter().map(|mutation| {
+            conservative_entity_reference_payload_len(mutation.post_image().target())
+        }),
+        event_reference_lens(),
+        (0..evaluated.event_intents().len()).map(|ordinal| {
+            let ordinal = u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
+            Ok(sizing_event_id_len(ordinal))
+        }),
     )?;
+
+    let event_charge = sum_sizes(evaluated.event_intents().iter().enumerate().map(
+        |(ordinal, event)| {
+            let event_ordinal =
+                u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
+            let payload_len = sizing_event_len(
+                event.event_type_id().get(),
+                event.payload_encoded_len(),
+                event_ordinal,
+            )?;
+            sizing_charge_len(EVENT, payload_len)
+        },
+    ))?;
+    let event_route_charge = sum_sizes(evaluated.event_intents().iter().enumerate().map(
+        |(ordinal, event)| {
+            let ordinal = u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
+            let route_len = sum_proto_fields([
+                message_field_len(1, sizing_event_id_len(ordinal)),
+                varint_field_len(2, event.event_type_id().get()),
+                bytes_field_len(3, SIZING_EVENT_HASH.len()),
+            ])?;
+            sizing_charge_len(EVENT_ROUTE, route_len)
+        },
+    ))?;
 
     let raw = RawWriteClassBreakdownV1 {
         allocator: sizing_charge_len(
@@ -350,11 +343,10 @@ pub fn command_write_set_upper_bound_v1(
                 .ok_or_else(DurableCodecError::invariant)?,
         )?,
         pending_resolution: 0,
-        entities: sum_sizes(
-            entity_payload_lens
-                .iter()
-                .map(|value| sizing_charge_len(ENTITY, *value)),
-        )?,
+        entities: sum_sizes(evaluated.mutations().iter().map(|mutation| {
+            sizing_entity_len(mutation, schema_binding_len)
+                .and_then(|len| sizing_charge_len(ENTITY, len))
+        }))?,
         index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
             IndexEntryMutationV1::Delete(_) => None,
             IndexEntryMutationV1::Put(value) => Some(
@@ -366,18 +358,11 @@ pub fn command_write_set_upper_bound_v1(
                 .and_then(|len| sizing_charge_len(INDEX_EPOCH, len))
         }))?,
         outcome: sizing_charge_len(OUTCOME_V2, outcome_len)?,
-        events: sum_sizes(
-            event_payload_lens
-                .iter()
-                .map(|value| sizing_charge_len(EVENT, *value))
-                .chain(
-                    event_route_lens
-                        .iter()
-                        .map(|value| sizing_charge_len(EVENT_ROUTE, *value)),
-                ),
-        )?,
-        outbox_intents: sum_sizes(event_reference_lens.iter().map(|event_reference_len| {
-            message_field_len(1, *event_reference_len)
+        events: event_charge
+            .checked_add(event_route_charge)
+            .ok_or_else(DurableCodecError::invariant)?,
+        outbox_intents: sum_sizes(event_reference_lens().map(|event_reference_len| {
+            message_field_len(1, event_reference_len?)
                 .and_then(|len| sizing_charge_len(OUTBOX_INTENT, len))
         }))?,
         provenance: sizing_charge_len(PROVENANCE_V2, provenance_len)?,
@@ -602,7 +587,7 @@ fn sizing_outcome_len(
     partition_hash_len: usize,
     provenance_id_len: usize,
     partition_key_len: usize,
-    conflict_hash_lens: &[usize],
+    conflict_hash_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
 ) -> Result<usize, DurableCodecError> {
     let fixed = sum_proto_fields([
         message_field_len(1, identity_len),
@@ -633,9 +618,9 @@ fn sizing_provenance_len(
     canonical_input_hash_len: usize,
     partition_hash_len: usize,
     provenance_id_len: usize,
-    conflict_hash_lens: &[usize],
-    affected_entity_lens: &[usize],
-    event_id_lens: &[usize],
+    conflict_hash_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
+    affected_entity_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
+    event_id_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
 ) -> Result<usize, DurableCodecError> {
     let mut total = sum_proto_fields([
         bytes_field_len(1, provenance_id_len),
@@ -666,10 +651,10 @@ fn sizing_commit_len(
     canonical_input_hash_len: usize,
     partition_hash_len: usize,
     provenance_id_len: usize,
-    conflict_hash_lens: &[usize],
-    entity_reference_lens: &[usize],
-    event_reference_lens: &[usize],
-    event_id_lens: &[usize],
+    conflict_hash_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
+    entity_reference_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
+    event_reference_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
+    event_id_lens: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
 ) -> Result<usize, DurableCodecError> {
     let mut total = sum_proto_fields([
         varint_field_len(1, MAXIMUM_WIDTH_U64),
@@ -767,11 +752,11 @@ fn sum_proto_fields(
 fn add_repeated_bytes(
     initial: usize,
     field_number: u32,
-    values: &[usize],
+    values: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
 ) -> Result<usize, DurableCodecError> {
-    values.iter().try_fold(initial, |total, len| {
+    values.into_iter().try_fold(initial, |total, len| {
         total
-            .checked_add(bytes_field_len(field_number, *len)?)
+            .checked_add(bytes_field_len(field_number, len?)?)
             .ok_or_else(DurableCodecError::invariant)
     })
 }
@@ -779,11 +764,11 @@ fn add_repeated_bytes(
 fn add_repeated_messages(
     initial: usize,
     field_number: u32,
-    values: &[usize],
+    values: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
 ) -> Result<usize, DurableCodecError> {
-    values.iter().try_fold(initial, |total, len| {
+    values.into_iter().try_fold(initial, |total, len| {
         total
-            .checked_add(message_field_len(field_number, *len)?)
+            .checked_add(message_field_len(field_number, len?)?)
             .ok_or_else(DurableCodecError::invariant)
     })
 }
