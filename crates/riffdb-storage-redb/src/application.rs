@@ -22,8 +22,8 @@ use riffdb_storage_api::{
     IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
     IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch, PartitionIndexTarget,
     ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot, ReadSnapshotBuilder,
-    SnapshotRequest, StagedBatchMetrics, StorageError, StorageErrorKind, StorageValueError,
-    StoredAdmissionStateV1, StoredExecutionFailedV1, StoredPendingAdmissionV1,
+    SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1, StorageError, StorageErrorKind,
+    StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1, StoredPendingAdmissionV1,
     TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
     UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest,
     encode_atomic_command_record_set_v1,
@@ -53,7 +53,7 @@ use crate::transient::TransientIndexDelta;
 struct BatchCore {
     access: RedbWriteAccess,
     allocator: ApplicationSequenceAllocator,
-    staged: Vec<AtomicCommandRecordSet>,
+    staged: Vec<StagedCommandEvidenceV1>,
     metrics: Option<StagedBatchMetrics>,
 }
 
@@ -206,23 +206,23 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
                 .core
                 .staged
                 .iter()
-                .any(|records| !records.matches_durability_mode(durability))
+                .any(|evidence| evidence.outcome().durability_mode() != durability)
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let outcomes = self
-            .core
-            .staged
-            .iter()
-            .map(|records| records.stored_outcome().clone())
-            .collect();
-        let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let pending_events = self
             .core
             .staged
             .iter()
-            .flat_map(|records| records.events().iter().map(|event| event.event_id()))
+            .flat_map(|evidence| evidence.event_ids().iter().copied())
             .collect::<Vec<_>>();
+        let outcomes = self
+            .core
+            .staged
+            .into_iter()
+            .map(|evidence| evidence.into_parts().0)
+            .collect();
+        let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let delta = (!pending_events.is_empty())
             .then_some(TransientIndexDelta::PendingOutboxInserted(pending_events));
         stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
@@ -244,15 +244,21 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
                 .core
                 .staged
                 .iter()
-                .any(|records| !records.matches_durability_mode(durability))
+                .any(|evidence| evidence.outcome().durability_mode() != durability)
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let outcomes = self
+        let pending_events = self
             .core
             .staged
             .iter()
-            .map(|records| records.stored_outcome().clone())
+            .flat_map(|evidence| evidence.event_ids().iter().copied())
+            .collect::<Vec<_>>();
+        let outcomes = self
+            .core
+            .staged
+            .into_iter()
+            .map(|evidence| evidence.into_parts().0)
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let mut terminal_positions = Vec::with_capacity(transitions.len());
@@ -269,12 +275,6 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .collect::<Vec<_>>();
         let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
             .map_err(invariant_value)?;
-        let pending_events = self
-            .core
-            .staged
-            .iter()
-            .flat_map(|records| records.events().iter().map(|event| event.event_id()))
-            .collect::<Vec<_>>();
         // AUDIT_BY_REQUEST is written durably inside stage_service_audit_group_in_write;
         // only outbox accelerators remain in the transient delta path.
         let delta = if pending_events.is_empty() {
@@ -314,7 +314,7 @@ fn read_transaction_local_snapshot(
     let observed_through = core
         .staged
         .last()
-        .map(|records| records.commit().commit_sequence())
+        .map(|evidence| evidence.outcome().commit_sequence())
         .or_else(|| match core.allocator {
             ApplicationSequenceAllocator::Next(next)
                 if next == riffdb_types::CommitSequence::first() =>
@@ -932,7 +932,7 @@ macro_rules! impl_candidate_chain {
                 let mut core = self.prior.core;
                 apply_record_set(core.access.transaction()?, &records, &encoded)?;
                 core.metrics = Some(metrics_after(core.metrics, &records)?);
-                core.staged.push(records);
+                core.staged.push(records.into_staged_evidence());
                 Ok(RedbNonEmptyBatch { core })
             }
         }

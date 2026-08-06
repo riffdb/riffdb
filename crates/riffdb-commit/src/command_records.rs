@@ -352,10 +352,6 @@ where
             drop(entries);
             return CheckedCommandGroupCommitResult::Integrity;
         }
-        let expected = entries
-            .iter()
-            .map(|entry| entry.expected_outcome.clone())
-            .collect::<Vec<_>>();
         let committed = match audits {
             Some(audits) => staged
                 .commit_with_service_audit_transitions(durability_mode, audits)
@@ -365,7 +361,12 @@ where
         match committed {
             Ok(batch)
                 if batch.durability_mode() == durability_mode
-                    && batch.outcomes() == expected.as_slice() =>
+                    && batch.outcomes().len() == entries.len()
+                    && batch
+                        .outcomes()
+                        .iter()
+                        .zip(&entries)
+                        .all(|(outcome, entry)| outcome == &entry.expected_outcome) =>
             {
                 let outcomes = entries
                     .into_iter()

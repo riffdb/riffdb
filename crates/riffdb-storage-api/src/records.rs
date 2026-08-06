@@ -1979,6 +1979,36 @@ pub struct AtomicCommandRecordSet {
     semantic_bytes: usize,
 }
 
+/// Minimal immutable evidence retained after one complete graph is physically staged.
+///
+/// Construction is only available by consuming an [`AtomicCommandRecordSet`], so
+/// the outcome and event identities cannot diverge from the graph that passed the
+/// complete reciprocal validation boundary.
+pub struct StagedCommandEvidenceV1 {
+    outcome: StoredOutcomeV1,
+    event_ids: Vec<EventId>,
+}
+
+impl StagedCommandEvidenceV1 {
+    /// Borrows the exact checked terminal outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &StoredOutcomeV1 {
+        &self.outcome
+    }
+
+    /// Borrows authoritative event identities in ordinal order.
+    #[must_use]
+    pub fn event_ids(&self) -> &[EventId] {
+        &self.event_ids
+    }
+
+    /// Consumes the post-staging evidence into its exact checked parts.
+    #[must_use]
+    pub fn into_parts(self) -> (StoredOutcomeV1, Vec<EventId>) {
+        (self.outcome, self.event_ids)
+    }
+}
+
 impl AtomicCommandRecordSet {
     /// Validates complete membership, canonical order, reciprocal links, and bounds.
     #[allow(clippy::too_many_arguments)]
@@ -2218,6 +2248,21 @@ impl AtomicCommandRecordSet {
     #[must_use]
     pub const fn write_plan(&self) -> &CommandWriteSetPlanV1 {
         &self.write_plan
+    }
+
+    /// Releases the complete graph after physical staging and retains only the
+    /// immutable evidence required to finish or recover the engine commit.
+    #[must_use]
+    pub fn into_staged_evidence(self) -> StagedCommandEvidenceV1 {
+        let event_ids = self
+            .events
+            .iter()
+            .map(StoredDurableEventV1::event_id)
+            .collect();
+        StagedCommandEvidenceV1 {
+            outcome: self.stored_outcome,
+            event_ids,
+        }
     }
 
     /// Proves this graph exactly matches the sequence-assigned candidate being staged.
@@ -2802,6 +2847,7 @@ redacted_debug!(
     ValidatedCommandWriteSetShapeV1,
     CommandWriteSetPlanV1,
     AtomicCommandRecordSet,
+    StagedCommandEvidenceV1,
 );
 
 #[cfg(test)]
@@ -2861,6 +2907,23 @@ mod tests {
 
         assert_eq!(affected.target(), &target);
         assert_eq!(affected.entity_version(), entity_version);
+    }
+
+    #[test]
+    fn staged_record_graph_consumption_preserves_only_outcome_and_event_identity() {
+        let records = atomic_record_set(8, &[5, 7]).expect("valid record graph");
+        let expected_outcome = records.stored_outcome().clone();
+        let expected_event_ids = records
+            .events()
+            .iter()
+            .map(StoredDurableEventV1::event_id)
+            .collect::<Vec<_>>();
+
+        let evidence = records.into_staged_evidence();
+        let (outcome, event_ids) = evidence.into_parts();
+
+        assert_eq!(outcome, expected_outcome);
+        assert_eq!(event_ids, expected_event_ids);
     }
 
     fn atomic_record_set(
