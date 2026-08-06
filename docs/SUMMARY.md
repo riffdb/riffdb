@@ -100,6 +100,7 @@
 - [WP-473 Sealed Command-Audit Link Evidence](performance/wp-473-sealed-command-audit-links.md)
 - [WP-474 Sealed Entity Post-Image Materialization](performance/wp-474-sealed-entity-postimage.md)
 - [WP-475 Retained Canonical Permission Lookup](performance/wp-475-retained-permission-keys.md)
+- [WP-476 Constant-Time Durable Shape Dispatch](performance/wp-476-durable-shape-dispatch.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference
