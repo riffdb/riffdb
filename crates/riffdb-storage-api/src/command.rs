@@ -483,8 +483,8 @@ impl StoredExecutionFailedV1 {
 pub struct EntityPostImage {
     target: EntityTarget,
     written_by_contract: ContractVersion,
-    fields: CanonicalRecord,
-    fields_encoded_len: usize,
+    fields: Arc<CanonicalRecord>,
+    fields_encoded: Arc<[u8]>,
 }
 
 impl EntityPostImage {
@@ -494,12 +494,16 @@ impl EntityPostImage {
         written_by_contract: ContractVersion,
         fields: CanonicalRecord,
     ) -> Result<Self, StorageValueError> {
-        let fields_encoded_len = canonical_record_bytes(&fields)?;
+        let fields_encoded = encode_canonical_record(&fields)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
+        if fields_encoded.len() > riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
         Ok(Self {
             target,
             written_by_contract,
-            fields,
-            fields_encoded_len,
+            fields: Arc::new(fields),
+            fields_encoded: Arc::from(fields_encoded),
         })
     }
 
@@ -517,21 +521,31 @@ impl EntityPostImage {
 
     /// Borrows every canonical entity field, including preserved unknowns.
     #[must_use]
-    pub const fn fields(&self) -> &CanonicalRecord {
-        &self.fields
+    pub fn fields(&self) -> &CanonicalRecord {
+        self.fields.as_ref()
     }
 
     /// Returns the checked canonical encoding length retained at construction.
     #[must_use]
-    pub const fn fields_encoded_len(&self) -> usize {
-        self.fields_encoded_len
+    pub fn fields_encoded_len(&self) -> usize {
+        self.fields_encoded.len()
+    }
+
+    /// Borrows the exact canonical bytes sealed with this evaluated post-image.
+    #[must_use]
+    pub fn fields_encoded(&self) -> &[u8] {
+        &self.fields_encoded
+    }
+
+    pub(crate) fn shared_fields(&self) -> (Arc<CanonicalRecord>, Arc<[u8]>) {
+        (Arc::clone(&self.fields), Arc::clone(&self.fields_encoded))
     }
 
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         self.target
             .semantic_bytes()?
             .checked_add(8)
-            .and_then(|value| value.checked_add(framed_bytes(self.fields_encoded_len).ok()?))
+            .and_then(|value| value.checked_add(framed_bytes(self.fields_encoded.len()).ok()?))
             .ok_or(StorageValueError::SizeOverflow)
     }
 }

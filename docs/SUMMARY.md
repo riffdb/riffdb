@@ -98,6 +98,7 @@
 - [WP-471 Revision-Aware Commit Materialization](performance/wp-471-revision-aware-commit.md)
 - [WP-472 Single-Pass Commit Materialization](performance/wp-472-single-pass-commit.md)
 - [WP-473 Sealed Command-Audit Link Evidence](performance/wp-473-sealed-command-audit-links.md)
+- [WP-474 Sealed Entity Post-Image Materialization](performance/wp-474-sealed-entity-postimage.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

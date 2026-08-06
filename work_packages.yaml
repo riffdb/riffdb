@@ -1,4 +1,4 @@
-spec_version: '0.76'
+spec_version: '0.77'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -263,6 +263,49 @@ work_packages:
   - ./scripts/generate-proto --check
   exit_gate: Canonicalization, ordering, decimal, assigned-type zero rejection, hash-domain separation, and
     error-redaction property tests pass.
+  human_review_triggers: *id001
+- id: WP-474
+  name: Sealed entity post-image materialization
+  depends_on: [WP-060, WP-065, WP-367, WP-458, WP-459, WP-472]
+  objective: Retain the canonical fields and bytes already checked when deterministic evaluation
+    creates an EntityPostImage, then reuse that sealed immutable representation when constructing
+    the commit-time StoredEntityRecordV1 instead of deep-cloning and re-encoding the same record.
+  requirements: [PERF-008, STO-002, TXN-041, TXN-042, TXN-044]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0059, ADR-0060, ADR-0061]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-commit/**, tests/command_semantics/**, tests/storage_recovery/**,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - EntityPostImage owns one immutable Arc-backed canonical record and its exact canonical encoded
+    bytes, both created together by the existing bounded canonical encoder
+  - A narrow checked StoredEntityRecordV1 constructor consumes only a sealed EntityPostImage
+    reference, commit-time version, and exact durable schema binding, revalidates the contract
+    identity, and shares the immutable record and bytes without re-encoding
+  - Ordinary command graph construction uses the sealed constructor; durable decoders, external
+    fixtures, recovery, migration, and arbitrary semantic construction retain StoredEntityRecordV1::new
+    and its complete canonical encoding, bound, and identity checks
+  - Pointer-sharing and byte-equivalence tests prove the sealed and full constructors produce the
+    same semantic record and exact durable envelope while malformed or mismatched bindings fail closed
+  - No durable schema, envelope, payload, key, hash, record ordering, transaction membership,
+    acknowledgement, uncertainty, authorization, or public application/transport behavior changes
+  - Full public seed evidence records evaluation, validation/encoding/staging, commit, total seed,
+    and representative unary latency, with revert required for a material regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --test lost_response_replay
+      --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Evaluation and commit graph construction share one exact canonical entity post-image,
+    external and recovered paths retain full validation, all semantic and recovery suites pass, and
+    same-host evidence reduces validation/staging CPU or total seed without a material unary regression.
   human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope

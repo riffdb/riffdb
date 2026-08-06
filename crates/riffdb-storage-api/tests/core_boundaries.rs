@@ -12,10 +12,11 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash, CanonicalRecord,
-    CommandId, ConflictKeyHash, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
-    DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventTypeId, FieldId,
-    IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId,
-    ProvenanceReason, RequestId, TenantId, TenantScope, Timestamp, hash_partition_key,
+    CanonicalString, CanonicalValue, CommandId, ConflictKeyHash, ContractBundleHash,
+    ContractLineage, ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId,
+    EntityVersion, Environment, EventTypeId, FieldId, IndexEpoch, IndexId, LogicalTime, OutcomeId,
+    PartitionKeyBuilder, PlanHash, ProvenanceId, ProvenanceReason, RequestId, TenantId,
+    TenantScope, Timestamp, hash_partition_key,
 };
 
 fn uuid_bytes(fill: u8) -> [u8; 16] {
@@ -219,6 +220,40 @@ fn entity_postimage_binding_must_match_its_written_contract_version() {
             CanonicalRecord::new(Vec::new()).expect("record"),
         ),
         Err(StorageValueError::IdentityMismatch)
+    );
+}
+
+#[test]
+fn sealed_entity_postimage_materializes_without_reencoding_or_deep_clone() {
+    let writer = plan(1);
+    let fields = CanonicalRecord::new(vec![(
+        FieldId::first(),
+        CanonicalValue::String(CanonicalString::new("shared canonical field").expect("string")),
+    )])
+    .expect("record");
+    let post_image = EntityPostImage::new(target(1), writer.contract_version(), fields.clone())
+        .expect("post-image");
+    let sealed = StoredEntityRecordV1::from_checked_post_image(
+        &post_image,
+        EntityVersion::first(),
+        DurableKeySchemaBindingV1::from_plan(&writer),
+    )
+    .expect("sealed stored record");
+    let full = StoredEntityRecordV1::new(
+        target(1),
+        EntityVersion::first(),
+        writer.contract_version(),
+        DurableKeySchemaBindingV1::from_plan(&writer),
+        fields,
+    )
+    .expect("fully reconstructed record");
+
+    assert_eq!(sealed, full);
+    assert!(std::ptr::eq(sealed.fields(), post_image.fields()));
+    assert_eq!(sealed.fields_encoded(), post_image.fields_encoded());
+    assert_eq!(
+        riffdb_storage_api::encode_entity_record_v1(&sealed),
+        riffdb_storage_api::encode_entity_record_v1(&full)
     );
 }
 
