@@ -6,7 +6,7 @@
 - **Related requirements:** `PERF-004`, `PERF-005`, `PERF-007`, `PERF-008`,
   `PERF-009`, `PERF-010`, `PERF-015`, `REC-002`, `TXN-040`, `TXN-041`,
   `TXN-042`, `TXN-043`, `TXN-044`
-- **Related work packages:** `WP-466`
+- **Related work packages:** `WP-466`, `WP-467`
 - **Amends:** ADR-0058, ADR-0060, ADR-0061, ADR-0095, ADR-0096, ADR-0097
 
 ## Context
@@ -176,6 +176,12 @@ the direct path for already-amortized prefixes.
 WP-466 enables only the single-transaction completion-edge window. Deferred
 subgroup commits and the last-durable frontier remain unavailable until a
 separate work package supplies their storage typestate and crash proof.
+
+WP-467 supplies that storage typestate and crash proof. It introduces the
+unpublished applied result, epoch-owned mutation lease, predecessor read
+frontier, accumulated transient-index publication, and Immediate tail seal.
+Coordinator epoch selection and response retention remain disabled until a
+later package composes this mechanism through the ordinary writer lane.
 
 ## Acceptance reference
 

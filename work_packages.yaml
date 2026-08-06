@@ -1,4 +1,4 @@
-spec_version: '0.69'
+spec_version: '0.70'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8292,4 +8292,48 @@ work_packages:
   exit_gate: Every semantic and recovery suite passes; the selected production change is format
     compatible, keeps standard and hardened durability exact, materially reduces measured physical
     commit work or c32 commit time, improves focused throughput, and causes no material c1 regression.
+  human_review_triggers: *id001
+- id: WP-467
+  name: Last-durable frontier and unpublished command typestate
+  depends_on: [WP-466]
+  objective: Implement ADR-0098's storage safety boundary for bounded standard-profile durability
+    epochs so an unfenced redb root is neither readable nor representable as a committed application
+    result, without yet widening the coordinator's epoch-selection policy.
+  requirements: [PERF-004, PERF-007, PERF-009, PERF-015, REC-002, TXN-040, TXN-041,
+    TXN-042, TXN-043, TXN-044]
+  required_adrs: [ADR-0058, ADR-0060, ADR-0061, ADR-0095, ADR-0096, ADR-0097,
+    ADR-0098]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0098-bounded-redb-durability-epochs.md,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, tests/storage_recovery/**,
+    benchmarks/command-growth/**, docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - A closed unpublished-applied result type is distinct from AuditedCommittedBatchV1 and exposes
+    no public acknowledgement, notification, transient-index, or committed-outcome conversion
+  - One standard-profile redb epoch owns the mutation lease from its first deferred subgroup through
+    its Immediate tail, while hardened storage and every ordinary write retain their current path
+  - Operational and derived reads use the predecessor last-durable snapshot for the whole epoch;
+    writer-private subgroup transactions alone may observe prior deferred roots
+  - The known-successful Immediate tail atomically publishes the successor read frontier before
+    returning releasable committed results and accumulated transient-index deltas
+  - Tail failure retains the predecessor frontier, invalidates unpublished accelerators, fences
+    writes, and returns no committed result
+  - Storage and process-recovery tests prove before-tail invisibility, after-tail visibility,
+    complete-or-absent reopen, independent command identity, and hardened-profile rejection
+  - Mechanics evidence records deferred subgroup work, tail-fence work, read-frontier publication,
+    physical commit count, and database growth without claiming coordinator-path availability
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./scripts/benchmark-command-growth --smoke
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Unpublished redb roots are visible only to the epoch writer, cannot become committed
+    application results before a known-successful Immediate tail, remain invisible to every reader
+    and derived worker, and recover as a complete fenced prefix or the preceding durable frontier.
   human_review_triggers: *id001

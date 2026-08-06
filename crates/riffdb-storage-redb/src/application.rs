@@ -15,17 +15,18 @@ use riffdb_storage_api::{
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CommitIntent, CommittedBatchV1, CurrentIndexGenerationObservation, CurrentRangeObservation,
-    DurabilityMode, EmptyCommandBatch, EntityObservation, EntityTarget,
-    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
-    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
-    ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
-    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch, PartitionIndexTarget,
-    ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot, ReadSnapshotBuilder,
-    SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1, StorageError, StorageErrorKind,
-    StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1, StoredPendingAdmissionV1,
-    TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
-    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest,
+    DeferredCommandEpoch, DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode,
+    EmptyCommandBatch, EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
+    ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
+    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
+    IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyLookupCandidatesV1,
+    IndexEntryMutationV1, IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch,
+    PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot,
+    ReadSnapshotBuilder, SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1,
+    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
+    StoredExecutionFailedV1, StoredPendingAdmissionV1, TransactionCurrentState,
+    TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
+    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
     encode_atomic_command_record_set_v1,
 };
 use riffdb_types::ProvenanceId;
@@ -47,7 +48,7 @@ use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
     INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
 };
-use crate::store::{RedbOperationalPorts, RedbWriteAccess};
+use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbWriteAccess};
 use crate::transient::TransientIndexDelta;
 
 struct BatchCore {
@@ -59,7 +60,10 @@ struct BatchCore {
 
 impl BatchCore {
     fn open(ports: &RedbOperationalPorts) -> Result<Self, StorageError> {
-        let access = ports.begin_write()?;
+        Self::open_with_access(ports.begin_write()?)
+    }
+
+    fn open_with_access(access: RedbWriteAccess) -> Result<Self, StorageError> {
         let allocator = read_application_allocator(access.transaction()?)?;
         Ok(Self {
             access,
@@ -148,6 +152,28 @@ impl ApplicationCommandTransactionPort for RedbOperationalPorts {
         Ok(RedbEmptyBatch {
             core: BatchCore::open(self)?,
         })
+    }
+}
+
+impl DeferredCommandEpochPort for RedbOperationalPorts {
+    type Epoch = RedbDurabilityEpoch;
+
+    fn begin_deferred_command_epoch(&self) -> Result<Self::Epoch, StorageError> {
+        self.begin_deferred_epoch()
+    }
+}
+
+impl DeferredCommandEpoch for RedbDurabilityEpoch {
+    type EmptyBatch = RedbEmptyBatch;
+
+    fn begin_empty_batch(self) -> Result<Self::EmptyBatch, StorageError> {
+        Ok(RedbEmptyBatch {
+            core: BatchCore::open_with_access(self.begin_write()?)?,
+        })
+    }
+
+    fn fence(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError> {
+        self.fence()
     }
 }
 
@@ -290,6 +316,64 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
     }
 
     fn rollback(self) {}
+}
+
+impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
+    type Epoch = RedbDurabilityEpoch;
+
+    fn apply_unpublished_with_service_audit_transitions(
+        self,
+        durability: DurabilityMode,
+        transitions: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
+    ) -> Result<Self::Epoch, StorageError> {
+        if durability == DurabilityMode::Memory
+            || self.core.staged.len() != transitions.len()
+            || transitions.is_empty()
+            || self
+                .core
+                .staged
+                .iter()
+                .any(|evidence| evidence.outcome().durability_mode() != durability)
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let metrics = self.metrics();
+        let pending_events = self
+            .core
+            .staged
+            .iter()
+            .flat_map(|evidence| evidence.event_ids().iter().copied())
+            .collect::<Vec<_>>();
+        let outcomes = self
+            .core
+            .staged
+            .into_iter()
+            .map(|evidence| evidence.into_parts().0)
+            .collect();
+        let mut terminal_positions = Vec::with_capacity(transitions.len());
+        let mut intents = Vec::with_capacity(transitions.len().saturating_mul(2));
+        for transition in transitions {
+            let rows = transition.into_intents();
+            intents.extend(rows);
+            terminal_positions.push(intents.len() - 1);
+        }
+        let records = stage_service_audit_group_in_write(&self.core.access, &intents)?;
+        let terminals = terminal_positions
+            .into_iter()
+            .map(|index| records[index].clone())
+            .collect::<Vec<_>>();
+        let unpublished =
+            UnpublishedAuditedBatchV1::new(outcomes, terminals).map_err(invariant_value)?;
+        let delta = if pending_events.is_empty() {
+            None
+        } else {
+            Some(TransientIndexDelta::PendingOutboxInserted(pending_events))
+        };
+        stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
+        self.core
+            .access
+            .apply_unpublished(unpublished, metrics, delta)
+    }
 }
 
 impl TransactionLocalCommandBatch for RedbNonEmptyBatch {
@@ -437,7 +521,7 @@ impl AdmissionRepository for RedbOperationalPorts {
         candidates
             .iter()
             .map(
-                |candidate| match matching_admissions(&transaction, candidate)?.as_slice() {
+                |candidate| match matching_admissions(&*transaction, candidate)?.as_slice() {
                     [] => Ok(AdmissionLookupResultV1::NotFound),
                     [value] => Ok(AdmissionLookupResultV1::Found(Box::new(value.clone()))),
                     [_, ..] => Ok(AdmissionLookupResultV1::MultipleMatches),

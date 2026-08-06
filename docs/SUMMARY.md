@@ -91,6 +91,7 @@
 - [WP-463 Allocation-free Read Dependencies](performance/wp-463-allocation-free-read-dependencies.md)
 - [WP-464 Bounded Batch Ingress](performance/wp-464-bounded-batch-ingress.md)
 - [WP-466 Bounded Durability Epochs](performance/wp-466-durability-epochs.md)
+- [WP-467 Last-Durable Frontier](performance/wp-467-last-durable-frontier.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

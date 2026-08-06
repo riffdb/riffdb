@@ -19,21 +19,22 @@ use riffdb_storage_api::{
     AuthoritativeScanReader, CapabilityAdministrationTransactionPort, CapabilityCreateCandidateV1,
     CapabilityInventoryPageV1, CapabilityInventoryReader, CapabilityLookupResult, CapabilityReader,
     CapabilityRevokeCandidateV1, CatalogRepository, CommitScanPageV1, CommitScanRequest,
-    EntityTarget, ExecutionFailureAdmissionResult, ExecutionFailureTransitionPort,
-    ExecutionFailureTransitionRequestV1, FilteredAuthoritativeIndexScanPage,
-    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
-    IdempotencyLookupCandidatesV1, OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit,
-    OutboxRenewV1, OutboxRepository, OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1,
-    OutboxTransitionResultV1, PendingOutboxScanV1, ProjectionApplySnapshot,
-    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlScanV1,
-    ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
-    ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
-    ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
-    QueryModuleRepository, ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError,
-    StorageErrorKind, StorageScanLimit, StoredCapabilityRecordV1, StoredCommitRecordV1,
-    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
-    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
+    DeferredCommandEpochPort, EntityTarget, ExecutionFailureAdmissionResult,
+    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
+    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
+    OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
+    PendingOutboxScanV1, ProjectionApplySnapshot, ProjectionApplySnapshotReader,
+    ProjectionApplySnapshotRequest, ProjectionControlScanV1, ProjectionQueryReader,
+    ProjectionQueryRequest, ProjectionQueryResult, ProjectionRecoveryPageLimit,
+    ProjectionRecoveryRepository, ProjectionRecoveryValidationRequestV1,
+    ProjectionRecoveryValidationResultV1, ProjectionStatus, QueryModuleRepository, ReadSnapshot,
+    SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
+    StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
+    UndeliveredOutboxStatusScanV1,
 };
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
@@ -153,6 +154,14 @@ impl ApplicationCommandTransactionPort for RedbSharedPorts {
 
     fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError> {
         ApplicationCommandTransactionPort::begin_empty_batch(&self.operational())
+    }
+}
+
+impl DeferredCommandEpochPort for RedbSharedPorts {
+    type Epoch = <RedbOperationalPorts as DeferredCommandEpochPort>::Epoch;
+
+    fn begin_deferred_command_epoch(&self) -> Result<Self::Epoch, StorageError> {
+        DeferredCommandEpochPort::begin_deferred_command_epoch(&self.operational())
     }
 }
 

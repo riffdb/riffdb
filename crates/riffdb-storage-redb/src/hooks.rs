@@ -14,6 +14,10 @@ pub enum RedbTestOperation {
     Admission,
     ExecutionFailure,
     CommandBatch,
+    /// Complete command graph applied without a durable/publication fence.
+    DeferredCommandBatch,
+    /// Immediate empty tail that makes every prior deferred subgroup durable.
+    CommandEpochTail,
     StorageFormatMigrationBatch,
     ContractMigrationBatch,
     ContractMigrationCutover,

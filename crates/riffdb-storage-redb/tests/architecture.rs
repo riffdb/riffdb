@@ -167,6 +167,30 @@ fn only_operational_ports_implement_semantic_runtime_traits() {
     }
     assert!(sources.contains("impl SnapshotReader for RedbOperationalPorts"));
     assert!(sources.contains("impl ApplicationCommandTransactionPort for RedbOperationalPorts"));
+    assert!(sources.contains("impl DeferredCommandEpochPort for RedbOperationalPorts"));
+}
+
+#[test]
+fn unpublished_epoch_state_has_no_committed_result_escape_hatch() {
+    let api = read(crate_root().join("../riffdb-storage-api/src/command_txn.rs"));
+    let unpublished = api
+        .split_once("pub struct UnpublishedAuditedBatchV1")
+        .expect("unpublished batch type")
+        .1
+        .split_once("impl AuditedCommittedBatchV1")
+        .expect("unpublished batch implementation end")
+        .0;
+    assert!(!unpublished.contains("AuditedCommittedBatchV1"));
+    assert!(!unpublished.contains("CommittedBatchV1"));
+    assert!(!unpublished.contains("impl Clone"));
+
+    let application = production_source(crate_root().join("src/application.rs"));
+    let deferred = application
+        .split_once("impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch")
+        .expect("redb deferred batch implementation")
+        .1;
+    assert!(deferred.contains("apply_unpublished"));
+    assert!(!deferred.contains("commit_for_with_delta"));
 }
 
 #[test]
@@ -285,10 +309,19 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     }
 
     let store = without_whitespace(&production_source(source_dir.join("store.rs")));
-    assert_eq!(store.matches("transaction.commit()").count(), 1);
+    assert_eq!(store.matches("transaction.commit()").count(), 2);
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
+    let deferred = store
+        .split_once("fnapply_unpublished(")
+        .expect("closed deferred commit path")
+        .1
+        .split_once("fninvalidate_transient_indexes(")
+        .expect("deferred commit path end")
+        .0;
+    assert_eq!(deferred.matches("transaction.commit()").count(), 1);
+    assert!(store.contains("set_durability(Durability::None)"));
 
     let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
     assert!(!startup.contains("transaction.commit()"));

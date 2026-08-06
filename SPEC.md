@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.69
+**Version:** 0.70
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.70 | 2026-08-06 | Planned WP-467 to implement ADR-0098's closed storage typestate: operational reads are pinned to an atomically published last-durable frontier while one bounded standard-profile epoch applies otherwise complete command subgroups without publication, and only a known-successful Immediate tail can convert them into releasable committed results. |
 | 0.69 | 2026-08-06 | Accepted ADR-0098 and planned WP-466: after a busy completion edge with at least two queued commands, the coordinator first uses a bounded contention-only window to coalesce one larger Immediate transaction; only unavoidable multiple physical subgroups may use unpublished redb commits behind one Immediate durability fence and last-durable visibility boundary. |
 | 0.68 | 2026-08-05 | Planned WP-465 under PERF-008: canonical capability permission, field-visibility, and approval collections use immutable shared ownership after their existing bounded sort, duplicate rejection, and semantic-byte validation, so internal authentication and authorization handoffs no longer deep-clone the same checked grant while public construction, equality, canonical bytes, durable encoding, and fail-closed policy semantics remain unchanged. |
 | 0.67 | 2026-08-05 | Planned WP-464 under PERF-001/PERF-008 and AAA-006/AAA-007: one bounded public `ExecuteBatch` envelope performs lifecycle admission and credential authentication once, then constructs independent request controls and invokes every item through the ordinary API-neutral command service without an outer Tokio task per item; current-policy authorization, coordinator admission, idempotency, commit, audit, result, cancellation, and recovery remain per command. |
