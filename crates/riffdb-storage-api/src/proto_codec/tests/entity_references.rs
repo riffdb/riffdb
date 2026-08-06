@@ -3,8 +3,10 @@
 use riffdb_types::EntityVersion;
 
 use super::super::{
-    decode_commit_entity_references, decode_commit_record_legacy_v1, decode_commit_record_v2,
-    decode_commit_record_v3, encode_commit_record_legacy_v1, encode_commit_record_v1,
+    CommitRecordRevisionV1, DurableCodecErrorKind, decode_commit_entity_references,
+    decode_commit_event_references_with_revision, decode_commit_record_for_revision,
+    decode_commit_record_legacy_v1, decode_commit_record_v2, decode_commit_record_v3,
+    decode_commit_record_with_events, encode_commit_record_legacy_v1, encode_commit_record_v1,
     encode_commit_record_v2_fixture,
 };
 use super::sample;
@@ -72,6 +74,70 @@ fn reference_only_decode_avoids_event_join() {
     let encoded = encode_commit_record_v1(atomic.commit()).expect("encode v3");
     let references = decode_commit_entity_references(encoded.as_bytes()).expect("refs");
     assert_eq!(references.value(), atomic.commit().entity_references());
+}
+
+#[test]
+fn revision_witness_dispatch_matches_the_compatibility_decoder() {
+    let atomic = sample::atomic_record_set();
+    let cases = [
+        (
+            CommitRecordRevisionV1::V3,
+            encode_commit_record_v1(atomic.commit()).expect("encode v3"),
+        ),
+        (
+            CommitRecordRevisionV1::V2,
+            encode_commit_record_v2_fixture(atomic.commit(), atomic.entities()).expect("encode v2"),
+        ),
+        (
+            CommitRecordRevisionV1::LegacyV1,
+            encode_commit_record_legacy_v1(atomic.commit(), atomic.entities()).expect("encode v1"),
+        ),
+    ];
+
+    for (expected_revision, encoded) in cases {
+        let witnessed = decode_commit_event_references_with_revision(encoded.as_bytes())
+            .expect("decode revision witness");
+        assert_eq!(witnessed.value().revision(), expected_revision);
+        assert_eq!(
+            witnessed.value().references(),
+            atomic.commit().event_references()
+        );
+        assert_eq!(
+            witnessed.encoded_content_charge(),
+            encoded.encoded_content_charge()
+        );
+        assert_eq!(
+            format!("{:?}", witnessed.value()),
+            format!(
+                "DecodedCommitEventReferencesV1 {{ revision: {expected_revision:?}, reference_count: {} }}",
+                atomic.events().len()
+            )
+        );
+
+        let direct = decode_commit_record_for_revision(
+            encoded.as_bytes(),
+            witnessed.value().revision(),
+            atomic.events().to_vec(),
+        )
+        .expect("direct revision materialization");
+        let compatibility =
+            decode_commit_record_with_events(encoded.as_bytes(), atomic.events().to_vec())
+                .expect("compatibility materialization");
+        assert_eq!(direct, compatibility);
+    }
+}
+
+#[test]
+fn revision_dispatch_rejects_a_witness_from_different_bytes() {
+    let atomic = sample::atomic_record_set();
+    let encoded = encode_commit_record_v1(atomic.commit()).expect("encode v3");
+    let error = decode_commit_record_for_revision(
+        encoded.as_bytes(),
+        CommitRecordRevisionV1::V2,
+        atomic.events().to_vec(),
+    )
+    .expect_err("a V2 witness cannot decode V3 bytes");
+    assert_eq!(error.kind(), DurableCodecErrorKind::UnexpectedRecordType);
 }
 
 #[test]

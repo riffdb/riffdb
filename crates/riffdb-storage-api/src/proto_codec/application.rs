@@ -1,3 +1,5 @@
+use std::fmt;
+
 use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
@@ -1373,26 +1375,107 @@ pub fn decode_commit_record_with_events(
     }
 }
 
-/// Decodes only the ordered event references needed to materialize a commit
-/// from the authoritative event table.
-pub fn decode_commit_event_references(
+/// Closed durable commit-row revision selected by an exact readable decode.
+///
+/// This is a decoder witness, not a caller-selected compatibility preference:
+/// consumers must obtain it from [`decode_commit_event_references_with_revision`]
+/// for the same canonical bytes they later materialize.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitRecordRevisionV1 {
+    /// Legacy V1 commit with embedded entity post-images and events.
+    LegacyV1,
+    /// Revision 2 commit with embedded entity post-images and event references.
+    V2,
+    /// Current revision 3 commit with entity and event references.
+    V3,
+}
+
+/// Ordered checked event references paired with the exact decoded commit-row
+/// revision.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DecodedCommitEventReferencesV1 {
+    revision: CommitRecordRevisionV1,
+    references: Vec<EventReferenceV2>,
+}
+
+impl fmt::Debug for DecodedCommitEventReferencesV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecodedCommitEventReferencesV1")
+            .field("revision", &self.revision)
+            .field("reference_count", &self.references.len())
+            .finish()
+    }
+}
+
+impl DecodedCommitEventReferencesV1 {
+    /// Returns the exact readable commit revision proven by decoding.
+    #[must_use]
+    pub const fn revision(&self) -> CommitRecordRevisionV1 {
+        self.revision
+    }
+
+    /// Borrows the ordered checked event references.
+    #[must_use]
+    pub fn references(&self) -> &[EventReferenceV2] {
+        &self.references
+    }
+
+    /// Consumes the witness into its revision and ordered references.
+    #[must_use]
+    pub fn into_parts(self) -> (CommitRecordRevisionV1, Vec<EventReferenceV2>) {
+        (self.revision, self.references)
+    }
+}
+
+/// Materializes a commit through the one decoder previously witnessed for the
+/// same canonical row, consuming the authoritative event collection once.
+pub fn decode_commit_record_for_revision(
     encoded: &[u8],
-) -> Result<EncodedPageItem<Vec<EventReferenceV2>>, DurableCodecError> {
+    revision: CommitRecordRevisionV1,
+    events: Vec<StoredDurableEventV1>,
+) -> Result<EncodedPageItem<StoredCommitRecordV1>, DurableCodecError> {
+    match revision {
+        CommitRecordRevisionV1::V3 => decode_commit_record_v3(encoded, events),
+        CommitRecordRevisionV1::V2 => decode_commit_record_v2(encoded, events),
+        CommitRecordRevisionV1::LegacyV1 => {
+            let decoded = decode_commit_record_legacy_v1(encoded)?;
+            if decoded.value().events() != events {
+                return Err(DurableCodecError::corrupt());
+            }
+            Ok(decoded)
+        }
+    }
+}
+
+/// Decodes the exact readable commit revision and only the ordered event
+/// references needed to materialize its authoritative event-table join.
+pub fn decode_commit_event_references_with_revision(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<DecodedCommitEventReferencesV1>, DurableCodecError> {
     match decode_message::<wire::StoredCommitRecordV3, _, _>(COMMIT, encoded, |value| {
-        value
+        let references = value
             .event_references
             .into_iter()
             .map(event_reference_from_proto)
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DecodedCommitEventReferencesV1 {
+            revision: CommitRecordRevisionV1::V3,
+            references,
+        })
     }) {
         Ok(value) => Ok(value),
         Err(error) if error.kind() == super::DurableCodecErrorKind::UnexpectedRecordType => {
             match decode_message::<wire::StoredCommitRecordV2, _, _>(COMMIT_V2, encoded, |value| {
-                value
+                let references = value
                     .event_references
                     .into_iter()
                     .map(event_reference_from_proto)
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DecodedCommitEventReferencesV1 {
+                    revision: CommitRecordRevisionV1::V2,
+                    references,
+                })
             }) {
                 Ok(value) => Ok(value),
                 Err(error)
@@ -1400,13 +1483,29 @@ pub fn decode_commit_event_references(
                 {
                     let decoded = decode_commit_record_legacy_v1(encoded)?;
                     let (commit, charge) = decoded.into_parts();
-                    Ok(EncodedPageItem::new(commit.event_references(), charge))
+                    Ok(EncodedPageItem::new(
+                        DecodedCommitEventReferencesV1 {
+                            revision: CommitRecordRevisionV1::LegacyV1,
+                            references: commit.event_references(),
+                        },
+                        charge,
+                    ))
                 }
                 Err(error) => Err(error),
             }
         }
         Err(error) => Err(error),
     }
+}
+
+/// Decodes only the ordered event references needed to materialize a commit
+/// from the authoritative event table.
+pub fn decode_commit_event_references(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<Vec<EventReferenceV2>>, DurableCodecError> {
+    let decoded = decode_commit_event_references_with_revision(encoded)?;
+    let (value, charge) = decoded.into_parts();
+    Ok(EncodedPageItem::new(value.into_parts().1, charge))
 }
 
 /// Decodes only the ordered entity references from a commit row (no event join).

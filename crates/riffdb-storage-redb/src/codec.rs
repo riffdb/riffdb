@@ -123,15 +123,9 @@ pub(crate) fn decode_commit_entity_references(
 
 pub(crate) fn decode_commit_event_references(
     encoded: &[u8],
-) -> Result<storage::EncodedPageItem<Vec<storage::EventReferenceV2>>, storage::StorageError> {
-    storage::decode_commit_event_references(encoded).map_err(codec_error)
-}
-
-pub(crate) fn decode_commit_record_with_events(
-    encoded: &[u8],
-    events: Vec<storage::StoredDurableEventV1>,
-) -> Result<storage::EncodedPageItem<storage::StoredCommitRecordV1>, storage::StorageError> {
-    storage::decode_commit_record_with_events(encoded, events).map_err(codec_error)
+) -> Result<storage::EncodedPageItem<storage::DecodedCommitEventReferencesV1>, storage::StorageError>
+{
+    storage::decode_commit_event_references_with_revision(encoded).map_err(codec_error)
 }
 
 pub(crate) fn decode_commit_with_event_table<T>(
@@ -141,7 +135,8 @@ pub(crate) fn decode_commit_with_event_table<T>(
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    let references = decode_commit_event_references(encoded)?.into_parts().0;
+    let decoded = decode_commit_event_references(encoded)?.into_parts().0;
+    let (revision, references) = decoded.into_parts();
     let mut loaded = Vec::with_capacity(references.len());
     for reference in references {
         let key = encode_event_key(reference.event_id());
@@ -155,7 +150,7 @@ where
         }
         loaded.push(event);
     }
-    decode_commit_record_with_events(encoded, loaded)
+    storage::decode_commit_record_for_revision(encoded, revision, loaded).map_err(codec_error)
 }
 borrowed_codec!(
     encode_active_catalog_pointer_v1,
