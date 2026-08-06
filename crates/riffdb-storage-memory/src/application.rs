@@ -2083,8 +2083,8 @@ mod tests {
         EvaluationBudget, EventIntent, IdempotencyKeyDigest, IndexEpochAdvanceV1,
         IndexPartitionFilter, IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget,
         PreEvaluationCommitContext, StorageScanLimit, StoredAdmittedProvenanceClaimsV1,
-        StoredContractBundleV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutboxIntentV1,
-        StoredReadDependenciesV1, UniqueIndexTarget,
+        StoredContractBundleV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredReadDependenciesV1,
+        UniqueIndexTarget,
     };
     use riffdb_testkit::model::AuthoritativeCommandModel;
     use riffdb_types::{
@@ -2515,8 +2515,6 @@ mod tests {
             mutations,
             write_plan.clone(),
             stored_outcome,
-            vec![event.clone()],
-            vec![StoredOutboxIntentV1::new(event)],
             provenance,
             commit,
         )
@@ -2562,8 +2560,6 @@ mod tests {
             fixture.records.entities().to_vec(),
             write_plan.clone(),
             fixture.records.stored_outcome().clone(),
-            fixture.records.events().to_vec(),
-            fixture.records.outbox_intents().to_vec(),
             fixture.records.provenance().clone(),
             fixture.records.commit().clone(),
         )

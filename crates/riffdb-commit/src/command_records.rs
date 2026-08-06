@@ -9,8 +9,8 @@ use riffdb_storage_api::{
     DurableKeySchemaBindingV1, EmptyCommandBatch, EntityMutation, ExpectedEntityState,
     IdempotencyLookupCandidatesV1, NonEmptyCommandBatch, StorageError, StorageErrorKind,
     StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredExecutionFailedV1, StoredOutboxIntentV1, StoredOutcomeV1,
-    StoredProvenanceRecordV1, StoredReadDependenciesV1, derive_event_hash_v1,
+    StoredEntityRecordV1, StoredExecutionFailedV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    StoredReadDependenciesV1, derive_event_hash_v1,
 };
 use riffdb_types::{EntityVersion, EventId};
 
@@ -740,25 +740,17 @@ fn build_atomic_command_record_set(
         intent.conflict_hashes().to_vec(),
         StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?,
         entity_references,
-        events.clone(),
+        events,
         evaluated.outcome().clone(),
         intent.provenance_id(),
         event_ids,
         durability_mode,
     )?;
-    let outbox_intents = events
-        .iter()
-        .cloned()
-        .map(StoredOutboxIntentV1::new)
-        .collect();
-
     AtomicCommandRecordSet::new(
         assignment,
         entities,
         write_plan,
         stored_outcome,
-        events,
-        outbox_intents,
         provenance,
         commit,
     )

@@ -140,7 +140,7 @@ fn command_staging_retains_and_checks_the_exact_candidate_graph() {
     assert!(records.contains("sequence != assignment.assigned()"));
     assert!(records.contains("expected_pending.partition_key() != stored_outcome.partition_key()"));
     assert!(records.contains("validate_intent_entity_derivation(evaluated, &entities)?"));
-    assert!(records.contains("validate_intent_event_derivation(evaluated, sequence, &events)?"));
+    assert!(records.contains("validate_intent_event_derivation(evaluated, sequence, events)?"));
     assert!(records.contains("pub fn matches_retained_candidate("));
     assert!(records.contains("pub fn matches_reserved_candidate("));
     assert!(records.contains("pub fn matches_durability_mode("));
@@ -169,6 +169,21 @@ fn atomic_record_reciprocity_and_staged_evidence_materialize_no_comparison_vecto
         .0;
     assert!(evidence.contains("event_ids: provenance.event_ids"));
     assert!(!evidence.contains("collect"));
+
+    let graph = records
+        .split_once("pub struct AtomicCommandRecordSet {")
+        .expect("atomic command graph")
+        .1
+        .split_once("/// Minimal immutable evidence retained")
+        .expect("atomic command graph end")
+        .0;
+    assert!(!graph.contains("events: Vec<StoredDurableEventV1>"));
+    assert!(records.contains(
+        "pub fn events(&self) -> &[StoredDurableEventV1] {\n        self.commit.events()\n    }"
+    ));
+    assert!(records.contains("let mut outbox_intents = Vec::with_capacity(events.len())"));
+    assert!(records.contains("outbox_intents.push(StoredOutboxIntentV1::new(event.clone()))"));
+    assert!(!constructor.contains("outbox_intents: Vec<StoredOutboxIntentV1>"));
 }
 
 #[test]

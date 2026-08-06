@@ -28,10 +28,9 @@ use crate::{
     StoredAdmittedProvenanceClaimsV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
     StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
-    StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutboxStatusV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProjectionApplyV1, StoredProjectionControlV1,
-    StoredProjectionStateV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StoredServiceAuditRecordV1,
+    StoredIndexEpochV1, StoredOutboxStatusV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    StoredProjectionApplyV1, StoredProjectionControlV1, StoredProjectionStateV1,
+    StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredServiceAuditRecordV1,
 };
 
 use crate::command_write_set_upper_bound_v1;
@@ -293,11 +292,6 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         DurabilityMode::Memory,
     )
     .expect("commit");
-    let outbox_intents = events
-        .iter()
-        .cloned()
-        .map(StoredOutboxIntentV1::new)
-        .collect();
     let affected_targets = AffectedIndexEpochTargets::new(Vec::new()).expect("affected targets");
     let affected_current =
         AffectedEpochCurrentState::new(&affected_targets, Vec::new()).expect("affected state");
@@ -322,8 +316,6 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         mutations,
         write_plan,
         stored_outcome,
-        events,
-        outbox_intents,
         provenance,
         commit,
     )

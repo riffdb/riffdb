@@ -713,6 +713,8 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
         })
         .expect("private record graph builder");
     assert!(!builder.starts_with("\n    assignment:"));
+    assert!(!builder.contains("events.clone()"));
+    assert!(!builder.contains("StoredOutboxIntentV1::new"));
     assert!(!builder.starts_with("\n    write_plan:"));
     assert!(!production.contains("pub(crate) fn build_atomic_command_record_set"));
     assert!(!production.contains("pub(super) fn build_atomic_command_record_set"));
