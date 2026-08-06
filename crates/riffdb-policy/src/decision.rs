@@ -1229,13 +1229,7 @@ pub(crate) fn check_permission(
 ) -> PermissionCheck {
     let mut present_requiring_approval = false;
     let mut inspect = |permission: &CapabilityPermissionV1| {
-        let target = permission.canonical_key();
-        if grant
-            .permissions()
-            .as_slice()
-            .binary_search_by(|candidate| candidate.canonical_key().cmp(&target))
-            .is_err()
-        {
+        if !grant.permissions().contains_exact(permission) {
             return None;
         }
         let kind = permission.kind();

@@ -1,4 +1,4 @@
-spec_version: '0.77'
+spec_version: '0.78'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -306,6 +306,45 @@ work_packages:
   exit_gate: Evaluation and commit graph construction share one exact canonical entity post-image,
     external and recovered paths retain full validation, all semantic and recovery suites pass, and
     same-host evidence reduces validation/staging CPU or total seed without a material unary regression.
+  human_review_triggers: *id001
+- id: WP-475
+  name: Retained canonical permission lookup
+  depends_on: [WP-110, WP-378, WP-465]
+  objective: Preserve complete fresh command authorization while retaining the exact ordered
+    canonical keys already derived for an immutable capability permission set, eliminating one
+    candidate-key allocation per binary-search comparison.
+  requirements: [PERF-008, AAA-006, AAA-007]
+  required_adrs: [ADR-0009, ADR-0060]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-types/**,
+    crates/riffdb-policy/**, docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - CapabilityPermissionsV1 constructs each exact canonical key once, sorts permission/key pairs by
+    those bytes, rejects adjacent equal keys exactly as before, and retains keys in immutable Arc
+    storage shared by grant clones
+  - Exact permission membership builds only the requested target key and searches retained keys;
+    all unparameterized, command, entity, index, projection, query, role, migration, stream, watch,
+    and contextual-subscription permission identities retain byte-exact comparison
+  - Current authorization still reloads the capability, samples fresh authorization time, validates
+    principal/current identity, evaluates tenant/partition/field/approval obligations, and produces
+    a new proof at every existing safe point
+  - Public grant construction, slices, equality, canonical semantic bytes, durable encoding,
+    decoding, redaction, denial taxonomy, and authorization results remain unchanged
+  - Full public seed evidence records authorization CPU, total seed, and representative unary
+    latency, with revert required for a material regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types --all-features
+  - cargo +1.97.0 test -p riffdb-policy --all-features
+  - cargo +1.97.0 test -p riffdb-auth --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every authorization result and canonical grant byte remains exact, every fresh safe
+    point still reloads and fully evaluates current authority, permission-set clones share retained
+    immutable keys, and same-host evidence reduces authorization CPU or total seed without a
+    material unary regression.
   human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope
