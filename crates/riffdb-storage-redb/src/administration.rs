@@ -37,7 +37,7 @@ use riffdb_types::{
     ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
 };
 
-use crate::application::stage_admission;
+use crate::application::stage_admission_group;
 use crate::codec::{
     decode_active_catalog_pointer_v1, decode_administration_audit_record_v1,
     decode_administration_sequence_allocator_v1, decode_capability_bootstrap_marker_v1,
@@ -1593,36 +1593,15 @@ fn service_link_is_valid(
             provenance_id,
         } => {
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            let key = encode_application_sequence_key(commit_sequence);
-            let Some(commit_guard) = commits
-                .get(key.as_slice())
-                .map_err(precommit_storage_error)?
-            else {
-                return Ok(false);
-            };
             let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            let commit = decoded_value(decode_commit_with_event_table(
-                commit_guard.value(),
-                &events,
-            )?);
-            drop(commit_guard);
-            if commit.commit_sequence() != commit_sequence
-                || commit.provenance_id() != provenance_id
-            {
-                return Ok(false);
-            }
-            drop(commits);
             let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
-            let key = encode_provenance_key(provenance_id);
-            let Some(provenance) = provenance
-                .get(key.as_slice())
-                .map_err(precommit_storage_error)?
-            else {
-                return Ok(false);
-            };
-            let provenance = decoded_value(decode_provenance_record_v1(provenance.value())?);
-            Ok(provenance.provenance_id() == provenance_id
-                && provenance.commit_sequence() == commit_sequence)
+            command_service_link_is_valid(
+                &commits,
+                &events,
+                &provenance,
+                commit_sequence,
+                provenance_id,
+            )
         }
         ServiceAuditLinkV1::ControlPlane {
             administration_sequence,
@@ -1675,6 +1654,45 @@ fn service_link_is_valid(
             })
         }
     }
+}
+
+fn command_service_link_is_valid<C, E, P>(
+    commits: &C,
+    events: &E,
+    provenance: &P,
+    commit_sequence: riffdb_types::CommitSequence,
+    provenance_id: riffdb_types::ProvenanceId,
+) -> Result<bool, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+    P: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let key = encode_application_sequence_key(commit_sequence);
+    let Some(commit_guard) = commits
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(false);
+    };
+    let commit = decoded_value(decode_commit_with_event_table(
+        commit_guard.value(),
+        events,
+    )?);
+    drop(commit_guard);
+    if commit.commit_sequence() != commit_sequence || commit.provenance_id() != provenance_id {
+        return Ok(false);
+    }
+    let key = encode_provenance_key(provenance_id);
+    let Some(provenance) = provenance
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(false);
+    };
+    let provenance = decoded_value(decode_provenance_record_v1(provenance.value())?);
+    Ok(provenance.provenance_id() == provenance_id
+        && provenance.commit_sequence() == commit_sequence)
 }
 
 impl ServiceAuditAppendRepository for RedbOperationalPorts {
@@ -1803,14 +1821,13 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
         &self,
         requests: Vec<AuditedAdmissionRequestV1>,
     ) -> Result<Vec<AuditedAdmissionResultV1>, StorageError> {
+        let request_ids = requests
+            .iter()
+            .map(|request| request.started().request_id())
+            .collect::<BTreeSet<_>>();
         if requests.is_empty()
             || requests.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
-            || requests
-                .iter()
-                .map(|request| request.started().request_id())
-                .collect::<BTreeSet<_>>()
-                .len()
-                != requests.len()
+            || request_ids.len() != requests.len()
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
@@ -1818,12 +1835,15 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(transaction)?;
+        let sequences_by_request = access.service_audit_sequences_for(&request_ids)?;
+        let audit = transaction.open_table(AUDIT).map_err(table_error)?;
 
         for request in &requests {
-            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-            let sequences = access.service_audit_sequences(request.started().request_id())?;
-            let lifecycle = service_lifecycle(&audit, request.started().request_id(), &sequences)?;
-            drop(audit);
+            let sequences = sequences_by_request
+                .get(&request.started().request_id())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let lifecycle = service_lifecycle(&audit, request.started().request_id(), sequences)?;
             if lifecycle.is_some()
                 || request.started().phase() != ServiceAuditPhaseV1::Started
                 || request.started().principal().is_none()
@@ -1833,13 +1853,19 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
+        drop(audit);
 
         let count = u16::try_from(requests.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let (assigned, next) = allocate_sequences(allocator, count)?;
+        let admissions = stage_admission_group(
+            transaction,
+            requests.iter().map(|request| request.admission()),
+        )?;
         let mut outputs = Vec::with_capacity(requests.len());
-        for (request, sequence) in requests.iter().zip(assigned) {
-            let (admission, created) = stage_admission(transaction, request.admission())?;
+        for ((request, sequence), (admission, created)) in
+            requests.iter().zip(assigned).zip(admissions)
+        {
             if created
                 && request.started().request_id()
                     != request
@@ -1892,6 +1918,12 @@ pub(crate) fn stage_service_audit_group_in_write(
     let transaction = access.transaction()?;
     let allocator = validate_administration_tail(transaction)?;
     let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    // A successful command group links every terminal row to records staged in
+    // this same transaction. Keep one handle per authoritative table while
+    // retaining the complete per-link decode and reciprocal identity checks.
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
     let mut fused_starts: BTreeMap<riffdb_types::RequestId, ServiceAuditAppendIntentV1> =
         BTreeMap::new();
     for intent in intents {
@@ -1937,7 +1969,22 @@ pub(crate) fn stage_service_audit_group_in_write(
         if had_fused_start && allowed {
             fused_starts.remove(&intent.request_id());
         }
-        if !allowed || !service_link_is_valid(transaction, intent)? {
+        let link_is_valid = match intent.link() {
+            ServiceAuditLinkV1::Command {
+                commit_sequence,
+                provenance_id,
+            } => command_service_link_is_valid(
+                &commits,
+                &events,
+                &provenance,
+                commit_sequence,
+                provenance_id,
+            )?,
+            ServiceAuditLinkV1::None | ServiceAuditLinkV1::ControlPlane { .. } => {
+                service_link_is_valid(transaction, intent)?
+            }
+        };
+        if !allowed || !link_is_valid {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
     }
@@ -1965,15 +2012,34 @@ pub(crate) fn stage_service_audit_group_in_write(
         records.push(record);
     }
     drop(audit);
+    drop(commits);
+    drop(events);
+    drop(provenance);
     // Durable AUDIT_BY_REQUEST rows must land in the same write as fused AUDIT
     // appends; the transient ServiceAudit delta is not an index authority.
+    let mut request_index = transaction
+        .open_table(crate::layout::AUDIT_BY_REQUEST)
+        .map_err(table_error)?;
     for record in &records {
-        write_service_audit_request_index(
-            transaction,
+        let index_key = crate::keys::encode_audit_by_request_key(
             record.request_id(),
             record.administration_sequence(),
+        );
+        let index_value = crate::codec::encode_service_audit_request_index_v1(
+            riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+                record.request_id(),
+                record.administration_sequence(),
+            ),
         )?;
+        if request_index
+            .insert(index_key.as_slice(), index_value.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(corrupt());
+        }
     }
+    drop(request_index);
     write_administration_allocator(transaction, allocator, next)?;
     Ok(records)
 }

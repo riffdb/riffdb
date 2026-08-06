@@ -1,4 +1,4 @@
-spec_version: '0.72'
+spec_version: '0.73'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8448,4 +8448,45 @@ work_packages:
     known-successful tail before release; singleton and hardened paths remain direct; every semantic,
     crash, recovery, and compatibility suite passes; focused evidence materially reduces physical
     commit cost or write latency without a material c1 regression.
+  human_review_triggers: *id001
+- id: WP-470
+  name: Batched command-audit table access
+  depends_on: [WP-364, WP-449, WP-464, WP-469]
+  objective: Remove repeated redb table-open and handle-construction work while staging bounded
+    audited admission and terminal command groups, without removing or weakening any lifecycle,
+    linked commit/event/provenance, request-index, allocator, canonical-byte, atomicity, or
+    result-release validation.
+  requirements: [PERF-004, PERF-008, PERF-015, TXN-040, TXN-041, TXN-042,
+    TXN-043, TXN-044]
+  required_adrs: [ADR-0007, ADR-0009, ADR-0021, ADR-0058, ADR-0060, ADR-0098]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-redb/**,
+    tests/service_audit/**, tests/command_semantics/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - One bounded audited admission group opens AUDIT and AUDIT_BY_REQUEST once for lifecycle lookup
+    while retaining an independent exact lookup and validation for every request identity
+  - One bounded command terminal-audit group opens the commit, event, and provenance tables once and
+    validates every Command link against those shared transaction-local handles
+  - The same group opens AUDIT_BY_REQUEST once and inserts every independently encoded, self-verifying
+    request-index row while retaining duplicate rejection and input order
+  - Fused Started and terminal lifecycle validation, full commit-with-events decoding, provenance
+    reciprocity, audit canonicalization, allocator validation, and atomic command-plus-audit commit
+    remain exact and fail closed
+  - Standalone service-audit operations retain their existing single-row helper and no public or
+    durable format, operation registry, result, error, transaction, or acknowledgement changes
+  - Focused service-audit tests and full public seed evidence record exact audit/index parity,
+    validation/encoding/staging, commit time, total seed, and representative unary latency
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --test command_concurrency --test lost_response_replay --all-features
+  - cargo +1.97.0 test --test service_audit_orchestration --test service_audit_ordering --test service_audit_recovery --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every admission lifecycle, terminal link, and request-index row retains exact validation
+    and durable bytes, all service-audit and recovery semantics pass, and retained full-seed evidence
+    reduces audited command CPU or total seed without a material unary regression.
   human_review_triggers: *id001

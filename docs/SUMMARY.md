@@ -94,6 +94,7 @@
 - [WP-467 Last-Durable Frontier](performance/wp-467-last-durable-frontier.md)
 - [WP-468 Revisited Writer Feeding](performance/wp-468-revisited-writer-feeding.md)
 - [WP-469 Fenced Single-Subgroup Commit](performance/wp-469-fenced-single-subgroup.md)
+- [WP-470 Batched Command-Audit Table Access](performance/wp-470-batched-command-audit-tables.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference
