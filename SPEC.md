@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.77
+**Version:** 0.78
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.78 | 2026-08-06 | Implemented WP-475 retained canonical permission lookup: each already canonical immutable capability permission set retains its ordered canonical keys under the same shared ownership, so every fresh authorization performs exact binary search without rebuilding a candidate key for each comparison; capability reload, time sampling, policy evaluation, approval checks, and fail-closed decisions remain unchanged. |
 | 0.77 | 2026-08-06 | Implemented WP-474 sealed entity post-image materialization: evaluation-owned entity post-images retain their already-checked canonical fields and bytes under immutable shared ownership, and commit graph construction forms the exact stored entity record without deep-cloning or re-encoding them; external and recovered values retain the full constructor and validation path. |
 | 0.76 | 2026-08-06 | Implemented WP-473 sealed command-audit link evidence: command graphs staged and canonically encoded by the same transaction carry move-only checked sequence/provenance evidence into terminal-audit validation, avoiding a redundant commit/event/provenance table decode while independently submitted audit links and all recovered or external bytes retain complete authoritative decoding. |
 | 0.75 | 2026-08-06 | Implemented WP-472 single-pass commit materialization: the exact canonical readable decode retains a private prepared payload while redb loads and validates the same authoritative event rows, then performs the complete revision-specific semantic construction without parsing the durable envelope or Protobuf payload a second time; compatibility, corruption, ordering, and recovery behavior remain exact. |

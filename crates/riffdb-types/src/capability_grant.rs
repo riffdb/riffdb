@@ -326,27 +326,51 @@ impl CapabilityPermissionV1 {
 }
 
 /// Canonical permission set.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CapabilityPermissionsV1(Arc<[CapabilityPermissionV1]>);
+#[derive(Clone)]
+pub struct CapabilityPermissionsV1(Arc<[CapabilityPermissionV1]>, Arc<[Vec<u8>]>);
+
+impl fmt::Debug for CapabilityPermissionsV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("CapabilityPermissionsV1")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl PartialEq for CapabilityPermissionsV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for CapabilityPermissionsV1 {}
 
 impl CapabilityPermissionsV1 {
     /// Sorts by canonical bytes and rejects duplicates or excessive counts.
     ///
     /// An empty set is a valid grant with no operation permission. Bootstrap
     /// separately requires the administration permission.
-    pub fn new(mut values: Vec<CapabilityPermissionV1>) -> Result<Self, CapabilityGrantError> {
+    pub fn new(values: Vec<CapabilityPermissionV1>) -> Result<Self, CapabilityGrantError> {
         if values.len() > MAX_CAPABILITY_PERMISSIONS {
             return Err(CapabilityGrantError::LimitExceeded);
         }
         validate_capability_payload_bytes(permission_set_semantic_bytes(&values)?)?;
-        values.sort_by_key(CapabilityPermissionV1::canonical_key);
-        if values
-            .windows(2)
-            .any(|pair| pair[0].canonical_key() == pair[1].canonical_key())
-        {
+        let mut keyed = values
+            .into_iter()
+            .map(|permission| (permission.canonical_key(), permission))
+            .collect::<Vec<_>>();
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        if keyed.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(CapabilityGrantError::Duplicate);
         }
-        Ok(Self(values.into()))
+        let mut values = Vec::with_capacity(keyed.len());
+        let mut canonical_keys = Vec::with_capacity(keyed.len());
+        for (canonical_key, permission) in keyed {
+            canonical_keys.push(canonical_key);
+            values.push(permission);
+        }
+        Ok(Self(values.into(), canonical_keys.into()))
     }
 
     /// Returns atoms in canonical order.
@@ -359,6 +383,15 @@ impl CapabilityPermissionsV1 {
     #[must_use]
     pub fn contains_kind(&self, kind: CapabilityPermissionKindV1) -> bool {
         self.0.iter().any(|permission| permission.kind() == kind)
+    }
+
+    /// Returns whether the exact canonical permission atom is present.
+    #[must_use]
+    pub fn contains_exact(&self, permission: &CapabilityPermissionV1) -> bool {
+        let target = permission.canonical_key();
+        self.1
+            .binary_search_by(|candidate| candidate.as_slice().cmp(&target))
+            .is_ok()
     }
 }
 
@@ -849,6 +882,76 @@ mod tests {
             CapabilityPermissionsV1::new(vec![duplicate.clone(), duplicate]),
             Err(CapabilityGrantError::Duplicate)
         );
+
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let command = CapabilityPermissionV1::InvokeCommand(lineage, CommandId::first());
+        let exact = CapabilityPermissionsV1::new(vec![command.clone()]).expect("permissions");
+        assert!(exact.contains_exact(&command));
+        assert!(
+            !exact.contains_exact(
+                &CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                    .expect("permission")
+            )
+        );
+    }
+
+    #[test]
+    fn retained_permission_keys_cover_the_closed_registry_exactly() {
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let query_module = QueryModuleHash::from_bytes([3; 32]);
+        let query_name = QueryOperationName::new("TicketPage").expect("query name");
+        let reactive_module = ReactiveModuleHash::from_bytes([4; 32]);
+        let reactive_name = ReactiveOperationName::new("TicketActivity").expect("reactive name");
+        let mut values = (1..=30)
+            .filter_map(CapabilityPermissionKindV1::from_tag)
+            .filter_map(|kind| CapabilityPermissionV1::unparameterized(kind).ok())
+            .collect::<Vec<_>>();
+        values.extend([
+            CapabilityPermissionV1::ExplainCommand(lineage.clone(), CommandId::first()),
+            CapabilityPermissionV1::InvokeCommand(lineage.clone(), CommandId::first()),
+            CapabilityPermissionV1::ReadEntity(lineage.clone(), EntityTypeId::first()),
+            CapabilityPermissionV1::ScanIndex(lineage.clone(), IndexId::first()),
+            CapabilityPermissionV1::QueryProjection(lineage.clone(), ProjectionId::first()),
+            CapabilityPermissionV1::ReadProjectionStatus(lineage.clone(), ProjectionId::first()),
+            CapabilityPermissionV1::ExplainNamedQuery(
+                lineage.clone(),
+                query_module,
+                query_name.clone(),
+            ),
+            CapabilityPermissionV1::ExecuteNamedQuery(lineage.clone(), query_module, query_name),
+            CapabilityPermissionV1::ApplicationRoleIdentity(ApplicationRoleHash::from_bytes(
+                [5; 32],
+            )),
+            CapabilityPermissionV1::MigrateContract(lineage.clone()),
+            CapabilityPermissionV1::ConsumeEventStream(
+                lineage.clone(),
+                reactive_module,
+                reactive_name.clone(),
+            ),
+            CapabilityPermissionV1::SeekEventStreamConsumer(
+                lineage.clone(),
+                reactive_module,
+                reactive_name.clone(),
+            ),
+            CapabilityPermissionV1::WatchNamedQuery(
+                lineage.clone(),
+                reactive_module,
+                reactive_name.clone(),
+            ),
+            CapabilityPermissionV1::ConsumeContextualSubscription(
+                lineage,
+                reactive_module,
+                reactive_name,
+            ),
+        ]);
+
+        let permissions = CapabilityPermissionsV1::new(values).expect("complete permission set");
+        assert_eq!(permissions.0.len(), permissions.1.len());
+        for (permission, retained_key) in permissions.0.iter().zip(permissions.1.iter()) {
+            assert_eq!(retained_key, &permission.canonical_key());
+            assert!(permissions.contains_exact(permission));
+        }
+        assert!(permissions.1.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[test]
@@ -882,6 +985,7 @@ mod tests {
         let original = grant();
         let cloned = original.clone();
         assert!(Arc::ptr_eq(&original.permissions.0, &cloned.permissions.0));
+        assert!(Arc::ptr_eq(&original.permissions.1, &cloned.permissions.1));
         assert!(Arc::ptr_eq(
             &original.field_visibility,
             &cloned.field_visibility
@@ -904,6 +1008,10 @@ mod tests {
         assert!(!Arc::ptr_eq(
             &original.permissions.0,
             &independently_built.permissions.0
+        ));
+        assert!(!Arc::ptr_eq(
+            &original.permissions.1,
+            &independently_built.permissions.1
         ));
     }
 
