@@ -114,17 +114,40 @@ fn revision_witness_dispatch_matches_the_compatibility_decoder() {
             )
         );
 
+        let revision = witnessed.value().revision();
         let direct = decode_commit_record_for_revision(
             encoded.as_bytes(),
-            witnessed.value().revision(),
+            revision,
             atomic.events().to_vec(),
         )
         .expect("direct revision materialization");
         let compatibility =
             decode_commit_record_with_events(encoded.as_bytes(), atomic.events().to_vec())
                 .expect("compatibility materialization");
+        let (prepared, charge) = witnessed.into_parts();
+        let prepared = prepared
+            .materialize(atomic.events().to_vec(), charge)
+            .expect("prepared materialization");
         assert_eq!(direct, compatibility);
+        assert_eq!(prepared, compatibility);
     }
+}
+
+#[test]
+fn prepared_materialization_rejects_missing_authoritative_events() {
+    let atomic = sample::atomic_record_set();
+    let encoded = encode_commit_record_v1(atomic.commit()).expect("encode v3");
+    assert!(
+        !atomic.events().is_empty(),
+        "fixture must exercise event join"
+    );
+    let (prepared, charge) = decode_commit_event_references_with_revision(encoded.as_bytes())
+        .expect("prepare")
+        .into_parts();
+    let error = prepared
+        .materialize(Vec::new(), charge)
+        .expect_err("missing event rows must fail closed");
+    assert_eq!(error.kind(), DurableCodecErrorKind::CorruptData);
 }
 
 #[test]

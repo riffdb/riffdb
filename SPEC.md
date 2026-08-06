@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.74
+**Version:** 0.75
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.75 | 2026-08-06 | Implemented WP-472 single-pass commit materialization: the exact canonical readable decode retains a private prepared payload while redb loads and validates the same authoritative event rows, then performs the complete revision-specific semantic construction without parsing the durable envelope or Protobuf payload a second time; compatibility, corruption, ordering, and recovery behavior remain exact. |
 | 0.74 | 2026-08-06 | Implemented WP-471 revision-aware commit materialization: the first exact commit decode records whether the canonical row is current V3, historical V2, or legacy V1, and the event-table join dispatches directly to that one decoder while consuming loaded events once; every envelope, checksum, schema, canonical-byte, event-reference/hash, semantic-record, compatibility, and corruption check remains exact. |
 | 0.73 | 2026-08-06 | Implemented WP-470 transaction-local redb table-handle reuse across bounded admission and terminal-audit groups while preserving every independent identity and lifecycle lookup, full linked commit/event/provenance decode, reciprocal identity check, canonical durable byte, transaction boundary, and fail-closed result-release rule. |
 | 0.72 | 2026-08-06 | Accepted WP-469 to use ADR-0098's closed unpublished-root typestate for a standard-profile physical group containing at least two commands: the complete subgroup is applied once without publication and an immediate empty tail fence publishes the successor durable frontier before any outcome, notification, transient index, or response is released. Idle singletons and the hardened oracle retain their direct Immediate paths. |
