@@ -11,11 +11,11 @@ use std::time::{Duration, Instant};
 
 use riffdb_catalog::{ValidatedContractBundle, resolve_executable_plan, validate_catalog_history};
 use riffdb_commit::{
-    AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
-    ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
+    AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
+    AdmissionClockError, ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
     CommandExecutionPreparation, CommandRequestControl, CommitTelemetry, CoordinatorDurability,
-    CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
-    RunningCommandCoordinator,
+    CoordinatorWorkloadCapacity, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
+    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::compile_contract_source;
@@ -43,11 +43,12 @@ use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence, ContractLineage, DatabaseId,
-    Decimal, DecimalSpec, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment,
-    FieldId, IdempotencyKey, PartitionKey, PartitionScopeV1, ProvenanceId, RequestId, TenantScope,
-    Timestamp,
+    ActorId, ActorKind, ApprovalId, Audience, CanonicalRecord, CanonicalValue, CapabilityGrantV1,
+    CapabilityId, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence, ContractLineage,
+    DatabaseId, Decimal, DecimalSpec, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
+    Environment, FieldId, IdempotencyKey, PartitionKey, PartitionScopeV1, ProvenanceId, RequestId,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
+    ServiceOperationV1, TenantScope, Timestamp,
 };
 
 const BUDGET_SOURCE: &str = include_str!("../../contracts/examples/budget.riff");
@@ -107,6 +108,94 @@ const ORGANIZATION_ID: [u8; 16] = [0x31; 16];
 const FISCAL_YEAR: i64 = 2026;
 const ENVIRONMENT: &str = "integration";
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
+
+struct StartedCommandAuditInput {
+    request_id: RequestId,
+    principal_id: ActorId,
+    capability_id: CapabilityId,
+    capability_revision: NonZeroU64,
+    targets: ServiceAuditTargetsV1,
+}
+
+impl StartedCommandAuditInput {
+    fn new(request_id: RequestId) -> Self {
+        Self {
+            request_id,
+            principal_id: ActorId::new(PRINCIPAL).expect("bounded principal"),
+            capability_id: CapabilityId::from_bytes(uuid_bytes(0xd1)).expect("valid capability ID"),
+            capability_revision: NonZeroU64::new(1).expect("nonzero capability revision"),
+            targets: ServiceAuditTargetsV1::empty(),
+        }
+    }
+}
+
+impl AdministrationAuditInputView for StartedCommandAuditInput {
+    fn request_id(&self) -> &RequestId {
+        &self.request_id
+    }
+
+    fn operation(&self) -> &ServiceOperationV1 {
+        &ServiceOperationV1::ExecuteCommand
+    }
+
+    fn phase(&self) -> &ServiceAuditPhaseV1 {
+        &ServiceAuditPhaseV1::Started
+    }
+
+    fn principal_id(&self) -> &ActorId {
+        &self.principal_id
+    }
+
+    fn actor_kind(&self) -> &ActorKind {
+        &ActorKind::Agent
+    }
+
+    fn capability_id(&self) -> &CapabilityId {
+        &self.capability_id
+    }
+
+    fn capability_revision(&self) -> &NonZeroU64 {
+        &self.capability_revision
+    }
+
+    fn ingress(&self) -> &ServiceIngressKindV1 {
+        &ServiceIngressKindV1::Grpc
+    }
+
+    fn targets(&self) -> &ServiceAuditTargetsV1 {
+        &self.targets
+    }
+
+    fn approval_id(&self) -> Option<&ApprovalId> {
+        None
+    }
+
+    fn link(&self) -> &ServiceAuditLinkV1 {
+        &ServiceAuditLinkV1::None
+    }
+}
+
+struct FixedPostEvaluationCommandAuthorizer {
+    authorization: Mutex<Option<AuthorizedCommandExecution>>,
+}
+
+impl FixedPostEvaluationCommandAuthorizer {
+    fn new(authorization: AuthorizedCommandExecution) -> Self {
+        Self {
+            authorization: Mutex::new(Some(authorization)),
+        }
+    }
+}
+
+impl PostEvaluationCommandAuthorizer for FixedPostEvaluationCommandAuthorizer {
+    fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError> {
+        self.authorization
+            .lock()
+            .map_err(|_| PostEvaluationAuthorizationError::Unavailable)?
+            .take()
+            .ok_or(PostEvaluationAuthorizationError::Integrity)
+    }
+}
 
 pub(crate) struct BudgetDatabase {
     path: PathBuf,
@@ -362,6 +451,44 @@ impl UniqueUserDatabase {
         digest_seed: u8,
         request_seed: u8,
     ) -> CommandExecutionPreparation {
+        self.prepare_organization_for_mode(
+            ports,
+            organization_id,
+            caller_key_text,
+            digest_seed,
+            request_seed,
+            false,
+        )
+    }
+
+    pub(crate) fn prepare_audited_organization_for(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        caller_key_text: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        self.prepare_organization_for_mode(
+            ports,
+            organization_id,
+            caller_key_text,
+            digest_seed,
+            request_seed,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_organization_for_mode(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        caller_key_text: &str,
+        digest_seed: u8,
+        request_seed: u8,
+        audited: bool,
+    ) -> CommandExecutionPreparation {
         let plan = self.command_plan("CreateOrganization");
         let reference = ExecutablePlanRef::new(
             self.checked_bundle.lineage().clone(),
@@ -413,12 +540,19 @@ impl UniqueUserDatabase {
             self.checked_bundle.lineage().clone(),
             facts.partition_key().clone(),
         );
+        let post_evaluation_authorization = audited.then(|| {
+            authorize_command(
+                plan,
+                self.checked_bundle.lineage().clone(),
+                facts.partition_key().clone(),
+            )
+        });
         let (control, _cancellation) = CommandRequestControl::new(
             Instant::now()
                 .checked_add(Duration::from_secs(30))
                 .expect("representable organization command deadline"),
         );
-        CommandExecutionPreparation::new(
+        let preparation = CommandExecutionPreparation::new(
             database_id(),
             &environment(),
             resolved,
@@ -430,7 +564,20 @@ impl UniqueUserDatabase {
             riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
-        .expect("join exact organization preparation proofs")
+        .expect("join exact organization preparation proofs");
+        if let Some(post_evaluation_authorization) = post_evaluation_authorization {
+            preparation
+                .with_audited_lifecycle(Box::new(StartedCommandAuditInput::new(request_id(
+                    request_seed,
+                ))))
+                .expect("attach matching checked Started audit lifecycle")
+                .with_post_evaluation_authorizer(Box::new(
+                    FixedPostEvaluationCommandAuthorizer::new(post_evaluation_authorization),
+                ))
+                .expect("attach exact post-evaluation authorization safe point")
+        } else {
+            preparation
+        }
     }
 
     pub(crate) fn assert_user_exists(

@@ -15,7 +15,8 @@ use riffdb_storage_api::{
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1,
-    CurrentIndexGenerationObservation, CurrentRangeObservation, DurabilityMode, EmptyCommandBatch,
+    CurrentIndexGenerationObservation, CurrentRangeObservation, DeferredCommandEpoch,
+    DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode, EmptyCommandBatch,
     EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
     EventRouteUpperFenceV1, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
@@ -32,7 +33,7 @@ use riffdb_storage_api::{
     StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1,
     StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, TransactionCurrentState,
     TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
-    UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
+    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -122,6 +123,15 @@ struct BatchCore {
     overlay: ApplicationOverlay,
     staged: Vec<StagedCommandEvidenceV1>,
     metrics: Option<StagedBatchMetrics>,
+    epoch: Option<MemoryEpochContext>,
+}
+
+struct MemoryEpochContext {
+    state: MemoryState,
+    applied: Vec<UnpublishedAuditedBatchV1>,
+    command_count: usize,
+    semantic_bytes: usize,
+    reserved_encoded_bytes: usize,
 }
 
 impl BatchCore {
@@ -133,8 +143,22 @@ impl BatchCore {
             overlay,
             staged: Vec::new(),
             metrics: None,
+            epoch: None,
         })
     }
+}
+
+/// Volatile semantic counterpart of one unpublished durability epoch.
+///
+/// It publishes no state until `fence`; the in-memory backend makes no disk
+/// durability claim and exists to exercise the same coordinator typestate.
+pub struct MemoryDurabilityEpoch {
+    access: MemoryAccess,
+    state: MemoryState,
+    applied: Vec<UnpublishedAuditedBatchV1>,
+    command_count: usize,
+    semantic_bytes: usize,
+    reserved_encoded_bytes: usize,
 }
 
 /// Empty in-memory command batch. This state has no commit operation.
@@ -220,6 +244,68 @@ impl ApplicationCommandTransactionPort for MemoryOperationalPorts {
     }
 }
 
+impl DeferredCommandEpochPort for MemoryOperationalPorts {
+    type Epoch = MemoryDurabilityEpoch;
+
+    fn begin_deferred_command_epoch(&self) -> Result<Self::Epoch, StorageError> {
+        let access = self.acquire()?;
+        let state = access.read(|state| Ok(state.clone()))?;
+        Ok(MemoryDurabilityEpoch {
+            access,
+            state,
+            applied: Vec::new(),
+            command_count: 0,
+            semantic_bytes: 0,
+            reserved_encoded_bytes: 0,
+        })
+    }
+}
+
+impl DeferredCommandEpoch for MemoryDurabilityEpoch {
+    type EmptyBatch = MemoryEmptyBatch;
+
+    fn begin_empty_batch(self) -> Result<Self::EmptyBatch, StorageError> {
+        let overlay = ApplicationOverlay::from_state(&self.state)?;
+        Ok(MemoryEmptyBatch {
+            core: BatchCore {
+                access: self.access,
+                overlay,
+                staged: Vec::new(),
+                metrics: None,
+                epoch: Some(MemoryEpochContext {
+                    state: self.state,
+                    applied: self.applied,
+                    command_count: self.command_count,
+                    semantic_bytes: self.semantic_bytes,
+                    reserved_encoded_bytes: self.reserved_encoded_bytes,
+                }),
+            },
+        })
+    }
+
+    fn fence(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError> {
+        if self.applied.is_empty() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let mut committed = Vec::with_capacity(self.applied.len());
+        for unpublished in self.applied {
+            let (outcomes, terminals) = unpublished.into_parts();
+            let durability = outcomes
+                .first()
+                .map(StoredOutcomeV1::durability_mode)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            let batch = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
+            committed
+                .push(AuditedCommittedBatchV1::new(batch, terminals).map_err(invariant_value)?);
+        }
+        self.access.write(move |state| {
+            *state = self.state;
+            Ok(())
+        })?;
+        Ok(committed)
+    }
+}
+
 impl EmptyCommandBatch for MemoryEmptyBatch {
     type Candidate = MemoryCandidateAdmission<Self>;
 
@@ -276,6 +362,9 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
     }
 
     fn commit(self, durability: DurabilityMode) -> Result<CommittedBatchV1, StorageError> {
+        if self.core.epoch.is_some() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         if self
             .core
             .staged
@@ -306,6 +395,9 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
         durability: DurabilityMode,
         transitions: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
     ) -> Result<AuditedCommittedBatchV1, StorageError> {
+        if self.core.epoch.is_some() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         if self.core.staged.len() != transitions.len()
             || transitions.is_empty()
             || self
@@ -348,6 +440,83 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
     }
 
     fn rollback(self) {}
+}
+
+impl DeferredNonEmptyCommandBatch for MemoryNonEmptyBatch {
+    type Epoch = MemoryDurabilityEpoch;
+
+    fn apply_unpublished_with_service_audit_transitions(
+        self,
+        durability: DurabilityMode,
+        transitions: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
+    ) -> Result<Self::Epoch, StorageError> {
+        if self.core.staged.len() != transitions.len()
+            || transitions.is_empty()
+            || self
+                .core
+                .staged
+                .iter()
+                .any(|evidence| evidence.outcome().durability_mode() != durability)
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let metrics = self.metrics();
+        let outcomes = self
+            .core
+            .staged
+            .into_iter()
+            .map(|evidence| evidence.into_parts().0)
+            .collect();
+        let BatchCore {
+            access,
+            overlay,
+            epoch,
+            ..
+        } = self.core;
+        let Some(mut epoch) = epoch else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        let next_count = epoch
+            .command_count
+            .checked_add(usize::from(metrics.command_count().get()))
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let next_semantic = epoch
+            .semantic_bytes
+            .checked_add(metrics.semantic_bytes())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let next_reserved = epoch
+            .reserved_encoded_bytes
+            .checked_add(metrics.reserved_encoded_bytes())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        if next_count > riffdb_storage_api::MAX_STAGED_COMMANDS
+            || next_semantic > riffdb_storage_api::MAX_STAGED_WRITE_BYTES
+            || next_reserved > riffdb_storage_api::MAX_STAGED_WRITE_BYTES
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        overlay.publish(&mut epoch.state);
+        let mut terminals = Vec::with_capacity(transitions.len());
+        for transition in transitions {
+            let intents = transition.into_intents();
+            let mut terminal = None;
+            for intent in &intents {
+                terminal = Some(append_service_audit_in_state(&mut epoch.state, intent)?);
+            }
+            terminals
+                .push(terminal.ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?);
+        }
+        epoch
+            .applied
+            .push(UnpublishedAuditedBatchV1::new(outcomes, terminals).map_err(invariant_value)?);
+        Ok(MemoryDurabilityEpoch {
+            access,
+            state: epoch.state,
+            applied: epoch.applied,
+            command_count: next_count,
+            semantic_bytes: next_semantic,
+            reserved_encoded_bytes: next_reserved,
+        })
+    }
 }
 
 impl TransactionLocalCommandBatch for MemoryNonEmptyBatch {
@@ -2078,11 +2247,12 @@ impl FilteredAuthoritativeScanReader for MemoryOperationalPorts {
 #[cfg(test)]
 mod tests {
     use riffdb_storage_api::{
-        AffectedEntityV1, ApplicationSequenceAllocator, DatabaseInitializationPort,
-        DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, EntityPostImage,
-        EvaluationBudget, EventIntent, IdempotencyKeyDigest, IndexEpochAdvanceV1,
-        IndexPartitionFilter, IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget,
-        PreEvaluationCommitContext, StorageScanLimit, StoredAdmittedProvenanceClaimsV1,
+        AffectedEntityV1, ApplicationSequenceAllocator, AuditPrincipalV1,
+        DatabaseInitializationPort, DurableKeySchemaBindingV1, EncodedWriteSetUpperBound,
+        EntityMutation, EntityPostImage, EvaluationBudget, EventIntent, IdempotencyKeyDigest,
+        IndexEpochAdvanceV1, IndexPartitionFilter, IndexPartitionFilterScope,
+        IndexRangePrefixBuilder, IndexRangeTarget, PreEvaluationCommitContext,
+        ServiceAuditAppendIntentV1, StorageScanLimit, StoredAdmittedProvenanceClaimsV1,
         StoredContractBundleV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredReadDependenciesV1,
         UniqueIndexTarget,
     };
@@ -2092,7 +2262,8 @@ mod tests {
         CommandId, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, DigestKeyId,
         EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventTypeId, FieldId,
         IndexEntryKeyBuilder, IndexId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
-        RequestId, TenantId, TenantScope, Timestamp,
+        RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+        ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -2590,9 +2761,14 @@ mod tests {
         ports: &MemoryOperationalPorts,
         fixture: &CommandFixture,
     ) -> MemoryCandidateAwaitingCapacity<MemoryEmptyBatch> {
-        let candidate = ports
-            .begin_empty_batch()
-            .expect("empty batch")
+        empty_batch_to_capacity(ports.begin_empty_batch().expect("empty batch"), fixture)
+    }
+
+    fn empty_batch_to_capacity(
+        empty: MemoryEmptyBatch,
+        fixture: &CommandFixture,
+    ) -> MemoryCandidateAwaitingCapacity<MemoryEmptyBatch> {
+        let candidate = empty
             .begin_candidate(Box::new(fixture.intent.clone()))
             .expect("candidate");
         let CandidateAdmissionResult::Proceed(candidate) =
@@ -2607,6 +2783,46 @@ mod tests {
             .plan_validated(fixture.affected_targets.clone())
             .read_affected_epoch_current()
             .expect("affected current")
+    }
+
+    fn command_audit_transition(
+        fixture: &CommandFixture,
+    ) -> riffdb_storage_api::CommandServiceAuditTransitionV1 {
+        let principal = AuditPrincipalV1::new(
+            fixture.pending.actor().principal_id().clone(),
+            fixture.pending.actor().actor_kind(),
+            riffdb_types::CapabilityId::from_bytes(uuid_bytes(0xd2)).expect("capability ID"),
+            std::num::NonZeroU64::MIN,
+        );
+        let started = ServiceAuditAppendIntentV1::new(
+            fixture.pending.admission_request_id(),
+            Timestamp::new(1_700_000_001, 0).expect("started timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Started,
+            principal.clone(),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("started audit");
+        let terminal = ServiceAuditAppendIntentV1::new(
+            fixture.pending.admission_request_id(),
+            Timestamp::new(1_700_000_002, 0).expect("terminal timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Succeeded,
+            principal,
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::Command {
+                commit_sequence: fixture.records.commit().commit_sequence(),
+                provenance_id: fixture.records.provenance().provenance_id(),
+            },
+        )
+        .expect("terminal audit");
+        riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(started, terminal)
+            .expect("complete audit transition")
     }
 
     fn nonempty_to_capacity(
@@ -2695,6 +2911,76 @@ mod tests {
                     fixture.records.stored_outcome().clone()
                 )
         ));
+    }
+
+    #[test]
+    fn deferred_epoch_keeps_state_private_until_fence_and_publishes_complete_group() {
+        let ports = operational_ports(bundle());
+        let mut model = AuthoritativeCommandModel::new();
+        let first = command_fixture(1, 1, None, IndexEpochPosition::BeforeFirst, 0x71);
+        let first_entity = first.records.entities()[0].post_image().clone();
+        let first_epoch = IndexEpochPosition::Value(first.records.index_epochs()[0].next());
+        let second = command_fixture(2, 2, Some(first_entity), first_epoch, 0x72);
+        admit(&ports, &mut model, &first);
+        admit(&ports, &mut model, &second);
+
+        let empty = ports
+            .begin_deferred_command_epoch()
+            .expect("begin semantic epoch")
+            .begin_empty_batch()
+            .expect("begin epoch batch");
+        let CandidateCapacityResult::Reserved(first_candidate) =
+            empty_batch_to_capacity(empty, &first)
+                .reserve_capacity(first.write_plan.clone())
+                .expect("reserve first")
+        else {
+            panic!("first command must reserve");
+        };
+        let first_batch = first_candidate
+            .assign_sequence()
+            .expect("assign first")
+            .stage(first.records.clone())
+            .expect("stage first");
+        let CandidateCapacityResult::Reserved(second_candidate) =
+            nonempty_to_capacity(first_batch, &second)
+                .reserve_capacity(second.write_plan.clone())
+                .expect("reserve second")
+        else {
+            panic!("second command must reserve");
+        };
+        let batch = second_candidate
+            .assign_sequence()
+            .expect("assign second")
+            .stage(second.records.clone())
+            .expect("stage second");
+        let epoch = batch
+            .apply_unpublished_with_service_audit_transitions(
+                DurabilityMode::Memory,
+                vec![
+                    command_audit_transition(&first),
+                    command_audit_transition(&second),
+                ],
+            )
+            .expect("apply private group");
+
+        assert!(
+            ports
+                .read_entity(&first.target)
+                .expect("read predecessor frontier")
+                .is_none(),
+            "the candidate state must remain invisible before the fence"
+        );
+        let committed = epoch.fence().expect("publish epoch tail");
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].batch().outcomes().len(), 2);
+        assert_eq!(
+            ports
+                .read_entity(&second.target)
+                .expect("read published successor")
+                .expect("successor exists")
+                .fields(),
+            second.records.entities()[0].post_image().fields()
+        );
     }
 
     #[test]

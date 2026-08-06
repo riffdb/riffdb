@@ -5,12 +5,12 @@ use std::{error::Error, fmt};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AffectedEntityV1, AssignedCommandSequence,
     AtomicCommandRecordSet, CommandCandidateSequenceAssigned, CommandWriteSetPlanV1,
-    CommittedBatchV1, CommittedEntityMutationV1, CommittedEntityReferenceV2, DurabilityMode,
-    DurableKeySchemaBindingV1, EmptyCommandBatch, EntityMutation, ExpectedEntityState,
-    IdempotencyLookupCandidatesV1, NonEmptyCommandBatch, StorageError, StorageErrorKind,
-    StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredExecutionFailedV1, StoredOutcomeV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, derive_event_hash_v1,
+    CommittedBatchV1, CommittedEntityMutationV1, CommittedEntityReferenceV2, DeferredCommandEpoch,
+    DeferredNonEmptyCommandBatch, DurabilityMode, DurableKeySchemaBindingV1, EmptyCommandBatch,
+    EntityMutation, ExpectedEntityState, IdempotencyLookupCandidatesV1, NonEmptyCommandBatch,
+    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1,
+    StoredOutcomeV1, StoredProvenanceRecordV1, StoredReadDependenciesV1, derive_event_hash_v1,
 };
 use riffdb_types::{EntityVersion, EventId};
 
@@ -358,51 +358,99 @@ where
                 .map(|audited| audited.into_parts().0),
             None => staged.commit(durability_mode),
         };
-        match committed {
-            Ok(batch)
-                if batch.durability_mode() == durability_mode
-                    && batch.outcomes().len() == entries.len()
-                    && batch
-                        .outcomes()
-                        .iter()
-                        .zip(&entries)
-                        .all(|(outcome, entry)| outcome == &entry.expected_outcome) =>
-            {
-                let outcomes = entries
-                    .into_iter()
-                    .map(|entry| {
-                        drop(entry.candidate);
-                        CommittedOutcome::first_commit(entry.expected_outcome)
-                    })
-                    .collect();
-                CheckedCommandGroupCommitResult::Committed(outcomes)
-            }
-            Ok(_) => {
-                drop(entries);
-                CheckedCommandGroupCommitResult::Integrity
-            }
-            Err(cause) if cause.kind() == StorageErrorKind::CommitStatusUnknown => {
-                let uncertain = entries
-                    .into_iter()
-                    .map(|entry| UncertainCommandCommit {
-                        cause: cause.clone(),
-                        lookup_candidates: entry.candidate.lookup_candidates().clone(),
-                        expected_outcome: entry.expected_outcome,
-                        candidate: entry.candidate,
-                        durability_mode,
-                    })
-                    .collect();
-                CheckedCommandGroupCommitResult::StatusUnknown(uncertain)
-            }
-            Err(cause) => {
-                let retries = entries
-                    .into_iter()
-                    .map(|entry| entry.candidate.into_pending_after_group_rollback())
-                    .collect::<Result<Vec<_>, _>>();
-                match retries {
-                    Ok(retries) => CheckedCommandGroupCommitResult::ProvenAbort { cause, retries },
-                    Err(()) => CheckedCommandGroupCommitResult::Integrity,
+        finish_checked_group_commit(entries, durability_mode, committed)
+    }
+}
+
+impl<S> CheckedStagedCommand<S>
+where
+    S: NonEmptyCommandBatch + DeferredNonEmptyCommandBatch,
+{
+    /// Applies one already-selected non-singleton subgroup without publication,
+    /// then converts it to ordinary committed outcomes only after the backend's
+    /// Immediate tail fence succeeds.
+    pub(super) fn commit_group_deferred(
+        self,
+        audits: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
+    ) -> CheckedCommandGroupCommitResult {
+        let Self {
+            staged,
+            entries,
+            durability_mode,
+        } = self;
+        if entries.len() < 2 || entries.len() != audits.len() {
+            drop(staged);
+            drop(entries);
+            return CheckedCommandGroupCommitResult::Integrity;
+        }
+        let committed = staged
+            .apply_unpublished_with_service_audit_transitions(durability_mode, audits)
+            .and_then(|epoch| epoch.fence())
+            .and_then(|mut batches| {
+                if batches.len() != 1 {
+                    return Err(StorageError::new(
+                        StorageErrorKind::InvariantViolation,
+                        None,
+                    ));
                 }
+                Ok(batches.remove(0).into_parts().0)
+            })
+            .map_err(|error| {
+                StorageError::new(StorageErrorKind::CommitStatusUnknown, error.incident_id())
+            });
+        finish_checked_group_commit(entries, durability_mode, committed)
+    }
+}
+
+fn finish_checked_group_commit(
+    entries: Vec<CheckedStagedCommandEntry>,
+    durability_mode: DurabilityMode,
+    committed: Result<CommittedBatchV1, StorageError>,
+) -> CheckedCommandGroupCommitResult {
+    match committed {
+        Ok(batch)
+            if batch.durability_mode() == durability_mode
+                && batch.outcomes().len() == entries.len()
+                && batch
+                    .outcomes()
+                    .iter()
+                    .zip(&entries)
+                    .all(|(outcome, entry)| outcome == &entry.expected_outcome) =>
+        {
+            let outcomes = entries
+                .into_iter()
+                .map(|entry| {
+                    drop(entry.candidate);
+                    CommittedOutcome::first_commit(entry.expected_outcome)
+                })
+                .collect();
+            CheckedCommandGroupCommitResult::Committed(outcomes)
+        }
+        Ok(_) => {
+            drop(entries);
+            CheckedCommandGroupCommitResult::Integrity
+        }
+        Err(cause) if cause.kind() == StorageErrorKind::CommitStatusUnknown => {
+            let uncertain = entries
+                .into_iter()
+                .map(|entry| UncertainCommandCommit {
+                    cause: cause.clone(),
+                    lookup_candidates: entry.candidate.lookup_candidates().clone(),
+                    expected_outcome: entry.expected_outcome,
+                    candidate: entry.candidate,
+                    durability_mode,
+                })
+                .collect();
+            CheckedCommandGroupCommitResult::StatusUnknown(uncertain)
+        }
+        Err(cause) => {
+            let retries = entries
+                .into_iter()
+                .map(|entry| entry.candidate.into_pending_after_group_rollback())
+                .collect::<Result<Vec<_>, _>>();
+            match retries {
+                Ok(retries) => CheckedCommandGroupCommitResult::ProvenAbort { cause, retries },
+                Err(()) => CheckedCommandGroupCommitResult::Integrity,
             }
         }
     }

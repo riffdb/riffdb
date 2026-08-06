@@ -66,7 +66,8 @@ device's same-run `fdatasync` p50 was 7.09 ms. This is engine-mechanics evidence
 for the storage protocol, not a public coordinator result; no application
 throughput claim is attached to WP-467.
 
-Coordinator selection, the two-millisecond epoch deadline, deferred result
-retention in the writer, and public workload evidence remain the next package.
-Until that package lands, this API is an internal storage mechanism rather than
-an application-visible performance feature.
+WP-469 subsequently enabled the narrower production case justified by current
+application evidence: one already-selected standard-profile physical group of
+at least two audited commands may use one unpublished root followed immediately
+by one Immediate tail. It adds no collection deadline and never combines
+logical groups. Multi-subgroup epoch collection remains deferred.
