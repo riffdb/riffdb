@@ -484,9 +484,9 @@ impl AdmissionRepository for RedbOperationalPorts {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
         let mut created_any = false;
-        let mut results = Vec::with_capacity(requests.len());
-        for request in requests {
-            let (result, created) = stage_admission(transaction, &request)?;
+        let staged = stage_admission_group(transaction, requests.iter())?;
+        let mut results = Vec::with_capacity(staged.len());
+        for (result, created) in staged {
             created_any |= created;
             results.push(result);
         }
@@ -531,11 +531,54 @@ impl AdmissionRepository for RedbOperationalPorts {
     }
 }
 
-pub(crate) fn stage_admission(
+/// Stages a bounded FIFO admission group while reusing one handle for each
+/// transaction-local authority table. Every request retains its independent
+/// identity lookup, plan-retirement check, canonical encoding, and insert
+/// assertion.
+pub(crate) fn stage_admission_group<'a, I>(
     transaction: &redb::WriteTransaction,
+    requests: I,
+) -> Result<Vec<(AdmissionResultV1, bool)>, StorageError>
+where
+    I: IntoIterator<Item = &'a AdmissionRequestV1>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let requests = requests.into_iter();
+    let request_count = requests.len();
+    if request_count == 0 || request_count > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    let mut pending = transaction
+        .open_table(IDEMPOTENCY_PENDING)
+        .map_err(table_error)?;
+    let terminal = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
+    let retirements = transaction
+        .open_table(crate::layout::CONTRACT_WRITE_RETIREMENTS)
+        .map_err(table_error)?;
+    let bundles = transaction
+        .open_table(CONTRACT_BUNDLES)
+        .map_err(table_error)?;
+    let mut staged = Vec::with_capacity(request_count);
+    for request in requests {
+        staged.push(stage_admission_with_tables(
+            &mut pending,
+            &terminal,
+            &retirements,
+            &bundles,
+            request,
+        )?);
+    }
+    Ok(staged)
+}
+
+fn stage_admission_with_tables(
+    pending: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    terminal: &redb::Table<'_, &'static [u8], &'static [u8]>,
+    retirements: &redb::Table<'_, &'static [u8], &'static [u8]>,
+    bundles: &redb::Table<'_, &'static [u8], &'static [u8]>,
     request: &AdmissionRequestV1,
 ) -> Result<(AdmissionResultV1, bool), StorageError> {
-    let matches = matching_admissions(transaction, request.lookup_candidates())?;
+    let matches = matching_admissions_from_tables(pending, terminal, request.lookup_candidates())?;
     if matches.len() > 1 {
         return Ok((AdmissionResultV1::MultipleMatches, false));
     }
@@ -545,22 +588,18 @@ pub(crate) fn stage_admission(
             false,
         ));
     }
-    if !plan_bundle_exists(transaction, request.proposed_pending().plan())? {
+    if !plan_bundle_exists_from_tables(retirements, bundles, request.proposed_pending().plan())? {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     let key = identity_key(request.proposed_pending().identity())?;
     let encoded = encode_pending_admission_v1(request.proposed_pending())?;
-    let mut table = transaction
-        .open_table(IDEMPOTENCY_PENDING)
-        .map_err(table_error)?;
-    if table
+    if pending
         .insert(encode_idempotency_key(&key), encoded.as_bytes())
         .map_err(precommit_storage_error)?
         .is_some()
     {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
-    drop(table);
     Ok((
         AdmissionResultV1::Created(request.proposed_pending().clone()),
         true,
@@ -1240,31 +1279,27 @@ fn read_admission(
     transaction: &redb::WriteTransaction,
     identity: &IdempotencyIdentity,
 ) -> Result<Option<StoredAdmissionStateV1>, StorageError> {
-    read_admission_from_tables(
-        transaction
-            .open_table(IDEMPOTENCY_PENDING)
-            .map_err(table_error)?,
-        transaction.open_table(IDEMPOTENCY).map_err(table_error)?,
-        identity,
-    )
+    let pending = transaction
+        .open_table(IDEMPOTENCY_PENDING)
+        .map_err(table_error)?;
+    let terminal = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
+    read_admission_from_tables(&pending, &terminal, identity)
 }
 
 fn read_admission_readonly(
     transaction: &redb::ReadTransaction,
     identity: &IdempotencyIdentity,
 ) -> Result<Option<StoredAdmissionStateV1>, StorageError> {
-    read_admission_from_tables(
-        transaction
-            .open_table(IDEMPOTENCY_PENDING)
-            .map_err(table_error)?,
-        transaction.open_table(IDEMPOTENCY).map_err(table_error)?,
-        identity,
-    )
+    let pending = transaction
+        .open_table(IDEMPOTENCY_PENDING)
+        .map_err(table_error)?;
+    let terminal = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
+    read_admission_from_tables(&pending, &terminal, identity)
 }
 
 fn read_admission_from_tables(
-    pending: impl ReadableTable<&'static [u8], &'static [u8]>,
-    terminal: impl ReadableTable<&'static [u8], &'static [u8]>,
+    pending: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    terminal: &impl ReadableTable<&'static [u8], &'static [u8]>,
     identity: &IdempotencyIdentity,
 ) -> Result<Option<StoredAdmissionStateV1>, StorageError> {
     let key = identity_key(identity)?;
@@ -1302,6 +1337,20 @@ fn matching_admissions(
     let mut matches = Vec::new();
     for identity in candidates.as_slice() {
         if let Some(value) = transaction.read_one(identity)? {
+            matches.push(value);
+        }
+    }
+    Ok(matches)
+}
+
+fn matching_admissions_from_tables(
+    pending: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    terminal: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    candidates: &IdempotencyLookupCandidatesV1,
+) -> Result<Vec<StoredAdmissionStateV1>, StorageError> {
+    let mut matches = Vec::new();
+    for identity in candidates.as_slice() {
+        if let Some(value) = read_admission_from_tables(pending, terminal, identity)? {
             matches.push(value);
         }
     }
@@ -1366,11 +1415,22 @@ fn plan_bundle_exists(
     transaction: &redb::WriteTransaction,
     plan: &riffdb_storage_api::ExecutablePlanRef,
 ) -> Result<bool, StorageError> {
-    let retirement_key =
-        crate::keys::encode_contract_write_retirement_key(plan.contract_bundle_hash());
     let retirements = transaction
         .open_table(crate::layout::CONTRACT_WRITE_RETIREMENTS)
         .map_err(table_error)?;
+    let bundles = transaction
+        .open_table(CONTRACT_BUNDLES)
+        .map_err(table_error)?;
+    plan_bundle_exists_from_tables(&retirements, &bundles, plan)
+}
+
+fn plan_bundle_exists_from_tables(
+    retirements: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    bundles: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    plan: &riffdb_storage_api::ExecutablePlanRef,
+) -> Result<bool, StorageError> {
+    let retirement_key =
+        crate::keys::encode_contract_write_retirement_key(plan.contract_bundle_hash());
     if let Some(value) = retirements
         .get(retirement_key.as_slice())
         .map_err(precommit_storage_error)?
@@ -1383,13 +1443,12 @@ fn plan_bundle_exists(
         }
         return Ok(false);
     }
-    drop(retirements);
     let key = encode_contract_bundle_key(plan.contract_lineage(), plan.contract_version())
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    let table = transaction
-        .open_table(CONTRACT_BUNDLES)
-        .map_err(table_error)?;
-    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+    let Some(value) = bundles
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
         return Ok(false);
     };
     let bundle = decoded_value(crate::codec::decode_contract_bundle_v1(value.value())?);

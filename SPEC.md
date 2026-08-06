@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.72
+**Version:** 0.73
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.73 | 2026-08-06 | Implemented WP-470 transaction-local redb table-handle reuse across bounded admission and terminal-audit groups while preserving every independent identity and lifecycle lookup, full linked commit/event/provenance decode, reciprocal identity check, canonical durable byte, transaction boundary, and fail-closed result-release rule. |
 | 0.72 | 2026-08-06 | Accepted WP-469 to use ADR-0098's closed unpublished-root typestate for a standard-profile physical group containing at least two commands: the complete subgroup is applied once without publication and an immediate empty tail fence publishes the successor durable frontier before any outcome, notification, transient index, or response is released. Idle singletons and the hardened oracle retain their direct Immediate paths. |
 | 0.71 | 2026-08-06 | Planned WP-468 to revisit bounded generated-command writer feeding after the intervening command-CPU packages: Rust, TypeScript, and Python may keep up to 384 independent items in flight while every public transport request remains capped at 16 commands, the coordinator stays independently count/byte bounded, and same-run evidence must keep the full public seed below three seconds without weakening per-item authorization, idempotency, outcome, progress, or recovery semantics. |
 | 0.70 | 2026-08-06 | Planned WP-467 to implement ADR-0098's closed storage typestate: operational reads are pinned to an atomically published last-durable frontier while one bounded standard-profile epoch applies otherwise complete command subgroups without publication, and only a known-successful Immediate tail can convert them into releasable committed results. |
