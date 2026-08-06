@@ -184,6 +184,32 @@ fn lifecycle_admission_precedes_security_fetch_and_bootstrap_transition() {
 }
 
 #[test]
+fn bounded_batch_ingress_authenticates_once_without_bypassing_the_application_service() {
+    let source = include_str!("../src/server.rs");
+    let handler = source
+        .split("async fn execute_batch(")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn get_outcome(").next())
+        .expect("execute-batch handler");
+
+    assert_eq!(handler.matches("normal_batch_invocation_with(").count(), 1);
+    assert!(!handler.contains("normal_invocation_with("));
+    assert!(!handler.contains("tokio::spawn"));
+    assert!(!handler.contains("BatchTaskAbortGuard"));
+    assert_eq!(handler.matches("service.execute_command(").count(), 1);
+    assert_eq!(handler.matches("join_all(invocations).await").count(), 1);
+
+    assert!(
+        source
+            .split("fn normal_batch_invocation_with(")
+            .nth(1)
+            .and_then(|tail| tail.split("fn normal_invocation(").next())
+            .expect("bounded batch invocation helper")
+            .contains("authenticate_normal_request(")
+    );
+}
+
+#[test]
 fn capability_cancellation_guard_outlives_invocation_construction() {
     let source = include_str!("../src/server.rs");
     let handler = source

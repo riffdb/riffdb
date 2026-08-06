@@ -2449,14 +2449,16 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
     let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
     let service = Arc::new(ProjectionService::new());
     let application_service: Arc<dyn ApplicationService> = service.clone();
-    let authenticator: Arc<dyn CredentialAuthenticator> =
-        Arc::new(AcceptingAuthenticator { principal });
+    let authenticator = Arc::new(CountingAcceptingAuthenticator {
+        principal,
+        calls: AtomicUsize::new(0),
+    });
     let capability_keys = Arc::new(
         CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
             .expect("valid capability key fixture"),
     );
     let security = CheckedGrpcSecurityContext::new(
-        authenticator,
+        authenticator.clone(),
         AuthenticationContext::new(database_id, environment, audience),
         capability_keys,
     );
@@ -2604,6 +2606,11 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
             .filter(|item| item.operation == ServiceOperationV1::ExecuteCommand)
             .count()
             >= 7
+    );
+    assert_eq!(
+        authenticator.calls(),
+        3,
+        "each bounded ExecuteBatch envelope authenticates exactly once"
     );
 
     shutdown_sender.send(()).expect("server still running");

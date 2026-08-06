@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.66
+**Version:** 0.67
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 5 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.67 | 2026-08-05 | Planned WP-464 under PERF-001/PERF-008 and AAA-006/AAA-007: one bounded public `ExecuteBatch` envelope performs lifecycle admission and credential authentication once, then constructs independent request controls and invokes every item through the ordinary API-neutral command service without an outer Tokio task per item; current-policy authorization, coordinator admission, idempotency, commit, audit, result, cancellation, and recovery remain per command. |
 | 0.66 | 2026-08-05 | Planned WP-463 under PERF-008: complete command-record reciprocity compares the commit-owned durable read dependencies directly with the already canonical live dependency set, removing one clone/sort/key-allocation conversion while preserving exact target, expected-state, ordering, storage, and recovery semantics. |
 | 0.65 | 2026-08-05 | Planned WP-462 under PERF-008: sequence-free write reservations sum exact bounded Protobuf field lengths directly instead of allocating intermediate length vectors, preserving the same conservative cap, final exact-encoding check, durable bytes, and fail-closed overflow behavior. |
 | 0.64 | 2026-08-05 | Planned WP-461 under PERF-008: the complete checked command graph uses its authoritative commit record as the single in-memory owner of the durable-event collection, removing one redundant event-descriptor vector while preserving reciprocal validation, current durable bytes, outbox evidence, recovery, writer ordering, and acknowledgement durability. |
