@@ -26,31 +26,31 @@ use riffdb_storage_api::{
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
-    EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
-    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit,
-    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
-    ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
-    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
-    IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
-    NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
-    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
-    PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
-    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-    ServiceAuditAppendIntentV1, SnapshotReader, SnapshotRequest, StartupValidationInputs,
-    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredAdmittedProvenanceClaimsV1,
-    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
-    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
-    StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
-    command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
-    decode_index_migration_row, derive_event_hash_v1, encode_index_entry_v1_fixture,
-    encode_index_entry_v2, encode_record_registry_v2,
+    DatabaseInitializationPort, DeclaredOutcome, DeferredCommandEpoch, DeferredCommandEpochPort,
+    DeferredNonEmptyCommandBatch, DurabilityMode, DurableKeySchemaBindingV1, EmptyCommandBatch,
+    EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation, EntityPostImage,
+    EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit, EventRouteScanRequestV1,
+    EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit, ExecutablePlanRef,
+    ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest, IdempotencyLookupCandidatesV1,
+    IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition, IndexRangeTarget,
+    MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch,
+    OpenSessionId, OutboxPageLimit, OutboxRepository, OutboxStatusObservationV1,
+    OutboxStatusReadResultV1, PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
+    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, SnapshotReader,
+    SnapshotRequest, StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
+    StructuralOpenOutcome, StructurallyOpened, command_write_set_upper_bound_v1,
+    decode_index_entry_v1, decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
+    encode_index_entry_v1_fixture, encode_index_entry_v2, encode_record_registry_v2,
 };
 use riffdb_storage_redb::{
-    RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort,
-    RedbStore, RedbTestController, RedbTestOperation,
+    RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts,
+    RedbStartupIndexMigrationPort, RedbStore, RedbTestController, RedbTestOperation,
 };
 use riffdb_types::{
     ActorId, ActorKind, AggregateTypeId, CanonicalInputHash, CanonicalRecord, CanonicalValue,
@@ -705,6 +705,54 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         .expect("commit complete command graph and audit lifecycle");
 }
 
+fn apply_unpublished_command_fixture(
+    epoch: RedbDurabilityEpoch,
+    fixture: &CommandFixture,
+) -> RedbDurabilityEpoch {
+    let candidate = DeferredCommandEpoch::begin_empty_batch(epoch)
+        .expect("begin deferred command batch")
+        .begin_candidate(Box::new(fixture.intent.clone()))
+        .expect("begin deferred command candidate");
+    let CandidateAdmissionResult::Proceed(candidate) = candidate
+        .recheck_admission()
+        .expect("recheck deferred pending admission")
+    else {
+        panic!("fresh vacant deferred admission must proceed");
+    };
+    let (candidate, current) = candidate
+        .read_transaction_current()
+        .expect("read deferred transaction-current state");
+    assert_eq!(
+        current.bindings()[0].expected_state(),
+        ExpectedEntityState::Absent
+    );
+    let candidate = candidate
+        .plan_validated(fixture.affected_targets.clone())
+        .read_affected_epoch_current()
+        .expect("read deferred affected epoch state");
+    let CandidateCapacityResult::Reserved(candidate) = candidate
+        .reserve_capacity(fixture.write_plan.clone())
+        .expect("reserve deferred complete command graph")
+    else {
+        panic!("small deferred fixture must reserve");
+    };
+    let candidate = candidate
+        .assign_sequence()
+        .expect("assign deferred sequence");
+    assert_eq!(
+        candidate.assignment().assigned(),
+        fixture.records.commit().commit_sequence()
+    );
+    candidate
+        .stage(fixture.records.clone())
+        .expect("stage deferred complete command graph")
+        .apply_unpublished_with_service_audit_transitions(
+            DurabilityMode::Sync,
+            vec![command_audit_transition(fixture)],
+        )
+        .expect("apply complete command graph without publication")
+}
+
 fn commit_command_group(ports: &RedbOperationalPorts, fixtures: &[CommandFixture]) {
     let (first, remaining) = fixtures.split_first().expect("non-empty recovery group");
     let candidate = ports
@@ -1286,6 +1334,15 @@ fn process_recovery_child() {
         "after-command-group-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
         }
+        "before-deferred-command-commit" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::DeferredCommandBatch)
+        }
+        "after-deferred-command-commit" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::DeferredCommandBatch)
+        }
+        "after-command-epoch-tail" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::CommandEpochTail)
+        }
         "before-index-migration-batch-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::IndexMigrationBatch)
         }
@@ -1354,6 +1411,16 @@ fn process_recovery_child() {
                 .collect::<Vec<_>>();
             commit_command_group(&ports, &fixtures);
         }
+        "before-deferred-command-commit"
+        | "after-deferred-command-commit"
+        | "after-command-epoch-tail" => {
+            let ports = open_operational(store);
+            let epoch = ports
+                .begin_deferred_command_epoch()
+                .expect("begin child durability epoch");
+            let epoch = apply_unpublished_command_fixture(epoch, &command_fixture());
+            let _ = DeferredCommandEpoch::fence(epoch);
+        }
         "before-index-migration-batch-commit" | "after-index-migration-batch-commit" => {
             let (_, catalog_outcome, outcome) = complete_startup_pass(store);
             let CatalogHistoryOutcome::MigrationRequired(context) = catalog_outcome else {
@@ -1378,6 +1445,155 @@ fn process_recovery_child() {
         _ => unreachable!("controller match rejects unknown modes"),
     }
     panic!("the armed failpoint did not terminate the child");
+}
+
+#[test]
+fn deferred_command_root_is_invisible_until_the_tail_fence_publishes_it() {
+    let path = TestDatabasePath::new("deferred-frontier");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let fixture = command_fixture();
+
+    let epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin standard durability epoch");
+    let epoch = apply_unpublished_command_fixture(epoch, &fixture);
+
+    assert_precommit_command_state(&ports, &fixture);
+    let committed = DeferredCommandEpoch::fence(epoch).expect("fence deferred command epoch");
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].batch().outcomes().len(), 1);
+    assert_postcommit_command_state(&ports, &fixture);
+}
+
+#[test]
+fn multiple_deferred_subgroups_publish_together_in_sequence_order() {
+    let path = TestDatabasePath::new("deferred-multiple-subgroups");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let first = command_fixture_at(1);
+    let second = command_fixture_at(2);
+
+    let epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin standard durability epoch");
+    let epoch = apply_unpublished_command_fixture(epoch, &first);
+    let epoch = apply_unpublished_command_fixture(epoch, &second);
+    for fixture in [&first, &second] {
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read predecessor entity frontier"),
+            None
+        );
+    }
+
+    let committed = DeferredCommandEpoch::fence(epoch).expect("fence both deferred subgroups");
+    assert_eq!(committed.len(), 2);
+    assert_eq!(
+        committed
+            .iter()
+            .map(|batch| batch.batch().outcomes()[0].commit_sequence())
+            .collect::<Vec<_>>(),
+        vec![
+            CommitSequence::new(1).expect("sequence one"),
+            CommitSequence::new(2).expect("sequence two"),
+        ]
+    );
+    for fixture in [&first, &second] {
+        let AdmissionLookupResultV1::Found(admission) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("lookup fenced subgroup identity")
+        else {
+            panic!("each fenced subgroup identity must be terminal");
+        };
+        assert_eq!(
+            *admission,
+            riffdb_storage_api::StoredAdmissionStateV1::StoredOutcome(
+                fixture.records.stored_outcome().clone()
+            )
+        );
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read fenced entity"),
+            Some(fixture.records.entities()[0].post_image().clone())
+        );
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read fenced commit"),
+            Some(fixture.records.commit().clone())
+        );
+    }
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+        ]
+    );
+}
+
+#[test]
+fn unknown_tail_status_keeps_the_predecessor_frontier_and_fences_writes() {
+    let path = TestDatabasePath::new("deferred-tail-unknown");
+    prepare_command_database(&path.0);
+    let controller =
+        RedbTestController::return_unknown_after_commit(RedbTestOperation::CommandEpochTail);
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller)
+            .expect("reopen controlled command database"),
+    );
+    let fixture = command_fixture();
+    let epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin controlled durability epoch");
+    let epoch = apply_unpublished_command_fixture(epoch, &fixture);
+
+    let error = DeferredCommandEpoch::fence(epoch).expect_err("tail status must be unknown");
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::CommitStatusUnknown
+    );
+    assert_eq!(
+        ports
+            .read_entity(&fixture.target)
+            .expect("fenced handle retains predecessor frontier"),
+        None
+    );
+    let Err(write_error) = ports.begin_empty_batch() else {
+        panic!("unknown tail status must fence authoritative writes");
+    };
+    assert_eq!(
+        write_error.kind(),
+        riffdb_storage_api::StorageErrorKind::Unavailable
+    );
+    drop(ports);
+
+    let reopened =
+        open_operational(RedbStore::open(&path.0).expect("reopen known-committed epoch"));
+    assert_postcommit_command_state(&reopened, &fixture);
+}
+
+#[test]
+fn hardened_profile_rejects_deferred_command_epochs() {
+    let path = TestDatabasePath::new("deferred-hardened-rejected");
+    prepare_command_database(&path.0);
+    let ports = open_operational(
+        RedbStore::open_with_commit_profile(&path.0, RedbCommitProfile::Hardened)
+            .expect("reopen hardened command database"),
+    );
+
+    let Err(error) = ports.begin_deferred_command_epoch() else {
+        panic!("hardened profile must keep independently Immediate groups");
+    };
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::Unavailable
+    );
 }
 
 #[test]
@@ -1891,6 +2107,34 @@ fn crash_after_command_commit_preserves_the_complete_reciprocal_graph() {
         let ports = open_operational(RedbStore::open(&path.0).expect("repeat postcommit recovery"));
         assert_postcommit_command_state(&ports, &command_fixture());
     }
+}
+
+#[test]
+fn crash_before_or_after_unpublished_subgroup_recovers_the_predecessor_frontier() {
+    for mode in [
+        "before-deferred-command-commit",
+        "after-deferred-command-commit",
+    ] {
+        let path = TestDatabasePath::new(mode);
+        prepare_command_database(&path.0);
+        run_crashing_child(mode, &path.0);
+
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("recover unfenced deferred subgroup crash"),
+        );
+        assert_precommit_command_state(&ports, &command_fixture());
+    }
+}
+
+#[test]
+fn crash_after_epoch_tail_preserves_the_complete_reciprocal_graph() {
+    let path = TestDatabasePath::new("after-command-epoch-tail");
+    prepare_command_database(&path.0);
+    run_crashing_child("after-command-epoch-tail", &path.0);
+
+    let ports =
+        open_operational(RedbStore::open(&path.0).expect("recover known-durable epoch tail crash"));
+    assert_postcommit_command_state(&ports, &command_fixture());
 }
 
 #[test]

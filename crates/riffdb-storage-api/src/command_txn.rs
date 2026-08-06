@@ -82,6 +82,48 @@ pub trait ApplicationCommandTransactionPort {
     fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError>;
 }
 
+/// Opens the closed unpublished-write protocol used by one bounded durability epoch.
+///
+/// This is deliberately separate from [`ApplicationCommandTransactionPort`]: an
+/// ordinary batch can produce a committed result directly, while an epoch batch
+/// can only return its owning epoch token. The token withholds every result until
+/// its durable tail fence succeeds.
+pub trait DeferredCommandEpochPort {
+    /// Backend-owned epoch state. It owns the writer exclusion boundary.
+    type Epoch: DeferredCommandEpoch;
+
+    /// Begins one standard-profile durability epoch at the current durable root.
+    fn begin_deferred_command_epoch(&self) -> Result<Self::Epoch, StorageError>;
+}
+
+/// Consuming state for one bounded unpublished durability epoch.
+pub trait DeferredCommandEpoch: Sized {
+    /// Empty command batch whose write transaction belongs to this epoch.
+    type EmptyBatch: EmptyCommandBatch;
+
+    /// Opens the next writer-private subgroup from the newest epoch root.
+    fn begin_empty_batch(self) -> Result<Self::EmptyBatch, StorageError>;
+
+    /// Performs the Immediate tail fence and returns results only after it is
+    /// known durable and the successor read frontier has been published.
+    fn fence(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError>;
+}
+
+/// Nonempty batch state whose graph may be applied without publication.
+pub trait DeferredNonEmptyCommandBatch: Sized {
+    /// Epoch token recovered only after the unpublished engine commit succeeds.
+    type Epoch: DeferredCommandEpoch;
+
+    /// Applies a complete audited command subgroup through backend-private
+    /// non-durable mechanics. No result escapes this call; the returned epoch
+    /// owns it until [`DeferredCommandEpoch::fence`] succeeds.
+    fn apply_unpublished_with_service_audit_transitions(
+        self,
+        durability: DurabilityMode,
+        transitions: Vec<CommandServiceAuditTransitionV1>,
+    ) -> Result<Self::Epoch, StorageError>;
+}
+
 /// Empty batch state; the trait deliberately exposes no `commit` method.
 pub trait TransactionLocalCommandBatch {
     /// Reads one compiler-declared bounded snapshot from this batch's private
@@ -336,6 +378,86 @@ impl AuditedExecutionFailureV1 {
 pub struct AuditedCommittedBatchV1 {
     batch: CommittedBatchV1,
     terminals: Vec<crate::StoredServiceAuditRecordV1>,
+}
+
+/// Complete command and audit material applied to an unpublished engine root.
+///
+/// This type intentionally has no conversion to [`AuditedCommittedBatchV1`].
+/// A backend retains it inside its epoch token and constructs committed results
+/// only after the tail durability fence is known successful.
+#[derive(Debug)]
+pub struct UnpublishedAuditedBatchV1 {
+    outcomes: Vec<StoredOutcomeV1>,
+    terminals: Vec<crate::StoredServiceAuditRecordV1>,
+}
+
+impl UnpublishedAuditedBatchV1 {
+    /// Validates the same exact command/audit links as a committed batch,
+    /// without asserting that an engine durability fence has occurred.
+    pub fn new(
+        outcomes: Vec<StoredOutcomeV1>,
+        terminals: Vec<crate::StoredServiceAuditRecordV1>,
+    ) -> Result<Self, crate::StorageValueError> {
+        if outcomes.len() != terminals.len()
+            || outcomes.is_empty()
+            || outcomes.len() > MAX_STAGED_COMMANDS
+            || terminals
+                .iter()
+                .any(|terminal| terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded)
+        {
+            return Err(crate::StorageValueError::IdentityMismatch);
+        }
+        let durability = outcomes[0].durability_mode();
+        if outcomes
+            .iter()
+            .any(|outcome| outcome.durability_mode() != durability)
+            || outcomes.windows(2).any(|pair| {
+                pair[0].commit_sequence().checked_next() != Some(pair[1].commit_sequence())
+            })
+        {
+            return Err(crate::StorageValueError::NonCanonicalOrder);
+        }
+        for (outcome, terminal) in outcomes.iter().zip(&terminals) {
+            if terminal.link()
+                != (riffdb_types::ServiceAuditLinkV1::Command {
+                    commit_sequence: outcome.commit_sequence(),
+                    provenance_id: outcome.provenance_id(),
+                })
+            {
+                return Err(crate::StorageValueError::IdentityMismatch);
+            }
+        }
+        Ok(Self {
+            outcomes,
+            terminals,
+        })
+    }
+
+    /// Returns the number of independently identified commands retained by
+    /// this unpublished subgroup.
+    #[must_use]
+    pub fn command_count(&self) -> usize {
+        self.outcomes.len()
+    }
+
+    /// Returns the first independently assigned command sequence.
+    #[must_use]
+    pub fn first_commit_sequence(&self) -> CommitSequence {
+        self.outcomes[0].commit_sequence()
+    }
+
+    /// Returns the final independently assigned command sequence.
+    #[must_use]
+    pub fn last_commit_sequence(&self) -> CommitSequence {
+        self.outcomes[self.outcomes.len() - 1].commit_sequence()
+    }
+
+    /// Consumes the unpublished material for a backend-owned, post-fence seal.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<StoredOutcomeV1>, Vec<crate::StoredServiceAuditRecordV1>) {
+        (self.outcomes, self.terminals)
+    }
 }
 
 impl AuditedCommittedBatchV1 {
