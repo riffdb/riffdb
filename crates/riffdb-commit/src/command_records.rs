@@ -821,12 +821,10 @@ fn committed_entity(
         ),
     };
     let post_image = mutation.post_image();
-    let stored = StoredEntityRecordV1::new(
-        post_image.target().clone(),
+    let stored = StoredEntityRecordV1::from_checked_post_image(
+        post_image,
         entity_version,
-        post_image.written_by_contract(),
         schema_binding.clone(),
-        post_image.fields().clone(),
     )?;
     CommittedEntityMutationV1::new(expected, stored).map_err(CommandRecordGraphError::from)
 }

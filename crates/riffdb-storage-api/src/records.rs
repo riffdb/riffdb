@@ -72,6 +72,33 @@ impl StoredEntityRecordV1 {
         })
     }
 
+    /// Materializes a stored record from one already checked evaluation post-image.
+    ///
+    /// The post-image is the only source of canonical fields and encoded bytes;
+    /// callers cannot supply detached bytes. External and decoded values use
+    /// [`Self::new`] and retain its complete canonical encoding checks.
+    pub fn from_checked_post_image(
+        post_image: &crate::EntityPostImage,
+        entity_version: EntityVersion,
+        schema_binding: DurableKeySchemaBindingV1,
+    ) -> Result<Self, StorageValueError> {
+        if post_image.fields_encoded_len() > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        if post_image.written_by_contract() != schema_binding.contract_version() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let (fields, fields_encoded) = post_image.shared_fields();
+        Ok(Self {
+            target: post_image.target().clone(),
+            entity_version,
+            written_by_contract: post_image.written_by_contract(),
+            schema_binding,
+            fields,
+            fields_encoded,
+        })
+    }
+
     /// Borrows the complete canonical entity target.
     #[must_use]
     pub const fn target(&self) -> &EntityTarget {
