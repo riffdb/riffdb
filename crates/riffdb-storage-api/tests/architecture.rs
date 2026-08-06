@@ -173,6 +173,8 @@ fn atomic_record_reciprocity_and_staged_evidence_materialize_no_comparison_vecto
         .expect("atomic command record constructor boundary")
         .0;
     assert!(!constructor.contains("collect::<Vec<_>>()"));
+    assert!(constructor.contains(".read_dependencies()\n            .matches_live("));
+    assert!(!constructor.contains("StoredReadDependenciesV1::from_live("));
 
     let evidence = records
         .split_once("    pub fn into_staged_evidence(self) -> StagedCommandEvidenceV1 {")

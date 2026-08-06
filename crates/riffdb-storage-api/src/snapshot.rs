@@ -857,6 +857,45 @@ impl StoredReadDependenciesV1 {
         )
     }
 
+    /// Proves this durable dependency set is the exact structural conversion
+    /// of one already canonical live dependency set without allocating a
+    /// comparison collection.
+    #[must_use]
+    pub fn matches_live(&self, dependencies: &ReadDependencies) -> bool {
+        self.0.len() == dependencies.0.len()
+            && self
+                .0
+                .iter()
+                .zip(&dependencies.0)
+                .all(|(stored, live)| match (stored, live) {
+                    (
+                        StoredReadDependencyV1::EntityObservation {
+                            target: stored_target,
+                            expected: stored_expected,
+                        },
+                        ReadDependency::EntityObservation {
+                            target: live_target,
+                            expected: live_expected,
+                        },
+                    ) => stored_target == live_target && stored_expected == live_expected,
+                    (
+                        StoredReadDependencyV1::IndexRangeEpoch {
+                            target: stored_target,
+                            expected: stored_expected,
+                        },
+                        ReadDependency::IndexRangeEpoch {
+                            target: live_target,
+                            expected: live_expected,
+                        },
+                    ) => {
+                        stored_target.index_id() == live_target.prefix().index_id()
+                            && stored_target.as_bytes() == live_target.prefix().as_bytes()
+                            && stored_expected == live_expected
+                    }
+                    _ => false,
+                })
+    }
+
     /// Borrows dependencies in canonical tag/target-byte order.
     #[must_use]
     pub fn as_slice(&self) -> &[StoredReadDependencyV1] {

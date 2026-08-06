@@ -1,4 +1,4 @@
-spec_version: '0.65'
+spec_version: '0.66'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8137,4 +8137,36 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: The hot sequence-free reservation pass retains no intermediate length vectors, every
     existing bound and codec test passes unchanged, and the full public seed does not regress.
+  human_review_triggers: *id001
+- id: WP-463
+  name: Allocation-free read-dependency reciprocity
+  depends_on: [WP-452, WP-460, WP-461, WP-462]
+  objective: Compare commit-owned durable read dependencies directly with the already canonical
+    live dependency set during complete command-graph validation, removing a redundant bounded
+    clone, sort, and target-key allocation pass without weakening transaction-current validation.
+  requirements: [PERF-008]
+  required_adrs: [ADR-0006, ADR-0061, ADR-0095, ADR-0097]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-api/**,
+    benchmarks/run-app-baseline, docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Durable dependency sets expose an exact allocation-free comparison with canonical live entity
+    and index-range dependencies, including target bytes and expected state
+  - Complete command-record construction uses that comparison rather than reconstructing, sorting,
+    and comparing a second durable dependency set
+  - Semantic tests cover both dependency kinds, target and expected-state mismatches, canonical
+    insertion-order independence, and length mismatches; architecture tests freeze the
+    allocation-free production path
+  - Before/after full public seed evidence at retained concurrency 128; retain only if total seed,
+    validation/encoding/staging, and representative unary latency do not materially regress
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Complete command-record validation retains exact durable/live dependency reciprocity
+    without constructing a comparison collection, every mismatch remains fail closed, durable
+    bytes and recovery remain unchanged, and the full public seed does not regress.
   human_review_triggers: *id001

@@ -3,18 +3,19 @@
 use riffdb_storage_api::{
     CommitIntent, DeclaredOutcome, DormantPortBundle, DurableKeySchemaBindingV1, EntityMutation,
     EntityObservation, EntityPostImage, EntityTarget, EvaluatedCommand, EvaluationBudget,
-    EventIntent, ExecutablePlanRef, IdempotencyIdentity, IdempotencyIdentityKey,
-    IdempotencyKeyDigest, IndexRangePrefixBuilder, OpenSessionId, PreEvaluationCommitContext,
+    EventIntent, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
+    IdempotencyIdentityKey, IdempotencyKeyDigest, IndexEpochPosition, IndexRangePrefixBuilder,
+    IndexRangeTarget, OpenSessionId, PreEvaluationCommitContext, ReadDependencies, ReadDependency,
     ReadSnapshot, RetainedMetadataV1, SnapshotRequest, StorageValueError,
     StoredAdmittedProvenanceClaimsV1, StoredEntityRecordV1, StoredPendingAdmissionV1,
-    StructurallyOpened, TransactionCurrentState,
+    StoredReadDependenciesV1, StructurallyOpened, TransactionCurrentState,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash, CanonicalRecord,
     CommandId, ConflictKeyHash, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
     DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventTypeId, FieldId,
-    IndexId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId, ProvenanceReason,
-    RequestId, TenantId, TenantScope, Timestamp, hash_partition_key,
+    IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId,
+    ProvenanceReason, RequestId, TenantId, TenantScope, Timestamp, hash_partition_key,
 };
 
 fn uuid_bytes(fill: u8) -> [u8; 16] {
@@ -440,6 +441,125 @@ fn range_prefixes_are_component_built_and_use_exact_bytes_as_identity() {
 
     let empty = IndexRangePrefixBuilder::new(index).finish();
     assert_eq!(empty.as_bytes(), &[0x49, 0x01, 0, 0, 0, 1]);
+}
+
+#[test]
+fn stored_read_dependencies_match_live_without_losing_any_semantics() {
+    let entity = target(1);
+    let other_entity = target(2);
+    let index = IndexId::new(1).expect("index");
+    let mut prefix = IndexRangePrefixBuilder::new(index);
+    prefix.push_u64(7).expect("bounded component");
+    let range = IndexRangeTarget::new(pending(plan(1)).partition_key().clone(), prefix.finish());
+    let epoch = IndexEpoch::new(3).expect("epoch");
+    let exact = ReadDependencies::new([
+        ReadDependency::EntityObservation {
+            target: entity.clone(),
+            expected: ExpectedEntityState::Present(EntityVersion::first()),
+        },
+        ReadDependency::IndexRangeEpoch {
+            target: range.clone(),
+            expected: IndexEpochPosition::Value(epoch),
+        },
+    ])
+    .expect("canonical dependencies");
+    let stored = StoredReadDependenciesV1::from_live(&exact).expect("durable dependencies");
+    assert!(stored.matches_live(&exact));
+
+    let reverse_insertion_order = ReadDependencies::new([
+        ReadDependency::IndexRangeEpoch {
+            target: range.clone(),
+            expected: IndexEpochPosition::Value(epoch),
+        },
+        ReadDependency::EntityObservation {
+            target: entity.clone(),
+            expected: ExpectedEntityState::Present(EntityVersion::first()),
+        },
+    ])
+    .expect("canonically reordered dependencies");
+    assert!(stored.matches_live(&reverse_insertion_order));
+
+    let wrong_entity = ReadDependencies::new([
+        ReadDependency::EntityObservation {
+            target: other_entity,
+            expected: ExpectedEntityState::Present(EntityVersion::first()),
+        },
+        ReadDependency::IndexRangeEpoch {
+            target: range.clone(),
+            expected: IndexEpochPosition::Value(epoch),
+        },
+    ])
+    .expect("wrong entity dependencies");
+    assert!(!stored.matches_live(&wrong_entity));
+
+    let wrong_entity_state = ReadDependencies::new([
+        ReadDependency::EntityObservation {
+            target: entity.clone(),
+            expected: ExpectedEntityState::Absent,
+        },
+        ReadDependency::IndexRangeEpoch {
+            target: range.clone(),
+            expected: IndexEpochPosition::Value(epoch),
+        },
+    ])
+    .expect("wrong entity state dependencies");
+    assert!(!stored.matches_live(&wrong_entity_state));
+
+    let mut wrong_prefix = IndexRangePrefixBuilder::new(index);
+    wrong_prefix.push_u64(8).expect("bounded component");
+    let wrong_range = ReadDependencies::new([
+        ReadDependency::EntityObservation {
+            target: entity.clone(),
+            expected: ExpectedEntityState::Present(EntityVersion::first()),
+        },
+        ReadDependency::IndexRangeEpoch {
+            target: IndexRangeTarget::new(
+                pending(plan(1)).partition_key().clone(),
+                wrong_prefix.finish(),
+            ),
+            expected: IndexEpochPosition::Value(epoch),
+        },
+    ])
+    .expect("wrong range dependencies");
+    assert!(!stored.matches_live(&wrong_range));
+
+    let wrong_range_state = ReadDependencies::new([
+        ReadDependency::EntityObservation {
+            target: entity.clone(),
+            expected: ExpectedEntityState::Present(EntityVersion::first()),
+        },
+        ReadDependency::IndexRangeEpoch {
+            target: range,
+            expected: IndexEpochPosition::BeforeFirst,
+        },
+    ])
+    .expect("wrong range state dependencies");
+    assert!(!stored.matches_live(&wrong_range_state));
+
+    let wrong_kind = ReadDependencies::new([
+        ReadDependency::EntityObservation {
+            target: entity.clone(),
+            expected: ExpectedEntityState::Present(EntityVersion::first()),
+        },
+        ReadDependency::EntityObservation {
+            target: target(3),
+            expected: ExpectedEntityState::Absent,
+        },
+    ])
+    .expect("wrong dependency kind");
+    assert!(!stored.matches_live(&wrong_kind));
+
+    let wrong_length = ReadDependencies::new([ReadDependency::EntityObservation {
+        target: entity,
+        expected: ExpectedEntityState::Present(EntityVersion::first()),
+    }])
+    .expect("short dependency set");
+    assert!(!stored.matches_live(&wrong_length));
+    assert!(
+        !StoredReadDependenciesV1::from_live(&ReadDependencies::empty())
+            .expect("empty durable dependencies")
+            .matches_live(&exact)
+    );
 }
 
 #[test]

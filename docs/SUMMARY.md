@@ -88,6 +88,7 @@
 - [WP-460 Allocation-free Record Validation](performance/wp-460-allocation-free-validation.md)
 - [WP-461 Single-owner Staged Event Collection](performance/wp-461-single-owner-events.md)
 - [WP-462 Allocation-free Wire Reservation](performance/wp-462-allocation-free-wire-reservation.md)
+- [WP-463 Allocation-free Read Dependencies](performance/wp-463-allocation-free-read-dependencies.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference
