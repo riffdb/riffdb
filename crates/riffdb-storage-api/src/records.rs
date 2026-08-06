@@ -1972,7 +1972,6 @@ pub struct AtomicCommandRecordSet {
     entities: Vec<CommittedEntityMutationV1>,
     write_plan: CommandWriteSetPlanV1,
     stored_outcome: StoredOutcomeV1,
-    events: Vec<StoredDurableEventV1>,
     outbox_intents: Vec<StoredOutboxIntentV1>,
     provenance: StoredProvenanceRecordV1,
     commit: StoredCommitRecordV1,
@@ -2017,8 +2016,6 @@ impl AtomicCommandRecordSet {
         entities: Vec<CommittedEntityMutationV1>,
         write_plan: CommandWriteSetPlanV1,
         stored_outcome: StoredOutcomeV1,
-        events: Vec<StoredDurableEventV1>,
-        outbox_intents: Vec<StoredOutboxIntentV1>,
         provenance: StoredProvenanceRecordV1,
         commit: StoredCommitRecordV1,
     ) -> Result<Self, StorageValueError> {
@@ -2028,6 +2025,7 @@ impl AtomicCommandRecordSet {
         let index_epochs = write_plan.index_epochs();
         let presequence_charge = write_plan.charge();
         let sequence = commit.commit_sequence();
+        let events = commit.events();
         if sequence != assignment.assigned()
             || assignment.next_allocator() != expected_next_allocator(sequence)
             || expected_pending.identity() != stored_outcome.identity()
@@ -2058,7 +2056,6 @@ impl AtomicCommandRecordSet {
                         .expected_entity_state(mutation.post_image().target())
                         != Some(mutation.expected())
             })
-            || events != commit.events()
             || stored_outcome.commit_sequence() != sequence
             || stored_outcome.plan() != commit.plan()
             || stored_outcome.admission_request_id() != commit.admission_request_id()
@@ -2102,25 +2099,24 @@ impl AtomicCommandRecordSet {
             index_entries,
             index_epochs,
         )?;
-        validate_events(sequence, &events)?;
-        validate_intent_event_derivation(evaluated, sequence, &events)?;
+        validate_events(sequence, events)?;
+        validate_intent_event_derivation(evaluated, sequence, events)?;
         let expected_dependencies =
             StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?;
         if commit.read_dependencies() != &expected_dependencies {
             return Err(StorageValueError::IdentityMismatch);
         }
-        if outbox_intents.len() != events.len()
-            || outbox_intents
-                .iter()
-                .zip(&events)
-                .any(|(intent, event)| intent.event() != event)
-            || !commit
-                .outbox_event_ids()
-                .iter()
-                .copied()
-                .eq(outbox_intents.iter().map(StoredOutboxIntentV1::event_id))
+        if !commit
+            .outbox_event_ids()
+            .iter()
+            .copied()
+            .eq(events.iter().map(StoredDurableEventV1::event_id))
         {
             return Err(StorageValueError::IdentityMismatch);
+        }
+        let mut outbox_intents = Vec::with_capacity(events.len());
+        for event in events {
+            outbox_intents.push(StoredOutboxIntentV1::new(event.clone()));
         }
 
         if provenance.affected_entities().len() != entities.len()
@@ -2147,7 +2143,7 @@ impl AtomicCommandRecordSet {
             &entities,
             index_entries,
             index_epochs,
-            &events,
+            events,
             &outbox_intents,
             &stored_outcome,
             &provenance,
@@ -2162,7 +2158,6 @@ impl AtomicCommandRecordSet {
             entities,
             write_plan,
             stored_outcome,
-            events,
             outbox_intents,
             provenance,
             commit,
@@ -2221,7 +2216,7 @@ impl AtomicCommandRecordSet {
     /// Borrows authoritative events in ordinal order.
     #[must_use]
     pub fn events(&self) -> &[StoredDurableEventV1] {
-        &self.events
+        self.commit.events()
     }
 
     /// Borrows reciprocal authoritative outbox intents.
@@ -2938,6 +2933,20 @@ mod tests {
         assert_eq!(event_ids, expected_event_ids);
     }
 
+    #[test]
+    fn atomic_record_graph_and_commit_share_one_event_collection() {
+        let records = atomic_record_set(8, &[5, 7]).expect("valid record graph");
+
+        assert_eq!(
+            records.events().as_ptr(),
+            records.commit().events().as_ptr()
+        );
+        assert_eq!(
+            records.outbox_intents()[0].event(),
+            &records.commit().events()[0]
+        );
+    }
+
     fn atomic_record_set(
         entity_payload_bytes: usize,
         event_payload_bytes: &[usize],
@@ -3101,17 +3110,12 @@ mod tests {
             Vec::new(),
             stored_read_dependencies,
             entity_references,
-            events.clone(),
+            events,
             declared_outcome,
             provenance_id,
             event_ids,
             DurabilityMode::Memory,
         )?;
-        let outbox: Vec<_> = events
-            .iter()
-            .cloned()
-            .map(StoredOutboxIntentV1::new)
-            .collect();
         let affected_targets = AffectedIndexEpochTargets::new(Vec::new())?;
         let affected_current = AffectedEpochCurrentState::new(&affected_targets, Vec::new())?;
         let shape = ValidatedCommandWriteSetShapeV1::new(
@@ -3128,8 +3132,6 @@ mod tests {
             mutations,
             write_plan,
             stored_outcome,
-            events,
-            outbox,
             provenance,
             commit,
         )
@@ -3326,8 +3328,6 @@ mod tests {
                 records.entities().to_vec(),
                 records.write_plan().clone(),
                 mismatched_outcome,
-                records.events().to_vec(),
-                records.outbox_intents().to_vec(),
                 records.provenance().clone(),
                 records.commit().clone(),
             ),
@@ -3342,8 +3342,6 @@ mod tests {
                 records.entities().to_vec(),
                 records.write_plan().clone(),
                 records.stored_outcome().clone(),
-                records.events().to_vec(),
-                records.outbox_intents().to_vec(),
                 mismatched_provenance,
                 records.commit().clone(),
             ),
@@ -3410,7 +3408,7 @@ mod tests {
             conflict_hashes,
             template.read_dependencies.clone(),
             template.entity_references.clone(),
-            template.events.clone(),
+            template.events.to_vec(),
             template.declared_outcome.clone(),
             template.provenance_id,
             template.outbox_event_ids.clone(),
