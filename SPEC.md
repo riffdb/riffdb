@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.73
+**Version:** 0.74
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.74 | 2026-08-06 | Implemented WP-471 revision-aware commit materialization: the first exact commit decode records whether the canonical row is current V3, historical V2, or legacy V1, and the event-table join dispatches directly to that one decoder while consuming loaded events once; every envelope, checksum, schema, canonical-byte, event-reference/hash, semantic-record, compatibility, and corruption check remains exact. |
 | 0.73 | 2026-08-06 | Implemented WP-470 transaction-local redb table-handle reuse across bounded admission and terminal-audit groups while preserving every independent identity and lifecycle lookup, full linked commit/event/provenance decode, reciprocal identity check, canonical durable byte, transaction boundary, and fail-closed result-release rule. |
 | 0.72 | 2026-08-06 | Accepted WP-469 to use ADR-0098's closed unpublished-root typestate for a standard-profile physical group containing at least two commands: the complete subgroup is applied once without publication and an immediate empty tail fence publishes the successor durable frontier before any outcome, notification, transient index, or response is released. Idle singletons and the hardened oracle retain their direct Immediate paths. |
 | 0.71 | 2026-08-06 | Planned WP-468 to revisit bounded generated-command writer feeding after the intervening command-CPU packages: Rust, TypeScript, and Python may keep up to 384 independent items in flight while every public transport request remains capped at 16 commands, the coordinator stays independently count/byte bounded, and same-run evidence must keep the full public seed below three seconds without weakening per-item authorization, idempotency, outcome, progress, or recovery semantics. |
