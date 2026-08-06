@@ -19,7 +19,7 @@ standard padded Base64 for persistence. See [Reactive Application
 Clients](reactive/CLIENTS.md).
 
 Generated synchronous and asynchronous command batch methods accept
-`CommandBatchOptions(concurrency=...)` from 1 through 128 and at most 4,096
+`CommandBatchOptions(concurrency=...)` from 1 through 384 and at most 4,096
 inputs. Each item remains an ordinary independently authorized and idempotent
 command; the collection is not one transaction.
 

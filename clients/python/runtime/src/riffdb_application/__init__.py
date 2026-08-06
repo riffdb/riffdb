@@ -150,7 +150,7 @@ class QueryOptions:
     read_after_commit: int | None = None
 
 
-MAX_COMMAND_BATCH_CONCURRENCY = 128
+MAX_COMMAND_BATCH_CONCURRENCY = 384
 
 
 @dataclass(frozen=True, slots=True)

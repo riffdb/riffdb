@@ -163,7 +163,7 @@ class RuntimeTests(unittest.TestCase):
             _native.validate_bridge_value('{"kind":"unknown","value":"do-not-echo"}')
         self.assertNotIn("do-not-echo", str(raised.exception))
 
-    def test_generated_batch_concurrency_accepts_128_and_rejects_129(self) -> None:
-        _validate_batch([object()], CommandBatchOptions(128))
+    def test_generated_batch_concurrency_accepts_384_and_rejects_385(self) -> None:
+        _validate_batch([object()], CommandBatchOptions(384))
         with self.assertRaises(InvalidInput):
-            _validate_batch([object()], CommandBatchOptions(129))
+            _validate_batch([object()], CommandBatchOptions(385))

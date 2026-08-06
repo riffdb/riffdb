@@ -128,7 +128,7 @@ export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity;
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
-export const MAX_COMMAND_BATCH_CONCURRENCY = 128;
+export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }

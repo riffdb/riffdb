@@ -20,7 +20,7 @@ use crate::{
 
 const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
 /// Maximum independently in-flight items in one generated command batch.
-pub const MAX_GENERATED_BATCH_CONCURRENCY: usize = 128;
+pub const MAX_GENERATED_BATCH_CONCURRENCY: usize = 384;
 
 /// A local shape failure for one bounded transport batch of ordinary commands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1875,7 +1875,7 @@ mod tests {
 
     #[test]
     fn generated_batch_bounds_and_resume_checkpoint_are_closed() {
-        let options = GeneratedBatchOptions::new(128)
+        let options = GeneratedBatchOptions::new(MAX_GENERATED_BATCH_CONCURRENCY)
             .expect("maximum concurrency")
             .with_checkpoint(4_096);
         options.validate(4_096).expect("complete checkpoint");
@@ -1886,7 +1886,7 @@ mod tests {
             Err(GeneratedBatchError::InvalidBounds)
         );
         assert_eq!(
-            GeneratedBatchOptions::new(129),
+            GeneratedBatchOptions::new(MAX_GENERATED_BATCH_CONCURRENCY + 1),
             Err(GeneratedBatchError::InvalidBounds)
         );
         assert_eq!(
@@ -1915,6 +1915,7 @@ mod tests {
         }
         assert_eq!(generated_transport_batch_policy(64), (16, 4));
         assert_eq!(generated_transport_batch_policy(128), (16, 8));
+        assert_eq!(generated_transport_batch_policy(384), (16, 24));
         assert_eq!(generated_transport_batch_policy(17), (8, 2));
     }
 

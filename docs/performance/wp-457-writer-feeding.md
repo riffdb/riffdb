@@ -1,5 +1,10 @@
 # WP-457 Writer-Feeding Decision
 
+Status: superseded by WP-468 after WP-458 through WP-464 removed the per-group
+CPU amplification that made the larger candidates lose this original sweep.
+The measurements below remain the reason the ceiling was not raised at this
+point in the history; they are not the current public bound.
+
 WP-457 tested whether allowing more generated-client work in flight would feed
 the sole writer well enough to reach the three-second full-seed target. The
 answer was no: the server formed larger physical groups and issued fewer

@@ -57,7 +57,7 @@ precision in tagged results. Generated decoding also restores it from the
 exact result schema when a compatible older tagged value omits the redundant
 field, while still rejecting a conflicting precision, scale, or currency.
 
-Generated command batch methods accept `concurrency` from 1 through 128 and at
+Generated command batch methods accept `concurrency` from 1 through 384 and at
 most 4,096 inputs. They use a bounded worker pool over ordinary generated
 commands; every item keeps its own identity and result, and the collection is
 not atomic.

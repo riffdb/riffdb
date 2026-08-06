@@ -1,4 +1,4 @@
-spec_version: '0.70'
+spec_version: '0.71'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -8336,4 +8336,58 @@ work_packages:
   exit_gate: Unpublished redb roots are visible only to the epoch writer, cannot become committed
     application results before a known-successful Immediate tail, remain invisible to every reader
     and derived worker, and recover as a complete fenced prefix or the preceding durable frontier.
+  human_review_triggers: *id001
+- id: WP-468
+  name: Revisited bounded generated-batch writer feeding
+  depends_on: [WP-457, WP-458, WP-459, WP-460, WP-461, WP-462, WP-463, WP-464,
+    WP-466]
+  objective: Re-evaluate and retain a larger cross-language generated-command concurrency ceiling
+    after the intervening command-CPU reductions, reaching the three-second full public seed target
+    without changing transport batch size, coordinator/storage bounds, or independent command
+    semantics.
+  requirements: [AAA-006, AAA-007, AAA-010, PYD-005, PYD-012, PERF-004, PERF-005,
+    PERF-006, PERF-008, PERF-009, PERF-010]
+  required_adrs: [ADR-0056, ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0071,
+    ADR-0084, ADR-0095, ADR-0096, ADR-0097]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-client-rust/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**, clients/python/runtime/**,
+    clients/python/ticketdesk/**, clients/typescript/ticketdesk/**,
+    examples/ticketdesk/generated/**, examples/ticketdesk/web/src/generated/**,
+    examples/ticketdesk/riffdb.application.lock.json,
+    examples/agent-alpha/**/generated/typescript/client.ts,
+    examples/agent-alpha/web/src/generated/client.ts, scripts/generate-query-clients,
+    examples/app-baseline/**, benchmarks/run-app-baseline, fixtures/application-parity/**,
+    fixtures/application-locks/ticketdesk-migration-v4.json,
+    docs/getting-started/COMMAND-BATCHES.md, docs/sdks/RUST.md, docs/python-driver.md,
+    docs/getting-started/TYPESCRIPT-APPLICATIONS.md, docs/SUMMARY.md,
+    docs/performance/wp-457-writer-feeding.md, docs/performance/**]
+  deliverables:
+  - One shared generated-command concurrency range of 1 through 384 for Rust, TypeScript, and
+    Python, with zero and 385 rejected before submission and the 4,096-item collection bound
+    unchanged
+  - Each Rust transport exchange remains capped at 16 ordinary commands, so concurrency 384 uses
+    at most 24 simultaneous exchanges and never creates a public batch transaction
+  - Every item retains independent authorization, idempotency identity, typed outcome, retries,
+    cancellation, progress, checkpoint, uncertainty classification, and response release
+  - The coordinator remains independently bounded at 512 queued messages and 32 MiB, while each
+    physical transaction remains dynamically selected under the 256-command and 16 MiB ceilings
+  - Generated TypeScript fixtures, Python runtime tests, Rust tests, and public handbook pages agree
+    on the exact shared bound and transport shape
+  - Same-run full public seed evidence records the 128, 256, and 384 candidates, group distribution,
+    physical commits, staging and flush cost, representative unary latency, and a retained median
+    below three seconds without overload or semantic failure
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-rust --all-features
+  - cargo +1.97.0 test -p riffdb-query-module --all-features
+  - cargo +1.97.0 test -p riffdb-cli --all-features
+  - TMPDIR=/home/user/tmp PYTHON=python3 ./scripts/check-python-runtime
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: All three generated-language paths reject one above the shared bound before work,
+    transport and coordinator safety bounds are unchanged, every semantic and recovery suite stays
+    exact, and retained full-seed evidence is below three seconds with no material unary regression.
   human_review_triggers: *id001

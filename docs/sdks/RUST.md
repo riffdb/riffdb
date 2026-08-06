@@ -48,9 +48,11 @@ persist each applied cursor and clear retained results on `Terminal`. See
 [Reactive Application Clients](../reactive/CLIENTS.md).
 
 Generated command batch methods accept `GeneratedBatchOptions` concurrency
-from 1 through 128 and at most 4,096 inputs. The setting bounds independent
+from 1 through 384 and at most 4,096 inputs. The setting bounds independent
 in-flight items; each public `ExecuteBatch` request still carries at most 16
-ordinary commands, with separate identities, outcomes, and recovery.
+ordinary commands, with separate identities, outcomes, and recovery. At the
+maximum, Rust opens at most 24 bounded transport exchanges; it does not create
+one 384-command RPC or application transaction.
 
 ## Retry rule
 
