@@ -73,14 +73,16 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
 }
 
 #[test]
-fn sha256_dependency_is_confined_to_reviewed_backup_and_migration_integrity_boundaries() {
+fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
     let source = crate_root().join("src");
     for entry in fs::read_dir(source).expect("read source directory") {
         let path = entry.expect("source entry").path();
-        if path
-            .file_name()
-            .is_some_and(|name| matches!(name.to_str(), Some("backup.rs" | "migration_stage.rs")))
-            || path.extension().is_none_or(|extension| extension != "rs")
+        if path.file_name().is_some_and(|name| {
+            matches!(
+                name.to_str(),
+                Some("backup.rs" | "journal.rs" | "migration_stage.rs")
+            )
+        }) || path.extension().is_none_or(|extension| extension != "rs")
         {
             continue;
         }
@@ -96,6 +98,10 @@ fn sha256_dependency_is_confined_to_reviewed_backup_and_migration_integrity_boun
             "migration artifact integrity must retain SHA-256: {path}"
         );
     }
+    assert!(
+        read(crate_root().join("src/journal.rs")).contains("sha2"),
+        "durability journal integrity must retain SHA-256"
+    );
 }
 
 #[test]

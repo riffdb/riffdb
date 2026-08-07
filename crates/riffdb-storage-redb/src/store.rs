@@ -1,5 +1,6 @@
 //! Dormant redb handle, identity probe, and atomic initialization.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::Deref;
@@ -312,6 +313,7 @@ pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
     transaction: Option<WriteTransaction>,
     ownership: Option<RedbWriteOwnership>,
+    journal_mutations: Option<RefCell<Vec<crate::journal::JournalMutation>>>,
 }
 
 enum RedbWriteOwnership {
@@ -334,6 +336,7 @@ pub struct RedbDurabilityEpoch {
     last_sequence: Option<riffdb_types::CommitSequence>,
     semantic_bytes: usize,
     reserved_encoded_bytes: usize,
+    journal_mutation_groups: Vec<Vec<crate::journal::JournalMutation>>,
     completed: bool,
 }
 
@@ -2233,6 +2236,7 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
             ownership: Some(RedbWriteOwnership::Direct { _lease: lease }),
+            journal_mutations: None,
         })
     }
 
@@ -2268,6 +2272,7 @@ impl RedbOperationalPorts {
             last_sequence: None,
             semantic_bytes: 0,
             reserved_encoded_bytes: 0,
+            journal_mutation_groups: Vec::new(),
             completed: false,
         })
     }
@@ -2306,6 +2311,20 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    pub(crate) fn record_journal_mutations(
+        &self,
+        mutations: Vec<crate::journal::JournalMutation>,
+    ) -> Result<(), StorageError> {
+        let Some(retained) = self.journal_mutations.as_ref() else {
+            return Ok(());
+        };
+        retained
+            .try_borrow_mut()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .extend(mutations);
+        Ok(())
+    }
+
     pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
         self.transaction
             .as_ref()
@@ -2398,6 +2417,14 @@ impl RedbWriteAccess {
         let Some(RedbWriteOwnership::Epoch(mut epoch)) = self.ownership.take() else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
+        let journal_mutations = self
+            .journal_mutations
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .into_inner();
+        if journal_mutations.is_empty() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         if epoch
             .last_sequence
             .is_some_and(|prior| prior.checked_next() != Some(applied.first_commit_sequence()))
@@ -2433,6 +2460,7 @@ impl RedbWriteAccess {
         epoch.last_sequence = Some(applied.last_commit_sequence());
         epoch.semantic_bytes = next_semantic;
         epoch.reserved_encoded_bytes = next_reserved;
+        epoch.journal_mutation_groups.push(journal_mutations);
         epoch.applied.push(applied);
         if let Some(delta) = delta {
             epoch.transient_deltas.push(delta);
@@ -2502,6 +2530,7 @@ impl RedbDurabilityEpoch {
             shared,
             transaction: Some(transaction),
             ownership: Some(RedbWriteOwnership::Epoch(self)),
+            journal_mutations: Some(RefCell::new(Vec::new())),
         })
     }
 
@@ -2548,6 +2577,16 @@ impl RedbDurabilityEpoch {
         }
         drop(transient);
 
+        if self.journal_mutation_groups.len() != self.applied.len()
+            || self
+                .journal_mutation_groups
+                .iter()
+                .any(std::vec::Vec::is_empty)
+        {
+            self.shared.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        self.journal_mutation_groups.clear();
         let mut committed = Vec::with_capacity(self.applied.len());
         for batch in self.applied.drain(..) {
             let (outcomes, terminals) = batch.into_parts();

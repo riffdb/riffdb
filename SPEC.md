@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.80
+**Version:** 0.81
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.81 | 2026-08-06 | Accepted ADR-0101 and planned WP-478: the standard profile may pipeline complete redb non-durable command groups behind a bounded first-party checksummed durability journal, publish only journal-fenced snapshots, and recover from the last redb checkpoint plus its exact gap-free suffix; idle singletons and the hardened two-phase oracle retain their current paths. |
 | 0.80 | 2026-08-06 | Accepted ADR-0099 and planned WP-477: one canonical successful-command capsule becomes the durable owner of shared commit, outcome, provenance, and linked command-audit facts; unchanged idempotency, provenance, and audit keys store compact self-verifying locators; a bounded restartable offline migration preserves exact semantic views, atomicity, retry, crash recovery, and fail-closed corruption handling. |
 | 0.79 | 2026-08-06 | Implemented WP-476 constant-time durable shape dispatch: every closed durable structural-preflight shape now carries a compile-time-checked direct field-number table, eliminating the per-field linear rule scan while preserving the exact cursor, bounds, recursion, occurrence, UTF-8, canonical re-encode, and fail-closed error behavior. |
 | 0.78 | 2026-08-06 | Implemented WP-475 retained canonical permission lookup: each already canonical immutable capability permission set retains its ordered canonical keys under the same shared ownership, so every fresh authorization performs exact binary search without rebuilding a candidate key for each comparison; capability reload, time sampling, policy evaluation, approval checks, and fail-closed decisions remain unchanged. |
@@ -6636,9 +6637,10 @@ ADR-0055.
   public mixed-workload throughput MUST be at least 0.90 times PostgreSQL and
   p95 latency MUST be at most 1.25 times PostgreSQL. A miss blocks WP-370.
 - `PERF-009`: The standard application durability profile MUST acknowledge only
-  after a redb Immediate one-phase checksummed durability fence is known
-  successful. It MAY use bounded unpublished redb commits before that fence
-  only under `PERF-015`. A
+  after either a redb Immediate one-phase checksummed durability fence or an
+  ADR-0101 first-party checksummed journal fence covering the complete command
+  graph is known successful. It MAY use bounded unpublished redb commits before
+  that fence only under `PERF-015`. A
   hardened two-phase profile and recovery oracle MUST remain available. Both
   profiles expose identical atomic command, idempotency, audit, provenance,
   event, outbox, and uncertainty semantics. Configuration MUST state the
@@ -6685,14 +6687,18 @@ ADR-0055.
   clean drains or simulated kills MUST NOT be presented as PERF-014 evidence.
 - `PERF-015`: A standard-profile durability epoch MAY contain multiple ordinary
   FIFO command subgroups committed through redb `Durability::None` only when
-  the complete epoch contains at most 256 commands, reserves at most 16 MiB,
-  begins its Immediate tail fence within 2 milliseconds of the oldest selected
-  command, and crosses no control-plane or lifecycle barrier. A singleton with
-  no accepted command backlog MUST use the direct Immediate path. Every
+  the complete applied-but-unpublished prefix contains at most 256 commands,
+  reserves at most 16 MiB, and crosses no control-plane or lifecycle barrier.
+  An in-engine epoch begins its Immediate tail fence within 2 milliseconds of
+  the oldest selected command. An ADR-0101 pipelined journal lane adds no fixed
+  batching wait: it drains the ready FIFO prefix before each journal fence, and
+  commands applied during an in-progress fence form the next bounded prefix. A
+  singleton with no accepted command backlog MUST use the direct Immediate
+  path. Every
   operational and derived read MUST use an atomically published last-durable
   redb snapshot; deferred subgroup state MUST remain invisible. Responses,
   notifications, transient indexes, projection work, outbox work, and
-  subscribers MUST remain withheld until the Immediate fence succeeds. Tail
+  subscribers MUST remain withheld until the covering durability fence succeeds. Tail
   uncertainty fences writes and resolves every command independently. Before
   using deferred commits, a busy completion edge with 2--32 queued commands MAY
   spend the same fixed 2-millisecond budget collecting one larger FIFO prefix
@@ -6716,6 +6722,19 @@ ADR-0055.
   substituted, cross-role, noncanonical, or nonreciprocal capsule/locator state
   is corruption. No result or effect may escape before the existing durable
   boundary.
+- `PERF-017`: Under ADR-0101, the standard-profile authoritative state MUST be
+  exactly one known-durable redb checkpoint plus a gap-free, versioned,
+  checksummed, hash-chained command-frame suffix. Each frame MUST contain the
+  complete already-validated bytes required to replay its command graphs
+  without command reevaluation and MUST be bounded with the unpublished prefix
+  to 256 commands and 16 MiB. redb roots ahead of the journal frontier are
+  writer-private; one successful journal fence atomically publishes the final
+  covered read snapshot before any result or effect. Append or fence uncertainty
+  withholds results and fences writes. Restart MUST reject every gap, reorder,
+  substitution, database mismatch, malformed frame, or nonreciprocal graph,
+  ignore only an incomplete terminal tail, replay the exact suffix, and
+  checkpoint before readiness. Journal reclamation and backup MUST preserve at
+  least one complete checkpoint-plus-suffix recovery path across every crash.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
