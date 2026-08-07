@@ -52,6 +52,7 @@ use crate::codec::{
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
+use crate::journal::{JournalMutation, JournalTable};
 use crate::keys::{
     decode_audit_key, decode_capability_key, decode_contract_migration_operation_key,
     encode_active_query_module_key, encode_application_sequence_key, encode_audit_key,
@@ -2036,6 +2037,8 @@ fn stage_service_audit_group_with_command_evidence(
         u16::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
     let (assigned, next) = allocate_sequences(allocator, count)?;
     let mut records = Vec::with_capacity(intents.len());
+    let mut journal_mutations =
+        Vec::with_capacity(intents.len().saturating_mul(2).saturating_add(1));
     for (intent, sequence) in intents.iter().zip(assigned) {
         let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
         let encoded = encode_administration_audit_record_v1(
@@ -2049,6 +2052,14 @@ fn stage_service_audit_group_with_command_evidence(
         {
             return Err(corrupt());
         }
+        journal_mutations.push(
+            JournalMutation::put(
+                JournalTable::Audit,
+                key.to_vec(),
+                encoded.as_bytes().to_vec(),
+            )
+            .map_err(|_| invariant())?,
+        );
         records.push(record);
     }
     drop(audit);
@@ -2076,9 +2087,29 @@ fn stage_service_audit_group_with_command_evidence(
         {
             return Err(corrupt());
         }
+        journal_mutations.push(
+            JournalMutation::put(
+                JournalTable::AuditByRequest,
+                index_key.to_vec(),
+                index_value.as_bytes().to_vec(),
+            )
+            .map_err(|_| invariant())?,
+        );
     }
     drop(request_index);
+    let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
+    let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
     write_administration_allocator(transaction, allocator, next)?;
+    journal_mutations.push(
+        JournalMutation::replace(
+            JournalTable::Meta,
+            META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
+            prior_allocator.as_bytes(),
+            encoded_allocator.as_bytes().to_vec(),
+        )
+        .map_err(|_| invariant())?,
+    );
+    access.record_journal_mutations(journal_mutations)?;
     Ok(records)
 }
 

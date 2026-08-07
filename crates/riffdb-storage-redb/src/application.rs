@@ -41,6 +41,7 @@ use crate::codec::{
 };
 use crate::error::{codec_error, precommit_storage_error, table_error};
 use crate::hooks::RedbTestOperation;
+use crate::journal::{JournalCodecError, JournalMutation, JournalTable};
 use crate::keys::{
     decode_index_entry_key, encode_application_sequence_key, encode_contract_bundle_key,
     encode_entity_key, encode_event_key, encode_event_route_key, encode_idempotency_key,
@@ -276,7 +277,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
         let delta = (!pending_events.is_empty())
             .then_some(TransientIndexDelta::PendingOutboxInserted(pending_events));
-        stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
+        stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
             .access
             .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
@@ -327,7 +328,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         } else {
             Some(TransientIndexDelta::PendingOutboxInserted(pending_events))
         };
-        stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
+        stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
             .access
             .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
@@ -382,7 +383,7 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
         } else {
             Some(TransientIndexDelta::PendingOutboxInserted(pending_events))
         };
-        stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
+        stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
             .access
             .apply_unpublished(unpublished, metrics, delta)
@@ -1066,7 +1067,9 @@ macro_rules! impl_candidate_chain {
                 // every physical write for this candidate.
                 let encoded = encode_atomic_command_record_set_v1(&records).map_err(codec_error)?;
                 let mut core = self.prior.core;
-                apply_record_set(core.access.transaction()?, &records, &encoded)?;
+                let journal_mutations =
+                    apply_record_set(core.access.transaction()?, &records, &encoded)?;
+                core.access.record_journal_mutations(journal_mutations)?;
                 core.metrics = Some(metrics_after(core.metrics, &records)?);
                 core.staged.push(records.into_staged_evidence());
                 Ok(RedbNonEmptyBatch { core })
@@ -1082,8 +1085,9 @@ fn apply_record_set(
     transaction: &redb::WriteTransaction,
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
-) -> Result<(), StorageError> {
+) -> Result<Vec<JournalMutation>, StorageError> {
     let identity_key = identity_key(records.expected_pending().identity())?;
+    let mut journal = Vec::new();
     // `RedbCandidateAdmission::recheck_admission` established this exact
     // expectation earlier in the same exclusive write transaction. Every
     // subsequent state is consuming and backend-private, so no path can stage
@@ -1092,9 +1096,9 @@ fn apply_record_set(
     // authoritative duplicate/vacancy assertion. Re-reading and decoding both
     // idempotency tables here supplied no newer evidence.
 
-    apply_entities(transaction, records, encoded)?;
-    apply_index_entries(transaction, records, encoded)?;
-    apply_index_epochs(transaction, records, encoded)?;
+    apply_entities(transaction, records, encoded, &mut journal)?;
+    apply_index_entries(transaction, records, encoded, &mut journal)?;
+    apply_index_epochs(transaction, records, encoded, &mut journal)?;
 
     {
         let mut table = transaction.open_table(PROVENANCE).map_err(table_error)?;
@@ -1108,6 +1112,14 @@ fn apply_record_set(
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        journal.push(
+            JournalMutation::put(
+                JournalTable::Provenance,
+                encode_provenance_key(records.provenance().provenance_id()).to_vec(),
+                encoded.provenance().as_bytes().to_vec(),
+            )
+            .map_err(journal_codec_error)?,
+        );
     }
     if !records.events().is_empty() {
         let mut events = transaction.open_table(EVENTS).map_err(table_error)?;
@@ -1141,6 +1153,30 @@ fn apply_record_set(
             {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
+            journal.push(
+                JournalMutation::put(
+                    JournalTable::Events,
+                    key.to_vec(),
+                    event_bytes.as_bytes().to_vec(),
+                )
+                .map_err(journal_codec_error)?,
+            );
+            journal.push(
+                JournalMutation::put(
+                    JournalTable::EventRoutes,
+                    route_key.to_vec(),
+                    route_bytes.as_bytes().to_vec(),
+                )
+                .map_err(journal_codec_error)?,
+            );
+            journal.push(
+                JournalMutation::put(
+                    JournalTable::Outbox,
+                    key.to_vec(),
+                    intent_bytes.as_bytes().to_vec(),
+                )
+                .map_err(journal_codec_error)?,
+            );
         }
     }
     {
@@ -1155,6 +1191,14 @@ fn apply_record_set(
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        journal.push(
+            JournalMutation::put(
+                JournalTable::Commits,
+                encode_application_sequence_key(records.assignment().assigned()).to_vec(),
+                encoded.commit().as_bytes().to_vec(),
+            )
+            .map_err(journal_codec_error)?,
+        );
     }
     if matches!(
         records.intent().admission_expectation(),
@@ -1163,13 +1207,20 @@ fn apply_record_set(
         let mut pending = transaction
             .open_table(IDEMPOTENCY_PENDING)
             .map_err(table_error)?;
-        if pending
+        let removed = pending
             .remove(encode_idempotency_key(&identity_key))
-            .map_err(precommit_storage_error)?
-            .is_none()
-        {
+            .map_err(precommit_storage_error)?;
+        let Some(removed) = removed else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
+        };
+        journal.push(
+            JournalMutation::delete_matching(
+                JournalTable::IdempotencyPending,
+                encode_idempotency_key(&identity_key).to_vec(),
+                removed.value(),
+            )
+            .map_err(journal_codec_error)?,
+        );
     }
     {
         let mut outcomes = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
@@ -1183,19 +1234,48 @@ fn apply_record_set(
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        journal.push(
+            JournalMutation::put(
+                JournalTable::Idempotency,
+                encode_idempotency_key(&identity_key).to_vec(),
+                encoded.outcome().as_bytes().to_vec(),
+            )
+            .map_err(journal_codec_error)?,
+        );
     }
-    Ok(())
+    Ok(journal)
+}
+
+fn journal_codec_error(error: JournalCodecError) -> StorageError {
+    let kind = if error == JournalCodecError::LimitExceeded {
+        StorageErrorKind::LimitExceeded
+    } else {
+        StorageErrorKind::InvariantViolation
+    };
+    storage_error(kind)
 }
 
 fn stage_application_allocator(
-    transaction: &redb::WriteTransaction,
+    access: &RedbWriteAccess,
     allocator: ApplicationSequenceAllocator,
 ) -> Result<(), StorageError> {
     let encoded = riffdb_storage_api::encode_application_sequence_allocator_v1(allocator)
         .map_err(codec_error)?;
+    let transaction = access.transaction()?;
     let mut meta = transaction.open_table(META).map_err(table_error)?;
-    meta.insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
-        .map_err(precommit_storage_error)?;
+    let prior = meta
+        .insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    access.record_journal_mutations(vec![
+        JournalMutation::replace(
+            JournalTable::Meta,
+            META_APPLICATION_SEQUENCE.as_bytes().to_vec(),
+            prior.value(),
+            encoded.as_bytes().to_vec(),
+        )
+        .map_err(journal_codec_error)?,
+    ])?;
     Ok(())
 }
 
@@ -1203,6 +1283,7 @@ fn apply_entities(
     transaction: &redb::WriteTransaction,
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
+    journal: &mut Vec<JournalMutation>,
 ) -> Result<(), StorageError> {
     if records.entities().is_empty() {
         return Ok(());
@@ -1217,6 +1298,22 @@ fn apply_entities(
         if prior.is_some() != expected_presence {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        journal.push(
+            match prior.as_ref() {
+                Some(prior) => JournalMutation::replace(
+                    JournalTable::Entities,
+                    key.to_vec(),
+                    prior.value(),
+                    bytes.as_bytes().to_vec(),
+                ),
+                None => JournalMutation::put(
+                    JournalTable::Entities,
+                    key.to_vec(),
+                    bytes.as_bytes().to_vec(),
+                ),
+            }
+            .map_err(journal_codec_error)?,
+        );
     }
     Ok(())
 }
@@ -1225,6 +1322,7 @@ fn apply_index_entries(
     transaction: &redb::WriteTransaction,
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
+    journal: &mut Vec<JournalMutation>,
 ) -> Result<(), StorageError> {
     if records.index_entries().is_empty() {
         return Ok(());
@@ -1236,18 +1334,39 @@ fn apply_index_entries(
         let key = encode_index_entry_key(mutation.key());
         match (mutation, bytes) {
             (IndexEntryMutationV1::Delete(_), None) => {
-                if table
-                    .remove(key)
-                    .map_err(precommit_storage_error)?
-                    .is_none()
-                {
+                let removed = table.remove(key).map_err(precommit_storage_error)?;
+                let Some(removed) = removed else {
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
-                }
+                };
+                journal.push(
+                    JournalMutation::delete_matching(
+                        JournalTable::SecondaryIndexes,
+                        key.to_vec(),
+                        removed.value(),
+                    )
+                    .map_err(journal_codec_error)?,
+                );
             }
             (IndexEntryMutationV1::Put(_), Some(bytes)) => {
-                table
+                let prior = table
                     .insert(key, bytes.as_bytes())
                     .map_err(precommit_storage_error)?;
+                journal.push(
+                    match prior.as_ref() {
+                        Some(prior) => JournalMutation::replace(
+                            JournalTable::SecondaryIndexes,
+                            key.to_vec(),
+                            prior.value(),
+                            bytes.as_bytes().to_vec(),
+                        ),
+                        None => JournalMutation::put(
+                            JournalTable::SecondaryIndexes,
+                            key.to_vec(),
+                            bytes.as_bytes().to_vec(),
+                        ),
+                    }
+                    .map_err(journal_codec_error)?,
+                );
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
@@ -1259,6 +1378,7 @@ fn apply_index_epochs(
     transaction: &redb::WriteTransaction,
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
+    journal: &mut Vec<JournalMutation>,
 ) -> Result<(), StorageError> {
     if records.index_epochs().is_empty() {
         return Ok(());
@@ -1273,6 +1393,22 @@ fn apply_index_epochs(
         if prior.is_some() != expected_presence {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        journal.push(
+            match prior.as_ref() {
+                Some(prior) => JournalMutation::replace(
+                    JournalTable::IndexEpochs,
+                    key.to_vec(),
+                    prior.value(),
+                    bytes.as_bytes().to_vec(),
+                ),
+                None => JournalMutation::put(
+                    JournalTable::IndexEpochs,
+                    key.to_vec(),
+                    bytes.as_bytes().to_vec(),
+                ),
+            }
+            .map_err(journal_codec_error)?,
+        );
     }
     Ok(())
 }

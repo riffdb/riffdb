@@ -18,6 +18,7 @@ mod error;
 mod fixtures;
 mod gate;
 mod hooks;
+mod journal;
 mod keys;
 mod layout;
 mod maintenance;

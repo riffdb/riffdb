@@ -1,4 +1,4 @@
-spec_version: '0.80'
+spec_version: '0.81'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -448,6 +448,78 @@ work_packages:
     locators, all predecessor databases migrate restartably with complete semantic equivalence and
     fail-closed recovery, every public behavior remains exact, and retained evidence materially
     reduces full-seed/write cost without material unary or read regression.
+  human_review_triggers: *id001
+- id: WP-478
+  name: Pipelined standard-profile durability journal
+  depends_on: [WP-362, WP-364, WP-452, WP-459, WP-466, WP-467, WP-469,
+    WP-470, WP-472, WP-473, WP-476]
+  objective: Implement ADR-0101's bounded first-party command-frame journal so the sole ordered
+    standard-profile writer can continue applying complete private redb groups while prior frames
+    flush, then publish one exact durable snapshot and independent command results without weakening
+    crash, idempotency, atomicity, visibility, or hardened-profile semantics.
+  requirements: [PERF-004, PERF-005, PERF-007, PERF-009, PERF-010, PERF-015,
+    PERF-017, REC-001, REC-002, TXN-041, TXN-042, TXN-043, TXN-044]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009,
+    ADR-0021, ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0082, ADR-0083,
+    ADR-0085, ADR-0098, ADR-0101]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0101-pipelined-standard-durability-journal.md,
+    proto/riffdb/storage/v1/**, crates/riffdb-proto/**, fixtures/proto/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-commit/**,
+    crates/riffdb-server/**, tests/command_semantics/**, tests/recovery/**,
+    tests/storage_recovery/**, benchmarks/command-growth/**,
+    benchmarks/run-app-baseline, examples/app-baseline/**,
+    scripts/generate-proto*, scripts/check-generated, docs/SUMMARY.md,
+    docs/architecture/**, docs/reference/**, docs/performance/**]
+  deliverables:
+  - A versioned bounded length-delimited checksummed hash-chained frame format carries complete
+    canonical command graphs, exact database incarnation, predecessor/frontier sequences, and
+    compatibility fixtures; every malformed, torn, substituted, reordered, or cross-database frame
+    fails closed except an incomplete terminal tail
+  - Standard-profile contention applies complete FIFO subgroups through redb Durability::None,
+    captures each exact post-subgroup snapshot, and submits immutable frames to a dedicated bounded
+    journal lane while the sole ordered writer may continue; idle singletons remain direct one-phase
+    Immediate and hardened groups remain direct two-phase Immediate
+  - The journal lane adds no fixed batching delay, drains only a ready FIFO prefix, performs one
+    sync_data for at most 256 commands and 16 MiB, and never permits more than those bounds to remain
+    applied but unpublished process-wide
+  - A successful journal fence atomically publishes the last covered redb snapshot before releasing
+    any result, notification, transient index, projection, outbox, subscription, or response; every
+    covered command retains independent identity, sequence, outcome, retry, audit, provenance, event,
+    and uncertainty semantics
+  - Append or fence errors retain the predecessor frontier, invalidate unpublished accelerators,
+    release no affected result, and fence writes for exact restart resolution
+  - Startup validates the checkpoint-plus-suffix relation, replays complete frames without command
+    reevaluation, checkpoints before readiness, and supports crash-safe journal reclamation, backup,
+    restore, and shutdown drains
+  - Deterministic and process-level tests cover kills before append, during write, during sync, after
+    sync before publication, after publication before response, during checkpoint, and during
+    reclamation, proving previous-or-complete recovery and no unfenced visibility
+  - Same-run c1/c32/c128 public comparisons record journal batch sizes, flush count/time, applied and
+    published frontier lag, write latency, throughput, process bytes, durable growth, and correctness;
+    retain only if c1 has no material regression and mean RiffDB throughput exceeds PostgreSQL safe-app
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --test lost_response_replay
+      --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./scripts/generate-proto --check
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every acknowledged standard-profile command is recoverable from exactly one validated
+    checkpoint-plus-journal prefix, applied roots never outrun public durability, all crash and
+    semantic suites pass, idle and hardened paths remain exact, and retained same-run evidence shows
+    RiffDB exceeding PostgreSQL safe-app mean throughput without a material c1 regression.
   human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope
