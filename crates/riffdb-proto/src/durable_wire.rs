@@ -29,7 +29,7 @@ const MAX_QUERY_MODULE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ITEMS: usize = 4_096;
 const MAX_CONFLICT_HASHES: usize = 2_046;
 const MAX_PACKED_ITEMS: usize = 65_535 + 19;
-const MAX_SHAPE_RULES: usize = 16;
+const MAX_SHAPE_RULES: usize = 20;
 const MAX_SHAPE_FIELD_NUMBER: usize = 20;
 
 const RECORD_REGISTRY_V2_RULES: [Rule; 1] = [fixed_bytes(1, 32)];
@@ -295,6 +295,34 @@ shape!(OUTCOME_V2 [
 shape!(PROVENANCE_V2 [
     message(1, &PROVENANCE),
     message(2, &COMMAND_CAUSATION),
+]);
+shape!(COMMAND_AUDIT_INVOCATION_V1 [
+    fixed_bytes(1, 16),
+    message(3, &AUDIT_PRINCIPAL),
+    repeated_message(5, 16, &SERVICE_AUDIT_TARGET_V2),
+    string(6, MAX_TEXT_ID_BYTES),
+    message(8, &TIMESTAMP),
+    message(10, &TIMESTAMP),
+]);
+shape!(COMMAND_CAPSULE_V1 [
+    message(1, &IDEMPOTENCY_IDENTITY),
+    fixed_bytes(3, 16),
+    message(4, &PLAN),
+    fixed_bytes(5, 32),
+    message(6, &ADMITTED_ACTOR),
+    message(7, &TIMESTAMP),
+    fixed_bytes(8, 32),
+    repeated_fixed_bytes(9, MAX_CONFLICT_HASHES, 32),
+    message(10, &DECLARED_OUTCOME),
+    message(11, &PROVENANCE_CLAIMS),
+    fixed_bytes(12, 16),
+    bytes(14, MAX_KEY_BYTES),
+    message(15, &COMMAND_CAUSATION),
+    message(16, &READ_DEPENDENCIES),
+    repeated_message(17, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_REFERENCE_V2),
+    repeated_message(18, MAX_COMMAND_ITEMS, &EVENT_REFERENCE_V2),
+    repeated_message(19, MAX_COMMAND_ITEMS, &EVENT_ID),
+    message(20, &COMMAND_AUDIT_INVOCATION_V1),
 ]);
 shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
@@ -675,7 +703,7 @@ shape!(ROOT_RETENTION_ADMINISTRATION [
     message(5, &TIMESTAMP),
 ]);
 
-const ROOTS: [&Shape; 57] = [
+const ROOTS: [&Shape; 60] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -742,6 +770,11 @@ const ROOTS: [&Shape; 57] = [
     &EXECUTION_FAILED_V2,
     &OUTCOME_V2,
     &PROVENANCE_V2,
+    &COMMAND_CAPSULE_V1,
+    // StoredCommandLocatorV1 contains only one nonzero scalar sequence.
+    &ROOT_EMPTY,
+    // StoredCommandAuditLocatorV1 contains a sequence and closed enum scalar.
+    &ROOT_EMPTY,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

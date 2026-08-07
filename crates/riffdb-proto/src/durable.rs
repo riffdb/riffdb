@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 62;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 65;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 47;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 50;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -170,6 +170,14 @@ const CONTEXTUAL_CAUSATION_V2_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(con
 const CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-contextual-causation-v2-record-bounds.bin"
+));
+const COMMAND_CAPSULE_V1_SCHEMA_HASH_BYTES: &[u8; 96] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-command-capsule-v1-schema-hashes.bin"
+));
+const COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES: &[u8; 24] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-command-capsule-v1-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -855,6 +863,51 @@ const PROVENANCE_V2_RECORD_SCHEMA: RecordSchema<'static> = contextual_causation_
     16
 );
 
+const fn command_capsule_v1_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = COMMAND_CAPSULE_V1_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn command_capsule_v1_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES[start],
+        COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES[start + 1],
+        COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES[start + 2],
+        COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! command_capsule_v1_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            command_capsule_v1_schema_hash($index),
+            command_capsule_v1_record_bound($index, 0),
+            command_capsule_v1_record_bound($index, 4),
+            preflight_payload::<{ 57 + $index }>,
+            validate_payload::<{ 57 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, 1)
+    };
+}
+
+const COMMAND_CAPSULE_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    command_capsule_v1_schema!(0, "StoredCommandCapsuleV1", v1::StoredCommandCapsuleV1, 51);
+const COMMAND_LOCATOR_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    command_capsule_v1_schema!(1, "StoredCommandLocatorV1", v1::StoredCommandLocatorV1, 52);
+const COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA: RecordSchema<'static> = command_capsule_v1_schema!(
+    2,
+    "StoredCommandAuditLocatorV1",
+    v1::StoredCommandAuditLocatorV1,
+    53
+);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1016,6 +1069,12 @@ readable_message!(
 );
 readable_message!(v1::StoredOutcomeV2, OUTCOME_V2_RECORD_SCHEMA);
 readable_message!(v1::StoredProvenanceRecordV2, PROVENANCE_V2_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandCapsuleV1, COMMAND_CAPSULE_V1_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandLocatorV1, COMMAND_LOCATOR_V1_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredCommandAuditLocatorV1,
+    COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -1064,6 +1123,9 @@ writable_message!(v1::StoredPendingAdmissionV2);
 writable_message!(v1::StoredExecutionFailedV2);
 writable_message!(v1::StoredOutcomeV2);
 writable_message!(v1::StoredProvenanceRecordV2);
+writable_message!(v1::StoredCommandCapsuleV1);
+writable_message!(v1::StoredCommandLocatorV1);
+writable_message!(v1::StoredCommandAuditLocatorV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -1187,6 +1249,9 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     EXECUTION_FAILED_V2_RECORD_SCHEMA,
     OUTCOME_V2_RECORD_SCHEMA,
     PROVENANCE_V2_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V1_RECORD_SCHEMA,
+    COMMAND_LOCATOR_V1_RECORD_SCHEMA,
+    COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1242,6 +1307,9 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     REACTIVE_MODULE_ADMINISTRATION_V1_RECORD_SCHEMA,
     EVENT_CONSUMER_V1_RECORD_SCHEMA,
     EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V1_RECORD_SCHEMA,
+    COMMAND_LOCATOR_V1_RECORD_SCHEMA,
+    COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

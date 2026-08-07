@@ -13,6 +13,14 @@ files
     import riffdb/storage/v1/capability.proto
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/command_capsule_v1.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/contextual_causation_v2.proto
+    import riffdb/storage/v1/entity_references_v3.proto
+    import riffdb/storage/v1/event_references_v2.proto
+    import riffdb/storage/v1/service_audit_v2.proto
   riffdb/storage/v1/common.proto
   riffdb/storage/v1/consumer_v1.proto
     import riffdb/storage/v1/common.proto
@@ -636,9 +644,46 @@ messages
     5 previous_active optional .riffdb.storage.v1.ActiveCatalogPointerV1
     6 activated optional .riffdb.storage.v1.ActiveCatalogPointerV1
     7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredCommandAuditInvocationV1 fields=10
+    1 request_id optional bytes
+    2 operation optional .riffdb.storage.v1.ServiceOperationV1
+    3 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    4 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+    5 targets repeated .riffdb.storage.v1.ServiceAuditTargetV2
+    6 approval_id optional string proto3-optional oneof=_approval_id
+    7 started_administration_sequence optional uint64
+    8 started_at optional .riffdb.storage.v1.TimestampV1
+    9 terminal_administration_sequence optional uint64
+    10 terminal_at optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.StoredCommandAuditLocatorV1 fields=2
+    1 commit_sequence optional uint64
+    2 member optional .riffdb.storage.v1.StoredCommandAuditMemberV1
+  riffdb.storage.v1.StoredCommandCapsuleV1 fields=20
+    1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
+    2 commit_sequence optional uint64
+    3 admission_request_id optional bytes
+    4 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    5 canonical_input_hash optional bytes
+    6 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    7 logical_time optional .riffdb.storage.v1.TimestampV1
+    8 partition_hash optional bytes
+    9 conflict_hashes repeated bytes
+    10 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    11 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+    12 provenance_id optional bytes
+    13 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+    14 partition_key optional bytes
+    15 causation optional .riffdb.storage.v1.StoredCommandCausationV1
+    16 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    17 entity_references repeated .riffdb.storage.v1.CommittedEntityReferenceV2
+    18 event_references repeated .riffdb.storage.v1.EventReferenceV2
+    19 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    20 audit optional .riffdb.storage.v1.StoredCommandAuditInvocationV1
   riffdb.storage.v1.StoredCommandCausationV1 fields=2
     1 causing_event_id optional .riffdb.storage.v1.EventIdV1
     2 root_request_id optional bytes
+  riffdb.storage.v1.StoredCommandLocatorV1 fields=1
+    1 commit_sequence optional uint64
   riffdb.storage.v1.StoredCommitRecordV1 fields=15
     1 commit_sequence optional uint64
     2 admission_request_id optional bytes
@@ -2283,6 +2328,10 @@ enums
     25 SERVICE_OPERATION_EXPLAIN_QUERY
     26 SERVICE_OPERATION_EXECUTE_QUERY
     27 SERVICE_OPERATION_DEPLOY_QUERY_MODULE
+  riffdb.storage.v1.StoredCommandAuditMemberV1 values=3
+    0 STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED
+    1 STORED_COMMAND_AUDIT_MEMBER_STARTED
+    2 STORED_COMMAND_AUDIT_MEMBER_TERMINAL
   riffdb.v1.ActorKind values=4
     0 ACTOR_KIND_UNSPECIFIED
     1 ACTOR_KIND_HUMAN

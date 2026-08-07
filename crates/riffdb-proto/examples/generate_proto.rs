@@ -42,6 +42,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability.proto",
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/command_capsule_v1.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/consumer_v1.proto",
     "riffdb/storage/v1/contextual_causation_v2.proto",
@@ -70,6 +71,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability.proto",
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/command_capsule_v1.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/consumer_v1.proto",
     "riffdb/storage/v1/contextual_causation_v2.proto",
@@ -440,6 +442,21 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "contextual_causation_v2.proto",
         "StoredProvenanceRecordV2",
         PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "command_capsule_v1.proto",
+        "StoredCommandCapsuleV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "command_capsule_v1.proto",
+        "StoredCommandLocatorV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "command_capsule_v1.proto",
+        "StoredCommandAuditLocatorV1",
+        PayloadBound::Tiny,
     ),
 ];
 
@@ -825,6 +842,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable contextual-causation-v2 registry is incomplete")
         })?;
+    let command_capsule_v1_records = durable_registry
+        .get(current_v1_record_count + 28..current_v1_record_count + 31)
+        .ok_or_else(|| io::Error::other("durable command-capsule-v1 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1029,6 +1049,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-contextual-causation-v2-record-bounds.bin",
         &durable_record_bounds(contextual_causation_v2_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-command-capsule-v1-schema-hashes.bin",
+        &durable_schema_hashes(command_capsule_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-command-capsule-v1-record-bounds.bin",
+        &durable_record_bounds(command_capsule_v1_records),
     )?;
     write_artifact(
         &output_root,
@@ -1297,7 +1327,7 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 57 {
+    if DURABLE_RECORDS.len() != 60 {
         return Err(
             io::Error::other("readable durable registry must contain exactly 57 records").into(),
         );
@@ -1323,9 +1353,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 120 || enum_count != 15 {
+    if message_count != 124 || enum_count != 16 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 119 semantic messages plus StoredEnvelope and 15 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 123 semantic messages plus StoredEnvelope and 16 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1579,6 +1609,11 @@ fn durable_writable_registry_fixture(
         .ok_or_else(|| {
             io::Error::other("durable registry is missing contextual causation V2 records")
         })?;
+    let command_capsule_v1 = records
+        .get(current_v1_record_count + 28..current_v1_record_count + 31)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing command capsule V1 records")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1603,10 +1638,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(history_tombstone))
         .chain(std::iter::once(retention_administration))
         .chain(reactive_consumer_v1.iter())
+        .chain(command_capsule_v1.iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 18);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 21);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

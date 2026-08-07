@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/audit.proto";
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/contextual_causation_v2.proto";
+import "riffdb/storage/v1/entity_references_v3.proto";
+import "riffdb/storage/v1/event_references_v2.proto";
+import "riffdb/storage/v1/service_audit_v2.proto";
+
+enum StoredCommandAuditMemberV1 {
+  STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED = 0;
+  STORED_COMMAND_AUDIT_MEMBER_STARTED = 1;
+  STORED_COMMAND_AUDIT_MEMBER_TERMINAL = 2;
+}
+
+// Common invocation facts and the two lifecycle positions for one successful
+// command. Started is reconstructed with phase Started and link None; terminal
+// is reconstructed with phase Succeeded and the capsule's command link.
+message StoredCommandAuditInvocationV1 {
+  bytes request_id = 1;
+  ServiceOperationV1 operation = 2;
+  AuditPrincipalV1 principal = 3;
+  ServiceIngressKindV1 ingress = 4;
+  repeated ServiceAuditTargetV2 targets = 5;
+  optional string approval_id = 6;
+  uint64 started_administration_sequence = 7;
+  TimestampV1 started_at = 8;
+  uint64 terminal_administration_sequence = 9;
+  TimestampV1 terminal_at = 10;
+}
+
+// Canonical durable owner for every fact shared by the successful command's
+// commit, terminal outcome, provenance, and service-audit views.
+message StoredCommandCapsuleV1 {
+  IdempotencyIdentityV1 identity = 1;
+  uint64 commit_sequence = 2;
+  bytes admission_request_id = 3;
+  ExecutablePlanRefV1 plan = 4;
+  bytes canonical_input_hash = 5;
+  AdmittedActorContextV1 actor = 6;
+  TimestampV1 logical_time = 7;
+  bytes partition_hash = 8;
+  repeated bytes conflict_hashes = 9;
+  DeclaredOutcomeV1 declared_outcome = 10;
+  StoredAdmittedProvenanceClaimsV1 admitted_claims = 11;
+  bytes provenance_id = 12;
+  DurabilityModeV1 durability_mode = 13;
+  bytes partition_key = 14;
+  StoredCommandCausationV1 causation = 15;
+  StoredReadDependenciesV1 read_dependencies = 16;
+  repeated CommittedEntityReferenceV2 entity_references = 17;
+  repeated EventReferenceV2 event_references = 18;
+  repeated EventIdV1 outbox_event_ids = 19;
+  StoredCommandAuditInvocationV1 audit = 20;
+}
+
+// Payload-free locator used by successful idempotency and provenance rows.
+message StoredCommandLocatorV1 {
+  uint64 commit_sequence = 1;
+}
+
+// Payload-free locator used by the two command-owned audit rows.
+message StoredCommandAuditLocatorV1 {
+  uint64 commit_sequence = 1;
+  StoredCommandAuditMemberV1 member = 2;
+}

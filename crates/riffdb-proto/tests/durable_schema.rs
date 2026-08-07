@@ -177,6 +177,18 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 "riffdb/storage/v1/catalog.proto".to_owned(),
                 vec!["riffdb/storage/v1/common.proto"],
             ),
+            (
+                "riffdb/storage/v1/command_capsule_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/application.proto",
+                    "riffdb/storage/v1/audit.proto",
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/contextual_causation_v2.proto",
+                    "riffdb/storage/v1/entity_references_v3.proto",
+                    "riffdb/storage/v1/event_references_v2.proto",
+                    "riffdb/storage/v1/service_audit_v2.proto",
+                ],
+            ),
             ("riffdb/storage/v1/common.proto".to_owned(), vec![]),
             (
                 "riffdb/storage/v1/consumer_v1.proto".to_owned(),
@@ -282,8 +294,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        120,
-        "119 semantic messages plus the unchanged StoredEnvelope"
+        124,
+        "123 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -291,7 +303,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.enum_type.len())
             .sum::<usize>(),
-        15
+        16
     );
     assert!(
         descriptors
@@ -312,9 +324,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 47);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 62);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 47);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 50);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 65);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 50);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -365,6 +377,9 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredExecutionFailedV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredOutcomeV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredProvenanceRecordV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandLocatorV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandAuditLocatorV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -403,6 +418,9 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .iter()
             .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
     );
+    writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandLocatorV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandAuditLocatorV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -531,8 +549,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 62);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 47);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 65);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 50);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -549,6 +567,32 @@ fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
             .map(|schema| (schema.record_type().to_owned(), schema_hash_hex(schema)))
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn canonical_command_capsule_records_are_closed_current_schemas() {
+    for (record_type, compact_tag) in [
+        ("riffdb.storage.v1.StoredCommandCapsuleV1", 51),
+        ("riffdb.storage.v1.StoredCommandLocatorV1", 52),
+        ("riffdb.storage.v1.StoredCommandAuditLocatorV1", 53),
+    ] {
+        let readable = readable_record_schema(record_type)
+            .unwrap_or_else(|| panic!("{record_type} must be readable"));
+        let writable = writable_record_schema(record_type)
+            .unwrap_or_else(|| panic!("{record_type} must be current writable"));
+        assert_eq!(
+            readable.record_type(),
+            writable.record_type(),
+            "{record_type}"
+        );
+        assert_eq!(
+            readable.schema_hash(),
+            writable.schema_hash(),
+            "{record_type}"
+        );
+        assert_eq!(readable.compact_tag(), compact_tag, "{record_type}");
+        assert_eq!(readable.schema_revision(), 1, "{record_type}");
+    }
 }
 
 fn registry_fixture_entries(fixture: &str, expected_count: usize) -> Vec<(String, String)> {
@@ -676,6 +720,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredAdmittedProvenanceClaimsV1.source_commit",
         "StoredAdmittedProvenanceClaimsV1.source_repository",
         "StoredCatalogAdministrationV1.approval_id",
+        "StoredCommandAuditInvocationV1.approval_id",
         "StoredContractMigrationJournalV1.exclusive_cursor",
         "StoredContractMigrationJournalV1.frozen_application_frontier",
         "StoredContractMigrationJournalV1.previous_journal_hash",
@@ -859,6 +904,7 @@ fn closed_oneof_and_enum_registries_are_exact() {
             ("ServiceAuditPhaseV1", "SERVICE_AUDIT_PHASE_UNSPECIFIED=0,SERVICE_AUDIT_PHASE_STARTED=1,SERVICE_AUDIT_PHASE_SUCCEEDED=2,SERVICE_AUDIT_PHASE_DENIED=3,SERVICE_AUDIT_PHASE_CANCELLED=4,SERVICE_AUDIT_PHASE_FAILED=5,SERVICE_AUDIT_PHASE_OUTCOME_UNCERTAIN=6"),
             ("ServiceIngressKindV1", "SERVICE_INGRESS_KIND_UNSPECIFIED=0,SERVICE_INGRESS_KIND_GRPC=1,SERVICE_INGRESS_KIND_MCP_HTTP=2,SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON=3"),
             ("ServiceOperationV1", "SERVICE_OPERATION_UNSPECIFIED=0,SERVICE_OPERATION_VALIDATE_CONTRACT=1,SERVICE_OPERATION_EXPLAIN_COMMAND=2,SERVICE_OPERATION_DEPLOY_CONTRACT=3,SERVICE_OPERATION_GET_ACTIVE_CONTRACT=4,SERVICE_OPERATION_GET_CONTRACT_VERSION=5,SERVICE_OPERATION_EXECUTE_COMMAND=6,SERVICE_OPERATION_RESOLVE_COMMAND_OUTCOME=7,SERVICE_OPERATION_GET_ENTITY=8,SERVICE_OPERATION_SCAN_INDEX=9,SERVICE_OPERATION_QUERY_PROJECTION=10,SERVICE_OPERATION_GET_PROJECTION_STATUS=11,SERVICE_OPERATION_GET_COMMIT=12,SERVICE_OPERATION_SCAN_COMMITS=13,SERVICE_OPERATION_SUBSCRIBE_TO_COMMITS=14,SERVICE_OPERATION_TRACE_PROVENANCE=15,SERVICE_OPERATION_GET_HEALTH=16,SERVICE_OPERATION_GET_STATISTICS=17,SERVICE_OPERATION_CREATE_CAPABILITY=18,SERVICE_OPERATION_REVOKE_CAPABILITY=19,SERVICE_OPERATION_LIST_PENDING_OUTBOX_DELIVERIES=20,SERVICE_OPERATION_DISCOVER_COMMAND_TOOLS=21,SERVICE_OPERATION_DISCOVER_RESOURCES=22,SERVICE_OPERATION_DESCRIBE_CONTRACT=23,SERVICE_OPERATION_CHECK_QUERY=24,SERVICE_OPERATION_EXPLAIN_QUERY=25,SERVICE_OPERATION_EXECUTE_QUERY=26,SERVICE_OPERATION_DEPLOY_QUERY_MODULE=27"),
+            ("StoredCommandAuditMemberV1", "STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED=0,STORED_COMMAND_AUDIT_MEMBER_STARTED=1,STORED_COMMAND_AUDIT_MEMBER_TERMINAL=2"),
         ]
         .into_iter()
         .map(|(name, values)| (name.to_owned(), values.to_owned()))

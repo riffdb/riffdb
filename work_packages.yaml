@@ -1,4 +1,4 @@
-spec_version: '0.79'
+spec_version: '0.80'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -382,6 +382,72 @@ work_packages:
   exit_gate: Every durable structural and semantic result remains exact, the direct table is proven
     equivalent to every closed rule set, all malformed and recovery suites pass, and same-host
     evidence reduces durable preflight CPU or total seed without a material unary regression.
+  human_review_triggers: *id001
+- id: WP-477
+  name: Canonical command capsule durable layout
+  depends_on: [WP-065, WP-070, WP-362, WP-372, WP-373, WP-374, WP-409,
+    WP-459, WP-470, WP-472, WP-473, WP-476]
+  objective: Replace duplicated successful-command payloads in the commit, idempotency,
+    provenance, and command-audit tables with one canonical sequence-keyed capsule and compact
+    self-verifying locators, including a bounded restartable offline migration, without changing
+    application semantics, lookup keys, atomicity, durability, recovery, or fail-closed validation.
+  requirements: [STO-002, STO-020, STO-021, STO-022, REC-002, TXN-041,
+    TXN-042, TXN-043, TXN-044, PERF-008, PERF-009, PERF-010, PERF-016]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009,
+    ADR-0021, ADR-0058, ADR-0060, ADR-0061, ADR-0082, ADR-0083, ADR-0085,
+    ADR-0098, ADR-0099]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0099-canonical-command-capsules.md,
+    proto/riffdb/storage/v1/**, crates/riffdb-proto/**, fixtures/proto/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-commit/**, crates/riffdb-server/**,
+    tests/command_semantics/**, tests/recovery/**, tests/storage_recovery/**,
+    benchmarks/command-growth/**, benchmarks/run-app-baseline,
+    examples/app-baseline/**, scripts/generate-proto*, scripts/check-generated,
+    docs/SUMMARY.md, docs/architecture/**, docs/reference/**, docs/performance/**]
+  deliverables:
+  - Exact StoredCommandCapsuleV1, StoredCommandLocatorV1, and
+    StoredCommandAuditLocatorV1 schemas, closed registry entries, canonical codecs, bounds,
+    semantic constructors, redacted debug, and immutable compatibility fixtures
+  - Capsule construction proves byte-for-byte semantic reconstruction of the current commit,
+    outcome, provenance, Started audit, and terminal audit views while storing each shared fact once
+  - Successful command writes atomically stage unchanged entity/index/generation/event/route/outbox
+    authority, one sequence-keyed capsule, exact-key idempotency/provenance/audit locators, request
+    indexes, and allocators through the direct and deferred-tail paths
+  - Every outcome, provenance, commit, audit, scan, replay, uncertainty, projection, event,
+    statistics, backup, and recovery read follows locators within one snapshot and validates the
+    complete requested key/view reciprocity before release
+  - Pending and execution-failure rows and non-command audit rows retain their complete current
+    schemas; no public service, application type, query result, protocol byte, or generated SDK changes
+  - An offline migration processes at most 500 commands and 4 MiB per durable page, validates the
+    complete predecessor graph before replacement, tolerates only internally complete mixed rows,
+    resumes after interruption, and publishes the successor registry only after a complete validation
+  - Startup, migration, corruption, uncertain commit, response-loss, retention, checkpoint,
+    backup/restore, and old-fixture tests cover absent, substituted, reordered, cross-role, malformed,
+    partial-page, pre-publication, and post-publication states
+  - Full seed and c1/c32/c128 evidence records staging, commit/fence, physical groups, process write
+    bytes, durable growth, lookup latency, correctness, and PostgreSQL ratios; retain only on a
+    material write/seed improvement without a material unary/read regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --test lost_response_replay
+      --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./scripts/generate-proto --check
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every successful command has one canonical capsule and only checked auxiliary
+    locators, all predecessor databases migrate restartably with complete semantic equivalence and
+    fail-closed recovery, every public behavior remains exact, and retained evidence materially
+    reduces full-seed/write cost without material unary or read regression.
   human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope
