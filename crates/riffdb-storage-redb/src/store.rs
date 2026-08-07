@@ -533,8 +533,38 @@ impl RedbStore {
             }),
         };
         store.ensure_current_storage_format()?;
+        store.recover_durability_journal()?;
         store.cache_verified_retention_watermark()?;
         Ok(store)
+    }
+
+    /// Reconciles the redb checkpoint with a complete bounded durability
+    /// journal before any startup validation or operational handle can exist.
+    fn recover_durability_journal(&self) -> Result<(), StorageError> {
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        if classify_read_layout(&transaction)? == LayoutState::Empty {
+            let journal = crate::journal::journal_path(&self.shared.path);
+            return match journal.try_exists() {
+                Ok(false) => Ok(()),
+                Ok(true) => Err(storage_error(StorageErrorKind::CorruptData)),
+                Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+            };
+        }
+        let database_id = read_identity_from_read_transaction(&transaction)?;
+        drop(transaction);
+        crate::journal::recover_journal(&self.shared.database, &self.shared.path, database_id)
+            .map_err(|error| match error {
+                crate::journal::JournalIoError::Corrupt => {
+                    storage_error(StorageErrorKind::CorruptData)
+                }
+                crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
+                    storage_error(StorageErrorKind::Unavailable)
+                }
+            })
     }
 
     /// Loads and semantically verifies the retention watermark once per open
