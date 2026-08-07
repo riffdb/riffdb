@@ -1,5 +1,5 @@
 riffdb-durable-registry-v1
-records 62
+records 65
 riffdb.storage.v1.StoredStorageFormatVersionV1 source=metadata.proto message=StoredStorageFormatVersionV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8284 schema-hash=07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab
 riffdb.storage.v1.StoredDatabaseIdentityV1 source=metadata.proto message=StoredDatabaseIdentityV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8280 schema-hash=de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea
 riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 source=metadata.proto message=StoredApplicationSequenceAllocatorV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8292 schema-hash=ff01f9e77e1d0ae47de12badcd541131a58fc6926b27543c681f0151f49aa24a
@@ -57,6 +57,9 @@ riffdb.storage.v1.StoredPendingAdmissionV2 source=contextual_causation_v2.proto 
 riffdb.storage.v1.StoredExecutionFailedV2 source=contextual_causation_v2.proto message=StoredExecutionFailedV2 descriptor-bytes=8988 max-payload-bytes=131072 max-envelope-bytes=131160 schema-hash=1015d1edb4119a20e4d354c2098a40f2ac9feeb4f69281244925b824c7772916
 riffdb.storage.v1.StoredOutcomeV2 source=contextual_causation_v2.proto message=StoredOutcomeV2 descriptor-bytes=8988 max-payload-bytes=2097152 max-envelope-bytes=2097233 schema-hash=820e2b776433a7249601db24fdc0b6218371a1ee87365b91c2a50f6370c4879b
 riffdb.storage.v1.StoredProvenanceRecordV2 source=contextual_causation_v2.proto message=StoredProvenanceRecordV2 descriptor-bytes=8988 max-payload-bytes=16777126 max-envelope-bytes=16777216 schema-hash=320d8fe4827d70911a69d79341242446e1ae8b353bc0706a7a3fbfab1692f15e
+riffdb.storage.v1.StoredCommandCapsuleV1 source=command_capsule_v1.proto message=StoredCommandCapsuleV1 descriptor-bytes=19835 max-payload-bytes=16777128 max-envelope-bytes=16777216 schema-hash=3e1dec217709e867ba6b3dd184357afef7b98b57b08efbba5e676bd717a25f3a
+riffdb.storage.v1.StoredCommandLocatorV1 source=command_capsule_v1.proto message=StoredCommandLocatorV1 descriptor-bytes=19835 max-payload-bytes=8192 max-envelope-bytes=8278 schema-hash=8cb109d2b275f638b279a89dd6fd93f168197bd142bf52f4053b1353cc0bdeb8
+riffdb.storage.v1.StoredCommandAuditLocatorV1 source=command_capsule_v1.proto message=StoredCommandAuditLocatorV1 descriptor-bytes=19835 max-payload-bytes=8192 max-envelope-bytes=8283 schema-hash=674bc659f79b759b835cfe1c25298fed46bda1541ea52ad15bab5ef84008358c
 riffdb.storage.v1.CapabilityRecordV1 source=capability.proto message=CapabilityRecordV1 descriptor-bytes=6685 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342
 riffdb.storage.v1.CapabilityRecordV1 source=capability.proto message=CapabilityRecordV1 descriptor-bytes=6685 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf
 riffdb.storage.v1.CapabilityTokenLookupV1 source=capability.proto message=CapabilityTokenLookupV1 descriptor-bytes=6685 max-payload-bytes=8192 max-envelope-bytes=8279 schema-hash=e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86

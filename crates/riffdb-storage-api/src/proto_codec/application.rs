@@ -72,7 +72,7 @@ pub(super) fn event_reference_from_proto(
     ))
 }
 
-fn durability_from_proto(value: i32) -> Result<DurabilityMode, DurableCodecError> {
+pub(super) fn durability_from_proto(value: i32) -> Result<DurabilityMode, DurableCodecError> {
     match wire::DurabilityModeV1::try_from(value).map_err(|_| DurableCodecError::corrupt())? {
         wire::DurabilityModeV1::DurabilityModeSync => Ok(DurabilityMode::Sync),
         wire::DurabilityModeV1::DurabilityModeGroup => Ok(DurabilityMode::Group),
@@ -265,7 +265,7 @@ pub(super) fn causation_to_proto(
     }
 }
 
-fn causation_from_proto(
+pub(super) fn causation_from_proto(
     value: wire::StoredCommandCausationV1,
 ) -> Result<StoredCommandCausationV1, DurableCodecError> {
     Ok(StoredCommandCausationV1::new(
@@ -282,7 +282,9 @@ pub(super) fn hashes_to_proto(values: &[ConflictKeyHash]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn hashes_from_proto(values: Vec<Vec<u8>>) -> Result<Vec<ConflictKeyHash>, DurableCodecError> {
+pub(super) fn hashes_from_proto(
+    values: Vec<Vec<u8>>,
+) -> Result<Vec<ConflictKeyHash>, DurableCodecError> {
     values
         .into_iter()
         .map(|value| Ok(ConflictKeyHash::from_bytes(fixed(value)?)))
@@ -355,7 +357,7 @@ pub(super) fn dependencies_to_proto(
     }
 }
 
-fn dependencies_from_proto(
+pub(super) fn dependencies_from_proto(
     value: wire::StoredReadDependenciesV1,
 ) -> Result<StoredReadDependenciesV1, DurableCodecError> {
     use wire::stored_read_dependency_v1::Dependency;
@@ -654,7 +656,7 @@ pub(super) fn encode_stored_outcome_legacy_v1_fixture(
     super::encode_legacy_message(OUTCOME, &outcome_to_proto(value))
 }
 
-fn outcome_to_proto(value: &StoredOutcomeV1) -> wire::StoredOutcomeV1 {
+pub(super) fn outcome_to_proto(value: &StoredOutcomeV1) -> wire::StoredOutcomeV1 {
     wire::StoredOutcomeV1 {
         identity: Some(identity_to_proto(value.identity())),
         commit_sequence: value.commit_sequence().get(),
@@ -673,7 +675,9 @@ fn outcome_to_proto(value: &StoredOutcomeV1) -> wire::StoredOutcomeV1 {
     }
 }
 
-fn outcome_from_proto(value: wire::StoredOutcomeV1) -> Result<StoredOutcomeV1, DurableCodecError> {
+pub(super) fn outcome_from_proto(
+    value: wire::StoredOutcomeV1,
+) -> Result<StoredOutcomeV1, DurableCodecError> {
     storage_result(StoredOutcomeV1::new(
         identity_from_proto(require(value.identity)?)?,
         CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?,
@@ -853,7 +857,7 @@ fn provenance_from_proto(
     ))
 }
 
-fn entity_reference_to_proto(
+pub(super) fn entity_reference_to_proto(
     value: &CommittedEntityReferenceV2,
 ) -> wire::CommittedEntityReferenceV2 {
     wire::CommittedEntityReferenceV2 {
@@ -863,7 +867,7 @@ fn entity_reference_to_proto(
     }
 }
 
-fn entity_reference_from_proto(
+pub(super) fn entity_reference_from_proto(
     value: wire::CommittedEntityReferenceV2,
 ) -> Result<CommittedEntityReferenceV2, DurableCodecError> {
     let target = entity_target_from_proto(require(value.target)?)?;
@@ -1170,7 +1174,7 @@ pub fn encode_commit_record_v2_fixture(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn commit_from_wire_parts(
+pub(super) fn commit_from_wire_parts(
     commit_sequence: u64,
     admission_request_id: Vec<u8>,
     plan: Option<wire::ExecutablePlanRefV1>,
@@ -1285,7 +1289,7 @@ fn take_event_references(
         .collect()
 }
 
-fn events_match_references(
+pub(super) fn events_match_references(
     references: &[EventReferenceV2],
     events: &[StoredDurableEventV1],
 ) -> bool {

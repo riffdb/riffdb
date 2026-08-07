@@ -1360,6 +1360,125 @@ pub struct StoredQueryModuleAdministrationV1 {
     #[prost(string, optional, tag = "7")]
     pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandAuditInvocationV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "ServiceOperationV1", tag = "2")]
+    pub operation: i32,
+    #[prost(message, optional, tag = "3")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(enumeration = "ServiceIngressKindV1", tag = "4")]
+    pub ingress: i32,
+    #[prost(message, repeated, tag = "5")]
+    pub targets: ::prost::alloc::vec::Vec<ServiceAuditTargetV2>,
+    #[prost(string, optional, tag = "6")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "7")]
+    pub started_administration_sequence: u64,
+    #[prost(message, optional, tag = "8")]
+    pub started_at: ::core::option::Option<TimestampV1>,
+    #[prost(uint64, tag = "9")]
+    pub terminal_administration_sequence: u64,
+    #[prost(message, optional, tag = "10")]
+    pub terminal_at: ::core::option::Option<TimestampV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandCapsuleV1 {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<IdempotencyIdentityV1>,
+    #[prost(uint64, tag = "2")]
+    pub commit_sequence: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub admission_request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub plan: ::core::option::Option<ExecutablePlanRefV1>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub canonical_input_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "6")]
+    pub actor: ::core::option::Option<AdmittedActorContextV1>,
+    #[prost(message, optional, tag = "7")]
+    pub logical_time: ::core::option::Option<TimestampV1>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub partition_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "9")]
+    pub conflict_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "10")]
+    pub declared_outcome: ::core::option::Option<DeclaredOutcomeV1>,
+    #[prost(message, optional, tag = "11")]
+    pub admitted_claims: ::core::option::Option<StoredAdmittedProvenanceClaimsV1>,
+    #[prost(bytes = "vec", tag = "12")]
+    pub provenance_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "DurabilityModeV1", tag = "13")]
+    pub durability_mode: i32,
+    #[prost(bytes = "vec", tag = "14")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "15")]
+    pub causation: ::core::option::Option<StoredCommandCausationV1>,
+    #[prost(message, optional, tag = "16")]
+    pub read_dependencies: ::core::option::Option<StoredReadDependenciesV1>,
+    #[prost(message, repeated, tag = "17")]
+    pub entity_references: ::prost::alloc::vec::Vec<CommittedEntityReferenceV2>,
+    #[prost(message, repeated, tag = "18")]
+    pub event_references: ::prost::alloc::vec::Vec<EventReferenceV2>,
+    #[prost(message, repeated, tag = "19")]
+    pub outbox_event_ids: ::prost::alloc::vec::Vec<EventIdV1>,
+    #[prost(message, optional, tag = "20")]
+    pub audit: ::core::option::Option<StoredCommandAuditInvocationV1>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredCommandLocatorV1 {
+    #[prost(uint64, tag = "1")]
+    pub commit_sequence: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredCommandAuditLocatorV1 {
+    #[prost(uint64, tag = "1")]
+    pub commit_sequence: u64,
+    #[prost(enumeration = "StoredCommandAuditMemberV1", tag = "2")]
+    pub member: i32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StoredCommandAuditMemberV1 {
+    StoredCommandAuditMemberUnspecified = 0,
+    StoredCommandAuditMemberStarted = 1,
+    StoredCommandAuditMemberTerminal = 2,
+}
+impl StoredCommandAuditMemberV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::StoredCommandAuditMemberUnspecified => {
+                "STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED"
+            }
+            Self::StoredCommandAuditMemberStarted => {
+                "STORED_COMMAND_AUDIT_MEMBER_STARTED"
+            }
+            Self::StoredCommandAuditMemberTerminal => {
+                "STORED_COMMAND_AUDIT_MEMBER_TERMINAL"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED" => {
+                Some(Self::StoredCommandAuditMemberUnspecified)
+            }
+            "STORED_COMMAND_AUDIT_MEMBER_STARTED" => {
+                Some(Self::StoredCommandAuditMemberStarted)
+            }
+            "STORED_COMMAND_AUDIT_MEMBER_TERMINAL" => {
+                Some(Self::StoredCommandAuditMemberTerminal)
+            }
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnitV1 {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

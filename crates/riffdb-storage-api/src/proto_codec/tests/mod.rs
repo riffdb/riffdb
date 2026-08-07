@@ -10,7 +10,10 @@ mod variants;
 
 use std::fmt::Debug;
 
-use riffdb_types::{AdministrationSequence, CommitSequence, ExecutionFailureCode};
+use riffdb_types::{
+    AdministrationSequence, CommitSequence, ExecutionFailureCode, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceOperationV1,
+};
 
 use crate::EncodedPageItem;
 
@@ -286,6 +289,80 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
         encode_service_audit_record_v2,
         decode_service_audit_record,
     );
+}
+
+#[test]
+fn command_capsule_round_trip_reconstructs_every_existing_view_exactly() {
+    let atomic = sample::atomic_record_set();
+    let audit_basis = sample::service_audit_record();
+    let started = crate::StoredServiceAuditRecordV1::from_stored_parts(
+        AdministrationSequence::first(),
+        audit_basis.request_id(),
+        audit_basis.timestamp(),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Started,
+        audit_basis.principal().cloned(),
+        audit_basis.ingress(),
+        audit_basis.targets().clone(),
+        audit_basis.approval_id().cloned(),
+        ServiceAuditLinkV1::None,
+    )
+    .expect("command start is valid");
+    let terminal_sequence = AdministrationSequence::first()
+        .checked_next()
+        .expect("second administration sequence");
+    let terminal = crate::StoredServiceAuditRecordV1::from_stored_parts(
+        terminal_sequence,
+        audit_basis.request_id(),
+        audit_basis.timestamp(),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Succeeded,
+        audit_basis.principal().cloned(),
+        audit_basis.ingress(),
+        audit_basis.targets().clone(),
+        audit_basis.approval_id().cloned(),
+        ServiceAuditLinkV1::Command {
+            commit_sequence: atomic.commit().commit_sequence(),
+            provenance_id: atomic.commit().provenance_id(),
+        },
+    )
+    .expect("command terminal is valid");
+    let capsule = crate::StoredCommandCapsuleV1::new(
+        atomic.stored_outcome().clone(),
+        atomic.provenance().clone(),
+        atomic.commit().clone(),
+        started,
+        terminal,
+    )
+    .expect("reciprocal capsule");
+
+    let encoded = encode_command_capsule_v1(&capsule).expect("capsule encodes");
+    let decoded = decode_command_capsule_v1(encoded.as_bytes(), atomic.events().to_vec())
+        .expect("capsule decodes");
+    assert_eq!(decoded.value(), &capsule);
+    assert_eq!(decoded.value().outcome(), atomic.stored_outcome());
+    assert_eq!(decoded.value().provenance(), atomic.provenance());
+    assert_eq!(decoded.value().commit(), atomic.commit());
+
+    let locator = crate::StoredCommandLocatorV1::new(atomic.commit().commit_sequence());
+    assert_round_trip(
+        locator,
+        |value| encode_command_locator_v1(*value),
+        decode_command_locator_v1,
+    );
+    for member in [
+        crate::StoredCommandAuditMemberV1::Started,
+        crate::StoredCommandAuditMemberV1::Terminal,
+    ] {
+        let locator =
+            crate::StoredCommandAuditLocatorV1::new(atomic.commit().commit_sequence(), member);
+        assert_round_trip(
+            locator,
+            |value| encode_command_audit_locator_v1(*value),
+            decode_command_audit_locator_v1,
+        );
+        assert_eq!(decoded.value().audit(member), capsule.audit(member));
+    }
 }
 
 #[test]

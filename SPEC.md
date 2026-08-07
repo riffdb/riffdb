@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.79
+**Version:** 0.80
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.80 | 2026-08-06 | Accepted ADR-0099 and planned WP-477: one canonical successful-command capsule becomes the durable owner of shared commit, outcome, provenance, and linked command-audit facts; unchanged idempotency, provenance, and audit keys store compact self-verifying locators; a bounded restartable offline migration preserves exact semantic views, atomicity, retry, crash recovery, and fail-closed corruption handling. |
 | 0.79 | 2026-08-06 | Implemented WP-476 constant-time durable shape dispatch: every closed durable structural-preflight shape now carries a compile-time-checked direct field-number table, eliminating the per-field linear rule scan while preserving the exact cursor, bounds, recursion, occurrence, UTF-8, canonical re-encode, and fail-closed error behavior. |
 | 0.78 | 2026-08-06 | Implemented WP-475 retained canonical permission lookup: each already canonical immutable capability permission set retains its ordered canonical keys under the same shared ownership, so every fresh authorization performs exact binary search without rebuilding a candidate key for each comparison; capability reload, time sampling, policy evaluation, approval checks, and fail-closed decisions remain unchanged. |
 | 0.77 | 2026-08-06 | Implemented WP-474 sealed entity post-image materialization: evaluation-owned entity post-images retain their already-checked canonical fields and bytes under immutable shared ownership, and commit graph construction forms the exact stored entity record without deep-cloning or re-encoding them; external and recovered values retain the full constructor and validation path. |
@@ -6701,6 +6702,20 @@ ADR-0055.
   prefix above 32 commands MUST use the direct Immediate path. Recovery
   MUST observe the epoch as complete or absent, never partially durable. The
   hardened profile MUST retain independently Immediate two-phase groups.
+- `PERF-016`: A successful command MAY store its shared commit, terminal
+  outcome, provenance, and linked command-audit facts once in a versioned
+  canonical command capsule. Existing idempotency, provenance, audit, and
+  request-index key layouts MUST remain exact lookup surfaces whose compact
+  locator values are trusted only after loading the capsule in the same
+  snapshot, reconstructing the requested semantic record, and proving complete
+  key/value reciprocity. Entity, index, generation, event, route, and outbox
+  authority remain separate and atomic with the capsule. Pending and execution-
+  failure records remain complete. Migration MUST be offline, bounded,
+  restartable, idempotent, mixed-state safe before registry publication, and
+  followed by complete structural and historical validation. Missing,
+  substituted, cross-role, noncanonical, or nonreciprocal capsule/locator state
+  is corruption. No result or effect may escape before the existing durable
+  boundary.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies

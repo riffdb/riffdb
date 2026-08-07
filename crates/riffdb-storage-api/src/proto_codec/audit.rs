@@ -85,7 +85,7 @@ pub fn decode_service_audit_request_index_v1(
     )
 }
 
-fn operation_from_proto(value: i32) -> Result<ServiceOperationV1, DurableCodecError> {
+pub(super) fn operation_from_proto(value: i32) -> Result<ServiceOperationV1, DurableCodecError> {
     let tag = u8::try_from(value).map_err(|_| DurableCodecError::corrupt())?;
     ServiceOperationV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
@@ -95,12 +95,12 @@ fn phase_from_proto(value: i32) -> Result<ServiceAuditPhaseV1, DurableCodecError
     ServiceAuditPhaseV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
 
-fn ingress_from_proto(value: i32) -> Result<ServiceIngressKindV1, DurableCodecError> {
+pub(super) fn ingress_from_proto(value: i32) -> Result<ServiceIngressKindV1, DurableCodecError> {
     let tag = u8::try_from(value).map_err(|_| DurableCodecError::corrupt())?;
     ServiceIngressKindV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
 
-fn target_to_proto_v2(value: &ServiceAuditTargetV1) -> wire::ServiceAuditTargetV2 {
+pub(super) fn target_to_proto_v2(value: &ServiceAuditTargetV1) -> wire::ServiceAuditTargetV2 {
     use wire::service_audit_target_v2::Target;
     let target = match value {
         ServiceAuditTargetV1::ContractLineage(lineage) => {
@@ -258,7 +258,7 @@ fn target_from_proto(
     })
 }
 
-fn target_from_proto_v2(
+pub(super) fn target_from_proto_v2(
     value: wire::ServiceAuditTargetV2,
 ) -> Result<ServiceAuditTargetV1, DurableCodecError> {
     use wire::service_audit_target_v2::Target;
