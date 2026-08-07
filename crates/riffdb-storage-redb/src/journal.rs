@@ -4,6 +4,7 @@
     reason = "WP-478 lands the closed frame and lane boundary before production coordinator wiring"
 )]
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,7 +14,15 @@ use std::thread;
 
 use sha2::{Digest, Sha256};
 
+use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
+
 use riffdb_types::{CommitSequence, DatabaseId};
+
+use crate::keys::decode_application_sequence_key;
+use crate::layout::{
+    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
+    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, PROVENANCE, SECONDARY_INDEXES,
+};
 
 const FILE_MAGIC: [u8; 8] = *b"RDBJRN01";
 const FRAME_MAGIC: [u8; 8] = *b"RDBFRM01";
@@ -716,6 +725,8 @@ pub(crate) struct JournalScanTail {
     pub(crate) last_sequence: Option<CommitSequence>,
     pub(crate) last_hash: [u8; HASH_BYTES],
     pub(crate) incomplete_tail: bool,
+    pub(crate) complete_bytes: usize,
+    pub(crate) command_count: usize,
 }
 
 pub(crate) fn journal_path(database_path: &Path) -> PathBuf {
@@ -743,6 +754,8 @@ pub(crate) fn scan_journal(
     }
     let mut previous_hash = header.checkpoint_frame_hash();
     let mut previous_sequence = header.checkpoint_sequence();
+    let mut complete_bytes = FILE_HEADER_BYTES;
+    let mut command_count = 0_usize;
     loop {
         let mut frame_header = [0_u8; FRAME_HEADER_BYTES];
         let read = read_until_full_or_eof(&mut file, &mut frame_header)?;
@@ -753,6 +766,8 @@ pub(crate) fn scan_journal(
                     last_sequence: previous_sequence,
                     last_hash: previous_hash,
                     incomplete_tail: false,
+                    complete_bytes,
+                    command_count,
                 },
             )));
         }
@@ -763,6 +778,8 @@ pub(crate) fn scan_journal(
                     last_sequence: previous_sequence,
                     last_hash: previous_hash,
                     incomplete_tail: true,
+                    complete_bytes,
+                    command_count,
                 },
             )));
         }
@@ -789,6 +806,8 @@ pub(crate) fn scan_journal(
                     last_sequence: previous_sequence,
                     last_hash: previous_hash,
                     incomplete_tail: true,
+                    complete_bytes,
+                    command_count,
                 },
             )));
         }
@@ -806,10 +825,260 @@ pub(crate) fn scan_journal(
         {
             return Err(JournalIoError::Corrupt);
         }
+        complete_bytes = complete_bytes
+            .checked_add(total)
+            .ok_or(JournalIoError::Corrupt)?;
+        command_count = command_count
+            .checked_add(usize::from(frame.command_count))
+            .ok_or(JournalIoError::Corrupt)?;
+        if complete_bytes.saturating_sub(FILE_HEADER_BYTES) > MAX_JOURNAL_FRAME_BYTES
+            || command_count > MAX_JOURNAL_COMMANDS
+        {
+            return Err(JournalIoError::Corrupt);
+        }
         visit(&frame)?;
         previous_sequence = Some(frame.last_sequence());
         previous_hash = frame_hash;
     }
+}
+
+/// Restores one bounded journal epoch before any structural startup evidence is
+/// collected. The only accepted redb positions are the exact checkpoint in the
+/// file header or the complete journal tail left by a crash after checkpoint
+/// and before reclamation.
+pub(crate) fn recover_journal(
+    database: &Database,
+    database_path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    let path = journal_path(database_path);
+    let mut frames = Vec::new();
+    let Some((header, tail)) = scan_journal(&path, database_id, |frame| {
+        frames.push(frame.clone());
+        Ok(())
+    })?
+    else {
+        return Ok(());
+    };
+    let redb_sequence = read_redb_tail(database)?;
+    if redb_sequence == header.checkpoint_sequence() {
+        if !frames.is_empty() {
+            replay_frames(database, &frames)?;
+        }
+    } else if redb_sequence == tail.last_sequence && !frames.is_empty() {
+        verify_replayed_tail(database, &frames)?;
+    } else {
+        return Err(JournalIoError::Corrupt);
+    }
+    reset_journal(
+        &path,
+        &JournalFileHeader::new(database_id, tail.last_sequence, tail.last_hash),
+    )
+}
+
+fn read_redb_tail(database: &Database) -> Result<Option<CommitSequence>, JournalIoError> {
+    let transaction = database.begin_read().map_err(|_| JournalIoError::Io)?;
+    let table = transaction
+        .open_table(COMMITS)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    table
+        .last()
+        .map_err(|_| JournalIoError::Corrupt)?
+        .map(|(key, _)| decode_application_sequence_key(key.value()))
+        .transpose()
+        .map_err(|_| JournalIoError::Corrupt)
+}
+
+fn replay_frames(database: &Database, frames: &[JournalFrame]) -> Result<(), JournalIoError> {
+    let mut transaction = database.begin_write().map_err(|_| JournalIoError::Io)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| JournalIoError::Io)?;
+    for frame in frames {
+        for mutation in frame.mutations() {
+            apply_mutation(&transaction, mutation)?;
+        }
+    }
+    transaction.commit().map_err(|_| JournalIoError::Io)
+}
+
+fn verify_replayed_tail(
+    database: &Database,
+    frames: &[JournalFrame],
+) -> Result<(), JournalIoError> {
+    let mut final_values = BTreeMap::<(u8, Vec<u8>), Option<Vec<u8>>>::new();
+    for mutation in frames.iter().flat_map(JournalFrame::mutations) {
+        final_values.insert(
+            (mutation.table() as u8, mutation.key().to_vec()),
+            mutation.value().map(<[u8]>::to_vec),
+        );
+    }
+    let transaction = database.begin_read().map_err(|_| JournalIoError::Io)?;
+    for ((table, key), expected) in final_values {
+        let table = JournalTable::decode(table).map_err(|_| JournalIoError::Corrupt)?;
+        let actual = read_value(&transaction, table, &key)?;
+        if actual != expected {
+            return Err(JournalIoError::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+fn apply_mutation(
+    transaction: &redb::WriteTransaction,
+    mutation: &JournalMutation,
+) -> Result<(), JournalIoError> {
+    match mutation.table() {
+        JournalTable::Meta => apply_meta_mutation(transaction, mutation),
+        JournalTable::Entities => apply_byte_mutation(transaction, ENTITIES, mutation),
+        JournalTable::SecondaryIndexes => {
+            apply_byte_mutation(transaction, SECONDARY_INDEXES, mutation)
+        }
+        JournalTable::IndexEpochs => apply_byte_mutation(transaction, INDEX_EPOCHS, mutation),
+        JournalTable::Idempotency => apply_byte_mutation(transaction, IDEMPOTENCY, mutation),
+        JournalTable::IdempotencyPending => {
+            apply_byte_mutation(transaction, IDEMPOTENCY_PENDING, mutation)
+        }
+        JournalTable::Events => apply_byte_mutation(transaction, EVENTS, mutation),
+        JournalTable::EventRoutes => apply_byte_mutation(transaction, EVENT_ROUTES, mutation),
+        JournalTable::Outbox => apply_byte_mutation(transaction, crate::layout::OUTBOX, mutation),
+        JournalTable::Provenance => apply_byte_mutation(transaction, PROVENANCE, mutation),
+        JournalTable::Commits => apply_byte_mutation(transaction, COMMITS, mutation),
+        JournalTable::Audit => apply_byte_mutation(transaction, AUDIT, mutation),
+        JournalTable::AuditByRequest => {
+            apply_byte_mutation(transaction, AUDIT_BY_REQUEST, mutation)
+        }
+    }
+}
+
+fn apply_meta_mutation(
+    transaction: &redb::WriteTransaction,
+    mutation: &JournalMutation,
+) -> Result<(), JournalIoError> {
+    let key = std::str::from_utf8(mutation.key()).map_err(|_| JournalIoError::Corrupt)?;
+    if !matches!(
+        key,
+        crate::layout::META_APPLICATION_SEQUENCE | crate::layout::META_ADMINISTRATION_SEQUENCE
+    ) {
+        return Err(JournalIoError::Corrupt);
+    }
+    let mut table = transaction
+        .open_table(META)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let current = table
+        .get(key)
+        .map_err(|_| JournalIoError::Corrupt)?
+        .map(|value| value.value().to_vec());
+    validate_before_image(current.as_deref(), mutation)?;
+    match mutation {
+        JournalMutation::Put { value, .. } => {
+            table
+                .insert(key, value.as_ref())
+                .map_err(|_| JournalIoError::Corrupt)?;
+        }
+        JournalMutation::Delete { .. } => {
+            table.remove(key).map_err(|_| JournalIoError::Corrupt)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_byte_mutation(
+    transaction: &redb::WriteTransaction,
+    definition: TableDefinition<&[u8], &[u8]>,
+    mutation: &JournalMutation,
+) -> Result<(), JournalIoError> {
+    let mut table = transaction
+        .open_table(definition)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let current = table
+        .get(mutation.key())
+        .map_err(|_| JournalIoError::Corrupt)?
+        .map(|value| value.value().to_vec());
+    validate_before_image(current.as_deref(), mutation)?;
+    match mutation {
+        JournalMutation::Put { value, .. } => {
+            table
+                .insert(mutation.key(), value.as_ref())
+                .map_err(|_| JournalIoError::Corrupt)?;
+        }
+        JournalMutation::Delete { .. } => {
+            table
+                .remove(mutation.key())
+                .map_err(|_| JournalIoError::Corrupt)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_before_image(
+    current: Option<&[u8]>,
+    mutation: &JournalMutation,
+) -> Result<(), JournalIoError> {
+    match (current, mutation.expected_hash()) {
+        (None, None) => Ok(()),
+        (Some(value), Some(expected)) if digest(value) == expected => Ok(()),
+        _ => Err(JournalIoError::Corrupt),
+    }
+}
+
+fn read_value(
+    transaction: &redb::ReadTransaction,
+    table: JournalTable,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, JournalIoError> {
+    if table == JournalTable::Meta {
+        let key = std::str::from_utf8(key).map_err(|_| JournalIoError::Corrupt)?;
+        return transaction
+            .open_table(META)
+            .map_err(|_| JournalIoError::Corrupt)?
+            .get(key)
+            .map_err(|_| JournalIoError::Corrupt)
+            .map(|value| value.map(|value| value.value().to_vec()));
+    }
+    let definition = match table {
+        JournalTable::Meta => unreachable!("meta returned above"),
+        JournalTable::Entities => ENTITIES,
+        JournalTable::SecondaryIndexes => SECONDARY_INDEXES,
+        JournalTable::IndexEpochs => INDEX_EPOCHS,
+        JournalTable::Idempotency => IDEMPOTENCY,
+        JournalTable::IdempotencyPending => IDEMPOTENCY_PENDING,
+        JournalTable::Events => EVENTS,
+        JournalTable::EventRoutes => EVENT_ROUTES,
+        JournalTable::Outbox => crate::layout::OUTBOX,
+        JournalTable::Provenance => PROVENANCE,
+        JournalTable::Commits => COMMITS,
+        JournalTable::Audit => AUDIT,
+        JournalTable::AuditByRequest => AUDIT_BY_REQUEST,
+    };
+    transaction
+        .open_table(definition)
+        .map_err(|_| JournalIoError::Corrupt)?
+        .get(key)
+        .map_err(|_| JournalIoError::Corrupt)
+        .map(|value| value.map(|value| value.value().to_vec()))
+}
+
+fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(), JournalIoError> {
+    let parent = path.parent().ok_or(JournalIoError::Io)?;
+    let file_name = path.file_name().ok_or(JournalIoError::Io)?;
+    let mut replacement_name = file_name.to_os_string();
+    replacement_name.push(".rewrite");
+    let replacement = parent.join(replacement_name);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&replacement)
+        .map_err(|_| JournalIoError::Io)?;
+    file.write_all(&header.encode())
+        .and_then(|()| file.sync_data())
+        .map_err(|_| JournalIoError::Io)?;
+    std::fs::rename(&replacement, path).map_err(|_| JournalIoError::Io)?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_data())
+        .map_err(|_| JournalIoError::Io)
 }
 
 fn read_until_full_or_eof(file: &mut File, bytes: &mut [u8]) -> Result<usize, JournalIoError> {
@@ -876,6 +1145,13 @@ mod tests {
     impl Drop for TestPath {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+            let journal = journal_path(&self.0);
+            let _ = std::fs::remove_file(&journal);
+            if let Some(file_name) = journal.file_name() {
+                let mut replacement = file_name.to_os_string();
+                replacement.push(".rewrite");
+                let _ = std::fs::remove_file(journal.with_file_name(replacement));
+            }
         }
     }
 
@@ -902,6 +1178,59 @@ mod tests {
             ],
         )
         .expect("frame")
+    }
+
+    fn create_database(path: &Path) -> Database {
+        let database = redb::Builder::new().create(path).expect("create database");
+        let mut transaction = database.begin_write().expect("begin initialize");
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .expect("set durability");
+        crate::layout::create_all_tables(&transaction).expect("create tables");
+        transaction.commit().expect("commit initialize");
+        database
+    }
+
+    fn recovery_frame(database_id: DatabaseId) -> JournalFrame {
+        JournalFrame::new(
+            database_id,
+            sequence(1),
+            sequence(1),
+            1,
+            [0; HASH_BYTES],
+            vec![
+                JournalMutation::put(
+                    JournalTable::Commits,
+                    crate::keys::encode_application_sequence_key(sequence(1)).to_vec(),
+                    vec![0x41],
+                )
+                .expect("commit mutation"),
+                JournalMutation::put(JournalTable::Entities, vec![0x10], vec![0x20])
+                    .expect("entity mutation"),
+            ],
+        )
+        .expect("recovery frame")
+    }
+
+    fn write_recovery_journal(
+        database_path: &Path,
+        database_id: DatabaseId,
+        frame: &EncodedJournalFrame,
+        tail_bytes: Option<&[u8]>,
+    ) {
+        let path = journal_path(database_path);
+        let header = JournalFileHeader::new(database_id, None, [0; HASH_BYTES]);
+        initialize_or_validate_file(&path, &header).expect("initialize recovery journal");
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open recovery journal");
+        file.write_all(frame.as_bytes()).expect("write frame");
+        if let Some(tail) = tail_bytes {
+            file.write_all(tail).expect("write tail");
+        }
+        file.sync_data().expect("sync recovery journal");
     }
 
     #[test]
@@ -1163,5 +1492,93 @@ mod tests {
             scan_journal(&path.0, database_id, |_| Ok(())),
             Err(JournalIoError::Corrupt)
         );
+    }
+
+    #[test]
+    fn recovery_replays_a_complete_suffix_and_reclaims_it() {
+        let database_path = TestPath::new("recovery-replay");
+        let database = create_database(&database_path.0);
+        let database_id = database_id(13);
+        let frame = recovery_frame(database_id).encode().expect("encode frame");
+        write_recovery_journal(&database_path.0, database_id, &frame, None);
+
+        recover_journal(&database, &database_path.0, database_id).expect("recover journal");
+        let transaction = database.begin_read().expect("begin read");
+        let entities = transaction.open_table(ENTITIES).expect("open entities");
+        assert_eq!(
+            entities
+                .get([0x10].as_slice())
+                .expect("read entity")
+                .map(|value| value.value().to_vec()),
+            Some(vec![0x20])
+        );
+        let (_, tail) = scan_journal(&journal_path(&database_path.0), database_id, |_| Ok(()))
+            .expect("scan reclaimed journal")
+            .expect("journal exists");
+        assert_eq!(tail.last_sequence, Some(sequence(1)));
+        assert_eq!(tail.command_count, 0);
+        assert_eq!(tail.complete_bytes, FILE_HEADER_BYTES);
+        assert!(!tail.incomplete_tail);
+    }
+
+    #[test]
+    fn recovery_accepts_checkpoint_before_reclamation_only_after_exact_tail_verification() {
+        let database_path = TestPath::new("recovery-verify");
+        let database = create_database(&database_path.0);
+        let database_id = database_id(14);
+        let frame = recovery_frame(database_id);
+        let encoded = frame.encode().expect("encode frame");
+        write_recovery_journal(&database_path.0, database_id, &encoded, None);
+        replay_frames(&database, std::slice::from_ref(&frame)).expect("simulate checkpoint");
+
+        recover_journal(&database, &database_path.0, database_id)
+            .expect("verify checkpointed tail");
+
+        let corrupt_path = TestPath::new("recovery-verify-corrupt");
+        let corrupt_database = create_database(&corrupt_path.0);
+        let mut transaction = corrupt_database
+            .begin_write()
+            .expect("begin corrupting write");
+        transaction
+            .set_durability(Durability::Immediate)
+            .expect("set durability");
+        for mutation in frame.mutations() {
+            apply_mutation(&transaction, mutation).expect("apply original mutation");
+        }
+        transaction
+            .open_table(ENTITIES)
+            .expect("open entities")
+            .insert([0x10].as_slice(), [0x21].as_slice())
+            .expect("replace entity");
+        transaction.commit().expect("commit replacement");
+        write_recovery_journal(&corrupt_path.0, database_id, &encoded, None);
+        assert_eq!(
+            recover_journal(&corrupt_database, &corrupt_path.0, database_id),
+            Err(JournalIoError::Corrupt)
+        );
+    }
+
+    #[test]
+    fn recovery_discards_only_a_torn_terminal_tail() {
+        let database_path = TestPath::new("recovery-torn");
+        let database = create_database(&database_path.0);
+        let database_id = database_id(15);
+        let frame = recovery_frame(database_id).encode().expect("encode frame");
+        let torn = recovery_frame(database_id)
+            .encode()
+            .expect("encode torn frame");
+        write_recovery_journal(
+            &database_path.0,
+            database_id,
+            &frame,
+            Some(&torn.as_bytes()[..torn.as_bytes().len() / 2]),
+        );
+
+        recover_journal(&database, &database_path.0, database_id).expect("recover complete prefix");
+        let (_, tail) = scan_journal(&journal_path(&database_path.0), database_id, |_| Ok(()))
+            .expect("scan reclaimed journal")
+            .expect("journal exists");
+        assert_eq!(tail.command_count, 0);
+        assert!(!tail.incomplete_tail);
     }
 }

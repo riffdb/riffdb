@@ -37,8 +37,17 @@ The first interface increment includes:
 - mutation capture beside the exact redb writes for command state, allocator,
   and linked audit rows.
 
+Startup now owns the journal before structural validation. It accepts exactly
+two redb positions: the file header's checkpoint, which causes the complete
+suffix to be compare-and-applied and checkpointed, or the suffix tail left by a
+crash after checkpoint and before reclamation, which must match every final
+table value. Any other frontier, before-image mismatch, hash-chain defect, or
+database mismatch refuses open. Reclamation uses a synced sibling replacement,
+an atomic rename, and a parent-directory sync; a torn terminal frame alone is
+discarded.
+
 This page does **not** claim that the production command path is journal-backed
-yet. Production enablement remains gated on replay, checkpoint/reclamation,
-coordinator pipelining, the process crash matrix, and the retained c1/c32/c128
+yet. Production enablement remains gated on coordinator pipelining, publication,
+backup integration, the process crash matrix, and the retained c1/c32/c128
 comparison. Until those gates pass, application writes retain the documented
 redb durability path.
