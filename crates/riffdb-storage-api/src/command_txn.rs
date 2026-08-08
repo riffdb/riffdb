@@ -481,6 +481,12 @@ impl UnpublishedAuditedBatchV1 {
         self.outcomes[self.outcomes.len() - 1].commit_sequence()
     }
 
+    /// Returns the final linked administration sequence in this subgroup.
+    #[must_use]
+    pub fn last_administration_sequence(&self) -> riffdb_types::AdministrationSequence {
+        self.terminals[self.terminals.len() - 1].administration_sequence()
+    }
+
     /// Consumes the unpublished material for a backend-owned, post-fence seal.
     #[doc(hidden)]
     #[must_use]

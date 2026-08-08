@@ -2590,6 +2590,18 @@ impl RedbOperationalPorts {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(runtime) = journal_checkpoint.as_ref()
+            && let Err(error) = self
+                .shared
+                .apply_published_journal_suffix(&transaction, runtime)
+        {
+            let _ = transaction.abort();
+            if let Some(runtime) = journal_checkpoint {
+                let _ = self.shared.restore_journal_runtime(runtime);
+            }
+            self.shared.fence_writes();
+            return Err(error);
+        }
         Ok(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
@@ -2676,18 +2688,9 @@ impl RedbOperationalPorts {
         let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
             &composite_predecessor,
         );
-        let mut transaction = self
-            .shared
-            .database
-            .begin_write()
-            .map_err(transaction_error)?;
-        transaction.set_two_phase_commit(false);
-        transaction
-            .set_durability(Durability::None)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         Ok(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
-            transaction: Some(transaction),
+            transaction: None,
             ownership: Some(RedbWriteOwnership::ServiceAudit { _lease: lease }),
             journal_mutations: Some(RefCell::new(
                 crate::journal::JournalMutationBuffer::default(),
@@ -3268,14 +3271,9 @@ impl RedbWriteAccess {
         if let Some(controller) = &self.shared.test_controller {
             controller.before_commit(RedbTestOperation::DeferredCommandBatch)?;
         }
-        let transaction = self
-            .transaction
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Err(error) = transaction.commit() {
+        if self.transaction.take().is_some() {
             self.shared.fence_writes();
-            self.invalidate_transient_indexes();
-            return Err(commit_error(error));
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if let Some(controller) = &self.shared.test_controller
             && let Err(error) = controller.after_commit(RedbTestOperation::DeferredCommandBatch)
@@ -3350,13 +3348,9 @@ impl RedbWriteAccess {
         if let Some(controller) = &self.shared.test_controller {
             controller.before_commit(RedbTestOperation::ServiceAudit)?;
         }
-        let transaction = self
-            .transaction
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Err(error) = transaction.commit() {
+        if self.transaction.take().is_some() {
             self.shared.fence_writes();
-            return Err(commit_error(error));
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if let Some(controller) = &self.shared.test_controller
             && let Err(error) = controller.after_commit(RedbTestOperation::ServiceAudit)
@@ -3364,14 +3358,17 @@ impl RedbWriteAccess {
             self.shared.fence_writes();
             return Err(error);
         }
-        let successor = Arc::new(
-            self.shared
-                .database
-                .begin_read()
-                .map_err(transaction_error)?,
-        );
-        let covered_sequence = read_commit_tail(&successor)?;
-        let covered_administration_sequence = read_administration_tail(&successor)?;
+        let successor = composite_predecessor.checkpoint_root_shared();
+        let covered_sequence = composite_predecessor.overlay().published_application();
+        let covered_administration_sequence = results
+            .iter()
+            .filter_map(|result| match result {
+                riffdb_storage_api::ServiceAuditAppendResult::Appended(record) => {
+                    Some(record.administration_sequence())
+                }
+                riffdb_storage_api::ServiceAuditAppendResult::PhaseConflict => None,
+            })
+            .next_back();
         let (
             receipt,
             encoded_bytes,
@@ -3491,11 +3488,9 @@ impl RedbWriteAccess {
     }
 
     pub(crate) fn abort(mut self) -> Result<(), StorageError> {
-        let transaction = self
-            .transaction
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        transaction.abort().map_err(precommit_storage_error)?;
+        if let Some(transaction) = self.transaction.take() {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
         if let Some(runtime) = self.journal_checkpoint.take() {
             self.shared.restore_journal_runtime(runtime)?;
         }
@@ -3561,22 +3556,13 @@ impl RedbDurabilityEpoch {
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        let mut transaction = self
-            .shared
-            .database
-            .begin_write()
-            .map_err(transaction_error)?;
-        transaction.set_two_phase_commit(false);
-        transaction
-            .set_durability(Durability::None)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let shared = Arc::clone(&self.shared);
         let journal_mutations = std::mem::take(&mut self.journal_mutations);
         let journal_mutation_start = journal_mutations.mutation_count();
         let composite_stage = self.composite_stage.take();
         Ok(RedbWriteAccess {
             shared,
-            transaction: Some(transaction),
+            transaction: None,
             ownership: Some(RedbWriteOwnership::Epoch(Box::new(self))),
             journal_mutations: Some(RefCell::new(journal_mutations)),
             journal_mutation_start,
@@ -3610,13 +3596,11 @@ impl RedbDurabilityEpoch {
         let last_sequence = self
             .last_sequence
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut successor = Arc::new(
-            self.shared
-                .database
-                .begin_read()
-                .map_err(transaction_error)?,
-        );
-        let last_administration_sequence = read_administration_tail(&successor)?;
+        let successor = self.composite_predecessor.checkpoint_root_shared();
+        let last_administration_sequence = self
+            .applied
+            .last()
+            .map(riffdb_storage_api::UnpublishedAuditedBatchV1::last_administration_sequence);
         let mutations = std::mem::take(&mut self.journal_mutations);
         let (
             receipt,
@@ -3686,7 +3670,7 @@ impl RedbDurabilityEpoch {
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
                 || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
             {
-                (None, 0, 0, predecessor_administration_sequence, false, None)
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
             } else {
                 let frame_hash = frame.frame_hash();
                 let (decoded, decoded_hash) =
@@ -3728,29 +3712,6 @@ impl RedbDurabilityEpoch {
                 &self.composite_predecessor,
                 composite_successor,
             )?;
-        }
-        if !journaled {
-            // The exact frame proved that the bounded recovery suffix is full.
-            // Flush the already-applied private redb root directly instead of
-            // failing the command or guessing a smaller global count ceiling.
-            // Results remain withheld by the returned fence, and the writer
-            // drains earlier journal fences before publishing this successor.
-            let mut transaction = self
-                .shared
-                .database
-                .begin_write()
-                .map_err(transaction_error)?;
-            transaction.set_two_phase_commit(false);
-            transaction
-                .set_durability(Durability::Immediate)
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            self.shared.commit_durable(transaction)?;
-            successor = Arc::new(
-                self.shared
-                    .database
-                    .begin_read()
-                    .map_err(transaction_error)?,
-            );
         }
         {
             let mut unpublished = self
@@ -4007,11 +3968,48 @@ impl SharedRedb {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = self.apply_published_journal_suffix(&transaction, &runtime) {
+            let _ = transaction.abort();
+            self.fence_writes();
+            return Err(error);
+        }
         if let Err(error) = self.commit_durable(transaction) {
             self.fence_writes();
             return Err(error);
         }
         self.finish_journal_checkpoint(runtime)
+    }
+
+    fn apply_published_journal_suffix(
+        &self,
+        transaction: &WriteTransaction,
+        runtime: &JournalRuntime,
+    ) -> Result<(), StorageError> {
+        let scanned = crate::journal::scan_journal(
+            &crate::journal::journal_path(&self.path),
+            runtime.database_id,
+            |frame| {
+                for mutation in frame.mutations() {
+                    crate::journal::apply_mutation(transaction, mutation)?;
+                }
+                Ok(())
+            },
+        )
+        .map_err(journal_io_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let (header, tail) = scanned;
+        if header.database_id() != runtime.database_id
+            || tail.incomplete_tail
+            || tail.last_sequence != runtime.last_sequence
+            || tail.last_administration_sequence != runtime.last_administration_sequence
+            || tail.last_hash != runtime.last_hash
+            || tail.transition_count != runtime.suffix_transitions
+            || tail.command_count != runtime.suffix_commands
+            || tail.audit_count != runtime.suffix_audits
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(())
     }
 
     fn take_published_journal_suffix_locked(
@@ -4522,12 +4520,39 @@ impl RedbWriteAccess {
         >,
         StorageError,
     > {
-        let table = self
-            .transaction()?
-            .open_table(AUDIT_BY_REQUEST)
-            .map_err(table_error)?;
         self.shared.note_audit_sequence_begin_read();
-        let mut sequences = service_audit_sequences_from_table(&table, request_ids)?;
+        let mut sequences = std::collections::BTreeMap::new();
+        for &request_id in request_ids {
+            let prefix = encode_audit_by_request_prefix(request_id);
+            let upper = exclusive_byte_prefix_end(&prefix)
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let rows = self.read_command_range(
+                crate::journal::JournalTable::AuditByRequest,
+                &prefix,
+                &upper,
+                3,
+            )?;
+            let mut found = Vec::new();
+            for (key, value) in rows {
+                let (decoded_request, sequence) = decode_audit_by_request_key(&key)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let index = decode_service_audit_request_index_v1(&value)?
+                    .into_parts()
+                    .0;
+                if decoded_request != request_id
+                    || index.request_id() != request_id
+                    || index.administration_sequence() != sequence
+                    || found.last().is_some_and(|prior| prior >= &sequence)
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                found.push(sequence);
+            }
+            if found.len() > 2 {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            sequences.insert(request_id, found);
+        }
         {
             let state = self
                 .shared
@@ -4642,47 +4667,12 @@ impl SharedRedb {
     }
 }
 
-fn service_audit_sequences_from_table(
-    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    request_ids: &std::collections::BTreeSet<riffdb_types::RequestId>,
-) -> Result<
-    std::collections::BTreeMap<riffdb_types::RequestId, Vec<riffdb_types::AdministrationSequence>>,
-    StorageError,
-> {
-    const MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST: usize = 2;
-    let mut results = std::collections::BTreeMap::new();
-    for &request_id in request_ids {
-        let prefix = encode_audit_by_request_prefix(request_id);
-        let mut sequences = Vec::new();
-        let scan = table
-            .range::<&[u8]>((std::ops::Bound::Included(prefix.as_slice()), Unbounded))
-            .map_err(precommit_storage_error)?;
-        for entry in scan {
-            let (key, value) = entry.map_err(precommit_storage_error)?;
-            if !key.value().starts_with(prefix.as_slice()) {
-                break;
-            }
-            let (decoded_request, sequence) = decode_audit_by_request_key(key.value())
-                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-            if decoded_request != request_id {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            let index = decode_service_audit_request_index_v1(value.value())?
-                .into_parts()
-                .0;
-            if index.request_id() != request_id || index.administration_sequence() != sequence {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            if sequences.len() >= MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST
-                || sequences.last().is_some_and(|prior| prior >= &sequence)
-            {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            sequences.push(sequence);
-        }
-        results.insert(request_id, sequences);
-    }
-    Ok(results)
+fn exclusive_byte_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    let position = end.iter().rposition(|byte| *byte != u8::MAX)?;
+    end[position] = end[position].checked_add(1)?;
+    end.truncate(position + 1);
+    Some(end)
 }
 
 impl TransientIndexState {
