@@ -1208,6 +1208,25 @@ pub fn encode_current_payload<M: WritableRecordMessage>(
     crate::envelope::encode_preflighted(M::record_schema(), payload)
 }
 
+/// Frames current-schema payload bytes after a first-party typed encoder has
+/// already proved their canonical structural shape.
+///
+/// This is a narrow internal optimization boundary for payloads assembled by
+/// a checked semantic pipeline. The caller must have established every field,
+/// nesting, cardinality, canonical-order, and scalar bound normally checked by
+/// generated durable-wire preflight. The sealed [`WritableRecordMessage`]
+/// selects the exact registered compact identity; framing still enforces the
+/// payload ceiling and writes the CRC-32C over the exact supplied bytes.
+///
+/// External, recovered, migrated, compatibility, or otherwise untyped bytes
+/// must use [`encode_current_payload`] or the readable registry instead.
+#[doc(hidden)]
+pub fn encode_current_payload_after_structural_proof<M: WritableRecordMessage>(
+    payload: &[u8],
+) -> Result<Vec<u8>, crate::envelope::EnvelopeError> {
+    crate::envelope::encode_after_structural_proof(M::record_schema(), payload)
+}
+
 const PRE_WP280_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     "riffdb.storage.v1.CapabilityRecordV1",
     PRE_WP280_CAPABILITY_SCHEMA_HASH,
@@ -1515,5 +1534,27 @@ mod tests {
             .expect("canonical prebuilt payload encodes");
 
         assert_eq!(prebuilt, typed);
+    }
+
+    #[test]
+    fn structurally_proven_current_payload_matches_checked_framing_and_keeps_bounds() {
+        let message = v1::StoredRecordRegistryV2 {
+            registry_digest: record_registry_digest().as_bytes().to_vec(),
+        };
+        let payload = message.encode_to_vec();
+        let checked = encode_current_payload::<v1::StoredRecordRegistryV2>(&payload)
+            .expect("canonical prebuilt payload encodes");
+        let proven =
+            encode_current_payload_after_structural_proof::<v1::StoredRecordRegistryV2>(&payload)
+                .expect("structurally proven payload frames");
+
+        assert_eq!(proven, checked);
+
+        let oversized =
+            vec![0_u8; v1::StoredRecordRegistryV2::record_schema().max_payload_bytes() + 1];
+        assert!(
+            encode_current_payload_after_structural_proof::<v1::StoredRecordRegistryV2>(&oversized)
+                .is_err()
+        );
     }
 }

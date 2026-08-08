@@ -118,7 +118,14 @@ pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordM
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
 }
 
-pub(super) fn encode_prebuilt_message<M: riffdb_proto::durable::WritableRecordMessage>(
+/// Frames bytes emitted by a checked first-party structural encoder.
+///
+/// Callers must already have proved the generated durable-wire shape and
+/// bounds by construction. The compact registry identity, exact outer bound,
+/// and CRC remain checked by `riffdb-proto`.
+pub(super) fn encode_structurally_proven_message<
+    M: riffdb_proto::durable::WritableRecordMessage,
+>(
     record_type: &'static str,
     payload: &[u8],
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
@@ -126,7 +133,7 @@ pub(super) fn encode_prebuilt_message<M: riffdb_proto::durable::WritableRecordMe
     if M::record_schema().record_type() != schema.record_type() {
         return Err(DurableCodecError::invariant());
     }
-    let bytes = riffdb_proto::durable::encode_current_payload::<M>(payload)
+    let bytes = riffdb_proto::durable::encode_current_payload_after_structural_proof::<M>(payload)
         .map_err(DurableCodecError::from_encode_envelope)?;
     let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
