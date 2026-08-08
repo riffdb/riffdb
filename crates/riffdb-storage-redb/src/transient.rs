@@ -308,6 +308,26 @@ impl TransientIndexes {
         Some(command_audit_from_locator(segment, *locator, sequence))
     }
 
+    pub(crate) fn command_audit_record_at_or_before(
+        &self,
+        sequence: riffdb_types::AdministrationSequence,
+        frontier: Option<CommitSequence>,
+    ) -> Option<Option<riffdb_storage_api::StoredServiceAuditRecordV1>> {
+        let indexes = self.command_derived.as_ref()?;
+        let exact_key = encode_audit_key(sequence);
+        let Some(locator) = indexes.audit_sequence.get(exact_key.as_slice()) else {
+            return Some(None);
+        };
+        let Some(frontier) = frontier else {
+            return Some(None);
+        };
+        let segment = indexes.segments.get(&locator.segment_first)?;
+        if segment.last_commit_sequence() > frontier {
+            return Some(None);
+        }
+        Some(command_audit_from_locator(segment, *locator, sequence))
+    }
+
     pub(crate) fn command_derived_member(
         &self,
         kind: CommandDerivedIndexKindV1,
@@ -331,6 +351,16 @@ impl TransientIndexes {
                 .segments
                 .last_key_value()
                 .map(|(_, segment)| (segment.first_commit_sequence(), segment.segment_digest())),
+        )
+    }
+
+    pub(crate) fn command_segment_coverage(&self) -> Option<Option<CommitSequence>> {
+        let indexes = self.command_derived.as_ref()?;
+        Some(
+            indexes
+                .segments
+                .last_key_value()
+                .map(|(_, segment)| segment.last_commit_sequence()),
         )
     }
 

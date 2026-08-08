@@ -175,7 +175,7 @@ fn read_administration_record_access(
         )
         .transpose()?;
     let derived = ports
-        .indexed_command_audit(sequence)?
+        .indexed_command_audit_at_access(access, sequence)?
         .map(StoredAdministrationAuditRecordV1::Service);
     let record = match (physical, derived) {
         (Some(physical), Some(derived)) if physical == derived => physical,
