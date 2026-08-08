@@ -109,6 +109,7 @@
 - [WP-483 Streaming Command Capsules](performance/wp-483-streaming-command-capsules.md)
 - [WP-484 Proven Command-segment Framing](performance/wp-484-proven-command-segment-framing.md)
 - [WP-485 State-bearing Segment Mechanics](performance/wp-485-state-bearing-segment-mechanics.md)
+- [WP-486 Journal-authoritative State Overlay](performance/wp-486-journal-state-overlay.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

@@ -849,6 +849,54 @@ work_packages:
     the proposed layout benchmark-only, and ADR-0104 is absent after a failed gate or remains
     Proposed pending exact-text human review after a passed gate.
   human_review_triggers: *id001
+- id: WP-486
+  name: Journal-authoritative overlay mechanics and exact design
+  depends_on: [WP-485]
+  objective: Prove whether publishing a bounded immutable current-state overlay directly from the
+    already-authoritative durability-journal suffix can remove synchronous redb apply amplification,
+    and define the exact checkpoint, read-merge, recovery, backup, and backpressure semantics before
+    any production authority or read-validation path changes.
+  requirements: [STO-001, STO-002, REC-001, REC-002, TXN-040, TXN-041, TXN-042,
+    TXN-043, TXN-044, PERF-004, PERF-005, PERF-007, PERF-008, PERF-009, PERF-010,
+    PERF-015, PERF-016, PERF-017]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0006, ADR-0035, ADR-0053, ADR-0058,
+    ADR-0060, ADR-0061, ADR-0070, ADR-0082, ADR-0098, ADR-0101, ADR-0102,
+    ADR-0103]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0104-journal-authoritative-state-overlay.md,
+    crates/riffdb-storage-redb/src/benchmark_support.rs,
+    benchmarks/command-growth/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - A benchmark-only mechanics driver compares the current apply-to-redb-before-fence path with
+    exact journal-mutation construction plus a bounded immutable overlay for distinct creates,
+    retained updates, mixed mutations, point reads, and canonical index-page reads
+  - Evidence separates journal-common work, redb begin/stage/non-durable commit work, overlay
+    construction/publication work, merged-read overhead, process writes, retained bytes, and the
+    bounded checkpoint cost at suffix sizes 32, 128, 256, and 4,096 transitions
+  - The production proposal proceeds only if median pre-acknowledgement apply work is at least two
+    times lower at 32 and 128 transitions, merged point and bounded-index reads remain within 1.25
+    times the checkpoint-only control, and one bounded checkpoint clears the maximum suffix
+  - Proposed ADR-0104 defines one frozen read view as a durable redb checkpoint plus an immutable
+    gap-free journal overlay, exact tombstone/newest-value merge rules, FIFO writer-private state,
+    acknowledgement after the journal fence, asynchronous ordered checkpointing, suffix
+    backpressure, reclamation, recovery, backup, hardened-profile isolation, and every corrupt or
+    uncertain state; the record remains Proposed pending exact-text human review
+  - No production adapter can select the benchmark overlay, no accepted ADR is silently amended,
+    and current storage, query, command, recovery, backup, and public behavior remain unchanged
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --manifest-path benchmarks/command-growth/Cargo.toml
+  - cargo +1.97.0 run --release --manifest-path benchmarks/command-growth/Cargo.toml
+    --bin journal-state-overlay
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Production behavior is unchanged; reproducible mechanics either reject the proposal or
+    meet every apply, read, and checkpoint threshold; and ADR-0104 remains Proposed until the human
+    maintainer accepts its exact authority, ordering, recovery, and read-validation text.
+  human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope
   depends_on:
