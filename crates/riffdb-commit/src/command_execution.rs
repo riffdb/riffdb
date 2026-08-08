@@ -1034,11 +1034,10 @@ where
     let all_groups_deferred_eligible = groups.len() == 1
         && durability == CoordinatorDurability::Group
         && groups.iter().all(|group| {
-            group.items.len() > 1
-                && group
-                    .items
-                    .iter()
-                    .all(|(_, state)| state.has_audited_lifecycle())
+            group
+                .items
+                .iter()
+                .all(|(_, state)| state.has_audited_lifecycle())
         });
     let mut submitted = Vec::new();
     for group in groups {
@@ -1399,7 +1398,7 @@ pub(super) fn command_group_is_deferred_eligible<'a>(
                     .is_ok()
             })
     });
-    compatible && count > 1
+    compatible && count != 0
 }
 
 fn shared_conflict_membership_is_compatible(
