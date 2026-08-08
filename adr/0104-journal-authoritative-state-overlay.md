@@ -1,23 +1,24 @@
 # ADR-0104: Journal-Authoritative Published State Overlay
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-08
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `STO-001`, `STO-002`, `REC-001`, `REC-002`,
   `TXN-040`, `TXN-041`, `TXN-042`, `TXN-043`, `TXN-044`, `PERF-004`,
   `PERF-005`, `PERF-007`, `PERF-008`, `PERF-009`, `PERF-010`, `PERF-015`,
   `PERF-016`, `PERF-017`
-- **Related work packages:** `WP-486` and follow-ons to be accepted separately
+- **Related work packages:** `WP-486`, `WP-487`, `WP-488`, `WP-489`, `WP-490`
 - **Would amend:** ADR-0004, ADR-0035, ADR-0053, ADR-0061, ADR-0070,
   ADR-0082, ADR-0098, ADR-0101, ADR-0102, ADR-0103
+- **Would amend specification requirements:** `PERF-015` and `PERF-017`
 
 ## Status boundary
 
-This record is proposed planning input. It changes materialized-state authority,
-transaction-current reads, and the operational read root. No implementation may
-select this path until the maintainer accepts this exact text and the WP-486
-mechanics gate passes. The hardened profile and current production path remain
-unchanged while this record is Proposed.
+This accepted record changes materialized-state authority, transaction-current
+reads, and the operational read root. WP-486 passed its mechanics gate before
+exact-text acceptance. Production may select the path only after WP-487 through
+WP-490 establish the required read views, writer publication, checkpoint and
+recovery behavior, and performance evidence. The hardened profile is unchanged.
 
 ## Context
 
@@ -73,6 +74,11 @@ rebuilt from it.
 The hardened profile continues to apply one complete group through a two-phase
 redb `Immediate` commit and never selects the overlay path.
 
+Every standard-profile command, including an idle singleton, uses the journal
+and overlay path without a batching delay. This amends ADR-0101's direct-redb
+idle-singleton rule. The singleton still receives an independent journal fence
+and acknowledgement; it is never parked merely to await sibling work.
+
 ### 2. One frozen operational read view
 
 One published standard-profile read view owns, as one immutable object:
@@ -105,6 +111,13 @@ fences, field authorization, corruption checks, and result ordering remain
 unchanged. The merge must stop at the existing bounded result and work limits;
 it may not materialize an unbounded union.
 
+The index generation returned as the scan fence is read from that same frozen
+view after applying the identical overlay-first/tombstone rule. Checkpoint
+compaction does not itself advance a logical index generation. A continuation
+therefore observes the same generation semantics as today and still rejects a
+real intervening mutation rather than treating physical overlay compaction as
+an application change.
+
 Derived exact command-segment locators remain governed by ADR-0102. Their
 published generation is bound to the same view and cannot claim a key beyond
 `P` or omit one at or below `P`.
@@ -127,7 +140,7 @@ authoritative writer. For each accepted FIFO group it:
 5. withholds every result and effect until the journal lane reports the frame's
    durable fence.
 
-Sequence assignment remains invisible until step 4 succeeds durably. A frame
+Sequence assignment remains invisible until the fence in step 5 succeeds. A frame
 construction, validation, capacity, or submission failure before durability
 publishes neither sequence nor state. A later command observes each complete
 earlier private transition in FIFO order even when their journal fence is still
@@ -196,17 +209,31 @@ typed degraded-storage/operator state. An uncertain redb checkpoint commit is
 resolved on restart from its embedded frontiers and terminal frame hash; the
 journal is never discarded merely because the redb commit may have succeeded.
 
-### 6. Crash recovery and corrupt states
+### 6. Redb-writing barriers
 
-On startup, storage validates the redb checkpoint and scans the journal exactly
-as required by ADR-0101 and ADR-0103. It then chooses one of two bounded paths:
+Catalog, contract, query-module, reactive-module, capability, other
+administration, offline maintenance, backup publication, shutdown, and
+hardened-profile operations remain non-bypassable barriers. Before any such
+operation opens a redb write transaction, the writer drains every unpublished
+journal fence and the checkpointer applies the complete published suffix to an
+Immediate redb checkpoint. The operation begins only from the validated empty-
+overlay successor view.
 
-- rebuild the immutable overlay from the complete suffix and become ready; or
-- replay the complete suffix through the checkpoint validator, perform one
-  redb checkpoint, and become ready with an empty overlay.
+Failure or uncertainty while draining or checkpointing prevents the barrier
+operation from starting and retains its existing public failure class. A
+barrier never writes an administrative successor onto a redb root that omits an
+acknowledged application or service-audit transition. Ordinary reads do not
+force this drain and remain available from the published composite view.
 
-The selected policy must be deterministic for one format version and must not
-depend on wall-clock timing. Repeated restart is idempotent.
+### 7. Crash recovery and corrupt states
+
+On standard-profile startup, storage validates the redb checkpoint and scans
+the journal exactly as required by ADR-0101 and ADR-0103. It deterministically
+rebuilds the immutable overlay from the complete suffix, publishes that
+composite view, and may then become ready without first rewriting the suffix
+into redb. The ordinary bounded checkpointer starts after readiness. Startup
+does not choose between replay policies based on timing, suffix size, or an
+operator knob. Repeated restart is idempotent.
 
 Recovery rejects: a suffix gap or duplicate; a wrong predecessor frontier or
 hash; a frame/database/history mismatch; a canonical mutation whose expected
@@ -223,7 +250,7 @@ after checkpoint commit before compacted-view publication; during journal
 reclamation; and after reclamation before the next frame. Every restart exposes
 the predecessor or the complete durable successor, never partial state.
 
-### 7. Backup, maintenance, retention, and replication
+### 8. Backup, maintenance, retention, and replication
 
 Offline backup captures the known-durable redb checkpoint plus every required
 journal extent as one verified unit, as ADR-0101 and ADR-0103 already require.
@@ -239,6 +266,27 @@ shortcut may bypass retention eligibility.
 Replication and changelog frames continue to derive from published durable
 frontiers under ADR-0100. Physical overlay entries and journal extent bytes are
 not a replication format, CDC surface, or public API.
+
+## Normative specification amendments
+
+The accepted change is also encoded in `SPEC.md`; updating the ADR alone is
+insufficient.
+
+`PERF-015` previously required every operational read to use an atomically
+published last-durable **redb snapshot**. It now requires one
+atomically published last-durable **composite read view** containing the exact
+redb checkpoint and gap-free immutable journal overlay. Applied-but-unfenced
+overlay state remains writer-private. It also removes the requirement that
+an idle standard-profile singleton use the direct redb Immediate path; the
+singleton instead uses one immediate journal submission with no batching wait.
+
+`PERF-017` previously required the final covered redb read snapshot to publish
+after a journal fence and recovery to replay and checkpoint the suffix before
+readiness. It now requires publication of the final covered
+composite read view and permits readiness after deterministic complete overlay
+rebuild. The exact checkpoint-plus-suffix authority, frame validation,
+acknowledgement fence, suffix bounds, FIFO order, barrier drain, backup unit,
+and corruption behavior remain unchanged.
 
 ## Consequences
 
@@ -306,6 +354,6 @@ benchmark-only synthetic application-value shapes through the real redb table
 definitions and journal frame encoder, not production enablement or a public
 performance claim.
 
-The mechanics evidence satisfies the quantitative prerequisite. This record
-remains Proposed because the separate exact-text human acceptance prerequisite
-has not yet been satisfied.
+The mechanics evidence satisfies the quantitative prerequisite. The maintainer
+accepted this exact authority, ordering, recovery, and read-validation decision
+on 2026-08-08. Production selection remains gated by WP-487 through WP-490.

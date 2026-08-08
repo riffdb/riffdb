@@ -92,6 +92,23 @@ RIFFDB_TMP_ROOT=$HOME/tmp TMPDIR=$HOME/tmp \
 
 ## Current status
 
-The mechanics gate passed and the exact design is recorded in Proposed
-ADR-0104. Production remains on the accepted apply-to-redb-before-fence path
-until that ADR receives explicit exact-text approval.
+The mechanics gate passed, and ADR-0104 received explicit exact-text approval
+on 2026-08-08. Production remains on the apply-to-redb-before-fence path until
+WP-487 through WP-490 complete the composite-view implementation and gates.
+
+Implementation is decomposed into four gates:
+
+1. WP-487 adds frozen checkpoint-plus-overlay read views and exact bounded
+   point/scan semantics without selecting them for production writes.
+2. WP-488 moves standard command and service-audit staging to frame-first
+   overlay publication while retaining the hardened redb oracle.
+3. WP-489 adds asynchronous checkpoints, deterministic restart rebuild,
+   redb-writing barriers, backup/restore, reclamation, and process crash proof.
+4. WP-490 enables the production composition and requires RiffDB's arithmetic
+   mean across c1/c8/c32/c128 to beat same-run PostgreSQL safe-app, with no
+   individual point below 0.90 parity.
+
+The ADR audit also identified explicit specification amendments: `PERF-015`
+and `PERF-017` previously required a published redb snapshot and recovery-time
+checkpoint before readiness. ADR-0104 states the exact composite-view and
+deterministic overlay-rebuild replacements, now encoded in `SPEC.md`.

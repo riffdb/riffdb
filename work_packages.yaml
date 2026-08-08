@@ -897,6 +897,186 @@ work_packages:
     meet every apply, read, and checkpoint threshold; and ADR-0104 remains Proposed until the human
     maintainer accepts its exact authority, ordering, recovery, and read-validation text.
   human_review_triggers: *id001
+- id: WP-487
+  name: Frozen checkpoint-plus-overlay read views
+  depends_on: [WP-486]
+  objective: Implement the accepted ADR-0104 composite read-view and exact journal-mutation overlay
+    primitives without yet selecting them for production command acknowledgement.
+  requirements: [STO-001, STO-002, TXN-040, PERF-007, PERF-008, PERF-012,
+    PERF-015, PERF-017]
+  required_adrs: [ADR-0004, ADR-0035, ADR-0053, ADR-0070, ADR-0101, ADR-0102,
+    ADR-0103, ADR-0104]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0104-journal-authoritative-state-overlay.md,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, tests/storage_conformance/**,
+    docs/SUMMARY.md, docs/architecture/**, docs/performance/**]
+  deliverables:
+  - "`PERF-015` and `PERF-017` encode the exact accepted composite-view, idle-singleton, and
+    deterministic overlay-recovery amendments without weakening their existing bounds or fences"
+  - A closed immutable view binds one redb checkpoint root, one exact ordered overlay, checkpoint
+    and published dual frontiers, database/history/registry identity, and terminal frame hash
+  - Point reads implement overlay value, overlay tombstone, and checkpoint fallback; bounded scans
+    merge canonical keys without materializing an unbounded union and observe the index generation
+    from the same view
+  - Overlay mutation application validates table membership, canonical bytes, expected prior hash,
+    put absence, tombstones, allocators, segment manifests, generations, frontiers, and complete
+    journal-frame order before a view can be frozen
+  - Memory/redb conformance and deterministic schedules prove snapshot consistency across overlay
+    publication and checkpoint compaction, cursor invalidation only on logical generation change,
+    and fail-closed corruption handling
+  - The production command path remains on apply-to-redb-before-fence until WP-488
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test --test storage_conformance
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Exact-text ADR-0104 is Accepted before implementation; composite view construction and
+    reads pass semantic parity, boundedness, corruption, and concurrency tests; and no production
+    acknowledgement path selects the overlay.
+  human_review_triggers: *id001
+- id: WP-488
+  name: Frame-first standard writer and overlay publication
+  depends_on: [WP-487]
+  objective: Remove synchronous redb apply from every standard-profile command and service-audit
+    acknowledgement while preserving sole-writer FIFO evaluation, transaction-current validation,
+    atomic command graphs, independent outcomes, and journal-fence publication.
+  requirements: [REC-001, REC-002, TXN-040, TXN-041, TXN-042, TXN-043,
+    TXN-044, PERF-004, PERF-005, PERF-008, PERF-009, PERF-010, PERF-015,
+    PERF-017]
+  required_adrs: [ADR-0003, ADR-0005, ADR-0058, ADR-0059, ADR-0060, ADR-0061,
+    ADR-0094, ADR-0095, ADR-0096, ADR-0098, ADR-0101, ADR-0102, ADR-0103,
+    ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-commit/**, crates/riffdb-observability/**,
+    tests/storage_recovery/**, tests/server_composition/**,
+    examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/architecture/**, docs/performance/**]
+  deliverables:
+  - Standard command staging constructs, validates, charges, and applies exact journal mutations to
+    the writer-private overlay without opening a redb write transaction; hardened staging remains
+    the independent two-phase redb oracle
+  - FIFO successors evaluate and transaction-current validate against every complete private
+    predecessor, with conflict authority transfer and disjoint same-snapshot proofs unchanged
+  - A known journal fence atomically publishes the complete covered composite view before any
+    result, audit, transient index, event, projection, outbox, subscription, or response release
+  - Idle singletons use one immediate journal submission with no batching wait or redb apply;
+    grouped commands retain all 256-transition, 16-MiB, scheduler, and independent-identity bounds
+  - Standalone service-audit frames use the same overlay publication order; every redb-writing
+    control-plane or lifecycle message remains a hard drain/checkpoint barrier
+  - Deterministic concurrency and failpoint tests cover frame construction failure, overlay
+    capacity, same-identity races, overlapping FIFO successors, fence failure/uncertainty, stale
+    publication, cancellation, and result withholding
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - cargo +1.97.0 test --test server_composition
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Standard acknowledgements perform no synchronous redb apply, hardened behavior is
+    unchanged, all semantic/concurrency/failure suites pass, and focused c1/c32 write evidence
+    materially improves without read or correctness regression.
+  human_review_triggers: *id001
+- id: WP-489
+  name: Ordered asynchronous checkpoint, recovery, and maintenance barriers
+  depends_on: [WP-488]
+  objective: Make acknowledged overlay state operationally complete through bounded asynchronous
+    redb checkpoints, deterministic restart rebuild, crash-safe reclamation, backup/restore, and
+    exact redb-writing barriers.
+  requirements: [STO-001, STO-002, REC-001, REC-002, TXN-043, TXN-044,
+    PERF-007, PERF-009, PERF-015, PERF-017]
+  required_adrs: [ADR-0006, ADR-0050, ADR-0061, ADR-0070, ADR-0082, ADR-0085,
+    ADR-0098, ADR-0101, ADR-0102, ADR-0103, ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    tests/storage_recovery/**, tests/backup_restore/**,
+    tests/server_composition/**, examples/app-baseline/**,
+    benchmarks/run-app-baseline, docs/SUMMARY.md, docs/architecture/**,
+    docs/operations/**, docs/performance/**]
+  deliverables:
+  - One bounded checkpointer applies a captured published suffix in exact writer order, validates
+    every expected prior and frontier, commits one Immediate redb checkpoint, and compacts only the
+    proven covered overlay prefix while retaining concurrent newer entries
+  - Checkpoint admission starts before the 4,096-transition, 16-MiB journal, 64-MiB overlay, extent,
+    and retained-root ceilings; insufficient headroom backpressures writes while reads remain live
+  - Standard restart deterministically validates checkpoint plus suffix, rebuilds the exact overlay,
+    reaches readiness without a mandatory redb rewrite, and starts the ordinary checkpointer
+  - Redb-writing barriers drain unpublished fences and checkpoint the complete published suffix
+    before their own transaction; checkpoint failure or uncertainty prevents barrier execution
+  - Backup/restore preserve the checkpoint-plus-extent unit, and reclamation/recycle occurs only
+    after a successor checkpoint and compacted view independently prove recovery sufficiency
+  - Process crash arms cover every ADR-0104 boundary, including checkpoint apply/commit,
+    compacted-view publication, concurrent suffix growth, barrier drain, backup, reclamation, and
+    repeated restart
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - cargo +1.97.0 test --test backup_restore
+  - cargo +1.97.0 test --test server_composition
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every acknowledged command survives all crash arms, every reconstructed view is exact,
+    checkpoints and barriers remain bounded and fail closed, backup/restore is complete, and no
+    accepted suffix can be lost or exposed partially.
+  human_review_triggers: *id001
+- id: WP-490
+  name: Journal-overlay production enablement and safe-app throughput gate
+  depends_on: [WP-489]
+  objective: Enable the accepted overlay path for the standard application profile and prove that
+    RiffDB beats PostgreSQL safe-app on same-run mean public-application throughput without
+    weakening correctness or hiding a regressed client point.
+  requirements: [PERF-001, PERF-002, PERF-003, PERF-004, PERF-005, PERF-007,
+    PERF-008, PERF-009, PERF-015, PERF-017]
+  required_adrs: [ADR-0053, ADR-0055, ADR-0056, ADR-0060, ADR-0061, ADR-0070,
+    ADR-0098, ADR-0101, ADR-0102, ADR-0103, ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-server/**, crates/riffdb-observability/**,
+    examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/architecture/**, docs/operations/**, docs/performance/**]
+  deliverables:
+  - Standard production composition selects frame-first overlay publication; hardened composition
+    remains selectable and semantically equivalent through its redb two-phase oracle
+  - Telemetry reports journal frames/fences, published and private overlay transitions/bytes,
+    checkpoint queue/apply/commit/reclaimed counts, backpressure, barrier drains, and read merge
+    classes with closed low-cardinality labels
+  - Same-host proxy-free sequential-exclusive tri-backend evidence uses three 30-second measured
+    repetitions after five-second warmup at 1, 8, 32, and 128 clients with zero semantic failures
+  - The arithmetic mean of the four per-client RiffDB mean-throughput points exceeds the matching
+    PostgreSQL safe-app arithmetic mean; every individual RiffDB point reaches at least 0.90 times
+    safe-app, and c1/read/write p50 plus p99 satisfy their existing gates
+  - Write-only, interactive, agent, hot-key contention, history-growth, crash-under-load, and
+    deploy-under-load profiles remain bounded, exact, and free of unavailable/storage errors
+  - Documentation states the checkpoint-plus-overlay mechanism, operational degraded state,
+    metrics, bounds, standard/hardened profiles, and retained POC limitations
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./benchmarks/run-app-baseline --full --load interactive --load-concurrency-sweep
+    --postgres-comparator safe-app --reps 3 --require-stable
+  - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep
+    --postgres-comparator safe-app --reps 3 --require-stable
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Same-run retained evidence proves RiffDB's four-point arithmetic mean throughput beats
+    PostgreSQL safe-app, no point falls below 0.90 parity, every correctness/recovery/latency gate
+    passes, and the complete standard-profile mechanism is documented and operationally bounded.
+  human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope
   depends_on:
