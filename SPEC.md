@@ -6697,9 +6697,15 @@ ADR-0055.
   batching wait: it drains the ready FIFO prefix before each journal fence, and
   commands applied during an in-progress fence form the next bounded prefix. A
   singleton with no accepted command backlog MUST use the direct Immediate
-  path. Every
-  operational and derived read MUST use an atomically published last-durable
-  redb snapshot; deferred subgroup state MUST remain invisible. Responses,
+  path until the ADR-0104 journal-authoritative overlay is selected. Under
+  ADR-0104, every standard-profile command, including an idle singleton, MUST
+  instead use one immediate journal submission with no fixed batching wait.
+  Every operational and derived read MUST use one atomically published
+  last-durable view. Before ADR-0104 selection that view is a redb snapshot.
+  Under ADR-0104 it MUST be one immutable composite view binding the exact
+  known-durable redb checkpoint and complete gap-free journal overlay through
+  the published frontier. Deferred or applied-but-unfenced state MUST remain
+  writer-private and invisible. Responses,
   notifications, transient indexes, projection work, outbox work, and
   subscribers MUST remain withheld until the covering durability fence succeeds. Tail
   uncertainty fences writes and resolves every command independently. Before
@@ -6718,8 +6724,10 @@ ADR-0055.
   spend the same fixed 2-millisecond budget collecting one larger FIFO prefix
   for a single Immediate transaction. The dedicated coordinator MAY park on an
   intake-or-deadline wait for that real two-millisecond window; the fresh
-  200-microsecond formation path remains timer-free. An idle singleton or a
-  prefix above 32 commands MUST use the direct Immediate path. Recovery
+  200-microsecond formation path remains timer-free. Before ADR-0104 selection,
+  an idle singleton or a prefix above 32 commands MUST use the direct Immediate
+  path. Under ADR-0104, an idle singleton MUST submit immediately to the journal
+  lane; it MUST NOT wait for a sibling merely to form a group. Recovery
   MUST observe the epoch as complete or absent, never partially durable. The
   hardened profile MUST retain independently Immediate two-phase groups.
 - `PERF-016`: A successful command MAY store its shared commit, terminal
@@ -6748,14 +6756,21 @@ ADR-0055.
   service-audit-group bounds remain independently enforced. Published frames
   MAY remain in the same recovery suffix up to a separate 4,096-transition and
   16 MiB bound before checkpoint reclamation, with one maximum unpublished
-  group reserved so the effective checkpoint ceiling is byte-aware. redb roots ahead
-  of the journal frontier are writer-private; one successful journal fence
-  atomically publishes the final covered read snapshot before any command
-  result, audit result, or effect. Append or fence uncertainty withholds
+  group reserved so the effective checkpoint ceiling is byte-aware. Redb roots
+  ahead of the journal frontier are writer-private. Before ADR-0104 selection,
+  one successful journal fence atomically publishes the final covered redb read
+  snapshot. Under ADR-0104, the synchronous path MUST NOT apply standard
+  command state to redb before acknowledgement; one successful journal fence
+  MUST instead atomically publish one composite read view containing the exact
+  checkpoint and complete covered overlay before any command result, audit
+  result, or effect. Append or fence uncertainty withholds
   results and fences command and audit writes. Restart MUST reject every
   dual-frontier gap, reorder, substitution, database mismatch, malformed
-  frame, or nonreciprocal graph, ignore only an incomplete terminal tail,
-  replay the exact suffix, and checkpoint before readiness. Journal reclamation
+  frame, or nonreciprocal graph, and ignore only an incomplete terminal tail.
+  Before ADR-0104 selection, restart MUST replay the exact suffix and checkpoint
+  before readiness. Under ADR-0104, restart MUST deterministically rebuild and
+  validate the complete composite overlay before readiness and MAY checkpoint
+  it asynchronously afterward. Journal reclamation
   and backup MUST preserve at least one complete checkpoint-plus-suffix recovery
   path across every crash. Catalog, contract, query-module, capability, other
   administration, lifecycle, backup, shutdown, and hardened-profile operations
