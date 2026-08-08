@@ -505,7 +505,7 @@ impl JournalMutationBuffer {
         );
         self.bytes.extend_from_slice(&frame_hash);
         Ok(EncodedJournalFrame {
-            bytes: self.bytes,
+            bytes: Arc::from(self.bytes),
             frame_hash,
             transition_count,
             command_count,
@@ -1135,7 +1135,7 @@ impl JournalFrame {
         bytes.extend_from_slice(&frame_hash);
         debug_assert_eq!(bytes.len(), total_len);
         Ok(EncodedJournalFrame {
-            bytes,
+            bytes: Arc::from(bytes),
             frame_hash,
             transition_count: self.transition_count,
             command_count: self.command_count,
@@ -1356,8 +1356,9 @@ impl JournalFrame {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct EncodedJournalFrame {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     frame_hash: [u8; HASH_BYTES],
     transition_count: u16,
     command_count: u16,

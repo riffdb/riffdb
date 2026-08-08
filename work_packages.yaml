@@ -1042,7 +1042,7 @@ work_packages:
     PERF-008, PERF-009, PERF-015, PERF-017]
   required_adrs: [ADR-0053, ADR-0055, ADR-0056, ADR-0060, ADR-0061, ADR-0070,
     ADR-0098, ADR-0101, ADR-0102, ADR-0103, ADR-0104]
-  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-server/**, crates/riffdb-observability/**,
     examples/app-baseline/**, benchmarks/run-app-baseline,
     docs/SUMMARY.md, docs/architecture/**, docs/operations/**, docs/performance/**]

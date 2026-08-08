@@ -678,6 +678,95 @@ impl CompositeMutationStage {
         })
     }
 
+    /// Seals a live frame from its already-encoded identity without cloning or
+    /// decoding its mutation graph.
+    ///
+    /// This boundary is for a storage adapter whose typed staging path feeds
+    /// the same ordered mutations to this stage and to its canonical frame
+    /// encoder. The constructor rechecks all frontier, predecessor, bound, and
+    /// frame-shape facts; startup and checkpoint materialization still decode
+    /// the durable bytes independently before applying them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seal_encoded_frame(
+        self,
+        kind: CompositeFrameKindV1,
+        database_id: DatabaseId,
+        predecessor_application: Option<CommitSequence>,
+        covered_application: Option<CommitSequence>,
+        predecessor_administration: Option<AdministrationSequence>,
+        covered_administration: Option<AdministrationSequence>,
+        transition_count: u16,
+        encoded_bytes: usize,
+        previous_hash: [u8; 32],
+        frame_hash: [u8; 32],
+    ) -> Result<FrozenCompositeOverlay, StorageValueError> {
+        let Self {
+            checkpoint,
+            predecessor_application: staged_predecessor_application,
+            predecessor_administration: staged_predecessor_administration,
+            predecessor_hash,
+            predecessor_transition_count,
+            predecessor_encoded_frame_bytes,
+            tables,
+            charged_bytes,
+            mutations,
+            predecessor_lineage,
+            predecessor_lineage_bytes,
+            staged_lineage_bytes: _,
+        } = self;
+        if database_id != checkpoint.database_id
+            || predecessor_application != staged_predecessor_application
+            || predecessor_administration != staged_predecessor_administration
+            || previous_hash != predecessor_hash
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let frame = CompositeFrameV1::new(
+            kind,
+            database_id,
+            predecessor_application,
+            covered_application,
+            predecessor_administration,
+            covered_administration,
+            transition_count,
+            encoded_bytes,
+            previous_hash,
+            frame_hash,
+            mutations,
+        )?;
+        let transition_count = predecessor_transition_count
+            .checked_add(usize::from(frame.transition_count))
+            .filter(|count| *count <= MAX_COMPOSITE_OVERLAY_TRANSITIONS)
+            .ok_or(StorageValueError::LimitExceeded)?;
+        let encoded_frame_bytes = predecessor_encoded_frame_bytes
+            .checked_add(frame.encoded_bytes)
+            .filter(|bytes| *bytes <= MAX_COMPOSITE_COMPONENT_BYTES)
+            .ok_or(StorageValueError::LimitExceeded)?;
+        let (lineage, lineage_bytes) = overlay_lineage_successor(
+            predecessor_lineage,
+            predecessor_lineage_bytes,
+            &frame.mutations,
+        )?;
+        if lineage_bytes
+            .checked_add(charged_bytes)
+            .is_none_or(|charge| charge > MAX_COMPOSITE_OVERLAY_BYTES)
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(FrozenCompositeOverlay {
+            checkpoint,
+            published_application: frame.covered_application,
+            published_administration: frame.covered_administration,
+            terminal_frame_hash: frame.frame_hash,
+            transition_count,
+            encoded_frame_bytes,
+            charged_bytes,
+            tables,
+            lineage,
+            lineage_bytes,
+        })
+    }
+
     /// Resolves a private point through staged state and then the checkpoint.
     pub fn resolve_point(
         &self,
@@ -1894,6 +1983,62 @@ mod tests {
         assert_eq!(
             successor.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
             Ok(Some(b"closed".to_vec()))
+        );
+    }
+
+    #[test]
+    fn live_encoded_seal_is_identical_to_the_independently_decoded_frame_path() {
+        let base = Base::default();
+        let mutation = CompositeMutationV1::put(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open".as_slice(),
+        )
+        .expect("put");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut decoded_stage = CompositeMutationStage::new(&predecessor);
+        decoded_stage
+            .apply(mutation.clone(), &base)
+            .expect("decoded stage mutation");
+        let mut live_stage = CompositeMutationStage::new(&predecessor);
+        live_stage
+            .apply(mutation.clone(), &base)
+            .expect("live stage mutation");
+
+        let decoded = decoded_stage
+            .seal_frame(&frame(vec![mutation]))
+            .expect("decoded seal");
+        let live = live_stage
+            .seal_encoded_frame(
+                CompositeFrameKindV1::Command,
+                database_id(),
+                Some(CommitSequence::first()),
+                CommitSequence::new(2),
+                Some(AdministrationSequence::first()),
+                AdministrationSequence::new(2),
+                1,
+                512,
+                [5; 32],
+                [6; 32],
+            )
+            .expect("live encoded seal");
+        assert_eq!(live.checkpoint(), decoded.checkpoint());
+        assert_eq!(
+            live.published_application(),
+            decoded.published_application()
+        );
+        assert_eq!(
+            live.published_administration(),
+            decoded.published_administration()
+        );
+        assert_eq!(live.terminal_frame_hash(), decoded.terminal_frame_hash());
+        assert_eq!(live.transition_count(), decoded.transition_count());
+        assert_eq!(live.encoded_frame_bytes(), decoded.encoded_frame_bytes());
+        assert_eq!(live.charged_bytes(), decoded.charged_bytes());
+        assert_eq!(live.lineage_bytes, decoded.lineage_bytes);
+        assert_eq!(
+            live.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
+            decoded.resolve_point(&base, CompositeTableV1::Entities, b"ticket")
         );
     }
 

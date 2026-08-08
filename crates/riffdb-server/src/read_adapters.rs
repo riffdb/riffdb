@@ -73,6 +73,14 @@ const MAX_HOT_EXECUTABLE_PLANS: usize = 4_096;
 #[cfg(test)]
 static QUERY_MODULE_POOL_DISPATCHES: AtomicU64 = AtomicU64::new(0);
 
+/// Counts blocking-pool dispatches for exact contract-version lookup.
+///
+/// Test-only observation of whether the immutable exact-version cache served a
+/// request. Compiled out of normal builds so the production fast path carries
+/// no counter traffic.
+#[cfg(test)]
+static CONTRACT_VERSION_POOL_DISPATCHES: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(test)]
 fn note_query_module_pool_dispatch() {
     QUERY_MODULE_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
@@ -85,6 +93,19 @@ const fn note_query_module_pool_dispatch() {}
 #[cfg(test)]
 fn query_module_pool_dispatch_count() -> u64 {
     QUERY_MODULE_POOL_DISPATCHES.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn note_contract_version_pool_dispatch() {
+    CONTRACT_VERSION_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+const fn note_contract_version_pool_dispatch() {}
+
+#[cfg(test)]
+fn contract_version_pool_dispatch_count() -> u64 {
+    CONTRACT_VERSION_POOL_DISPATCHES.load(Ordering::Relaxed)
 }
 
 #[derive(Default)]
@@ -243,6 +264,10 @@ impl QueryModulePlanCache {
 pub(crate) struct ServerCatalogReadPort {
     active_storage: SharedRedbOperationalPorts,
     active_cache: Arc<RwLock<ActiveCatalogView>>,
+    /// Exact immutable bundles already proved by the blocking catalog path.
+    /// Shared reads let generated clients reuse their pinned contract identity
+    /// without resubmitting every named query to the blocking worker pool.
+    exact_contract_cache: Arc<RwLock<HistoricalContractView>>,
     active: BlockingPortExecutor<(), Option<ActiveCatalogSnapshot>, CatalogError>,
     contract_version:
         BlockingPortExecutor<ContractVersionRequest, Option<ValidatedContractBundle>, CatalogError>,
@@ -279,12 +304,12 @@ impl ServerCatalogReadPort {
             read_active_catalog_cached(&reserved_active_storage, &reserved_active_cache)
         });
 
-        let historical = Arc::new(Mutex::new(HistoricalContractView::default()));
+        let historical = Arc::new(RwLock::new(HistoricalContractView::default()));
         let version_storage = storage.clone();
         let version_historical = Arc::clone(&historical);
         let contract_version = driver.executor(move |(lineage, version)| {
             if let Some(bundle) = version_historical
-                .lock()
+                .read()
                 .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
                 .get(&lineage, version)
             {
@@ -293,7 +318,7 @@ impl ServerCatalogReadPort {
             let bundle = read_contract_version(&version_storage, lineage, version)?;
             if let Some(bundle) = bundle.as_ref() {
                 version_historical
-                    .lock()
+                    .write()
                     .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
                     .insert(bundle.clone())?;
             }
@@ -364,6 +389,7 @@ impl ServerCatalogReadPort {
         Self {
             active_storage,
             active_cache,
+            exact_contract_cache: historical,
             active,
             contract_version,
             executable_plan,
@@ -391,6 +417,17 @@ impl CatalogReadPort for ServerCatalogReadPort {
         lineage: ContractLineage,
         version: ContractVersion,
     ) -> PortFuture<'a, Option<ValidatedContractBundle>, CatalogError> {
+        // Exact contract bundles are immutable. Admission is still checked on
+        // every request, then a warm proof can be shared inline without a
+        // serialized blocking-port turn. A miss, contended publication, or
+        // poisoned cache retains the complete durable lookup and error path.
+        if self.contract_version.precheck(control).is_ok()
+            && let Ok(cache) = self.exact_contract_cache.try_read()
+            && let Some(bundle) = cache.get(&lineage, version)
+        {
+            return Box::pin(async move { Ok(Some(bundle)) });
+        }
+        note_contract_version_pool_dispatch();
         submit_catalog(
             self.contract_version.reserve_async(control),
             (lineage, version),
@@ -2672,6 +2709,41 @@ mod tests {
         let (control, _cancellation) =
             RequestControl::new(Instant::now() + Duration::from_secs(30));
 
+        let contract_baseline = contract_version_pool_dispatch_count();
+        runtime.block_on(async {
+            let cold = port
+                .prepare_contract_version(
+                    &control,
+                    bundle.lineage().clone(),
+                    bundle.contract_version(),
+                )
+                .await
+                .expect("cold exact contract lookup succeeds")
+                .expect("activated contract resolves");
+            assert_eq!(cold.bundle_hash(), bundle.bundle_hash());
+            assert_eq!(
+                contract_version_pool_dispatch_count(),
+                contract_baseline + 1,
+                "a cold exact contract lookup must enter the blocking pool"
+            );
+
+            let warm = port
+                .prepare_contract_version(
+                    &control,
+                    bundle.lineage().clone(),
+                    bundle.contract_version(),
+                )
+                .await
+                .expect("warm exact contract lookup succeeds")
+                .expect("cached contract resolves");
+            assert_eq!(warm.bundle_hash(), bundle.bundle_hash());
+            assert_eq!(
+                contract_version_pool_dispatch_count(),
+                contract_baseline + 1,
+                "an immutable exact contract cache hit must stay inline"
+            );
+        });
+
         let baseline = query_module_pool_dispatch_count();
         runtime.block_on(async {
             // Cold: the plan cache is empty, so compilation must happen on the
@@ -2727,6 +2799,7 @@ mod tests {
         // `try_lock` turns harmless reader overlap into blocking-pool work;
         // this synchronized burst makes that regression observable.
         let concurrent_baseline = query_module_pool_dispatch_count();
+        let concurrent_contract_baseline = contract_version_pool_dispatch_count();
         let readers = 64;
         let barrier = StdArc::new(Barrier::new(readers));
         thread::scope(|scope| {
@@ -2740,6 +2813,15 @@ mod tests {
                         RequestControl::new(Instant::now() + Duration::from_secs(30));
                     barrier.wait();
                     for _ in 0..64 {
+                        let exact = handle
+                            .block_on(port.prepare_contract_version(
+                                &control,
+                                bundle.lineage().clone(),
+                                bundle.contract_version(),
+                            ))
+                            .expect("concurrent exact lookup succeeds")
+                            .expect("concurrent exact contract is present");
+                        assert_eq!(exact.bundle_hash(), bundle.bundle_hash());
                         let resolved = handle
                             .block_on(port.prepare_query_module(
                                 &control,
@@ -2757,6 +2839,11 @@ mod tests {
             query_module_pool_dispatch_count(),
             concurrent_baseline,
             "concurrent warm readers must never fall back to the blocking pool"
+        );
+        assert_eq!(
+            contract_version_pool_dispatch_count(),
+            concurrent_contract_baseline,
+            "concurrent exact contract readers must never fall back to the blocking pool"
         );
 
         // Admission control: once routing stops, a warm cache must not be a

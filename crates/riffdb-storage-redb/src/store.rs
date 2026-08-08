@@ -398,7 +398,7 @@ struct JournalRuntime {
     suffix_commands: usize,
     suffix_audits: usize,
     suffix_bytes: usize,
-    suffix_frames: Vec<([u8; 32], Arc<crate::journal::JournalFrame>)>,
+    suffix_frames: Vec<([u8; 32], crate::journal::EncodedJournalFrame)>,
     unpublished_transitions: usize,
     unpublished_commands: usize,
     unpublished_audits: usize,
@@ -419,7 +419,7 @@ struct JournalCheckpointBatch {
     command_count: usize,
     audit_count: usize,
     encoded_bytes: usize,
-    frames: Vec<([u8; 32], Arc<crate::journal::JournalFrame>)>,
+    frames: Vec<([u8; 32], crate::journal::EncodedJournalFrame)>,
 }
 
 struct AsyncJournalCheckpoint {
@@ -3425,12 +3425,6 @@ impl RedbWriteAccess {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if let Some(controller) = &self.shared.test_controller
-            && let Err(error) = controller.after_commit(RedbTestOperation::ServiceAudit)
-        {
-            self.shared.fence_writes();
-            return Err(error);
-        }
         let successor = composite_predecessor.checkpoint_root_shared();
         let covered_sequence = composite_predecessor.overlay().published_application();
         let covered_administration_sequence = results
@@ -3508,20 +3502,26 @@ impl RedbWriteAccess {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let frame_hash = frame.frame_hash();
-            let (decoded, decoded_hash) = crate::journal::JournalFrame::decode(frame.as_bytes())
-                .map_err(journal_storage_error)?;
-            if decoded_hash != frame_hash {
-                self.shared.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            let composite_successor = Arc::new(composite_stage.seal_frame(&decoded)?);
+            let composite_successor = Arc::new(composite_stage.seal_encoded_frame(
+                riffdb_storage_api::CompositeFrameKindV1::ServiceAudit,
+                runtime.database_id,
+                predecessor_sequence,
+                predecessor_sequence,
+                predecessor_administration_sequence,
+                covered_administration_sequence,
+                audit_count,
+                encoded_bytes,
+                runtime.last_hash,
+                frame_hash,
+            )?);
+            let retained_frame = frame.clone();
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.last_administration_sequence = covered_administration_sequence;
             runtime.last_hash = frame_hash;
             runtime.suffix_transitions = next_transitions;
             runtime.suffix_audits = next_audits;
             runtime.suffix_bytes = next_bytes;
-            runtime.suffix_frames.push((frame_hash, Arc::new(decoded)));
+            runtime.suffix_frames.push((frame_hash, retained_frame));
             runtime.unpublished_transitions = next_unpublished_transitions;
             runtime.unpublished_audits = next_unpublished_audits;
             runtime.unpublished_bytes = next_unpublished_bytes;
@@ -3754,14 +3754,19 @@ impl RedbDurabilityEpoch {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             } else {
                 let frame_hash = frame.frame_hash();
-                let (decoded, decoded_hash) =
-                    crate::journal::JournalFrame::decode(frame.as_bytes())
-                        .map_err(journal_storage_error)?;
-                if decoded_hash != frame_hash {
-                    self.shared.fence_writes();
-                    return Err(storage_error(StorageErrorKind::InvariantViolation));
-                }
-                let composite_successor = Arc::new(composite_stage.seal_frame(&decoded)?);
+                let composite_successor = Arc::new(composite_stage.seal_encoded_frame(
+                    riffdb_storage_api::CompositeFrameKindV1::Command,
+                    runtime.database_id,
+                    runtime.last_sequence,
+                    Some(last_sequence),
+                    runtime.last_administration_sequence,
+                    last_administration_sequence,
+                    command_count,
+                    encoded_bytes,
+                    runtime.last_hash,
+                    frame_hash,
+                )?);
+                let retained_frame = frame.clone();
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.last_sequence = Some(last_sequence);
                 runtime.last_administration_sequence = last_administration_sequence;
@@ -3770,7 +3775,7 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_commands = next_commands;
                 runtime.suffix_audits = next_audits;
                 runtime.suffix_bytes = next_bytes;
-                runtime.suffix_frames.push((frame_hash, Arc::new(decoded)));
+                runtime.suffix_frames.push((frame_hash, retained_frame));
                 runtime.unpublished_transitions = next_unpublished_transitions;
                 runtime.unpublished_commands = next_unpublished_commands;
                 runtime.unpublished_audits = next_unpublished_audits;
@@ -4235,7 +4240,13 @@ impl SharedRedb {
         let mut transition_count = 0_usize;
         let mut command_count = 0_usize;
         let mut audit_count = 0_usize;
-        for (frame_hash, frame) in &batch.frames {
+        for (frame_hash, encoded) in &batch.frames {
+            let (frame, decoded_hash) = crate::journal::JournalFrame::decode(encoded.as_bytes())
+                .map_err(journal_storage_error)?;
+            if decoded_hash != *frame_hash {
+                let _ = transaction.abort();
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
             if frame.database_id() != batch.database_id
                 || frame.predecessor_sequence() != last_sequence
                 || frame.predecessor_administration_sequence() != last_administration_sequence
@@ -4908,6 +4919,12 @@ impl RedbSubmittedServiceAuditFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
+        // The uncertainty hook models a failure after the durability fence,
+        // not after private staging. On an injected unknown result, recovery
+        // must observe the complete journal frame while the in-process public
+        // view remains at its predecessor.
+        self.shared
+            .after_test_commit(RedbTestOperation::ServiceAudit)?;
         let composite_successor = self
             .composite_successor
             .take()
