@@ -420,7 +420,7 @@ pub struct CompositeOverlayBuilder {
     transition_count: usize,
     encoded_frame_bytes: usize,
     charged_bytes: usize,
-    tables: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT],
+    tables: [PersistentOverlayMap; TABLE_COUNT],
 }
 
 impl CompositeOverlayBuilder {
@@ -435,7 +435,26 @@ impl CompositeOverlayBuilder {
             transition_count: 0,
             encoded_frame_bytes: 0,
             charged_bytes: 0,
-            tables: array::from_fn(|_| BTreeMap::new()),
+            tables: array::from_fn(|_| PersistentOverlayMap::default()),
+        }
+    }
+
+    /// Forks an immutable published suffix into writer-private construction
+    /// state in O(1). Only paths touched by successor mutations are copied.
+    /// Captured readers therefore retain their exact prior roots while the sole
+    /// writer can continue from the published frontier without cloning the
+    /// complete bounded overlay.
+    #[must_use]
+    pub fn from_published(published: &FrozenCompositeOverlay) -> Self {
+        Self {
+            checkpoint: published.checkpoint.clone(),
+            current_application: published.published_application,
+            current_administration: published.published_administration,
+            current_hash: published.terminal_frame_hash,
+            transition_count: published.transition_count,
+            encoded_frame_bytes: published.encoded_frame_bytes,
+            charged_bytes: published.charged_bytes,
+            tables: published.tables.clone(),
         }
     }
 
@@ -454,10 +473,8 @@ impl CompositeOverlayBuilder {
         for mutation in &frame.mutations {
             base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
             let table_index = mutation.table().index();
-            let current = match pending_tables[table_index]
-                .get(mutation.key())
-                .or_else(|| self.tables[table_index].get(mutation.key()))
-            {
+            let pending = pending_tables[table_index].get(mutation.key());
+            let current = match pending.or_else(|| self.tables[table_index].get(mutation.key())) {
                 Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
                 Some(OverlayValue::Tombstone) => None,
                 None => base.read_base(mutation.table(), mutation.key())?,
@@ -487,7 +504,9 @@ impl CompositeOverlayBuilder {
         }
 
         for (target, pending) in self.tables.iter_mut().zip(pending_tables) {
-            target.extend(pending);
+            for (key, value) in pending {
+                target.insert(key, value);
+            }
         }
         self.charged_bytes = candidate_charge;
         self.transition_count = self
@@ -534,7 +553,7 @@ impl CompositeOverlayBuilder {
             transition_count: self.transition_count,
             encoded_frame_bytes: self.encoded_frame_bytes,
             charged_bytes: self.charged_bytes,
-            tables: Arc::new(self.tables),
+            tables: self.tables,
         }
     }
 }
@@ -549,7 +568,7 @@ pub struct FrozenCompositeOverlay {
     transition_count: usize,
     encoded_frame_bytes: usize,
     charged_bytes: usize,
-    tables: Arc<[BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT]>,
+    tables: [PersistentOverlayMap; TABLE_COUNT],
 }
 
 impl FrozenCompositeOverlay {
@@ -638,13 +657,10 @@ impl FrozenCompositeOverlay {
             return Err(StorageValueError::InvalidShape);
         }
         let mut base = base.into_iter().peekable();
-        let bounds = (
-            Included::<Box<[u8]>>(start_inclusive.into()),
-            end_exclusive
-                .map(|end| Excluded::<Box<[u8]>>(end.into()))
-                .unwrap_or(Unbounded),
-        );
-        let mut overlay = self.tables[table.index()].range(bounds).peekable();
+        let end_bound = end_exclusive.map(Excluded).unwrap_or(Unbounded);
+        let mut overlay = self.tables[table.index()]
+            .range(Included(start_inclusive), end_bound)
+            .peekable();
         let mut rows = Vec::with_capacity(max_rows.min(256));
         let mut inspected = 0usize;
         let mut last_base_key: Option<Box<[u8]>> = None;
@@ -669,7 +685,7 @@ impl FrozenCompositeOverlay {
                 }
                 None => None,
             };
-            let overlay_key = overlay.peek().map(|(key, _)| key.as_ref());
+            let overlay_key = overlay.peek().map(|(key, _)| *key);
             if base_key.is_none() && overlay_key.is_none() {
                 break;
             }
@@ -697,7 +713,7 @@ impl FrozenCompositeOverlay {
                 (Some(_), Some(_)) | (None, Some(_)) => {
                     let (key, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
                     if let OverlayValue::Value(value) = value {
-                        rows.push((key.clone(), value.as_ref().into()));
+                        rows.push((key.into(), value.as_ref().into()));
                     }
                 }
                 (Some(_), None) => {
@@ -762,6 +778,233 @@ impl BoundedCompositePage {
 enum OverlayValue {
     Tombstone,
     Value(Arc<[u8]>),
+}
+
+/// Persistent AVL map used by immutable published views.
+///
+/// A successor reuses every untouched node and copies only one logarithmic
+/// search path. This is intentionally private: callers can observe only the
+/// closed overlay lookup and bounded merge contracts above.
+#[derive(Clone, Default)]
+struct PersistentOverlayMap {
+    root: Option<Arc<OverlayNode>>,
+}
+
+struct OverlayNode {
+    key: Box<[u8]>,
+    value: OverlayValue,
+    height: u16,
+    left: Option<Arc<Self>>,
+    right: Option<Arc<Self>>,
+}
+
+impl PersistentOverlayMap {
+    fn get(&self, key: &[u8]) -> Option<&OverlayValue> {
+        let mut current = self.root.as_deref();
+        while let Some(node) = current {
+            match key.cmp(node.key.as_ref()) {
+                std::cmp::Ordering::Less => current = node.left.as_deref(),
+                std::cmp::Ordering::Equal => return Some(&node.value),
+                std::cmp::Ordering::Greater => current = node.right.as_deref(),
+            }
+        }
+        None
+    }
+
+    fn insert(&mut self, key: Box<[u8]>, value: OverlayValue) {
+        self.root = Some(insert_overlay_node(self.root.as_ref(), key, value));
+    }
+
+    fn range<'map>(
+        &'map self,
+        start: std::ops::Bound<&'map [u8]>,
+        end: std::ops::Bound<&'map [u8]>,
+    ) -> PersistentOverlayRange<'map> {
+        PersistentOverlayRange::new(self.root.as_deref(), start, end)
+    }
+}
+
+fn insert_overlay_node(
+    node: Option<&Arc<OverlayNode>>,
+    key: Box<[u8]>,
+    value: OverlayValue,
+) -> Arc<OverlayNode> {
+    let Some(node) = node else {
+        return overlay_node(key, value, None, None);
+    };
+    match key.as_ref().cmp(node.key.as_ref()) {
+        std::cmp::Ordering::Less => rebalance_overlay_node(overlay_node(
+            node.key.clone(),
+            node.value.clone(),
+            Some(insert_overlay_node(node.left.as_ref(), key, value)),
+            node.right.clone(),
+        )),
+        std::cmp::Ordering::Equal => {
+            overlay_node(key, value, node.left.clone(), node.right.clone())
+        }
+        std::cmp::Ordering::Greater => rebalance_overlay_node(overlay_node(
+            node.key.clone(),
+            node.value.clone(),
+            node.left.clone(),
+            Some(insert_overlay_node(node.right.as_ref(), key, value)),
+        )),
+    }
+}
+
+fn overlay_node(
+    key: Box<[u8]>,
+    value: OverlayValue,
+    left: Option<Arc<OverlayNode>>,
+    right: Option<Arc<OverlayNode>>,
+) -> Arc<OverlayNode> {
+    let height = overlay_height(&left)
+        .max(overlay_height(&right))
+        .saturating_add(1);
+    Arc::new(OverlayNode {
+        key,
+        value,
+        height,
+        left,
+        right,
+    })
+}
+
+fn overlay_height(node: &Option<Arc<OverlayNode>>) -> u16 {
+    node.as_ref().map_or(0, |node| node.height)
+}
+
+fn rebalance_overlay_node(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+    let balance = i32::from(overlay_height(&node.left)) - i32::from(overlay_height(&node.right));
+    if balance > 1 {
+        let left = node
+            .left
+            .as_ref()
+            .expect("positive AVL balance has left child");
+        if overlay_height(&left.left) < overlay_height(&left.right) {
+            let rotated_left = rotate_overlay_left(Arc::clone(left));
+            return rotate_overlay_right(overlay_node(
+                node.key.clone(),
+                node.value.clone(),
+                Some(rotated_left),
+                node.right.clone(),
+            ));
+        }
+        return rotate_overlay_right(node);
+    }
+    if balance < -1 {
+        let right = node
+            .right
+            .as_ref()
+            .expect("negative AVL balance has right child");
+        if overlay_height(&right.right) < overlay_height(&right.left) {
+            let rotated_right = rotate_overlay_right(Arc::clone(right));
+            return rotate_overlay_left(overlay_node(
+                node.key.clone(),
+                node.value.clone(),
+                node.left.clone(),
+                Some(rotated_right),
+            ));
+        }
+        return rotate_overlay_left(node);
+    }
+    node
+}
+
+fn rotate_overlay_left(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+    let right = node
+        .right
+        .as_ref()
+        .expect("AVL left rotation has right child");
+    let new_left = overlay_node(
+        node.key.clone(),
+        node.value.clone(),
+        node.left.clone(),
+        right.left.clone(),
+    );
+    overlay_node(
+        right.key.clone(),
+        right.value.clone(),
+        Some(new_left),
+        right.right.clone(),
+    )
+}
+
+fn rotate_overlay_right(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+    let left = node
+        .left
+        .as_ref()
+        .expect("AVL right rotation has left child");
+    let new_right = overlay_node(
+        node.key.clone(),
+        node.value.clone(),
+        left.right.clone(),
+        node.right.clone(),
+    );
+    overlay_node(
+        left.key.clone(),
+        left.value.clone(),
+        left.left.clone(),
+        Some(new_right),
+    )
+}
+
+struct PersistentOverlayRange<'map> {
+    stack: Vec<&'map OverlayNode>,
+    end: std::ops::Bound<&'map [u8]>,
+}
+
+impl<'map> PersistentOverlayRange<'map> {
+    fn new(
+        root: Option<&'map OverlayNode>,
+        start: std::ops::Bound<&'map [u8]>,
+        end: std::ops::Bound<&'map [u8]>,
+    ) -> Self {
+        let mut range = Self {
+            stack: Vec::new(),
+            end,
+        };
+        let mut current = root;
+        while let Some(node) = current {
+            let before_start = match start {
+                Included(start) => node.key.as_ref() < start,
+                Excluded(start) => node.key.as_ref() <= start,
+                Unbounded => false,
+            };
+            if before_start {
+                current = node.right.as_deref();
+            } else {
+                range.stack.push(node);
+                current = node.left.as_deref();
+            }
+        }
+        range
+    }
+
+    fn push_left(&mut self, mut current: Option<&'map OverlayNode>) {
+        while let Some(node) = current {
+            self.stack.push(node);
+            current = node.left.as_deref();
+        }
+    }
+}
+
+impl<'map> Iterator for PersistentOverlayRange<'map> {
+    type Item = (&'map [u8], &'map OverlayValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.stack.pop()?;
+        let beyond_end = match self.end {
+            Included(end) => node.key.as_ref() > end,
+            Excluded(end) => node.key.as_ref() >= end,
+            Unbounded => false,
+        };
+        if beyond_end {
+            self.stack.clear();
+            return None;
+        }
+        self.push_left(node.right.as_deref());
+        Some((node.key.as_ref(), &node.value))
+    }
 }
 
 fn validate_before_image(
@@ -1103,5 +1346,39 @@ mod tests {
             view.merge_bounded(CompositeTableV1::Entities, base, b"a", Some(b"z"), 2, 1,),
             Err(StorageValueError::InvalidShape)
         );
+    }
+
+    #[test]
+    fn persistent_overlay_map_stays_balanced_for_ordered_keys() {
+        for descending in [false, true] {
+            let mut map = PersistentOverlayMap::default();
+            let keys: Vec<u16> = if descending {
+                (0..4_096).rev().collect()
+            } else {
+                (0..4_096).collect()
+            };
+            for key in keys {
+                map.insert(
+                    key.to_be_bytes().to_vec().into_boxed_slice(),
+                    OverlayValue::Value(Arc::from(key.to_be_bytes())),
+                );
+            }
+            let root = map.root.as_ref().expect("nonempty map");
+            assert!(root.height <= 14, "AVL height was {}", root.height);
+            for key in [0_u16, 1, 2_047, 4_095] {
+                assert!(matches!(
+                    map.get(&key.to_be_bytes()),
+                    Some(OverlayValue::Value(value)) if value.as_ref() == key.to_be_bytes()
+                ));
+            }
+            let rows: Vec<u16> = map
+                .range(
+                    Included(&1_000_u16.to_be_bytes()),
+                    Excluded(&1_100_u16.to_be_bytes()),
+                )
+                .map(|(key, _)| u16::from_be_bytes([key[0], key[1]]))
+                .collect();
+            assert_eq!(rows, (1_000..1_100).collect::<Vec<_>>());
+        }
     }
 }

@@ -97,6 +97,80 @@ fn exact_successor_publication_preserves_old_frozen_view() {
 }
 
 #[test]
+fn writer_private_fork_withholds_successor_from_captured_reader() {
+    let base = Base::default();
+    let mut first = CompositeOverlayBuilder::new(checkpoint());
+    first
+        .apply_frame(
+            &CompositeFrameV1::new(
+                CompositeFrameKindV1::Command,
+                database_id(),
+                None,
+                Some(CommitSequence::first()),
+                None,
+                Some(AdministrationSequence::first()),
+                1,
+                128,
+                [0; 32],
+                [1; 32],
+                vec![
+                    CompositeMutationV1::put(
+                        CompositeTableV1::Entities,
+                        b"ticket".as_slice(),
+                        b"open".as_slice(),
+                    )
+                    .expect("first mutation"),
+                ],
+            )
+            .expect("first frame"),
+            &base,
+        )
+        .expect("apply first frame");
+    let captured = first.freeze();
+
+    let mut private = CompositeOverlayBuilder::from_published(&captured);
+    private
+        .apply_frame(
+            &CompositeFrameV1::new(
+                CompositeFrameKindV1::Command,
+                database_id(),
+                Some(CommitSequence::first()),
+                CommitSequence::new(2),
+                Some(AdministrationSequence::first()),
+                AdministrationSequence::new(2),
+                1,
+                128,
+                [1; 32],
+                [2; 32],
+                vec![
+                    CompositeMutationV1::replace(
+                        CompositeTableV1::Entities,
+                        b"ticket".as_slice(),
+                        b"open",
+                        b"closed".as_slice(),
+                    )
+                    .expect("successor mutation"),
+                ],
+            )
+            .expect("successor frame"),
+            &base,
+        )
+        .expect("apply private successor");
+
+    assert_eq!(
+        captured.lookup(CompositeTableV1::Entities, b"ticket"),
+        OverlayLookup::Value(b"open")
+    );
+    let successor = private.freeze();
+    assert_eq!(
+        successor.lookup(CompositeTableV1::Entities, b"ticket"),
+        OverlayLookup::Value(b"closed")
+    );
+    assert_eq!(captured.transition_count(), 1);
+    assert_eq!(successor.transition_count(), 2);
+}
+
+#[test]
 fn storage_debug_never_exposes_overlay_keys_or_values() {
     let mutation = CompositeMutationV1::put(
         CompositeTableV1::Entities,
