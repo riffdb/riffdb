@@ -407,6 +407,40 @@ struct JournalRuntime {
     reanchor_required: bool,
 }
 
+#[derive(Clone, Copy)]
+struct JournalCapacityCharge {
+    checkpoint_transitions: usize,
+    checkpoint_bytes: usize,
+    suffix_transitions: usize,
+    suffix_bytes: usize,
+    suffix_physical_bytes: usize,
+    unpublished_transitions: usize,
+    unpublished_bytes: usize,
+}
+
+impl JournalCapacityCharge {
+    fn admits(self, transitions: usize, bytes: usize, physical_bytes: usize) -> bool {
+        transitions <= crate::journal::MAX_JOURNAL_TRANSITIONS
+            && bytes <= crate::journal::MAX_JOURNAL_FRAME_BYTES
+            && self
+                .checkpoint_transitions
+                .saturating_add(self.suffix_transitions)
+                .saturating_add(transitions)
+                <= crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+            && self
+                .checkpoint_bytes
+                .saturating_add(self.suffix_bytes)
+                .saturating_add(bytes)
+                <= crate::journal::MAX_JOURNAL_SUFFIX_BYTES
+            && self.suffix_physical_bytes.saturating_add(physical_bytes)
+                <= crate::journal::EXTENT_DATA_BYTES
+            && self.unpublished_transitions.saturating_add(transitions)
+                <= crate::journal::MAX_JOURNAL_TRANSITIONS
+            && self.unpublished_bytes.saturating_add(bytes)
+                <= crate::journal::MAX_JOURNAL_FRAME_BYTES
+    }
+}
+
 const JOURNAL_CHECKPOINT_START_TRANSITIONS: usize =
     crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS / 2;
 const JOURNAL_CHECKPOINT_START_BYTES: usize = crate::journal::MAX_JOURNAL_SUFFIX_BYTES / 2;
@@ -3415,12 +3449,30 @@ impl RedbWriteAccess {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        let prospective_encoded_bytes = self
+            .journal_mutations
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .borrow()
+            .encoded_frame_len()
+            .map_err(journal_storage_error)?;
+        let prospective_physical_bytes =
+            crate::journal::extent_frame_bytes(prospective_encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let checkpoint_rebased = self.shared.ensure_journal_frame_headroom(
+            transition_count,
+            prospective_encoded_bytes,
+            prospective_physical_bytes,
+        )?;
+        if checkpoint_rebased {
+            self.composite_predecessor = Some(self.shared.capture_or_initialize_composite_view()?);
+        }
         let mutations = self
             .journal_mutations
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .into_inner();
-        let composite_stage = self
+        let mut composite_stage = self
             .composite_stage
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
@@ -3444,7 +3496,6 @@ impl RedbWriteAccess {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let successor = composite_predecessor.checkpoint_root_shared();
         let covered_sequence = composite_predecessor.overlay().published_application();
         let covered_administration_sequence = results
             .iter()
@@ -3487,6 +3538,15 @@ impl RedbWriteAccess {
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
+            if encoded_bytes != prospective_encoded_bytes {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            if checkpoint_rebased {
+                composite_stage = self
+                    .shared
+                    .rebuild_composite_stage_for_frame(&composite_predecessor, &frame)?;
+            }
             let physical_bytes = crate::journal::extent_frame_bytes(encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let next_transitions = runtime
@@ -3562,6 +3622,7 @@ impl RedbWriteAccess {
         };
         self.shared
             .install_private_composite_successor(&composite_predecessor, &composite_successor)?;
+        let successor = composite_predecessor.checkpoint_root_shared();
         let fence = RedbSubmittedServiceAuditFence {
             shared: Arc::clone(&self.shared),
             receipt: Some(receipt),
@@ -3688,6 +3749,21 @@ impl RedbDurabilityEpoch {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        let prospective_encoded_bytes = self
+            .journal_mutations
+            .encoded_frame_len()
+            .map_err(journal_storage_error)?;
+        let prospective_physical_bytes =
+            crate::journal::extent_frame_bytes(prospective_encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let checkpoint_rebased = self.shared.ensure_journal_frame_headroom(
+            self.command_count,
+            prospective_encoded_bytes,
+            prospective_physical_bytes,
+        )?;
+        if checkpoint_rebased {
+            self.composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
+        }
         let first_sequence = self
             .applied
             .first()
@@ -3696,13 +3772,12 @@ impl RedbDurabilityEpoch {
         let last_sequence = self
             .last_sequence
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let successor = self.composite_predecessor.checkpoint_root_shared();
         let last_administration_sequence = self
             .applied
             .last()
             .map(riffdb_storage_api::UnpublishedAuditedBatchV1::last_administration_sequence);
         let mutations = std::mem::take(&mut self.journal_mutations);
-        let composite_stage = self
+        let mut composite_stage = self
             .composite_stage
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
@@ -3738,6 +3813,15 @@ impl RedbDurabilityEpoch {
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
+            if encoded_bytes != prospective_encoded_bytes {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            if checkpoint_rebased {
+                composite_stage = self
+                    .shared
+                    .rebuild_composite_stage_for_frame(&self.composite_predecessor, &frame)?;
+            }
             let physical_bytes = crate::journal::extent_frame_bytes(encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let audit_count = usize::from(frame.audit_count());
@@ -3845,6 +3929,7 @@ impl RedbDurabilityEpoch {
         }
         self.completed = true;
         drop(self.lease.take());
+        let successor = self.composite_predecessor.checkpoint_root_shared();
         Ok(RedbSubmittedCommandFence {
             shared: Arc::clone(&self.shared),
             receipt,
@@ -4291,6 +4376,91 @@ impl SharedRedb {
                 checkpoint.batch.encoded_bytes,
             )
         }))
+    }
+
+    fn async_checkpoint_in_flight(&self) -> Result<bool, StorageError> {
+        self.journal_checkpoint
+            .lock()
+            .map(|checkpoint| checkpoint.is_some())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    /// Reserves exact capacity for one already-staged frame.
+    ///
+    /// A checkpoint can be slower than the foreground writer. Reaching its
+    /// reserved headroom is bounded backpressure, not a semantic limit error:
+    /// finish the covered checkpoint, rotate the newer suffix when needed,
+    /// and only then admit the frame. The caller holds the sole mutation lease,
+    /// so no sibling can consume the proven capacity between this check and
+    /// frame submission.
+    fn ensure_journal_frame_headroom(
+        self: &Arc<Self>,
+        transitions: usize,
+        bytes: usize,
+        physical_bytes: usize,
+    ) -> Result<bool, StorageError> {
+        if transitions == 0
+            || transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
+            || bytes == 0
+            || bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            || physical_bytes == 0
+            || physical_bytes > crate::journal::EXTENT_DATA_BYTES
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let mut rebased = false;
+        for _ in 0..4 {
+            let (checkpoint_transitions, checkpoint_bytes) = self.async_checkpoint_charge()?;
+            let admits = {
+                let runtime = self.journal_runtime()?;
+                let runtime = runtime
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                JournalCapacityCharge {
+                    checkpoint_transitions,
+                    checkpoint_bytes,
+                    suffix_transitions: runtime.suffix_transitions,
+                    suffix_bytes: runtime.suffix_bytes,
+                    suffix_physical_bytes: runtime.suffix_physical_bytes,
+                    unpublished_transitions: runtime.unpublished_transitions,
+                    unpublished_bytes: runtime.unpublished_bytes,
+                }
+                .admits(transitions, bytes, physical_bytes)
+            };
+            if admits {
+                return Ok(rebased);
+            }
+            if self.async_checkpoint_in_flight()? {
+                self.poll_async_checkpoint_locked(true)?;
+                rebased = true;
+                continue;
+            }
+            self.maybe_start_async_checkpoint()?;
+            if !self.async_checkpoint_in_flight()? {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+        }
+        self.fence_writes();
+        Err(storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn rebuild_composite_stage_for_frame(
+        &self,
+        predecessor: &Arc<crate::composite_view::RedbCompositeReadView>,
+        frame: &crate::journal::EncodedJournalFrame,
+    ) -> Result<crate::composite_view::RedbCompositeMutationStage, StorageError> {
+        let (decoded, decoded_hash) = crate::journal::JournalFrame::decode(frame.as_bytes())
+            .map_err(journal_storage_error)?;
+        if decoded_hash != frame.frame_hash() {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let mut stage =
+            crate::composite_view::RedbCompositeMutationStage::from_published(predecessor);
+        for mutation in decoded.mutations() {
+            stage.apply(mutation)?;
+        }
+        Ok(stage)
     }
 
     fn materialize_checkpoint_batch(
@@ -5611,6 +5781,34 @@ mod tests {
             start_physical.checked_add(maximum_frame),
             Some(crate::journal::EXTENT_DATA_BYTES)
         );
+    }
+
+    #[test]
+    fn journal_capacity_turns_checkpoint_headroom_into_backpressure_boundary() {
+        let exact = JournalCapacityCharge {
+            checkpoint_transitions: 4_096,
+            checkpoint_bytes: 16 * 1024 * 1024,
+            suffix_transitions: 4_095,
+            suffix_bytes: 16 * 1024 * 1024 - 1,
+            suffix_physical_bytes: crate::journal::EXTENT_DATA_BYTES - 4_096,
+            unpublished_transitions: 0,
+            unpublished_bytes: 0,
+        };
+        assert!(exact.admits(1, 1, 4_096));
+        assert!(!exact.admits(2, 1, 4_096));
+        assert!(!exact.admits(1, 2, 4_096));
+        assert!(!exact.admits(1, 1, 4_097));
+
+        let unpublished = JournalCapacityCharge {
+            checkpoint_transitions: 0,
+            checkpoint_bytes: 0,
+            suffix_transitions: 0,
+            suffix_bytes: 0,
+            suffix_physical_bytes: 0,
+            unpublished_transitions: crate::journal::MAX_JOURNAL_TRANSITIONS,
+            unpublished_bytes: crate::journal::MAX_JOURNAL_FRAME_BYTES,
+        };
+        assert!(!unpublished.admits(1, 1, 4_096));
     }
 
     #[test]

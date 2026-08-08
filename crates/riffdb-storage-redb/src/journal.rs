@@ -298,6 +298,15 @@ impl JournalMutationBuffer {
         self.mutation_count
     }
 
+    /// Returns the exact logical frame length after the fixed footer is sealed.
+    pub(crate) fn encoded_frame_len(&self) -> Result<usize, JournalCodecError> {
+        self.bytes
+            .len()
+            .checked_add(FRAME_FOOTER_BYTES)
+            .filter(|size| *size <= MAX_JOURNAL_FRAME_BYTES)
+            .ok_or(JournalCodecError::LimitExceeded)
+    }
+
     pub(crate) fn extend(
         &mut self,
         mutations: impl IntoIterator<Item = JournalMutation>,

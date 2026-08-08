@@ -26,6 +26,15 @@ flight. The amendment changes only checkpoint cadence and compiled headroom;
 it does not change authority, acknowledgement, ordering, durable bytes, the
 256-transition/16-MiB unpublished prefix, or the hardened profile.
 
+Production validation then exposed the corresponding admission edge: a slow
+checkpoint could consume all reserved suffix or physical-extent headroom just
+before a service-audit frame. The implementation now charges the exact staged
+frame before submission. When that frame would cross a bound, the sole writer
+waits for the in-flight checkpoint, publishes its exact compacted successor,
+rebases the still-private staged mutations, and retries capacity admission.
+This is the bounded backpressure already required by section 4; it does not
+increase a compiled ceiling or turn pressure into `AuditUnavailable`.
+
 ## Context
 
 ADR-0101 already defines standard-profile authority as one known-durable redb
