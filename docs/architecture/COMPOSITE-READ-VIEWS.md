@@ -36,6 +36,14 @@ frame. One frame and the complete writer-private unpublished prefix remain
 independently capped at 256 transitions and 16 MiB. These are fail-closed safety
 bounds, not tuning settings.
 
+Every staged frame is charged at its exact encoded and padded sizes before
+submission. If an asynchronous checkpoint has not reclaimed enough logical or
+physical headroom, the sole writer applies bounded backpressure: it waits for
+that checkpoint, publishes the compacted successor, rebases the still-private
+frame against the equivalent successor view, and then retries admission. Reads
+continue from the last published composite view. RiffDB does not report an
+ordinary capacity race as a successful write or as permanent audit failure.
+
 Physical checkpoint compaction copies a proven overlay prefix into redb. It
 does not advance a logical index generation, so a cursor is invalidated only by
 an actual application mutation, not by storage housekeeping.
