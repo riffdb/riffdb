@@ -875,13 +875,11 @@ fn post_commit_collector_drains_ready_arrivals_without_reordering() {
 }
 
 #[test]
-fn audited_singleton_preserves_the_direct_immediate_path() {
+fn audited_singleton_is_eligible_for_standard_deferred_publication() {
     let preparation = audited_command_preparation(1);
 
     assert!(
-        !crate::command_execution::command_group_is_deferred_eligible(std::iter::once(
-            &preparation
-        ))
+        crate::command_execution::command_group_is_deferred_eligible(std::iter::once(&preparation))
     );
 }
 

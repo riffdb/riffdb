@@ -425,10 +425,10 @@ where
             entries,
             durability_mode,
         } = self;
-        // An idle singleton remains on the direct Immediate path. A singleton
-        // selected after an unpublished FIFO predecessor is nevertheless a
-        // valid deferred subgroup: its storage transition must extend the
-        // writer-private frontier and share a later journal fence.
+        // Standard-profile audited commands, including idle singletons, use
+        // the deferred storage boundary. A singleton selected after an
+        // unpublished FIFO predecessor extends that same writer-private
+        // frontier and may share a later journal fence.
         if entries.is_empty() || entries.len() != audits.len() {
             drop(staged);
             drop(entries);

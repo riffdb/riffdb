@@ -26,6 +26,57 @@ use support::{
 };
 
 #[test]
+fn audited_standard_singleton_uses_one_unpublished_root_and_one_journal_tail() {
+    let database = UniqueUserDatabase::create("audited-deferred-singleton");
+    let controller = RedbTestController::observe_index_migration();
+    let ports = database.open_with_controller(controller.clone());
+    let command =
+        database.prepare_audited_organization_for(&ports, [0x86; 16], "audit-only", 0x86, 0x96);
+    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let provenance_source = Arc::new(IncrementingProvenanceSource::new(0xa6));
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_group_coordinator_with_notifications(
+        ports,
+        admission_clock,
+        provenance_source,
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let result = runtime().block_on(async {
+        executor
+            .reserve_capacity()
+            .await
+            .expect("reserve audited singleton")
+            .submit(command)
+            .expect("submit audited singleton")
+            .completion()
+            .await
+            .expect("audited singleton completion")
+    });
+    assert!(matches!(result, CommandExecutionResult::Committed(_)));
+    assert_eq!(notifications.sequences(), vec![CommitSequence::first()]);
+
+    drop(executor);
+    coordinator.shutdown().expect("drain grouped coordinator");
+    let transitions = controller
+        .events()
+        .into_iter()
+        .filter(|event| event.phase() == RedbTestPhase::BeforeEngineCommit)
+        .filter(|event| event.operation() != RedbTestOperation::ValidatedPrefixCheckpoint)
+        .map(|event| event.operation())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        transitions,
+        vec![
+            RedbTestOperation::DeferredCommandBatch,
+            RedbTestOperation::CommandEpochTail,
+        ],
+        "a Standard audited singleton never opens the direct redb command path"
+    );
+}
+
+#[test]
 fn audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail() {
     let database = UniqueUserDatabase::create("audited-deferred-group");
     let controller = RedbTestController::observe_index_migration();
