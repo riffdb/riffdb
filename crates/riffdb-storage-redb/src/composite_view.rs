@@ -8,7 +8,7 @@
     reason = "WP-487 builds the closed view; WP-488 installs its production publisher"
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use redb::{ReadTransaction, TableDefinition};
 use riffdb_storage_api::{
@@ -67,6 +67,15 @@ impl RedbCompositeViewBuilder {
         self.apply_composite_frame(&frame)
     }
 
+    /// Forks a captured published view into sole-writer private state without
+    /// copying its complete suffix map.
+    pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
+        Self {
+            root: Arc::clone(&published.root),
+            overlay: CompositeOverlayBuilder::from_published(&published.overlay),
+        }
+    }
+
     fn apply_composite_frame(&mut self, frame: &CompositeFrameV1) -> Result<(), StorageError> {
         self.overlay
             .apply_frame(frame, &RedbCheckpointBase { root: &self.root })
@@ -86,6 +95,50 @@ impl RedbCompositeViewBuilder {
 pub(crate) struct RedbCompositeReadView {
     root: Arc<ReadTransaction>,
     overlay: FrozenCompositeOverlay,
+}
+
+/// One atomic publication cell for a checkpoint-plus-overlay read view.
+///
+/// Publication compares the exact captured predecessor object, not merely its
+/// numeric frontier. A late fence can therefore never replace a newer view.
+pub(crate) struct RedbCompositePublication {
+    current: RwLock<Arc<RedbCompositeReadView>>,
+}
+
+impl RedbCompositePublication {
+    pub(crate) fn new(initial: RedbCompositeReadView) -> Self {
+        Self {
+            current: RwLock::new(Arc::new(initial)),
+        }
+    }
+
+    pub(crate) fn capture(&self) -> Result<Arc<RedbCompositeReadView>, StorageError> {
+        self.current
+            .read()
+            .map(|current| Arc::clone(&current))
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    pub(crate) fn publish_successor(
+        &self,
+        expected: &Arc<RedbCompositeReadView>,
+        successor: RedbCompositeReadView,
+    ) -> Result<Arc<RedbCompositeReadView>, StorageError> {
+        let mut current = self
+            .current
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if !Arc::ptr_eq(&current, expected)
+            || !Arc::ptr_eq(&successor.root, &expected.root)
+            || successor.overlay.checkpoint() != expected.overlay.checkpoint()
+            || successor.overlay.transition_count() <= expected.overlay.transition_count()
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let published = Arc::new(successor);
+        *current = Arc::clone(&published);
+        Ok(published)
+    }
 }
 
 impl RedbCompositeReadView {
@@ -676,5 +729,75 @@ mod tests {
                 last_key.as_slice(),
             ]
         );
+    }
+
+    #[test]
+    fn publication_withholds_private_successor_and_rejects_stale_fence() {
+        let (_path, _store, ports) = operational("publication");
+        let initial = allocator_bytes(AdministrationSequenceAllocator::initial());
+        let next = allocator_bytes(AdministrationSequenceAllocator::next(
+            AdministrationSequence::new(2).expect("sequence"),
+        ));
+        let publication = RedbCompositePublication::new(
+            RedbCompositeViewBuilder::capture(&ports, [0; 32])
+                .expect("capture")
+                .freeze(),
+        );
+        let captured = publication.capture().expect("published predecessor");
+        let mut private = RedbCompositeViewBuilder::from_published(&captured);
+        let frame = CompositeFrameV1::new(
+            CompositeFrameKindV1::ServiceAudit,
+            database_id(),
+            None,
+            None,
+            None,
+            Some(AdministrationSequence::first()),
+            1,
+            256,
+            [0; 32],
+            [1; 32],
+            vec![
+                CompositeMutationV1::replace(
+                    CompositeTableV1::Meta,
+                    META_ADMINISTRATION_SEQUENCE.as_bytes(),
+                    &initial,
+                    next.as_slice(),
+                )
+                .expect("mutation"),
+            ],
+        )
+        .expect("frame");
+        private.apply_composite_frame(&frame).expect("apply");
+
+        assert_eq!(
+            publication
+                .capture()
+                .expect("still predecessor")
+                .resolve_point(
+                    CompositeTableV1::Meta,
+                    META_ADMINISTRATION_SEQUENCE.as_bytes(),
+                )
+                .expect("resolve"),
+            Some(initial)
+        );
+        let published = publication
+            .publish_successor(&captured, private.freeze())
+            .expect("publish after fence");
+        assert_eq!(
+            published
+                .resolve_point(
+                    CompositeTableV1::Meta,
+                    META_ADMINISTRATION_SEQUENCE.as_bytes(),
+                )
+                .expect("resolve"),
+            Some(next)
+        );
+
+        let stale_successor = RedbCompositeViewBuilder::from_published(&captured).freeze();
+        let stale = publication.publish_successor(&captured, stale_successor);
+        assert!(matches!(
+            stale,
+            Err(error) if error.kind() == StorageErrorKind::InvariantViolation
+        ));
     }
 }
