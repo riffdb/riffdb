@@ -21,6 +21,14 @@ The specification and accepted architecture decision records are authoritative. 
 8. Projection state is derived and rebuildable. The commit log and entity state are authoritative.
 9. First-party crates use `#![forbid(unsafe_code)]` unless an accepted ADR grants a narrow exception.
 10. Do not add SQL, Raft, distributed transactions, arbitrary transaction callbacks, or general analytical joins to the POC critical path.
+11. Application-facing interfaces are always safe: no public surface may let an
+    application developer or agent express an unsafe operation or silently opt
+    out of a guarantee (transactions, idempotency, org scoping, typed
+    freshness, bounded queries, durability of acknowledged writes). Unsafe
+    machinery is permitted only below the public boundary. Every ADR touching
+    a public surface must answer the interface-safety design test in the ADR
+    template; weakening this boundary requires explicit human acceptance, never
+    an implementation-package deviation.
 
 ## Authoritative files
 

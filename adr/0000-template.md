@@ -37,6 +37,19 @@ Describe public API, durable data, IR, source-language, and migration effects.
 
 Describe trust boundaries, redaction, denial behavior, and security dependencies.
 
+## Standing Design Tests
+
+Answer both explicitly; "not applicable" requires one sentence of reasoning.
+
+- **Interface safety (AGENTS.md boundary 11):** can an application developer or
+  agent express an unsafe operation, or silently opt out of a guarantee,
+  through any surface this decision adds or changes? If yes, the decision must
+  remove that expressibility or escalate for explicit human acceptance.
+- **Scale:** does this decision assume co-located authoritative storage,
+  single-node memory, or full-state rewrite? Any yes forecloses the
+  billion-row tier and must be named as a deliberate, reversible POC
+  constraint.
+
 ## Testing
 
 Name fixtures, property tests, conformance tests, fuzz targets, crash tests, or
