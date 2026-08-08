@@ -142,6 +142,18 @@ impl RedbCompositeMutationStage {
         self.stage.mutation_count()
     }
 
+    pub(crate) fn seal_frame(
+        self,
+        frame: &JournalFrame,
+    ) -> Result<RedbCompositeReadView, StorageError> {
+        let frame = frame.composite().map_err(corrupt_value)?;
+        let overlay = self.stage.seal_frame(&frame).map_err(corrupt_value)?;
+        Ok(RedbCompositeReadView {
+            root: self.root,
+            overlay,
+        })
+    }
+
     pub(crate) fn read_checkpoint_bytes(
         &self,
         definition: TableDefinition<'static, &'static [u8], &'static [u8]>,

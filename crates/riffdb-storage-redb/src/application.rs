@@ -1980,6 +1980,13 @@ fn command_outcome_from_operational_indexes(
     let Some(frontier) = frontier else {
         return Ok(None);
     };
+    if command_derived_index_covers(
+        access.checkpoint_application_frontier(),
+        ports.command_derived_frontier()?,
+        frontier,
+    ) {
+        return Ok(None);
+    }
     let first = access
         .checkpoint_application_frontier()
         .and_then(CommitSequence::checked_next)
@@ -2025,6 +2032,14 @@ fn command_outcome_from_operational_indexes(
         }
     }
     Ok(found)
+}
+
+fn command_derived_index_covers(
+    checkpoint: Option<CommitSequence>,
+    derived: Option<CommitSequence>,
+    captured: CommitSequence,
+) -> bool {
+    checkpoint == Some(captured) || derived.is_some_and(|frontier| frontier >= captured)
 }
 
 fn admission_result(
@@ -2424,4 +2439,27 @@ fn storage_error(kind: StorageErrorKind) -> StorageError {
 
 fn decoded_value<T>(item: riffdb_storage_api::EncodedPageItem<T>) -> T {
     item.into_parts().0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derived_command_coverage_proves_absence_only_through_the_captured_frontier() {
+        let captured = CommitSequence::new(8).expect("captured frontier");
+
+        assert!(command_derived_index_covers(Some(captured), None, captured));
+        assert!(command_derived_index_covers(
+            CommitSequence::new(3),
+            CommitSequence::new(9),
+            captured
+        ));
+        assert!(!command_derived_index_covers(
+            CommitSequence::new(3),
+            CommitSequence::new(7),
+            captured
+        ));
+        assert!(!command_derived_index_covers(None, None, captured));
+    }
 }

@@ -2465,6 +2465,21 @@ impl RedbOperationalPorts {
         }
     }
 
+    pub(crate) fn command_derived_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_segment_coverage()
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant => Ok(None),
+            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
+    }
+
     pub(crate) fn indexed_command_at(
         &self,
         sequence: CommitSequence,
@@ -2496,6 +2511,26 @@ impl RedbOperationalPorts {
             TransientIndexState::Ready(indexes) => {
                 Ok(indexes.command_audit_record(sequence).flatten())
             }
+            TransientIndexState::Dormant => Ok(None),
+            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
+    }
+
+    pub(crate) fn indexed_command_audit_at_access(
+        &self,
+        access: &RedbReadAccess,
+        sequence: riffdb_types::AdministrationSequence,
+    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
+        let frontier = access.application_frontier()?;
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_audit_record_at_or_before(sequence, frontier)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
             TransientIndexState::Dormant => Ok(None),
             TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
         }
@@ -3438,11 +3473,7 @@ impl RedbWriteAccess {
                 self.shared.fence_writes();
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
-            let mut composite = crate::composite_view::RedbCompositeViewBuilder::from_published(
-                &composite_predecessor,
-            );
-            composite.apply_frame(&decoded)?;
-            let composite_successor = Arc::new(composite.freeze());
+            let composite_successor = Arc::new(composite_stage.seal_frame(&decoded)?);
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.last_administration_sequence = covered_administration_sequence;
             runtime.last_hash = frame_hash;
@@ -3602,6 +3633,10 @@ impl RedbDurabilityEpoch {
             .last()
             .map(riffdb_storage_api::UnpublishedAuditedBatchV1::last_administration_sequence);
         let mutations = std::mem::take(&mut self.journal_mutations);
+        let composite_stage = self
+            .composite_stage
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let (
             receipt,
             encoded_bytes,
@@ -3680,11 +3715,7 @@ impl RedbDurabilityEpoch {
                     self.shared.fence_writes();
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
                 }
-                let mut composite = crate::composite_view::RedbCompositeViewBuilder::from_published(
-                    &self.composite_predecessor,
-                );
-                composite.apply_frame(&decoded)?;
-                let composite_successor = Arc::new(composite.freeze());
+                let composite_successor = Arc::new(composite_stage.seal_frame(&decoded)?);
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.last_sequence = Some(last_sequence);
                 runtime.last_administration_sequence = last_administration_sequence;
@@ -4266,9 +4297,7 @@ impl RedbSubmittedCommandFence {
             .composite_successor
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.shared
-            .publish_composite_successor(&self.composite_predecessor, composite_successor)?;
-        self.publish_successor(false)?;
+        self.publish_fenced_successor(composite_successor)?;
 
         {
             let mut runtime_guard = self.shared.journal_runtime()?;
@@ -4344,6 +4373,48 @@ impl RedbSubmittedCommandFence {
             }
             transient.apply_delta(delta);
         }
+        Ok(())
+    }
+
+    fn publish_fenced_successor(
+        &mut self,
+        composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+    ) -> Result<(), StorageError> {
+        let mut transient = self
+            .shared
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let mut unpublished = self
+            .shared
+            .unpublished_command_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        for delta in self.transient_deltas.drain(..) {
+            if let Some(segment) = delta.command_segment() {
+                unpublished.remove_segment(segment)?;
+            }
+            transient.apply_delta(delta);
+        }
+        if let Err(error) = self
+            .shared
+            .publish_composite_successor(&self.composite_predecessor, composite_successor)
+        {
+            *transient = TransientIndexState::Invalid;
+            self.shared.fence_writes();
+            return Err(error);
+        }
+        let mut frontier = self
+            .shared
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if frontier.is_none() {
+            *transient = TransientIndexState::Invalid;
+            self.shared.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *frontier = Some(Arc::clone(&self.successor));
         Ok(())
     }
 
@@ -5121,8 +5192,12 @@ mod tests {
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
             let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+            let invocation = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock after Unix epoch")
+                .as_nanos();
             Self(std::env::temp_dir().join(format!(
-                "riffdb-redb-{label}-{}-{ordinal}.redb",
+                "riffdb-redb-{label}-{}-{invocation}-{ordinal}.redb",
                 std::process::id()
             )))
         }
@@ -5131,6 +5206,7 @@ mod tests {
     impl Drop for TestDatabasePath {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
         }
     }
 

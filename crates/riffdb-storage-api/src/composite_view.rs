@@ -529,6 +529,12 @@ impl CompositeOverlayBuilder {
 /// applying that frame to [`CompositeOverlayBuilder`] creates a publishable
 /// successor. Dropping the stage publishes nothing.
 pub struct CompositeMutationStage {
+    checkpoint: CompositeCheckpointV1,
+    predecessor_application: Option<CommitSequence>,
+    predecessor_administration: Option<AdministrationSequence>,
+    predecessor_hash: [u8; 32],
+    predecessor_transition_count: usize,
+    predecessor_encoded_frame_bytes: usize,
     tables: [PersistentOverlayMap; TABLE_COUNT],
     charged_bytes: usize,
     mutations: Vec<CompositeMutationV1>,
@@ -539,6 +545,12 @@ impl CompositeMutationStage {
     #[must_use]
     pub fn new(predecessor: &FrozenCompositeOverlay) -> Self {
         Self {
+            checkpoint: predecessor.checkpoint.clone(),
+            predecessor_application: predecessor.published_application,
+            predecessor_administration: predecessor.published_administration,
+            predecessor_hash: predecessor.terminal_frame_hash,
+            predecessor_transition_count: predecessor.transition_count,
+            predecessor_encoded_frame_bytes: predecessor.encoded_frame_bytes,
             tables: predecessor.tables.clone(),
             charged_bytes: predecessor.charged_bytes,
             mutations: Vec::new(),
@@ -552,14 +564,74 @@ impl CompositeMutationStage {
         mutation: CompositeMutationV1,
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
-        apply_mutations_atomically(
-            &mut self.tables,
-            &mut self.charged_bytes,
-            std::slice::from_ref(&mutation),
-            base,
-        )?;
+        base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
+        let table = &mut self.tables[mutation.table().index()];
+        let current = match table.get(mutation.key()) {
+            Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
+            Some(OverlayValue::Tombstone) => None,
+            None => base.read_base(mutation.table(), mutation.key())?,
+        };
+        validate_before_image(current.as_deref(), mutation.expected_hash())?;
+        let key: Box<[u8]> = mutation.key().into();
+        let replacement = mutation
+            .value()
+            .map(|value| OverlayValue::Value(Arc::from(value)))
+            .unwrap_or(OverlayValue::Tombstone);
+        let mut next_charge = self.charged_bytes;
+        if let Some(prior) = table.get(key.as_ref()) {
+            next_charge = next_charge
+                .checked_sub(entry_charge(&key, prior)?)
+                .ok_or(StorageValueError::SizeOverflow)?;
+        }
+        next_charge = next_charge
+            .checked_add(entry_charge(&key, &replacement)?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if next_charge > MAX_COMPOSITE_OVERLAY_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        table.insert(key, replacement);
+        self.charged_bytes = next_charge;
         self.mutations.push(mutation);
         Ok(())
+    }
+
+    /// Seals the already-validated private state as one exact successor frame.
+    ///
+    /// The frame must contain the byte-identical ordered mutation list staged
+    /// here and must name this stage's captured predecessor. No value is
+    /// decoded or hashed again at this boundary.
+    pub fn seal_frame(
+        self,
+        frame: &CompositeFrameV1,
+    ) -> Result<FrozenCompositeOverlay, StorageValueError> {
+        if frame.database_id != self.checkpoint.database_id
+            || frame.predecessor_application != self.predecessor_application
+            || frame.predecessor_administration != self.predecessor_administration
+            || frame.previous_hash != self.predecessor_hash
+            || frame.mutations != self.mutations
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let transition_count = self
+            .predecessor_transition_count
+            .checked_add(usize::from(frame.transition_count))
+            .filter(|count| *count <= MAX_COMPOSITE_OVERLAY_TRANSITIONS)
+            .ok_or(StorageValueError::LimitExceeded)?;
+        let encoded_frame_bytes = self
+            .predecessor_encoded_frame_bytes
+            .checked_add(frame.encoded_bytes)
+            .filter(|bytes| *bytes <= MAX_COMPOSITE_COMPONENT_BYTES)
+            .ok_or(StorageValueError::LimitExceeded)?;
+        Ok(FrozenCompositeOverlay {
+            checkpoint: self.checkpoint,
+            published_application: frame.covered_application,
+            published_administration: frame.covered_administration,
+            terminal_frame_hash: frame.frame_hash,
+            transition_count,
+            encoded_frame_bytes,
+            charged_bytes: self.charged_bytes,
+            tables: self.tables,
+        })
     }
 
     /// Resolves a private point through staged state and then the checkpoint.
@@ -1410,14 +1482,25 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     #[derive(Default)]
-    struct Base(BTreeMap<(CompositeTableV1, Vec<u8>), Vec<u8>>);
+    struct Base {
+        rows: BTreeMap<(CompositeTableV1, Vec<u8>), Vec<u8>>,
+        reads: Cell<usize>,
+        validations: Cell<usize>,
+    }
 
     impl Base {
         fn insert(&mut self, table: CompositeTableV1, key: &[u8], value: &[u8]) {
-            self.0.insert((table, key.to_vec()), value.to_vec());
+            self.rows.insert((table, key.to_vec()), value.to_vec());
+        }
+
+        fn reset_counts(&self) {
+            self.reads.set(0);
+            self.validations.set(0);
         }
     }
 
@@ -1427,7 +1510,8 @@ mod tests {
             table: CompositeTableV1,
             key: &[u8],
         ) -> Result<Option<Vec<u8>>, StorageValueError> {
-            Ok(self.0.get(&(table, key.to_vec())).cloned())
+            self.reads.set(self.reads.get() + 1);
+            Ok(self.rows.get(&(table, key.to_vec())).cloned())
         }
 
         fn validate_entry(
@@ -1436,6 +1520,7 @@ mod tests {
             key: &[u8],
             value: Option<&[u8]>,
         ) -> Result<(), StorageValueError> {
+            self.validations.set(self.validations.get() + 1);
             validate_component(key)?;
             if let Some(value) = value {
                 validate_component(value)?;
@@ -1475,6 +1560,71 @@ mod tests {
             mutations,
         )
         .expect("frame")
+    }
+
+    #[test]
+    fn private_stage_seals_exact_frame_without_revalidating_checkpoint_values() {
+        let mut base = Base::default();
+        base.insert(CompositeTableV1::Entities, b"ticket", b"open");
+        let mutation = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open",
+            b"closed".as_slice(),
+        )
+        .expect("replace");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        stage
+            .apply(mutation.clone(), &base)
+            .expect("stage mutation");
+        assert_eq!(base.reads.get(), 1);
+        assert_eq!(base.validations.get(), 1);
+
+        base.reset_counts();
+        let successor = stage
+            .seal_frame(&frame(vec![mutation]))
+            .expect("seal frame");
+        assert_eq!(
+            base.reads.get(),
+            0,
+            "seal must not re-read checkpoint state"
+        );
+        assert_eq!(
+            base.validations.get(),
+            0,
+            "seal must not repeat entry validation"
+        );
+        assert_eq!(successor.transition_count(), 1);
+        assert_eq!(
+            successor.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
+            Ok(Some(b"closed".to_vec()))
+        );
+    }
+
+    #[test]
+    fn private_stage_rejects_a_frame_that_differs_from_validated_mutations() {
+        let base = Base::default();
+        let staged = CompositeMutationV1::put(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open".as_slice(),
+        )
+        .expect("staged mutation");
+        let changed = CompositeMutationV1::put(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"closed".as_slice(),
+        )
+        .expect("changed mutation");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        stage.apply(staged, &base).expect("stage mutation");
+
+        assert!(matches!(
+            stage.seal_frame(&frame(vec![changed])),
+            Err(StorageValueError::IdentityMismatch)
+        ));
     }
 
     #[test]
