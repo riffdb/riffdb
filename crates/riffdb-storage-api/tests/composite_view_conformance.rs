@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use riffdb_storage_api::{
-    CompositeCheckpointV1, CompositeFrameKindV1, CompositeFrameV1, CompositeMutationV1,
-    CompositeOverlayBuilder, CompositeTableV1, CompositeViewBase, OverlayLookup, StorageValueError,
+    CompositeCheckpointV1, CompositeFrameKindV1, CompositeFrameV1, CompositeMutationStage,
+    CompositeMutationV1, CompositeOverlayBuilder, CompositeTableV1, CompositeViewBase,
+    OverlayLookup, StorageValueError,
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, SchemaHash};
 
@@ -168,6 +169,63 @@ fn writer_private_fork_withholds_successor_from_captured_reader() {
     );
     assert_eq!(captured.transition_count(), 1);
     assert_eq!(successor.transition_count(), 2);
+}
+
+#[test]
+fn mutation_stage_reads_its_writes_but_cannot_publish_them() {
+    let base = Base::default();
+    let captured = CompositeOverlayBuilder::new(checkpoint()).freeze();
+    let mut stage = CompositeMutationStage::new(&captured);
+    stage
+        .apply(
+            CompositeMutationV1::put(
+                CompositeTableV1::Entities,
+                b"private-ticket".as_slice(),
+                b"private-value".as_slice(),
+            )
+            .expect("mutation"),
+            &base,
+        )
+        .expect("stage");
+
+    assert_eq!(
+        stage
+            .resolve_point(&base, CompositeTableV1::Entities, b"private-ticket")
+            .expect("private read"),
+        Some(b"private-value".to_vec())
+    );
+    assert_eq!(
+        captured.lookup(CompositeTableV1::Entities, b"private-ticket"),
+        OverlayLookup::Unchanged
+    );
+
+    let mutations = stage.into_mutations();
+    let mut publishable = CompositeOverlayBuilder::from_published(&captured);
+    publishable
+        .apply_frame(
+            &CompositeFrameV1::new(
+                CompositeFrameKindV1::Command,
+                database_id(),
+                None,
+                Some(CommitSequence::first()),
+                None,
+                Some(AdministrationSequence::first()),
+                1,
+                128,
+                [0; 32],
+                [1; 32],
+                mutations,
+            )
+            .expect("frame"),
+            &base,
+        )
+        .expect("validate framed mutations");
+    assert_eq!(
+        publishable
+            .freeze()
+            .lookup(CompositeTableV1::Entities, b"private-ticket"),
+        OverlayLookup::Value(b"private-value")
+    );
 }
 
 #[test]

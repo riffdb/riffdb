@@ -12,9 +12,9 @@ use std::sync::{Arc, RwLock};
 
 use redb::{ReadTransaction, TableDefinition};
 use riffdb_storage_api::{
-    BoundedCompositePage, CompositeCheckpointV1, CompositeFrameV1, CompositeOverlayBuilder,
-    CompositeTableV1, CompositeViewBase, FrozenCompositeOverlay, StorageError, StorageErrorKind,
-    StorageValueError,
+    BoundedCompositePage, CompositeCheckpointV1, CompositeFrameV1, CompositeMutationStage,
+    CompositeOverlayBuilder, CompositeTableV1, CompositeViewBase, FrozenCompositeOverlay,
+    StorageError, StorageErrorKind, StorageValueError,
 };
 use riffdb_types::SchemaHash;
 
@@ -53,6 +53,13 @@ impl RedbCompositeViewBuilder {
         checkpoint_frame_hash: [u8; 32],
     ) -> Result<Self, StorageError> {
         let root = ports.begin_read()?.into_shared();
+        Self::from_root(root, checkpoint_frame_hash)
+    }
+
+    pub(crate) fn from_root(
+        root: Arc<ReadTransaction>,
+        checkpoint_frame_hash: [u8; 32],
+    ) -> Result<Self, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
         Ok(Self {
             root,
@@ -97,6 +104,45 @@ pub(crate) struct RedbCompositeReadView {
     overlay: FrozenCompositeOverlay,
 }
 
+/// Redb-rooted private mutation stage for one command subgroup.
+pub(crate) struct RedbCompositeMutationStage {
+    root: Arc<ReadTransaction>,
+    stage: CompositeMutationStage,
+}
+
+impl RedbCompositeMutationStage {
+    pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
+        Self {
+            root: Arc::clone(&published.root),
+            stage: CompositeMutationStage::new(&published.overlay),
+        }
+    }
+
+    pub(crate) fn apply(
+        &mut self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        let mutation = mutation.composite().map_err(corrupt_value)?;
+        self.stage
+            .apply(mutation, &RedbCheckpointBase { root: &self.root })
+            .map_err(corrupt_value)
+    }
+
+    pub(crate) fn resolve_point(
+        &self,
+        table: CompositeTableV1,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        self.stage
+            .resolve_point(&RedbCheckpointBase { root: &self.root }, table, key)
+            .map_err(corrupt_value)
+    }
+
+    pub(crate) fn mutation_count(&self) -> usize {
+        self.stage.mutation_count()
+    }
+}
+
 /// One atomic publication cell for a checkpoint-plus-overlay read view.
 ///
 /// Publication compares the exact captured predecessor object, not merely its
@@ -122,7 +168,7 @@ impl RedbCompositePublication {
     pub(crate) fn publish_successor(
         &self,
         expected: &Arc<RedbCompositeReadView>,
-        successor: RedbCompositeReadView,
+        successor: Arc<RedbCompositeReadView>,
     ) -> Result<Arc<RedbCompositeReadView>, StorageError> {
         let mut current = self
             .current
@@ -135,9 +181,8 @@ impl RedbCompositePublication {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let published = Arc::new(successor);
-        *current = Arc::clone(&published);
-        Ok(published)
+        *current = Arc::clone(&successor);
+        Ok(successor)
     }
 }
 
@@ -781,7 +826,7 @@ mod tests {
             Some(initial)
         );
         let published = publication
-            .publish_successor(&captured, private.freeze())
+            .publish_successor(&captured, Arc::new(private.freeze()))
             .expect("publish after fence");
         assert_eq!(
             published
@@ -793,7 +838,8 @@ mod tests {
             Some(next)
         );
 
-        let stale_successor = RedbCompositeViewBuilder::from_published(&captured).freeze();
+        let stale_successor =
+            Arc::new(RedbCompositeViewBuilder::from_published(&captured).freeze());
         let stale = publication.publish_successor(&captured, stale_successor);
         assert!(matches!(
             stale,
