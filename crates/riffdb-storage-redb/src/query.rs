@@ -1,18 +1,17 @@
 //! One-transaction owned composite-query snapshots for redb.
 
 use std::collections::BTreeMap;
-use std::ops::Bound::{Excluded, Included};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use redb::{ReadOnlyTable, ReadTransaction, TableDefinition};
 use riffdb_query_executor::{
-    BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
-    QueryExecutionRequest, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow,
-    QueryScanPage, execute_in_snapshot, execute_page_in_snapshot, validate_query_execution_group,
+    BoundPredicate, MAX_QUERY_SCANNED_ROWS, QueryBackendFault, QueryContinuation,
+    QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryOwnedSnapshot,
+    QueryParameters, QueryReadView, QueryRow, QueryScanPage, execute_in_snapshot,
+    execute_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -20,14 +19,11 @@ use riffdb_query_ir::{
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
 use riffdb_types::{CanonicalValue, FieldId, IndexEntryKey};
 
-use crate::codec::{decode_index_entry_v2, decode_index_epoch_v1};
-use crate::error::{precommit_storage_error, storage_error};
-use crate::keys::{decode_index_entry_key, encode_partition_index_key};
-use crate::layout::{COMMITS, ENTITIES, INDEX_EPOCHS, SECONDARY_INDEXES};
-use crate::reads::{read_entity_record, read_snapshot_head};
-use crate::store::RedbOperationalPorts;
-
-type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
+use crate::codec::{decode_entity_record_v1, decode_index_entry_v2, decode_index_epoch_v1};
+use crate::error::storage_error;
+use crate::journal::JournalTable;
+use crate::keys::{decode_index_entry_key, encode_entity_key, encode_partition_index_key};
+use crate::store::{RedbOperationalPorts, RedbReadAccess};
 
 /// Per-table open counts for falsifying lazy opens (test-only).
 #[cfg(test)]
@@ -102,19 +98,17 @@ impl QueryExecutionPort for RedbOperationalPorts {
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         let transaction = self.begin_read().map_err(map_storage_query_error)?;
-        // Commit head is part of the read contract and always runs first.
-        let commits = open_query_table(&transaction, COMMITS, QueryTableKind::Commits)
-            .map_err(map_storage_query_error)?;
-        let head = read_snapshot_head(&transaction, &commits)
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        drop(commits);
         // Entities / index / epoch tables open on first touch only.
         let mut view = RedbQueryView {
             transaction: &transaction,
-            entities: None,
-            indexes: None,
-            epochs: None,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
             head,
             program,
             parameters,
@@ -128,20 +122,19 @@ impl QueryExecutionPort for RedbOperationalPorts {
     ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
         validate_query_execution_group(requests)?;
         let transaction = self.begin_read().map_err(map_storage_query_error)?;
-        let commits = open_query_table(&transaction, COMMITS, QueryTableKind::Commits)
-            .map_err(map_storage_query_error)?;
-        let head = read_snapshot_head(&transaction, &commits)
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        drop(commits);
         requests
             .iter()
             .map(|request| {
                 let mut view = RedbQueryView {
                     transaction: &transaction,
-                    entities: None,
-                    indexes: None,
-                    epochs: None,
+                    entities_touched: false,
+                    indexes_touched: false,
+                    epochs_touched: false,
                     head,
                     program: request.program(),
                     parameters: request.parameters(),
@@ -150,17 +143,6 @@ impl QueryExecutionPort for RedbOperationalPorts {
             })
             .collect()
     }
-}
-
-fn open_query_table(
-    transaction: &ReadTransaction,
-    definition: TableDefinition<&'static [u8], &'static [u8]>,
-    kind: QueryTableKind,
-) -> Result<BytesTable, StorageError> {
-    note_query_table_open(kind);
-    transaction
-        .open_table(definition)
-        .map_err(crate::error::table_error)
 }
 
 fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
@@ -186,47 +168,67 @@ const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
 }
 
 struct RedbQueryView<'a> {
-    transaction: &'a ReadTransaction,
-    entities: Option<BytesTable>,
-    indexes: Option<BytesTable>,
-    epochs: Option<BytesTable>,
+    transaction: &'a RedbReadAccess,
+    entities_touched: bool,
+    indexes_touched: bool,
+    epochs_touched: bool,
     head: u64,
     program: &'a QueryAccessProgramV1,
     parameters: &'a QueryParameters,
 }
 
 impl RedbQueryView<'_> {
-    fn entities_table(&mut self) -> Result<&BytesTable, StorageError> {
-        if self.entities.is_none() {
-            self.entities = Some(open_query_table(
-                self.transaction,
-                ENTITIES,
-                QueryTableKind::Entities,
-            )?);
+    fn touch_entities(&mut self) {
+        if !self.entities_touched {
+            note_query_table_open(QueryTableKind::Entities);
+            self.entities_touched = true;
         }
-        Ok(self.entities.as_ref().expect("entities just opened"))
     }
 
-    fn indexes_table(&mut self) -> Result<&BytesTable, StorageError> {
-        if self.indexes.is_none() {
-            self.indexes = Some(open_query_table(
-                self.transaction,
-                SECONDARY_INDEXES,
-                QueryTableKind::Indexes,
-            )?);
+    fn touch_indexes(&mut self) {
+        if !self.indexes_touched {
+            note_query_table_open(QueryTableKind::Indexes);
+            self.indexes_touched = true;
         }
-        Ok(self.indexes.as_ref().expect("indexes just opened"))
     }
 
-    fn epochs_table(&mut self) -> Result<&BytesTable, StorageError> {
-        if self.epochs.is_none() {
-            self.epochs = Some(open_query_table(
-                self.transaction,
-                INDEX_EPOCHS,
-                QueryTableKind::Epochs,
-            )?);
+    fn touch_epochs(&mut self) {
+        if !self.epochs_touched {
+            note_query_table_open(QueryTableKind::Epochs);
+            self.epochs_touched = true;
         }
-        Ok(self.epochs.as_ref().expect("epochs just opened"))
+    }
+
+    fn read_entity(
+        &mut self,
+        target: &EntityTarget,
+    ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
+        self.touch_entities();
+        let key = encode_entity_key(target.key());
+        let Some(encoded) = self.transaction.read_value(JournalTable::Entities, key)? else {
+            return Ok(None);
+        };
+        let decoded = decode_entity_record_v1(&encoded)?.into_parts().0;
+        if decoded.target() != target {
+            return Err(corrupt());
+        }
+        Ok(Some(decoded))
+    }
+
+    fn read_epoch(&mut self, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
+        self.touch_epochs();
+        let key = encode_partition_index_key(target);
+        let Some(encoded) = self
+            .transaction
+            .read_value(JournalTable::IndexEpochs, &key)?
+        else {
+            return Ok(0);
+        };
+        let epoch = decode_index_epoch_v1(&encoded)?.into_parts().0;
+        if epoch.target() != target {
+            return Err(corrupt());
+        }
+        Ok(epoch.epoch().get())
     }
 }
 
@@ -290,14 +292,14 @@ impl QueryReadView for RedbQueryView<'_> {
             .map_err(|_| invariant())?;
         let generation_target =
             PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
-        let epoch = {
-            let epochs = self.epochs_table()?;
-            read_epoch(epochs, &generation_target)?
-        };
+        let epoch = self.read_epoch(&generation_target)?;
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
         let mut entries = Vec::<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2)>::new();
+        let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS)
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let mut inspected = 0usize;
         let mut prefixes = index_prefixes(fields, predicates)?
             .into_iter()
             .map(|values| schema.encode_index_prefix(&values).map_err(|_| invariant()))
@@ -312,65 +314,64 @@ impl QueryReadView for RedbQueryView<'_> {
             prefixes.reverse();
         }
 
-        {
-            let indexes = self.indexes_table()?;
-            'prefixes: for prefix in prefixes {
-                let upper = exclusive_prefix_end(prefix.as_bytes()).ok_or_else(invariant)?;
-                if after.is_some_and(|after| match direction {
-                    AccessDirection::Forward => upper.as_slice() <= after,
-                    AccessDirection::Reverse => prefix.as_bytes() > after,
-                }) {
+        self.touch_indexes();
+        'prefixes: for prefix in prefixes {
+            let upper = exclusive_prefix_end(prefix.as_bytes()).ok_or_else(invariant)?;
+            if after.is_some_and(|after| match direction {
+                AccessDirection::Forward => upper.as_slice() <= after,
+                AccessDirection::Reverse => prefix.as_bytes() > after,
+            }) {
+                continue;
+            }
+            let remaining_scan = scan_ceiling.saturating_sub(inspected);
+            if remaining_scan == 0 {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            let rows = match direction {
+                AccessDirection::Forward => {
+                    let start = after
+                        .filter(|after| after.starts_with(prefix.as_bytes()))
+                        .unwrap_or(prefix.as_bytes());
+                    self.transaction.read_range(
+                        JournalTable::SecondaryIndexes,
+                        start,
+                        &upper,
+                        remaining_scan,
+                    )?
+                }
+                AccessDirection::Reverse => {
+                    let end = after
+                        .filter(|after| after.starts_with(prefix.as_bytes()))
+                        .unwrap_or(upper.as_slice());
+                    self.transaction.read_range_reverse(
+                        JournalTable::SecondaryIndexes,
+                        prefix.as_bytes(),
+                        end,
+                        remaining_scan,
+                    )?
+                }
+            };
+            let inspected_this_prefix = rows.len();
+            inspected = inspected
+                .checked_add(inspected_this_prefix)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            for entry in rows {
+                if matches!(direction, AccessDirection::Forward)
+                    && after.is_some_and(|after| entry.0.as_ref() == after)
+                {
                     continue;
                 }
-                let lower_bound = match (direction, after) {
-                    (AccessDirection::Forward, Some(after))
-                        if after.starts_with(prefix.as_bytes()) =>
-                    {
-                        Excluded(after)
-                    }
-                    _ => Included(prefix.as_bytes()),
-                };
-                let upper_bound = match (direction, after) {
-                    (AccessDirection::Reverse, Some(after))
-                        if after.starts_with(prefix.as_bytes()) =>
-                    {
-                        Excluded(after)
-                    }
-                    _ => Excluded(upper.as_slice()),
-                };
-                let mut range = indexes
-                    .range::<&[u8]>((lower_bound, upper_bound))
-                    .map_err(precommit_storage_error)?;
-                match direction {
-                    AccessDirection::Forward => {
-                        for entry in &mut range {
-                            let decoded = decode_current_index_entry(
-                                entry.map_err(precommit_storage_error)?,
-                            )?;
-                            if decoded.1.partition_key() != generation_target.partition_key() {
-                                continue;
-                            }
-                            entries.push(decoded);
-                            if entries.len() == fetch_limit {
-                                break 'prefixes;
-                            }
-                        }
-                    }
-                    AccessDirection::Reverse => {
-                        while let Some(entry) = range.next_back() {
-                            let decoded = decode_current_index_entry(
-                                entry.map_err(precommit_storage_error)?,
-                            )?;
-                            if decoded.1.partition_key() != generation_target.partition_key() {
-                                continue;
-                            }
-                            entries.push(decoded);
-                            if entries.len() == fetch_limit {
-                                break 'prefixes;
-                            }
-                        }
-                    }
+                let decoded = decode_current_index_entry(entry)?;
+                if decoded.1.partition_key() != generation_target.partition_key() {
+                    continue;
                 }
+                entries.push(decoded);
+                if entries.len() == fetch_limit {
+                    break 'prefixes;
+                }
+            }
+            if inspected_this_prefix == remaining_scan {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
         }
         // Continuation only when an extra matching entry was observed. Bound is
@@ -392,10 +393,7 @@ impl QueryReadView for RedbQueryView<'_> {
             let decoded = schema.decode_index(&key).map_err(|_| corrupt())?;
             let target = EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
                 .map_err(|_| corrupt())?;
-            let record = {
-                let entities = self.entities_table()?;
-                read_entity_record(entities, &target)?.ok_or_else(corrupt)?
-            };
+            let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
             rows.push(plan.materialize(&record)?);
         }
         match continuation {
@@ -435,22 +433,18 @@ impl RedbQueryView<'_> {
             .encode_entity(&values)
             .map_err(|_| invariant())?;
         let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
-        let entities = self.entities_table()?;
-        read_entity_record(entities, &target)?
+        self.read_entity(&target)?
             .map(|record| plan.materialize(&record))
             .transpose()
     }
 }
 
 fn decode_current_index_entry(
-    entry: (
-        redb::AccessGuard<'_, &'static [u8]>,
-        redb::AccessGuard<'_, &'static [u8]>,
-    ),
+    entry: riffdb_storage_api::CompositeRow,
 ) -> Result<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2), StorageError> {
     let (physical_key, encoded) = entry;
-    let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-    let decoded = decode_index_entry_v2(encoded.value())?.into_parts().0;
+    let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
+    let decoded = decode_index_entry_v2(&encoded)?.into_parts().0;
     if decoded.key() != &key {
         return Err(corrupt());
     }
@@ -463,18 +457,6 @@ fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     upper[position] = upper[position].saturating_add(1);
     upper.truncate(position + 1);
     Some(upper)
-}
-
-fn read_epoch(table: &BytesTable, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
-    let key = encode_partition_index_key(target);
-    let Some(encoded) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
-        return Ok(0);
-    };
-    let epoch = decode_index_epoch_v1(encoded.value())?.into_parts().0;
-    if epoch.target() != target {
-        return Err(corrupt());
-    }
-    Ok(epoch.epoch().get())
 }
 
 fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalValue, StorageError> {
@@ -615,6 +597,7 @@ mod tests {
     use super::*;
     use crate::codec::{encode_entity_record_v1, encode_index_entry_v2};
     use crate::keys::encode_entity_key;
+    use crate::layout::{ENTITIES, SECONDARY_INDEXES};
     use crate::store::RedbStore;
 
     const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
