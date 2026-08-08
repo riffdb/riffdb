@@ -107,6 +107,7 @@
 - [WP-481 Constant-time Query Frontiers](performance/wp-481-constant-time-query-frontiers.md)
 - [WP-482 Streaming Command Segments](performance/wp-482-streaming-command-segments.md)
 - [WP-483 Streaming Command Capsules](performance/wp-483-streaming-command-capsules.md)
+- [WP-484 Proven Command-segment Framing](performance/wp-484-proven-command-segment-framing.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

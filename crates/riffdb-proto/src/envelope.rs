@@ -622,6 +622,21 @@ pub(crate) fn encode_preflighted(
     encode_compact_checked_payload(schema, payload)
 }
 
+/// Frames one payload after a first-party typed encoder has already proved
+/// the schema's canonical structural shape.
+///
+/// This deliberately retains the registered compact identity, exact payload
+/// bound, and CRC-32C framing checks. The durable registry keeps this entry
+/// point crate-private so callers can reach it only through a sealed current
+/// record type and the explicit proof-bearing API in `durable`.
+pub(crate) fn encode_after_structural_proof(
+    schema: &RecordSchema<'_>,
+    payload: &[u8],
+) -> Result<Vec<u8>, EnvelopeError> {
+    maximum_encoded_compact_record_bytes(schema, payload.len())?;
+    encode_compact_checked_payload(schema, payload)
+}
+
 /// Encodes immutable compatibility bytes in legacy V1 envelope framing.
 pub fn encode_v1(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
     maximum_encoded_envelope_bytes(schema, payload.len())?;

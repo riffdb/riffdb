@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     CanonicalStoredEnvelopeV1, DurableCodecError, binding_to_proto, decode_message, encode_message,
-    encode_prebuilt_message, fixed, require, storage_result,
+    encode_structurally_proven_message, fixed, require, storage_result,
 };
 use super::{application, command_capsule};
 
@@ -447,8 +447,10 @@ pub fn seal_and_encode_command_segment_v1(
     );
     append_length_delimited_field(&mut payload, 0x0a, &body_bytes)?;
     append_length_delimited_field(&mut payload, 0x12, digest.as_bytes())?;
-    let encoded =
-        encode_prebuilt_message::<wire::StoredCommandSegmentV1>(COMMAND_SEGMENT_V1, &payload)?;
+    let encoded = encode_structurally_proven_message::<wire::StoredCommandSegmentV1>(
+        COMMAND_SEGMENT_V1,
+        &payload,
+    )?;
     Ok((value, encoded))
 }
 
