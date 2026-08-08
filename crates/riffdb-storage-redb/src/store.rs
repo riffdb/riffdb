@@ -288,6 +288,18 @@ impl SharedRedb {
     }
 
     fn begin_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
+        // A published composite view is the complete standard-profile state:
+        // one immutable redb checkpoint plus the exact fenced journal suffix.
+        // Capture it before consulting the legacy deferred-redb frontier so a
+        // reader can never select the checkpoint alone after publication.
+        let composite = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(publication) = composite.as_ref() {
+            return Ok(RedbReadAccess::Composite(publication.capture()?));
+        }
+        drop(composite);
         // Keep the shared guard through `begin_read`: an epoch cannot install
         // its predecessor frontier between observing `None` and redb selecting
         // the newest (possibly deferred) root.
@@ -425,6 +437,7 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
 pub(crate) enum RedbReadAccess {
     Current(ReadTransaction),
     Durable(Arc<ReadTransaction>),
+    Composite(Arc<crate::composite_view::RedbCompositeReadView>),
 }
 
 impl RedbReadAccess {
@@ -432,10 +445,122 @@ impl RedbReadAccess {
         dead_code,
         reason = "WP-487 introduces the composite root; WP-488 publishes it"
     )]
-    pub(crate) fn into_shared(self) -> Arc<ReadTransaction> {
+    pub(crate) fn into_shared(self) -> Result<Arc<ReadTransaction>, StorageError> {
         match self {
-            Self::Current(transaction) => Arc::new(transaction),
-            Self::Durable(transaction) => transaction,
+            Self::Current(transaction) => Ok(Arc::new(transaction)),
+            Self::Durable(transaction) => Ok(transaction),
+            Self::Composite(_) => Err(storage_error(StorageErrorKind::InvariantViolation)),
+        }
+    }
+
+    pub(crate) fn read_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        match self {
+            Self::Current(transaction) => {
+                crate::journal::read_value(transaction, table, key).map_err(journal_io_error)
+            }
+            Self::Durable(transaction) => {
+                crate::journal::read_value(transaction, table, key).map_err(journal_io_error)
+            }
+            Self::Composite(view) => view.resolve_point(table.composite(), key),
+        }
+    }
+
+    pub(crate) fn read_range(
+        &self,
+        table: crate::journal::JournalTable,
+        start_inclusive: &[u8],
+        end_exclusive: &[u8],
+        max_rows: usize,
+    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        if max_rows == 0 {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if let Self::Composite(view) = self {
+            return view
+                .merge_bounded(
+                    table.composite(),
+                    start_inclusive,
+                    Some(end_exclusive),
+                    max_rows,
+                    max_rows.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS),
+                )
+                .map(|page| page.rows().to_vec());
+        }
+        let definition = crate::journal::byte_table_definition(table)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.open_table(definition)
+            .map_err(table_error)?
+            .range::<&[u8]>((
+                std::ops::Bound::Included(start_inclusive),
+                std::ops::Bound::Excluded(end_exclusive),
+            ))
+            .map_err(precommit_storage_error)?
+            .take(max_rows)
+            .map(|row| {
+                row.map(|(key, value)| {
+                    (
+                        key.value().to_vec().into_boxed_slice(),
+                        value.value().to_vec().into_boxed_slice(),
+                    )
+                })
+                .map_err(precommit_storage_error)
+            })
+            .collect()
+    }
+
+    pub(crate) fn read_range_reverse(
+        &self,
+        table: crate::journal::JournalTable,
+        start_inclusive: &[u8],
+        end_exclusive: &[u8],
+        max_rows: usize,
+    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        if max_rows == 0 {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if let Self::Composite(view) = self {
+            return view
+                .merge_bounded_reverse(
+                    table.composite(),
+                    start_inclusive,
+                    Some(end_exclusive),
+                    max_rows,
+                    max_rows.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS),
+                )
+                .map(|page| page.rows().to_vec());
+        }
+        let definition = crate::journal::byte_table_definition(table)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.open_table(definition)
+            .map_err(table_error)?
+            .range::<&[u8]>((
+                std::ops::Bound::Included(start_inclusive),
+                std::ops::Bound::Excluded(end_exclusive),
+            ))
+            .map_err(precommit_storage_error)?
+            .rev()
+            .take(max_rows)
+            .map(|row| {
+                row.map(|(key, value)| {
+                    (
+                        key.value().to_vec().into_boxed_slice(),
+                        value.value().to_vec().into_boxed_slice(),
+                    )
+                })
+                .map_err(precommit_storage_error)
+            })
+            .collect()
+    }
+
+    pub(crate) fn application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
+        match self {
+            Self::Current(transaction) => read_commit_tail(transaction),
+            Self::Durable(transaction) => read_commit_tail(transaction),
+            Self::Composite(view) => Ok(view.overlay().published_application()),
         }
     }
 }
@@ -452,6 +577,9 @@ impl Deref for RedbReadAccess {
         match self {
             Self::Current(transaction) => transaction,
             Self::Durable(transaction) => transaction,
+            // Only non-overlay tables may use `Deref`. Every table named by
+            // `JournalTable` must go through the explicit point/range methods.
+            Self::Composite(view) => view.checkpoint_root(),
         }
     }
 }

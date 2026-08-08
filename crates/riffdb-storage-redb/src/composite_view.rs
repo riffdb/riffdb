@@ -52,7 +52,7 @@ impl RedbCompositeViewBuilder {
         ports: &RedbOperationalPorts,
         checkpoint_frame_hash: [u8; 32],
     ) -> Result<Self, StorageError> {
-        let root = ports.begin_read()?.into_shared();
+        let root = ports.begin_read()?.into_shared()?;
         Self::from_root(root, checkpoint_frame_hash)
     }
 
@@ -192,6 +192,45 @@ impl RedbCompositeMutationStage {
             )
             .map_err(corrupt_value)
     }
+
+    pub(crate) fn merge_bounded_reverse(
+        &self,
+        table: CompositeTableV1,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+        max_inspected: usize,
+    ) -> Result<BoundedCompositePage, StorageError> {
+        let definition =
+            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let base = self.root.open_table(definition).map_err(table_error)?;
+        let end = end_exclusive
+            .map(std::ops::Bound::Excluded)
+            .unwrap_or(std::ops::Bound::Unbounded);
+        let rows = base
+            .range::<&[u8]>((std::ops::Bound::Included(start_inclusive), end))
+            .map_err(precommit_storage_error)?
+            .rev()
+            .map(|row| {
+                row.map(|(key, value)| {
+                    (
+                        key.value().to_vec().into_boxed_slice(),
+                        value.value().to_vec().into_boxed_slice(),
+                    )
+                })
+                .map_err(invalid_shape)
+            });
+        self.stage
+            .merge_bounded_reverse(
+                table,
+                rows,
+                start_inclusive,
+                end_exclusive,
+                max_rows,
+                max_inspected,
+            )
+            .map_err(corrupt_value)
+    }
 }
 
 /// One atomic publication cell for a checkpoint-plus-overlay read view.
@@ -238,6 +277,10 @@ impl RedbCompositePublication {
 }
 
 impl RedbCompositeReadView {
+    pub(crate) fn checkpoint_root(&self) -> &ReadTransaction {
+        &self.root
+    }
+
     pub(crate) fn overlay(&self) -> &FrozenCompositeOverlay {
         &self.overlay
     }
@@ -281,6 +324,47 @@ impl RedbCompositeReadView {
             });
         self.overlay
             .merge_bounded(
+                table,
+                rows,
+                start_inclusive,
+                end_exclusive,
+                max_rows,
+                max_inspected,
+            )
+            .map_err(corrupt_value)
+    }
+
+    /// Merges one bounded byte-table range in descending key order through
+    /// this exact captured view.
+    pub(crate) fn merge_bounded_reverse(
+        &self,
+        table: CompositeTableV1,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+        max_inspected: usize,
+    ) -> Result<BoundedCompositePage, StorageError> {
+        let definition =
+            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let base = self.root.open_table(definition).map_err(table_error)?;
+        let end = end_exclusive
+            .map(std::ops::Bound::Excluded)
+            .unwrap_or(std::ops::Bound::Unbounded);
+        let rows = base
+            .range::<&[u8]>((std::ops::Bound::Included(start_inclusive), end))
+            .map_err(precommit_storage_error)?
+            .rev()
+            .map(|row| {
+                row.map(|(key, value)| {
+                    (
+                        key.value().to_vec().into_boxed_slice(),
+                        value.value().to_vec().into_boxed_slice(),
+                    )
+                })
+                .map_err(invalid_shape)
+            });
+        self.overlay
+            .merge_bounded_reverse(
                 table,
                 rows,
                 start_inclusive,

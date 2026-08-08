@@ -597,6 +597,31 @@ impl CompositeMutationStage {
         )
     }
 
+    /// Canonically merges one bounded checkpoint range in descending key
+    /// order with private staged values.
+    pub fn merge_bounded_reverse<I>(
+        &self,
+        table: CompositeTableV1,
+        base: I,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+        max_inspected: usize,
+    ) -> Result<BoundedCompositePage, StorageValueError>
+    where
+        I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
+    {
+        merge_overlay_bounded_reverse(
+            &self.tables,
+            table,
+            base,
+            start_inclusive,
+            end_exclusive,
+            max_rows,
+            max_inspected,
+        )
+    }
+
     /// Returns the number of exact ordered mutations retained for framing.
     #[must_use]
     pub fn mutation_count(&self) -> usize {
@@ -712,6 +737,31 @@ impl FrozenCompositeOverlay {
             max_inspected,
         )
     }
+
+    /// Canonically merges a descending checkpoint range with this overlay
+    /// without materializing an unbounded union.
+    pub fn merge_bounded_reverse<I>(
+        &self,
+        table: CompositeTableV1,
+        base: I,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+        max_inspected: usize,
+    ) -> Result<BoundedCompositePage, StorageValueError>
+    where
+        I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
+    {
+        merge_overlay_bounded_reverse(
+            &self.tables,
+            table,
+            base,
+            start_inclusive,
+            end_exclusive,
+            max_rows,
+            max_inspected,
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -772,6 +822,93 @@ where
 
         match (base_key, overlay_key) {
             (Some(base_key), Some(overlay_key)) if base_key < overlay_key => {
+                let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
+                last_base_key = Some(key.clone());
+                rows.push((key, value));
+            }
+            (Some(base_key), Some(overlay_key)) if base_key == overlay_key => {
+                let (key, _) = base.next().ok_or(StorageValueError::InvalidShape)??;
+                last_base_key = Some(key.clone());
+                let (_, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
+                if let OverlayValue::Value(value) = value {
+                    rows.push((key, value.as_ref().into()));
+                }
+            }
+            (Some(_), Some(_)) | (None, Some(_)) => {
+                let (key, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
+                if let OverlayValue::Value(value) = value {
+                    rows.push((key.into(), value.as_ref().into()));
+                }
+            }
+            (Some(_), None) => {
+                let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
+                last_base_key = Some(key.clone());
+                rows.push((key, value));
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(BoundedCompositePage { rows, inspected })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_overlay_bounded_reverse<I>(
+    tables: &[PersistentOverlayMap; TABLE_COUNT],
+    table: CompositeTableV1,
+    base: I,
+    start_inclusive: &[u8],
+    end_exclusive: Option<&[u8]>,
+    max_rows: usize,
+    max_inspected: usize,
+) -> Result<BoundedCompositePage, StorageValueError>
+where
+    I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
+{
+    if max_rows == 0 || max_inspected == 0 || max_rows > max_inspected {
+        return Err(StorageValueError::InvalidShape);
+    }
+    let mut base = base.into_iter().peekable();
+    let end_bound = end_exclusive.map(Excluded).unwrap_or(Unbounded);
+    let mut overlay = tables[table.index()]
+        .range_reverse(Included(start_inclusive), end_bound)
+        .peekable();
+    let mut rows = Vec::with_capacity(max_rows.min(256));
+    let mut inspected = 0usize;
+    let mut last_base_key: Option<Box<[u8]>> = None;
+
+    while rows.len() < max_rows {
+        let base_key = match base.peek() {
+            Some(Ok((key, _))) => {
+                validate_range_key(key, start_inclusive, end_exclusive)?;
+                if last_base_key
+                    .as_deref()
+                    .is_some_and(|last| last <= key.as_ref())
+                {
+                    return Err(StorageValueError::NonCanonicalOrder);
+                }
+                Some(key.as_ref())
+            }
+            Some(Err(_)) => {
+                return match base.next().ok_or(StorageValueError::InvalidShape)? {
+                    Err(error) => Err(error),
+                    Ok(_) => Err(StorageValueError::InvalidShape),
+                };
+            }
+            None => None,
+        };
+        let overlay_key = overlay.peek().map(|(key, _)| *key);
+        if base_key.is_none() && overlay_key.is_none() {
+            break;
+        }
+        inspected = inspected
+            .checked_add(1)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if inspected > max_inspected {
+            return Err(StorageValueError::LimitExceeded);
+        }
+
+        match (base_key, overlay_key) {
+            (Some(base_key), Some(overlay_key)) if base_key > overlay_key => {
                 let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
                 last_base_key = Some(key.clone());
                 rows.push((key, value));
@@ -959,6 +1096,14 @@ impl PersistentOverlayMap {
     ) -> PersistentOverlayRange<'map> {
         PersistentOverlayRange::new(self.root.as_deref(), start, end)
     }
+
+    fn range_reverse<'map>(
+        &'map self,
+        start: std::ops::Bound<&'map [u8]>,
+        end: std::ops::Bound<&'map [u8]>,
+    ) -> PersistentOverlayRangeReverse<'map> {
+        PersistentOverlayRangeReverse::new(self.root.as_deref(), start, end)
+    }
 }
 
 fn insert_overlay_node(
@@ -1140,6 +1285,65 @@ impl<'map> Iterator for PersistentOverlayRange<'map> {
             return None;
         }
         self.push_left(node.right.as_deref());
+        Some((node.key.as_ref(), &node.value))
+    }
+}
+
+struct PersistentOverlayRangeReverse<'map> {
+    stack: Vec<&'map OverlayNode>,
+    start: std::ops::Bound<&'map [u8]>,
+}
+
+impl<'map> PersistentOverlayRangeReverse<'map> {
+    fn new(
+        root: Option<&'map OverlayNode>,
+        start: std::ops::Bound<&'map [u8]>,
+        end: std::ops::Bound<&'map [u8]>,
+    ) -> Self {
+        let mut range = Self {
+            stack: Vec::new(),
+            start,
+        };
+        let mut current = root;
+        while let Some(node) = current {
+            let beyond_end = match end {
+                Included(end) => node.key.as_ref() > end,
+                Excluded(end) => node.key.as_ref() >= end,
+                Unbounded => false,
+            };
+            if beyond_end {
+                current = node.left.as_deref();
+            } else {
+                range.stack.push(node);
+                current = node.right.as_deref();
+            }
+        }
+        range
+    }
+
+    fn push_right(&mut self, mut current: Option<&'map OverlayNode>) {
+        while let Some(node) = current {
+            self.stack.push(node);
+            current = node.right.as_deref();
+        }
+    }
+}
+
+impl<'map> Iterator for PersistentOverlayRangeReverse<'map> {
+    type Item = (&'map [u8], &'map OverlayValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.stack.pop()?;
+        let before_start = match self.start {
+            Included(start) => node.key.as_ref() < start,
+            Excluded(start) => node.key.as_ref() <= start,
+            Unbounded => false,
+        };
+        if before_start {
+            self.stack.clear();
+            return None;
+        }
+        self.push_right(node.left.as_deref());
         Some((node.key.as_ref(), &node.value))
     }
 }
@@ -1446,6 +1650,77 @@ mod tests {
             vec![
                 (b"a".as_slice(), b"new-a".as_slice()),
                 (b"b".as_slice(), b"base-b".as_slice()),
+                (b"d".as_slice(), b"new-d".as_slice()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reverse_bounded_merge_replaces_deletes_and_inserts_canonically() {
+        let mut base = Base::default();
+        base.insert(CompositeTableV1::SecondaryIndexes, b"b", b"base-b");
+        base.insert(CompositeTableV1::SecondaryIndexes, b"d", b"base-d");
+        base.insert(CompositeTableV1::SecondaryIndexes, b"f", b"base-f");
+        let mutations = vec![
+            CompositeMutationV1::put(
+                CompositeTableV1::SecondaryIndexes,
+                b"z".as_slice(),
+                b"new-z".as_slice(),
+            )
+            .expect("put"),
+            CompositeMutationV1::replace(
+                CompositeTableV1::SecondaryIndexes,
+                b"d".as_slice(),
+                b"base-d",
+                b"new-d".as_slice(),
+            )
+            .expect("replace"),
+            CompositeMutationV1::delete_matching(
+                CompositeTableV1::SecondaryIndexes,
+                b"b".as_slice(),
+                b"base-b",
+            )
+            .expect("delete"),
+        ];
+        let mut builder = CompositeOverlayBuilder::new(checkpoint());
+        builder
+            .apply_frame(&frame(mutations), &base)
+            .expect("apply");
+        let view = builder.freeze();
+        let base_rows = [
+            Ok((
+                b"f".to_vec().into_boxed_slice(),
+                b"base-f".to_vec().into_boxed_slice(),
+            )),
+            Ok((
+                b"d".to_vec().into_boxed_slice(),
+                b"base-d".to_vec().into_boxed_slice(),
+            )),
+            Ok((
+                b"b".to_vec().into_boxed_slice(),
+                b"base-b".to_vec().into_boxed_slice(),
+            )),
+        ];
+        let page = view
+            .merge_bounded_reverse(
+                CompositeTableV1::SecondaryIndexes,
+                base_rows,
+                b"a",
+                None,
+                10,
+                10,
+            )
+            .expect("merge");
+        let rows: Vec<(&[u8], &[u8])> = page
+            .rows()
+            .iter()
+            .map(|(key, value)| (key.as_ref(), value.as_ref()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (b"z".as_slice(), b"new-z".as_slice()),
+                (b"f".as_slice(), b"base-f".as_slice()),
                 (b"d".as_slice(), b"new-d".as_slice()),
             ]
         );
