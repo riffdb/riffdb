@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.0"
 publish = false
+default-run = "riffdb-command-growth"
 
 [workspace]
 resolver = "3"
@@ -17,6 +18,10 @@ riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", features = ["
 unsafe_code = "forbid"
 unused_must_use = "deny"
 missing_docs = "warn"
+
+[[bin]]
+name = "state-segment-projection"
+path = "src/bin/state_segment_projection.rs"
 
 [lints.clippy]
 correctness = { level = "warn", priority = -1 }
