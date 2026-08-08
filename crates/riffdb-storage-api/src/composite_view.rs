@@ -16,9 +16,11 @@ use sha2::{Digest, Sha256};
 use crate::StorageValueError;
 
 /// Maximum complete published journal suffix represented by one overlay.
-pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 4_096;
+pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 8_192;
+/// Maximum cumulative encoded journal bytes represented by one overlay.
+pub const MAX_COMPOSITE_SUFFIX_BYTES: usize = 32 * 1024 * 1024;
 /// Independent in-memory charge for one published overlay.
-pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 128 * 1024 * 1024;
 /// Maximum key or value component accepted from one journal mutation.
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative per-entry ordered-map and enum overhead charge.
@@ -513,7 +515,7 @@ impl CompositeOverlayBuilder {
             || self
                 .encoded_frame_bytes
                 .checked_add(frame.encoded_bytes)
-                .is_none_or(|bytes| bytes > MAX_COMPOSITE_COMPONENT_BYTES)
+                .is_none_or(|bytes| bytes > MAX_COMPOSITE_SUFFIX_BYTES)
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -651,7 +653,7 @@ impl CompositeMutationStage {
         let encoded_frame_bytes = self
             .predecessor_encoded_frame_bytes
             .checked_add(frame.encoded_bytes)
-            .filter(|bytes| *bytes <= MAX_COMPOSITE_COMPONENT_BYTES)
+            .filter(|bytes| *bytes <= MAX_COMPOSITE_SUFFIX_BYTES)
             .ok_or(StorageValueError::LimitExceeded)?;
         let (lineage, lineage_bytes) = overlay_lineage_successor(
             self.predecessor_lineage,
@@ -740,7 +742,7 @@ impl CompositeMutationStage {
             .ok_or(StorageValueError::LimitExceeded)?;
         let encoded_frame_bytes = predecessor_encoded_frame_bytes
             .checked_add(frame.encoded_bytes)
-            .filter(|bytes| *bytes <= MAX_COMPOSITE_COMPONENT_BYTES)
+            .filter(|bytes| *bytes <= MAX_COMPOSITE_SUFFIX_BYTES)
             .ok_or(StorageValueError::LimitExceeded)?;
         let (lineage, lineage_bytes) = overlay_lineage_successor(
             predecessor_lineage,
@@ -1867,6 +1869,66 @@ mod tests {
             mutations,
         )
         .expect("second frame")
+    }
+
+    #[test]
+    fn composite_bounds_keep_frames_small_and_give_checkpoints_half_full_headroom() {
+        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS, 8_192);
+        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES, 32 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_OVERLAY_BYTES, 128 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_COMPONENT_BYTES, 16 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS / 2, 4_096);
+        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES / 2, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn composite_suffix_accepts_exact_hard_bounds_and_rejects_each_successor() {
+        let base = Base::default();
+        let exact_frame = CompositeFrameV1::new(
+            CompositeFrameKindV1::Command,
+            database_id(),
+            Some(CommitSequence::first()),
+            CommitSequence::new(2),
+            Some(AdministrationSequence::first()),
+            AdministrationSequence::new(2),
+            1,
+            1,
+            [5; 32],
+            [6; 32],
+            vec![
+                CompositeMutationV1::put(
+                    CompositeTableV1::Entities,
+                    b"exact".as_slice(),
+                    b"value".as_slice(),
+                )
+                .expect("exact mutation"),
+            ],
+        )
+        .expect("exact frame");
+
+        let mut exact = CompositeOverlayBuilder::new(checkpoint());
+        exact.transition_count = MAX_COMPOSITE_OVERLAY_TRANSITIONS - 1;
+        exact.encoded_frame_bytes = MAX_COMPOSITE_SUFFIX_BYTES - 1;
+        exact
+            .apply_frame(&exact_frame, &base)
+            .expect("exact hard bounds");
+        let exact = exact.freeze();
+        assert_eq!(exact.transition_count(), MAX_COMPOSITE_OVERLAY_TRANSITIONS);
+        assert_eq!(exact.encoded_frame_bytes(), MAX_COMPOSITE_SUFFIX_BYTES);
+
+        let mut transitions_over = CompositeOverlayBuilder::new(checkpoint());
+        transitions_over.transition_count = MAX_COMPOSITE_OVERLAY_TRANSITIONS;
+        assert_eq!(
+            transitions_over.apply_frame(&exact_frame, &base),
+            Err(StorageValueError::IdentityMismatch)
+        );
+
+        let mut bytes_over = CompositeOverlayBuilder::new(checkpoint());
+        bytes_over.encoded_frame_bytes = MAX_COMPOSITE_SUFFIX_BYTES;
+        assert_eq!(
+            bytes_over.apply_frame(&exact_frame, &base),
+            Err(StorageValueError::IdentityMismatch)
+        );
     }
 
     #[test]

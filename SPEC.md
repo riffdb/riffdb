@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.84
+**Version:** 0.85
 **Status:** Contract-migration and reactive-application implementation
-**Date:** 7 August 2026
+**Date:** 8 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.85 | 2026-08-08 | Applied the maintainer-approved ADR-0104 Amendment 1: asynchronous checkpointing begins at 4,096 transitions or 16 MiB while the compiled published-plus-in-flight suffix ceilings become 8,192 transitions, 32 MiB encoded bytes, and 128 MiB overlay charge. Individual frames and the writer-private unpublished prefix remain capped at 256 transitions and 16 MiB; the fixed 40-MiB physical extent retains an independently charged maximum-frame reserve. |
 | 0.84 | 2026-08-07 | Accepted ADR-0103 and planned WP-480 after a same-filesystem probe measured fully zero-filled positional journal fences at 880 us p50 versus 4,479 us for extending append. The standard-profile journal becomes a fixed-capacity recyclable extent with dual generation headers, generation/position-bound frames, preflight allocation, empty-journal activation, and unchanged published-frontier replication semantics. |
 | 0.83 | 2026-08-07 | Amended ADR-0101 after mixed-load evidence showed ordinary same-tenant overlap collapsing the writer journal: once storage accepts a complete checked subgroup, serialization authority transfers to the sole FIFO writer, and overlapping successors must evaluate through the closed transaction-local protocol against the exact writer-private frontier while all public visibility and effects remain withheld until the covering fence. |
 | 0.82 | 2026-08-07 | Amended ADR-0101 and WP-478 after mixed-load evidence: the closed writer journal may carry complete checked command graphs and validated standalone service-audit groups in one dual-frontier FIFO durability epoch; audit results remain withheld until the covering fence, while all other administration, control-plane, lifecycle, backup, shutdown, and hardened-profile operations remain hard barriers. |
@@ -6754,9 +6755,12 @@ ADR-0055.
   reevaluation or audit reauthorization. The unpublished prefix MUST be bounded
   to 256 logical writer transitions and 16 MiB; existing command-group and
   service-audit-group bounds remain independently enforced. Published frames
-  MAY remain in the same recovery suffix up to a separate 4,096-transition and
-  16 MiB bound before checkpoint reclamation, with one maximum unpublished
-  group reserved so the effective checkpoint ceiling is byte-aware. Redb roots
+  MAY remain in the complete published-plus-checkpoint-in-flight recovery suffix
+  up to separate 8,192-transition and 32 MiB bounds before checkpoint
+  reclamation. Checkpointing MUST begin at 4,096 transitions or 16 MiB,
+  whichever occurs first, and earlier when necessary to reserve one maximum
+  padded frame in the fixed 40-MiB physical extent. Overlay memory has an
+  independent 128 MiB hard charge. Redb roots
   ahead of the journal frontier are writer-private. Before ADR-0104 selection,
   one successful journal fence atomically publishes the final covered redb read
   snapshot. Under ADR-0104, the synchronous path MUST NOT apply standard
@@ -6775,6 +6779,12 @@ ADR-0055.
   path across every crash. Catalog, contract, query-module, capability, other
   administration, lifecycle, backup, shutdown, and hardened-profile operations
   MUST remain barriers that drain the mixed suffix before proceeding.
+  A derived worker racing durable-but-unpublished state MUST receive bounded
+  transient backpressure and retry without fencing authoritative writes or
+  degrading application readiness. A successful barrier MUST advance the
+  operational read root to its exact post-barrier state before publishing any
+  cache or result. Graceful shutdown MUST materialize the complete published
+  suffix before binding the validated-prefix checkpoint.
   Complete accepted command subgroups MAY release their conflict capabilities
   to the sole FIFO writer before journal durability. An overlapping successor
   MUST observe the exact newest writer-private frontier through the closed

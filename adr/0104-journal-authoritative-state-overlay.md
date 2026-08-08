@@ -20,6 +20,12 @@ exact-text acceptance. Production may select the path only after WP-487 through
 WP-490 establish the required read views, writer publication, checkpoint and
 recovery behavior, and performance evidence. The hardened profile is unchanged.
 
+On 2026-08-08 the maintainer approved Amendment 1 after the production seed
+could fill the original suffix while its asynchronous checkpoint was still in
+flight. The amendment changes only checkpoint cadence and compiled headroom;
+it does not change authority, acknowledgement, ordering, durable bytes, the
+256-transition/16-MiB unpublished prefix, or the hardened profile.
+
 ## Context
 
 ADR-0101 already defines standard-profile authority as one known-durable redb
@@ -160,20 +166,26 @@ outcome, audit, provenance, event, retry, cancellation, and uncertainty result.
 
 ### 4. Bounded suffix and backpressure
 
-The published overlay and the complete durable-but-uncheckpointed suffix retain
-ADR-0101's maximum 4,096 transitions and 16 MiB of encoded journal frames. The
-writer-private unpublished prefix retains its independent 256-transition and
-16-MiB caps. Overlay keys, values, tombstones, manifests, and indexing overhead
-receive a separate conservative in-memory charge derived before admission; the
-closed POC ceiling is 64 MiB.
+The published overlay and the complete durable-but-uncheckpointed suffix have
+independent hard ceilings of 8,192 transitions and 32 MiB of cumulative encoded
+journal-frame bytes. The writer-private unpublished prefix and every individual
+frame retain their independent 256-transition and 16-MiB caps. Overlay keys,
+values, tombstones, manifests, and indexing overhead receive a separate
+conservative in-memory charge derived before admission; the closed POC ceiling
+is 128 MiB.
 
-Checkpoint work begins before any hard bound is reached. If the checkpointer
-cannot reclaim sufficient headroom, authoritative writer admission applies
-bounded backpressure before accepting a command that could exceed any encoded,
-transition, overlay-memory, extent, or retained-read-root limit. It never drops
-old overlay entries, acknowledges beyond the bound, performs an unbounded
-checkpoint, or converts pressure into a false successful outcome. Reads remain
-available from the last published view while write admission is backpressured.
+Checkpoint work begins when the active published suffix reaches 4,096
+transitions or 16 MiB, whichever occurs first. It begins earlier when required
+to reserve enough of the fixed 40-MiB physical extent for one maximum padded
+frame. The remaining half of each logical hard bound is checkpoint-in-flight
+headroom, not an additional unpublished allowance. If the checkpointer cannot
+reclaim sufficient headroom, authoritative writer admission applies bounded
+backpressure before accepting a command that could exceed any encoded,
+transition, overlay-memory, physical-extent, or retained-read-root limit. It
+never drops old overlay entries, acknowledges beyond the bound, performs an
+unbounded checkpoint, or converts pressure into a false successful outcome.
+Reads remain available from the last published view while write admission is
+backpressured.
 
 These are compiled safety ceilings, not operator-tunable correctness knobs.
 
@@ -224,6 +236,12 @@ operation from starting and retains its existing public failure class. A
 barrier never writes an administrative successor onto a redb root that omits an
 acknowledged application or service-audit transition. Ordinary reads do not
 force this drain and remain available from the published composite view.
+Derived workers that race the bounded durable-before-publication interval treat
+it as transient writer backpressure and retry; they do not fence authoritative
+writes or degrade application readiness. After a successful barrier write, the
+operational read root advances to that exact post-barrier redb root before any
+cache or result publication. Graceful shutdown materializes the complete
+published suffix before binding its validated-prefix checkpoint.
 
 ### 7. Crash recovery and corrupt states
 

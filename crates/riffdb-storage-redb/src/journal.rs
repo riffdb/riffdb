@@ -39,7 +39,7 @@ const EXTENT_FORMAT_VERSION: u16 = 3;
 const EXTENT_HEADER_SLOT_BYTES: usize = 4 * 1024;
 const EXTENT_HEADER_SLOT_COUNT: usize = 2;
 const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_COUNT;
-const EXTENT_DATA_BYTES: usize = 40 * 1024 * 1024;
+pub(crate) const EXTENT_DATA_BYTES: usize = 40 * 1024 * 1024;
 const EXTENT_FILE_BYTES: usize = EXTENT_DATA_OFFSET + EXTENT_DATA_BYTES;
 const EXTENT_FRAME_ALIGNMENT: usize = 4 * 1024;
 const EXTENT_FRAME_HEADER_BYTES: usize = 128;
@@ -59,8 +59,9 @@ pub(crate) const MAX_JOURNAL_COMMANDS: usize = MAX_JOURNAL_TRANSITIONS;
 /// governs one frame flush and all unpublished work; this independent cap
 /// prevents already-published small frames from forcing byte-inefficient redb
 /// checkpoints while keeping restart CPU bounded.
-pub(crate) const MAX_JOURNAL_SUFFIX_TRANSITIONS: usize = 4_096;
+pub(crate) const MAX_JOURNAL_SUFFIX_TRANSITIONS: usize = 8_192;
 pub(crate) const MAX_JOURNAL_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_JOURNAL_SUFFIX_BYTES: usize = 32 * 1024 * 1024;
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1415,12 +1416,7 @@ impl EncodedExtentFrame {
             return Err(JournalIoError::Corrupt);
         }
         let encoded_len = logical.as_bytes().len();
-        let unpadded_len = EXTENT_FRAME_HEADER_BYTES
-            .checked_add(encoded_len)
-            .and_then(|value| value.checked_add(EXTENT_FRAME_FOOTER_BYTES))
-            .ok_or(JournalIoError::Capacity)?;
-        let padded_len =
-            align_up(unpadded_len, EXTENT_FRAME_ALIGNMENT).ok_or(JournalIoError::Capacity)?;
+        let padded_len = extent_frame_bytes(encoded_len).ok_or(JournalIoError::Capacity)?;
         if padded_len > EXTENT_DATA_BYTES
             || position
                 .checked_add(padded_len)
@@ -1456,6 +1452,14 @@ impl EncodedExtentFrame {
         bytes[68..100].copy_from_slice(&checksum);
         Ok(Self { bytes, position })
     }
+}
+
+pub(crate) fn extent_frame_bytes(encoded_len: usize) -> Option<usize> {
+    EXTENT_FRAME_HEADER_BYTES
+        .checked_add(encoded_len)
+        .and_then(|value| value.checked_add(EXTENT_FRAME_FOOTER_BYTES))
+        .and_then(|value| align_up(value, EXTENT_FRAME_ALIGNMENT))
+        .filter(|value| *value <= EXTENT_DATA_BYTES)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1873,6 +1877,7 @@ fn scan_extent(
     let mut transition_count = 0_usize;
     let mut command_count = 0_usize;
     let mut audit_count = 0_usize;
+    let mut encoded_byte_count = 0_usize;
     let mut incomplete_tail = false;
     while position < EXTENT_FILE_BYTES {
         let mut physical_header = [0_u8; EXTENT_FRAME_HEADER_BYTES];
@@ -1965,7 +1970,12 @@ fn scan_extent(
         audit_count = audit_count
             .checked_add(usize::from(frame.audit_count()))
             .ok_or(JournalIoError::Corrupt)?;
-        if transition_count > MAX_JOURNAL_SUFFIX_TRANSITIONS {
+        encoded_byte_count = encoded_byte_count
+            .checked_add(encoded_len)
+            .ok_or(JournalIoError::Corrupt)?;
+        if transition_count > MAX_JOURNAL_SUFFIX_TRANSITIONS
+            || encoded_byte_count > MAX_JOURNAL_SUFFIX_BYTES
+        {
             return Err(JournalIoError::Corrupt);
         }
         visit(&frame)?;
@@ -2134,7 +2144,7 @@ fn scan_legacy_journal(
         audit_count = audit_count
             .checked_add(usize::from(frame.audit_count()))
             .ok_or(JournalIoError::Corrupt)?;
-        if complete_bytes.saturating_sub(FILE_HEADER_BYTES) > MAX_JOURNAL_FRAME_BYTES
+        if complete_bytes.saturating_sub(FILE_HEADER_BYTES) > MAX_JOURNAL_SUFFIX_BYTES
             || transition_count > MAX_JOURNAL_SUFFIX_TRANSITIONS
         {
             return Err(JournalIoError::Corrupt);
@@ -2942,6 +2952,19 @@ mod tests {
             ),
             Err(JournalCodecError::InvalidValue)
         );
+    }
+
+    #[test]
+    fn journal_bounds_keep_one_frame_and_unpublished_prefix_independent() {
+        assert_eq!(MAX_JOURNAL_TRANSITIONS, 256);
+        assert_eq!(MAX_JOURNAL_FRAME_BYTES, 16 * 1024 * 1024);
+        assert_eq!(MAX_JOURNAL_SUFFIX_TRANSITIONS, 8_192);
+        assert_eq!(MAX_JOURNAL_SUFFIX_BYTES, 32 * 1024 * 1024);
+        assert_eq!(EXTENT_DATA_BYTES, 40 * 1024 * 1024);
+        let maximum_physical_frame =
+            extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).expect("maximum frame fits extent");
+        assert!(maximum_physical_frame > MAX_JOURNAL_FRAME_BYTES);
+        assert!(maximum_physical_frame < EXTENT_DATA_BYTES);
     }
 
     #[test]

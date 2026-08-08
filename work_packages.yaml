@@ -1,4 +1,4 @@
-spec_version: '0.84'
+spec_version: '0.85'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -485,7 +485,7 @@ work_packages:
     overlapping compiler-derived conflict key; incompatible completion groups never retain leases
     while waiting on a fence that only the same writer can publish
   - The journal lane adds no fixed batching delay, drains only a ready FIFO prefix, performs one
-    sync_data for at most 256 logical writer transitions and 16 MiB, preserves independent command and audit group limits, never permits more than those bounds to remain unpublished, and retains at most a byte-aware 4,096-transition/16-MiB published recovery suffix before redb checkpoint reclamation
+    sync_data for at most 256 logical writer transitions and 16 MiB, preserves independent command and audit group limits, never permits more than those bounds to remain unpublished, and retains at most a byte-aware 8,192-transition/32-MiB complete published-plus-checkpoint-in-flight recovery suffix before redb checkpoint reclamation
     applied but unpublished process-wide
   - A successful journal fence atomically publishes the last covered redb snapshot before releasing
     any command or audit result, notification, transient index, projection, outbox, subscription, or response; every
@@ -1006,8 +1006,10 @@ work_packages:
   - One bounded checkpointer applies a captured published suffix in exact writer order, validates
     every expected prior and frontier, commits one Immediate redb checkpoint, and compacts only the
     proven covered overlay prefix while retaining concurrent newer entries
-  - Checkpoint admission starts before the 4,096-transition, 16-MiB journal, 64-MiB overlay, extent,
-    and retained-root ceilings; insufficient headroom backpressures writes while reads remain live
+  - Checkpoint admission starts at 4,096 transitions or 16 MiB and before the physical extent reserve;
+    the complete published-plus-checkpoint-in-flight suffix remains below 8,192 transitions and
+    32 MiB, the overlay remains below 128 MiB, and insufficient headroom backpressures writes while
+    reads remain live
   - Standard restart deterministically validates checkpoint plus suffix, rebuilds the exact overlay,
     reaches readiness without a mandatory redb rewrite, and starts the ordinary checkpointer
   - Redb-writing barriers drain unpublished fences and checkpoint the complete published suffix
