@@ -15,7 +15,7 @@ use riffdb_commit::{
     MigrationProjectionBuildObservation, MigrationProjectionBuildPort, MigrationProjectionError,
 };
 use riffdb_projection::{
-    ProjectionController, ProjectionCoreError, ProjectionEvaluationError,
+    ProjectionController, ProjectionCoreError, ProjectionCoreErrorKind, ProjectionEvaluationError,
     ProjectionInitializationResult, ProjectionNotifier, ProjectionRecoveryError,
     ProjectionRecoveryOutcome, ProjectionSchemaRegistry, evaluate_and_prepare_projection_commit,
     validate_and_recover_projection_generation,
@@ -173,12 +173,16 @@ impl RunningProjectionWorker {
                     if stop_requested(&worker_stop) {
                         break;
                     }
-                    worker_status.publish(
-                        match run_projection_pass(&storage, &notifier, &mut state) {
-                            Ok(()) => ProjectionWorkerReadiness::Ready,
-                            Err(_) => ProjectionWorkerReadiness::Degraded,
-                        },
-                    );
+                    match run_projection_pass(&storage, &notifier, &mut state) {
+                        Ok(()) => worker_status.publish(ProjectionWorkerReadiness::Ready),
+                        Err(error) if error.is_transient_writer_backpressure() => {
+                            // A journal frame may be durable but not published for
+                            // a bounded interval after the mutation gate becomes
+                            // available. Derived work retries on its next pass;
+                            // the authoritative application remains ready.
+                        }
+                        Err(_) => worker_status.publish(ProjectionWorkerReadiness::Degraded),
+                    }
                     if wait_for_stop(&worker_stop, WORKER_POLL_INTERVAL) {
                         break;
                     }
@@ -860,6 +864,19 @@ enum ProjectionWorkerError {
     TransitionLimit,
 }
 
+impl ProjectionWorkerError {
+    fn is_transient_writer_backpressure(&self) -> bool {
+        matches!(
+            self,
+            Self::Projection(error)
+                if error.kind() == ProjectionCoreErrorKind::StorageUnavailable
+        ) || matches!(
+            self,
+            Self::Storage(error) if error.kind() == riffdb_storage_api::StorageErrorKind::Unavailable
+        )
+    }
+}
+
 impl fmt::Debug for ProjectionWorkerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let class = match self {
@@ -914,6 +931,29 @@ mod tests {
         assert_eq!(
             format!("{:?}", ProjectionWorkerError::TransitionLimit),
             "ProjectionWorkerError { class: \"transition_limit\" }"
+        );
+    }
+
+    #[test]
+    fn transient_writer_backpressure_does_not_degrade_projection_readiness() {
+        assert!(
+            ProjectionWorkerError::Projection(ProjectionCoreError::new(
+                ProjectionCoreErrorKind::StorageUnavailable,
+            ))
+            .is_transient_writer_backpressure()
+        );
+        assert!(
+            ProjectionWorkerError::Storage(StorageError::new(
+                riffdb_storage_api::StorageErrorKind::Unavailable,
+                None,
+            ))
+            .is_transient_writer_backpressure()
+        );
+        assert!(
+            !ProjectionWorkerError::Projection(ProjectionCoreError::new(
+                ProjectionCoreErrorKind::CommitStatusUnknown,
+            ))
+            .is_transient_writer_backpressure()
         );
     }
 }

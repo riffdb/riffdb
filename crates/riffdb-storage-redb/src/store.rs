@@ -398,12 +398,23 @@ struct JournalRuntime {
     suffix_commands: usize,
     suffix_audits: usize,
     suffix_bytes: usize,
+    suffix_physical_bytes: usize,
     suffix_frames: Vec<([u8; 32], crate::journal::EncodedJournalFrame)>,
     unpublished_transitions: usize,
     unpublished_commands: usize,
     unpublished_audits: usize,
     unpublished_bytes: usize,
     reanchor_required: bool,
+}
+
+const JOURNAL_CHECKPOINT_START_TRANSITIONS: usize =
+    crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS / 2;
+const JOURNAL_CHECKPOINT_START_BYTES: usize = crate::journal::MAX_JOURNAL_SUFFIX_BYTES / 2;
+
+fn journal_checkpoint_start_physical_bytes() -> Option<usize> {
+    crate::journal::EXTENT_DATA_BYTES.checked_sub(crate::journal::extent_frame_bytes(
+        crate::journal::MAX_JOURNAL_FRAME_BYTES,
+    )?)
 }
 
 #[derive(Clone)]
@@ -1369,6 +1380,13 @@ impl RedbStore {
         self.ensure_writable()?;
         if !self.shared.startup_validation_clean() {
             return Ok(false);
+        }
+        if let Err(error) = self
+            .shared
+            .checkpoint_published_journal_suffix_for_barrier()
+        {
+            self.shared.note_checkpoint_write_failure();
+            return Err(error);
         }
         let transaction = self
             .shared
@@ -3277,6 +3295,7 @@ impl RedbWriteAccess {
             // not have landed.
             return Err(error);
         }
+        self.shared.refresh_durable_read_frontier()?;
         if let Some(runtime) = self.journal_checkpoint.take()
             && let Err(error) = self.shared.finish_journal_checkpoint(runtime)
         {
@@ -3468,6 +3487,8 @@ impl RedbWriteAccess {
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
+            let physical_bytes = crate::journal::extent_frame_bytes(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let next_transitions = runtime
                 .suffix_transitions
                 .checked_add(transition_count)
@@ -3479,6 +3500,10 @@ impl RedbWriteAccess {
             let next_bytes = runtime
                 .suffix_bytes
                 .checked_add(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_physical_bytes = runtime
+                .suffix_physical_bytes
+                .checked_add(physical_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let next_unpublished_transitions = runtime
                 .unpublished_transitions
@@ -3495,7 +3520,8 @@ impl RedbWriteAccess {
             if checkpoint_transitions.saturating_add(next_transitions)
                 > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
                 || checkpoint_bytes.saturating_add(next_bytes)
-                    > crate::journal::MAX_JOURNAL_FRAME_BYTES
+                    > crate::journal::MAX_JOURNAL_SUFFIX_BYTES
+                || next_physical_bytes > crate::journal::EXTENT_DATA_BYTES
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
                 || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
             {
@@ -3521,6 +3547,7 @@ impl RedbWriteAccess {
             runtime.suffix_transitions = next_transitions;
             runtime.suffix_audits = next_audits;
             runtime.suffix_bytes = next_bytes;
+            runtime.suffix_physical_bytes = next_physical_bytes;
             runtime.suffix_frames.push((frame_hash, retained_frame));
             runtime.unpublished_transitions = next_unpublished_transitions;
             runtime.unpublished_audits = next_unpublished_audits;
@@ -3711,6 +3738,8 @@ impl RedbDurabilityEpoch {
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
+            let physical_bytes = crate::journal::extent_frame_bytes(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let audit_count = usize::from(frame.audit_count());
             let next_transitions = runtime
                 .suffix_transitions
@@ -3727,6 +3756,10 @@ impl RedbDurabilityEpoch {
             let next_bytes = runtime
                 .suffix_bytes
                 .checked_add(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_physical_bytes = runtime
+                .suffix_physical_bytes
+                .checked_add(physical_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let next_unpublished_commands = runtime
                 .unpublished_commands
@@ -3747,7 +3780,8 @@ impl RedbDurabilityEpoch {
             if checkpoint_transitions.saturating_add(next_transitions)
                 > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
                 || checkpoint_bytes.saturating_add(next_bytes)
-                    > crate::journal::MAX_JOURNAL_FRAME_BYTES
+                    > crate::journal::MAX_JOURNAL_SUFFIX_BYTES
+                || next_physical_bytes > crate::journal::EXTENT_DATA_BYTES
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
                 || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
             {
@@ -3775,6 +3809,7 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_commands = next_commands;
                 runtime.suffix_audits = next_audits;
                 runtime.suffix_bytes = next_bytes;
+                runtime.suffix_physical_bytes = next_physical_bytes;
                 runtime.suffix_frames.push((frame_hash, retained_frame));
                 runtime.unpublished_transitions = next_unpublished_transitions;
                 runtime.unpublished_commands = next_unpublished_commands;
@@ -3831,6 +3866,36 @@ impl RedbDurabilityEpoch {
 }
 
 impl SharedRedb {
+    fn checkpoint_published_journal_suffix_for_barrier(
+        self: &Arc<Self>,
+    ) -> Result<(), StorageError> {
+        self.poll_async_checkpoint_locked(true)?;
+        let Some(runtime) = self.take_published_journal_suffix_locked(true)? else {
+            return Ok(());
+        };
+        let mut transaction = match self.database.begin_write() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                self.restore_journal_runtime(runtime)?;
+                return Err(transaction_error(error));
+            }
+        };
+        transaction.set_two_phase_commit(false);
+        if transaction.set_durability(Durability::Immediate).is_err() {
+            let _ = transaction.abort();
+            self.restore_journal_runtime(runtime)?;
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if let Err(error) = self.apply_published_journal_suffix(&transaction, &runtime) {
+            let _ = transaction.abort();
+            self.restore_journal_runtime(runtime)?;
+            return Err(error);
+        }
+        self.commit_durable(transaction)?;
+        self.refresh_durable_read_frontier()?;
+        self.finish_journal_checkpoint(runtime)
+    }
+
     fn capture_or_initialize_composite_view(
         &self,
     ) -> Result<Arc<crate::composite_view::RedbCompositeReadView>, StorageError> {
@@ -4043,6 +4108,7 @@ impl SharedRedb {
                 suffix_commands: 0,
                 suffix_audits: 0,
                 suffix_bytes: 0,
+                suffix_physical_bytes: 0,
                 suffix_frames: Vec::new(),
                 unpublished_transitions: 0,
                 unpublished_commands: 0,
@@ -4055,8 +4121,8 @@ impl SharedRedb {
     }
 
     fn maybe_start_async_checkpoint(self: &Arc<Self>) -> Result<(), StorageError> {
-        const START_TRANSITIONS: usize = crate::journal::MAX_JOURNAL_TRANSITIONS * 4;
-        const START_BYTES: usize = 4 * 1024 * 1024;
+        let start_physical_bytes = journal_checkpoint_start_physical_bytes()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
 
         let mut checkpoint_guard = self
             .journal_checkpoint
@@ -4076,8 +4142,9 @@ impl SharedRedb {
             return Ok(());
         }
         if !runtime.reanchor_required
-            && runtime.suffix_transitions < START_TRANSITIONS
-            && runtime.suffix_bytes < START_BYTES
+            && runtime.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
+            && runtime.suffix_bytes < JOURNAL_CHECKPOINT_START_BYTES
+            && runtime.suffix_physical_bytes < start_physical_bytes
         {
             return Ok(());
         }
@@ -4176,6 +4243,7 @@ impl SharedRedb {
                 suffix_commands: 0,
                 suffix_audits: 0,
                 suffix_bytes: 0,
+                suffix_physical_bytes: 0,
                 suffix_frames: Vec::new(),
                 unpublished_transitions: 0,
                 unpublished_commands: 0,
@@ -4457,11 +4525,6 @@ impl SharedRedb {
         &self,
         force: bool,
     ) -> Result<Option<JournalRuntime>, StorageError> {
-        const CHECKPOINT_TRANSITION_WATERMARK: usize =
-            crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
-                - riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
-        const CHECKPOINT_BYTE_WATERMARK: usize = crate::journal::MAX_JOURNAL_FRAME_BYTES * 3 / 4;
-
         let mut runtime = self
             .journal_runtime
             .lock()
@@ -4471,15 +4534,18 @@ impl SharedRedb {
         };
         if current.unpublished_transitions != 0 || current.unpublished_bytes != 0 {
             if force {
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
+                // Another lane can acquire the mutation gate after private
+                // staging releases it but before the journal fence publishes.
+                // The predecessor remains authoritative, so this is bounded
+                // transient backpressure rather than an integrity failure.
+                return Err(storage_error(StorageErrorKind::Unavailable));
             }
             return Ok(None);
         }
         if !force
             && !current.reanchor_required
-            && current.suffix_transitions < CHECKPOINT_TRANSITION_WATERMARK
-            && current.suffix_bytes < CHECKPOINT_BYTE_WATERMARK
+            && current.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
+            && current.suffix_bytes < JOURNAL_CHECKPOINT_START_BYTES
         {
             return Ok(None);
         }
@@ -4488,7 +4554,7 @@ impl SharedRedb {
 
     fn finish_journal_checkpoint(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
         drop(runtime.lane);
-        let checkpoint = self.database.begin_read().map_err(transaction_error)?;
+        let checkpoint = Arc::new(self.database.begin_read().map_err(transaction_error)?);
         let checkpoint_database_id = read_identity_from_read_transaction(&checkpoint)?;
         let checkpoint_sequence = read_commit_tail(&checkpoint)?;
         let checkpoint_administration_sequence = read_administration_tail(&checkpoint)?;
@@ -4515,11 +4581,25 @@ impl SharedRedb {
             .durable_read_frontier
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if frontier.take().is_none() {
+        if frontier.is_none() {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        *frontier = Some(checkpoint);
         self.clear_composite_publication()?;
+        Ok(())
+    }
+
+    fn refresh_durable_read_frontier(&self) -> Result<(), StorageError> {
+        let mut frontier = self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if frontier.is_some() {
+            *frontier = Some(Arc::new(
+                self.database.begin_read().map_err(transaction_error)?,
+            ));
+        }
         Ok(())
     }
 
@@ -5517,6 +5597,21 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn async_checkpoint_starts_half_full_and_reserves_one_maximum_physical_frame() {
+        assert_eq!(JOURNAL_CHECKPOINT_START_TRANSITIONS, 4_096);
+        assert_eq!(JOURNAL_CHECKPOINT_START_BYTES, 16 * 1024 * 1024);
+        let maximum_frame =
+            crate::journal::extent_frame_bytes(crate::journal::MAX_JOURNAL_FRAME_BYTES)
+                .expect("maximum physical frame");
+        let start_physical =
+            journal_checkpoint_start_physical_bytes().expect("physical start watermark");
+        assert_eq!(
+            start_physical.checked_add(maximum_frame),
+            Some(crate::journal::EXTENT_DATA_BYTES)
+        );
+    }
 
     #[test]
     fn durability_epoch_totals_accept_exact_bounds_and_reject_each_successor() {

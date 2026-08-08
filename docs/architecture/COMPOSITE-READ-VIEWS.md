@@ -28,18 +28,31 @@ Before an overlay can freeze, RiffDB verifies:
   tombstones; and
 - ordered application of every mutation in each complete frame.
 
+The compiled standard-profile ceilings are 8,192 transitions, 32 MiB of
+cumulative encoded suffix bytes, and 128 MiB of conservative overlay-memory
+charge. Checkpointing starts at the half-full point (4,096 transitions or
+16 MiB) and earlier if the fixed 40-MiB extent must reserve one maximum padded
+frame. One frame and the complete writer-private unpublished prefix remain
+independently capped at 256 transitions and 16 MiB. These are fail-closed safety
+bounds, not tuning settings.
+
 Physical checkpoint compaction copies a proven overlay prefix into redb. It
 does not advance a logical index generation, so a cursor is invalidated only by
 an actual application mutation, not by storage housekeeping.
 
+Redb-writing barriers first materialize the complete published suffix. If a
+derived worker reaches a barrier while a durable journal frame is still
+awaiting publication, it observes transient writer backpressure and retries
+without degrading authoritative application readiness. A successful barrier
+advances the operational read root to its exact post-barrier state before
+publishing a cache or result. Graceful shutdown drains the suffix before
+writing the validated-prefix checkpoint.
+
 ## Current implementation boundary
 
-WP-487 provides the closed engine-neutral overlay values plus redb and memory
-conformance adapters. Production command acknowledgement and ordinary reads do
-not select the composite path yet. WP-488 owns publication after the journal
-fence, WP-489 owns asynchronous checkpoint/recovery/barriers, and WP-490 owns
-production enablement and the performance gate. Until those packages pass,
-the existing redb-snapshot path remains active.
+The standard profile selects the composite path for command acknowledgement and
+ordinary reads. WP-490 owns the remaining production performance gate and
+operational evidence.
 
 The hardened profile remains the independent two-phase redb oracle and never
 selects the journal overlay.
