@@ -421,6 +421,8 @@ pub struct CompositeOverlayBuilder {
     encoded_frame_bytes: usize,
     charged_bytes: usize,
     tables: [PersistentOverlayMap; TABLE_COUNT],
+    lineage: Option<Arc<OverlayLineageNode>>,
+    lineage_bytes: usize,
 }
 
 impl CompositeOverlayBuilder {
@@ -436,6 +438,8 @@ impl CompositeOverlayBuilder {
             encoded_frame_bytes: 0,
             charged_bytes: 0,
             tables: array::from_fn(|_| PersistentOverlayMap::default()),
+            lineage: None,
+            lineage_bytes: 0,
         }
     }
 
@@ -455,6 +459,8 @@ impl CompositeOverlayBuilder {
             encoded_frame_bytes: published.encoded_frame_bytes,
             charged_bytes: published.charged_bytes,
             tables: published.tables.clone(),
+            lineage: published.lineage.clone(),
+            lineage_bytes: published.lineage_bytes,
         }
     }
 
@@ -467,11 +473,17 @@ impl CompositeOverlayBuilder {
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
         self.validate_frame_identity(frame)?;
+        let (lineage, lineage_bytes) =
+            overlay_lineage_successor(self.lineage.clone(), self.lineage_bytes, &frame.mutations)?;
+        let maximum_table_charge = MAX_COMPOSITE_OVERLAY_BYTES
+            .checked_sub(lineage_bytes)
+            .ok_or(StorageValueError::LimitExceeded)?;
         apply_mutations_atomically(
             &mut self.tables,
             &mut self.charged_bytes,
             &frame.mutations,
             base,
+            maximum_table_charge,
         )?;
         self.transition_count = self
             .transition_count
@@ -484,6 +496,8 @@ impl CompositeOverlayBuilder {
         self.current_application = frame.covered_application;
         self.current_administration = frame.covered_administration;
         self.current_hash = frame.frame_hash;
+        self.lineage = lineage;
+        self.lineage_bytes = lineage_bytes;
         Ok(())
     }
 
@@ -518,6 +532,8 @@ impl CompositeOverlayBuilder {
             encoded_frame_bytes: self.encoded_frame_bytes,
             charged_bytes: self.charged_bytes,
             tables: self.tables,
+            lineage: self.lineage,
+            lineage_bytes: self.lineage_bytes,
         }
     }
 }
@@ -538,6 +554,9 @@ pub struct CompositeMutationStage {
     tables: [PersistentOverlayMap; TABLE_COUNT],
     charged_bytes: usize,
     mutations: Vec<CompositeMutationV1>,
+    predecessor_lineage: Option<Arc<OverlayLineageNode>>,
+    predecessor_lineage_bytes: usize,
+    staged_lineage_bytes: usize,
 }
 
 impl CompositeMutationStage {
@@ -554,6 +573,9 @@ impl CompositeMutationStage {
             tables: predecessor.tables.clone(),
             charged_bytes: predecessor.charged_bytes,
             mutations: Vec::new(),
+            predecessor_lineage: predecessor.lineage.clone(),
+            predecessor_lineage_bytes: predecessor.lineage_bytes,
+            staged_lineage_bytes: 0,
         }
     }
 
@@ -577,6 +599,10 @@ impl CompositeMutationStage {
             .value()
             .map(|value| OverlayValue::Value(Arc::from(value)))
             .unwrap_or(OverlayValue::Tombstone);
+        let next_staged_lineage_bytes = self
+            .staged_lineage_bytes
+            .checked_add(lineage_key_charge(mutation.key())?)
+            .ok_or(StorageValueError::SizeOverflow)?;
         let mut next_charge = self.charged_bytes;
         if let Some(prior) = table.get(key.as_ref()) {
             next_charge = next_charge
@@ -586,11 +612,16 @@ impl CompositeMutationStage {
         next_charge = next_charge
             .checked_add(entry_charge(&key, &replacement)?)
             .ok_or(StorageValueError::SizeOverflow)?;
-        if next_charge > MAX_COMPOSITE_OVERLAY_BYTES {
+        if next_charge
+            .checked_add(self.predecessor_lineage_bytes)
+            .and_then(|charge| charge.checked_add(next_staged_lineage_bytes))
+            .is_none_or(|charge| charge > MAX_COMPOSITE_OVERLAY_BYTES)
+        {
             return Err(StorageValueError::LimitExceeded);
         }
         table.insert(key, replacement);
         self.charged_bytes = next_charge;
+        self.staged_lineage_bytes = next_staged_lineage_bytes;
         self.mutations.push(mutation);
         Ok(())
     }
@@ -622,6 +653,17 @@ impl CompositeMutationStage {
             .checked_add(frame.encoded_bytes)
             .filter(|bytes| *bytes <= MAX_COMPOSITE_COMPONENT_BYTES)
             .ok_or(StorageValueError::LimitExceeded)?;
+        let (lineage, lineage_bytes) = overlay_lineage_successor(
+            self.predecessor_lineage,
+            self.predecessor_lineage_bytes,
+            &self.mutations,
+        )?;
+        if lineage_bytes
+            .checked_add(self.charged_bytes)
+            .is_none_or(|charge| charge > MAX_COMPOSITE_OVERLAY_BYTES)
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
         Ok(FrozenCompositeOverlay {
             checkpoint: self.checkpoint,
             published_application: frame.covered_application,
@@ -631,6 +673,8 @@ impl CompositeMutationStage {
             encoded_frame_bytes,
             charged_bytes: self.charged_bytes,
             tables: self.tables,
+            lineage,
+            lineage_bytes,
         })
     }
 
@@ -719,6 +763,8 @@ pub struct FrozenCompositeOverlay {
     encoded_frame_bytes: usize,
     charged_bytes: usize,
     tables: [PersistentOverlayMap; TABLE_COUNT],
+    lineage: Option<Arc<OverlayLineageNode>>,
+    lineage_bytes: usize,
 }
 
 impl FrozenCompositeOverlay {
@@ -761,7 +807,79 @@ impl FrozenCompositeOverlay {
     /// Returns the conservative overlay-memory charge.
     #[must_use]
     pub const fn charged_bytes(&self) -> usize {
-        self.charged_bytes
+        self.charged_bytes + self.lineage_bytes
+    }
+
+    /// Re-roots this published view after `covered` has been materialized by
+    /// an independently durable checkpoint.
+    ///
+    /// The successor retains only final key states that differ from the exact
+    /// covered view. Because published overlays are persistent maps, this is a
+    /// bounded final-state diff rather than a replay of every newer mutation.
+    /// A key changed and then restored to its covered value needs no overlay
+    /// entry over the new checkpoint.
+    pub fn rebase_after(
+        &self,
+        covered: &Self,
+        checkpoint: CompositeCheckpointV1,
+    ) -> Result<Self, StorageValueError> {
+        if self.checkpoint != covered.checkpoint
+            || checkpoint.database_id != covered.checkpoint.database_id
+            || checkpoint.history_incarnation != covered.checkpoint.history_incarnation
+            || checkpoint.registry_digest != covered.checkpoint.registry_digest
+            || checkpoint.application_frontier != covered.published_application
+            || checkpoint.administration_frontier != covered.published_administration
+            || checkpoint.terminal_frame_hash != covered.terminal_frame_hash
+            || self.transition_count < covered.transition_count
+            || self.encoded_frame_bytes < covered.encoded_frame_bytes
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+
+        let mut touched = BTreeMap::<(CompositeTableV1, Box<[u8]>), ()>::new();
+        let mut lineage = self.lineage.as_ref();
+        while !same_lineage(lineage, covered.lineage.as_ref()) {
+            let node = lineage.ok_or(StorageValueError::IdentityMismatch)?;
+            for (table, key) in node.keys.iter() {
+                touched.insert((*table, key.clone()), ());
+            }
+            lineage = node.predecessor.as_ref();
+        }
+
+        let mut pending: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT] =
+            array::from_fn(|_| BTreeMap::new());
+        let mut charged_bytes = 0_usize;
+        for ((table, key), ()) in touched {
+            let table_index = table.index();
+            let value = self.tables[table_index]
+                .get(&key)
+                .ok_or(StorageValueError::IdentityMismatch)?;
+            if covered.tables[table_index]
+                .get(&key)
+                .is_some_and(|covered| overlay_values_equal(covered, value))
+            {
+                continue;
+            }
+            charged_bytes = charged_bytes
+                .checked_add(entry_charge(&key, value)?)
+                .filter(|charge| *charge <= MAX_COMPOSITE_OVERLAY_BYTES)
+                .ok_or(StorageValueError::LimitExceeded)?;
+            pending[table_index].insert(key, value.clone());
+        }
+        let tables = pending.map(PersistentOverlayMap::from_sorted_entries);
+
+        Ok(Self {
+            checkpoint,
+            published_application: self.published_application,
+            published_administration: self.published_administration,
+            terminal_frame_hash: self.terminal_frame_hash,
+            transition_count: self.transition_count - covered.transition_count,
+            encoded_frame_bytes: self.encoded_frame_bytes - covered.encoded_frame_bytes,
+            charged_bytes,
+            tables,
+            lineage: None,
+            lineage_bytes: 0,
+        })
     }
 
     /// Resolves one point from the overlay only. `Unchanged` falls back to the
@@ -1062,11 +1180,70 @@ enum OverlayValue {
     Value(Arc<[u8]>),
 }
 
+/// Exact persistent publication ancestry used to identify the bounded set of
+/// keys changed after a checkpoint capture. Values remain solely in the
+/// overlay maps; lineage retains no duplicate payload bytes.
+struct OverlayLineageNode {
+    predecessor: Option<Arc<Self>>,
+    keys: Box<[(CompositeTableV1, Box<[u8]>)]>,
+}
+
+fn overlay_lineage_successor(
+    predecessor: Option<Arc<OverlayLineageNode>>,
+    predecessor_bytes: usize,
+    mutations: &[CompositeMutationV1],
+) -> Result<(Option<Arc<OverlayLineageNode>>, usize), StorageValueError> {
+    let mut added_bytes = 0_usize;
+    let mut keys = Vec::with_capacity(mutations.len());
+    for mutation in mutations {
+        added_bytes = added_bytes
+            .checked_add(lineage_key_charge(mutation.key())?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        keys.push((mutation.table(), mutation.key().into()));
+    }
+    let lineage_bytes = predecessor_bytes
+        .checked_add(added_bytes)
+        .ok_or(StorageValueError::SizeOverflow)?;
+    let lineage = (!keys.is_empty()).then(|| {
+        Arc::new(OverlayLineageNode {
+            predecessor,
+            keys: keys.into_boxed_slice(),
+        })
+    });
+    Ok((lineage, lineage_bytes))
+}
+
+fn lineage_key_charge(key: &[u8]) -> Result<usize, StorageValueError> {
+    key.len()
+        .checked_add(48)
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn same_lineage(
+    left: Option<&Arc<OverlayLineageNode>>,
+    right: Option<&Arc<OverlayLineageNode>>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        _ => false,
+    }
+}
+
+fn overlay_values_equal(left: &OverlayValue, right: &OverlayValue) -> bool {
+    match (left, right) {
+        (OverlayValue::Tombstone, OverlayValue::Tombstone) => true,
+        (OverlayValue::Value(left), OverlayValue::Value(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn apply_mutations_atomically(
     tables: &mut [PersistentOverlayMap; TABLE_COUNT],
     charged_bytes: &mut usize,
     mutations: &[CompositeMutationV1],
     base: &impl CompositeViewBase,
+    maximum_table_charge: usize,
 ) -> Result<(), StorageValueError> {
     let mut pending_tables: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT] =
         array::from_fn(|_| BTreeMap::new());
@@ -1098,7 +1275,7 @@ fn apply_mutations_atomically(
         candidate_charge = candidate_charge
             .checked_add(entry_charge(&key, &replacement)?)
             .ok_or(StorageValueError::SizeOverflow)?;
-        if candidate_charge > MAX_COMPOSITE_OVERLAY_BYTES {
+        if candidate_charge > maximum_table_charge {
             return Err(StorageValueError::LimitExceeded);
         }
         pending_tables[table_index].insert(key, replacement);
@@ -1161,6 +1338,14 @@ impl PersistentOverlayMap {
         self.root = Some(insert_overlay_node(self.root.as_ref(), key, value));
     }
 
+    fn from_sorted_entries(entries: BTreeMap<Box<[u8]>, OverlayValue>) -> Self {
+        let len = entries.len();
+        let mut entries = entries.into_iter();
+        Self {
+            root: build_balanced_overlay(&mut entries, len),
+        }
+    }
+
     fn range<'map>(
         &'map self,
         start: std::ops::Bound<&'map [u8]>,
@@ -1176,6 +1361,22 @@ impl PersistentOverlayMap {
     ) -> PersistentOverlayRangeReverse<'map> {
         PersistentOverlayRangeReverse::new(self.root.as_deref(), start, end)
     }
+}
+
+fn build_balanced_overlay(
+    entries: &mut impl Iterator<Item = (Box<[u8]>, OverlayValue)>,
+    len: usize,
+) -> Option<Arc<OverlayNode>> {
+    if len == 0 {
+        return None;
+    }
+    let left_len = len / 2;
+    let left = build_balanced_overlay(entries, left_len);
+    let (key, value) = entries
+        .next()
+        .expect("balanced overlay length matches its owned iterator");
+    let right = build_balanced_overlay(entries, len - left_len - 1);
+    Some(overlay_node(key, value, left, right))
 }
 
 fn insert_overlay_node(
@@ -1560,6 +1761,100 @@ mod tests {
             mutations,
         )
         .expect("frame")
+    }
+
+    fn second_frame(mutations: Vec<CompositeMutationV1>) -> CompositeFrameV1 {
+        CompositeFrameV1::new(
+            CompositeFrameKindV1::Command,
+            database_id(),
+            CommitSequence::new(2),
+            CommitSequence::new(3),
+            AdministrationSequence::new(2),
+            AdministrationSequence::new(3),
+            1,
+            384,
+            [6; 32],
+            [7; 32],
+            mutations,
+        )
+        .expect("second frame")
+    }
+
+    #[test]
+    fn rebase_retains_only_exact_post_checkpoint_lineage() {
+        let mut old_base = Base::default();
+        old_base.insert(CompositeTableV1::Entities, b"ticket", b"open");
+        let mut covered_builder = CompositeOverlayBuilder::new(checkpoint());
+        covered_builder
+            .apply_frame(
+                &frame(vec![
+                    CompositeMutationV1::replace(
+                        CompositeTableV1::Entities,
+                        b"ticket".as_slice(),
+                        b"open",
+                        b"assigned".as_slice(),
+                    )
+                    .expect("replace"),
+                    CompositeMutationV1::put(
+                        CompositeTableV1::Entities,
+                        b"comment".as_slice(),
+                        b"first".as_slice(),
+                    )
+                    .expect("put"),
+                ]),
+                &old_base,
+            )
+            .expect("covered frame");
+        let covered = covered_builder.freeze();
+
+        let mut current_builder = CompositeOverlayBuilder::from_published(&covered);
+        current_builder
+            .apply_frame(
+                &second_frame(vec![
+                    CompositeMutationV1::replace(
+                        CompositeTableV1::Entities,
+                        b"ticket".as_slice(),
+                        b"assigned",
+                        b"closed".as_slice(),
+                    )
+                    .expect("replace"),
+                ]),
+                &old_base,
+            )
+            .expect("newer frame");
+        let current = current_builder.freeze();
+        let new_checkpoint = CompositeCheckpointV1::new(
+            database_id(),
+            1,
+            SchemaHash::from_bytes([3; 32]),
+            CommitSequence::new(2),
+            AdministrationSequence::new(2),
+            [6; 32],
+        )
+        .expect("materialized checkpoint");
+        let rebased = current
+            .rebase_after(&covered, new_checkpoint)
+            .expect("exact rebase");
+
+        let mut new_base = Base::default();
+        new_base.insert(CompositeTableV1::Entities, b"ticket", b"assigned");
+        new_base.insert(CompositeTableV1::Entities, b"comment", b"first");
+        assert_eq!(rebased.transition_count(), 1);
+        assert_eq!(rebased.encoded_frame_bytes(), 384);
+        assert_eq!(
+            rebased.resolve_point(&new_base, CompositeTableV1::Entities, b"ticket"),
+            Ok(Some(b"closed".to_vec()))
+        );
+        new_base.reset_counts();
+        assert_eq!(
+            rebased.resolve_point(&new_base, CompositeTableV1::Entities, b"comment"),
+            Ok(Some(b"first".to_vec()))
+        );
+        assert_eq!(
+            new_base.reads.get(),
+            1,
+            "covered-only keys fall through to the new checkpoint"
+        );
     }
 
     #[test]

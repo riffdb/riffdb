@@ -1710,6 +1710,27 @@ pub(crate) fn journal_path(database_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Immutable journal extent currently being materialized into redb.
+pub(crate) fn checkpoint_journal_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(".riffjournal.checkpoint");
+    PathBuf::from(path)
+}
+
+/// Preallocated non-authoritative extent reserved for the next rotation.
+pub(crate) fn spare_journal_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(".riffjournal.next");
+    PathBuf::from(path)
+}
+
+pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), JournalIoError> {
+    let parent = path.parent().ok_or(JournalIoError::Io)?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| JournalIoError::Io)
+}
+
 fn align_up(value: usize, alignment: usize) -> Option<usize> {
     value
         .checked_add(alignment.checked_sub(1)?)
@@ -2133,9 +2154,16 @@ pub(crate) fn recover_journal(
     database_path: &Path,
     database_id: DatabaseId,
 ) -> Result<(), JournalIoError> {
-    let path = journal_path(database_path);
+    recover_journal_path(database, &journal_path(database_path), database_id)
+}
+
+pub(crate) fn recover_journal_path(
+    database: &Database,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
     let mut frames = Vec::new();
-    let Some((header, tail)) = scan_journal(&path, database_id, |frame| {
+    let Some((header, tail)) = scan_journal(path, database_id, |frame| {
         frames.push(frame.clone());
         Ok(())
     })?
@@ -2156,7 +2184,7 @@ pub(crate) fn recover_journal(
         && checkpoint_frontier != redb_frontier
     {
         return reset_journal(
-            &path,
+            path,
             &JournalFileHeader::with_frontiers(
                 database_id,
                 redb_frontier.0,
@@ -2175,7 +2203,7 @@ pub(crate) fn recover_journal(
         return Err(JournalIoError::Corrupt);
     }
     reset_journal(
-        &path,
+        path,
         &JournalFileHeader::with_frontiers(
             database_id,
             tail.last_sequence,
@@ -2631,6 +2659,8 @@ mod tests {
             let _ = std::fs::remove_file(&self.0);
             let journal = journal_path(&self.0);
             let _ = std::fs::remove_file(&journal);
+            let _ = std::fs::remove_file(checkpoint_journal_path(&self.0));
+            let _ = std::fs::remove_file(spare_journal_path(&self.0));
             if let Some(file_name) = journal.file_name() {
                 let mut replacement = file_name.to_os_string();
                 replacement.push(".rewrite");

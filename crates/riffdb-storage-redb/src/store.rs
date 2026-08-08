@@ -84,6 +84,7 @@ pub(crate) struct SharedRedb {
     /// epochs whose journal fence has not published yet.
     private_composite_frontier: Mutex<Option<Arc<crate::composite_view::RedbCompositeReadView>>>,
     journal_runtime: Mutex<Option<JournalRuntime>>,
+    journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
     /// Exact identities in sealed command epochs that are not public yet.
@@ -397,11 +398,35 @@ struct JournalRuntime {
     suffix_commands: usize,
     suffix_audits: usize,
     suffix_bytes: usize,
+    suffix_frames: Vec<([u8; 32], Arc<crate::journal::JournalFrame>)>,
     unpublished_transitions: usize,
     unpublished_commands: usize,
     unpublished_audits: usize,
     unpublished_bytes: usize,
     reanchor_required: bool,
+}
+
+#[derive(Clone)]
+struct JournalCheckpointBatch {
+    database_id: DatabaseId,
+    checkpoint_sequence: Option<CommitSequence>,
+    checkpoint_administration_sequence: Option<AdministrationSequence>,
+    checkpoint_hash: [u8; 32],
+    last_sequence: Option<CommitSequence>,
+    last_administration_sequence: Option<AdministrationSequence>,
+    last_hash: [u8; 32],
+    transition_count: usize,
+    command_count: usize,
+    audit_count: usize,
+    encoded_bytes: usize,
+    frames: Vec<([u8; 32], Arc<crate::journal::JournalFrame>)>,
+}
+
+struct AsyncJournalCheckpoint {
+    batch: JournalCheckpointBatch,
+    covered_view: Arc<crate::composite_view::RedbCompositeReadView>,
+    completion: Option<std::sync::mpsc::Receiver<Result<(), StorageError>>>,
+    result: Option<Result<(), StorageError>>,
 }
 
 pub struct RedbSubmittedCommandFence {
@@ -759,6 +784,7 @@ impl RedbStore {
                 composite_publication: RwLock::new(None),
                 private_composite_frontier: Mutex::new(None),
                 journal_runtime: Mutex::new(None),
+                journal_checkpoint: Mutex::new(None),
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
                 unpublished_command_indexes: Mutex::new(UnpublishedCommandIndexes::default()),
@@ -785,34 +811,45 @@ impl RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         if classify_read_layout(&transaction)? == LayoutState::Empty {
-            let journal = crate::journal::journal_path(&self.shared.path);
-            return match journal.try_exists() {
-                Ok(false) => Ok(()),
-                Ok(true) => Err(storage_error(StorageErrorKind::CorruptData)),
-                Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
-            };
+            for journal in [
+                crate::journal::journal_path(&self.shared.path),
+                crate::journal::checkpoint_journal_path(&self.shared.path),
+                crate::journal::spare_journal_path(&self.shared.path),
+            ] {
+                match journal.try_exists() {
+                    Ok(false) => {}
+                    Ok(true) => return Err(storage_error(StorageErrorKind::CorruptData)),
+                    Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+                }
+            }
+            return Ok(());
         }
         let database_id = read_identity_from_read_transaction(&transaction)?;
         drop(transaction);
+        let checkpoint = crate::journal::checkpoint_journal_path(&self.shared.path);
+        if checkpoint
+            .try_exists()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+        {
+            crate::journal::recover_journal_path(&self.shared.database, &checkpoint, database_id)
+                .map_err(recovery_journal_error)?;
+            std::fs::remove_file(&checkpoint)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            crate::journal::sync_parent_directory(&checkpoint).map_err(journal_io_error)?;
+        }
         crate::journal::recover_journal(&self.shared.database, &self.shared.path, database_id)
-            .map_err(|error| match error {
-                crate::journal::JournalIoError::Corrupt => {
-                    storage_error(StorageErrorKind::CorruptData)
-                }
-                crate::journal::JournalIoError::LegacyNonEmpty(path) => {
-                    eprintln!(
-                        "RDB-STORAGE-UPGRADE: legacy durability journal '{}' is nonempty; reopen with the prior binary and perform a clean checkpoint before upgrading",
-                        path.display()
-                    );
-                    storage_error(StorageErrorKind::IncompatibleFormat)
-                }
-                crate::journal::JournalIoError::Capacity => {
-                    storage_error(StorageErrorKind::LimitExceeded)
-                }
-                crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
-                    storage_error(StorageErrorKind::Unavailable)
-                }
-            })
+            .map_err(recovery_journal_error)?;
+
+        // The spare extent is never authoritative: it is only a preallocated
+        // destination for the next active generation. Recovery first proves
+        // the redb checkpoint plus checkpoint/active suffix chain, then may
+        // discard any scratch name left by a crash between rotation renames.
+        let spare = crate::journal::spare_journal_path(&self.shared.path);
+        match std::fs::remove_file(&spare) {
+            Ok(()) => crate::journal::sync_parent_directory(&spare).map_err(journal_io_error),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
     }
 
     /// Loads and semantically verifies the retention watermark once per open
@@ -2611,6 +2648,7 @@ impl RedbOperationalPorts {
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        self.shared.poll_async_checkpoint_locked(true)?;
         let journal_checkpoint = self.shared.take_published_journal_suffix_locked(true)?;
         let mut transaction = match self.shared.database.begin_write() {
             Ok(transaction) => transaction,
@@ -2656,8 +2694,8 @@ impl RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        self.shared
-            .checkpoint_published_journal_suffix_locked(false)?;
+        self.shared.poll_async_checkpoint_locked(false)?;
+        self.shared.maybe_start_async_checkpoint()?;
         let mut frontier = self
             .shared
             .durable_read_frontier
@@ -2703,8 +2741,8 @@ impl RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        self.shared
-            .checkpoint_published_journal_suffix_locked(false)?;
+        self.shared.poll_async_checkpoint_locked(false)?;
+        self.shared.maybe_start_async_checkpoint()?;
         let mut frontier = self
             .shared
             .durable_read_frontier
@@ -3411,6 +3449,8 @@ impl RedbWriteAccess {
             predecessor_administration_sequence,
             composite_successor,
         ) = {
+            let (checkpoint_transitions, checkpoint_bytes) =
+                self.shared.async_checkpoint_charge()?;
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
                 .as_mut()
@@ -3458,12 +3498,13 @@ impl RedbWriteAccess {
                 .unpublished_bytes
                 .checked_add(encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            if next_transitions > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
-                || next_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            if checkpoint_transitions.saturating_add(next_transitions)
+                > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+                || checkpoint_bytes.saturating_add(next_bytes)
+                    > crate::journal::MAX_JOURNAL_FRAME_BYTES
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
                 || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
             {
-                self.shared.fence_writes();
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let frame_hash = frame.frame_hash();
@@ -3480,6 +3521,7 @@ impl RedbWriteAccess {
             runtime.suffix_transitions = next_transitions;
             runtime.suffix_audits = next_audits;
             runtime.suffix_bytes = next_bytes;
+            runtime.suffix_frames.push((frame_hash, Arc::new(decoded)));
             runtime.unpublished_transitions = next_unpublished_transitions;
             runtime.unpublished_audits = next_unpublished_audits;
             runtime.unpublished_bytes = next_unpublished_bytes;
@@ -3645,6 +3687,8 @@ impl RedbDurabilityEpoch {
             journaled,
             composite_successor,
         ) = {
+            let (checkpoint_transitions, checkpoint_bytes) =
+                self.shared.async_checkpoint_charge()?;
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
                 .as_mut()
@@ -3700,8 +3744,10 @@ impl RedbDurabilityEpoch {
                 .unpublished_bytes
                 .checked_add(encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            if next_transitions > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
-                || next_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            if checkpoint_transitions.saturating_add(next_transitions)
+                > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+                || checkpoint_bytes.saturating_add(next_bytes)
+                    > crate::journal::MAX_JOURNAL_FRAME_BYTES
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
                 || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
             {
@@ -3724,6 +3770,7 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_commands = next_commands;
                 runtime.suffix_audits = next_audits;
                 runtime.suffix_bytes = next_bytes;
+                runtime.suffix_frames.push((frame_hash, Arc::new(decoded)));
                 runtime.unpublished_transitions = next_unpublished_transitions;
                 runtime.unpublished_commands = next_unpublished_commands;
                 runtime.unpublished_audits = next_unpublished_audits;
@@ -3964,6 +4011,17 @@ impl SharedRedb {
             {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
+            let spare_header = crate::journal::JournalFileHeader::with_frontiers(
+                database_id,
+                tail.last_sequence,
+                tail.last_administration_sequence,
+                tail.last_hash,
+            );
+            crate::journal::reset_journal(
+                &crate::journal::spare_journal_path(&self.path),
+                &spare_header,
+            )
+            .map_err(journal_io_error)?;
             let lane = Arc::new(
                 crate::journal::JournalLane::open(&path, &header).map_err(journal_io_error)?,
             );
@@ -3980,6 +4038,7 @@ impl SharedRedb {
                 suffix_commands: 0,
                 suffix_audits: 0,
                 suffix_bytes: 0,
+                suffix_frames: Vec::new(),
                 unpublished_transitions: 0,
                 unpublished_commands: 0,
                 unpublished_audits: 0,
@@ -3990,25 +4049,365 @@ impl SharedRedb {
         Ok(runtime)
     }
 
-    fn checkpoint_published_journal_suffix_locked(&self, force: bool) -> Result<(), StorageError> {
-        let Some(runtime) = self.take_published_journal_suffix_locked(force)? else {
+    fn maybe_start_async_checkpoint(self: &Arc<Self>) -> Result<(), StorageError> {
+        const START_TRANSITIONS: usize = crate::journal::MAX_JOURNAL_TRANSITIONS * 4;
+        const START_BYTES: usize = 4 * 1024 * 1024;
+
+        let mut checkpoint_guard = self
+            .journal_checkpoint
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if checkpoint_guard.is_some() {
+            return Ok(());
+        }
+        let mut runtime_guard = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let Some(runtime) = runtime_guard.as_ref() else {
             return Ok(());
         };
+        if runtime.unpublished_transitions != 0 || runtime.unpublished_bytes != 0 {
+            return Ok(());
+        }
+        if !runtime.reanchor_required
+            && runtime.suffix_transitions < START_TRANSITIONS
+            && runtime.suffix_bytes < START_BYTES
+        {
+            return Ok(());
+        }
+        let covered_view = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .capture()?;
+        if covered_view.overlay().published_application() != runtime.last_sequence
+            || covered_view.overlay().published_administration()
+                != runtime.last_administration_sequence
+            || covered_view.overlay().terminal_frame_hash() != runtime.last_hash
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let runtime = runtime_guard
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        drop(runtime_guard);
+        if Arc::strong_count(&runtime.lane) != 1 {
+            self.restore_journal_runtime(runtime)?;
+            return Ok(());
+        }
+        drop(runtime.lane);
+
+        let active_path = crate::journal::journal_path(&self.path);
+        let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
+        let spare_path = crate::journal::spare_journal_path(&self.path);
+        if checkpoint_path
+            .try_exists()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let covered_overlay = covered_view.overlay();
+        if covered_overlay.transition_count() != runtime.suffix_transitions
+            || covered_overlay.encoded_frame_bytes() != runtime.suffix_bytes
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let batch = JournalCheckpointBatch {
+            database_id: runtime.database_id,
+            checkpoint_sequence: covered_overlay.checkpoint().application_frontier(),
+            checkpoint_administration_sequence: covered_overlay
+                .checkpoint()
+                .administration_frontier(),
+            checkpoint_hash: covered_overlay.checkpoint().terminal_frame_hash(),
+            last_sequence: runtime.last_sequence,
+            last_administration_sequence: runtime.last_administration_sequence,
+            last_hash: runtime.last_hash,
+            transition_count: runtime.suffix_transitions,
+            command_count: runtime.suffix_commands,
+            audit_count: runtime.suffix_audits,
+            encoded_bytes: runtime.suffix_bytes,
+            frames: runtime.suffix_frames,
+        };
+        let next_header = crate::journal::JournalFileHeader::with_frontiers(
+            runtime.database_id,
+            runtime.last_sequence,
+            runtime.last_administration_sequence,
+            runtime.last_hash,
+        );
+        crate::journal::reset_journal(&spare_path, &next_header).map_err(journal_io_error)?;
+        std::fs::rename(&active_path, &checkpoint_path)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        // Persist removal of the old active name before the prepared spare is
+        // allowed to replace it. A crash between these two syncs leaves the
+        // complete checkpoint extent authoritative and no active suffix.
+        crate::journal::sync_parent_directory(&active_path).map_err(journal_io_error)?;
+        std::fs::rename(&spare_path, &active_path)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        crate::journal::sync_parent_directory(&active_path).map_err(journal_io_error)?;
+        let lane = Arc::new(
+            crate::journal::JournalLane::open(&active_path, &next_header)
+                .map_err(journal_io_error)?,
+        );
+        *self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
+            Some(JournalRuntime {
+                lane,
+                database_id: runtime.database_id,
+                last_sequence: runtime.last_sequence,
+                last_administration_sequence: runtime.last_administration_sequence,
+                last_hash: runtime.last_hash,
+                published_sequence: runtime.published_sequence,
+                published_administration_sequence: runtime.published_administration_sequence,
+                published_hash: runtime.published_hash,
+                suffix_transitions: 0,
+                suffix_commands: 0,
+                suffix_audits: 0,
+                suffix_bytes: 0,
+                suffix_frames: Vec::new(),
+                unpublished_transitions: 0,
+                unpublished_commands: 0,
+                unpublished_audits: 0,
+                unpublished_bytes: 0,
+                reanchor_required: false,
+            });
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *checkpoint_guard = Some(AsyncJournalCheckpoint {
+            batch: batch.clone(),
+            covered_view,
+            completion: Some(receiver),
+            result: None,
+        });
+        let worker_shared = Arc::clone(self);
+        let worker_batch = batch.clone();
+        if std::thread::Builder::new()
+            .name("riffdb-checkpoint".to_string())
+            .spawn(move || {
+                let result = worker_shared.materialize_checkpoint_batch(&worker_batch);
+                let _ = sender.send(result);
+            })
+            .is_err()
+        {
+            let error = storage_error(StorageErrorKind::Unavailable);
+            if let Some(checkpoint) = checkpoint_guard.as_mut() {
+                checkpoint.completion = None;
+                checkpoint.result = Some(Err(error.clone()));
+            }
+            self.fence_writes();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn async_checkpoint_charge(&self) -> Result<(usize, usize), StorageError> {
+        let checkpoint = self
+            .journal_checkpoint
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(checkpoint.as_ref().map_or((0, 0), |checkpoint| {
+            (
+                checkpoint.batch.transition_count,
+                checkpoint.batch.encoded_bytes,
+            )
+        }))
+    }
+
+    fn materialize_checkpoint_batch(
+        &self,
+        batch: &JournalCheckpointBatch,
+    ) -> Result<(), StorageError> {
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(false);
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Err(error) = self.apply_published_journal_suffix(&transaction, &runtime) {
+        let mut last_sequence = batch.checkpoint_sequence;
+        let mut last_administration_sequence = batch.checkpoint_administration_sequence;
+        let mut last_hash = batch.checkpoint_hash;
+        let mut transition_count = 0_usize;
+        let mut command_count = 0_usize;
+        let mut audit_count = 0_usize;
+        for (frame_hash, frame) in &batch.frames {
+            if frame.database_id() != batch.database_id
+                || frame.predecessor_sequence() != last_sequence
+                || frame.predecessor_administration_sequence() != last_administration_sequence
+                || frame.previous_hash() != last_hash
+            {
+                let _ = transaction.abort();
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            for mutation in frame.mutations() {
+                crate::journal::apply_mutation(&transaction, mutation).map_err(journal_io_error)?;
+            }
+            transition_count = transition_count
+                .checked_add(usize::from(frame.transition_count()))
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            command_count = command_count
+                .checked_add(usize::from(frame.command_count()))
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            audit_count = audit_count
+                .checked_add(usize::from(frame.audit_count()))
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            last_sequence = frame.covered_sequence();
+            last_administration_sequence = frame.covered_administration_sequence();
+            last_hash = *frame_hash;
+        }
+        if last_sequence != batch.last_sequence
+            || last_administration_sequence != batch.last_administration_sequence
+            || last_hash != batch.last_hash
+            || transition_count != batch.transition_count
+            || command_count != batch.command_count
+            || audit_count != batch.audit_count
+        {
             let _ = transaction.abort();
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        self.commit_durable(transaction)
+    }
+
+    fn poll_async_checkpoint_locked(self: &Arc<Self>, wait: bool) -> Result<(), StorageError> {
+        {
+            let mut checkpoint = self
+                .journal_checkpoint
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let Some(checkpoint) = checkpoint.as_mut() else {
+                return Ok(());
+            };
+            if checkpoint.result.is_none() {
+                let receiver = checkpoint
+                    .completion
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                let result = if wait {
+                    Some(
+                        receiver
+                            .recv()
+                            .unwrap_or_else(|_| Err(storage_error(StorageErrorKind::Unavailable))),
+                    )
+                } else {
+                    match receiver.try_recv() {
+                        Ok(result) => Some(result),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Some(Err(storage_error(StorageErrorKind::Unavailable)))
+                        }
+                    }
+                };
+                if let Some(result) = result {
+                    checkpoint.completion = None;
+                    checkpoint.result = Some(result);
+                }
+            }
+        }
+        self.finish_async_checkpoint_if_quiescent()
+    }
+
+    fn finish_async_checkpoint_if_quiescent(self: &Arc<Self>) -> Result<(), StorageError> {
+        let mut checkpoint = self
+            .journal_checkpoint
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let Some(state) = checkpoint.as_mut() else {
+            return Ok(());
+        };
+        let runtime = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let Some(runtime) = runtime.as_ref() else {
+            return Ok(());
+        };
+        if runtime.unpublished_transitions != 0 || runtime.unpublished_bytes != 0 {
+            return Ok(());
+        }
+        let Some(result) = state.result.take() else {
+            return Ok(());
+        };
+        if let Err(error) = result {
             self.fence_writes();
             return Err(error);
         }
-        if let Err(error) = self.commit_durable(transaction) {
+        let batch = state.batch.clone();
+        let covered_view = Arc::clone(&state.covered_view);
+        let current = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .capture()?;
+        let root = Arc::new(self.database.begin_read().map_err(transaction_error)?);
+        if read_commit_tail(&root)? != batch.last_sequence
+            || read_administration_tail(&root)? != batch.last_administration_sequence
+        {
             self.fence_writes();
-            return Err(error);
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        self.finish_journal_checkpoint(runtime)
+        if covered_view.overlay().published_application() != batch.last_sequence
+            || covered_view.overlay().published_administration()
+                != batch.last_administration_sequence
+            || covered_view.overlay().terminal_frame_hash() != batch.last_hash
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let successor = Arc::new(current.rebase_after(&covered_view, root, batch.last_hash)?);
+        let mut private = self
+            .private_composite_frontier
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if private
+            .as_ref()
+            .is_none_or(|private| !Arc::ptr_eq(private, &current))
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        self.composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .publish_rebased(&current, Arc::clone(&successor))?;
+        *private = Some(Arc::clone(&successor));
+        *self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
+            Some(successor.checkpoint_root_shared());
+        let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
+        let spare_path = crate::journal::spare_journal_path(&self.path);
+        if spare_path
+            .try_exists()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        std::fs::rename(&checkpoint_path, &spare_path)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        crate::journal::sync_parent_directory(&spare_path).map_err(journal_io_error)?;
+        let spare_header = crate::journal::JournalFileHeader::with_frontiers(
+            runtime.database_id,
+            runtime.last_sequence,
+            runtime.last_administration_sequence,
+            runtime.last_hash,
+        );
+        if let Err(error) = crate::journal::reset_journal(&spare_path, &spare_header) {
+            self.fence_writes();
+            return Err(journal_io_error(error));
+        }
+        *checkpoint = None;
+        Ok(())
     }
 
     fn apply_published_journal_suffix(
@@ -4198,6 +4597,23 @@ fn journal_io_error(error: crate::journal::JournalIoError) -> StorageError {
         crate::journal::JournalIoError::Capacity => storage_error(StorageErrorKind::LimitExceeded),
         crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
             storage_error(StorageErrorKind::CommitStatusUnknown)
+        }
+    }
+}
+
+fn recovery_journal_error(error: crate::journal::JournalIoError) -> StorageError {
+    match error {
+        crate::journal::JournalIoError::Corrupt => storage_error(StorageErrorKind::CorruptData),
+        crate::journal::JournalIoError::LegacyNonEmpty(path) => {
+            eprintln!(
+                "RDB-STORAGE-UPGRADE: legacy durability journal '{}' is nonempty; reopen with the prior binary and perform a clean checkpoint before upgrading",
+                path.display()
+            );
+            storage_error(StorageErrorKind::IncompatibleFormat)
+        }
+        crate::journal::JournalIoError::Capacity => storage_error(StorageErrorKind::LimitExceeded),
+        crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
+            storage_error(StorageErrorKind::Unavailable)
         }
     }
 }
@@ -5207,6 +5623,8 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
             let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
+            let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
+            let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
         }
     }
 
