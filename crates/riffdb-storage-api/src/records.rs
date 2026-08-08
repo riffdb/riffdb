@@ -19,8 +19,8 @@ use crate::{
     IndexEpochPosition, MAX_COMMIT_CONFLICT_HASHES, MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS,
     MAX_INDEX_DELTAS, MAX_STAGED_WRITE_BYTES, MAX_VALIDATION_TARGETS, PartitionIndexTarget,
     StorageValueError, StoredAdmittedProvenanceClaimsV1, StoredReadDependenciesV1,
-    StructurallyDecodedIndexRangePrefixV1, actor_semantic_bytes, canonical_codec_storage_error,
-    canonical_record_bytes, framed_bytes,
+    StoredServiceAuditRecordV1, StructurallyDecodedIndexRangePrefixV1, actor_semantic_bytes,
+    canonical_codec_storage_error, canonical_record_bytes, framed_bytes,
 };
 
 /// The durability contract used for one completed engine commit.
@@ -1884,7 +1884,7 @@ impl ValidatedCommandWriteSetShapeV1 {
 ///
 /// It owns every coordinator-derived index mutation and epoch advance, preventing
 /// an equal-size shape from being substituted after preflight.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct CommandWriteSetPlanV1(Arc<CommandWriteSetPlanInnerV1>);
 
 #[derive(Eq, PartialEq)]
@@ -1896,6 +1896,14 @@ struct CommandWriteSetPlanInnerV1 {
     index_epochs: Vec<IndexEpochAdvanceV1>,
     charge: CommandWriteSetChargeV1,
 }
+
+impl PartialEq for CommandWriteSetPlanV1 {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl Eq for CommandWriteSetPlanV1 {}
 
 impl CommandWriteSetPlanV1 {
     /// Validates exact affected coverage and freezes the complete pre-sequence plan.
@@ -2012,20 +2020,39 @@ pub struct AtomicCommandRecordSet {
 /// complete reciprocal validation boundary.
 pub struct StagedCommandEvidenceV1 {
     outcome: StoredOutcomeV1,
-    event_ids: Vec<EventId>,
+    provenance: StoredProvenanceRecordV1,
+    commit: StoredCommitRecordV1,
 }
 
 /// Move-only exact command-link proof derived while consuming staged evidence.
 pub struct StagedCommandAuditLinkEvidenceV1 {
-    commit_sequence: CommitSequence,
-    provenance_id: ProvenanceId,
+    outcome: StoredOutcomeV1,
+    provenance: StoredProvenanceRecordV1,
+    commit: StoredCommitRecordV1,
 }
 
 impl StagedCommandAuditLinkEvidenceV1 {
     /// Proves one terminal audit link names the consumed staged graph.
     #[must_use]
     pub fn matches(&self, commit_sequence: CommitSequence, provenance_id: ProvenanceId) -> bool {
-        self.commit_sequence == commit_sequence && self.provenance_id == provenance_id
+        self.commit.commit_sequence() == commit_sequence
+            && self.provenance.provenance_id() == provenance_id
+    }
+
+    /// Consumes the exact staged command views and joins them to the two audit
+    /// members allocated in the same authoritative transaction.
+    pub fn into_capsule(
+        self,
+        started: StoredServiceAuditRecordV1,
+        terminal: StoredServiceAuditRecordV1,
+    ) -> Result<crate::StoredCommandCapsuleV1, StorageValueError> {
+        crate::StoredCommandCapsuleV1::new(
+            self.outcome,
+            self.provenance,
+            self.commit,
+            started,
+            terminal,
+        )
     }
 }
 
@@ -2039,13 +2066,28 @@ impl StagedCommandEvidenceV1 {
     /// Borrows authoritative event identities in ordinal order.
     #[must_use]
     pub fn event_ids(&self) -> &[EventId] {
-        &self.event_ids
+        self.provenance.event_ids()
     }
 
     /// Consumes the post-staging evidence into its exact checked parts.
     #[must_use]
     pub fn into_parts(self) -> (StoredOutcomeV1, Vec<EventId>) {
-        (self.outcome, self.event_ids)
+        let event_ids = self.provenance.event_ids().to_vec();
+        (self.outcome, event_ids)
+    }
+
+    /// Consumes the complete checked authority retained for a direct
+    /// non-audited storage commit. Normal application writes consume the same
+    /// values through `into_parts_with_command_audit_link` and a capsule.
+    #[must_use]
+    pub fn into_authority_parts(
+        self,
+    ) -> (
+        StoredOutcomeV1,
+        StoredProvenanceRecordV1,
+        StoredCommitRecordV1,
+    ) {
+        (self.outcome, self.provenance, self.commit)
     }
 
     /// Consumes the evidence into commit publication values plus the exact
@@ -2058,11 +2100,29 @@ impl StagedCommandEvidenceV1 {
         Vec<EventId>,
         StagedCommandAuditLinkEvidenceV1,
     ) {
+        let event_ids = self.provenance.event_ids().to_vec();
+        let outcome = self.outcome.clone();
         let link = StagedCommandAuditLinkEvidenceV1 {
-            commit_sequence: self.outcome.commit_sequence(),
-            provenance_id: self.outcome.provenance_id(),
+            outcome: self.outcome,
+            provenance: self.provenance,
+            commit: self.commit,
         };
-        (self.outcome, self.event_ids, link)
+        (outcome, event_ids, link)
+    }
+
+    /// Consumes successful-command evidence without copying the event-ID
+    /// collection already owned by the command graph.
+    #[must_use]
+    pub fn into_outcome_and_command_audit_link(
+        self,
+    ) -> (StoredOutcomeV1, StagedCommandAuditLinkEvidenceV1) {
+        let outcome = self.outcome.clone();
+        let link = StagedCommandAuditLinkEvidenceV1 {
+            outcome: self.outcome,
+            provenance: self.provenance,
+            commit: self.commit,
+        };
+        (outcome, link)
     }
 }
 
@@ -2260,7 +2320,7 @@ impl AtomicCommandRecordSet {
         self.write_plan.index_entries()
     }
 
-    /// Borrows canonical exact-prefix epoch advances.
+    /// Borrows canonical partition/index generation advances.
     #[must_use]
     pub fn index_epochs(&self) -> &[IndexEpochAdvanceV1] {
         self.write_plan.index_epochs()
@@ -2321,11 +2381,13 @@ impl AtomicCommandRecordSet {
         let Self {
             stored_outcome,
             provenance,
+            commit,
             ..
         } = self;
         StagedCommandEvidenceV1 {
             outcome: stored_outcome,
-            event_ids: provenance.event_ids,
+            provenance,
+            commit,
         }
     }
 
@@ -2978,7 +3040,6 @@ mod tests {
     fn staged_record_graph_consumption_preserves_only_outcome_and_event_identity() {
         let records = atomic_record_set(8, &[5, 7]).expect("valid record graph");
         let expected_outcome = records.stored_outcome().clone();
-        let checked_event_ids_allocation = records.provenance().event_ids().as_ptr();
         let expected_event_ids = records
             .events()
             .iter()
@@ -2986,7 +3047,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let evidence = records.into_staged_evidence();
-        assert_eq!(evidence.event_ids().as_ptr(), checked_event_ids_allocation);
+        assert_eq!(evidence.event_ids(), expected_event_ids);
         let (outcome, event_ids) = evidence.into_parts();
 
         assert_eq!(outcome, expected_outcome);
@@ -3014,6 +3075,21 @@ mod tests {
             format!("{link:?}"),
             "StagedCommandAuditLinkEvidenceV1([REDACTED])"
         );
+    }
+
+    #[test]
+    fn staged_command_evidence_moves_directly_into_segment_link_authority() {
+        let records = atomic_record_set(8, &[5, 7]).expect("valid record graph");
+        let expected_outcome = records.stored_outcome().clone();
+        let sequence = records.commit().commit_sequence();
+        let provenance_id = records.provenance().provenance_id();
+
+        let (outcome, link) = records
+            .into_staged_evidence()
+            .into_outcome_and_command_audit_link();
+
+        assert_eq!(outcome, expected_outcome);
+        assert!(link.matches(sequence, provenance_id));
     }
 
     #[test]

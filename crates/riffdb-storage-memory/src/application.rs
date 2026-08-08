@@ -16,15 +16,15 @@ use riffdb_storage_api::{
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1,
     CurrentIndexGenerationObservation, CurrentRangeObservation, DeferredCommandEpoch,
-    DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode, EmptyCommandBatch,
-    EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
-    EventRouteUpperFenceV1, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
-    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
-    ExecutionFailureTransitionRequestV1, ExpectedEntityState, FilteredAuthoritativeIndexScanPage,
-    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader,
-    HistoricalPersistedKeyEvidenceV1, IdempotencyIdentity, IdempotencyIdentityKey,
-    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochPosition,
-    IndexPartitionFilterScope, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_BYTES,
+    DeferredCommandEpochPort, DeferredCommandFence, DeferredNonEmptyCommandBatch, DurabilityMode,
+    EmptyCommandBatch, EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1,
+    EventRouteScanV1, EventRouteUpperFenceV1, ExecutionFailureAdmissionRechecked,
+    ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
+    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, HistoricalPersistedKeyEvidenceV1, IdempotencyIdentity,
+    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
+    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_BYTES,
     MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES, NonEmptyCommandBatch,
     PartitionEventRouteReader, PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies,
     ReadDependency, ReadSnapshot, ReadSnapshotBuilder, RetainedMetadataV1, SnapshotReader,
@@ -263,6 +263,7 @@ impl DeferredCommandEpochPort for MemoryOperationalPorts {
 
 impl DeferredCommandEpoch for MemoryDurabilityEpoch {
     type EmptyBatch = MemoryEmptyBatch;
+    type Fence = Self;
 
     fn begin_empty_batch(self) -> Result<Self::EmptyBatch, StorageError> {
         let overlay = ApplicationOverlay::from_state(&self.state)?;
@@ -283,12 +284,32 @@ impl DeferredCommandEpoch for MemoryDurabilityEpoch {
         })
     }
 
-    fn fence(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError> {
+    fn seal(self) -> Result<Self::Fence, StorageError> {
         if self.applied.is_empty() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        Ok(self)
+    }
+}
+
+impl DeferredCommandFence for MemoryDurabilityEpoch {
+    fn requires_pipeline_drain(&self) -> bool {
+        false
+    }
+
+    fn try_wait(&mut self) -> Result<Option<Vec<AuditedCommittedBatchV1>>, StorageError> {
+        self.publish().map(Some)
+    }
+
+    fn wait(mut self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError> {
+        self.publish()
+    }
+}
+
+impl MemoryDurabilityEpoch {
+    fn publish(&mut self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError> {
         let mut committed = Vec::with_capacity(self.applied.len());
-        for unpublished in self.applied {
+        for unpublished in self.applied.drain(..) {
             let (outcomes, terminals) = unpublished.into_parts();
             let durability = outcomes
                 .first()
@@ -298,8 +319,9 @@ impl DeferredCommandEpoch for MemoryDurabilityEpoch {
             committed
                 .push(AuditedCommittedBatchV1::new(batch, terminals).map_err(invariant_value)?);
         }
+        let successor = self.state.clone();
         self.access.write(move |state| {
-            *state = self.state;
+            *state = successor;
             Ok(())
         })?;
         Ok(committed)
@@ -686,14 +708,33 @@ fn affected_current_state(
 
 impl SnapshotReader for MemoryOperationalPorts {
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError> {
+        let mut snapshots = self.read_snapshot_group(vec![request])?;
+        snapshots
+            .pop()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn read_snapshot_group(
+        &self,
+        requests: Vec<SnapshotRequest>,
+    ) -> Result<Vec<ReadSnapshot>, StorageError> {
+        if requests.is_empty() || requests.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
         self.read(|state| {
-            read_snapshot_from_parts(
-                request,
-                &state.commits,
-                &state.entities,
-                &state.index_entries,
-                &state.index_epochs,
-            )
+            requests
+                .into_iter()
+                .map(|request| {
+                    read_snapshot_from_parts(
+                        request,
+                        &state.commits,
+                        &state.entities,
+                        &state.index_entries,
+                        &state.index_epochs,
+                    )
+                })
+                .collect()
         })
     }
 }

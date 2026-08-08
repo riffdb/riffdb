@@ -21,6 +21,10 @@ files
     import riffdb/storage/v1/entity_references_v3.proto
     import riffdb/storage/v1/event_references_v2.proto
     import riffdb/storage/v1/service_audit_v2.proto
+  riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_capsule_v1.proto
+    import riffdb/storage/v1/index_generation_v2.proto
   riffdb/storage/v1/common.proto
   riffdb/storage/v1/consumer_v1.proto
     import riffdb/storage/v1/common.proto
@@ -419,6 +423,16 @@ messages
   riffdb.storage.v1.CommandAuditTargetV1 fields=2
     1 contract_lineage optional string
     2 command_id optional uint32
+  riffdb.storage.v1.CommandDerivedIndexManifestEntryV1 fields=6
+    1 kind optional .riffdb.storage.v1.CommandDerivedIndexKindV1
+    2 member optional .riffdb.storage.v1.CommandDerivedMemberV1
+    3 exact_key optional bytes
+    4 command_ordinal optional uint32
+    5 member_ordinal optional uint32
+    6 segment_first_commit_sequence optional uint64
+  riffdb.storage.v1.CommandSegmentManifestV1 fields=2
+    1 entries repeated .riffdb.storage.v1.CommandDerivedIndexManifestEntryV1
+    2 digest optional bytes
   riffdb.storage.v1.CommandServiceAuditLinkV1 fields=2
     1 commit_sequence optional uint64
     2 provenance_id optional bytes
@@ -679,11 +693,36 @@ messages
     18 event_references repeated .riffdb.storage.v1.EventReferenceV2
     19 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
     20 audit optional .riffdb.storage.v1.StoredCommandAuditInvocationV1
+  riffdb.storage.v1.StoredCommandCapsuleV2 fields=3
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV1
+    2 events repeated .riffdb.storage.v1.StoredDurableEventV1
+    3 index_generation_transitions repeated .riffdb.storage.v1.StoredIndexGenerationTransitionV1
   riffdb.storage.v1.StoredCommandCausationV1 fields=2
     1 causing_event_id optional .riffdb.storage.v1.EventIdV1
     2 root_request_id optional bytes
+  riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1 fields=7
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 registry_digest optional bytes
+    4 segment_frontier optional uint64
+    5 segment_root_digest optional bytes
+    6 entries repeated .riffdb.storage.v1.CommandDerivedIndexManifestEntryV1
+    7 checkpoint_digest optional bytes
   riffdb.storage.v1.StoredCommandLocatorV1 fields=1
     1 commit_sequence optional uint64
+  riffdb.storage.v1.StoredCommandSegmentBodyV1 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV2
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentV1 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV1
+    2 segment_digest optional bytes
   riffdb.storage.v1.StoredCommitRecordV1 fields=15
     1 commit_sequence optional uint64
     2 admission_request_id optional bytes
@@ -843,6 +882,9 @@ messages
     1 canonical_index_range_prefix optional bytes
     2 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
     3 epoch optional uint64
+  riffdb.storage.v1.StoredIndexGenerationTransitionV1 fields=2
+    1 post_image optional .riffdb.storage.v1.StoredIndexGenerationV2
+    2 prior_generation optional uint64 proto3-optional oneof=_prior_generation
   riffdb.storage.v1.StoredIndexGenerationV2 fields=4
     1 partition_key optional bytes
     2 index_id optional uint32
@@ -2235,6 +2277,20 @@ enums
     28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
     29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
     30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
+  riffdb.storage.v1.CommandDerivedIndexKindV1 values=7
+    0 COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED
+    1 COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY
+    2 COMMAND_DERIVED_INDEX_KIND_PROVENANCE
+    3 COMMAND_DERIVED_INDEX_KIND_AUDIT_SEQUENCE
+    4 COMMAND_DERIVED_INDEX_KIND_AUDIT_REQUEST
+    5 COMMAND_DERIVED_INDEX_KIND_EVENT_ROUTE
+    6 COMMAND_DERIVED_INDEX_KIND_PENDING_OUTBOX
+  riffdb.storage.v1.CommandDerivedMemberV1 values=5
+    0 COMMAND_DERIVED_MEMBER_UNSPECIFIED
+    1 COMMAND_DERIVED_MEMBER_COMMAND
+    2 COMMAND_DERIVED_MEMBER_AUDIT_STARTED
+    3 COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL
+    4 COMMAND_DERIVED_MEMBER_EVENT
   riffdb.storage.v1.ContractMigrationJournalStepV1 values=6
     0 CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED
     1 CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING

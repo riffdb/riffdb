@@ -941,7 +941,7 @@ impl fmt::Debug for CommandAdmissionExpectationV1 {
 }
 
 /// A complete pre-sequence command candidate assembled only after evaluation.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct CommitIntent(Arc<CommitIntentInner>);
 
 #[derive(Eq, PartialEq)]
@@ -952,6 +952,14 @@ struct CommitIntentInner {
     provenance_id: ProvenanceId,
     semantic_bytes: usize,
 }
+
+impl PartialEq for CommitIntent {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl Eq for CommitIntent {}
 
 impl CommitIntent {
     /// Consumes the pre-evaluation reserve and combines it with runtime output.

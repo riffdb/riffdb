@@ -101,12 +101,41 @@ pub trait DeferredCommandEpoch: Sized {
     /// Empty command batch whose write transaction belongs to this epoch.
     type EmptyBatch: EmptyCommandBatch;
 
+    /// Backend-owned durability fence submitted after the complete private
+    /// epoch has been sealed. It owns every unpublished result until wait
+    /// proves the covering durability boundary and publishes the successor.
+    type Fence: DeferredCommandFence;
+
     /// Opens the next writer-private subgroup from the newest epoch root.
     fn begin_empty_batch(self) -> Result<Self::EmptyBatch, StorageError>;
 
-    /// Performs the Immediate tail fence and returns results only after it is
-    /// known durable and the successor read frontier has been published.
-    fn fence(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError>;
+    /// Seals the epoch and submits its immutable durability work without
+    /// releasing any result. Backends may complete the physical fence on a
+    /// dedicated lane while the sole ordered apply coordinator prepares a
+    /// later bounded epoch.
+    fn seal(self) -> Result<Self::Fence, StorageError>;
+
+    /// Performs the complete fence synchronously.
+    fn fence(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError> {
+        self.seal()?.wait()
+    }
+}
+
+/// Submitted durability work whose results remain unpublished and unobservable.
+pub trait DeferredCommandFence: Sized {
+    /// Whether this fence used the bounded synchronous tail fallback and the
+    /// coordinator must publish every earlier fence before opening another
+    /// private epoch. This is storage scheduling evidence only; it never
+    /// changes command visibility or durability semantics.
+    fn requires_pipeline_drain(&self) -> bool;
+
+    /// Polls the fence without blocking. `None` means the durability lane has
+    /// not yet resolved the submitted epoch.
+    fn try_wait(&mut self) -> Result<Option<Vec<AuditedCommittedBatchV1>>, StorageError>;
+
+    /// Waits for durability, publishes the exact successor frontier, and only
+    /// then converts every retained subgroup into committed results.
+    fn wait(self) -> Result<Vec<AuditedCommittedBatchV1>, StorageError>;
 }
 
 /// Nonempty batch state whose graph may be applied without publication.

@@ -29,7 +29,8 @@ use riffdb_storage_api::{
 use riffdb_types::{CanonicalRecord, CanonicalValue, FieldId, LogicalTime};
 
 use crate::command_attempt::{
-    PendingCommandAttempts, ProvenanceBoundCommandAttempt, RolledBackCandidateDisposition,
+    PendingCommandAttempts, PostApplyCommandEvidence, ProvenanceBoundCommandAttempt,
+    RolledBackCandidateDisposition,
 };
 
 /// Redacted failure for an impossible checked-plan/value combination.
@@ -608,6 +609,18 @@ impl StagedValidatedCommand {
         drop(_current);
         drop(_mutation_positions);
         attempt.into_pending_after_proven_noncommit()
+    }
+
+    pub(super) fn into_post_apply_evidence(self) -> Result<PostApplyCommandEvidence, ()> {
+        let Self {
+            _seal,
+            attempt,
+            _current,
+            _mutation_positions,
+        } = self;
+        drop(_current);
+        drop(_mutation_positions);
+        attempt.into_post_apply_evidence()
     }
 }
 

@@ -1479,6 +1479,205 @@ impl StoredCommandAuditMemberV1 {
         }
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredIndexGenerationTransitionV1 {
+    #[prost(message, optional, tag = "1")]
+    pub post_image: ::core::option::Option<StoredIndexGenerationV2>,
+    #[prost(uint64, optional, tag = "2")]
+    pub prior_generation: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandCapsuleV2 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredCommandCapsuleV1>,
+    #[prost(message, repeated, tag = "2")]
+    pub events: ::prost::alloc::vec::Vec<StoredDurableEventV1>,
+    #[prost(message, repeated, tag = "3")]
+    pub index_generation_transitions: ::prost::alloc::vec::Vec<
+        StoredIndexGenerationTransitionV1,
+    >,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommandDerivedIndexManifestEntryV1 {
+    #[prost(enumeration = "CommandDerivedIndexKindV1", tag = "1")]
+    pub kind: i32,
+    #[prost(enumeration = "CommandDerivedMemberV1", tag = "2")]
+    pub member: i32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub exact_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "4")]
+    pub command_ordinal: u32,
+    #[prost(uint32, tag = "5")]
+    pub member_ordinal: u32,
+    #[prost(uint64, tag = "6")]
+    pub segment_first_commit_sequence: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CommandSegmentManifestV1 {
+    #[prost(message, repeated, tag = "1")]
+    pub entries: ::prost::alloc::vec::Vec<CommandDerivedIndexManifestEntryV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentBodyV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub predecessor_segment_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub first_commit_sequence: u64,
+    #[prost(uint64, tag = "5")]
+    pub last_commit_sequence: u64,
+    #[prost(uint64, tag = "6")]
+    pub first_administration_sequence: u64,
+    #[prost(uint64, tag = "7")]
+    pub last_administration_sequence: u64,
+    #[prost(message, repeated, tag = "8")]
+    pub commands: ::prost::alloc::vec::Vec<StoredCommandCapsuleV2>,
+    #[prost(message, optional, tag = "9")]
+    pub manifest: ::core::option::Option<CommandSegmentManifestV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentV1 {
+    #[prost(message, optional, tag = "1")]
+    pub body: ::core::option::Option<StoredCommandSegmentBodyV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub segment_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandDerivedIndexCheckpointV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub registry_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub segment_frontier: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub segment_root_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "6")]
+    pub entries: ::prost::alloc::vec::Vec<CommandDerivedIndexManifestEntryV1>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub checkpoint_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CommandDerivedIndexKindV1 {
+    CommandDerivedIndexKindUnspecified = 0,
+    CommandDerivedIndexKindIdempotency = 1,
+    CommandDerivedIndexKindProvenance = 2,
+    CommandDerivedIndexKindAuditSequence = 3,
+    CommandDerivedIndexKindAuditRequest = 4,
+    CommandDerivedIndexKindEventRoute = 5,
+    CommandDerivedIndexKindPendingOutbox = 6,
+}
+impl CommandDerivedIndexKindV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::CommandDerivedIndexKindUnspecified => {
+                "COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED"
+            }
+            Self::CommandDerivedIndexKindIdempotency => {
+                "COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY"
+            }
+            Self::CommandDerivedIndexKindProvenance => {
+                "COMMAND_DERIVED_INDEX_KIND_PROVENANCE"
+            }
+            Self::CommandDerivedIndexKindAuditSequence => {
+                "COMMAND_DERIVED_INDEX_KIND_AUDIT_SEQUENCE"
+            }
+            Self::CommandDerivedIndexKindAuditRequest => {
+                "COMMAND_DERIVED_INDEX_KIND_AUDIT_REQUEST"
+            }
+            Self::CommandDerivedIndexKindEventRoute => {
+                "COMMAND_DERIVED_INDEX_KIND_EVENT_ROUTE"
+            }
+            Self::CommandDerivedIndexKindPendingOutbox => {
+                "COMMAND_DERIVED_INDEX_KIND_PENDING_OUTBOX"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED" => {
+                Some(Self::CommandDerivedIndexKindUnspecified)
+            }
+            "COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY" => {
+                Some(Self::CommandDerivedIndexKindIdempotency)
+            }
+            "COMMAND_DERIVED_INDEX_KIND_PROVENANCE" => {
+                Some(Self::CommandDerivedIndexKindProvenance)
+            }
+            "COMMAND_DERIVED_INDEX_KIND_AUDIT_SEQUENCE" => {
+                Some(Self::CommandDerivedIndexKindAuditSequence)
+            }
+            "COMMAND_DERIVED_INDEX_KIND_AUDIT_REQUEST" => {
+                Some(Self::CommandDerivedIndexKindAuditRequest)
+            }
+            "COMMAND_DERIVED_INDEX_KIND_EVENT_ROUTE" => {
+                Some(Self::CommandDerivedIndexKindEventRoute)
+            }
+            "COMMAND_DERIVED_INDEX_KIND_PENDING_OUTBOX" => {
+                Some(Self::CommandDerivedIndexKindPendingOutbox)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CommandDerivedMemberV1 {
+    CommandDerivedMemberUnspecified = 0,
+    CommandDerivedMemberCommand = 1,
+    CommandDerivedMemberAuditStarted = 2,
+    CommandDerivedMemberAuditTerminal = 3,
+    CommandDerivedMemberEvent = 4,
+}
+impl CommandDerivedMemberV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::CommandDerivedMemberUnspecified => "COMMAND_DERIVED_MEMBER_UNSPECIFIED",
+            Self::CommandDerivedMemberCommand => "COMMAND_DERIVED_MEMBER_COMMAND",
+            Self::CommandDerivedMemberAuditStarted => {
+                "COMMAND_DERIVED_MEMBER_AUDIT_STARTED"
+            }
+            Self::CommandDerivedMemberAuditTerminal => {
+                "COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL"
+            }
+            Self::CommandDerivedMemberEvent => "COMMAND_DERIVED_MEMBER_EVENT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COMMAND_DERIVED_MEMBER_UNSPECIFIED" => {
+                Some(Self::CommandDerivedMemberUnspecified)
+            }
+            "COMMAND_DERIVED_MEMBER_COMMAND" => Some(Self::CommandDerivedMemberCommand),
+            "COMMAND_DERIVED_MEMBER_AUDIT_STARTED" => {
+                Some(Self::CommandDerivedMemberAuditStarted)
+            }
+            "COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL" => {
+                Some(Self::CommandDerivedMemberAuditTerminal)
+            }
+            "COMMAND_DERIVED_MEMBER_EVENT" => Some(Self::CommandDerivedMemberEvent),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnitV1 {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

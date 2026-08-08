@@ -341,6 +341,24 @@ fn command_preparation(seed: u8) -> CommandExecutionPreparation {
     .expect("command preparation")
 }
 
+fn audited_command_preparation(seed: u8) -> CommandExecutionPreparation {
+    command_preparation(seed)
+        .with_audited_lifecycle(Box::new(CheckedInput {
+            request_id: request_id(seed),
+            operation: ServiceOperationV1::ExecuteCommand,
+            phase: ServiceAuditPhaseV1::Started,
+            principal_id: ActorId::new("form-kernel-principal").expect("principal"),
+            actor_kind: ActorKind::Agent,
+            capability_id: capability_id(2),
+            capability_revision: NonZeroU64::MIN,
+            ingress: ServiceIngressKindV1::Grpc,
+            targets: ServiceAuditTargetsV1::empty(),
+            approval_id: None,
+            link: ServiceAuditLinkV1::None,
+        }))
+        .expect("audited command preparation")
+}
+
 fn retained_permit() -> tokio::sync::OwnedSemaphorePermit {
     static SEM: OnceLock<Arc<Semaphore>> = OnceLock::new();
     let sem = SEM.get_or_init(|| Arc::new(Semaphore::new(1_000_000)));
@@ -817,10 +835,10 @@ fn post_commit_window_never_delays_a_barrier_or_full_prefix() {
         .collect::<VecDeque<_>>();
     assert!(!post_commit_command_window_eligible(&full));
 
-    let already_amortized = (0..=POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS)
+    let almost_full = (0..riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS - 1)
         .map(|index| command_msg_with_id(u8::try_from(index).expect("bounded") + 1))
         .collect::<VecDeque<_>>();
-    assert!(!post_commit_command_window_eligible(&already_amortized));
+    assert!(post_commit_command_window_eligible(&almost_full));
 }
 
 #[test]
@@ -854,4 +872,23 @@ fn post_commit_collector_drains_ready_arrivals_without_reordering() {
         assert_eq!(reason, CommitGroupDispatchReason::QueueDrained);
         assert!(matches!(unit, WorkUnit::CommandGroup(group) if group.len() == 3));
     });
+}
+
+#[test]
+fn audited_singleton_preserves_the_direct_immediate_path() {
+    let preparation = audited_command_preparation(1);
+
+    assert!(
+        !crate::command_execution::command_group_is_deferred_eligible(std::iter::once(
+            &preparation
+        ))
+    );
+}
+
+#[test]
+fn preflight_rejects_a_group_that_dynamic_compatibility_would_split() {
+    let first = audited_command_preparation(1);
+    let same_target = audited_command_preparation(2);
+
+    assert!(!crate::command_execution::command_group_is_deferred_eligible([&first, &same_target]));
 }

@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.81
+**Version:** 0.84
 **Status:** Contract-migration and reactive-application implementation
-**Date:** 6 August 2026
+**Date:** 7 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -36,6 +36,9 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.84 | 2026-08-07 | Accepted ADR-0103 and planned WP-480 after a same-filesystem probe measured fully zero-filled positional journal fences at 880 us p50 versus 4,479 us for extending append. The standard-profile journal becomes a fixed-capacity recyclable extent with dual generation headers, generation/position-bound frames, preflight allocation, empty-journal activation, and unchanged published-frontier replication semantics. |
+| 0.83 | 2026-08-07 | Amended ADR-0101 after mixed-load evidence showed ordinary same-tenant overlap collapsing the writer journal: once storage accepts a complete checked subgroup, serialization authority transfers to the sole FIFO writer, and overlapping successors must evaluate through the closed transaction-local protocol against the exact writer-private frontier while all public visibility and effects remain withheld until the covering fence. |
+| 0.82 | 2026-08-07 | Amended ADR-0101 and WP-478 after mixed-load evidence: the closed writer journal may carry complete checked command graphs and validated standalone service-audit groups in one dual-frontier FIFO durability epoch; audit results remain withheld until the covering fence, while all other administration, control-plane, lifecycle, backup, shutdown, and hardened-profile operations remain hard barriers. |
 | 0.81 | 2026-08-06 | Accepted ADR-0101 and planned WP-478: the standard profile may pipeline complete redb non-durable command groups behind a bounded first-party checksummed durability journal, publish only journal-fenced snapshots, and recover from the last redb checkpoint plus its exact gap-free suffix; idle singletons and the hardened two-phase oracle retain their current paths. |
 | 0.80 | 2026-08-06 | Accepted ADR-0099 and planned WP-477: one canonical successful-command capsule becomes the durable owner of shared commit, outcome, provenance, and linked command-audit facts; unchanged idempotency, provenance, and audit keys store compact self-verifying locators; a bounded restartable offline migration preserves exact semantic views, atomicity, retry, crash recovery, and fail-closed corruption handling. |
 | 0.79 | 2026-08-06 | Implemented WP-476 constant-time durable shape dispatch: every closed durable structural-preflight shape now carries a compile-time-checked direct field-number table, eliminating the per-field linear rule scan while preserving the exact cursor, bounds, recursion, occurrence, UTF-8, canonical re-encode, and fail-closed error behavior. |
@@ -2029,7 +2032,7 @@ A mutating command follows this sequence:
     plan over normalized current read/root values plus those proposed complete
     post-images. A missing post-image is never replaced by a current pre-image.
 16. Only for a nonzero mutation set, after semantic validation the coordinator
-    derives the canonical set of mutation-affected index-prefix epoch targets
+    derives the canonical set of mutation-affected partition/index generation targets
     from transaction-current old entries and proposed new entries. Storage reads
     those epoch positions in the same write transaction. A zero-mutation outcome
     retains empty index deltas and affected-epoch targets. Mutation-affected
@@ -2769,7 +2772,7 @@ the uncertain-write `CoordinatorFenced` state.
 | `query_module_active` | lineage + contract version + bundle hash | Active query-module pointer identity for one contract |
 | `entities` | exact canonical `EntityKey` bytes | Entity record envelope |
 | `secondary_indexes` | exact canonical `IndexEntryKey` bytes | Index entry envelope including covered values |
-| `index_epochs` | exact canonical index-range-prefix bytes | Monotonic validation epoch envelope |
+| `index_epochs` | exact canonical partition key + stable index ID | Monotonic validation generation envelope |
 | `idempotency` | canonical identity from Section 7.6 | One full `StoredOutcomeV1` envelope serving as both committed terminal state and persisted outcome, or one closed ADR-0012 `StoredExecutionFailedV1` envelope; never a pointer or tombstone |
 | `idempotency_pending` | canonical idempotency identity | Pending reservation, fixed transaction context, complete `ExecutablePlanRef`, admitted actor, and stored approved provenance claims |
 | `commits` | commit sequence, big endian | Commit record envelope |
@@ -6700,6 +6703,17 @@ ADR-0055.
   notifications, transient indexes, projection work, outbox work, and
   subscribers MUST remain withheld until the covering durability fence succeeds. Tail
   uncertainty fences writes and resolves every command independently. Before
+  storage accepts a command subgroup, its compiler-derived conflict capability
+  remains authoritative. After complete private acceptance, authority MAY
+  transfer to the sole FIFO writer. Any later command that overlaps an
+  unpublished predecessor MUST then be freshly evaluated and transaction-current
+  validated through the closed transaction-local snapshot protocol against the
+  newest writer-private frontier; it MUST NOT use the older published snapshot.
+  This path MUST be equivalent to strict FIFO serial execution, retain per-command
+  authorization, cancellation, identity, outcome, audit, and recovery semantics,
+  and expose no private state or effect before the covering fence. Disjoint
+  successors MAY retain published-snapshot evaluation only under the complete
+  compiler-derived noninterference proof. Before
   using deferred commits, a busy completion edge with 2--32 queued commands MAY
   spend the same fixed 2-millisecond budget collecting one larger FIFO prefix
   for a single Immediate transaction. The dedicated coordinator MAY park on an
@@ -6724,17 +6738,35 @@ ADR-0055.
   boundary.
 - `PERF-017`: Under ADR-0101, the standard-profile authoritative state MUST be
   exactly one known-durable redb checkpoint plus a gap-free, versioned,
-  checksummed, hash-chained command-frame suffix. Each frame MUST contain the
-  complete already-validated bytes required to replay its command graphs
-  without command reevaluation and MUST be bounded with the unpublished prefix
-  to 256 commands and 16 MiB. redb roots ahead of the journal frontier are
-  writer-private; one successful journal fence atomically publishes the final
-  covered read snapshot before any result or effect. Append or fence uncertainty
-  withholds results and fences writes. Restart MUST reject every gap, reorder,
-  substitution, database mismatch, malformed frame, or nonreciprocal graph,
-  ignore only an incomplete terminal tail, replay the exact suffix, and
-  checkpoint before readiness. Journal reclamation and backup MUST preserve at
-  least one complete checkpoint-plus-suffix recovery path across every crash.
+  checksummed, hash-chained writer-frame suffix. The closed frame catalog MAY
+  contain complete already-validated command graphs or complete validated
+  standalone service-audit groups in their single FIFO writer order. Frames
+  MUST record exact predecessor and successor application and administration
+  frontiers and the canonical bytes required to replay without command
+  reevaluation or audit reauthorization. The unpublished prefix MUST be bounded
+  to 256 logical writer transitions and 16 MiB; existing command-group and
+  service-audit-group bounds remain independently enforced. Published frames
+  MAY remain in the same recovery suffix up to a separate 4,096-transition and
+  16 MiB bound before checkpoint reclamation, with one maximum unpublished
+  group reserved so the effective checkpoint ceiling is byte-aware. redb roots ahead
+  of the journal frontier are writer-private; one successful journal fence
+  atomically publishes the final covered read snapshot before any command
+  result, audit result, or effect. Append or fence uncertainty withholds
+  results and fences command and audit writes. Restart MUST reject every
+  dual-frontier gap, reorder, substitution, database mismatch, malformed
+  frame, or nonreciprocal graph, ignore only an incomplete terminal tail,
+  replay the exact suffix, and checkpoint before readiness. Journal reclamation
+  and backup MUST preserve at least one complete checkpoint-plus-suffix recovery
+  path across every crash. Catalog, contract, query-module, capability, other
+  administration, lifecycle, backup, shutdown, and hardened-profile operations
+  MUST remain barriers that drain the mixed suffix before proceeding.
+  Complete accepted command subgroups MAY release their conflict capabilities
+  to the sole FIFO writer before journal durability. An overlapping successor
+  MUST observe the exact newest writer-private frontier through the closed
+  transaction-local snapshot protocol and MUST remain strict-serial equivalent;
+  disjoint successors MAY use the published frontier only under compiler-proven
+  noninterference. Later failure cannot alter an earlier complete subgroup, and
+  no covered result or effect may escape before the journal fence publishes.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies

@@ -16,7 +16,7 @@ pub const MAX_VALIDATION_TARGETS: usize = riffdb_types::MAX_COMMAND_VALIDATION_T
 pub const MAX_ENTITY_MUTATIONS: usize = 4_096;
 /// Maximum index deltas in one command.
 pub const MAX_INDEX_DELTAS: usize = riffdb_types::MAX_COMMAND_INDEX_DELTAS_V1;
-/// Maximum mutation-affected index-prefix epoch targets in one command.
+/// Maximum mutation-affected partition/index generation targets in one command.
 pub const MAX_AFFECTED_INDEX_EPOCH_TARGETS: usize =
     riffdb_types::MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1;
 /// Maximum event or outbox intents in one command.

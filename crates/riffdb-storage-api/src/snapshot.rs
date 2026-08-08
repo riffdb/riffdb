@@ -15,7 +15,8 @@ use riffdb_types::{
 use crate::{
     AffectedIndexEpochTargets, ExecutablePlanRef, MAX_COMMAND_READ_TARGETS, MAX_READ_DEPENDENCIES,
     MAX_READ_SNAPSHOT_BYTES, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES, StorageError,
-    StorageValueError, StoredEntityRecordV1, UniqueIndexTarget, canonical_codec_storage_error,
+    StorageErrorKind, StorageValueError, StoredEntityRecordV1, UniqueIndexTarget,
+    canonical_codec_storage_error,
 };
 
 /// One complete canonical entity identity.
@@ -551,7 +552,7 @@ pub enum ReadDependency {
         /// Expected absence or version.
         expected: ExpectedEntityState,
     },
-    /// One exact index-prefix epoch observation.
+    /// One conservative partition/index generation observation.
     IndexRangeEpoch {
         /// Complete-component prefix target.
         target: IndexRangeTarget,
@@ -2159,6 +2160,23 @@ const fn transaction_current_fixed_semantic_bytes() -> usize {
 pub trait SnapshotReader {
     /// Materializes a complete owned snapshot and closes its engine read view.
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError>;
+
+    /// Materializes a bounded FIFO group of independent command snapshots.
+    ///
+    /// Backends may share one immutable engine read view across the group. The
+    /// default retains scalar semantics for conformance implementations.
+    fn read_snapshot_group(
+        &self,
+        requests: Vec<SnapshotRequest>,
+    ) -> Result<Vec<ReadSnapshot>, StorageError> {
+        if requests.is_empty() || requests.len() > crate::MAX_GROUPED_WRITE_TRANSITIONS {
+            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        }
+        requests
+            .into_iter()
+            .map(|request| self.read_snapshot(request))
+            .collect()
+    }
 }
 
 fn validate_entity_positions(

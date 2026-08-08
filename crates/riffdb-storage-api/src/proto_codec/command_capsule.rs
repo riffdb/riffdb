@@ -1,3 +1,4 @@
+use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     AdministrationSequence, ApprovalId, CommitSequence, ProvenanceId, RequestId,
@@ -5,9 +6,9 @@ use riffdb_types::{
 };
 
 use crate::{
-    AffectedEntityV1, EncodedPageItem, StoredCommandAuditLocatorV1, StoredCommandAuditMemberV1,
-    StoredCommandCapsuleV1, StoredCommandLocatorV1, StoredDurableEventV1, StoredProvenanceRecordV1,
-    StoredServiceAuditRecordV1,
+    AffectedEntityV1, CommittedEntityReferenceV2, EncodedPageItem, StoredCommandAuditLocatorV1,
+    StoredCommandAuditMemberV1, StoredCommandCapsuleV1, StoredCommandLocatorV1,
+    StoredDurableEventV1, StoredProvenanceRecordV1, StoredServiceAuditRecordV1,
 };
 
 use super::{
@@ -26,66 +27,237 @@ const COMMAND_AUDIT_LOCATOR: &str = "riffdb.storage.v1.StoredCommandAuditLocator
 pub fn encode_command_capsule_v1(
     value: &StoredCommandCapsuleV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(COMMAND_CAPSULE, &command_capsule_to_proto(value))
+}
+
+pub(super) fn command_capsule_to_proto(
+    value: &StoredCommandCapsuleV1,
+) -> wire::StoredCommandCapsuleV1 {
     let outcome = value.outcome();
     let commit = value.commit();
     let started = value.started_audit();
     let terminal = value.terminal_audit();
     debug_assert_eq!(started.request_id(), terminal.request_id());
 
-    encode_message(
-        COMMAND_CAPSULE,
-        &wire::StoredCommandCapsuleV1 {
-            identity: Some(identity_to_proto(outcome.identity())),
-            commit_sequence: commit.commit_sequence().get(),
-            admission_request_id: commit.admission_request_id().as_bytes().to_vec(),
-            plan: Some(plan_to_proto(commit.plan())),
-            canonical_input_hash: commit.canonical_input_hash().as_bytes().to_vec(),
-            actor: Some(actor_to_proto(commit.actor())),
-            logical_time: Some(timestamp_to_proto(commit.logical_time().timestamp())),
-            partition_hash: commit.partition_hash().as_bytes().to_vec(),
-            conflict_hashes: application::hashes_to_proto(commit.conflict_hashes()),
-            declared_outcome: Some(declared_outcome_to_proto(commit.declared_outcome())),
-            admitted_claims: Some(claims_to_proto(outcome.admitted_claims())),
-            provenance_id: commit.provenance_id().as_bytes().to_vec(),
-            durability_mode: application::durability_to_proto(commit.durability_mode()),
-            partition_key: outcome.partition_key().as_bytes().to_vec(),
-            causation: outcome.causation().map(application::causation_to_proto),
-            read_dependencies: Some(dependencies_to_proto(commit.read_dependencies())),
-            entity_references: commit
-                .entity_references()
-                .iter()
-                .map(application::entity_reference_to_proto)
-                .collect(),
-            event_references: commit
-                .event_references()
-                .into_iter()
-                .map(application::event_reference_to_proto)
-                .collect(),
-            outbox_event_ids: commit
-                .outbox_event_ids()
-                .iter()
-                .copied()
-                .map(event_id_to_proto)
-                .collect(),
-            audit: Some(wire::StoredCommandAuditInvocationV1 {
-                request_id: started.request_id().as_bytes().to_vec(),
-                operation: i32::from(started.operation().tag()),
-                principal: started.principal().map(audit_principal_to_proto),
-                ingress: i32::from(started.ingress().tag()),
-                targets: started
-                    .targets()
-                    .as_slice()
-                    .iter()
-                    .map(audit::target_to_proto_v2)
-                    .collect(),
-                approval_id: started.approval_id().map(|value| value.as_str().to_owned()),
-                started_administration_sequence: started.administration_sequence().get(),
-                started_at: Some(timestamp_to_proto(started.timestamp())),
-                terminal_administration_sequence: terminal.administration_sequence().get(),
-                terminal_at: Some(timestamp_to_proto(terminal.timestamp())),
-            }),
-        },
-    )
+    wire::StoredCommandCapsuleV1 {
+        identity: Some(identity_to_proto(outcome.identity())),
+        commit_sequence: commit.commit_sequence().get(),
+        admission_request_id: commit.admission_request_id().as_bytes().to_vec(),
+        plan: Some(plan_to_proto(commit.plan())),
+        canonical_input_hash: commit.canonical_input_hash().as_bytes().to_vec(),
+        actor: Some(actor_to_proto(commit.actor())),
+        logical_time: Some(timestamp_to_proto(commit.logical_time().timestamp())),
+        partition_hash: commit.partition_hash().as_bytes().to_vec(),
+        conflict_hashes: application::hashes_to_proto(commit.conflict_hashes()),
+        declared_outcome: Some(declared_outcome_to_proto(commit.declared_outcome())),
+        admitted_claims: Some(claims_to_proto(outcome.admitted_claims())),
+        provenance_id: commit.provenance_id().as_bytes().to_vec(),
+        durability_mode: application::durability_to_proto(commit.durability_mode()),
+        partition_key: outcome.partition_key().as_bytes().to_vec(),
+        causation: outcome.causation().map(application::causation_to_proto),
+        read_dependencies: Some(dependencies_to_proto(commit.read_dependencies())),
+        entity_references: commit
+            .entity_references()
+            .iter()
+            .map(application::entity_reference_to_proto)
+            .collect(),
+        event_references: commit
+            .events()
+            .iter()
+            .map(crate::EventReferenceV2::from_event)
+            .map(application::event_reference_to_proto)
+            .collect(),
+        outbox_event_ids: commit
+            .outbox_event_ids()
+            .iter()
+            .copied()
+            .map(event_id_to_proto)
+            .collect(),
+        audit: Some(command_audit_to_proto(started, terminal)),
+    }
+}
+
+fn command_audit_to_proto(
+    started: &StoredServiceAuditRecordV1,
+    terminal: &StoredServiceAuditRecordV1,
+) -> wire::StoredCommandAuditInvocationV1 {
+    wire::StoredCommandAuditInvocationV1 {
+        request_id: started.request_id().as_bytes().to_vec(),
+        operation: i32::from(started.operation().tag()),
+        principal: started.principal().map(audit_principal_to_proto),
+        ingress: i32::from(started.ingress().tag()),
+        targets: started
+            .targets()
+            .as_slice()
+            .iter()
+            .map(audit::target_to_proto_v2)
+            .collect(),
+        approval_id: started.approval_id().map(|value| value.as_str().to_owned()),
+        started_administration_sequence: started.administration_sequence().get(),
+        started_at: Some(timestamp_to_proto(started.timestamp())),
+        terminal_administration_sequence: terminal.administration_sequence().get(),
+        terminal_at: Some(timestamp_to_proto(terminal.timestamp())),
+    }
+}
+
+fn append_key(output: &mut Vec<u8>, field_number: u32, wire_type: u8) {
+    prost::encoding::encode_varint(
+        (u64::from(field_number) << 3) | u64::from(wire_type),
+        output,
+    );
+}
+
+fn append_length_delimited_field(
+    output: &mut Vec<u8>,
+    field_number: u32,
+    bytes: &[u8],
+) -> Result<(), DurableCodecError> {
+    append_key(output, field_number, 2);
+    prost::encoding::encode_varint(
+        u64::try_from(bytes.len()).map_err(|_| DurableCodecError::invariant())?,
+        output,
+    );
+    output.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn append_varint_field(output: &mut Vec<u8>, field_number: u32, value: u64) {
+    if value == 0 {
+        return;
+    }
+    append_key(output, field_number, 0);
+    prost::encoding::encode_varint(value, output);
+}
+
+fn append_message_field<M: Message>(
+    output: &mut Vec<u8>,
+    field_number: u32,
+    message: &M,
+) -> Result<(), DurableCodecError> {
+    append_key(output, field_number, 2);
+    prost::encoding::encode_varint(
+        u64::try_from(message.encoded_len()).map_err(|_| DurableCodecError::invariant())?,
+        output,
+    );
+    message
+        .encode(output)
+        .map_err(|_| DurableCodecError::invariant())
+}
+
+fn command_audit_bytes_for_seal(
+    started: &StoredServiceAuditRecordV1,
+    terminal: &StoredServiceAuditRecordV1,
+) -> Result<Vec<u8>, DurableCodecError> {
+    let mut audit_bytes = Vec::new();
+    append_length_delimited_field(&mut audit_bytes, 1, started.request_id().as_bytes())?;
+    append_varint_field(&mut audit_bytes, 2, u64::from(started.operation().tag()));
+    if let Some(principal) = started.principal() {
+        append_message_field(&mut audit_bytes, 3, &audit_principal_to_proto(principal))?;
+    }
+    append_varint_field(&mut audit_bytes, 4, u64::from(started.ingress().tag()));
+    for target in started.targets().as_slice() {
+        append_message_field(&mut audit_bytes, 5, &audit::target_to_proto_v2(target))?;
+    }
+    if let Some(approval_id) = started.approval_id() {
+        append_length_delimited_field(&mut audit_bytes, 6, approval_id.as_str().as_bytes())?;
+    }
+    append_varint_field(&mut audit_bytes, 7, started.administration_sequence().get());
+    append_message_field(
+        &mut audit_bytes,
+        8,
+        &timestamp_to_proto(started.timestamp()),
+    )?;
+    append_varint_field(
+        &mut audit_bytes,
+        9,
+        terminal.administration_sequence().get(),
+    );
+    append_message_field(
+        &mut audit_bytes,
+        10,
+        &timestamp_to_proto(terminal.timestamp()),
+    )?;
+    Ok(audit_bytes)
+}
+
+/// Streams one canonical V1 capsule without constructing the complete
+/// generated-Protobuf object graph. The caller owns a structurally checked
+/// capsule; the independent full-Prost encoder remains the validation oracle.
+pub(super) fn command_capsule_bytes_for_seal(
+    value: &StoredCommandCapsuleV1,
+) -> Result<Vec<u8>, DurableCodecError> {
+    let outcome = value.outcome();
+    let commit = value.commit();
+    let started = value.started_audit();
+    let terminal = value.terminal_audit();
+    debug_assert_eq!(started.request_id(), terminal.request_id());
+
+    let mut capsule = Vec::new();
+    append_message_field(&mut capsule, 1, &identity_to_proto(outcome.identity()))?;
+    append_varint_field(&mut capsule, 2, commit.commit_sequence().get());
+    append_length_delimited_field(&mut capsule, 3, commit.admission_request_id().as_bytes())?;
+    append_message_field(&mut capsule, 4, &plan_to_proto(commit.plan()))?;
+    append_length_delimited_field(&mut capsule, 5, commit.canonical_input_hash().as_bytes())?;
+    append_message_field(&mut capsule, 6, &actor_to_proto(commit.actor()))?;
+    append_message_field(
+        &mut capsule,
+        7,
+        &timestamp_to_proto(commit.logical_time().timestamp()),
+    )?;
+    append_length_delimited_field(&mut capsule, 8, commit.partition_hash().as_bytes())?;
+    for conflict_hash in commit.conflict_hashes() {
+        append_length_delimited_field(&mut capsule, 9, conflict_hash.as_bytes())?;
+    }
+    append_message_field(
+        &mut capsule,
+        10,
+        &declared_outcome_to_proto(commit.declared_outcome()),
+    )?;
+    append_message_field(
+        &mut capsule,
+        11,
+        &claims_to_proto(outcome.admitted_claims()),
+    )?;
+    append_length_delimited_field(&mut capsule, 12, commit.provenance_id().as_bytes())?;
+    append_varint_field(
+        &mut capsule,
+        13,
+        u64::try_from(application::durability_to_proto(commit.durability_mode()))
+            .map_err(|_| DurableCodecError::invariant())?,
+    );
+    append_length_delimited_field(&mut capsule, 14, outcome.partition_key().as_bytes())?;
+    if let Some(causation) = outcome.causation() {
+        append_message_field(
+            &mut capsule,
+            15,
+            &application::causation_to_proto(causation),
+        )?;
+    }
+    append_message_field(
+        &mut capsule,
+        16,
+        &dependencies_to_proto(commit.read_dependencies()),
+    )?;
+    for entity_reference in commit.entity_references() {
+        append_message_field(
+            &mut capsule,
+            17,
+            &application::entity_reference_to_proto(entity_reference),
+        )?;
+    }
+    for event in commit.events() {
+        append_message_field(
+            &mut capsule,
+            18,
+            &application::event_reference_to_proto(crate::EventReferenceV2::from_event(event)),
+        )?;
+    }
+    for event_id in commit.outbox_event_ids() {
+        append_message_field(&mut capsule, 19, &event_id_to_proto(*event_id))?;
+    }
+    let audit = command_audit_bytes_for_seal(started, terminal)?;
+    append_length_delimited_field(&mut capsule, 20, &audit)?;
+    Ok(capsule)
 }
 
 /// Decodes a capsule and reconstructs all five semantic views using event rows
@@ -244,6 +416,36 @@ pub fn decode_command_capsule_v1(
         storage_result(StoredCommandCapsuleV1::new(
             outcome, provenance, commit, started, terminal,
         ))
+    })
+}
+
+/// Decodes and validates the event-reference portion needed to load a capsule
+/// from an event table in the same authoritative snapshot.
+pub fn decode_command_capsule_event_references(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<Vec<crate::EventReferenceV2>>, DurableCodecError> {
+    decode_message::<wire::StoredCommandCapsuleV1, _, _>(COMMAND_CAPSULE, encoded, |value| {
+        value
+            .event_references
+            .into_iter()
+            .map(application::event_reference_from_proto)
+            .collect()
+    })
+}
+
+/// Decodes only the ordered entity references needed by startup history and
+/// validated-prefix walks. This deliberately does not require loading event
+/// rows: entity history must remain independently inspectable while the full
+/// capsule decoder verifies the event join in the same snapshot.
+pub fn decode_command_capsule_entity_references(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<Vec<CommittedEntityReferenceV2>>, DurableCodecError> {
+    decode_message::<wire::StoredCommandCapsuleV1, _, _>(COMMAND_CAPSULE, encoded, |value| {
+        value
+            .entity_references
+            .into_iter()
+            .map(application::entity_reference_from_proto)
+            .collect()
     })
 }
 

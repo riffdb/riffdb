@@ -1549,7 +1549,7 @@ fn accepted_work_is_bounded_by_admission_permits_under_a_blocked_writer() {
     drop(running);
     assert!(
         total <= 2 * c + 1,
-        "accepted-without-parking {total} exceeds 2C+1={} under latched writer",
+        "accepted-without-parking {total} exceeds 2C+1={} under latched audit writer",
         2 * c + 1
     );
     assert!(

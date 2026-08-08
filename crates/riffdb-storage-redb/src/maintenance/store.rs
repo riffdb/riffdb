@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -1624,15 +1624,26 @@ fn checked_staged_inventory(
 }
 
 fn validate_stage_inventory(stage_directory: &Path) -> Result<(), StorageError> {
-    let mut entries = fs::read_dir(stage_directory).map_err(io_unavailable)?;
-    let Some(entry) = entries.next() else {
-        return Err(corrupt());
-    };
-    let entry = entry.map_err(io_unavailable)?;
-    if entry.file_name() != OsStr::new(crate::backup::DATABASE_ARTIFACT_FILE_NAME)
-        || !entry.file_type().map_err(io_unavailable)?.is_file()
-        || entries.next().is_some()
-    {
+    let journal_name =
+        crate::journal::journal_path(Path::new(crate::backup::DATABASE_ARTIFACT_FILE_NAME))
+            .file_name()
+            .ok_or_else(invariant)?
+            .to_os_string();
+    let mut expected = BTreeSet::from([
+        OsString::from(crate::backup::DATABASE_ARTIFACT_FILE_NAME),
+        journal_name,
+    ]);
+    let mut seen = BTreeSet::new();
+    for entry in fs::read_dir(stage_directory).map_err(io_unavailable)? {
+        let entry = entry.map_err(io_unavailable)?;
+        if !entry.file_type().map_err(io_unavailable)?.is_file()
+            || !expected.remove(&entry.file_name())
+            || !seen.insert(entry.file_name())
+        {
+            return Err(corrupt());
+        }
+    }
+    if !expected.is_empty() || seen.len() != 2 {
         return Err(corrupt());
     }
     Ok(())

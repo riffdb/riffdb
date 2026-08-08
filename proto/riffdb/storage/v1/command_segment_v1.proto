@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/command_capsule_v1.proto";
+import "riffdb/storage/v1/index_generation_v2.proto";
+
+// Closed accelerator roles reconstructed from a validated command segment.
+// These entries contain exact lookup keys and ordinals, never business payload.
+enum CommandDerivedIndexKindV1 {
+  COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED = 0;
+  COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY = 1;
+  COMMAND_DERIVED_INDEX_KIND_PROVENANCE = 2;
+  COMMAND_DERIVED_INDEX_KIND_AUDIT_SEQUENCE = 3;
+  COMMAND_DERIVED_INDEX_KIND_AUDIT_REQUEST = 4;
+  COMMAND_DERIVED_INDEX_KIND_EVENT_ROUTE = 5;
+  COMMAND_DERIVED_INDEX_KIND_PENDING_OUTBOX = 6;
+}
+
+enum CommandDerivedMemberV1 {
+  COMMAND_DERIVED_MEMBER_UNSPECIFIED = 0;
+  COMMAND_DERIVED_MEMBER_COMMAND = 1;
+  COMMAND_DERIVED_MEMBER_AUDIT_STARTED = 2;
+  COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL = 3;
+  COMMAND_DERIVED_MEMBER_EVENT = 4;
+}
+
+// One exact logical generation transition retained even when the physical
+// generation table receives only the group's final post-image.
+message StoredIndexGenerationTransitionV1 {
+  StoredIndexGenerationV2 post_image = 1;
+  optional uint64 prior_generation = 2;
+}
+
+// Successor capsule. The V1 base continues to define the established outcome,
+// provenance, commit, and audit views. Full events and exact logical generation
+// transitions add the authority formerly held in separate immutable rows.
+message StoredCommandCapsuleV2 {
+  StoredCommandCapsuleV1 base = 1;
+  repeated StoredDurableEventV1 events = 2;
+  repeated StoredIndexGenerationTransitionV1 index_generation_transitions = 3;
+}
+
+message CommandDerivedIndexManifestEntryV1 {
+  CommandDerivedIndexKindV1 kind = 1;
+  CommandDerivedMemberV1 member = 2;
+  bytes exact_key = 3;
+  uint32 command_ordinal = 4;
+  uint32 member_ordinal = 5;
+  uint64 segment_first_commit_sequence = 6;
+}
+
+message CommandSegmentManifestV1 {
+  repeated CommandDerivedIndexManifestEntryV1 entries = 1;
+  bytes digest = 2;
+}
+
+// Digest-bearing body prevents a self-referential segment hash. The segment
+// digest is SHA-256 over the canonical protobuf bytes of this complete body.
+message StoredCommandSegmentBodyV1 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes predecessor_segment_hash = 3;
+  uint64 first_commit_sequence = 4;
+  uint64 last_commit_sequence = 5;
+  uint64 first_administration_sequence = 6;
+  uint64 last_administration_sequence = 7;
+  repeated StoredCommandCapsuleV2 commands = 8;
+  CommandSegmentManifestV1 manifest = 9;
+}
+
+message StoredCommandSegmentV1 {
+  StoredCommandSegmentBodyV1 body = 1;
+  bytes segment_digest = 2;
+}
+
+// Derived and replaceable startup accelerator. A checkpoint is usable only
+// after all identity, registry, frontier, and segment-root bindings validate.
+message StoredCommandDerivedIndexCheckpointV1 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes registry_digest = 3;
+  uint64 segment_frontier = 4;
+  bytes segment_root_digest = 5;
+  repeated CommandDerivedIndexManifestEntryV1 entries = 6;
+  bytes checkpoint_digest = 7;
+}

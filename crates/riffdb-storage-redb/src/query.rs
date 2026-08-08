@@ -24,7 +24,7 @@ use crate::codec::{decode_index_entry_v2, decode_index_epoch_v1};
 use crate::error::{precommit_storage_error, storage_error};
 use crate::keys::{decode_index_entry_key, encode_partition_index_key};
 use crate::layout::{COMMITS, ENTITIES, INDEX_EPOCHS, SECONDARY_INDEXES};
-use crate::reads::{read_commit_head, read_entity_record};
+use crate::reads::{read_entity_record, read_snapshot_head};
 use crate::store::RedbOperationalPorts;
 
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
@@ -105,7 +105,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
         // Commit head is part of the read contract and always runs first.
         let commits = open_query_table(&transaction, COMMITS, QueryTableKind::Commits)
             .map_err(map_storage_query_error)?;
-        let head = read_commit_head(&transaction, &commits)
+        let head = read_snapshot_head(&transaction, &commits)
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
         drop(commits);
@@ -130,7 +130,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
         let transaction = self.begin_read().map_err(map_storage_query_error)?;
         let commits = open_query_table(&transaction, COMMITS, QueryTableKind::Commits)
             .map_err(map_storage_query_error)?;
-        let head = read_commit_head(&transaction, &commits)
+        let head = read_snapshot_head(&transaction, &commits)
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
         drop(commits);

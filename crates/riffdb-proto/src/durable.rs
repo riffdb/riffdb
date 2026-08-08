@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 65;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 68;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 50;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 53;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -178,6 +178,14 @@ const COMMAND_CAPSULE_V1_SCHEMA_HASH_BYTES: &[u8; 96] = include_bytes!(concat!(
 const COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES: &[u8; 24] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-command-capsule-v1-record-bounds.bin"
+));
+const COMMAND_SEGMENT_V1_SCHEMA_HASH_BYTES: &[u8; 96] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-command-segment-v1-schema-hashes.bin"
+));
+const COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES: &[u8; 24] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-command-segment-v1-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -908,6 +916,51 @@ const COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA: RecordSchema<'static> = command_ca
     53
 );
 
+const fn command_segment_v1_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = COMMAND_SEGMENT_V1_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn command_segment_v1_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES[start],
+        COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES[start + 1],
+        COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES[start + 2],
+        COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! command_segment_v1_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            command_segment_v1_schema_hash($index),
+            command_segment_v1_record_bound($index, 0),
+            command_segment_v1_record_bound($index, 4),
+            preflight_payload::<{ 60 + $index }>,
+            validate_payload::<{ 60 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, 1)
+    };
+}
+
+const COMMAND_CAPSULE_V2_RECORD_SCHEMA: RecordSchema<'static> =
+    command_segment_v1_schema!(0, "StoredCommandCapsuleV2", v1::StoredCommandCapsuleV2, 54);
+const COMMAND_SEGMENT_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    command_segment_v1_schema!(1, "StoredCommandSegmentV1", v1::StoredCommandSegmentV1, 55);
+const COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA: RecordSchema<'static> = command_segment_v1_schema!(
+    2,
+    "StoredCommandDerivedIndexCheckpointV1",
+    v1::StoredCommandDerivedIndexCheckpointV1,
+    56
+);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1075,6 +1128,12 @@ readable_message!(
     v1::StoredCommandAuditLocatorV1,
     COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA
 );
+readable_message!(v1::StoredCommandCapsuleV2, COMMAND_CAPSULE_V2_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandSegmentV1, COMMAND_SEGMENT_V1_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredCommandDerivedIndexCheckpointV1,
+    COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -1126,12 +1185,27 @@ writable_message!(v1::StoredProvenanceRecordV2);
 writable_message!(v1::StoredCommandCapsuleV1);
 writable_message!(v1::StoredCommandLocatorV1);
 writable_message!(v1::StoredCommandAuditLocatorV1);
+writable_message!(v1::StoredCommandCapsuleV2);
+writable_message!(v1::StoredCommandSegmentV1);
+writable_message!(v1::StoredCommandDerivedIndexCheckpointV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
     message: &M,
 ) -> Result<Vec<u8>, crate::envelope::EnvelopeError> {
     crate::envelope::encode_preflighted(M::record_schema(), &message.encode_to_vec())
+}
+
+/// Frames already-canonical bytes for one sealed current record type.
+///
+/// This is reserved for first-party encoders that assemble a payload from
+/// canonical nested-message bytes they already needed for a content digest.
+/// The same generated durable-wire preflight used by [`encode_current_message`]
+/// still rejects malformed, noncanonical, or over-limit payloads.
+pub fn encode_current_payload<M: WritableRecordMessage>(
+    payload: &[u8],
+) -> Result<Vec<u8>, crate::envelope::EnvelopeError> {
+    crate::envelope::encode_preflighted(M::record_schema(), payload)
 }
 
 const PRE_WP280_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
@@ -1252,6 +1326,9 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_CAPSULE_V1_RECORD_SCHEMA,
     COMMAND_LOCATOR_V1_RECORD_SCHEMA,
     COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V2_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V1_RECORD_SCHEMA,
+    COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1310,6 +1387,9 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_CAPSULE_V1_RECORD_SCHEMA,
     COMMAND_LOCATOR_V1_RECORD_SCHEMA,
     COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V2_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V1_RECORD_SCHEMA,
+    COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 
@@ -1422,5 +1502,18 @@ mod tests {
             "riffdb.storage.v1.StoredRecordRegistryV2"
         );
         assert_eq!(decoded.payload(), message.encode_to_vec());
+    }
+
+    #[test]
+    fn prebuilt_current_payload_matches_the_typed_current_encoder_exactly() {
+        let message = v1::StoredRecordRegistryV2 {
+            registry_digest: record_registry_digest().as_bytes().to_vec(),
+        };
+        let payload = message.encode_to_vec();
+        let typed = encode_current_message(&message).expect("typed current record encodes");
+        let prebuilt = encode_current_payload::<v1::StoredRecordRegistryV2>(&payload)
+            .expect("canonical prebuilt payload encodes");
+
+        assert_eq!(prebuilt, typed);
     }
 }

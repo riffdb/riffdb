@@ -102,6 +102,11 @@
 - [WP-475 Retained Canonical Permission Lookup](performance/wp-475-retained-permission-keys.md)
 - [WP-476 Constant-Time Durable Shape Dispatch](performance/wp-476-durable-shape-dispatch.md)
 - [WP-478 Pipelined Durability Journal](performance/wp-478-pipelined-durability-journal.md)
+- [WP-479 Segmented Command Authority](performance/wp-479-segmented-command-authority.md)
+- [WP-480 Preallocated Recyclable Journal](performance/wp-480-journal-mechanics.md)
+- [WP-481 Constant-time Query Frontiers](performance/wp-481-constant-time-query-frontiers.md)
+- [WP-482 Streaming Command Segments](performance/wp-482-streaming-command-segments.md)
+- [WP-483 Streaming Command Capsules](performance/wp-483-streaming-command-capsules.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

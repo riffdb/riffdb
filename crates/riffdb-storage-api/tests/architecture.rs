@@ -161,7 +161,8 @@ fn command_staging_retains_and_checks_the_exact_candidate_graph() {
 }
 
 #[test]
-fn atomic_record_reciprocity_and_staged_evidence_materialize_no_comparison_vectors() {
+fn atomic_record_reciprocity_and_staged_evidence_retains_capsule_authority_without_comparison_vectors()
+ {
     let records = include_str!("../src/records.rs");
     let constructor = records
         .split_once("impl AtomicCommandRecordSet {")
@@ -183,7 +184,8 @@ fn atomic_record_reciprocity_and_staged_evidence_materialize_no_comparison_vecto
         .split_once("    /// Proves this graph exactly matches")
         .expect("staged evidence end")
         .0;
-    assert!(evidence.contains("event_ids: provenance.event_ids"));
+    assert!(evidence.contains("provenance,"));
+    assert!(evidence.contains("commit,"));
     assert!(!evidence.contains("collect"));
 
     let graph = records
@@ -200,6 +202,17 @@ fn atomic_record_reciprocity_and_staged_evidence_materialize_no_comparison_vecto
     assert!(records.contains("let mut outbox_intents = Vec::with_capacity(events.len())"));
     assert!(records.contains("outbox_intents.push(StoredOutboxIntentV1::new(event.clone()))"));
     assert!(!constructor.contains("outbox_intents: Vec<StoredOutboxIntentV1>"));
+
+    let segment = include_str!("../src/command_segment.rs");
+    let capsule = segment
+        .split_once("pub struct StoredCommandCapsuleV2 {")
+        .expect("V2 command capsule")
+        .1
+        .split_once("impl StoredCommandCapsuleV2")
+        .expect("V2 command capsule fields")
+        .0;
+    assert!(!capsule.contains("events: Vec<StoredDurableEventV1>"));
+    assert!(segment.contains("self.base.commit().events()"));
 }
 
 #[test]

@@ -33,8 +33,8 @@ use crate::{
     CommittedOutcomeDisposition, NoopCommitTelemetry, ProvenanceIdSource,
     command_execution::{
         CommandEvaluationPool, CommandExecutionError, CommandExecutionLifecycle,
-        CommandExecutionResult, CoordinatorDurability, RepeatableCommandBatchPort,
-        drive_command_execution,
+        CommandExecutionResult, CommandGroupDriveResult, CoordinatorDurability,
+        RepeatableCommandBatchPort, drive_command_execution,
     },
     control_plane::{
         CapabilityBootstrapExecutionResult, CapabilityBootstrapPreparation,
@@ -301,6 +301,135 @@ fn append_administration_audit_group(
         .collect()
 }
 
+enum AuditGroupDriveResult {
+    Complete(Vec<Result<(), AdministrationAuditExecutionError>>),
+    Submitted(SubmittedAuditGroup),
+}
+
+struct SubmittedAuditGroup {
+    outputs: Vec<Option<Result<(), AdministrationAuditExecutionError>>>,
+    prepared_indices: Vec<usize>,
+    fence: Option<Box<dyn riffdb_storage_api::DeferredServiceAuditFence>>,
+}
+
+impl SubmittedAuditGroup {
+    fn try_wait(&mut self) -> Option<Vec<Result<(), AdministrationAuditExecutionError>>> {
+        match self.fence.as_mut()?.try_wait() {
+            Ok(Some(results)) => Some(self.install(results)),
+            Ok(None) => None,
+            Err(error) => Some(self.fail(error)),
+        }
+    }
+
+    fn wait(self) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        let mut group = self;
+        let Some(fence) = group.fence.take() else {
+            return group.fail(StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        };
+        match fence.wait() {
+            Ok(results) => group.install(results),
+            Err(error) => group.fail(error),
+        }
+    }
+
+    fn install(
+        &mut self,
+        results: Vec<ServiceAuditAppendResult>,
+    ) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        if results.len() != self.prepared_indices.len() {
+            return self.fail(StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        for (index, result) in self.prepared_indices.drain(..).zip(results) {
+            self.outputs[index] = Some(match result {
+                ServiceAuditAppendResult::Appended(_) => Ok(()),
+                ServiceAuditAppendResult::PhaseConflict => {
+                    Err(AdministrationAuditExecutionError::PhaseConflict)
+                }
+            });
+        }
+        self.take_outputs()
+    }
+
+    fn fail(&mut self, error: StorageError) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        for index in self.prepared_indices.drain(..) {
+            self.outputs[index] = Some(Err(AdministrationAuditExecutionError::Storage(
+                error.clone(),
+            )));
+        }
+        self.take_outputs()
+    }
+
+    fn take_outputs(&mut self) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        self.outputs
+            .drain(..)
+            .map(|output| {
+                output.unwrap_or(Err(AdministrationAuditExecutionError::CoordinatorStopped))
+            })
+            .collect()
+    }
+}
+
+fn submit_administration_audit_group(
+    repository: &mut dyn ServiceAuditAppendRepository,
+    clock: &dyn AdministrationClock,
+    inputs: &[Box<dyn AdministrationAuditInputView>],
+) -> AuditGroupDriveResult {
+    let mut outputs = (0..inputs.len()).map(|_| None).collect::<Vec<_>>();
+    let mut prepared = Vec::with_capacity(inputs.len());
+    for (index, input) in inputs.iter().enumerate() {
+        match prepare_administration_audit(clock, input.as_ref()) {
+            Ok(intent) => prepared.push((index, intent)),
+            Err(error) => outputs[index] = Some(Err(error)),
+        }
+    }
+    if prepared.is_empty() {
+        return AuditGroupDriveResult::Complete(
+            outputs
+                .into_iter()
+                .map(|output| {
+                    output.unwrap_or(Err(AdministrationAuditExecutionError::CoordinatorStopped))
+                })
+                .collect(),
+        );
+    }
+    let prepared_indices = prepared.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+    let intents = prepared
+        .into_iter()
+        .map(|(_, intent)| intent)
+        .collect::<Vec<_>>();
+    match repository.submit_service_audit_group(&intents) {
+        Ok(riffdb_storage_api::ServiceAuditGroupAppend::Complete(results)) => {
+            let mut submitted = SubmittedAuditGroup {
+                outputs,
+                prepared_indices,
+                fence: None,
+            };
+            AuditGroupDriveResult::Complete(submitted.install(results))
+        }
+        Ok(riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence)) => {
+            AuditGroupDriveResult::Submitted(SubmittedAuditGroup {
+                outputs,
+                prepared_indices,
+                fence: Some(fence),
+            })
+        }
+        Err(error) => {
+            let mut submitted = SubmittedAuditGroup {
+                outputs,
+                prepared_indices,
+                fence: None,
+            };
+            AuditGroupDriveResult::Complete(submitted.fail(error))
+        }
+    }
+}
+
 const LIFECYCLE_ACCEPTING: u8 = 0;
 const LIFECYCLE_DRAINING: u8 = 1;
 const LIFECYCLE_FENCED: u8 = 2;
@@ -333,9 +462,6 @@ const POST_COMMIT_COALESCE_BUDGET: Duration = Duration::from_millis(2);
 /// Tokio rounds timer deadlines to its millisecond wheel. Arm one tick early so
 /// that rounding does not intentionally extend the accepted logical budget.
 const POST_COMMIT_COALESCE_TIMER_GUARD: Duration = Duration::from_millis(1);
-/// Prefixes above this size already amortize the durable fence sufficiently;
-/// delaying them reduced saturated throughput in retained c128 evidence.
-const POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS: usize = 32;
 
 /// Exact number of coordinator workload messages admitted independently of shutdown.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1946,8 +2072,7 @@ enum CoordinatorMessage {
 
 type LocalCommandFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CommandExecutionResult, CommandExecutionError>> + 'a>>;
-type LocalCommandGroupFuture<'a> =
-    Pin<Box<dyn Future<Output = Vec<Result<CommandExecutionResult, CommandExecutionError>>> + 'a>>;
+type LocalCommandGroupFuture<'a> = Pin<Box<dyn Future<Output = CommandGroupDriveResult> + 'a>>;
 type AuditGroupItem = (
     AdministrationAuditSubmission,
     oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
@@ -1959,6 +2084,31 @@ type CommandGroupItem = (
     Instant,
     oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
 );
+type CommandGroupMetadata = (
+    riffdb_types::CommandId,
+    riffdb_types::ServiceIngressKindV1,
+    Instant,
+    oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
+);
+
+enum SubmittedWriterUnit {
+    Command {
+        pending: Option<PendingCommandPublication>,
+        metadata: Vec<CommandGroupMetadata>,
+        footprint: Option<crate::command_execution::DeferredPipelineFootprint>,
+    },
+    Audit {
+        submitted: Option<SubmittedAuditGroup>,
+        completions: Vec<oneshot::Sender<Result<(), AdministrationAuditExecutionError>>>,
+    },
+}
+
+enum PendingCommandPublication {
+    Fence(crate::command_execution::SubmittedCommandGroup),
+    /// A private-frontier replay or no-write result. It owns no new durability
+    /// work, but may be released only after every earlier FIFO fence publishes.
+    AfterPredecessor(Vec<Result<CommandExecutionResult, CommandExecutionError>>),
+}
 
 trait CoordinatorActorOperations: Send {
     fn append_audit(
@@ -1974,6 +2124,13 @@ trait CoordinatorActorOperations: Send {
             .iter()
             .map(|input| self.append_audit(input.as_ref()))
             .collect()
+    }
+
+    fn drive_audit_group(
+        &mut self,
+        inputs: &[Box<dyn AdministrationAuditInputView>],
+    ) -> AuditGroupDriveResult {
+        AuditGroupDriveResult::Complete(self.append_audit_group(inputs))
     }
 
     fn append_audit_fused_pair(
@@ -1992,13 +2149,15 @@ trait CoordinatorActorOperations: Send {
     fn drive_command_group(
         &mut self,
         preparations: Vec<CommandExecutionPreparation>,
+        evaluation_frontier: crate::command_execution::CommandEvaluationFrontier,
     ) -> LocalCommandGroupFuture<'_> {
+        let _ = evaluation_frontier;
         Box::pin(async move {
             let mut results = Vec::with_capacity(preparations.len());
             for preparation in preparations {
                 results.push(self.drive_command(preparation).await);
             }
-            results
+            CommandGroupDriveResult::Complete(results)
         })
     }
 
@@ -2099,6 +2258,17 @@ where
         )
     }
 
+    fn drive_audit_group(
+        &mut self,
+        inputs: &[Box<dyn AdministrationAuditInputView>],
+    ) -> AuditGroupDriveResult {
+        submit_administration_audit_group(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            inputs,
+        )
+    }
+
     fn append_audit_fused_pair(
         &mut self,
         started: &dyn AdministrationAuditInputView,
@@ -2155,6 +2325,7 @@ where
     fn drive_command_group(
         &mut self,
         preparations: Vec<CommandExecutionPreparation>,
+        evaluation_frontier: crate::command_execution::CommandEvaluationFrontier,
     ) -> LocalCommandGroupFuture<'_> {
         self.repository.drive_repeatable_group(
             self.conflicts.as_ref(),
@@ -2165,6 +2336,7 @@ where
             &self.lifecycle,
             self.telemetry.as_ref(),
             self.evaluation_pool.as_ref(),
+            evaluation_frontier,
             preparations,
         )
     }
@@ -2471,9 +2643,9 @@ fn post_commit_command_window_eligible(pending: &VecDeque<CoordinatorMessage>) -
                 CommandGroupingClass::Command
             )
         })
-        .take(POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS.saturating_add(1))
+        .take(riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
         .count();
-    (2..=POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS).contains(&commands)
+    (2..riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS).contains(&commands)
 }
 
 fn collect_until_group_deadline(
@@ -2807,6 +2979,118 @@ struct CommandWriter {
     ewma_initialized: bool,
 }
 
+impl SubmittedWriterUnit {
+    fn transition_count(&self) -> usize {
+        match self {
+            Self::Command {
+                pending: Some(PendingCommandPublication::Fence(_)),
+                metadata,
+                ..
+            } => metadata.len(),
+            Self::Command {
+                pending: Some(PendingCommandPublication::AfterPredecessor(_)) | None,
+                ..
+            } => 0,
+            Self::Audit { completions, .. } => completions.len(),
+        }
+    }
+
+    fn requires_pipeline_drain(&self) -> bool {
+        match self {
+            Self::Command {
+                pending: Some(PendingCommandPublication::Fence(submitted)),
+                ..
+            } => submitted.requires_pipeline_drain(),
+            Self::Command {
+                pending: Some(PendingCommandPublication::AfterPredecessor(_)) | None,
+                ..
+            } => false,
+            Self::Audit { .. } => false,
+        }
+    }
+
+    fn has_command_pipeline_proof(&self) -> bool {
+        matches!(
+            self,
+            Self::Command {
+                footprint: Some(_),
+                ..
+            }
+        )
+    }
+
+    fn try_finish(&mut self, writer: &mut CommandWriter) -> bool {
+        match self {
+            Self::Command {
+                pending, metadata, ..
+            } => {
+                let Some(publication) = pending.as_mut() else {
+                    writer.lifecycle.stop();
+                    return true;
+                };
+                let results = match publication {
+                    PendingCommandPublication::Fence(group) => {
+                        let Some(results) = group.try_wait(&writer.lifecycle) else {
+                            return false;
+                        };
+                        results
+                    }
+                    PendingCommandPublication::AfterPredecessor(results) => std::mem::take(results),
+                };
+                pending.take();
+                writer.finish_command_group(std::mem::take(metadata), results);
+                true
+            }
+            Self::Audit {
+                submitted,
+                completions,
+            } => {
+                let Some(group) = submitted.as_mut() else {
+                    writer.lifecycle.stop();
+                    return true;
+                };
+                let Some(results) = group.try_wait() else {
+                    return false;
+                };
+                submitted.take();
+                writer.finish_audit_group(std::mem::take(completions), results);
+                true
+            }
+        }
+    }
+
+    fn finish(self, writer: &mut CommandWriter) {
+        match self {
+            Self::Command {
+                pending, metadata, ..
+            } => {
+                let Some(publication) = pending else {
+                    writer.lifecycle.stop();
+                    return;
+                };
+                let results = match publication {
+                    PendingCommandPublication::Fence(submitted) => {
+                        submitted.wait(&writer.lifecycle)
+                    }
+                    PendingCommandPublication::AfterPredecessor(results) => results,
+                };
+                writer.finish_command_group(metadata, results);
+            }
+            Self::Audit {
+                submitted,
+                completions,
+            } => {
+                let Some(submitted) = submitted else {
+                    writer.lifecycle.stop();
+                    return;
+                };
+                let results = submitted.wait();
+                writer.finish_audit_group(completions, results);
+            }
+        }
+    }
+}
+
 impl CommandWriter {
     fn run(
         mut self,
@@ -2815,10 +3099,105 @@ impl CommandWriter {
         runtime: &runtime::Runtime,
     ) {
         let mut last_edge = Instant::now();
-        while let Ok(unit) = work_rx.recv() {
+        let mut submitted = VecDeque::<SubmittedWriterUnit>::new();
+        // Complete journal suffix since the last point at which the writer
+        // drained every fence and the next storage begin can checkpoint it.
+        // Published frames remain in that suffix until checkpoint, so counting
+        // only `submitted` would permit a continuously fed lane to exceed the
+        // bounded recovery suffix even as old receipts are published.
+        let mut journal_suffix_transitions = 0_usize;
+        loop {
+            if submitted
+                .front_mut()
+                .is_some_and(|pending| pending.try_finish(&mut self))
+            {
+                submitted.pop_front();
+                if submitted.is_empty() {
+                    // The next writer unit begins after every prior fence is
+                    // published; storage can checkpoint the complete suffix
+                    // before opening its transaction.
+                    journal_suffix_transitions = 0;
+                }
+                continue;
+            }
+            let unit = if submitted.is_empty() {
+                match work_rx.recv() {
+                    Ok(unit) => unit,
+                    Err(_) => break,
+                }
+            } else {
+                match work_rx.try_recv() {
+                    Ok(unit) => unit,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                }
+            };
+            let pipeline_transitions = match &unit {
+                WorkUnit::CommandGroup(group) => group.len(),
+                WorkUnit::AuditGroup(group) => group.len(),
+                WorkUnit::Single(_) | WorkUnit::Shutdown => 0,
+            };
+            let command_pipeline_footprint = match &unit {
+                WorkUnit::CommandGroup(group) => Some(
+                    crate::command_execution::command_group_deferred_pipeline_footprint(
+                        group.iter().map(|(preparation, ..)| preparation),
+                    ),
+                ),
+                WorkUnit::AuditGroup(_) | WorkUnit::Single(_) | WorkUnit::Shutdown => None,
+            };
+            let (command_deferred_eligible, mut command_evaluation_frontier) =
+                if submitted.is_empty() {
+                    (
+                        true,
+                        crate::command_execution::CommandEvaluationFrontier::Published,
+                    )
+                } else {
+                    match &unit {
+                        WorkUnit::CommandGroup(_) => (
+                            command_pipeline_footprint
+                                .as_ref()
+                                .and_then(Option::as_ref)
+                                .is_some()
+                                && submitted
+                                    .iter()
+                                    .all(SubmittedWriterUnit::has_command_pipeline_proof),
+                            crate::command_execution::CommandEvaluationFrontier::WriterPrivate,
+                        ),
+                        WorkUnit::AuditGroup(_) => (
+                            true,
+                            crate::command_execution::CommandEvaluationFrontier::Published,
+                        ),
+                        WorkUnit::Single(_) | WorkUnit::Shutdown => (
+                            false,
+                            crate::command_execution::CommandEvaluationFrontier::Published,
+                        ),
+                    }
+                };
+            // Each submitted frame retains one exact redb read root until its
+            // fence publishes. Stay below redb's finite live-read slot pool so
+            // a saturated writer never blocks trying to capture the next
+            // private successor before it can drain the oldest fence.
+            const WRITER_PIPELINE_DRAIN_TRANSITIONS: usize =
+                riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+            if pipeline_transitions == 0
+                || !command_deferred_eligible
+                || journal_suffix_transitions.saturating_add(pipeline_transitions)
+                    > WRITER_PIPELINE_DRAIN_TRANSITIONS
+            {
+                while let Some(pending) = submitted.pop_front() {
+                    pending.finish(&mut self);
+                }
+                journal_suffix_transitions = 0;
+                command_evaluation_frontier =
+                    crate::command_execution::CommandEvaluationFrontier::Published;
+            }
             let idle = last_edge.elapsed();
             let busy_started = Instant::now();
             let unit_enqueued_hint = unit_enqueue_hint(&unit);
+            let mut deferred = None;
             // Fence/stop takes effect between units: reject without storage access.
             if matches!(
                 lifecycle_state(&self.lifecycle.lifecycle),
@@ -2829,9 +3208,15 @@ impl CommandWriter {
                 let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
                 match unit {
                     WorkUnit::CommandGroup(group) => {
-                        runtime.block_on(self.execute_command_group(group));
+                        deferred = runtime.block_on(self.execute_command_group(
+                            group,
+                            command_pipeline_footprint.flatten(),
+                            command_evaluation_frontier,
+                        ));
                     }
-                    WorkUnit::AuditGroup(group) => self.execute_audit_group(group),
+                    WorkUnit::AuditGroup(group) => {
+                        deferred = self.execute_audit_group(group);
+                    }
                     WorkUnit::Single(message) => {
                         runtime.block_on(self.execute_single(message));
                     }
@@ -2846,7 +3231,19 @@ impl CommandWriter {
                     idle,
                     queue_delay_estimate_micros,
                 });
-            // Capacity 2 with ≤1 outstanding unit: send always succeeds while
+            if let Some(deferred) = deferred {
+                journal_suffix_transitions =
+                    journal_suffix_transitions.saturating_add(deferred.transition_count());
+                let requires_pipeline_drain = deferred.requires_pipeline_drain();
+                submitted.push_back(deferred);
+                if requires_pipeline_drain {
+                    while let Some(pending) = submitted.pop_front() {
+                        pending.finish(&mut self);
+                    }
+                    journal_suffix_transitions = 0;
+                }
+            }
+            // Capacity 2 with <=1 outstanding unit: send always succeeds while
             // the intake actor is alive. During actor-panic unwind, avoid a
             // second panic from expect on a closed channel.
             if !std::thread::panicking() {
@@ -2857,6 +3254,9 @@ impl CommandWriter {
                 let _ = feedback_tx.try_send(UnitCompleted);
             }
             last_edge = Instant::now();
+        }
+        while let Some(pending) = submitted.pop_front() {
+            pending.finish(&mut self);
         }
     }
 
@@ -2992,7 +3392,7 @@ impl CommandWriter {
         let _receiver_may_be_dropped = completion.send(result);
     }
 
-    fn execute_audit_group(&mut self, group: Vec<AuditGroupItem>) {
+    fn execute_audit_group(&mut self, group: Vec<AuditGroupItem>) -> Option<SubmittedWriterUnit> {
         // Fused pairs always form a singleton group and use the fused storage path.
         if group.len() == 1 && matches!(group[0].0, AdministrationAuditSubmission::FusedPair { .. })
         {
@@ -3025,7 +3425,7 @@ impl CommandWriter {
                 Err(_) => self.lifecycle.stop(),
             }
             let _ = completion.send(result);
-            return;
+            return None;
         }
         let mut inputs = Vec::with_capacity(group.len());
         let mut completions = Vec::with_capacity(group.len());
@@ -3045,11 +3445,27 @@ impl CommandWriter {
                             .send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
                     }
                     let _ = (started, terminal);
-                    return;
+                    return None;
                 }
             }
         }
-        let results = self.operations.append_audit_group(&inputs);
+        match self.operations.drive_audit_group(&inputs) {
+            AuditGroupDriveResult::Complete(results) => {
+                self.finish_audit_group(completions, results);
+                None
+            }
+            AuditGroupDriveResult::Submitted(submitted) => Some(SubmittedWriterUnit::Audit {
+                submitted: Some(submitted),
+                completions,
+            }),
+        }
+    }
+
+    fn finish_audit_group(
+        &mut self,
+        completions: Vec<oneshot::Sender<Result<(), AdministrationAuditExecutionError>>>,
+        results: Vec<Result<(), AdministrationAuditExecutionError>>,
+    ) {
         if results.len() != completions.len() {
             self.lifecycle.stop();
             for completion in completions {
@@ -3116,7 +3532,12 @@ impl CommandWriter {
         let _receiver_may_be_dropped = completion.send(result);
     }
 
-    async fn execute_command_group(&mut self, group: Vec<CommandGroupItem>) {
+    async fn execute_command_group(
+        &mut self,
+        group: Vec<CommandGroupItem>,
+        footprint: Option<crate::command_execution::DeferredPipelineFootprint>,
+        evaluation_frontier: crate::command_execution::CommandEvaluationFrontier,
+    ) -> Option<SubmittedWriterUnit> {
         for (_, command_id, ingress, enqueued_at, _) in &group {
             self.telemetry
                 .record(CommitTelemetryEvent::StorageQueueCompleted {
@@ -3133,7 +3554,38 @@ impl CommandWriter {
                 },
             )
             .unzip();
-        let results = self.operations.drive_command_group(preparations).await;
+        match self
+            .operations
+            .drive_command_group(preparations, evaluation_frontier)
+            .await
+        {
+            CommandGroupDriveResult::Complete(results) => {
+                if evaluation_frontier
+                    == crate::command_execution::CommandEvaluationFrontier::WriterPrivate
+                {
+                    Some(SubmittedWriterUnit::Command {
+                        pending: Some(PendingCommandPublication::AfterPredecessor(results)),
+                        metadata,
+                        footprint,
+                    })
+                } else {
+                    self.finish_command_group(metadata, results);
+                    None
+                }
+            }
+            CommandGroupDriveResult::Submitted(submitted) => Some(SubmittedWriterUnit::Command {
+                pending: Some(PendingCommandPublication::Fence(submitted)),
+                metadata,
+                footprint,
+            }),
+        }
+    }
+
+    fn finish_command_group(
+        &mut self,
+        metadata: Vec<CommandGroupMetadata>,
+        results: Vec<Result<CommandExecutionResult, CommandExecutionError>>,
+    ) {
         if results.len() != metadata.len() {
             self.lifecycle.stop();
             for (_, _, _, completion) in metadata {
@@ -3141,7 +3593,7 @@ impl CommandWriter {
                     completion.send(Err(CommandExecutionError::coordinator_stopped()));
             }
             return;
-        }
+        };
         let first_commit_sequences = results
             .iter()
             .filter_map(|result| match result {

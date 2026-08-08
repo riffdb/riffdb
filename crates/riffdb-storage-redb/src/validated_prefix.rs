@@ -36,6 +36,7 @@ use riffdb_storage_api::{
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, EntityVersion, EventId};
 
 use crate::codec;
+use crate::command_authority::command_authority_head;
 use crate::error::{precommit_storage_error, storage_error, table_error, transaction_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys;
@@ -530,14 +531,9 @@ pub(crate) fn sample_window_starts(
 fn last_commit_sequence(
     transaction: &ReadTransaction,
 ) -> Result<Option<CommitSequence>, StorageError> {
-    let table = transaction.open_table(COMMITS).map_err(table_error)?;
-    let Some((key, _)) = table.last().map_err(precommit_storage_error)? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        keys::decode_application_sequence_key(key.value())
-            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?,
-    ))
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    command_authority_head(&commits, &events)
 }
 
 fn last_audit_sequence(
@@ -571,9 +567,9 @@ fn count_commits_le(
     {
         let (key, _) = entry.map_err(precommit_storage_error)?;
         *rows_walked = rows_walked.saturating_add(1);
-        let seq = keys::decode_application_sequence_key(key.value())
+        let sequence = keys::decode_application_sequence_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        if seq.get() <= s {
+        if sequence.get() <= s {
             count = count
                 .checked_add(1)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -858,6 +854,9 @@ pub(crate) fn classify_terminal_row(value: &[u8]) -> TerminalRowClass {
                 TerminalRowClass::Outcome(outcome.commit_sequence().get())
             }
             crate::codec::IdempotencyRecordV1::ExecutionFailed(_) => TerminalRowClass::Failed,
+            crate::codec::IdempotencyRecordV1::CommandLocator(locator) => {
+                TerminalRowClass::Outcome(locator.commit_sequence().get())
+            }
         },
         Err(_) => TerminalRowClass::Undecodable,
     }

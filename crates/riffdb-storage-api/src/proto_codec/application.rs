@@ -177,7 +177,7 @@ pub(super) fn index_epoch_to_proto(value: &StoredIndexEpochV1) -> wire::StoredIn
     }
 }
 
-fn index_epoch_from_proto(
+pub(super) fn index_epoch_from_proto(
     value: wire::StoredIndexGenerationV2,
 ) -> Result<StoredIndexEpochV1, DurableCodecError> {
     Ok(StoredIndexEpochV1::new(

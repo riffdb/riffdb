@@ -118,6 +118,7 @@ struct FakeSession {
     pages: Vec<Option<Vec<HistoricalSemanticEvidence>>>,
     page: usize,
     bundles: Vec<HistoricalBundleEvidence>,
+    bundle_reads: usize,
     entities: Vec<StoredEntityRecordV1>,
     unique_state: FakeUniqueState,
     fault: CursorFault,
@@ -223,6 +224,7 @@ impl StructuralEvidenceSession for FakeSession {
         contract_version: ContractVersion,
         bundle_hash: ContractBundleHash,
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
+        self.bundle_reads += 1;
         Ok(self
             .bundles
             .iter()
@@ -299,6 +301,7 @@ fn session(
         pages: pages.into_iter().map(Some).collect(),
         page: 0,
         bundles,
+        bundle_reads: 0,
         entities: Vec::new(),
         unique_state: FakeUniqueState::Vacant,
         fault,
@@ -426,6 +429,105 @@ fn initialized_but_undeployed_catalog_has_an_exact_empty_history() {
     let validation = validate_catalog_history(&mut session).expect("empty exact history");
     assert!(ready_history(&validation).active().is_none());
     assert_eq!(ready_history(&validation).evidence_count(), 1);
+}
+
+#[test]
+fn repeated_exact_binding_keys_validate_the_bundle_lookup_once() {
+    const SOURCE: &str = r#"
+contract BundleLookupCache version 1 {
+  entity Row {
+    key (id: u64)
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(SOURCE).expect("cache contract"),
+    )
+    .expect("validated");
+    let stored = stored_bundle(&bundle);
+    let entity = bundle.bundle().schema().entities().first().expect("entity");
+    let keys = (1..=3)
+        .map(|id| {
+            entity
+                .primary_key()
+                .encode_entity(&[CanonicalValue::U64(id)])
+                .expect("entity key")
+        })
+        .map(|key| HistoricalSemanticEvidence::PersistedKey(entity_key_evidence(&bundle, key)))
+        .collect();
+    let mut candidate = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            keys,
+        ],
+        vec![stored],
+        CursorFault::None,
+    );
+
+    validate_catalog_history(&mut candidate).expect("valid repeated binding history");
+    assert_eq!(
+        candidate.bundle_reads, 1,
+        "one independently validated exact lookup must serve the startup session"
+    );
+}
+
+#[test]
+fn cached_bundle_lookup_still_rejects_substituted_bytes() {
+    const SOURCE: &str = r#"
+contract BundleLookupIdentity version 1 {
+  entity Row {
+    key (id: u64)
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+"#;
+    const SUBSTITUTE: &str = r#"
+contract BundleLookupSubstitute version 1 {
+}
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(SOURCE).expect("identity contract"),
+    )
+    .expect("validated identity");
+    let substitute = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(SUBSTITUTE).expect("substitute contract"),
+    )
+    .expect("validated substitute");
+    let streamed = stored_bundle(&bundle);
+    let substituted_lookup = HistoricalBundleEvidence::new(
+        bundle.lineage().clone(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+        HistoricalBundleBytes::new(substitute.bundle().canonical_bytes().to_vec())
+            .expect("substitute bytes"),
+    );
+    let mut candidate = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(streamed)],
+            vec![active(&bundle)],
+        ],
+        vec![substituted_lookup],
+        CursorFault::None,
+    );
+
+    assert_eq!(
+        validate_catalog_history(&mut candidate)
+            .err()
+            .expect("substituted lookup bytes")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+    assert_eq!(candidate.bundle_reads, 1);
 }
 
 #[test]

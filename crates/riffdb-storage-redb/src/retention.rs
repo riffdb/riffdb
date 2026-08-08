@@ -33,12 +33,14 @@ use crate::error::{
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{
     decode_application_sequence_key, decode_event_key, encode_application_sequence_key,
+    encode_audit_by_request_key, encode_audit_key, encode_event_route_key, encode_idempotency_key,
+    encode_provenance_key,
 };
 use crate::layout::{
-    COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENT_CONSUMERS, EVENTS, HISTORY_TOMBSTONES, META,
-    META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION, META_RETENTION_HOLDS,
-    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
-    PROJECTION_FRONTIER,
+    AUDIT, AUDIT_BY_REQUEST, COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENT_CONSUMERS, EVENT_ROUTES,
+    EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, META, META_APPLICATION_SEQUENCE, META_DATABASE_ID,
+    META_HISTORY_INCARNATION, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER, PROVENANCE,
 };
 
 /// Inclusive commit sequences pruned per offline sub-range transaction.
@@ -395,7 +397,8 @@ impl RedbOfflineRetention {
             if counts.commits != range_size {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
-            delete_commit_range(&mut write, first, last)?;
+            materialize_retained_command_views(&write, first, last)?;
+            rewrite_pruned_command_segments(&mut write, first, last)?;
             delete_event_keyed_range(&mut write, EVENTS, first, last)?;
             delete_event_keyed_range(&mut write, OUTBOX, first, last)?;
             delete_event_keyed_range(&mut write, OUTBOX_STATUS, first, last)?;
@@ -461,6 +464,251 @@ impl RedbOfflineRetention {
         }
         Ok(())
     }
+}
+
+/// Re-materializes the two application views that ADR-0085 retains beyond the
+/// prunable commit body. A live capsule is their sole owner, but once retention
+/// removes that capsule the idempotency retry contract and provenance lookup
+/// must remain complete rather than becoming dangling locators.
+///
+/// The replacements happen in the same transaction and before the capsule and
+/// event rows are deleted. Any absent, substituted, or non-locator peer fails
+/// closed and leaves the complete sub-range unchanged.
+fn materialize_retained_command_views(
+    write: &WriteTransaction,
+    first: u64,
+    last: u64,
+) -> Result<(), StorageError> {
+    let commits = write.open_table(COMMITS).map_err(table_error)?;
+    let events = write.open_table(EVENTS).map_err(table_error)?;
+    let mut idempotency = write.open_table(IDEMPOTENCY).map_err(table_error)?;
+    let mut provenance = write.open_table(PROVENANCE).map_err(table_error)?;
+    let mut audit = write.open_table(AUDIT).map_err(table_error)?;
+    let mut audit_by_request = write.open_table(AUDIT_BY_REQUEST).map_err(table_error)?;
+    let mut event_routes = write.open_table(EVENT_ROUTES).map_err(table_error)?;
+    let first_key = encode_application_sequence_key(
+        CommitSequence::new(first)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+    );
+    let last_key = encode_application_sequence_key(
+        CommitSequence::new(last)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+    );
+
+    for entry in commits
+        .range::<&[u8]>((
+            Included(first_key.as_slice()),
+            Included(last_key.as_slice()),
+        ))
+        .map_err(precommit_storage_error)?
+    {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let sequence = decode_application_sequence_key(physical_key.value())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            Ok(segment) => {
+                let segment = segment.into_parts().0;
+                if segment.first_commit_sequence() != sequence {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                for command in segment.commands() {
+                    let command_sequence = command.commit_sequence();
+                    if command_sequence.get() >= first && command_sequence.get() <= last {
+                        materialize_retained_capsule_views(
+                            &mut idempotency,
+                            &mut provenance,
+                            &mut audit,
+                            &mut audit_by_request,
+                            &mut event_routes,
+                            command.base(),
+                            command.events(),
+                        )?;
+                    }
+                }
+                continue;
+            }
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+            Err(error) => return Err(crate::error::codec_error(error)),
+        }
+        let is_capsule = match riffdb_storage_api::decode_command_capsule_v2(value.value()) {
+            Ok(_) => true,
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                match riffdb_storage_api::decode_command_capsule_event_references(value.value()) {
+                    Ok(_) => true,
+                    Err(error)
+                        if error.kind()
+                            == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                    {
+                        false
+                    }
+                    Err(error) => return Err(crate::error::codec_error(error)),
+                }
+            }
+            Err(error) => return Err(crate::error::codec_error(error)),
+        };
+        if !is_capsule {
+            continue;
+        }
+        let capsule = codec::decode_command_capsule_with_event_table(value.value(), &events)?
+            .into_parts()
+            .0;
+        if capsule.commit_sequence() != sequence {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        materialize_retained_capsule_views(
+            &mut idempotency,
+            &mut provenance,
+            &mut audit,
+            &mut audit_by_request,
+            &mut event_routes,
+            &capsule,
+            &[],
+        )?;
+    }
+    Ok(())
+}
+
+fn materialize_retained_capsule_views(
+    idempotency: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    provenance: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    audit: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    audit_by_request: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    event_routes: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    capsule: &riffdb_storage_api::StoredCommandCapsuleV1,
+    events: &[riffdb_storage_api::StoredDurableEventV1],
+) -> Result<(), StorageError> {
+    let sequence = capsule.commit_sequence();
+    let identity_key = capsule
+        .outcome()
+        .identity()
+        .storage_key()
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let idempotency_key = encode_idempotency_key(&identity_key);
+    if let Some(stored_outcome) = idempotency
+        .get(idempotency_key)
+        .map_err(precommit_storage_error)?
+    {
+        match riffdb_storage_api::decode_command_locator_v1(stored_outcome.value()) {
+            Ok(locator) if locator.value().commit_sequence() == sequence => {}
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                let outcome = riffdb_storage_api::decode_stored_outcome_v1(stored_outcome.value());
+                if !matches!(outcome, Ok(ref outcome) if outcome.value() == capsule.outcome()) {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            }
+            Ok(_) | Err(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
+        }
+    }
+    let encoded_outcome = codec::encode_stored_outcome_v1(capsule.outcome())?;
+    let _ = idempotency
+        .insert(idempotency_key, encoded_outcome.as_bytes())
+        .map_err(precommit_storage_error)?;
+
+    let provenance_key = encode_provenance_key(capsule.provenance().provenance_id());
+    if let Some(stored_provenance) = provenance
+        .get(provenance_key.as_slice())
+        .map_err(precommit_storage_error)?
+    {
+        match riffdb_storage_api::decode_command_locator_v1(stored_provenance.value()) {
+            Ok(locator) if locator.value().commit_sequence() == sequence => {}
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                let retained =
+                    riffdb_storage_api::decode_provenance_record_v1(stored_provenance.value())
+                        .map_err(crate::error::codec_error)?;
+                if retained.value() != capsule.provenance() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            }
+            Ok(_) | Err(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
+        }
+    }
+    let encoded_provenance = codec::encode_provenance_record_v1(capsule.provenance())?;
+    let _ = provenance
+        .insert(provenance_key.as_slice(), encoded_provenance.as_bytes())
+        .map_err(precommit_storage_error)?;
+
+    for (member, record) in [
+        (
+            riffdb_storage_api::StoredCommandAuditMemberV1::Started,
+            capsule.started_audit(),
+        ),
+        (
+            riffdb_storage_api::StoredCommandAuditMemberV1::Terminal,
+            capsule.terminal_audit(),
+        ),
+    ] {
+        let audit_key = encode_audit_key(record.administration_sequence());
+        if let Some(stored_audit) = audit
+            .get(audit_key.as_slice())
+            .map_err(precommit_storage_error)?
+        {
+            match riffdb_storage_api::decode_command_audit_locator_v1(stored_audit.value()) {
+                Ok(locator)
+                    if locator.value().commit_sequence() == sequence
+                        && locator.value().member() == member => {}
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    let retained =
+                        riffdb_storage_api::decode_service_audit_record(stored_audit.value())
+                            .map_err(crate::error::codec_error)?;
+                    if retained.value() != record {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                }
+                Ok(_) | Err(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
+            }
+        }
+        let encoded_audit = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Service(record.clone()),
+        )?;
+        let _ = audit
+            .insert(audit_key.as_slice(), encoded_audit.as_bytes())
+            .map_err(precommit_storage_error)?;
+        let request_key =
+            encode_audit_by_request_key(record.request_id(), record.administration_sequence());
+        let request_row = riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+            record.request_id(),
+            record.administration_sequence(),
+        );
+        let encoded_request = codec::encode_service_audit_request_index_v1(request_row)?;
+        if let Some(prior) = audit_by_request
+            .insert(request_key.as_slice(), encoded_request.as_bytes())
+            .map_err(precommit_storage_error)?
+            && prior.value() != encoded_request.as_bytes()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    for event in events {
+        let route = riffdb_storage_api::StoredEventRouteV1::new(
+            event.event_id(),
+            event.event_type_id(),
+            event.event_hash(),
+        );
+        let key = encode_event_route_key(capsule.commit().partition_hash(), event.event_id());
+        let encoded = codec::encode_event_route_v1(route)?;
+        if let Some(prior) = event_routes
+            .insert(key.as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?
+            && prior.value() != encoded.as_bytes()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Default)]
@@ -668,11 +916,38 @@ fn undelivered_outbox_low_water(
 ) -> Result<Option<u64>, StorageError> {
     let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
     let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let mut event_ids = BTreeSet::new();
+    for entry in commits.iter().map_err(precommit_storage_error)? {
+        let (_, value) = entry.map_err(precommit_storage_error)?;
+        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            Ok(segment) => {
+                for command in segment.value().commands() {
+                    for event in command.events() {
+                        if !event_ids.insert(event.event_id()) {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                    }
+                }
+            }
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+            Err(error) => return Err(crate::error::codec_error(error)),
+        }
+    }
     for entry in intents.iter().map_err(precommit_storage_error)? {
         let (key, _) = entry.map_err(precommit_storage_error)?;
         let event_id = decode_event_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let delivered = match statuses.get(key.value()).map_err(precommit_storage_error)? {
+        event_ids.insert(event_id);
+    }
+    for event_id in event_ids {
+        let key = event_id.to_be_bytes();
+        let delivered = match statuses
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+        {
             None => false,
             Some(value) => {
                 let status: StoredOutboxStatusV1 = codec::decode_outbox_status_v1(value.value())
@@ -728,33 +1003,86 @@ fn digest_and_count_range(
     preimage.extend_from_slice(&first.to_be_bytes());
     preimage.extend_from_slice(&last.to_be_bytes());
     let mut counts = RangeCounts::default();
+    let mut segment_event_ids = BTreeSet::new();
 
     {
         let commits = write.open_table(COMMITS).map_err(table_error)?;
-        let first_key = encode_application_sequence_key(
-            CommitSequence::new(first)
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-        );
-        let last_key = encode_application_sequence_key(
-            CommitSequence::new(last)
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-        );
-        for entry in commits
-            .range::<&[u8]>((
-                Included(first_key.as_slice()),
-                Included(last_key.as_slice()),
-            ))
-            .map_err(precommit_storage_error)?
-        {
+        for entry in commits.iter().map_err(precommit_storage_error)? {
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            preimage.extend_from_slice(b"commits\0");
-            preimage.extend_from_slice(key.value());
-            preimage.extend_from_slice(&(value.value().len() as u64).to_be_bytes());
-            preimage.extend_from_slice(value.value());
-            counts.commits = counts
-                .commits
-                .checked_add(1)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let physical_sequence = decode_application_sequence_key(key.value())
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+                Ok(segment) => {
+                    let segment = segment.into_parts().0;
+                    if segment.first_commit_sequence() != physical_sequence {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                    for command in segment.commands() {
+                        let sequence = command.commit_sequence().get();
+                        if sequence < first || sequence > last {
+                            continue;
+                        }
+                        let encoded = riffdb_storage_api::encode_command_capsule_v2(command)
+                            .map_err(crate::error::codec_error)?;
+                        append_tombstone_member(
+                            &mut preimage,
+                            b"commits",
+                            &command.commit_sequence().to_be_bytes(),
+                            encoded.as_bytes(),
+                        )?;
+                        counts.commits = counts
+                            .commits
+                            .checked_add(1)
+                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                        for event in command.events() {
+                            if !segment_event_ids.insert(event.event_id()) {
+                                return Err(storage_error(StorageErrorKind::CorruptData));
+                            }
+                            let event_bytes = riffdb_storage_api::encode_durable_event_v1(event)
+                                .map_err(crate::error::codec_error)?;
+                            append_tombstone_member(
+                                &mut preimage,
+                                b"events",
+                                &event.event_id().to_be_bytes(),
+                                event_bytes.as_bytes(),
+                            )?;
+                            let intent =
+                                riffdb_storage_api::StoredOutboxIntentV1::new(event.clone());
+                            let outbox_bytes = riffdb_storage_api::encode_outbox_intent_v1(&intent)
+                                .map_err(crate::error::codec_error)?;
+                            append_tombstone_member(
+                                &mut preimage,
+                                b"outbox",
+                                &event.event_id().to_be_bytes(),
+                                outbox_bytes.as_bytes(),
+                            )?;
+                            counts.events = counts
+                                .events
+                                .checked_add(1)
+                                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                            counts.outbox = counts
+                                .outbox
+                                .checked_add(1)
+                                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                        }
+                    }
+                }
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    let sequence = physical_sequence.get();
+                    if sequence < first || sequence > last {
+                        continue;
+                    }
+                    append_tombstone_member(&mut preimage, b"commits", key.value(), value.value())?;
+                    counts.commits = counts
+                        .commits
+                        .checked_add(1)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                }
+                Err(error) => return Err(crate::error::codec_error(error)),
+            }
         }
     }
 
@@ -770,11 +1098,12 @@ fn digest_and_count_range(
             .map_err(precommit_storage_error)?
         {
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            preimage.extend_from_slice(label.as_bytes());
-            preimage.extend_from_slice(b"\0");
-            preimage.extend_from_slice(key.value());
-            preimage.extend_from_slice(&(value.value().len() as u64).to_be_bytes());
-            preimage.extend_from_slice(value.value());
+            let event_id = decode_event_key(key.value())
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            if label != "outbox_status" && segment_event_ids.contains(&event_id) {
+                continue;
+            }
+            append_tombstone_member(&mut preimage, label.as_bytes(), key.value(), value.value())?;
             *counter = counter
                 .checked_add(1)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -788,35 +1117,122 @@ fn digest_and_count_range(
     ))
 }
 
-fn delete_commit_range(
+fn append_tombstone_member(
+    preimage: &mut Vec<u8>,
+    label: &[u8],
+    key: &[u8],
+    value: &[u8],
+) -> Result<(), StorageError> {
+    preimage.extend_from_slice(label);
+    preimage.extend_from_slice(b"\0");
+    preimage.extend_from_slice(key);
+    preimage.extend_from_slice(
+        &u64::try_from(value.len())
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?
+            .to_be_bytes(),
+    );
+    preimage.extend_from_slice(value);
+    Ok(())
+}
+
+fn rewrite_pruned_command_segments(
     write: &mut WriteTransaction,
     first: u64,
     last: u64,
 ) -> Result<(), StorageError> {
     let mut table = write.open_table(COMMITS).map_err(table_error)?;
-    let first_key = encode_application_sequence_key(
-        CommitSequence::new(first)
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-    );
-    let last_key = encode_application_sequence_key(
-        CommitSequence::new(last)
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-    );
-    let mut keys = Vec::new();
-    for entry in table
-        .range::<&[u8]>((
-            Included(first_key.as_slice()),
-            Included(last_key.as_slice()),
-        ))
-        .map_err(precommit_storage_error)?
-    {
-        let (key, _) = entry.map_err(precommit_storage_error)?;
-        keys.push(key.value().to_vec());
+    let mut deletes = Vec::new();
+    let mut replacements = Vec::new();
+    let mut rewritten_predecessor = None;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let physical_sequence = decode_application_sequence_key(key.value())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            Ok(segment) => {
+                let segment = segment.into_parts().0;
+                if segment.first_commit_sequence() != physical_sequence {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                if segment.last_commit_sequence().get() < first {
+                    continue;
+                }
+                if segment.last_commit_sequence().get() <= last {
+                    deletes.push(key.value().to_vec());
+                    continue;
+                }
+                let commands = if segment.first_commit_sequence().get() <= last {
+                    segment
+                        .commands()
+                        .iter()
+                        .filter(|command| command.commit_sequence().get() > last)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else if rewritten_predecessor.is_some() {
+                    segment.commands().to_vec()
+                } else {
+                    continue;
+                };
+                let predecessor =
+                    rewritten_predecessor.or_else(|| segment.predecessor_segment_digest());
+                let first_retained = commands
+                    .first()
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+                    .commit_sequence();
+                let manifest =
+                    crate::application::build_command_segment_manifest(&commands, first_retained)?;
+                let draft = riffdb_storage_api::StoredCommandSegmentV1::new(
+                    segment.database_id(),
+                    segment.history_incarnation(),
+                    predecessor,
+                    commands.clone(),
+                    manifest.clone(),
+                    riffdb_storage_api::CommandSegmentDigestV1::from_bytes([0; 32]),
+                )
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let digest = riffdb_storage_api::command_segment_digest_v1(&draft);
+                let rewritten = riffdb_storage_api::StoredCommandSegmentV1::new(
+                    segment.database_id(),
+                    segment.history_incarnation(),
+                    predecessor,
+                    commands,
+                    manifest,
+                    digest,
+                )
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let encoded = riffdb_storage_api::encode_command_segment_v1(&rewritten)
+                    .map_err(crate::error::codec_error)?;
+                deletes.push(key.value().to_vec());
+                replacements.push((
+                    encode_application_sequence_key(first_retained).to_vec(),
+                    encoded.into_bytes(),
+                ));
+                rewritten_predecessor = Some(digest);
+            }
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                if physical_sequence.get() >= first && physical_sequence.get() <= last {
+                    deletes.push(key.value().to_vec());
+                }
+            }
+            Err(error) => return Err(crate::error::codec_error(error)),
+        }
     }
-    for key in keys {
+    for key in deletes {
         let _ = table
             .remove(key.as_slice())
             .map_err(precommit_storage_error)?;
+    }
+    for (key, value) in replacements {
+        if table
+            .insert(key.as_slice(), value.as_slice())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
     }
     Ok(())
 }

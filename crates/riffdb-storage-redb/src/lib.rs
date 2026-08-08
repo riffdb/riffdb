@@ -9,6 +9,7 @@ mod backup;
 #[doc(hidden)]
 pub mod benchmark_support;
 mod codec;
+mod command_authority;
 mod consumer;
 mod derived;
 #[cfg(feature = "test-fixtures")]

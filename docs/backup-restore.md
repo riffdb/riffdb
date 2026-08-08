@@ -88,6 +88,32 @@ Publication occurs only after complete artifact checksum, storage structure,
 catalog, allocator, capability, audit, and active-contract validation. RiffDB
 then performs a fresh validation of the published target before readiness.
 
+### Closed backup inventory
+
+New backups contain exactly three regular files:
+
+```text
+database.redb
+journal.riffextent
+manifest.riffdb
+```
+
+The manifest authenticates the redb checkpoint and the complete fixed-size
+durability-journal extent as one unit. Restore checks both artifact checksums,
+the journal database identity, its selected generation, and an empty suffix at
+the manifest checkpoint before replacing the target. Unknown files, a missing
+extent, stale or mixed identities, and checksum damage fail closed. Historical
+pre-extent backups with the former two-file inventory remain readable; restore
+creates a fully zero-filled empty extent before publishing them.
+
+Extent creation reserves and physically zero-fills its fixed capacity before
+the database becomes ready. Insufficient space therefore fails during startup,
+backup staging, or restore staging—not after a command has been accepted.
+
+The journal format is local recovery media. Replication and changelog records
+continue to derive from published durable frontiers and do not copy journal
+bytes.
+
 ## Interruption and Recovery
 
 Receipts live beneath:

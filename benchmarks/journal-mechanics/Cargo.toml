@@ -1,0 +1,21 @@
+[package]
+name = "riffdb-journal-mechanics"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+libc = { version = "0.2", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+correctness = { level = "warn", priority = -1 }
+

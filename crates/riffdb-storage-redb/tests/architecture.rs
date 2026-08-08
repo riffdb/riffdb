@@ -219,8 +219,8 @@ fn terminal_staging_reuses_the_same_transaction_current_admission_proof() {
         .split_once("impl CommandCandidateStateRead")
         .expect("candidate recheck body")
         .0;
-    assert!(candidate.contains("read_admission("));
-    assert!(candidate.contains("matching_admissions("));
+    assert!(candidate.contains("read_candidate_admission("));
+    assert!(candidate.contains("matching_candidate_admissions("));
 }
 
 #[test]
@@ -276,14 +276,16 @@ fn startup_session_holds_at_most_one_structural_read_transaction() {
     assert_eq!(
         session.matches("ReadTransaction").count(),
         1,
-        "session body must name ReadTransaction exactly once"
+        "session body must own at most one snapshot pin"
     );
-    assert!(session.contains("structural_read: Option<ReadTransaction>"));
+    assert!(session.contains("validation_read: Option<ReadTransaction>"));
     assert!(!session.contains("transaction: ReadTransaction"));
     assert!(session.contains("durable_commit_epoch: u64"));
-    // ExactEnd path and final-page release both drop the pin.
+    // The completed session drops the pin before its final continuity read.
     assert!(startup.contains("self.structural_finished = true"));
-    assert!(startup.contains("self.structural_read = None"));
+    assert!(
+        startup.contains("self.historical_tables = None;\n        self.validation_read = None")
+    );
     assert!(startup.contains("StructuralEvidencePage::ExactEnd"));
     assert!(startup.contains("fn open_snapshot_read(&self) -> Result<ReadTransaction"));
 }
@@ -315,7 +317,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     }
 
     let store = without_whitespace(&production_source(source_dir.join("store.rs")));
-    assert_eq!(store.matches("transaction.commit()").count(), 2);
+    assert_eq!(store.matches("transaction.commit()").count(), 3);
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
@@ -326,7 +328,15 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .split_once("fninvalidate_transient_indexes(")
         .expect("deferred commit path end")
         .0;
-    assert_eq!(deferred.matches("transaction.commit()").count(), 1);
+    assert_eq!(deferred.matches("transaction.commit()").count(), 2);
+    let service_audit = store
+        .split_once("fnsubmit_service_audit(")
+        .expect("closed deferred service-audit path")
+        .1
+        .split_once("fninvalidate_transient_indexes(")
+        .expect("deferred service-audit path end")
+        .0;
+    assert_eq!(service_audit.matches("transaction.commit()").count(), 1);
     assert!(store.contains("set_durability(Durability::None)"));
 
     let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
@@ -346,7 +356,7 @@ fn sealed_command_audit_evidence_is_confined_to_post_staging_application_commits
         .expect("command stage end")
         .0;
     let physical_insert = stage
-        .find("apply_record_set(core.access.transaction()?,&records,&encoded)?")
+        .find("apply_record_set(&mutcore,&records,encoded,retain_journal)?")
         .expect("complete graph physical insert");
     let sealed_evidence = stage
         .find("core.staged.push(records.into_staged_evidence())")
@@ -391,12 +401,23 @@ fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
         .split_once("fnvalidate_administration_tail(")
         .expect("tail validator")
         .1
-        .split_once("fnvalidate_administration_stream_readonly(")
+        .split_once("fnvalidate_administration_tail_readonly(")
         .expect("tail validator end")
         .0;
-    assert!(tail.contains(".len()"));
     assert!(tail.contains(".last()"));
+    assert!(tail.contains("access.command_audit_record(expected_last)"));
     assert!(!tail.contains(".iter()"));
+
+    let readonly_tail = administration
+        .split_once("fnvalidate_administration_tail_readonly(")
+        .expect("read-only tail validator")
+        .1
+        .split_once("fnvalidate_administration_stream_readonly(")
+        .expect("read-only tail validator end")
+        .0;
+    assert!(readonly_tail.contains(".last()"));
+    assert!(readonly_tail.contains("ports.indexed_command_audit(expected_last)"));
+    assert!(!readonly_tail.contains(".iter()"));
 
     let full_read = administration
         .split_once("fnvalidate_administration_stream_readonly(")
@@ -405,7 +426,8 @@ fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
         .split_once("fnallocate_sequences(")
         .expect("read validator end")
         .0;
-    assert!(full_read.contains("validate_administration_table(&table,allocator)"));
+    assert!(full_read.contains("read_administration_record_readonly(ports,transaction,current)"));
+    assert!(full_read.contains("current.checked_next()"));
 
     let append = administration
         .split_once("implServiceAuditAppendRepositoryforRedbOperationalPorts")
@@ -414,8 +436,40 @@ fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
         .split_once("fnprincipal_matches_observation(")
         .expect("service audit repository end")
         .0;
-    assert!(append.contains("validate_administration_tail(transaction)?"));
+    assert!(append.contains("validate_administration_tail(&access)?"));
     assert!(!append.contains("validate_administration_table"));
+}
+
+#[test]
+fn pipelined_writers_resolve_command_audits_from_the_unpublished_exact_index() {
+    let source_dir = crate_root().join("src");
+    let store = without_whitespace(&production_source(source_dir.join("store.rs")));
+    let lookup = store
+        .split_once("pub(crate)fncommand_audit_record(")
+        .expect("command audit lookup")
+        .1
+        .split_once("pub(crate)constfnretains_journal_mutations(")
+        .expect("command audit lookup end")
+        .0;
+    assert!(lookup.contains("unpublished_command_indexes"));
+    assert!(lookup.contains(".command_audit_record(sequence)"));
+
+    let administration =
+        without_whitespace(&production_source(source_dir.join("administration.rs")));
+    let tail = administration
+        .split_once("fnvalidate_administration_tail(")
+        .expect("tail validator")
+        .1
+        .split_once("fncommand_audit_at_transaction_tail")
+        .expect("tail fallback")
+        .0;
+    let exact = tail
+        .find("access.command_audit_record(expected_last)?")
+        .expect("exact unpublished-aware audit lookup");
+    let fallback = tail
+        .find("command_audit_at_transaction_tail(&commits,expected_last)?")
+        .expect("bounded dormant fallback");
+    assert!(exact < fallback);
 }
 
 #[test]

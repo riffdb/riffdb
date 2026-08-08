@@ -376,6 +376,27 @@ impl StoredServiceAuditRecordV1 {
         }
     }
 
+    /// Lowers an owned checked append intent after sequence assignment without
+    /// cloning its bounded principal, targets, or approval identity.
+    #[must_use]
+    pub fn from_owned_intent(
+        administration_sequence: AdministrationSequence,
+        intent: ServiceAuditAppendIntentV1,
+    ) -> Self {
+        Self {
+            administration_sequence,
+            request_id: intent.request_id,
+            timestamp: intent.timestamp,
+            operation: intent.operation,
+            phase: intent.phase,
+            principal: intent.principal,
+            ingress: intent.ingress,
+            targets: intent.targets,
+            approval_id: intent.approval_id,
+            link: intent.link,
+        }
+    }
+
     /// Lowers the principal-less start inside the typed bootstrap transition.
     ///
     /// The start must immediately precede the linked transition in the shared
@@ -503,6 +524,27 @@ pub enum ServiceAuditAppendResult {
     /// The request already has a start, standalone terminal, or terminal phase
     /// inconsistent with this attempted transition; no sequence was allocated.
     PhaseConflict,
+}
+
+/// Submitted standalone service-audit durability work.
+///
+/// The storage implementation retains the unpublished successor and all
+/// results until the covering writer-journal fence resolves.
+pub trait DeferredServiceAuditFence: Send {
+    /// Polls without blocking. `None` means the durability fence is pending.
+    fn try_wait(&mut self) -> Result<Option<Vec<ServiceAuditAppendResult>>, StorageError>;
+
+    /// Waits for the covering fence, publishes the successor, and returns the
+    /// independent FIFO append results.
+    fn wait(self: Box<Self>) -> Result<Vec<ServiceAuditAppendResult>, StorageError>;
+}
+
+/// Closed result of preparing a standalone service-audit group.
+pub enum ServiceAuditGroupAppend {
+    /// The repository used its ordinary direct durable path.
+    Complete(Vec<ServiceAuditAppendResult>),
+    /// The repository submitted a writer-journal frame and withheld results.
+    Submitted(Box<dyn DeferredServiceAuditFence>),
 }
 
 /// One item in the shared administration sequence space.
@@ -657,6 +699,20 @@ pub trait ServiceAuditAppendRepository {
             .iter()
             .map(|intent| self.append_service_audit(intent))
             .collect()
+    }
+
+    /// Applies a bounded FIFO group and, when supported, submits its complete
+    /// validated mutations to the standard-profile writer journal.
+    ///
+    /// Conformance repositories retain the direct implementation. Production
+    /// redb overrides this only for standalone service-audit groups; other
+    /// administration operations remain hard barriers.
+    fn submit_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<ServiceAuditGroupAppend, StorageError> {
+        self.append_service_audit_group(intents)
+            .map(ServiceAuditGroupAppend::Complete)
     }
 
     /// Appends one Started+terminal pair in a single durable transition.
@@ -974,6 +1030,10 @@ mod tests {
         .expect("normal audit intent");
         let stored =
             StoredServiceAuditRecordV1::from_intent(AdministrationSequence::first(), &intent);
+        let owned = StoredServiceAuditRecordV1::from_owned_intent(
+            AdministrationSequence::first(),
+            intent.clone(),
+        );
         let reconstructed = StoredServiceAuditRecordV1::from_stored_parts(
             stored.administration_sequence(),
             stored.request_id(),
@@ -988,6 +1048,7 @@ mod tests {
         )
         .expect("stored parts remain valid");
 
+        assert_eq!(owned, stored);
         assert_eq!(reconstructed, stored);
     }
 

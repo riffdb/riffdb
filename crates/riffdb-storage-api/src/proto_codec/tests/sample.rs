@@ -132,10 +132,21 @@ pub(super) fn identity() -> crate::IdempotencyIdentity {
 }
 
 pub(super) fn pending() -> StoredPendingAdmissionV1 {
-    StoredPendingAdmissionV1::new(
+    pending_for_request(request_id())
+}
+
+fn pending_for_request(request_id: RequestId) -> StoredPendingAdmissionV1 {
+    pending_for_request_with_causation(request_id, None)
+}
+
+fn pending_for_request_with_causation(
+    request_id: RequestId,
+    causation: Option<crate::StoredCommandCausationV1>,
+) -> StoredPendingAdmissionV1 {
+    StoredPendingAdmissionV1::new_with_causation(
         identity(),
         CanonicalInputHash::from_bytes([0x32; 32]),
-        request_id(),
+        request_id,
         plan(),
         LogicalTime::new(Timestamp::new(42, 7).expect("logical time")),
         actor(),
@@ -147,11 +158,24 @@ pub(super) fn pending() -> StoredPendingAdmissionV1 {
             Some(ApprovalId::new("approval-a").expect("approval")),
         )
         .expect("claims"),
+        causation,
     )
     .expect("pending")
 }
 
 pub(super) fn commit_intent() -> CommitIntent {
+    commit_intent_for(request_id(), provenance_id())
+}
+
+fn commit_intent_for(request_id: RequestId, provenance_id: ProvenanceId) -> CommitIntent {
+    commit_intent_for_causation(request_id, provenance_id, None)
+}
+
+fn commit_intent_for_causation(
+    request_id: RequestId,
+    provenance_id: ProvenanceId,
+    causation: Option<crate::StoredCommandCausationV1>,
+) -> CommitIntent {
     let plan = plan();
     let target = entity_target();
     let snapshot_request =
@@ -185,15 +209,32 @@ pub(super) fn commit_intent() -> CommitIntent {
         EvaluationBudget::v1(),
     )
     .expect("evaluated command");
-    let pending = pending();
+    let pending = pending_for_request_with_causation(request_id, causation);
     let partition_hash = hash_partition_key(pending.partition_key().as_bytes());
     let context = PreEvaluationCommitContext::new(pending.clone(), partition_hash, Vec::new())
         .expect("pre-evaluation context");
-    CommitIntent::new(context, evaluated, provenance_id()).expect("commit intent")
+    CommitIntent::new(context, evaluated, provenance_id).expect("commit intent")
 }
 
 pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
-    let intent = commit_intent();
+    atomic_record_set_at(CommitSequence::first(), request_id(), provenance_id())
+}
+
+pub(super) fn atomic_record_set_at(
+    sequence: CommitSequence,
+    request_id: RequestId,
+    provenance_id: ProvenanceId,
+) -> AtomicCommandRecordSet {
+    atomic_record_set_at_with_causation(sequence, request_id, provenance_id, None)
+}
+
+pub(super) fn atomic_record_set_at_with_causation(
+    sequence: CommitSequence,
+    request_id: RequestId,
+    provenance_id: ProvenanceId,
+    causation: Option<crate::StoredCommandCausationV1>,
+) -> AtomicCommandRecordSet {
+    let intent = commit_intent_for_causation(request_id, provenance_id, causation);
     let plan = intent.evaluated().plan().clone();
     let target = intent.evaluated().mutations()[0]
         .post_image()
@@ -214,7 +255,6 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         CommittedEntityMutationV1::new(ExpectedEntityState::Absent, entity)
             .expect("committed mutation"),
     ];
-    let sequence = CommitSequence::first();
     let event_id = EventId::new(sequence, 0);
     let event_hash =
         crate::derive_event_hash_v1(event_id, EventTypeId::first(), &canonical_record(0x43))
@@ -229,10 +269,10 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         .expect("durable event"),
     ];
     let event_ids = vec![event_id];
-    let stored_outcome = StoredOutcomeV1::new(
+    let stored_outcome = StoredOutcomeV1::new_with_causation(
         identity(),
         sequence,
-        request_id(),
+        request_id,
         plan.clone(),
         CanonicalInputHash::from_bytes([0x32; 32]),
         actor(),
@@ -242,19 +282,20 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         Vec::new(),
         outcome.clone(),
         pending.provenance_claims().clone(),
-        provenance_id(),
+        provenance_id,
         DurabilityMode::Memory,
+        causation,
     )
     .expect("stored outcome");
     let affected = mutations
         .iter()
         .map(|value| AffectedEntityV1::from_record(value.post_image()))
         .collect();
-    let provenance = StoredProvenanceRecordV1::new(
-        provenance_id(),
+    let provenance = StoredProvenanceRecordV1::new_with_causation(
+        provenance_id,
         sequence,
         identity(),
-        request_id(),
+        request_id,
         plan.clone(),
         CanonicalInputHash::from_bytes([0x32; 32]),
         actor(),
@@ -265,6 +306,7 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         affected,
         event_ids.clone(),
         pending.provenance_claims().clone(),
+        causation,
     )
     .expect("provenance");
     let read_dependencies =
@@ -272,7 +314,7 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
             .expect("stored read dependencies");
     let commit = StoredCommitRecordV1::new(
         sequence,
-        request_id(),
+        request_id,
         plan,
         CanonicalInputHash::from_bytes([0x32; 32]),
         actor(),
@@ -287,7 +329,7 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
             .expect("entity references"),
         events.clone(),
         outcome,
-        provenance_id(),
+        provenance_id,
         event_ids,
         DurabilityMode::Memory,
     )
