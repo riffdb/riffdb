@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
-use std::ops::Bound::{Excluded, Included};
 use std::sync::Arc;
 
 use redb::ReadableTable;
@@ -60,8 +59,8 @@ use crate::keys::{
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
-    INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION,
-    OUTBOX, PROVENANCE, SECONDARY_INDEXES,
+    INDEX_EPOCHS, META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION, OUTBOX,
+    PROVENANCE,
 };
 use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbWriteAccess};
 use crate::transient::TransientIndexDelta;
@@ -94,7 +93,7 @@ impl BatchCore {
     }
 
     fn open_with_access(access: RedbWriteAccess) -> Result<Self, StorageError> {
-        let allocator = read_application_allocator(access.transaction()?)?;
+        let allocator = read_application_allocator(&access)?;
         Ok(Self {
             access,
             allocator,
@@ -162,26 +161,16 @@ fn capsulate_command_rows(
         terminals.push(terminal);
     }
     let access = &core.access;
-    let transaction = access.transaction()?;
     let segment = build_command_segment(access, capsules)?;
     let commit_key = encode_application_sequence_key(segment.first_commit_sequence());
     let (segment, encoded_segment) =
         riffdb_storage_api::seal_and_encode_command_segment_v1(segment).map_err(codec_error)?;
-    let mut commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    if commits
-        .insert(commit_key.as_slice(), encoded_segment.as_bytes())
-        .map_err(precommit_storage_error)?
-        .is_some()
-    {
+    if !access.put_command_segment_value(
+        commit_key.to_vec(),
+        encoded_segment.into_bytes(),
+        segment.commands().len(),
+    )? {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
-    }
-    drop(commits);
-    if access.retains_journal_mutations() {
-        access.record_command_segment_journal_mutation(
-            commit_key.to_vec(),
-            encoded_segment.into_bytes(),
-            segment.commands().len(),
-        )?;
     }
     Ok((segment, terminals))
 }
@@ -190,30 +179,23 @@ fn build_command_segment(
     access: &RedbWriteAccess,
     capsules: Vec<StoredCommandCapsuleV2>,
 ) -> Result<StoredCommandSegmentV1, StorageError> {
-    let transaction = access.transaction()?;
     let first = capsules
         .first()
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
         .commit_sequence();
-    let meta = transaction.open_table(META).map_err(table_error)?;
-    let database_id_row = meta
-        .get(META_DATABASE_ID)
-        .map_err(precommit_storage_error)?
+    let database_id_row = access
+        .read_command_value(JournalTable::Meta, META_DATABASE_ID.as_bytes())?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    let database_id = *decode_database_identity_v1(database_id_row.value())?.value();
-    drop(database_id_row);
-    let history_incarnation_row = meta
-        .get(META_HISTORY_INCARNATION)
-        .map_err(precommit_storage_error)?
+    let database_id = *decode_database_identity_v1(&database_id_row)?.value();
+    let history_incarnation_row = access
+        .read_command_value(JournalTable::Meta, META_HISTORY_INCARNATION.as_bytes())?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    let history_incarnation =
-        *decode_history_incarnation_v1(history_incarnation_row.value())?.value();
-    drop(history_incarnation_row);
-    drop(meta);
+    let history_incarnation = *decode_history_incarnation_v1(&history_incarnation_row)?.value();
 
     let predecessor = if let Some(tail) = access.command_segment_tail()? {
         tail.map(|(_, digest)| digest)
     } else {
+        let transaction = access.transaction()?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
         match commits.last().map_err(precommit_storage_error)? {
             None => None,
@@ -771,12 +753,6 @@ fn read_transaction_local_snapshot(
     core: &BatchCore,
     request: SnapshotRequest,
 ) -> Result<ReadSnapshot, StorageError> {
-    let transaction = core.access.transaction()?;
-    let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-    let index_entries = transaction
-        .open_table(SECONDARY_INDEXES)
-        .map_err(table_error)?;
-    let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     let observed_through = core
         .staged
         .last()
@@ -797,12 +773,12 @@ fn read_transaction_local_snapshot(
 
     for target in request.binding_targets() {
         snapshot
-            .push_binding(entity_observation_from_table(&entities, target)?)
+            .push_binding(entity_observation_from_access(&core.access, target)?)
             .map_err(materialization_value)?;
     }
     for target in request.root_validation_targets() {
         snapshot
-            .push_root_validation(entity_observation_from_table(&entities, target)?)
+            .push_root_validation(entity_observation_from_access(&core.access, target)?)
             .map_err(materialization_value)?;
     }
     for target in request.range_targets() {
@@ -811,24 +787,25 @@ fn read_transaction_local_snapshot(
             .get(target.generation_target())
             .copied()
             .map_or_else(
-                || epoch_position_from_table(&index_epochs, target.generation_target()),
+                || epoch_position_from_access(&core.access, target.generation_target()),
                 Ok,
             )?;
         let mut range = snapshot
             .begin_range(target.clone(), epoch)
             .map_err(materialization_value)?;
         let prefix = target.prefix().as_bytes();
-        let mut entries = index_entries
-            .range(prefix..)
-            .map_err(precommit_storage_error)?;
-        for entry in &mut entries {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            if !physical_key.value().starts_with(prefix) {
-                break;
-            }
-            let key = decode_index_entry_key(physical_key.value())
+        let upper = exclusive_prefix_end(prefix)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let entries = core.access.read_command_range(
+            JournalTable::SecondaryIndexes,
+            prefix,
+            upper.as_slice(),
+            riffdb_storage_api::MAX_INDEX_SCAN_INSPECTED_ENTRIES,
+        )?;
+        for (physical_key, encoded) in entries {
+            let key = decode_index_entry_key(&physical_key)
                 .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-            let decoded = decode_index_entry_v2(encoded.value())?;
+            let decoded = decode_index_entry_v2(&encoded)?;
             if decoded.value().key() != &key {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
@@ -1136,7 +1113,7 @@ impl RedbExecutionFailureAwaitingDecision {
         }
         let terminal = self.request.terminal_record();
         let transaction = self.access.transaction()?;
-        if !plan_bundle_exists(transaction, self.request.expected_pending().plan())? {
+        if !plan_bundle_exists(&self.access, self.request.expected_pending().plan())? {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         match self.request.admission_expectation() {
@@ -1477,10 +1454,7 @@ macro_rules! impl_candidate_chain {
                 let encoded =
                     encode_capsule_command_record_set_v1(&records).map_err(codec_error)?;
                 let mut core = self.prior.core;
-                let retain_journal = core.access.retains_journal_mutations();
-                let journal_mutations =
-                    apply_record_set(&mut core, &records, encoded, retain_journal)?;
-                core.access.record_journal_mutations(journal_mutations)?;
+                apply_record_set(&mut core, &records, encoded)?;
                 core.metrics = Some(metrics_after(core.metrics, &records)?);
                 core.capsule_extensions
                     .push(records.index_epochs().to_vec());
@@ -1527,18 +1501,15 @@ fn apply_record_set(
     core: &mut BatchCore,
     records: &AtomicCommandRecordSet,
     encoded: riffdb_storage_api::EncodedCapsuleCommandRecordSetV1,
-    retain_journal: bool,
-) -> Result<Vec<JournalMutation>, StorageError> {
+) -> Result<(), StorageError> {
     let BatchCore {
         access,
         entity_observations,
         index_generations,
         ..
     } = core;
-    let transaction = access.transaction()?;
     let identity_key = identity_key(records.expected_pending().identity())?;
     let (entities, index_entries, index_epochs) = encoded.into_parts();
-    let mut journal = retain_journal.then(Vec::new);
     // `RedbCandidateAdmission::recheck_admission` established this exact
     // expectation earlier in the same exclusive write transaction. Every
     // subsequent state is consuming and backend-private, so no path can stage
@@ -1547,14 +1518,8 @@ fn apply_record_set(
     // authoritative duplicate/vacancy assertion. Re-reading and decoding both
     // idempotency tables here supplied no newer evidence.
 
-    apply_entities(
-        transaction,
-        records,
-        entities,
-        journal.as_mut(),
-        entity_observations,
-    )?;
-    apply_index_entries(transaction, records, index_entries, journal.as_mut())?;
+    apply_entities(access, records, entities, entity_observations)?;
+    apply_index_entries(access, records, index_entries)?;
     apply_index_epochs(
         records,
         index_epochs,
@@ -1573,27 +1538,15 @@ fn apply_record_set(
         records.intent().admission_expectation(),
         CommandAdmissionExpectationV1::ExistingPending
     ) {
-        let mut pending = transaction
-            .open_table(IDEMPOTENCY_PENDING)
-            .map_err(table_error)?;
-        let removed = pending
-            .remove(encode_idempotency_key(&identity_key))
-            .map_err(precommit_storage_error)?;
-        let Some(removed) = removed else {
+        let Some(_removed) = access.delete_command_value(
+            JournalTable::IdempotencyPending,
+            encode_idempotency_key(&identity_key).to_vec(),
+        )?
+        else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
-        if let Some(journal) = journal.as_mut() {
-            journal.push(
-                JournalMutation::delete_matching(
-                    JournalTable::IdempotencyPending,
-                    encode_idempotency_key(&identity_key).to_vec(),
-                    removed.value(),
-                )
-                .map_err(journal_codec_error)?,
-            );
-        }
     }
-    Ok(journal.unwrap_or_default())
+    Ok(())
 }
 
 fn journal_codec_error(error: JournalCodecError) -> StorageError {
@@ -1611,42 +1564,29 @@ fn stage_application_allocator(
 ) -> Result<(), StorageError> {
     let encoded = riffdb_storage_api::encode_application_sequence_allocator_v1(allocator)
         .map_err(codec_error)?;
-    let transaction = access.transaction()?;
-    let mut meta = transaction.open_table(META).map_err(table_error)?;
-    let prior = meta
-        .insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
-        .map_err(precommit_storage_error)?
+    access
+        .put_command_value(
+            JournalTable::Meta,
+            META_APPLICATION_SEQUENCE.as_bytes().to_vec(),
+            encoded.into_bytes(),
+        )?
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-    if access.retains_journal_mutations() {
-        access.record_journal_mutations(vec![
-            JournalMutation::replace(
-                JournalTable::Meta,
-                META_APPLICATION_SEQUENCE.as_bytes().to_vec(),
-                prior.value(),
-                encoded.into_bytes(),
-            )
-            .map_err(journal_codec_error)?,
-        ])?;
-    }
     Ok(())
 }
 
 fn apply_entities(
-    transaction: &redb::WriteTransaction,
+    access: &RedbWriteAccess,
     records: &AtomicCommandRecordSet,
     encoded: Vec<riffdb_storage_api::CanonicalStoredEnvelopeV1>,
-    mut journal: Option<&mut Vec<JournalMutation>>,
     observations: &mut BTreeMap<EntityTarget, EntityObservation>,
 ) -> Result<(), StorageError> {
     if records.entities().is_empty() {
         return Ok(());
     }
-    let mut table = transaction.open_table(ENTITIES).map_err(table_error)?;
     for (mutation, bytes) in records.entities().iter().zip(encoded) {
         let key = encode_entity_key(mutation.post_image().target().key());
-        let prior = table
-            .insert(key, bytes.as_bytes())
-            .map_err(precommit_storage_error)?;
+        let prior =
+            access.put_command_value(JournalTable::Entities, key.to_vec(), bytes.into_bytes())?;
         let expected_presence = matches!(mutation.expected(), ExpectedEntityState::Present(_));
         if prior.is_some() != expected_presence {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -1661,81 +1601,34 @@ fn apply_entities(
             mutation.post_image().target().clone(),
             EntityObservation::Present(mutation.post_image().clone()),
         );
-        if let Some(journal) = journal.as_deref_mut() {
-            journal.push(
-                match prior.as_ref() {
-                    Some(prior) => JournalMutation::replace(
-                        JournalTable::Entities,
-                        key.to_vec(),
-                        prior.value(),
-                        bytes.into_bytes(),
-                    ),
-                    None => JournalMutation::put(
-                        JournalTable::Entities,
-                        key.to_vec(),
-                        bytes.into_bytes(),
-                    ),
-                }
-                .map_err(journal_codec_error)?,
-            );
-        }
     }
     Ok(())
 }
 
 fn apply_index_entries(
-    transaction: &redb::WriteTransaction,
+    access: &RedbWriteAccess,
     records: &AtomicCommandRecordSet,
     encoded: Vec<Option<riffdb_storage_api::CanonicalStoredEnvelopeV1>>,
-    mut journal: Option<&mut Vec<JournalMutation>>,
 ) -> Result<(), StorageError> {
     if records.index_entries().is_empty() {
         return Ok(());
     }
-    let mut table = transaction
-        .open_table(SECONDARY_INDEXES)
-        .map_err(table_error)?;
     for (mutation, bytes) in records.index_entries().iter().zip(encoded) {
         let key = encode_index_entry_key(mutation.key());
         match (mutation, bytes) {
             (IndexEntryMutationV1::Delete(_), None) => {
-                let removed = table.remove(key).map_err(precommit_storage_error)?;
-                let Some(removed) = removed else {
+                let Some(_removed) =
+                    access.delete_command_value(JournalTable::SecondaryIndexes, key.to_vec())?
+                else {
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
                 };
-                if let Some(journal) = journal.as_deref_mut() {
-                    journal.push(
-                        JournalMutation::delete_matching(
-                            JournalTable::SecondaryIndexes,
-                            key.to_vec(),
-                            removed.value(),
-                        )
-                        .map_err(journal_codec_error)?,
-                    );
-                }
             }
             (IndexEntryMutationV1::Put(_), Some(bytes)) => {
-                let prior = table
-                    .insert(key, bytes.as_bytes())
-                    .map_err(precommit_storage_error)?;
-                if let Some(journal) = journal.as_deref_mut() {
-                    journal.push(
-                        match prior.as_ref() {
-                            Some(prior) => JournalMutation::replace(
-                                JournalTable::SecondaryIndexes,
-                                key.to_vec(),
-                                prior.value(),
-                                bytes.into_bytes(),
-                            ),
-                            None => JournalMutation::put(
-                                JournalTable::SecondaryIndexes,
-                                key.to_vec(),
-                                bytes.into_bytes(),
-                            ),
-                        }
-                        .map_err(journal_codec_error)?,
-                    );
-                }
+                access.put_command_value(
+                    JournalTable::SecondaryIndexes,
+                    key.to_vec(),
+                    bytes.into_bytes(),
+                )?;
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
@@ -1788,9 +1681,6 @@ fn flush_index_generation_post_images(core: &mut BatchCore) -> Result<(), Storag
         return Ok(());
     }
     let pending = std::mem::take(&mut core.pending_index_generations);
-    let transaction = core.access.transaction()?;
-    let mut table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-    let mut journal = core.access.retains_journal_mutations().then(Vec::new);
     for (target, post_image) in pending {
         if post_image.final_record.target() != &target
             || core.index_generations.get(&target)
@@ -1799,10 +1689,9 @@ fn flush_index_generation_post_images(core: &mut BatchCore) -> Result<(), Storag
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let key = encode_partition_index_key(&target);
-        let prior_bytes = table
-            .get(key.as_slice())
-            .map_err(precommit_storage_error)?
-            .map(|value| value.value().to_vec());
+        let prior_bytes = core
+            .access
+            .read_command_value(JournalTable::IndexEpochs, key.as_slice())?;
         let physical = match prior_bytes.as_deref() {
             Some(bytes) => {
                 let decoded = decoded_value(decode_index_epoch_v1(bytes)?);
@@ -1816,60 +1705,73 @@ fn flush_index_generation_post_images(core: &mut BatchCore) -> Result<(), Storag
         if physical != post_image.initial {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let replaced = table
-            .insert(key.as_slice(), post_image.final_bytes.as_bytes())
-            .map_err(precommit_storage_error)?;
-        if replaced.as_ref().map(|value| value.value()) != prior_bytes.as_deref() {
+        let replaced = core.access.put_command_value(
+            JournalTable::IndexEpochs,
+            key.to_vec(),
+            post_image.final_bytes.into_bytes(),
+        )?;
+        if replaced.as_deref() != prior_bytes.as_deref() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if let Some(journal) = journal.as_mut() {
-            journal.push(
-                match prior_bytes {
-                    Some(prior) => JournalMutation::replace(
-                        JournalTable::IndexEpochs,
-                        key.to_vec(),
-                        &prior,
-                        post_image.final_bytes.into_bytes(),
-                    ),
-                    None => JournalMutation::put(
-                        JournalTable::IndexEpochs,
-                        key.to_vec(),
-                        post_image.final_bytes.into_bytes(),
-                    ),
-                }
-                .map_err(journal_codec_error)?,
-            );
-        }
     }
-    drop(table);
-    core.access
-        .record_journal_mutations(journal.unwrap_or_default())
+    Ok(())
 }
 
 fn read_application_allocator(
-    transaction: &redb::WriteTransaction,
+    access: &RedbWriteAccess,
 ) -> Result<ApplicationSequenceAllocator, StorageError> {
-    let table = transaction.open_table(META).map_err(table_error)?;
-    let value = table
-        .get(META_APPLICATION_SEQUENCE)
-        .map_err(precommit_storage_error)?
+    let value = access
+        .read_command_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    decode_application_sequence_allocator_v1(value.value()).map(decoded_value)
+    decode_application_sequence_allocator_v1(&value).map(decoded_value)
 }
 
 fn read_admission(
     access: &RedbWriteAccess,
     identity: &IdempotencyIdentity,
 ) -> Result<Option<StoredAdmissionStateV1>, StorageError> {
-    let transaction = access.transaction()?;
-    let pending = transaction
-        .open_table(IDEMPOTENCY_PENDING)
-        .map_err(table_error)?;
-    let terminal = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let key = identity_key(identity)?;
+    let physical_key = encode_idempotency_key(&key);
+    let pending = access
+        .read_command_value(JournalTable::IdempotencyPending, physical_key)?
+        .map(|value| decode_pending_admission_v1(&value).map(decoded_value))
+        .transpose()?;
+    let physical = access
+        .read_command_value(JournalTable::Idempotency, physical_key)?
+        .map(|value| decode_idempotency_record_v1(&value).map(decoded_value))
+        .transpose()?;
     let derived = command_outcome_from_write_indexes(access, identity)?;
-    read_admission_from_tables(&pending, &terminal, &commits, &events, identity, derived)
+    let terminal = match (physical, derived) {
+        (None, None) => None,
+        (None, Some(value)) => Some(IdempotencyRecordV1::StoredOutcome(value)),
+        (Some(IdempotencyRecordV1::CommandLocator(locator)), Some(value))
+            if locator.commit_sequence() == value.commit_sequence() =>
+        {
+            Some(IdempotencyRecordV1::StoredOutcome(value))
+        }
+        (Some(IdempotencyRecordV1::StoredOutcome(physical)), Some(derived))
+            if physical == derived =>
+        {
+            Some(IdempotencyRecordV1::StoredOutcome(physical))
+        }
+        (Some(value), None) => Some(value),
+        _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+    };
+    match (pending, terminal) {
+        (None, None) => Ok(None),
+        (Some(value), None) if value.identity() == identity => {
+            Ok(Some(StoredAdmissionStateV1::Pending(value)))
+        }
+        (None, Some(IdempotencyRecordV1::StoredOutcome(value))) if value.identity() == identity => {
+            Ok(Some(StoredAdmissionStateV1::StoredOutcome(value)))
+        }
+        (None, Some(IdempotencyRecordV1::ExecutionFailed(value)))
+            if value.pending().identity() == identity =>
+        {
+            Ok(Some(StoredAdmissionStateV1::ExecutionFailed(value)))
+        }
+        _ => Err(storage_error(StorageErrorKind::CorruptData)),
+    }
 }
 
 fn read_admission_from_tables(
@@ -2053,16 +1955,32 @@ fn admission_result(
 }
 
 fn plan_bundle_exists(
-    transaction: &redb::WriteTransaction,
+    access: &RedbWriteAccess,
     plan: &riffdb_storage_api::ExecutablePlanRef,
 ) -> Result<bool, StorageError> {
-    let retirements = transaction
-        .open_table(crate::layout::CONTRACT_WRITE_RETIREMENTS)
-        .map_err(table_error)?;
-    let bundles = transaction
-        .open_table(CONTRACT_BUNDLES)
-        .map_err(table_error)?;
-    plan_bundle_exists_from_tables(&retirements, &bundles, plan)
+    let retirement_key =
+        crate::keys::encode_contract_write_retirement_key(plan.contract_bundle_hash());
+    if let Some(value) = access.read_checkpoint_byte_value(
+        crate::layout::CONTRACT_WRITE_RETIREMENTS,
+        retirement_key.as_slice(),
+    )? {
+        let retirement =
+            riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(&value)
+                .map_err(crate::error::codec_error)?;
+        if retirement.value().artifacts().parent() != plan.contract_bundle_hash() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return Ok(false);
+    }
+    let key = encode_contract_bundle_key(plan.contract_lineage(), plan.contract_version())
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let Some(value) = access.read_checkpoint_byte_value(CONTRACT_BUNDLES, key.as_slice())? else {
+        return Ok(false);
+    };
+    let bundle = decoded_value(crate::codec::decode_contract_bundle_v1(&value)?);
+    Ok(bundle.lineage() == plan.contract_lineage()
+        && bundle.contract_version() == plan.contract_version()
+        && bundle.bundle_hash() == plan.contract_bundle_hash())
 }
 
 fn plan_bundle_exists_from_tables(
@@ -2163,11 +2081,7 @@ fn cached_entity_observation(
     if let Some(observation) = core.entity_observations.get(target) {
         return Ok(observation.clone());
     }
-    let observation = {
-        let transaction = core.access.transaction()?;
-        let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-        entity_observation_from_table(&entities, target)?
-    };
+    let observation = { entity_observation_from_access(&core.access, target)? };
     core.entity_observations
         .insert(target.clone(), observation.clone());
     Ok(observation)
@@ -2180,11 +2094,7 @@ fn cached_index_generation(
     if let Some(position) = core.index_generations.get(target) {
         return Ok(*position);
     }
-    let position = {
-        let transaction = core.access.transaction()?;
-        let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-        epoch_position_from_table(&epochs, target)?
-    };
+    let position = { epoch_position_from_access(&core.access, target)? };
     core.index_generations.insert(target.clone(), position);
     Ok(position)
 }
@@ -2203,29 +2113,22 @@ fn affected_current_state_cached(
             .map_err(materialization_value)?;
     }
     if !targets.unique_targets().is_empty() {
-        let transaction = core.access.transaction()?;
-        let table = transaction
-            .open_table(SECONDARY_INDEXES)
-            .map_err(table_error)?;
         for target in targets.unique_targets() {
             let prefix = target.prefix().prefix().as_bytes();
             let upper = exclusive_prefix_end(prefix)
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let mut range = table
-                .range::<&[u8]>((Included(prefix), Excluded(upper.as_slice())))
-                .map_err(precommit_storage_error)?;
-            let first = range
-                .next()
-                .transpose()
-                .map_err(precommit_storage_error)?
-                .map(|(key, _)| key.value().to_vec());
-            let second = range.next().transpose().map_err(precommit_storage_error)?;
-            let kind = match (first, second) {
-                (None, None) => UniqueOccupancyKind::Vacant,
-                (Some(key), None) if key.as_slice() == target.expected_entry().as_bytes() => {
+            let rows = core.access.read_command_range(
+                JournalTable::SecondaryIndexes,
+                prefix,
+                upper.as_slice(),
+                2,
+            )?;
+            let kind = match rows.as_slice() {
+                [] => UniqueOccupancyKind::Vacant,
+                [(key, _)] if key.as_ref() == target.expected_entry().as_bytes() => {
                     UniqueOccupancyKind::Owned
                 }
-                (Some(_), None) => UniqueOccupancyKind::Conflict,
+                [(_, _)] => UniqueOccupancyKind::Conflict,
                 _ => return Err(storage_error(StorageErrorKind::CorruptData)),
             };
             builder
@@ -2261,6 +2164,22 @@ fn entity_observation_from_table(
     Ok(EntityObservation::Present(record))
 }
 
+fn entity_observation_from_access(
+    access: &RedbWriteAccess,
+    target: &EntityTarget,
+) -> Result<EntityObservation, StorageError> {
+    let Some(value) =
+        access.read_command_value(JournalTable::Entities, encode_entity_key(target.key()))?
+    else {
+        return Ok(EntityObservation::Absent(target.clone()));
+    };
+    let record = decoded_value(decode_entity_record_v1(&value)?);
+    if record.target() != target {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    Ok(EntityObservation::Present(record))
+}
+
 fn epoch_position_from_table(
     table: &impl ReadableTable<&'static [u8], &'static [u8]>,
     target: &PartitionIndexTarget,
@@ -2270,6 +2189,21 @@ fn epoch_position_from_table(
         return Ok(IndexEpochPosition::BeforeFirst);
     };
     let record = decoded_value(decode_index_epoch_v1(value.value())?);
+    if record.target() != target {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    Ok(IndexEpochPosition::Value(record.epoch()))
+}
+
+fn epoch_position_from_access(
+    access: &RedbWriteAccess,
+    target: &PartitionIndexTarget,
+) -> Result<IndexEpochPosition, StorageError> {
+    let key = encode_partition_index_key(target);
+    let Some(value) = access.read_command_value(JournalTable::IndexEpochs, key.as_slice())? else {
+        return Ok(IndexEpochPosition::BeforeFirst);
+    };
+    let record = decoded_value(decode_index_epoch_v1(&value)?);
     if record.target() != target {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
@@ -2309,14 +2243,9 @@ fn provenance_exists(core: &BatchCore, provenance_id: ProvenanceId) -> Result<bo
     {
         return Ok(true);
     }
-    let table = core
+    Ok(core
         .access
-        .transaction()?
-        .open_table(PROVENANCE)
-        .map_err(table_error)?;
-    Ok(table
-        .get(key.as_slice())
-        .map_err(precommit_storage_error)?
+        .read_command_value(JournalTable::Provenance, key.as_slice())?
         .is_some())
 }
 

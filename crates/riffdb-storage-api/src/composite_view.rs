@@ -572,6 +572,31 @@ impl CompositeMutationStage {
         resolve_overlay_point(&self.tables, base, table, key)
     }
 
+    /// Canonically merges one bounded checkpoint range with private staged
+    /// values for transaction-current validation.
+    pub fn merge_bounded<I>(
+        &self,
+        table: CompositeTableV1,
+        base: I,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+        max_inspected: usize,
+    ) -> Result<BoundedCompositePage, StorageValueError>
+    where
+        I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
+    {
+        merge_overlay_bounded(
+            &self.tables,
+            table,
+            base,
+            start_inclusive,
+            end_exclusive,
+            max_rows,
+            max_inspected,
+        )
+    }
+
     /// Returns the number of exact ordered mutations retained for framing.
     #[must_use]
     pub fn mutation_count(&self) -> usize {
@@ -677,79 +702,103 @@ impl FrozenCompositeOverlay {
     where
         I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
     {
-        if max_rows == 0 || max_inspected == 0 || max_rows > max_inspected {
-            return Err(StorageValueError::InvalidShape);
-        }
-        let mut base = base.into_iter().peekable();
-        let end_bound = end_exclusive.map(Excluded).unwrap_or(Unbounded);
-        let mut overlay = self.tables[table.index()]
-            .range(Included(start_inclusive), end_bound)
-            .peekable();
-        let mut rows = Vec::with_capacity(max_rows.min(256));
-        let mut inspected = 0usize;
-        let mut last_base_key: Option<Box<[u8]>> = None;
-
-        while rows.len() < max_rows {
-            let base_key = match base.peek() {
-                Some(Ok((key, _))) => {
-                    validate_range_key(key, start_inclusive, end_exclusive)?;
-                    if last_base_key
-                        .as_deref()
-                        .is_some_and(|last| last >= key.as_ref())
-                    {
-                        return Err(StorageValueError::NonCanonicalOrder);
-                    }
-                    Some(key.as_ref())
-                }
-                Some(Err(_)) => {
-                    return match base.next().ok_or(StorageValueError::InvalidShape)? {
-                        Err(error) => Err(error),
-                        Ok(_) => Err(StorageValueError::InvalidShape),
-                    };
-                }
-                None => None,
-            };
-            let overlay_key = overlay.peek().map(|(key, _)| *key);
-            if base_key.is_none() && overlay_key.is_none() {
-                break;
-            }
-            inspected = inspected
-                .checked_add(1)
-                .ok_or(StorageValueError::SizeOverflow)?;
-            if inspected > max_inspected {
-                return Err(StorageValueError::LimitExceeded);
-            }
-
-            match (base_key, overlay_key) {
-                (Some(base_key), Some(overlay_key)) if base_key < overlay_key => {
-                    let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
-                    last_base_key = Some(key.clone());
-                    rows.push((key, value));
-                }
-                (Some(base_key), Some(overlay_key)) if base_key == overlay_key => {
-                    let (key, _) = base.next().ok_or(StorageValueError::InvalidShape)??;
-                    last_base_key = Some(key.clone());
-                    let (_, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
-                    if let OverlayValue::Value(value) = value {
-                        rows.push((key, value.as_ref().into()));
-                    }
-                }
-                (Some(_), Some(_)) | (None, Some(_)) => {
-                    let (key, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
-                    if let OverlayValue::Value(value) = value {
-                        rows.push((key.into(), value.as_ref().into()));
-                    }
-                }
-                (Some(_), None) => {
-                    let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
-                    last_base_key = Some(key.clone());
-                    rows.push((key, value));
-                }
-                (None, None) => break,
-            }
-        }
-        Ok(BoundedCompositePage { rows, inspected })
+        merge_overlay_bounded(
+            &self.tables,
+            table,
+            base,
+            start_inclusive,
+            end_exclusive,
+            max_rows,
+            max_inspected,
+        )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_overlay_bounded<I>(
+    tables: &[PersistentOverlayMap; TABLE_COUNT],
+    table: CompositeTableV1,
+    base: I,
+    start_inclusive: &[u8],
+    end_exclusive: Option<&[u8]>,
+    max_rows: usize,
+    max_inspected: usize,
+) -> Result<BoundedCompositePage, StorageValueError>
+where
+    I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
+{
+    if max_rows == 0 || max_inspected == 0 || max_rows > max_inspected {
+        return Err(StorageValueError::InvalidShape);
+    }
+    let mut base = base.into_iter().peekable();
+    let end_bound = end_exclusive.map(Excluded).unwrap_or(Unbounded);
+    let mut overlay = tables[table.index()]
+        .range(Included(start_inclusive), end_bound)
+        .peekable();
+    let mut rows = Vec::with_capacity(max_rows.min(256));
+    let mut inspected = 0usize;
+    let mut last_base_key: Option<Box<[u8]>> = None;
+
+    while rows.len() < max_rows {
+        let base_key = match base.peek() {
+            Some(Ok((key, _))) => {
+                validate_range_key(key, start_inclusive, end_exclusive)?;
+                if last_base_key
+                    .as_deref()
+                    .is_some_and(|last| last >= key.as_ref())
+                {
+                    return Err(StorageValueError::NonCanonicalOrder);
+                }
+                Some(key.as_ref())
+            }
+            Some(Err(_)) => {
+                return match base.next().ok_or(StorageValueError::InvalidShape)? {
+                    Err(error) => Err(error),
+                    Ok(_) => Err(StorageValueError::InvalidShape),
+                };
+            }
+            None => None,
+        };
+        let overlay_key = overlay.peek().map(|(key, _)| *key);
+        if base_key.is_none() && overlay_key.is_none() {
+            break;
+        }
+        inspected = inspected
+            .checked_add(1)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if inspected > max_inspected {
+            return Err(StorageValueError::LimitExceeded);
+        }
+
+        match (base_key, overlay_key) {
+            (Some(base_key), Some(overlay_key)) if base_key < overlay_key => {
+                let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
+                last_base_key = Some(key.clone());
+                rows.push((key, value));
+            }
+            (Some(base_key), Some(overlay_key)) if base_key == overlay_key => {
+                let (key, _) = base.next().ok_or(StorageValueError::InvalidShape)??;
+                last_base_key = Some(key.clone());
+                let (_, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
+                if let OverlayValue::Value(value) = value {
+                    rows.push((key, value.as_ref().into()));
+                }
+            }
+            (Some(_), Some(_)) | (None, Some(_)) => {
+                let (key, value) = overlay.next().ok_or(StorageValueError::InvalidShape)?;
+                if let OverlayValue::Value(value) = value {
+                    rows.push((key.into(), value.as_ref().into()));
+                }
+            }
+            (Some(_), None) => {
+                let (key, value) = base.next().ok_or(StorageValueError::InvalidShape)??;
+                last_base_key = Some(key.clone());
+                rows.push((key, value));
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(BoundedCompositePage { rows, inspected })
 }
 
 /// Overlay-only point result.

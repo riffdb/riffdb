@@ -2278,7 +2278,7 @@ fn verify_replayed_tail(
     Ok(())
 }
 
-fn apply_mutation(
+pub(crate) fn apply_mutation(
     transaction: &redb::WriteTransaction,
     mutation: &JournalMutation,
 ) -> Result<(), JournalIoError> {
@@ -2411,6 +2411,63 @@ pub(crate) fn read_value(
         .get(key)
         .map_err(|_| JournalIoError::Corrupt)
         .map(|value| value.map(|value| value.value().to_vec()))
+}
+
+pub(crate) fn read_write_value(
+    transaction: &redb::WriteTransaction,
+    table: JournalTable,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, JournalIoError> {
+    if table == JournalTable::Meta {
+        let key = std::str::from_utf8(key).map_err(|_| JournalIoError::Corrupt)?;
+        return transaction
+            .open_table(META)
+            .map_err(|_| JournalIoError::Corrupt)?
+            .get(key)
+            .map_err(|_| JournalIoError::Corrupt)
+            .map(|value| value.map(|value| value.value().to_vec()));
+    }
+    let definition = match table {
+        JournalTable::Meta => unreachable!("meta returned above"),
+        JournalTable::Entities => ENTITIES,
+        JournalTable::SecondaryIndexes => SECONDARY_INDEXES,
+        JournalTable::IndexEpochs => INDEX_EPOCHS,
+        JournalTable::Idempotency => IDEMPOTENCY,
+        JournalTable::IdempotencyPending => IDEMPOTENCY_PENDING,
+        JournalTable::Events => EVENTS,
+        JournalTable::EventRoutes => EVENT_ROUTES,
+        JournalTable::Outbox => crate::layout::OUTBOX,
+        JournalTable::Provenance => PROVENANCE,
+        JournalTable::Commits => COMMITS,
+        JournalTable::Audit => AUDIT,
+        JournalTable::AuditByRequest => AUDIT_BY_REQUEST,
+    };
+    transaction
+        .open_table(definition)
+        .map_err(|_| JournalIoError::Corrupt)?
+        .get(key)
+        .map_err(|_| JournalIoError::Corrupt)
+        .map(|value| value.map(|value| value.value().to_vec()))
+}
+
+pub(crate) const fn byte_table_definition(
+    table: JournalTable,
+) -> Option<TableDefinition<'static, &'static [u8], &'static [u8]>> {
+    match table {
+        JournalTable::Meta => None,
+        JournalTable::Entities => Some(ENTITIES),
+        JournalTable::SecondaryIndexes => Some(SECONDARY_INDEXES),
+        JournalTable::IndexEpochs => Some(INDEX_EPOCHS),
+        JournalTable::Idempotency => Some(IDEMPOTENCY),
+        JournalTable::IdempotencyPending => Some(IDEMPOTENCY_PENDING),
+        JournalTable::Events => Some(EVENTS),
+        JournalTable::EventRoutes => Some(EVENT_ROUTES),
+        JournalTable::Outbox => Some(crate::layout::OUTBOX),
+        JournalTable::Provenance => Some(PROVENANCE),
+        JournalTable::Commits => Some(COMMITS),
+        JournalTable::Audit => Some(AUDIT),
+        JournalTable::AuditByRequest => Some(AUDIT_BY_REQUEST),
+    }
 }
 
 pub(crate) fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(), JournalIoError> {
