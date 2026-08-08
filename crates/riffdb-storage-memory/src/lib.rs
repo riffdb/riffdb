@@ -4,6 +4,7 @@
 
 mod administration;
 mod application;
+mod composite_view;
 mod consumer;
 mod derived;
 mod gate;

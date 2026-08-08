@@ -929,7 +929,7 @@ work_packages:
   - cargo +1.97.0 test -p riffdb-storage-api --all-features
   - cargo +1.97.0 test -p riffdb-storage-redb --all-features
   - cargo +1.97.0 test -p riffdb-storage-memory --all-features
-  - cargo +1.97.0 test --test storage_conformance
+  - cargo +1.97.0 test -p riffdb-storage-api --test composite_view_conformance
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
   - cargo +1.97.0 fmt --all -- --check

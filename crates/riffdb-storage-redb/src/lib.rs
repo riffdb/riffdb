@@ -10,6 +10,7 @@ mod backup;
 pub mod benchmark_support;
 mod codec;
 mod command_authority;
+mod composite_view;
 mod consumer;
 mod derived;
 #[cfg(feature = "test-fixtures")]
