@@ -188,6 +188,9 @@ pub enum EngineStagingOrder {
     /// Models one segmented capsule authority plus only independently mutable rows.
     /// This is benchmark-only evidence for a proposed durable-layout ADR.
     FusedSegmentedCapsule,
+    /// Models one state-bearing segment containing entity and index transitions.
+    /// This is benchmark-only evidence and is not a production storage mode.
+    FusedStateBearingSegment,
 }
 
 impl EngineStagingOrder {
@@ -199,6 +202,7 @@ impl EngineStagingOrder {
             Self::TableMajor => "table_major",
             Self::FusedCurrentCapsule => "fused_current_capsule",
             Self::FusedSegmentedCapsule => "fused_segmented_capsule",
+            Self::FusedStateBearingSegment => "fused_state_bearing_segment",
         }
     }
 }
@@ -318,6 +322,133 @@ impl EngineMechanicsSample {
     #[must_use]
     pub const fn file_bytes(self) -> u64 {
         self.file_bytes
+    }
+}
+
+/// Closed physical projection compared by the WP-485 mechanics probe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StateSegmentProjection {
+    /// ADR-0102 production shape: entity and secondary-index state remain rows.
+    CurrentSegmentedAuthority,
+    /// Proposed one-segment state authority. Never selected by production code.
+    BenchmarkStateBearingSegment,
+}
+
+impl StateSegmentProjection {
+    /// Stable evidence label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CurrentSegmentedAuthority => "current_segmented_authority",
+            Self::BenchmarkStateBearingSegment => "benchmark_state_bearing_segment",
+        }
+    }
+}
+
+/// Closed current-state mutation mix used by the WP-485 mechanics probe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StateSegmentWorkload {
+    /// Every command creates a previously absent entity and index member.
+    DistinctCreates,
+    /// Every command overwrites a member in the retained current-state set.
+    RetainedUpdates,
+    /// Three creates followed by one retained update, repeated in FIFO order.
+    MixedCreatesAndUpdates,
+}
+
+impl StateSegmentWorkload {
+    /// Stable evidence label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DistinctCreates => "distinct_creates",
+            Self::RetainedUpdates => "retained_updates",
+            Self::MixedCreatesAndUpdates => "mixed_75_create_25_update",
+        }
+    }
+}
+
+/// One benchmark-only state-segment projection measurement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StateSegmentProjectionSample {
+    projection: StateSegmentProjection,
+    workload: StateSegmentWorkload,
+    commands: usize,
+    group_commands: usize,
+    retained_entities: usize,
+    table_work: Duration,
+    final_durable_barrier: Duration,
+    elapsed: Duration,
+    file_bytes_before: u64,
+    file_bytes_after: u64,
+    inventory: Vec<AuthoritativeTableInventoryV1>,
+}
+
+impl StateSegmentProjectionSample {
+    /// Physical projection measured.
+    #[must_use]
+    pub const fn projection(&self) -> StateSegmentProjection {
+        self.projection
+    }
+
+    /// Mutation mix measured.
+    #[must_use]
+    pub const fn workload(&self) -> StateSegmentWorkload {
+        self.workload
+    }
+
+    /// Commands completed.
+    #[must_use]
+    pub const fn commands(&self) -> usize {
+        self.commands
+    }
+
+    /// Maximum commands per physical group.
+    #[must_use]
+    pub const fn group_commands(&self) -> usize {
+        self.group_commands
+    }
+
+    /// Retained current-state population present before measurement.
+    #[must_use]
+    pub const fn retained_entities(&self) -> usize {
+        self.retained_entities
+    }
+
+    /// Redb begin/stage/non-durable-commit work, excluding the final durability fence.
+    #[must_use]
+    pub const fn table_work(&self) -> Duration {
+        self.table_work
+    }
+
+    /// Final common durability barrier used only to make inventory inspectable.
+    #[must_use]
+    pub const fn final_durable_barrier(&self) -> Duration {
+        self.final_durable_barrier
+    }
+
+    /// Complete measured window including the common final durability barrier.
+    #[must_use]
+    pub const fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// Redb file bytes after retained-state setup and before the measured window.
+    #[must_use]
+    pub const fn file_bytes_before(&self) -> u64 {
+        self.file_bytes_before
+    }
+
+    /// Redb file bytes after the measured window and final durability barrier.
+    #[must_use]
+    pub const fn file_bytes_after(&self) -> u64 {
+        self.file_bytes_after
+    }
+
+    /// Closed per-table inventory after the measured window.
+    #[must_use]
+    pub fn inventory(&self) -> &[AuthoritativeTableInventoryV1] {
+        &self.inventory
     }
 }
 
@@ -577,6 +708,96 @@ pub fn initialize_engine_mechanics(path: &Path) -> Result<(), EngineBenchmarkErr
         .map_err(|_| EngineBenchmarkError::Engine)
 }
 
+/// Runs one WP-485 benchmark-only physical projection window.
+///
+/// Production adapters cannot select either projection through this API: the
+/// complete implementation is feature-gated benchmark support and operates on
+/// a caller-owned disposable database path.
+pub fn run_state_segment_projection_window(
+    path: &Path,
+    projection: StateSegmentProjection,
+    workload: StateSegmentWorkload,
+    commands: usize,
+    group_commands: usize,
+    retained_entities: usize,
+) -> Result<StateSegmentProjectionSample, EngineBenchmarkError> {
+    if commands == 0
+        || commands > MAX_WINDOW_COMMANDS
+        || group_commands == 0
+        || group_commands > MAX_GROUP_COMMANDS
+        || retained_entities > 65_536
+        || (workload != StateSegmentWorkload::DistinctCreates && retained_entities == 0)
+    {
+        return Err(EngineBenchmarkError::InvalidConfiguration);
+    }
+    initialize_engine_mechanics(path)?;
+    let database = Database::create(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    seed_state_segment_projection(&database, projection, retained_entities)?;
+    let file_bytes_before = fs::metadata(path)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .len();
+    let first_sequence = u64::try_from(retained_entities)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .checked_add(1)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let started = Instant::now();
+    let mut table_work = Duration::ZERO;
+    for group_start in (0..commands).step_by(group_commands) {
+        let group_end = commands.min(group_start.saturating_add(group_commands));
+        let group_started = Instant::now();
+        let mut transaction = database
+            .begin_write()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        configure(&mut transaction, EngineDurability::None)?;
+        match projection {
+            StateSegmentProjection::CurrentSegmentedAuthority => {
+                stage_current_state_projection(
+                    &transaction,
+                    first_sequence,
+                    group_start,
+                    group_end,
+                    workload,
+                    retained_entities,
+                )?;
+            }
+            StateSegmentProjection::BenchmarkStateBearingSegment => {
+                stage_state_bearing_projection(
+                    &transaction,
+                    first_sequence,
+                    group_start,
+                    group_end,
+                )?;
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        table_work = table_work.saturating_add(group_started.elapsed());
+    }
+    let barrier_started = Instant::now();
+    durable_barrier(&database)?;
+    let final_durable_barrier = barrier_started.elapsed();
+    let elapsed = started.elapsed();
+    drop(database);
+    let file_bytes_after = fs::metadata(path)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .len();
+    let inventory = authoritative_table_inventory_v1(path)?;
+    Ok(StateSegmentProjectionSample {
+        projection,
+        workload,
+        commands,
+        group_commands,
+        retained_entities,
+        table_work,
+        final_durable_barrier,
+        elapsed,
+        file_bytes_before,
+        file_bytes_after,
+        inventory,
+    })
+}
+
 /// Runs one bounded two-transition command window against a retained database.
 ///
 /// Every command first installs a pending row and reaches the selected commit
@@ -639,6 +860,14 @@ pub fn run_engine_mechanics_window(
             }
             EngineStagingOrder::FusedSegmentedCapsule => {
                 stage_fused_segmented_capsule(
+                    &transaction,
+                    first_sequence,
+                    group_start,
+                    group_end,
+                )?;
+            }
+            EngineStagingOrder::FusedStateBearingSegment => {
+                stage_fused_state_bearing_segment(
                     &transaction,
                     first_sequence,
                     group_start,
@@ -1332,6 +1561,211 @@ fn stage_fused_current_capsule(
     stage_group_allocator(transaction, first_sequence, end)
 }
 
+fn seed_state_segment_projection(
+    database: &Database,
+    projection: StateSegmentProjection,
+    retained_entities: usize,
+) -> Result<(), EngineBenchmarkError> {
+    if retained_entities == 0 {
+        return Ok(());
+    }
+    for start in (0..retained_entities).step_by(MAX_GROUP_COMMANDS) {
+        let end = retained_entities.min(start.saturating_add(MAX_GROUP_COMMANDS));
+        let mut transaction = database
+            .begin_write()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        configure(&mut transaction, EngineDurability::None)?;
+        match projection {
+            StateSegmentProjection::CurrentSegmentedAuthority => {
+                insert_projection_state_rows(
+                    &transaction,
+                    1,
+                    start,
+                    end,
+                    StateSegmentWorkload::DistinctCreates,
+                    0,
+                )?;
+                let segment_sequence = sequence_at(1, start)?;
+                let commands = end
+                    .checked_sub(start)
+                    .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+                insert_record(
+                    &transaction,
+                    INDEX_EPOCHS,
+                    segment_sequence,
+                    0x58,
+                    EPOCH_VALUE_BYTES,
+                )?;
+                insert_record(
+                    &transaction,
+                    COMMITS,
+                    segment_sequence,
+                    0x43,
+                    segmented_capsule_bytes(commands)?,
+                )?;
+            }
+            StateSegmentProjection::BenchmarkStateBearingSegment => {
+                insert_state_bearing_segment(&transaction, 1, start, end)?;
+            }
+        }
+        stage_group_allocator(&transaction, 1, end)?;
+        transaction
+            .commit()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+    }
+    durable_barrier(database)
+}
+
+fn stage_current_state_projection(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+    workload: StateSegmentWorkload,
+    retained_entities: usize,
+) -> Result<(), EngineBenchmarkError> {
+    insert_projection_state_rows(
+        transaction,
+        first_sequence,
+        start,
+        end,
+        workload,
+        retained_entities,
+    )?;
+    let commands = end
+        .checked_sub(start)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let segment_sequence = sequence_at(first_sequence, start)?;
+    insert_record(
+        transaction,
+        INDEX_EPOCHS,
+        segment_sequence,
+        0x58,
+        EPOCH_VALUE_BYTES,
+    )?;
+    insert_record(
+        transaction,
+        COMMITS,
+        segment_sequence,
+        0x43,
+        segmented_capsule_bytes(commands)?,
+    )?;
+    stage_group_allocator(transaction, first_sequence, end)
+}
+
+fn stage_state_bearing_projection(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
+    insert_state_bearing_segment(transaction, first_sequence, start, end)?;
+    stage_group_allocator(transaction, first_sequence, end)
+}
+
+fn insert_projection_state_rows(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+    workload: StateSegmentWorkload,
+    retained_entities: usize,
+) -> Result<(), EngineBenchmarkError> {
+    let mut entities = transaction
+        .open_table(ENTITIES)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let mut indexes = transaction
+        .open_table(SECONDARY_INDEXES)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    for offset in start..end {
+        let command_sequence = sequence_at(first_sequence, offset)?;
+        let state_sequence =
+            projection_state_sequence(command_sequence, offset, workload, retained_entities)?;
+        let entity_key = record_key(state_sequence, 0x45);
+        let entity_value = record_value(command_sequence, ENTITY_VALUE_BYTES, 0x45);
+        entities
+            .insert(entity_key.as_slice(), entity_value.as_slice())
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        let index_key = record_key(state_sequence, 0x49);
+        let index_value = record_value(command_sequence, INDEX_VALUE_BYTES, 0x49);
+        indexes
+            .insert(index_key.as_slice(), index_value.as_slice())
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+    }
+    Ok(())
+}
+
+fn projection_state_sequence(
+    command_sequence: u64,
+    offset: usize,
+    workload: StateSegmentWorkload,
+    retained_entities: usize,
+) -> Result<u64, EngineBenchmarkError> {
+    match workload {
+        StateSegmentWorkload::DistinctCreates => Ok(command_sequence),
+        StateSegmentWorkload::RetainedUpdates => retained_state_sequence(offset, retained_entities),
+        StateSegmentWorkload::MixedCreatesAndUpdates if offset % 4 == 3 => {
+            retained_state_sequence(offset / 4, retained_entities)
+        }
+        StateSegmentWorkload::MixedCreatesAndUpdates => Ok(command_sequence),
+    }
+}
+
+fn retained_state_sequence(
+    offset: usize,
+    retained_entities: usize,
+) -> Result<u64, EngineBenchmarkError> {
+    if retained_entities == 0 {
+        return Err(EngineBenchmarkError::InvalidConfiguration);
+    }
+    let member = offset % retained_entities;
+    u64::try_from(member)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .checked_add(1)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)
+}
+
+fn segmented_capsule_bytes(commands: usize) -> Result<usize, EngineBenchmarkError> {
+    segmented_capsule_command_bytes()?
+        .checked_mul(commands)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)
+}
+
+fn segmented_capsule_command_bytes() -> Result<usize, EngineBenchmarkError> {
+    PROVENANCE_VALUE_BYTES
+        .checked_add(COMMIT_VALUE_BYTES)
+        .and_then(|value| value.checked_add(OUTCOME_VALUE_BYTES))
+        .and_then(|value| value.checked_add(2 * AUDIT_VALUE_BYTES))
+        .and_then(|value| value.checked_add(EVENT_VALUE_BYTES))
+        .and_then(|value| value.checked_add(EPOCH_VALUE_BYTES))
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)
+}
+
+fn insert_state_bearing_segment(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
+    let commands = end
+        .checked_sub(start)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let segment_sequence = sequence_at(first_sequence, start)?;
+    let command_bytes = segmented_capsule_command_bytes()?
+        .checked_add(ENTITY_VALUE_BYTES)
+        .and_then(|value| value.checked_add(INDEX_VALUE_BYTES))
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    insert_record(
+        transaction,
+        COMMITS,
+        segment_sequence,
+        0x53,
+        command_bytes
+            .checked_mul(commands)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    )
+}
+
 fn stage_fused_segmented_capsule(
     transaction: &WriteTransaction,
     first_sequence: u64,
@@ -1387,6 +1821,20 @@ fn stage_fused_segmented_capsule(
         .and_then(|value| value.checked_mul(commands))
         .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
     insert_record(transaction, COMMITS, segment_sequence, 0x43, capsule_bytes)?;
+    stage_group_allocator(transaction, first_sequence, end)
+}
+
+fn stage_fused_state_bearing_segment(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
+    // Every immutable command fact and complete current-state transition is
+    // projected into one group segment. Independently mutable delivery rows
+    // remain possible, but the audited production command path creates none.
+    // This function is reachable only through benchmark support.
+    insert_state_bearing_segment(transaction, first_sequence, start, end)?;
     stage_group_allocator(transaction, first_sequence, end)
 }
 
@@ -1548,10 +1996,11 @@ fn uuid_v7_bytes(tag: u8, sequence: u64) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{
-        EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
-        authoritative_table_inventory_v1, expected_evidence_page_capacity,
-        initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
-        run_engine_mechanics_window, split_half_page_durations,
+        EngineDurability, EngineMechanicsProfile, EngineStagingOrder, ServiceAuditGrowthHarness,
+        StateSegmentProjection, StateSegmentWorkload, authoritative_table_inventory_v1,
+        expected_evidence_page_capacity, initialize_engine_mechanics, measure_clean_startup,
+        measure_clean_startup_linear, run_engine_mechanics_window,
+        run_state_segment_projection_window, split_half_page_durations,
     };
     use std::time::Duration;
 
@@ -1634,6 +2083,55 @@ mod tests {
     #[test]
     fn engine_mechanics_profile_rejects_zero_group() {
         assert!(EngineMechanicsProfile::new(EngineDurability::None, 0).is_err());
+    }
+
+    #[test]
+    fn state_bearing_projection_is_explicitly_benchmark_only() {
+        assert_eq!(
+            EngineStagingOrder::FusedStateBearingSegment.label(),
+            "fused_state_bearing_segment"
+        );
+    }
+
+    #[test]
+    fn state_bearing_projection_folds_state_rows_without_inventing_delivery_rows() {
+        let dir = tempfile_dir();
+        let current = run_state_segment_projection_window(
+            &dir.join("current-projection.redb"),
+            StateSegmentProjection::CurrentSegmentedAuthority,
+            StateSegmentWorkload::DistinctCreates,
+            8,
+            8,
+            0,
+        )
+        .expect("current projection");
+        let proposed = run_state_segment_projection_window(
+            &dir.join("state-bearing-projection.redb"),
+            StateSegmentProjection::BenchmarkStateBearingSegment,
+            StateSegmentWorkload::DistinctCreates,
+            8,
+            8,
+            0,
+        )
+        .expect("proposed projection");
+        let rows = |sample: &super::StateSegmentProjectionSample, name: &str| {
+            sample
+                .inventory()
+                .iter()
+                .find(|table| table.name() == name)
+                .expect("closed table")
+                .rows()
+        };
+        assert_eq!(rows(&current, "entities"), 8);
+        assert_eq!(rows(&current, "secondary_indexes"), 8);
+        assert_eq!(rows(&current, "events"), 0);
+        assert_eq!(rows(&proposed, "entities"), 0);
+        assert_eq!(rows(&proposed, "secondary_indexes"), 0);
+        assert_eq!(rows(&proposed, "events"), 0);
+        assert_eq!(rows(&current, "commits"), 1);
+        assert_eq!(rows(&proposed, "commits"), 1);
+        assert_eq!(rows(&current, "outbox"), 0);
+        assert_eq!(rows(&proposed, "outbox"), 0);
     }
 
     #[test]
