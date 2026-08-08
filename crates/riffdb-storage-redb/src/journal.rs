@@ -100,6 +100,24 @@ impl JournalTable {
             _ => Err(JournalCodecError::UnknownTable),
         }
     }
+
+    pub(crate) const fn composite(self) -> riffdb_storage_api::CompositeTableV1 {
+        match self {
+            Self::Meta => riffdb_storage_api::CompositeTableV1::Meta,
+            Self::Entities => riffdb_storage_api::CompositeTableV1::Entities,
+            Self::SecondaryIndexes => riffdb_storage_api::CompositeTableV1::SecondaryIndexes,
+            Self::IndexEpochs => riffdb_storage_api::CompositeTableV1::IndexEpochs,
+            Self::Idempotency => riffdb_storage_api::CompositeTableV1::Idempotency,
+            Self::IdempotencyPending => riffdb_storage_api::CompositeTableV1::IdempotencyPending,
+            Self::Events => riffdb_storage_api::CompositeTableV1::Events,
+            Self::EventRoutes => riffdb_storage_api::CompositeTableV1::EventRoutes,
+            Self::Outbox => riffdb_storage_api::CompositeTableV1::Outbox,
+            Self::Provenance => riffdb_storage_api::CompositeTableV1::Provenance,
+            Self::Commits => riffdb_storage_api::CompositeTableV1::Commits,
+            Self::Audit => riffdb_storage_api::CompositeTableV1::Audit,
+            Self::AuditByRequest => riffdb_storage_api::CompositeTableV1::AuditByRequest,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,6 +227,34 @@ impl JournalMutation {
         match self {
             Self::Put { expected_hash, .. } => *expected_hash,
             Self::Delete { expected_hash, .. } => Some(*expected_hash),
+        }
+    }
+
+    pub(crate) fn composite(
+        &self,
+    ) -> Result<riffdb_storage_api::CompositeMutationV1, riffdb_storage_api::StorageValueError>
+    {
+        match self {
+            Self::Put {
+                table,
+                key,
+                expected_hash,
+                value,
+            } => riffdb_storage_api::CompositeMutationV1::put_checked(
+                table.composite(),
+                key.clone(),
+                *expected_hash,
+                value.clone(),
+            ),
+            Self::Delete {
+                table,
+                key,
+                expected_hash,
+            } => riffdb_storage_api::CompositeMutationV1::delete_checked(
+                table.composite(),
+                key.clone(),
+                *expected_hash,
+            ),
         }
     }
 }
@@ -1276,6 +1322,38 @@ impl JournalFrame {
     pub(crate) fn mutations(&self) -> &[JournalMutation] {
         &self.mutations
     }
+
+    pub(crate) fn composite(
+        &self,
+    ) -> Result<riffdb_storage_api::CompositeFrameV1, riffdb_storage_api::StorageValueError> {
+        let encoded = self
+            .encode()
+            .map_err(|_| riffdb_storage_api::StorageValueError::InvalidShape)?;
+        let kind = match self.kind {
+            JournalFrameKind::Command => riffdb_storage_api::CompositeFrameKindV1::Command,
+            JournalFrameKind::ServiceAudit => {
+                riffdb_storage_api::CompositeFrameKindV1::ServiceAudit
+            }
+        };
+        let mutations = self
+            .mutations
+            .iter()
+            .map(JournalMutation::composite)
+            .collect::<Result<Vec<_>, _>>()?;
+        riffdb_storage_api::CompositeFrameV1::new(
+            kind,
+            self.database_id,
+            self.predecessor_sequence,
+            self.covered_sequence,
+            self.predecessor_administration_sequence,
+            self.covered_administration_sequence,
+            self.transition_count,
+            encoded.as_bytes().len(),
+            self.previous_hash,
+            encoded.frame_hash(),
+            mutations,
+        )
+    }
 }
 
 pub(crate) struct EncodedJournalFrame {
@@ -2298,7 +2376,7 @@ fn validate_before_image(
     }
 }
 
-fn read_value(
+pub(crate) fn read_value(
     transaction: &redb::ReadTransaction,
     table: JournalTable,
     key: &[u8],
@@ -2529,6 +2607,16 @@ mod tests {
             ],
         )
         .expect("frame")
+    }
+
+    #[test]
+    fn decoded_journal_frame_converts_to_the_shared_overlay_descriptor() {
+        let frame = sample_frame();
+        let composite = frame.composite().expect("composite frame");
+        assert_eq!(
+            composite.kind(),
+            riffdb_storage_api::CompositeFrameKindV1::Command
+        );
     }
 
     #[test]

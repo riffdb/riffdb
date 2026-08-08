@@ -412,6 +412,19 @@ pub(crate) enum RedbReadAccess {
     Durable(Arc<ReadTransaction>),
 }
 
+impl RedbReadAccess {
+    #[allow(
+        dead_code,
+        reason = "WP-487 introduces the composite root; WP-488 publishes it"
+    )]
+    pub(crate) fn into_shared(self) -> Arc<ReadTransaction> {
+        match self {
+            Self::Current(transaction) => Arc::new(transaction),
+            Self::Durable(transaction) => transaction,
+        }
+    }
+}
+
 pub(crate) enum RedbIndexedReadLease {
     Direct { _lease: ExclusiveLease },
     DurableEpoch,
@@ -3579,13 +3592,15 @@ impl SharedRedb {
     }
 }
 
-fn read_commit_tail(transaction: &ReadTransaction) -> Result<Option<CommitSequence>, StorageError> {
+pub(crate) fn read_commit_tail(
+    transaction: &ReadTransaction,
+) -> Result<Option<CommitSequence>, StorageError> {
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
     crate::command_authority::command_authority_head(&commits, &events)
 }
 
-fn read_administration_tail(
+pub(crate) fn read_administration_tail(
     transaction: &ReadTransaction,
 ) -> Result<Option<AdministrationSequence>, StorageError> {
     let physical = transaction

@@ -8,9 +8,9 @@
   `PERF-005`, `PERF-007`, `PERF-008`, `PERF-009`, `PERF-010`, `PERF-015`,
   `PERF-016`, `PERF-017`
 - **Related work packages:** `WP-486`, `WP-487`, `WP-488`, `WP-489`, `WP-490`
-- **Would amend:** ADR-0004, ADR-0035, ADR-0053, ADR-0061, ADR-0070,
+- **Amends:** ADR-0004, ADR-0035, ADR-0053, ADR-0061, ADR-0070,
   ADR-0082, ADR-0098, ADR-0101, ADR-0102, ADR-0103
-- **Would amend specification requirements:** `PERF-015` and `PERF-017`
+- **Amends specification requirements:** `PERF-015` and `PERF-017`
 
 ## Status boundary
 

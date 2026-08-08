@@ -2097,6 +2097,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-proto",
  "riffdb-types",
+ "sha2",
 ]
 
 [[package]]
