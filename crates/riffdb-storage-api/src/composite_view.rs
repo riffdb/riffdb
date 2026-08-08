@@ -467,48 +467,12 @@ impl CompositeOverlayBuilder {
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
         self.validate_frame_identity(frame)?;
-        let mut pending_tables: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT] =
-            array::from_fn(|_| BTreeMap::new());
-        let mut candidate_charge = self.charged_bytes;
-        for mutation in &frame.mutations {
-            base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
-            let table_index = mutation.table().index();
-            let pending = pending_tables[table_index].get(mutation.key());
-            let current = match pending.or_else(|| self.tables[table_index].get(mutation.key())) {
-                Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
-                Some(OverlayValue::Tombstone) => None,
-                None => base.read_base(mutation.table(), mutation.key())?,
-            };
-            validate_before_image(current.as_deref(), mutation.expected_hash())?;
-
-            let key: Box<[u8]> = mutation.key().into();
-            let replacement = mutation
-                .value()
-                .map(|value| OverlayValue::Value(Arc::from(value)))
-                .unwrap_or(OverlayValue::Tombstone);
-            let prior_overlay = pending_tables[table_index]
-                .get(key.as_ref())
-                .or_else(|| self.tables[table_index].get(key.as_ref()));
-            if let Some(prior) = prior_overlay {
-                candidate_charge = candidate_charge
-                    .checked_sub(entry_charge(&key, prior)?)
-                    .ok_or(StorageValueError::SizeOverflow)?;
-            }
-            candidate_charge = candidate_charge
-                .checked_add(entry_charge(&key, &replacement)?)
-                .ok_or(StorageValueError::SizeOverflow)?;
-            if candidate_charge > MAX_COMPOSITE_OVERLAY_BYTES {
-                return Err(StorageValueError::LimitExceeded);
-            }
-            pending_tables[table_index].insert(key, replacement);
-        }
-
-        for (target, pending) in self.tables.iter_mut().zip(pending_tables) {
-            for (key, value) in pending {
-                target.insert(key, value);
-            }
-        }
-        self.charged_bytes = candidate_charge;
+        apply_mutations_atomically(
+            &mut self.tables,
+            &mut self.charged_bytes,
+            &frame.mutations,
+            base,
+        )?;
         self.transition_count = self
             .transition_count
             .checked_add(usize::from(frame.transition_count))
@@ -555,6 +519,70 @@ impl CompositeOverlayBuilder {
             charged_bytes: self.charged_bytes,
             tables: self.tables,
         }
+    }
+}
+
+/// Unpublished read-your-writes stage for one command subgroup.
+///
+/// This value intentionally has no publication or frontier-advancing method.
+/// Its ordered mutations must first become one validated journal frame; only
+/// applying that frame to [`CompositeOverlayBuilder`] creates a publishable
+/// successor. Dropping the stage publishes nothing.
+pub struct CompositeMutationStage {
+    tables: [PersistentOverlayMap; TABLE_COUNT],
+    charged_bytes: usize,
+    mutations: Vec<CompositeMutationV1>,
+}
+
+impl CompositeMutationStage {
+    /// Forks one captured view for private subgroup staging in O(1).
+    #[must_use]
+    pub fn new(predecessor: &FrozenCompositeOverlay) -> Self {
+        Self {
+            tables: predecessor.tables.clone(),
+            charged_bytes: predecessor.charged_bytes,
+            mutations: Vec::new(),
+        }
+    }
+
+    /// Applies one exact mutation to private read-your-writes state. A failed
+    /// validation leaves the complete stage unchanged.
+    pub fn apply(
+        &mut self,
+        mutation: CompositeMutationV1,
+        base: &impl CompositeViewBase,
+    ) -> Result<(), StorageValueError> {
+        apply_mutations_atomically(
+            &mut self.tables,
+            &mut self.charged_bytes,
+            std::slice::from_ref(&mutation),
+            base,
+        )?;
+        self.mutations.push(mutation);
+        Ok(())
+    }
+
+    /// Resolves a private point through staged state and then the checkpoint.
+    pub fn resolve_point(
+        &self,
+        base: &impl CompositeViewBase,
+        table: CompositeTableV1,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageValueError> {
+        resolve_overlay_point(&self.tables, base, table, key)
+    }
+
+    /// Returns the number of exact ordered mutations retained for framing.
+    #[must_use]
+    pub fn mutation_count(&self) -> usize {
+        self.mutations.len()
+    }
+
+    /// Consumes the stage into the exact ordered mutations that must be encoded
+    /// in its journal frame.
+    #[must_use]
+    pub fn into_mutations(self) -> Vec<CompositeMutationV1> {
+        self.mutations
     }
 }
 
@@ -632,11 +660,7 @@ impl FrozenCompositeOverlay {
         table: CompositeTableV1,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageValueError> {
-        match self.lookup(table, key) {
-            OverlayLookup::Unchanged => base.read_base(table, key),
-            OverlayLookup::Tombstone => Ok(None),
-            OverlayLookup::Value(value) => Ok(Some(value.to_vec())),
-        }
+        resolve_overlay_point(&self.tables, base, table, key)
     }
 
     /// Canonically merges a sorted checkpoint range with this overlay without
@@ -778,6 +802,70 @@ impl BoundedCompositePage {
 enum OverlayValue {
     Tombstone,
     Value(Arc<[u8]>),
+}
+
+fn apply_mutations_atomically(
+    tables: &mut [PersistentOverlayMap; TABLE_COUNT],
+    charged_bytes: &mut usize,
+    mutations: &[CompositeMutationV1],
+    base: &impl CompositeViewBase,
+) -> Result<(), StorageValueError> {
+    let mut pending_tables: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT] =
+        array::from_fn(|_| BTreeMap::new());
+    let mut candidate_charge = *charged_bytes;
+    for mutation in mutations {
+        base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
+        let table_index = mutation.table().index();
+        let pending = pending_tables[table_index].get(mutation.key());
+        let current = match pending.or_else(|| tables[table_index].get(mutation.key())) {
+            Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
+            Some(OverlayValue::Tombstone) => None,
+            None => base.read_base(mutation.table(), mutation.key())?,
+        };
+        validate_before_image(current.as_deref(), mutation.expected_hash())?;
+
+        let key: Box<[u8]> = mutation.key().into();
+        let replacement = mutation
+            .value()
+            .map(|value| OverlayValue::Value(Arc::from(value)))
+            .unwrap_or(OverlayValue::Tombstone);
+        let prior_overlay = pending_tables[table_index]
+            .get(key.as_ref())
+            .or_else(|| tables[table_index].get(key.as_ref()));
+        if let Some(prior) = prior_overlay {
+            candidate_charge = candidate_charge
+                .checked_sub(entry_charge(&key, prior)?)
+                .ok_or(StorageValueError::SizeOverflow)?;
+        }
+        candidate_charge = candidate_charge
+            .checked_add(entry_charge(&key, &replacement)?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if candidate_charge > MAX_COMPOSITE_OVERLAY_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        pending_tables[table_index].insert(key, replacement);
+    }
+
+    for (target, pending) in tables.iter_mut().zip(pending_tables) {
+        for (key, value) in pending {
+            target.insert(key, value);
+        }
+    }
+    *charged_bytes = candidate_charge;
+    Ok(())
+}
+
+fn resolve_overlay_point(
+    tables: &[PersistentOverlayMap; TABLE_COUNT],
+    base: &impl CompositeViewBase,
+    table: CompositeTableV1,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, StorageValueError> {
+    match tables[table.index()].get(key) {
+        None => base.read_base(table, key),
+        Some(OverlayValue::Tombstone) => Ok(None),
+        Some(OverlayValue::Value(value)) => Ok(Some(value.to_vec())),
+    }
 }
 
 /// Persistent AVL map used by immutable published views.

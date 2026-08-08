@@ -76,6 +76,13 @@ pub(crate) struct SharedRedb {
     /// epoch is active every operational reader clones this immutable root;
     /// the epoch writer alone may observe redb's newer deferred roots.
     durable_read_frontier: RwLock<Option<Arc<ReadTransaction>>>,
+    /// Shadow publication root used while WP-488 replaces the standard writer.
+    /// It is not selected by operational reads until the complete frame-first
+    /// path and recovery barriers are installed.
+    composite_publication: RwLock<Option<crate::composite_view::RedbCompositePublication>>,
+    /// Newest complete writer-private composite successor, including sealed
+    /// epochs whose journal fence has not published yet.
+    private_composite_frontier: Mutex<Option<Arc<crate::composite_view::RedbCompositeReadView>>>,
     journal_runtime: Mutex<Option<JournalRuntime>>,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
@@ -327,11 +334,13 @@ pub(crate) struct RedbWriteAccess {
     journal_mutations: Option<RefCell<crate::journal::JournalMutationBuffer>>,
     journal_mutation_start: u32,
     journal_checkpoint: Option<JournalRuntime>,
+    composite_predecessor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
+    composite_stage: Option<RefCell<crate::composite_view::RedbCompositeMutationStage>>,
 }
 
 enum RedbWriteOwnership {
     Direct { _lease: ExclusiveLease },
-    Epoch(RedbDurabilityEpoch),
+    Epoch(Box<RedbDurabilityEpoch>),
     ServiceAudit { _lease: ExclusiveLease },
 }
 
@@ -354,6 +363,8 @@ pub struct RedbDurabilityEpoch {
     reserved_encoded_bytes: usize,
     journal_mutations: crate::journal::JournalMutationBuffer,
     journal_mutation_groups: usize,
+    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_stage: Option<crate::composite_view::RedbCompositeMutationStage>,
     completed: bool,
 }
 
@@ -390,6 +401,8 @@ pub struct RedbSubmittedCommandFence {
     last_administration_sequence: Option<AdministrationSequence>,
     audit_count: usize,
     journaled: bool,
+    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_successor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
     completed: bool,
 }
 
@@ -404,6 +417,8 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
     covered_sequence: Option<CommitSequence>,
     predecessor_administration_sequence: Option<AdministrationSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
+    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_successor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
     completed: bool,
 }
 
@@ -602,6 +617,8 @@ impl RedbStore {
                 write_fenced: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_read_frontier: RwLock::new(None),
+                composite_publication: RwLock::new(None),
+                private_composite_frontier: Mutex::new(None),
                 journal_runtime: Mutex::new(None),
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
@@ -2437,6 +2454,8 @@ impl RedbOperationalPorts {
             journal_mutations: None,
             journal_mutation_start: 0,
             journal_checkpoint,
+            composite_predecessor: None,
+            composite_stage: None,
         })
     }
 
@@ -2464,6 +2483,10 @@ impl RedbOperationalPorts {
             *frontier = Some(transaction);
         }
         drop(frontier);
+        let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
+        let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
+            &composite_predecessor,
+        );
         Ok(RedbDurabilityEpoch {
             shared: Arc::clone(&self.shared),
             lease: Some(lease),
@@ -2475,6 +2498,8 @@ impl RedbOperationalPorts {
             reserved_encoded_bytes: 0,
             journal_mutations: crate::journal::JournalMutationBuffer::default(),
             journal_mutation_groups: 0,
+            composite_predecessor,
+            composite_stage: Some(composite_stage),
             completed: false,
         })
     }
@@ -2504,6 +2529,10 @@ impl RedbOperationalPorts {
             ));
         }
         drop(frontier);
+        let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
+        let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
+            &composite_predecessor,
+        );
         let mut transaction = self
             .shared
             .database
@@ -2522,6 +2551,8 @@ impl RedbOperationalPorts {
             )),
             journal_mutation_start: 0,
             journal_checkpoint: None,
+            composite_predecessor: Some(composite_predecessor),
+            composite_stage: Some(RefCell::new(composite_stage)),
         })
     }
 
@@ -2791,6 +2822,14 @@ impl RedbWriteAccess {
         let Some(retained) = self.journal_mutations.as_ref() else {
             return Ok(());
         };
+        if let Some(stage) = self.composite_stage.as_ref() {
+            let mut stage = stage
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            for mutation in &mutations {
+                stage.apply(mutation)?;
+            }
+        }
         retained
             .try_borrow_mut()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
@@ -2808,6 +2847,18 @@ impl RedbWriteAccess {
         let Some(retained) = self.journal_mutations.as_ref() else {
             return Ok(());
         };
+        let mutation = crate::journal::JournalMutation::put(
+            crate::journal::JournalTable::Commits,
+            key.clone(),
+            value.clone(),
+        )
+        .map_err(journal_storage_error)?;
+        if let Some(stage) = self.composite_stage.as_ref() {
+            stage
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .apply(&mutation)?;
+        }
         retained
             .try_borrow_mut()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
@@ -2910,15 +2961,26 @@ impl RedbWriteAccess {
         metrics: riffdb_storage_api::StagedBatchMetrics,
         delta: Option<TransientIndexDelta>,
     ) -> Result<RedbDurabilityEpoch, StorageError> {
-        let Some(RedbWriteOwnership::Epoch(mut epoch)) = self.ownership.take() else {
+        let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.take() else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
+        let mut epoch = *epoch;
         let journal_mutations = self
             .journal_mutations
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .into_inner();
+        let composite_stage = self
+            .composite_stage
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .into_inner();
         if journal_mutations.mutation_count() == self.journal_mutation_start {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if usize::try_from(journal_mutations.mutation_count()).ok()
+            != Some(composite_stage.mutation_count())
+        {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if epoch
@@ -2957,6 +3019,7 @@ impl RedbWriteAccess {
         epoch.semantic_bytes = next_semantic;
         epoch.reserved_encoded_bytes = next_reserved;
         epoch.journal_mutations = journal_mutations;
+        epoch.composite_stage = Some(composite_stage);
         epoch.journal_mutation_groups = epoch
             .journal_mutation_groups
             .checked_add(1)
@@ -2998,7 +3061,21 @@ impl RedbWriteAccess {
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .into_inner();
+        let composite_stage = self
+            .composite_stage
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .into_inner();
+        let composite_predecessor = self
+            .composite_predecessor
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         if mutations.mutation_count() == self.journal_mutation_start {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if usize::try_from(mutations.mutation_count()).ok()
+            != Some(composite_stage.mutation_count())
+        {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if let Some(controller) = &self.shared.test_controller {
@@ -3026,7 +3103,13 @@ impl RedbWriteAccess {
         );
         let covered_sequence = read_commit_tail(&successor)?;
         let covered_administration_sequence = read_administration_tail(&successor)?;
-        let (receipt, encoded_bytes, predecessor_sequence, predecessor_administration_sequence) = {
+        let (
+            receipt,
+            encoded_bytes,
+            predecessor_sequence,
+            predecessor_administration_sequence,
+            composite_successor,
+        ) = {
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
                 .as_mut()
@@ -3083,6 +3166,17 @@ impl RedbWriteAccess {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let frame_hash = frame.frame_hash();
+            let (decoded, decoded_hash) = crate::journal::JournalFrame::decode(frame.as_bytes())
+                .map_err(journal_storage_error)?;
+            if decoded_hash != frame_hash {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let mut composite = crate::composite_view::RedbCompositeViewBuilder::from_published(
+                &composite_predecessor,
+            );
+            composite.apply_frame(&decoded)?;
+            let composite_successor = Arc::new(composite.freeze());
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.last_administration_sequence = covered_administration_sequence;
             runtime.last_hash = frame_hash;
@@ -3097,8 +3191,11 @@ impl RedbWriteAccess {
                 encoded_bytes,
                 predecessor_sequence,
                 predecessor_administration_sequence,
+                composite_successor,
             )
         };
+        self.shared
+            .install_private_composite_successor(&composite_predecessor, &composite_successor)?;
         let fence = RedbSubmittedServiceAuditFence {
             shared: Arc::clone(&self.shared),
             receipt: Some(receipt),
@@ -3110,6 +3207,8 @@ impl RedbWriteAccess {
             covered_sequence,
             predecessor_administration_sequence,
             covered_administration_sequence,
+            composite_predecessor,
+            composite_successor: Some(composite_successor),
             completed: false,
         };
         drop(ownership);
@@ -3180,6 +3279,10 @@ impl RedbDurabilityEpoch {
             || self.reserved_encoded_bytes != 0
             || self.journal_mutations.mutation_count() != 0
             || self.journal_mutation_groups != 0
+            || self
+                .composite_stage
+                .as_ref()
+                .is_some_and(|stage| stage.mutation_count() != 0)
     }
 
     pub(crate) fn begin_write(mut self) -> Result<RedbWriteAccess, StorageError> {
@@ -3201,13 +3304,16 @@ impl RedbDurabilityEpoch {
         let shared = Arc::clone(&self.shared);
         let journal_mutations = std::mem::take(&mut self.journal_mutations);
         let journal_mutation_start = journal_mutations.mutation_count();
+        let composite_stage = self.composite_stage.take();
         Ok(RedbWriteAccess {
             shared,
             transaction: Some(transaction),
-            ownership: Some(RedbWriteOwnership::Epoch(self)),
+            ownership: Some(RedbWriteOwnership::Epoch(Box::new(self))),
             journal_mutations: Some(RefCell::new(journal_mutations)),
             journal_mutation_start,
             journal_checkpoint: None,
+            composite_predecessor: None,
+            composite_stage: composite_stage.map(RefCell::new),
         })
     }
 
@@ -3219,6 +3325,10 @@ impl RedbDurabilityEpoch {
             .before_test_commit(RedbTestOperation::CommandEpochTail)?;
         if self.journal_mutation_groups != self.applied.len()
             || self.journal_mutations.mutation_count() == 0
+            || self.composite_stage.as_ref().is_none_or(|stage| {
+                usize::try_from(self.journal_mutations.mutation_count()).ok()
+                    != Some(stage.mutation_count())
+            })
         {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -3239,7 +3349,14 @@ impl RedbDurabilityEpoch {
         );
         let last_administration_sequence = read_administration_tail(&successor)?;
         let mutations = std::mem::take(&mut self.journal_mutations);
-        let (receipt, encoded_bytes, audit_count, predecessor_administration_sequence, journaled) = {
+        let (
+            receipt,
+            encoded_bytes,
+            audit_count,
+            predecessor_administration_sequence,
+            journaled,
+            composite_successor,
+        ) = {
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
                 .as_mut()
@@ -3300,9 +3417,21 @@ impl RedbDurabilityEpoch {
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
                 || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
             {
-                (None, 0, 0, predecessor_administration_sequence, false)
+                (None, 0, 0, predecessor_administration_sequence, false, None)
             } else {
                 let frame_hash = frame.frame_hash();
+                let (decoded, decoded_hash) =
+                    crate::journal::JournalFrame::decode(frame.as_bytes())
+                        .map_err(journal_storage_error)?;
+                if decoded_hash != frame_hash {
+                    self.shared.fence_writes();
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+                let mut composite = crate::composite_view::RedbCompositeViewBuilder::from_published(
+                    &self.composite_predecessor,
+                );
+                composite.apply_frame(&decoded)?;
+                let composite_successor = Arc::new(composite.freeze());
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.last_sequence = Some(last_sequence);
                 runtime.last_administration_sequence = last_administration_sequence;
@@ -3321,9 +3450,16 @@ impl RedbDurabilityEpoch {
                     audit_count,
                     predecessor_administration_sequence,
                     true,
+                    Some(composite_successor),
                 )
             }
         };
+        if let Some(composite_successor) = composite_successor.as_ref() {
+            self.shared.install_private_composite_successor(
+                &self.composite_predecessor,
+                composite_successor,
+            )?;
+        }
         if !journaled {
             // The exact frame proved that the bounded recovery suffix is full.
             // Flush the already-applied private redb root directly instead of
@@ -3374,12 +3510,112 @@ impl RedbDurabilityEpoch {
             last_administration_sequence,
             audit_count,
             journaled,
+            composite_predecessor: Arc::clone(&self.composite_predecessor),
+            composite_successor,
             completed: false,
         })
     }
 }
 
 impl SharedRedb {
+    fn capture_or_initialize_composite_view(
+        &self,
+    ) -> Result<Arc<crate::composite_view::RedbCompositeReadView>, StorageError> {
+        if let Some(private) = self
+            .private_composite_frontier
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+            .map(Arc::clone)
+        {
+            return Ok(private);
+        }
+        let published_hash = {
+            let mut runtime = self.journal_runtime()?;
+            runtime
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .published_hash
+        };
+        let mut publication = self
+            .composite_publication
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if publication.is_none() {
+            let root = self
+                .durable_read_frontier
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            let initial =
+                crate::composite_view::RedbCompositeViewBuilder::from_root(root, published_hash)?
+                    .freeze();
+            *publication = Some(crate::composite_view::RedbCompositePublication::new(
+                initial,
+            ));
+        }
+        let captured = publication
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .capture()?;
+        *self
+            .private_composite_frontier
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
+            Some(Arc::clone(&captured));
+        Ok(captured)
+    }
+
+    fn install_private_composite_successor(
+        &self,
+        expected: &Arc<crate::composite_view::RedbCompositeReadView>,
+        successor: &Arc<crate::composite_view::RedbCompositeReadView>,
+    ) -> Result<(), StorageError> {
+        let mut private = self
+            .private_composite_frontier
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if private
+            .as_ref()
+            .is_none_or(|current| !Arc::ptr_eq(current, expected))
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *private = Some(Arc::clone(successor));
+        Ok(())
+    }
+
+    fn publish_composite_successor(
+        &self,
+        expected: &Arc<crate::composite_view::RedbCompositeReadView>,
+        successor: Arc<crate::composite_view::RedbCompositeReadView>,
+    ) -> Result<(), StorageError> {
+        let publication = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        publication
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .publish_successor(expected, successor)?;
+        Ok(())
+    }
+
+    fn clear_composite_publication(&self) -> Result<(), StorageError> {
+        *self
+            .composite_publication
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? = None;
+        *self
+            .private_composite_frontier
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? = None;
+        Ok(())
+    }
+
     fn journal_runtime(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, Option<JournalRuntime>>, StorageError> {
@@ -3575,6 +3811,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        self.clear_composite_publication()?;
         Ok(())
     }
 
@@ -3712,6 +3949,7 @@ impl RedbSubmittedCommandFence {
         &mut self,
     ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
         self.publish_successor()?;
+        self.shared.clear_composite_publication()?;
         {
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
@@ -3752,6 +3990,12 @@ impl RedbSubmittedCommandFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
+        let composite_successor = self
+            .composite_successor
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.shared
+            .publish_composite_successor(&self.composite_predecessor, composite_successor)?;
         self.publish_successor()?;
 
         {
@@ -3903,6 +4147,12 @@ impl RedbSubmittedServiceAuditFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
+        let composite_successor = self
+            .composite_successor
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.shared
+            .publish_composite_successor(&self.composite_predecessor, composite_successor)?;
         let mut frontier = self
             .shared
             .durable_read_frontier
