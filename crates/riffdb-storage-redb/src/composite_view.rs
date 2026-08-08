@@ -141,6 +141,57 @@ impl RedbCompositeMutationStage {
     pub(crate) fn mutation_count(&self) -> usize {
         self.stage.mutation_count()
     }
+
+    pub(crate) fn read_checkpoint_bytes(
+        &self,
+        definition: TableDefinition<'static, &'static [u8], &'static [u8]>,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        self.root
+            .open_table(definition)
+            .map_err(table_error)?
+            .get(key)
+            .map_err(precommit_storage_error)
+            .map(|value| value.map(|value| value.value().to_vec()))
+    }
+
+    pub(crate) fn merge_bounded(
+        &self,
+        table: CompositeTableV1,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+        max_inspected: usize,
+    ) -> Result<BoundedCompositePage, StorageError> {
+        let definition =
+            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let base = self.root.open_table(definition).map_err(table_error)?;
+        let end = end_exclusive
+            .map(std::ops::Bound::Excluded)
+            .unwrap_or(std::ops::Bound::Unbounded);
+        let rows = base
+            .range::<&[u8]>((std::ops::Bound::Included(start_inclusive), end))
+            .map_err(precommit_storage_error)?
+            .map(|row| {
+                row.map(|(key, value)| {
+                    (
+                        key.value().to_vec().into_boxed_slice(),
+                        value.value().to_vec().into_boxed_slice(),
+                    )
+                })
+                .map_err(invalid_shape)
+            });
+        self.stage
+            .merge_bounded(
+                table,
+                rows,
+                start_inclusive,
+                end_exclusive,
+                max_rows,
+                max_inspected,
+            )
+            .map_err(corrupt_value)
+    }
 }
 
 /// One atomic publication cell for a checkpoint-plus-overlay read view.

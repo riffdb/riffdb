@@ -41,10 +41,11 @@ use riffdb_types::{
 
 use crate::application::stage_admission_group;
 use crate::codec::{
-    decode_active_catalog_pointer_v1, decode_administration_audit_with_command_tables,
-    decode_administration_sequence_allocator_v1, decode_capability_bootstrap_marker_v1,
-    decode_capability_record_v1, decode_capability_token_lookup_v1, decode_commit_with_event_table,
-    decode_contract_bundle_v1, decode_database_identity_v1, decode_provenance_record_v1,
+    decode_active_catalog_pointer_v1, decode_administration_audit_record_v1,
+    decode_administration_audit_with_command_tables, decode_administration_sequence_allocator_v1,
+    decode_capability_bootstrap_marker_v1, decode_capability_record_v1,
+    decode_capability_token_lookup_v1, decode_commit_with_event_table, decode_contract_bundle_v1,
+    decode_database_identity_v1, decode_provenance_record_v1,
     decode_query_module_administration_v1, decode_query_module_v1, decode_reactive_module_v1,
     encode_active_catalog_pointer_v1, encode_administration_audit_record_v1,
     encode_administration_sequence_allocator_v1, encode_capability_bootstrap_marker_v1,
@@ -166,9 +167,12 @@ fn read_administration_record_readonly(
 fn validate_administration_tail(
     access: &crate::store::RedbWriteAccess,
 ) -> Result<AdministrationSequenceAllocator, StorageError> {
-    let transaction = access.transaction()?;
-    let allocator = read_administration_allocator(transaction)?;
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let allocator_bytes = access
+        .read_command_value(JournalTable::Meta, META_ADMINISTRATION_SEQUENCE.as_bytes())?
+        .ok_or_else(corrupt)?;
+    let allocator = decoded_value(decode_administration_sequence_allocator_v1(
+        &allocator_bytes,
+    )?);
     let expected_last = match allocator {
         AdministrationSequenceAllocator::Next(next) => {
             AdministrationSequence::new(next.get().saturating_sub(1))
@@ -176,30 +180,31 @@ fn validate_administration_tail(
         AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
     };
     let Some(expected_last) = expected_last else {
-        if table.last().map_err(precommit_storage_error)?.is_some() {
+        if !access
+            .read_command_range(JournalTable::Audit, &[0], &[u8::MAX; 9], 1)?
+            .is_empty()
+        {
             return Err(corrupt());
         }
         return Ok(allocator);
     };
     let key = encode_audit_key(expected_last);
-    let physical = match table.get(key.as_slice()).map_err(precommit_storage_error)? {
-        Some(value) => {
-            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            Some(decoded_value(
-                decode_administration_audit_with_command_tables(value.value(), &commits, &events)?,
-            ))
-        }
-        None => None,
-    };
-    let derived = match access.command_audit_record(expected_last)? {
-        Some(indexed) => Some(indexed),
-        None => {
-            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            command_audit_at_transaction_tail(&commits, expected_last)?
-        }
-    }
-    .map(StoredAdministrationAuditRecordV1::Service);
+    let derived = access
+        .command_audit_record(expected_last)?
+        .map(StoredAdministrationAuditRecordV1::Service);
+    let physical = access
+        .read_command_value(JournalTable::Audit, key.as_slice())?
+        .map(
+            |value| match decode_administration_audit_record_v1(&value) {
+                Ok(record) => Ok(Some(decoded_value(record))),
+                Err(_) if riffdb_storage_api::decode_command_audit_locator_v1(&value).is_ok() => {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            },
+        )
+        .transpose()?
+        .flatten();
     let exact = match (physical, derived) {
         (Some(physical), Some(derived)) if physical == derived => physical,
         (Some(physical), None) | (None, Some(physical)) => physical,
@@ -208,8 +213,11 @@ fn validate_administration_tail(
     if exact.administration_sequence() != expected_last {
         return Err(corrupt());
     }
-    if let Some((last_key, _)) = table.last().map_err(precommit_storage_error)?
-        && decode_audit_key(last_key.value()).map_err(|_| corrupt())? > expected_last
+    let next_key = expected_last.checked_next().map(encode_audit_key);
+    if let Some(next_key) = next_key
+        && !access
+            .read_command_range(JournalTable::Audit, next_key.as_slice(), &[u8::MAX; 9], 1)?
+            .is_empty()
     {
         return Err(corrupt());
     }
@@ -369,6 +377,29 @@ pub(crate) fn write_administration_allocator(
     table
         .insert(META_ADMINISTRATION_SEQUENCE, encoded.as_bytes())
         .map_err(precommit_storage_error)?;
+    Ok(())
+}
+
+fn write_administration_allocator_in_access(
+    access: &RedbWriteAccess,
+    expected: AdministrationSequenceAllocator,
+    next: AdministrationSequenceAllocator,
+) -> Result<(), StorageError> {
+    let current = access
+        .read_command_value(JournalTable::Meta, META_ADMINISTRATION_SEQUENCE.as_bytes())?
+        .ok_or_else(corrupt)?;
+    if decoded_value(decode_administration_sequence_allocator_v1(&current)?) != expected {
+        return Err(invariant());
+    }
+    let encoded = encode_administration_sequence_allocator_v1(next)?;
+    let replaced = access.put_command_value(
+        JournalTable::Meta,
+        META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
+        encoded.into_bytes(),
+    )?;
+    if replaced.as_deref() != Some(current.as_slice()) {
+        return Err(invariant());
+    }
     Ok(())
 }
 
@@ -1830,6 +1861,76 @@ where
     Ok(lifecycle)
 }
 
+fn service_lifecycle_in_access(
+    access: &RedbWriteAccess,
+    request_id: RequestId,
+    sequences: &[AdministrationSequence],
+) -> Result<Option<ServiceLifecycle>, StorageError> {
+    let mut lifecycle = None;
+    for sequence in sequences {
+        let key = encode_audit_key(*sequence);
+        let derived = access
+            .command_audit_record(*sequence)?
+            .map(StoredAdministrationAuditRecordV1::Service);
+        let physical = access
+            .read_command_value(JournalTable::Audit, key.as_slice())?
+            .map(
+                |value| match decode_administration_audit_record_v1(&value) {
+                    Ok(record) => Ok(Some(decoded_value(record))),
+                    Err(_)
+                        if riffdb_storage_api::decode_command_audit_locator_v1(&value).is_ok() =>
+                    {
+                        Ok(None)
+                    }
+                    Err(error) => Err(error),
+                },
+            )
+            .transpose()?
+            .flatten();
+        let record = match (physical, derived) {
+            (Some(physical), Some(derived)) if physical == derived => physical,
+            (Some(record), None) | (None, Some(record)) => record,
+            (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
+        };
+        let StoredAdministrationAuditRecordV1::Service(record) = record else {
+            return Err(corrupt());
+        };
+        if record.request_id() != request_id {
+            return Err(corrupt());
+        }
+        lifecycle = Some(match lifecycle {
+            None if record.phase() == ServiceAuditPhaseV1::Started => ServiceLifecycle::Started {
+                record,
+                terminal: false,
+            },
+            None if record.principal().is_some()
+                && record.link() == ServiceAuditLinkV1::None
+                && matches!(
+                    record.phase(),
+                    ServiceAuditPhaseV1::Denied
+                        | ServiceAuditPhaseV1::Cancelled
+                        | ServiceAuditPhaseV1::Failed
+                ) =>
+            {
+                ServiceLifecycle::Standalone
+            }
+            Some(ServiceLifecycle::Started {
+                record: started,
+                terminal: false,
+            }) if record.phase() != ServiceAuditPhaseV1::Started
+                && service_common_matches(&started, &record) =>
+            {
+                ServiceLifecycle::Started {
+                    record: started,
+                    terminal: true,
+                }
+            }
+            _ => return Err(corrupt()),
+        });
+    }
+    Ok(lifecycle)
+}
+
 fn service_link_is_valid(
     transaction: &redb::WriteTransaction,
     intent: &ServiceAuditAppendIntentV1,
@@ -2402,15 +2503,7 @@ pub(crate) fn stage_command_service_audit_group_in_write(
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     let sequences_by_request = access.service_audit_sequences_for(&request_ids)?;
-    let transaction = access.transaction()?;
     let allocator = validate_administration_tail(access)?;
-    let has_prior_lifecycle = sequences_by_request
-        .values()
-        .any(|sequences| !sequences.is_empty());
-    let audit = has_prior_lifecycle
-        .then(|| transaction.open_table(AUDIT).map_err(table_error))
-        .transpose()?;
-
     let mut prior_starts = Vec::with_capacity(transitions.len());
     for (transition, evidence) in transitions.iter().zip(staged_commands) {
         let terminal = transition.terminal();
@@ -2431,14 +2524,7 @@ pub(crate) fn stage_command_service_audit_group_in_write(
         let lifecycle = if sequences.is_empty() {
             None
         } else {
-            service_lifecycle_in_write(
-                access,
-                audit
-                    .as_ref()
-                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-                terminal.request_id(),
-                sequences,
-            )?
+            service_lifecycle_in_access(access, terminal.request_id(), sequences)?
         };
         match (transition, lifecycle) {
             (CommandServiceAuditTransitionV1::StartedAndTerminal { started, terminal }, None) => {
@@ -2467,7 +2553,6 @@ pub(crate) fn stage_command_service_audit_group_in_write(
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
     }
-    drop(audit);
 
     let row_count = transitions
         .iter()
@@ -2523,18 +2608,7 @@ pub(crate) fn stage_command_service_audit_group_in_write(
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
 
-    let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
-    let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
-    write_administration_allocator(transaction, allocator, next)?;
-    access.record_journal_mutations(vec![
-        JournalMutation::replace(
-            JournalTable::Meta,
-            META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
-            prior_allocator.as_bytes(),
-            encoded_allocator.as_bytes().to_vec(),
-        )
-        .map_err(|_| invariant())?,
-    ])?;
+    write_administration_allocator_in_access(access, allocator, next)?;
     Ok(records)
 }
 

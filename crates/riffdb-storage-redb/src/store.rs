@@ -2838,38 +2838,164 @@ impl RedbWriteAccess {
         Ok(())
     }
 
-    pub(crate) fn record_command_segment_journal_mutation(
+    pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
+        self.transaction
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    pub(crate) fn read_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        if let Some(stage) = self.composite_stage.as_ref() {
+            return stage
+                .try_borrow()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .resolve_point(table.composite(), key);
+        }
+        crate::journal::read_write_value(self.transaction()?, table, key).map_err(journal_io_error)
+    }
+
+    pub(crate) fn put_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let prior = self.read_command_value(table, &key)?;
+        let mutation = match prior.as_deref() {
+            Some(prior) => crate::journal::JournalMutation::replace(table, key, prior, value),
+            None => crate::journal::JournalMutation::put(table, key, value),
+        }
+        .map_err(journal_storage_error)?;
+        if let Some(transaction) = self.transaction.as_ref() {
+            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+        }
+        self.record_journal_mutations(vec![mutation])?;
+        Ok(prior)
+    }
+
+    pub(crate) fn delete_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(prior) = self.read_command_value(table, &key)? else {
+            return Ok(None);
+        };
+        let mutation = crate::journal::JournalMutation::delete_matching(table, key, &prior)
+            .map_err(journal_storage_error)?;
+        if let Some(transaction) = self.transaction.as_ref() {
+            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+        }
+        self.record_journal_mutations(vec![mutation])?;
+        Ok(Some(prior))
+    }
+
+    pub(crate) fn put_command_segment_value(
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
         command_count: usize,
-    ) -> Result<(), StorageError> {
-        let Some(retained) = self.journal_mutations.as_ref() else {
-            return Ok(());
-        };
+    ) -> Result<bool, StorageError> {
+        if self
+            .read_command_value(crate::journal::JournalTable::Commits, &key)?
+            .is_some()
+        {
+            return Ok(false);
+        }
         let mutation = crate::journal::JournalMutation::put(
             crate::journal::JournalTable::Commits,
             key.clone(),
             value.clone(),
         )
         .map_err(journal_storage_error)?;
+        if let Some(transaction) = self.transaction.as_ref() {
+            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+        }
         if let Some(stage) = self.composite_stage.as_ref() {
             stage
                 .try_borrow_mut()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
                 .apply(&mutation)?;
         }
-        retained
-            .try_borrow_mut()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .push_command_segment(key, value, command_count)
-            .map_err(journal_storage_error)
+        if let Some(retained) = self.journal_mutations.as_ref() {
+            retained
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .push_command_segment(key, value, command_count)
+                .map_err(journal_storage_error)?;
+        }
+        Ok(true)
     }
 
-    pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
-        self.transaction
-            .as_ref()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    pub(crate) fn read_command_range(
+        &self,
+        table: crate::journal::JournalTable,
+        start_inclusive: &[u8],
+        end_exclusive: &[u8],
+        max_rows: usize,
+    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        if max_rows == 0 {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if let Some(stage) = self.composite_stage.as_ref() {
+            return stage
+                .try_borrow()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .merge_bounded(
+                    table.composite(),
+                    start_inclusive,
+                    Some(end_exclusive),
+                    max_rows,
+                    max_rows,
+                )
+                .map(|page| page.rows().to_vec());
+        }
+        let definition = crate::journal::byte_table_definition(table)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let table = self
+            .transaction()?
+            .open_table(definition)
+            .map_err(table_error)?;
+        table
+            .range::<&[u8]>((
+                std::ops::Bound::Included(start_inclusive),
+                std::ops::Bound::Excluded(end_exclusive),
+            ))
+            .map_err(precommit_storage_error)?
+            .take(max_rows)
+            .map(|row| {
+                row.map(|(key, value)| {
+                    (
+                        key.value().to_vec().into_boxed_slice(),
+                        value.value().to_vec().into_boxed_slice(),
+                    )
+                })
+                .map_err(precommit_storage_error)
+            })
+            .collect()
+    }
+
+    pub(crate) fn read_checkpoint_byte_value(
+        &self,
+        definition: TableDefinition<'static, &'static [u8], &'static [u8]>,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        if let Some(stage) = self.composite_stage.as_ref() {
+            return stage
+                .try_borrow()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .read_checkpoint_bytes(definition, key);
+        }
+        self.transaction()?
+            .open_table(definition)
+            .map_err(table_error)?
+            .get(key)
+            .map_err(precommit_storage_error)
+            .map(|value| value.map(|value| value.value().to_vec()))
     }
 
     #[allow(
