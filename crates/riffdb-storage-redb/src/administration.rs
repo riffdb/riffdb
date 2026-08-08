@@ -52,6 +52,7 @@ use crate::codec::{
     encode_capability_record_v1, encode_capability_token_lookup_v1, encode_contract_bundle_v1,
     encode_query_module_administration_v1, encode_query_module_v1, encode_reactive_module_v1,
 };
+use crate::command_authority::command_member_at_access;
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::{JournalMutation, JournalTable};
@@ -68,7 +69,7 @@ use crate::layout::{
     META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, PROVENANCE,
     QUERY_MODULE_ACTIVE, QUERY_MODULES, REACTIVE_MODULES,
 };
-use crate::store::{RedbOperationalPorts, RedbWriteAccess};
+use crate::store::{RedbOperationalPorts, RedbReadAccess, RedbWriteAccess};
 
 fn decoded_value<T>(item: EncodedPageItem<T>) -> T {
     item.into_parts().0
@@ -131,6 +132,86 @@ fn read_administration_allocator_readonly(
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
     decode_administration_sequence_allocator_v1(value.value()).map(decoded_value)
+}
+
+fn read_administration_allocator_access(
+    access: &RedbReadAccess,
+) -> Result<AdministrationSequenceAllocator, StorageError> {
+    let encoded = access
+        .read_value(JournalTable::Meta, META_ADMINISTRATION_SEQUENCE.as_bytes())?
+        .ok_or_else(corrupt)?;
+    decode_administration_sequence_allocator_v1(&encoded).map(decoded_value)
+}
+
+fn read_administration_record_access(
+    ports: &RedbOperationalPorts,
+    access: &RedbReadAccess,
+    sequence: AdministrationSequence,
+) -> Result<StoredAdministrationAuditRecordV1, StorageError> {
+    let key = encode_audit_key(sequence);
+    let physical = access
+        .read_value(JournalTable::Audit, key.as_slice())?
+        .map(
+            |encoded| match riffdb_storage_api::decode_command_audit_locator_v1(&encoded) {
+                Ok(locator) => {
+                    let locator = locator.into_parts().0;
+                    let command = command_member_at_access(access, locator.commit_sequence())?
+                        .ok_or_else(corrupt)?;
+                    let base = command.base();
+                    let audit = match locator.member() {
+                        riffdb_storage_api::StoredCommandAuditMemberV1::Started => {
+                            base.started_audit()
+                        }
+                        riffdb_storage_api::StoredCommandAuditMemberV1::Terminal => {
+                            base.terminal_audit()
+                        }
+                    };
+                    Ok(StoredAdministrationAuditRecordV1::Service(audit.clone()))
+                }
+                Err(_) => Ok(decoded_value(decode_administration_audit_record_v1(
+                    &encoded,
+                )?)),
+            },
+        )
+        .transpose()?;
+    let derived = ports
+        .indexed_command_audit(sequence)?
+        .map(StoredAdministrationAuditRecordV1::Service);
+    let record = match (physical, derived) {
+        (Some(physical), Some(derived)) if physical == derived => physical,
+        (Some(record), None) | (None, Some(record)) => record,
+        (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
+    };
+    if record.administration_sequence() != sequence {
+        return Err(corrupt());
+    }
+    Ok(record)
+}
+
+fn validate_administration_stream_access(
+    ports: &RedbOperationalPorts,
+    access: &RedbReadAccess,
+) -> Result<AdministrationSequenceAllocator, StorageError> {
+    let allocator = read_administration_allocator_access(access)?;
+    let mut current = AdministrationSequence::first();
+    loop {
+        let present = match allocator {
+            AdministrationSequenceAllocator::Next(next) => current < next,
+            AdministrationSequenceAllocator::Exhausted => true,
+        };
+        if !present {
+            return Ok(allocator);
+        }
+        read_administration_record_access(ports, access, current)?;
+        let Some(next) = current.checked_next() else {
+            return if allocator == AdministrationSequenceAllocator::Exhausted {
+                Ok(allocator)
+            } else {
+                Err(corrupt())
+            };
+        };
+        current = next;
+    }
 }
 
 fn read_administration_record_readonly(
@@ -782,9 +863,8 @@ impl AdministrationAuditReader for RedbOperationalPorts {
         &self,
         request: AdministrationAuditScanRequest,
     ) -> Result<AdministrationAuditScan, StorageError> {
-        let transaction = self.begin_read()?;
-        validate_administration_stream_readonly(self, &transaction)?;
-        let allocator = read_administration_allocator_readonly(&transaction)?;
+        let transaction = self.begin_composite_read()?;
+        let allocator = validate_administration_stream_access(self, &transaction)?;
         let mut records = Vec::new();
         let mut bytes = 0usize;
         let mut has_more = false;
@@ -800,7 +880,7 @@ impl AdministrationAuditReader for RedbOperationalPorts {
             if !present {
                 break;
             }
-            let record = read_administration_record_readonly(self, &transaction, sequence)?;
+            let record = read_administration_record_access(self, &transaction, sequence)?;
             let encoded = encode_administration_audit_record_v1(&record)?;
             let item = EncodedPageItem::new(record, encoded.encoded_content_charge());
             let next_bytes = bytes
@@ -2009,6 +2089,105 @@ fn service_link_is_valid(
     }
 }
 
+fn service_link_is_valid_access(
+    access: &RedbWriteAccess,
+    intent: &ServiceAuditAppendIntentV1,
+) -> Result<bool, StorageError> {
+    match intent.link() {
+        ServiceAuditLinkV1::None => Ok(true),
+        ServiceAuditLinkV1::Command {
+            commit_sequence,
+            provenance_id,
+        } => {
+            let provenance_key = encode_provenance_key(provenance_id);
+            if let Some((segment, locator)) = access.command_derived_member(
+                riffdb_storage_api::CommandDerivedIndexKindV1::Provenance,
+                provenance_key.as_slice(),
+            )? {
+                if locator.member != riffdb_storage_api::CommandDerivedMemberV1::Command
+                    || locator.member_ordinal != 0
+                {
+                    return Err(corrupt());
+                }
+                let command = segment
+                    .commands()
+                    .get(usize::from(locator.command_ordinal))
+                    .ok_or_else(corrupt)?;
+                return Ok(command.commit_sequence() == commit_sequence
+                    && command.base().provenance().provenance_id() == provenance_id
+                    && command.base().provenance().commit_sequence() == commit_sequence);
+            }
+            let Some(encoded_provenance) =
+                access.read_command_value(JournalTable::Provenance, provenance_key.as_slice())?
+            else {
+                return Ok(false);
+            };
+            let provenance = decoded_value(decode_provenance_record_v1(&encoded_provenance)?);
+            if provenance.provenance_id() != provenance_id
+                || provenance.commit_sequence() != commit_sequence
+            {
+                return Ok(false);
+            }
+            let commit_key = encode_application_sequence_key(commit_sequence);
+            Ok(access
+                .read_command_value(JournalTable::Commits, commit_key.as_slice())?
+                .is_some())
+        }
+        ServiceAuditLinkV1::ControlPlane {
+            administration_sequence,
+        } => {
+            let key = encode_audit_key(administration_sequence);
+            let Some(encoded) = access.read_command_value(JournalTable::Audit, key.as_slice())?
+            else {
+                return Ok(false);
+            };
+            let target = decoded_value(decode_administration_audit_record_v1(&encoded)?);
+            Ok(match (intent.operation(), target) {
+                (
+                    ServiceOperationV1::DeployContract,
+                    StoredAdministrationAuditRecordV1::Catalog(_),
+                )
+                | (
+                    ServiceOperationV1::DeployQueryModule,
+                    StoredAdministrationAuditRecordV1::QueryModule(_),
+                )
+                | (
+                    ServiceOperationV1::DeployReactiveModule,
+                    StoredAdministrationAuditRecordV1::ReactiveModule(_),
+                ) => true,
+                (
+                    ServiceOperationV1::CreateCapability,
+                    StoredAdministrationAuditRecordV1::Capability(record),
+                ) => {
+                    matches!(
+                        record.operation(),
+                        CapabilityAdministrationOperationV1::Bootstrap
+                            | CapabilityAdministrationOperationV1::Create
+                    ) && intent
+                        .targets()
+                        .as_slice()
+                        .contains(&ServiceAuditTargetV1::Capability(
+                            record.target_capability_id(),
+                        ))
+                }
+                (
+                    ServiceOperationV1::RevokeCapability,
+                    StoredAdministrationAuditRecordV1::Capability(record),
+                ) => {
+                    record.operation() == CapabilityAdministrationOperationV1::Revoke
+                        && intent
+                            .targets()
+                            .as_slice()
+                            .contains(&ServiceAuditTargetV1::Capability(
+                                record.target_capability_id(),
+                            ))
+                }
+                _ => false,
+            })
+        }
+    }
+}
+
 fn command_service_link_is_valid<C, E, P>(
     commits: &C,
     events: &E,
@@ -2190,7 +2369,6 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
         let access = self.begin_deferred_service_audit_write()?;
-        let transaction = access.transaction()?;
         validate_administration_tail(&access)?;
         let distinct_requests = intents
             .iter()
@@ -2199,14 +2377,11 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         let sequences_by_request = access.service_audit_sequences_for(&distinct_requests)?;
         let mut allowed = Vec::with_capacity(intents.len());
         for intent in intents {
-            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
             let sequences = sequences_by_request
                 .get(&intent.request_id())
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let lifecycle =
-                service_lifecycle_in_write(&access, &audit, intent.request_id(), sequences)?;
-            drop(audit);
+            let lifecycle = service_lifecycle_in_access(&access, intent.request_id(), sequences)?;
             let phase_allowed = match lifecycle {
                 None => match intent.phase() {
                     ServiceAuditPhaseV1::Started => {
@@ -2237,7 +2412,7 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
                                 && intent.link() == started.link()))
                 }
             };
-            allowed.push(phase_allowed && service_link_is_valid(transaction, intent)?);
+            allowed.push(phase_allowed && service_link_is_valid_access(&access, intent)?);
         }
         let selected = intents
             .iter()
@@ -2386,14 +2561,10 @@ fn stage_checked_standalone_service_audit_group_in_write(
     {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }
-    let transaction = access.transaction()?;
     let allocator = validate_administration_tail(access)?;
     let count =
         u16::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
     let (assigned, next) = allocate_sequences(allocator, count)?;
-    let mut journal_mutations =
-        Vec::with_capacity(intents.len().saturating_mul(2).saturating_add(1));
-    let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
     let mut records = Vec::with_capacity(intents.len());
     for (intent, sequence) in intents.iter().zip(assigned) {
         let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
@@ -2401,27 +2572,18 @@ fn stage_checked_standalone_service_audit_group_in_write(
             &StoredAdministrationAuditRecordV1::Service(record.clone()),
         )?;
         let key = encode_audit_key(sequence);
-        if audit
-            .insert(key.as_slice(), encoded.as_bytes())
-            .map_err(precommit_storage_error)?
+        if access
+            .put_command_value(
+                JournalTable::Audit,
+                key.to_vec(),
+                encoded.as_bytes().to_vec(),
+            )?
             .is_some()
         {
             return Err(corrupt());
         }
-        journal_mutations.push(
-            JournalMutation::put(
-                JournalTable::Audit,
-                key.to_vec(),
-                encoded.as_bytes().to_vec(),
-            )
-            .map_err(|_| invariant())?,
-        );
         records.push(record);
     }
-    drop(audit);
-    let mut request_index = transaction
-        .open_table(crate::layout::AUDIT_BY_REQUEST)
-        .map_err(table_error)?;
     for record in &records {
         let key = crate::keys::encode_audit_by_request_key(
             record.request_id(),
@@ -2433,36 +2595,27 @@ fn stage_checked_standalone_service_audit_group_in_write(
                 record.administration_sequence(),
             ),
         )?;
-        if request_index
-            .insert(key.as_slice(), value.as_bytes())
-            .map_err(precommit_storage_error)?
+        if access
+            .put_command_value(
+                JournalTable::AuditByRequest,
+                key.to_vec(),
+                value.as_bytes().to_vec(),
+            )?
             .is_some()
         {
             return Err(corrupt());
         }
-        journal_mutations.push(
-            JournalMutation::put(
-                JournalTable::AuditByRequest,
-                key.to_vec(),
-                value.as_bytes().to_vec(),
-            )
-            .map_err(|_| invariant())?,
-        );
     }
-    drop(request_index);
     let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
     let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
-    write_administration_allocator(transaction, allocator, next)?;
-    journal_mutations.push(
-        JournalMutation::replace(
-            JournalTable::Meta,
-            META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
-            prior_allocator.as_bytes(),
-            encoded_allocator.as_bytes().to_vec(),
-        )
-        .map_err(|_| invariant())?,
-    );
-    access.record_journal_mutations(journal_mutations)?;
+    let prior = access.put_command_value(
+        JournalTable::Meta,
+        META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
+        encoded_allocator.as_bytes().to_vec(),
+    )?;
+    if prior.as_deref() != Some(prior_allocator.as_bytes()) {
+        return Err(corrupt());
+    }
     Ok(records)
 }
 

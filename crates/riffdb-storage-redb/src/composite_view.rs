@@ -281,6 +281,10 @@ impl RedbCompositeReadView {
         &self.root
     }
 
+    pub(crate) fn checkpoint_root_shared(&self) -> Arc<ReadTransaction> {
+        Arc::clone(&self.root)
+    }
+
     pub(crate) fn overlay(&self) -> &FrozenCompositeOverlay {
         &self.overlay
     }

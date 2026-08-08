@@ -317,7 +317,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     }
 
     let store = without_whitespace(&production_source(source_dir.join("store.rs")));
-    assert_eq!(store.matches("transaction.commit()").count(), 3);
+    assert_eq!(store.matches("transaction.commit()").count(), 1);
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
@@ -328,7 +328,8 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .split_once("fninvalidate_transient_indexes(")
         .expect("deferred commit path end")
         .0;
-    assert_eq!(deferred.matches("transaction.commit()").count(), 2);
+    assert_eq!(deferred.matches("transaction.commit()").count(), 0);
+    assert!(deferred.contains("ifself.transaction.take().is_some()"));
     let service_audit = store
         .split_once("fnsubmit_service_audit(")
         .expect("closed deferred service-audit path")
@@ -336,8 +337,32 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .split_once("fninvalidate_transient_indexes(")
         .expect("deferred service-audit path end")
         .0;
-    assert_eq!(service_audit.matches("transaction.commit()").count(), 1);
-    assert!(store.contains("set_durability(Durability::None)"));
+    assert_eq!(service_audit.matches("transaction.commit()").count(), 0);
+    assert!(service_audit.contains("ifself.transaction.take().is_some()"));
+    assert!(!store.contains("set_durability(Durability::None)"));
+
+    let deferred_begin = store
+        .split_once("implRedbDurabilityEpoch{")
+        .expect("durability epoch implementation")
+        .1
+        .split_once("pub(crate)fnbegin_write(")
+        .expect("deferred writer entry")
+        .1
+        .split_once("pub(crate)fnseal(")
+        .expect("deferred writer entry end")
+        .0;
+    assert!(deferred_begin.contains("transaction:None"));
+    assert!(!deferred_begin.contains("database.begin_write()"));
+
+    let audit_begin = store
+        .split_once("pub(crate)fnbegin_deferred_service_audit_write(")
+        .expect("deferred service-audit writer entry")
+        .1
+        .split_once("pub(crate)fnacquire_indexed_read_lease(")
+        .expect("deferred service-audit writer entry end")
+        .0;
+    assert!(audit_begin.contains("transaction:None"));
+    assert!(!audit_begin.contains("database.begin_write()"));
 
     let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
     assert!(!startup.contains("transaction.commit()"));
