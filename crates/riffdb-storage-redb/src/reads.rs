@@ -1,16 +1,18 @@
 //! Owned authoritative reads over short redb read transactions.
 
-use std::ops::Bound::{Excluded, Included, Unbounded};
-
-use redb::{ReadOnlyTable, ReadTransaction, ReadableTableMetadata};
+use redb::ReadOnlyTable;
+#[cfg(test)]
+use redb::{ReadTransaction, ReadableTableMetadata};
+#[cfg(test)]
+use riffdb_storage_api::ApplicationSequenceAllocator;
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
-    AuthoritativePointReader, AuthoritativeScanReader, CommandDerivedIndexKindV1,
-    CommandDerivedMemberV1, CommitScanPageV1, CommitScanRequest, EncodedContentCharge,
-    EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
-    EventRouteUpperFenceV1, FilteredAuthoritativeIndexScanPage,
-    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
-    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
+    AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
+    AuthoritativeScanReader, CommandDerivedIndexKindV1, CommandDerivedMemberV1, CommitScanPageV1,
+    CommitScanRequest, EncodedContentCharge, EncodedPageItem, EntityObservation, EntityTarget,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, IdempotencyIdentity, IndexEpochPosition,
+    IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
     MAX_INDEX_SCAN_INSPECTED_BYTES, MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES,
     PartitionEventRouteReader, PartitionIndexTarget, ReadSnapshot, ReadSnapshotBuilder,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageValueError,
@@ -19,17 +21,22 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
+#[cfg(test)]
+use crate::codec::decode_application_sequence_allocator_v1;
 use crate::codec::{
-    IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_command_locator_v1,
-    decode_durable_event_v1, decode_entity_record_v1, decode_idempotency_record_v1,
-    decode_index_entry_v2, decode_index_epoch_v1, decode_provenance_record_v1,
-    encode_event_route_v1,
+    IdempotencyRecordV1, decode_command_locator_v1, decode_durable_event_v1,
+    decode_entity_record_v1, decode_idempotency_record_v1, decode_index_entry_v2,
+    decode_index_epoch_v1, decode_provenance_record_v1, encode_event_route_v1,
 };
+#[cfg(test)]
+use crate::command_authority::command_authority_head;
 use crate::command_authority::{
-    command_authority_head, command_member_at, commit_at, commits_in_physical_row,
-    physical_scan_start,
+    command_member_at_access, commit_at_access, commits_in_physical_row_access,
 };
-use crate::error::{precommit_storage_error, storage_error, table_error};
+#[cfg(test)]
+use crate::error::table_error;
+use crate::error::{precommit_storage_error, storage_error};
+use crate::journal::JournalTable;
 #[cfg(test)]
 use crate::keys::encode_event_route_key;
 use crate::keys::{
@@ -37,11 +44,9 @@ use crate::keys::{
     encode_entity_key, encode_event_key, encode_idempotency_key, encode_partition_index_key,
     encode_provenance_key,
 };
-use crate::layout::{
-    COMMITS, ENTITIES, EVENTS, IDEMPOTENCY, INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE,
-    PROVENANCE, SECONDARY_INDEXES,
-};
-use crate::store::RedbOperationalPorts;
+#[cfg(test)]
+use crate::layout::{EVENTS, META, META_APPLICATION_SEQUENCE};
+use crate::store::{RedbOperationalPorts, RedbReadAccess};
 
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
@@ -61,66 +66,48 @@ impl SnapshotReader for RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let transaction = self.begin_read()?;
-        let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-        let index_entries = transaction
-            .open_table(SECONDARY_INDEXES)
-            .map_err(table_error)?;
-        let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-
-        let observed_through = read_snapshot_head(&transaction, &commits)?;
+        let transaction = self.begin_composite_read()?;
+        let observed_through = transaction.application_frontier()?;
         requests
             .into_iter()
-            .map(|request| {
-                read_snapshot_from_tables(
-                    request,
-                    observed_through,
-                    &entities,
-                    &index_entries,
-                    &index_epochs,
-                )
-            })
+            .map(|request| read_snapshot_from_access(request, observed_through, &transaction))
             .collect()
     }
 }
 
-fn read_snapshot_from_tables(
+fn read_snapshot_from_access(
     request: SnapshotRequest,
     observed_through: Option<CommitSequence>,
-    entities: &BytesTable,
-    index_entries: &BytesTable,
-    index_epochs: &BytesTable,
+    access: &RedbReadAccess,
 ) -> Result<ReadSnapshot, StorageError> {
     let mut snapshot =
         ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
-
     for target in request.binding_targets() {
         snapshot
-            .push_binding(read_entity_observation(entities, target)?)
+            .push_binding(read_entity_observation_access(access, target)?)
             .map_err(materialization_value)?;
     }
     for target in request.root_validation_targets() {
         snapshot
-            .push_root_validation(read_entity_observation(entities, target)?)
+            .push_root_validation(read_entity_observation_access(access, target)?)
             .map_err(materialization_value)?;
     }
     for target in request.range_targets() {
-        let epoch = read_epoch_position(index_epochs, target.generation_target())?;
+        let epoch = read_epoch_position_access(access, target.generation_target())?;
         let mut range = snapshot
             .begin_range(target.clone(), epoch)
             .map_err(materialization_value)?;
         let prefix = target.prefix().as_bytes();
-        let mut entries = index_entries
-            .range(prefix..)
-            .map_err(precommit_storage_error)?;
-        for entry in &mut entries {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            if !physical_key.value().starts_with(prefix) {
-                break;
-            }
-            let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(encoded.value())?;
+        let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
+        let entries = access.read_range(
+            JournalTable::SecondaryIndexes,
+            prefix,
+            &upper,
+            MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
+        )?;
+        for (physical_key, encoded) in entries {
+            let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
+            let decoded = decode_index_entry_v2(&encoded)?;
             if decoded.value().key() != &key {
                 return Err(corrupt());
             }
@@ -145,9 +132,8 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         &self,
         target: &EntityTarget,
     ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
-        let transaction = self.begin_read()?;
-        let table = transaction.open_table(ENTITIES).map_err(table_error)?;
-        read_entity_record(&table, target)
+        let transaction = self.begin_composite_read()?;
+        read_entity_record_access(&transaction, target)
     }
 
     fn read_stored_outcome(
@@ -173,12 +159,11 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             }
             return Ok(Some(command.base().outcome().clone()));
         }
-        let transaction = self.begin_read()?;
-        let table = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
-        let Some(encoded) = table.get(encoded_key).map_err(precommit_storage_error)? else {
+        let transaction = self.begin_composite_read()?;
+        let Some(encoded) = transaction.read_value(JournalTable::Idempotency, encoded_key)? else {
             return Ok(None);
         };
-        let decoded = decode_idempotency_record_v1(encoded.value())?;
+        let decoded = decode_idempotency_record_v1(&encoded)?;
         match decoded.into_parts().0 {
             IdempotencyRecordV1::StoredOutcome(outcome) if outcome.identity() == identity => {
                 Ok(Some(outcome))
@@ -192,9 +177,7 @@ impl AuthoritativePointReader for RedbOperationalPorts {
                 Err(corrupt())
             }
             IdempotencyRecordV1::CommandLocator(locator) => {
-                let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-                let events = transaction.open_table(EVENTS).map_err(table_error)?;
-                let capsule = command_member_at(&commits, &events, locator.commit_sequence())?
+                let capsule = command_member_at_access(&transaction, locator.commit_sequence())?
                     .ok_or_else(corrupt)?
                     .into_base();
                 if capsule.commit_sequence() != locator.commit_sequence()
@@ -217,13 +200,11 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             }
             return Ok(Some(command.base().commit().clone()));
         }
-        let transaction = self.begin_read()?;
+        let transaction = self.begin_composite_read()?;
         // Verified once at open; prune runs only under exclusive OFFLINE
         // access, so the watermark cannot change under a live handle.
         let watermark = self.shared.retention_watermark();
-        let table = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let Some(record) = commit_at(&table, &events, sequence)? else {
+        let Some(record) = commit_at_access(&transaction, sequence)? else {
             if crate::retention::sequence_covered_by_watermark(sequence.get(), watermark) {
                 return Err(storage_error(StorageErrorKind::HistoryPruned));
             }
@@ -254,20 +235,16 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             }
             return Ok(Some(record.clone()));
         }
-        let transaction = self.begin_read()?;
-        let table = transaction.open_table(PROVENANCE).map_err(table_error)?;
-        let Some(encoded) = table
-            .get(encoded_key.as_slice())
-            .map_err(precommit_storage_error)?
+        let transaction = self.begin_composite_read()?;
+        let Some(encoded) =
+            transaction.read_value(JournalTable::Provenance, encoded_key.as_slice())?
         else {
             return Ok(None);
         };
-        let record = match decode_command_locator_v1(encoded.value()) {
+        let record = match decode_command_locator_v1(&encoded) {
             Ok(locator) => {
                 let locator = locator.into_parts().0;
-                let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-                let events = transaction.open_table(EVENTS).map_err(table_error)?;
-                let capsule = command_member_at(&commits, &events, locator.commit_sequence())?
+                let capsule = command_member_at_access(&transaction, locator.commit_sequence())?
                     .ok_or_else(corrupt)?
                     .into_base();
                 if capsule.commit_sequence() != locator.commit_sequence() {
@@ -275,7 +252,7 @@ impl AuthoritativePointReader for RedbOperationalPorts {
                 }
                 capsule.provenance().clone()
             }
-            Err(_) => decode_provenance_record_v1(encoded.value())?.into_parts().0,
+            Err(_) => decode_provenance_record_v1(&encoded)?.into_parts().0,
         };
         if record.provenance_id() != provenance_id {
             return Err(corrupt());
@@ -295,15 +272,11 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             }
             return Ok(Some(event.clone()));
         }
-        let transaction = self.begin_read()?;
+        let transaction = self.begin_composite_read()?;
         // Verified once at open (see read_commit).
         let watermark = self.shared.retention_watermark();
-        let table = transaction.open_table(EVENTS).map_err(table_error)?;
         let encoded_key = encode_event_key(event_id);
-        let Some(encoded) = table
-            .get(encoded_key.as_slice())
-            .map_err(precommit_storage_error)?
-        else {
+        let Some(encoded) = transaction.read_value(JournalTable::Events, &encoded_key)? else {
             if crate::retention::sequence_covered_by_watermark(
                 event_id.commit_sequence().get(),
                 watermark,
@@ -312,7 +285,7 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             }
             return Ok(None);
         };
-        let event = decode_durable_event_v1(encoded.value())?.into_parts().0;
+        let event = decode_durable_event_v1(&encoded)?.into_parts().0;
         if event.event_id() != event_id {
             return Err(corrupt());
         }
@@ -370,31 +343,35 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
         &self,
         request: AuthoritativeIndexScanRequest,
     ) -> Result<AuthoritativeIndexScanPage, StorageError> {
-        let transaction = self.begin_read()?;
-        let table = transaction
-            .open_table(SECONDARY_INDEXES)
-            .map_err(table_error)?;
-        let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-        let epoch = read_epoch_position(&index_epochs, request.target().generation_target())?;
+        let transaction = self.begin_composite_read()?;
+        let epoch = read_epoch_position_access(&transaction, request.target().generation_target())?;
         let prefix = request.target().prefix().as_bytes();
-        let mut scan = match request.after() {
-            Some(after) => table
-                .range::<&[u8]>((Excluded(after.as_bytes()), Unbounded))
-                .map_err(precommit_storage_error)?,
-            None => table.range(prefix..).map_err(precommit_storage_error)?,
-        };
+        let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
+        let start = request.after().map_or(prefix, |after| after.as_bytes());
+        let scan = transaction.read_range(
+            JournalTable::SecondaryIndexes,
+            start,
+            &upper,
+            MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
+        )?;
         let wanted = usize::from(request.limit().get());
         let mut entries = Vec::with_capacity(wanted);
         let mut encoded_bytes = 0usize;
         let mut has_more = false;
 
-        for entry in &mut scan {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            if !physical_key.value().starts_with(prefix) {
+        for (candidate_index, (physical_key, encoded)) in scan.into_iter().enumerate() {
+            if request
+                .after()
+                .is_some_and(|after| physical_key.as_ref() == after.as_bytes())
+            {
+                continue;
+            }
+            if candidate_index == MAX_INDEX_SCAN_INSPECTED_ENTRIES {
+                has_more = true;
                 break;
             }
-            let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(encoded.value())?;
+            let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
+            let decoded = decode_index_entry_v2(&encoded)?;
             if decoded.value().key() != &key {
                 return Err(corrupt());
             }
@@ -434,12 +411,10 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
-        let transaction = self.begin_read()?;
-        let table = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let transaction = self.begin_composite_read()?;
         let inclusive_upper = match request.inclusive_upper() {
             Some(sequence) => FrontierPosition::AppliedThrough(sequence),
-            None => read_commit_head(&transaction, &table)?.map_or(
+            None => transaction.application_frontier()?.map_or(
                 FrontierPosition::BeforeFirst,
                 FrontierPosition::AppliedThrough,
             ),
@@ -459,11 +434,23 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
             return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
                 .map_err(corrupt_value);
         }
-        let start = physical_scan_start(&table, first_expected)?.ok_or_else(corrupt)?;
-        let end = encode_application_sequence_key(upper);
-        let mut scan = table
-            .range::<&[u8]>((Included(start.as_slice()), Included(end.as_slice())))
-            .map_err(precommit_storage_error)?;
+        let first_key = encode_application_sequence_key(CommitSequence::first());
+        let mut first_end = encode_application_sequence_key(first_expected).to_vec();
+        first_end.push(0);
+        let start = transaction
+            .read_range_reverse(JournalTable::Commits, &first_key, &first_end, 1)?
+            .into_iter()
+            .next()
+            .map(|(key, _)| key)
+            .ok_or_else(corrupt)?;
+        let mut end = encode_application_sequence_key(upper).to_vec();
+        end.push(0);
+        let scan = transaction.read_range(
+            JournalTable::Commits,
+            &start,
+            &end,
+            MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
+        )?;
         let wanted = usize::from(request.limit().get());
         let mut records = Vec::with_capacity(wanted);
         let mut encoded_bytes = 0usize;
@@ -471,14 +458,17 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
         let mut expected = Some(first_expected);
         let mut expected_physical = None;
 
-        'rows: for entry in &mut scan {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+        'rows: for (row_index, (physical_key, encoded)) in scan.into_iter().enumerate() {
+            if row_index == MAX_INDEX_SCAN_INSPECTED_ENTRIES {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
             let physical_sequence =
-                decode_application_sequence_key(physical_key.value()).map_err(|_| corrupt())?;
+                decode_application_sequence_key(&physical_key).map_err(|_| corrupt())?;
             if expected_physical.is_some_and(|value| value != physical_sequence) {
                 return Err(corrupt());
             }
-            let logical = commits_in_physical_row(encoded.value(), &events, physical_sequence)?;
+            let logical =
+                commits_in_physical_row_access(&transaction, &encoded, physical_sequence)?;
             let last_physical = logical
                 .last()
                 .ok_or_else(corrupt)?
@@ -540,11 +530,7 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
         &self,
         request: FilteredAuthoritativeIndexScanRequest,
     ) -> Result<FilteredAuthoritativeIndexScanPage, StorageError> {
-        let transaction = self.begin_read()?;
-        let table = transaction
-            .open_table(SECONDARY_INDEXES)
-            .map_err(table_error)?;
-        let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+        let transaction = self.begin_composite_read()?;
         if request.partition_filter().is_none() {
             return FilteredAuthoritativeIndexScanPage::exact_end(
                 &request,
@@ -561,18 +547,20 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         };
-        let epoch = read_epoch_position(
-            &index_epochs,
+        let epoch = read_epoch_position_access(
+            &transaction,
             &PartitionIndexTarget::new(partition.clone(), request.target().prefix().index_id()),
         )?;
 
         let prefix = request.target().prefix().as_bytes();
-        let mut scan = match request.after() {
-            Some(after) => table
-                .range::<&[u8]>((Excluded(after.as_bytes()), Unbounded))
-                .map_err(precommit_storage_error)?,
-            None => table.range(prefix..).map_err(precommit_storage_error)?,
-        };
+        let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
+        let start = request.after().map_or(prefix, |after| after.as_bytes());
+        let scan = transaction.read_range(
+            JournalTable::SecondaryIndexes,
+            start,
+            &upper,
+            MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
+        )?;
         let returned_limit = usize::from(request.limit().get());
         let mut returned = Vec::with_capacity(returned_limit);
         let mut returned_bytes = 0usize;
@@ -580,10 +568,12 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
         let mut scanned_through = None;
         let mut exact_end = true;
 
-        for (candidate_index, entry) in (&mut scan).enumerate() {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            if !physical_key.value().starts_with(prefix) {
-                break;
+        for (candidate_index, (physical_key, encoded)) in scan.into_iter().enumerate() {
+            if request
+                .after()
+                .is_some_and(|after| physical_key.as_ref() == after.as_bytes())
+            {
+                continue;
             }
             if returned.len() == returned_limit
                 || candidate_index == MAX_INDEX_SCAN_INSPECTED_ENTRIES
@@ -592,8 +582,8 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
                 break;
             }
 
-            let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(encoded.value())?;
+            let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
+            let decoded = decode_index_entry_v2(&encoded)?;
             if decoded.value().key() != &key {
                 return Err(corrupt());
             }
@@ -644,14 +634,30 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
     }
 }
 
-fn read_entity_observation(
-    table: &BytesTable,
+fn read_entity_observation_access(
+    access: &RedbReadAccess,
     target: &EntityTarget,
 ) -> Result<EntityObservation, StorageError> {
-    Ok(read_entity_record(table, target)?.map_or_else(
+    Ok(read_entity_record_access(access, target)?.map_or_else(
         || EntityObservation::Absent(target.clone()),
         EntityObservation::Present,
     ))
+}
+
+pub(crate) fn read_entity_record_access(
+    access: &RedbReadAccess,
+    target: &EntityTarget,
+) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+    let Some(encoded) =
+        access.read_value(JournalTable::Entities, encode_entity_key(target.key()))?
+    else {
+        return Ok(None);
+    };
+    let record = decode_entity_record_v1(&encoded)?.into_parts().0;
+    if record.target() != target {
+        return Err(corrupt());
+    }
+    Ok(Some(record))
 }
 
 pub(crate) fn read_entity_record(
@@ -671,21 +677,30 @@ pub(crate) fn read_entity_record(
     Ok(Some(record))
 }
 
-fn read_epoch_position(
-    table: &BytesTable,
+fn read_epoch_position_access(
+    access: &RedbReadAccess,
     target: &PartitionIndexTarget,
 ) -> Result<IndexEpochPosition, StorageError> {
     let key = encode_partition_index_key(target);
-    let Some(encoded) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+    let Some(encoded) = access.read_value(JournalTable::IndexEpochs, &key)? else {
         return Ok(IndexEpochPosition::BeforeFirst);
     };
-    let epoch = decode_index_epoch_v1(encoded.value())?.into_parts().0;
+    let epoch = decode_index_epoch_v1(&encoded)?.into_parts().0;
     if epoch.target() != target {
         return Err(corrupt());
     }
     Ok(IndexEpochPosition::Value(epoch.epoch()))
 }
 
+fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
+    upper[position] = upper[position].saturating_add(1);
+    upper.truncate(position + 1);
+    Some(upper)
+}
+
+#[cfg(test)]
 pub(crate) fn read_commit_head(
     transaction: &ReadTransaction,
     table: &BytesTable,
@@ -698,6 +713,7 @@ pub(crate) fn read_commit_head(
 /// command history. The allocator is advanced in the same authoritative redb
 /// transaction as every entity/index post-image and command segment, so its
 /// predecessor is the exact frontier of this read transaction.
+#[cfg(test)]
 pub(crate) fn read_snapshot_head(
     transaction: &ReadTransaction,
     commits: &BytesTable,
@@ -715,6 +731,7 @@ pub(crate) fn read_snapshot_head(
     Ok(head)
 }
 
+#[cfg(test)]
 const fn snapshot_head_from_allocator(
     allocator: ApplicationSequenceAllocator,
 ) -> Option<CommitSequence> {

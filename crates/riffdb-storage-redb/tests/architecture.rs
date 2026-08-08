@@ -356,7 +356,7 @@ fn sealed_command_audit_evidence_is_confined_to_post_staging_application_commits
         .expect("command stage end")
         .0;
     let physical_insert = stage
-        .find("apply_record_set(&mutcore,&records,encoded,retain_journal)?")
+        .find("apply_record_set(&mutcore,&records,encoded)?")
         .expect("complete graph physical insert");
     let sealed_evidence = stage
         .find("core.staged.push(records.into_staged_evidence())")
@@ -466,10 +466,10 @@ fn pipelined_writers_resolve_command_audits_from_the_unpublished_exact_index() {
     let exact = tail
         .find("access.command_audit_record(expected_last)?")
         .expect("exact unpublished-aware audit lookup");
-    let fallback = tail
-        .find("command_audit_at_transaction_tail(&commits,expected_last)?")
-        .expect("bounded dormant fallback");
-    assert!(exact < fallback);
+    let physical = tail
+        .find(".read_command_value(JournalTable::Audit,key.as_slice())?")
+        .expect("composite physical audit lookup");
+    assert!(exact < physical);
 }
 
 #[test]

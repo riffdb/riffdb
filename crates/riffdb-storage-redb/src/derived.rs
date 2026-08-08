@@ -34,9 +34,12 @@ use crate::codec::{
     encode_durable_event_v1, encode_outbox_intent_v1, encode_outbox_status_v1,
     encode_projection_apply_v1, encode_projection_control_v1, encode_projection_state_v1,
 };
-use crate::command_authority::{command_authority_head, commit_at};
+use crate::command_authority::{
+    command_authority_head, command_member_at_access, commit_at, commit_at_access,
+};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
+use crate::journal::JournalTable;
 #[cfg(test)]
 use crate::keys::encode_application_sequence_key;
 use crate::keys::{
@@ -47,7 +50,7 @@ use crate::layout::{
     COMMITS, EVENTS, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED, PROJECTION_FRONTIER,
     PROJECTION_STATE,
 };
-use crate::store::RedbOperationalPorts;
+use crate::store::{RedbOperationalPorts, RedbReadAccess};
 use crate::transient::TransientIndexDelta;
 
 impl OutboxRepository for RedbOperationalPorts {
@@ -61,13 +64,10 @@ impl OutboxRepository for RedbOperationalPorts {
         &self,
         event_id: EventId,
     ) -> Result<OutboxStatusReadResultV1, StorageError> {
-        let transaction = self.begin_read()?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
+        let transaction = self.begin_composite_read()?;
         let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
         Ok(
-            reciprocal_outbox_item(self, &events, &intents, &statuses, &commits, event_id)?.map_or(
+            reciprocal_outbox_item_access(&transaction, &statuses, event_id)?.map_or(
                 OutboxStatusReadResultV1::AuthoritativeIntentMissing,
                 |item| OutboxStatusReadResultV1::Status(item.status),
             ),
@@ -82,18 +82,14 @@ impl OutboxRepository for RedbOperationalPorts {
         let _lease = self.acquire_indexed_read_lease()?;
         let wanted = usize::from(limit.get().get());
         let (event_ids, mut has_more) = self.pending_outbox_page(after, wanted)?;
-        let transaction = self.begin_read()?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
+        let transaction = self.begin_composite_read()?;
         let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
         let mut items = Vec::with_capacity(wanted);
         let mut encoded_bytes = 0usize;
 
         for event_id in event_ids {
-            let item =
-                reciprocal_outbox_item(self, &events, &intents, &statuses, &commits, event_id)?
-                    .ok_or_else(corrupt)?;
+            let item = reciprocal_outbox_item_access(&transaction, &statuses, event_id)?
+                .ok_or_else(corrupt)?;
             if !item.status.is_pending() {
                 return Err(corrupt());
             }
@@ -125,11 +121,8 @@ impl OutboxRepository for RedbOperationalPorts {
         // The transient index gates derived-component availability only. The
         // recovery page itself is always read and proven from durable tables.
         let _ = self.undelivered_outbox_page(None, 0)?;
-        let transaction = self.begin_read()?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
+        let transaction = self.begin_composite_read()?;
         let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
         let inclusive_upper = request.inclusive_upper().or(self.outbox_intent_last()?);
         let Some(inclusive_upper) = inclusive_upper else {
             if statuses.last().map_err(precommit_storage_error)?.is_some() {
@@ -157,9 +150,8 @@ impl OutboxRepository for RedbOperationalPorts {
             if event_id > inclusive_upper {
                 break;
             }
-            let item =
-                reciprocal_outbox_item(self, &events, &intents, &statuses, &commits, event_id)?
-                    .ok_or_else(corrupt)?;
+            let item = reciprocal_outbox_item_access(&transaction, &statuses, event_id)?
+                .ok_or_else(corrupt)?;
             if !status_is_undelivered(&item.status) {
                 continue;
             }
@@ -337,6 +329,131 @@ struct ReciprocalOutboxItem {
     encoded_bytes: usize,
 }
 
+fn reciprocal_outbox_item_access<S>(
+    access: &RedbReadAccess,
+    statuses: &S,
+    event_id: EventId,
+) -> Result<Option<ReciprocalOutboxItem>, StorageError>
+where
+    S: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let key = encode_event_key(event_id);
+    if let Some(command) = command_member_at_access(access, event_id.commit_sequence())? {
+        let command = command.base();
+        let commit = command.commit();
+        let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+        let event = commit.events().get(ordinal).ok_or_else(corrupt)?.clone();
+        if event.event_id() != event_id || commit.outbox_event_ids().get(ordinal) != Some(&event_id)
+        {
+            return Err(corrupt());
+        }
+        let intent = StoredOutboxIntentV1::new(event.clone());
+        let status = statuses
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .map(|encoded| decode_outbox_status_v1(encoded.value()))
+            .transpose()?;
+        if status
+            .as_ref()
+            .is_some_and(|status| status.value().event_id() != event_id)
+        {
+            return Err(corrupt());
+        }
+        let event_bytes = encode_durable_event_v1(&event)?.as_bytes().len();
+        let intent_bytes = encode_outbox_intent_v1(&intent)?.as_bytes().len();
+        let encoded_bytes = event_bytes
+            .checked_add(intent_bytes)
+            .and_then(|bytes| {
+                status.as_ref().map_or(Some(bytes), |status| {
+                    bytes.checked_add(status.encoded_content_charge().get())
+                })
+            })
+            .ok_or_else(corrupt)?;
+        let status = status.map_or(OutboxStatusObservationV1::AbsentInitialPending, |status| {
+            OutboxStatusObservationV1::Present(status.into_parts().0)
+        });
+        return Ok(Some(ReciprocalOutboxItem {
+            event,
+            intent,
+            status,
+            encoded_bytes,
+        }));
+    }
+    let event = access
+        .read_value(JournalTable::Events, &key)?
+        .map(|encoded| decode_durable_event_v1(&encoded))
+        .transpose()?;
+    let encoded_intent = access.read_value(JournalTable::Outbox, &key)?;
+    let intent = match (encoded_intent, event.as_ref()) {
+        (Some(encoded), Some(event)) => Some(decode_outbox_intent_with_event(
+            &encoded,
+            event.value().clone(),
+        )?),
+        (Some(_), None) => return Err(corrupt()),
+        (None, _) => None,
+    };
+    let status = statuses
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+        .map(|encoded| decode_outbox_status_v1(encoded.value()))
+        .transpose()?;
+    if status
+        .as_ref()
+        .is_some_and(|status| status.value().event_id() != event_id)
+    {
+        return Err(corrupt());
+    }
+    let commit = commit_at_access(access, event_id.commit_sequence())?;
+    let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+    match (event, intent) {
+        (None, None) => {
+            if status.is_some()
+                || commit.is_some_and(|commit| {
+                    commit.events().get(ordinal).is_some()
+                        || commit.outbox_event_ids().get(ordinal).is_some()
+                })
+            {
+                return Err(corrupt());
+            }
+            Ok(None)
+        }
+        (Some(event), Some(intent)) => {
+            if event.value().event_id() != event_id
+                || intent.value().event_id() != event_id
+                || intent.value().event() != event.value()
+            {
+                return Err(corrupt());
+            }
+            let commit = commit.ok_or_else(corrupt)?;
+            if commit.events().get(ordinal) != Some(event.value())
+                || commit.outbox_event_ids().get(ordinal) != Some(&event_id)
+            {
+                return Err(corrupt());
+            }
+            let encoded_bytes = event
+                .encoded_content_charge()
+                .get()
+                .checked_add(intent.encoded_content_charge().get())
+                .and_then(|bytes| {
+                    status.as_ref().map_or(Some(bytes), |status| {
+                        bytes.checked_add(status.encoded_content_charge().get())
+                    })
+                })
+                .ok_or_else(corrupt)?;
+            let status = status.map_or(OutboxStatusObservationV1::AbsentInitialPending, |status| {
+                OutboxStatusObservationV1::Present(status.into_parts().0)
+            });
+            Ok(Some(ReciprocalOutboxItem {
+                event: event.into_parts().0,
+                intent: intent.into_parts().0,
+                status,
+                encoded_bytes,
+            }))
+        }
+        (None | Some(_), None | Some(_)) => Err(corrupt()),
+    }
+}
+
 fn reciprocal_outbox_item<E, I, S, C>(
     ports: &RedbOperationalPorts,
     events: &E,
@@ -475,7 +592,7 @@ impl ProjectionApplySnapshotReader for RedbOperationalPorts {
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
-        let transaction = self.begin_read()?;
+        let transaction = self.begin_composite_read()?;
         let controls = transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
@@ -838,13 +955,14 @@ impl ProjectionQueryReader for RedbOperationalPorts {
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<ProjectionStatus, StorageError> {
-        let transaction = self.begin_read()?;
+        let transaction = self.begin_composite_read()?;
         let controls = transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let head = authoritative_head(&commits, &events)?;
+        let head = transaction.application_frontier()?.map_or(
+            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough,
+        );
         Ok(read_projection_control(&controls, identity)?.map_or_else(
             || ProjectionStatus::uninitialized(identity.clone(), head),
             |control| ProjectionStatus::from_control(&control, head),

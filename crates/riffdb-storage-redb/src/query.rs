@@ -97,7 +97,9 @@ impl QueryExecutionPort for RedbOperationalPorts {
         parameters: &QueryParameters,
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        let transaction = self.begin_read().map_err(map_storage_query_error)?;
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
         note_query_table_open(QueryTableKind::Commits);
         let head = transaction
             .application_frontier()
@@ -121,7 +123,9 @@ impl QueryExecutionPort for RedbOperationalPorts {
         requests: &[QueryExecutionRequest<'_>],
     ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
         validate_query_execution_group(requests)?;
-        let transaction = self.begin_read().map_err(map_storage_query_error)?;
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
         note_query_table_open(QueryTableKind::Commits);
         let head = transaction
             .application_frontier()
