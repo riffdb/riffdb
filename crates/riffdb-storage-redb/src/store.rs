@@ -288,18 +288,6 @@ impl SharedRedb {
     }
 
     fn begin_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
-        // A published composite view is the complete standard-profile state:
-        // one immutable redb checkpoint plus the exact fenced journal suffix.
-        // Capture it before consulting the legacy deferred-redb frontier so a
-        // reader can never select the checkpoint alone after publication.
-        let composite = self
-            .composite_publication
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Some(publication) = composite.as_ref() {
-            return Ok(RedbReadAccess::Composite(publication.capture()?));
-        }
-        drop(composite);
         // Keep the shared guard through `begin_read`: an epoch cannot install
         // its predecessor frontier between observing `None` and redb selecting
         // the newest (possibly deferred) root.
@@ -312,6 +300,22 @@ impl SharedRedb {
         }
         let transaction = self.database.begin_read().map_err(transaction_error)?;
         Ok(RedbReadAccess::Current(transaction))
+    }
+
+    fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
+        // A published composite view is the complete standard-profile state:
+        // one immutable redb checkpoint plus the exact fenced journal suffix.
+        // Capture it before consulting the legacy deferred-redb frontier so a
+        // reader can never select the checkpoint alone after publication.
+        let composite = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(publication) = composite.as_ref() {
+            return Ok(RedbReadAccess::Composite(publication.capture()?));
+        }
+        drop(composite);
+        self.begin_operational_read()
     }
 }
 
@@ -561,6 +565,13 @@ impl RedbReadAccess {
             Self::Current(transaction) => read_commit_tail(transaction),
             Self::Durable(transaction) => read_commit_tail(transaction),
             Self::Composite(view) => Ok(view.overlay().published_application()),
+        }
+    }
+
+    pub(crate) fn checkpoint_application_frontier(&self) -> Option<CommitSequence> {
+        match self {
+            Self::Composite(view) => view.overlay().checkpoint().application_frontier(),
+            Self::Current(_) | Self::Durable(_) => self.application_frontier().ok().flatten(),
         }
     }
 }
@@ -2556,6 +2567,10 @@ impl RedbOperationalPorts {
         self.shared.begin_operational_read()
     }
 
+    pub(crate) fn begin_composite_read(&self) -> Result<RedbReadAccess, StorageError> {
+        self.shared.begin_composite_operational_read()
+    }
+
     pub(crate) fn begin_write(&self) -> Result<RedbWriteAccess, StorageError> {
         let lease = self.shared.mutation_gate.acquire()?;
         if self.shared.write_fenced.load(Ordering::Acquire) {
@@ -4202,7 +4217,7 @@ impl RedbSubmittedCommandFence {
     fn publish_direct(
         &mut self,
     ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
-        self.publish_successor()?;
+        self.publish_successor(true)?;
         self.shared.clear_composite_publication()?;
         {
             let mut runtime_guard = self.shared.journal_runtime()?;
@@ -4244,13 +4259,18 @@ impl RedbSubmittedCommandFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
+        // No public view may advance before the post-durability uncertainty
+        // hook has resolved. This preserves the predecessor view on an
+        // injected unknown result and matches the recovery contract.
+        self.shared
+            .after_test_commit(RedbTestOperation::CommandEpochTail)?;
         let composite_successor = self
             .composite_successor
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         self.shared
             .publish_composite_successor(&self.composite_predecessor, composite_successor)?;
-        self.publish_successor()?;
+        self.publish_successor(false)?;
 
         {
             let mut runtime_guard = self.shared.journal_runtime()?;
@@ -4294,9 +4314,11 @@ impl RedbSubmittedCommandFence {
         self.finish_applied()
     }
 
-    fn publish_successor(&mut self) -> Result<(), StorageError> {
-        self.shared
-            .after_test_commit(RedbTestOperation::CommandEpochTail)?;
+    fn publish_successor(&mut self, run_test_hook: bool) -> Result<(), StorageError> {
+        if run_test_hook {
+            self.shared
+                .after_test_commit(RedbTestOperation::CommandEpochTail)?;
+        }
         let mut transient = self
             .shared
             .transient_indexes

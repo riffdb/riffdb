@@ -33,7 +33,7 @@ use riffdb_storage_api::{
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, encode_capsule_command_record_set_v1,
 };
-use riffdb_types::{EventId, ProvenanceId};
+use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
 use crate::administration::{
     StagedCommandAuditRecordsV1, stage_command_service_audit_group_in_write,
@@ -47,7 +47,7 @@ use crate::codec::{
     encode_execution_failed_v1, encode_outbox_intent_v1, encode_pending_admission_v1,
     encode_provenance_record_v1, encode_stored_outcome_v1,
 };
-use crate::command_authority::command_member_at;
+use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{codec_error, precommit_storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::{JournalCodecError, JournalMutation, JournalTable};
@@ -62,7 +62,7 @@ use crate::layout::{
     INDEX_EPOCHS, META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION, OUTBOX,
     PROVENANCE,
 };
-use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbWriteAccess};
+use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbReadAccess, RedbWriteAccess};
 use crate::transient::TransientIndexDelta;
 
 struct BatchCore {
@@ -882,26 +882,11 @@ impl AdmissionRepository for RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let transaction = self.begin_read()?;
-        let pending = transaction
-            .open_table(IDEMPOTENCY_PENDING)
-            .map_err(table_error)?;
-        let terminal = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let transaction = self.begin_composite_read()?;
         candidates
             .iter()
             .map(|candidate| {
-                match matching_admissions_from_tables(
-                    &pending,
-                    &terminal,
-                    &commits,
-                    &events,
-                    candidate,
-                    |identity| command_outcome_from_operational_indexes(self, identity),
-                )?
-                .as_slice()
-                {
+                match matching_admissions_from_access(self, &transaction, candidate)?.as_slice() {
                     [] => Ok(AdmissionLookupResultV1::NotFound),
                     [value] => Ok(AdmissionLookupResultV1::Found(Box::new(value.clone()))),
                     [_, ..] => Ok(AdmissionLookupResultV1::MultipleMatches),
@@ -1874,20 +1859,6 @@ fn command_outcome_from_write_indexes(
         .transpose()
 }
 
-fn command_outcome_from_operational_indexes(
-    ports: &RedbOperationalPorts,
-    identity: &IdempotencyIdentity,
-) -> Result<Option<StoredOutcomeV1>, StorageError> {
-    let key = identity_key(identity)?;
-    ports
-        .command_derived_member(
-            CommandDerivedIndexKindV1::Idempotency,
-            encode_idempotency_key(&key),
-        )?
-        .map(|(segment, locator)| command_outcome_from_member(&segment, locator, identity))
-        .transpose()
-}
-
 fn matching_admissions(
     access: &RedbWriteAccess,
     candidates: &IdempotencyLookupCandidatesV1,
@@ -1923,6 +1894,137 @@ fn matching_admissions_from_tables(
         }
     }
     Ok(matches)
+}
+
+fn matching_admissions_from_access(
+    ports: &RedbOperationalPorts,
+    access: &RedbReadAccess,
+    candidates: &IdempotencyLookupCandidatesV1,
+) -> Result<Vec<StoredAdmissionStateV1>, StorageError> {
+    let mut matches = Vec::new();
+    for identity in candidates.as_slice() {
+        let key = identity_key(identity)?;
+        let physical_key = encode_idempotency_key(&key);
+        let pending = access
+            .read_value(JournalTable::IdempotencyPending, physical_key)?
+            .map(|value| decode_pending_admission_v1(&value).map(decoded_value))
+            .transpose()?;
+        let terminal = access
+            .read_value(JournalTable::Idempotency, physical_key)?
+            .map(|value| decode_idempotency_record_v1(&value).map(decoded_value))
+            .transpose()?;
+        let physical = match terminal {
+            Some(IdempotencyRecordV1::CommandLocator(locator)) => {
+                let capsule = command_member_at_access(access, locator.commit_sequence())?
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+                    .into_base();
+                if capsule.commit_sequence() != locator.commit_sequence() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                Some(IdempotencyRecordV1::StoredOutcome(
+                    capsule.outcome().clone(),
+                ))
+            }
+            other => other,
+        };
+        let derived = command_outcome_from_operational_indexes(ports, access, identity)?;
+        let terminal = match (physical, derived) {
+            (None, None) => None,
+            (None, Some(value)) => Some(IdempotencyRecordV1::StoredOutcome(value)),
+            (Some(value), None) => Some(value),
+            (Some(IdempotencyRecordV1::StoredOutcome(physical)), Some(derived))
+                if physical == derived =>
+            {
+                Some(IdempotencyRecordV1::StoredOutcome(physical))
+            }
+            _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+        };
+        let value = match (pending, terminal) {
+            (None, None) => None,
+            (Some(value), None) if value.identity() == identity => {
+                Some(StoredAdmissionStateV1::Pending(value))
+            }
+            (None, Some(IdempotencyRecordV1::StoredOutcome(value)))
+                if value.identity() == identity =>
+            {
+                Some(StoredAdmissionStateV1::StoredOutcome(value))
+            }
+            (None, Some(IdempotencyRecordV1::ExecutionFailed(value)))
+                if value.pending().identity() == identity =>
+            {
+                Some(StoredAdmissionStateV1::ExecutionFailed(value))
+            }
+            _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+        };
+        if let Some(value) = value {
+            matches.push(value);
+        }
+    }
+    Ok(matches)
+}
+
+fn command_outcome_from_operational_indexes(
+    ports: &RedbOperationalPorts,
+    access: &RedbReadAccess,
+    identity: &IdempotencyIdentity,
+) -> Result<Option<StoredOutcomeV1>, StorageError> {
+    let key = identity_key(identity)?;
+    let exact_key = encode_idempotency_key(&key);
+    let frontier = access.application_frontier()?;
+    if let Some((segment, locator)) =
+        ports.command_derived_member(CommandDerivedIndexKindV1::Idempotency, exact_key)?
+        && frontier.is_some_and(|frontier| locator.segment_first <= frontier)
+    {
+        return command_outcome_from_member(&segment, locator, identity).map(Some);
+    }
+    let Some(frontier) = frontier else {
+        return Ok(None);
+    };
+    let first = access
+        .checkpoint_application_frontier()
+        .and_then(CommitSequence::checked_next)
+        .unwrap_or(CommitSequence::first());
+    if first > frontier {
+        return Ok(None);
+    }
+    let start = encode_application_sequence_key(first);
+    let mut end = encode_application_sequence_key(frontier).to_vec();
+    end.push(0);
+    let rows = access.read_range(
+        JournalTable::Commits,
+        &start,
+        &end,
+        riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS,
+    )?;
+    let mut found = None;
+    for (_, encoded) in rows {
+        let segment = match riffdb_storage_api::decode_command_segment_v1(&encoded) {
+            Ok(segment) => segment.into_parts().0,
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                continue;
+            }
+            Err(error) => return Err(codec_error(error)),
+        };
+        let Some(entry) = segment.manifest().entries().iter().find(|entry| {
+            entry.kind() == CommandDerivedIndexKindV1::Idempotency && entry.exact_key() == exact_key
+        }) else {
+            continue;
+        };
+        let locator = crate::transient::CommandDerivedLocator {
+            segment_first: entry.segment_first_commit_sequence(),
+            command_ordinal: entry.command_ordinal(),
+            member_ordinal: entry.member_ordinal(),
+            member: entry.member(),
+        };
+        let outcome = command_outcome_from_member(&segment, locator, identity)?;
+        if found.replace(outcome).is_some() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    Ok(found)
 }
 
 fn admission_result(
