@@ -122,6 +122,7 @@ direction, merged draft, or implementation choice.
 | [0101](0101-pipelined-standard-durability-journal.md) | Pipelined Standard Durability Journal | Accepted |
 | [0102](0102-segmented-command-authority-and-derived-locators.md) | Segmented Command Authority and Rebuildable Exact Locators | Accepted |
 | [0103](0103-preallocated-recyclable-durability-journal.md) | Preallocated Recyclable Durability Journal | Accepted |
+| [0104](0104-journal-authoritative-state-overlay.md) | Journal-Authoritative Published State Overlay | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

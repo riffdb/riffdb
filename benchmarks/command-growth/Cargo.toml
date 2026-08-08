@@ -23,6 +23,10 @@ missing_docs = "warn"
 name = "state-segment-projection"
 path = "src/bin/state_segment_projection.rs"
 
+[[bin]]
+name = "journal-state-overlay"
+path = "src/bin/journal_state_overlay.rs"
+
 [lints.clippy]
 correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"

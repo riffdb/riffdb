@@ -1,5 +1,6 @@
 //! Bounded engine-mechanics evidence for the command-growth benchmark.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::num::NonZeroU64;
@@ -14,11 +15,14 @@ use riffdb_storage_api::{
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
 };
 use riffdb_types::{
-    ActorId, ActorKind, CapabilityId, DatabaseId, RequestId, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
-    Timestamp,
+    ActorId, ActorKind, AdministrationSequence, CapabilityId, CommitSequence, DatabaseId,
+    RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, ServiceOperationV1, Timestamp,
 };
 
+use crate::journal::{
+    EncodedJournalFrame, JournalFrame, JournalMutation, JournalMutationBuffer, JournalTable,
+};
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
     IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE,
@@ -450,6 +454,707 @@ impl StateSegmentProjectionSample {
     pub fn inventory(&self) -> &[AuthoritativeTableInventoryV1] {
         &self.inventory
     }
+}
+
+/// One benchmark-only comparison of synchronous redb apply and a journal-backed overlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalOverlayMechanicsSample {
+    workload: StateSegmentWorkload,
+    commands: usize,
+    group_commands: usize,
+    retained_entities: usize,
+    current_frame_build: Duration,
+    current_redb_apply: Duration,
+    overlay_frame_build: Duration,
+    overlay_apply: Duration,
+    control_point_reads: Duration,
+    overlay_point_reads: Duration,
+    control_page_reads: Duration,
+    overlay_page_reads: Duration,
+    checkpoint: Duration,
+    current_process_write_bytes: u64,
+    overlay_process_write_bytes: u64,
+    checkpoint_process_write_bytes: u64,
+    encoded_journal_bytes: u64,
+    overlay_bytes: u64,
+    overlay_transition_count: usize,
+    checkpointed_transition_count: usize,
+    overlay_rows_after_checkpoint: usize,
+    point_read_checksum: u64,
+    control_point_read_checksum: u64,
+    page_read_checksum: u64,
+    control_page_read_checksum: u64,
+}
+
+impl JournalOverlayMechanicsSample {
+    /// Mutation mix measured.
+    #[must_use]
+    pub const fn workload(&self) -> StateSegmentWorkload {
+        self.workload
+    }
+
+    /// Commands represented by the journal suffix.
+    #[must_use]
+    pub const fn commands(&self) -> usize {
+        self.commands
+    }
+
+    /// Commands represented by one physical frame.
+    #[must_use]
+    pub const fn group_commands(&self) -> usize {
+        self.group_commands
+    }
+
+    /// Current-state rows in the checkpoint before the measured suffix.
+    #[must_use]
+    pub const fn retained_entities(&self) -> usize {
+        self.retained_entities
+    }
+
+    /// Exact journal mutation and frame construction for the current control.
+    #[must_use]
+    pub const fn current_frame_build(&self) -> Duration {
+        self.current_frame_build
+    }
+
+    /// Redb begin, stage, and non-durable commit work before the control fence.
+    #[must_use]
+    pub const fn current_redb_apply(&self) -> Duration {
+        self.current_redb_apply
+    }
+
+    /// Exact journal mutation and frame construction for the overlay candidate.
+    #[must_use]
+    pub const fn overlay_frame_build(&self) -> Duration {
+        self.overlay_frame_build
+    }
+
+    /// Immutable overlay insertion and publication-construction work.
+    #[must_use]
+    pub const fn overlay_apply(&self) -> Duration {
+        self.overlay_apply
+    }
+
+    /// Checkpoint-only point-read control time.
+    #[must_use]
+    pub const fn control_point_reads(&self) -> Duration {
+        self.control_point_reads
+    }
+
+    /// Checkpoint-plus-overlay point-read time.
+    #[must_use]
+    pub const fn overlay_point_reads(&self) -> Duration {
+        self.overlay_point_reads
+    }
+
+    /// Checkpoint-only bounded index-page control time.
+    #[must_use]
+    pub const fn control_page_reads(&self) -> Duration {
+        self.control_page_reads
+    }
+
+    /// Checkpoint-plus-overlay bounded merge time.
+    #[must_use]
+    pub const fn overlay_page_reads(&self) -> Duration {
+        self.overlay_page_reads
+    }
+
+    /// One immediate checkpoint applying the complete suffix to redb.
+    #[must_use]
+    pub const fn checkpoint(&self) -> Duration {
+        self.checkpoint
+    }
+
+    /// Process write bytes caused by the current redb apply window.
+    #[must_use]
+    pub const fn current_process_write_bytes(&self) -> u64 {
+        self.current_process_write_bytes
+    }
+
+    /// Process write bytes caused by journal construction plus overlay apply.
+    #[must_use]
+    pub const fn overlay_process_write_bytes(&self) -> u64 {
+        self.overlay_process_write_bytes
+    }
+
+    /// Process write bytes caused by the bounded redb checkpoint.
+    #[must_use]
+    pub const fn checkpoint_process_write_bytes(&self) -> u64 {
+        self.checkpoint_process_write_bytes
+    }
+
+    /// Canonical encoded journal-frame bytes built by the candidate.
+    #[must_use]
+    pub const fn encoded_journal_bytes(&self) -> u64 {
+        self.encoded_journal_bytes
+    }
+
+    /// Conservative keys, values, tombstones, and map-node charge.
+    #[must_use]
+    pub const fn overlay_bytes(&self) -> u64 {
+        self.overlay_bytes
+    }
+
+    /// Logical command transitions represented by the overlay.
+    #[must_use]
+    pub const fn overlay_transition_count(&self) -> usize {
+        self.overlay_transition_count
+    }
+
+    /// Logical transitions applied by the bounded checkpoint.
+    #[must_use]
+    pub const fn checkpointed_transition_count(&self) -> usize {
+        self.checkpointed_transition_count
+    }
+
+    /// Overlay rows retained after the checkpoint control clears the suffix.
+    #[must_use]
+    pub const fn overlay_rows_after_checkpoint(&self) -> usize {
+        self.overlay_rows_after_checkpoint
+    }
+
+    /// Candidate point-read semantic checksum.
+    #[must_use]
+    pub const fn point_read_checksum(&self) -> u64 {
+        self.point_read_checksum
+    }
+
+    /// Checkpoint-only point-read semantic checksum.
+    #[must_use]
+    pub const fn control_point_read_checksum(&self) -> u64 {
+        self.control_point_read_checksum
+    }
+
+    /// Candidate bounded-page semantic checksum.
+    #[must_use]
+    pub const fn page_read_checksum(&self) -> u64 {
+        self.page_read_checksum
+    }
+
+    /// Checkpoint-only bounded-page semantic checksum.
+    #[must_use]
+    pub const fn control_page_read_checksum(&self) -> u64 {
+        self.control_page_read_checksum
+    }
+}
+
+#[derive(Default)]
+struct BenchmarkJournalOverlay {
+    tables: [BTreeMap<Vec<u8>, Option<Vec<u8>>>; 14],
+    charged_bytes: u64,
+}
+
+impl BenchmarkJournalOverlay {
+    fn apply(&mut self, mutation: &JournalMutation) -> Result<(), EngineBenchmarkError> {
+        const MAP_NODE_CHARGE: u64 = 48;
+        let (table, key, value) = match mutation {
+            JournalMutation::Put {
+                table, key, value, ..
+            } => (*table, key.as_ref(), Some(value.as_ref())),
+            JournalMutation::Delete { table, key, .. } => (*table, key.as_ref(), None),
+        };
+        let index = table as usize;
+        let replacement = value.map(<[u8]>::to_vec);
+        let prior = self.tables[index].insert(key.to_vec(), replacement.clone());
+        if let Some(prior) = prior {
+            self.charged_bytes = self
+                .charged_bytes
+                .saturating_sub(overlay_entry_charge(key, prior.as_deref()));
+        }
+        self.charged_bytes = self
+            .charged_bytes
+            .saturating_add(overlay_entry_charge(key, replacement.as_deref()))
+            .saturating_add(MAP_NODE_CHARGE);
+        Ok(())
+    }
+
+    fn table(&self, table: JournalTable) -> &BTreeMap<Vec<u8>, Option<Vec<u8>>> {
+        &self.tables[table as usize]
+    }
+
+    fn rows(&self) -> usize {
+        self.tables.iter().map(BTreeMap::len).sum()
+    }
+
+    fn clear(&mut self) {
+        self.tables.iter_mut().for_each(BTreeMap::clear);
+        self.charged_bytes = 0;
+    }
+}
+
+fn overlay_entry_charge(key: &[u8], value: Option<&[u8]>) -> u64 {
+    u64::try_from(key.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::try_from(value.map_or(1, <[u8]>::len)).unwrap_or(u64::MAX))
+}
+
+/// Runs the WP-486 benchmark-only journal-overlay mechanics comparison.
+///
+/// This entry point is feature-gated with the rest of benchmark support and
+/// cannot be selected by a production storage adapter.
+pub fn run_journal_overlay_mechanics_window(
+    path: &Path,
+    workload: StateSegmentWorkload,
+    commands: usize,
+    group_commands: usize,
+    retained_entities: usize,
+) -> Result<JournalOverlayMechanicsSample, EngineBenchmarkError> {
+    if commands == 0
+        || commands > MAX_WINDOW_COMMANDS
+        || group_commands == 0
+        || group_commands > MAX_GROUP_COMMANDS
+        || retained_entities == 0
+        || retained_entities > 65_536
+    {
+        return Err(EngineBenchmarkError::InvalidConfiguration);
+    }
+    let overlay_path = path.with_extension("overlay.redb");
+    initialize_engine_mechanics(path)?;
+    initialize_engine_mechanics(&overlay_path)?;
+    let control = Database::create(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let overlay_base = Database::create(&overlay_path).map_err(|_| EngineBenchmarkError::Engine)?;
+    seed_state_segment_projection(
+        &control,
+        StateSegmentProjection::CurrentSegmentedAuthority,
+        retained_entities,
+    )?;
+    seed_state_segment_projection(
+        &overlay_base,
+        StateSegmentProjection::CurrentSegmentedAuthority,
+        retained_entities,
+    )?;
+    let first_sequence = u64::try_from(retained_entities)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .checked_add(1)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let database_id =
+        DatabaseId::from_bytes(uuid_v7_bytes(0x71, 0)).map_err(|_| EngineBenchmarkError::Engine)?;
+
+    let mut current_frame_build = Duration::ZERO;
+    let mut current_redb_apply = Duration::ZERO;
+    let mut current_hash = [0_u8; 32];
+    let writes_before_current = process_write_bytes();
+    for start in (0..commands).step_by(group_commands) {
+        let end = commands.min(start.saturating_add(group_commands));
+        let frame_started = Instant::now();
+        let (_, frame) = build_overlay_frame(
+            database_id,
+            current_hash,
+            first_sequence,
+            start,
+            end,
+            workload,
+            retained_entities,
+        )?;
+        current_hash = frame.frame_hash();
+        current_frame_build = current_frame_build.saturating_add(frame_started.elapsed());
+
+        let apply_started = Instant::now();
+        let mut transaction = control
+            .begin_write()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        configure(&mut transaction, EngineDurability::None)?;
+        stage_current_state_projection(
+            &transaction,
+            first_sequence,
+            start,
+            end,
+            workload,
+            retained_entities,
+        )?;
+        transaction
+            .commit()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        current_redb_apply = current_redb_apply.saturating_add(apply_started.elapsed());
+    }
+    let writes_after_current = process_write_bytes();
+
+    let mut overlay = BenchmarkJournalOverlay::default();
+    let mut overlay_frame_build = Duration::ZERO;
+    let mut overlay_apply = Duration::ZERO;
+    let mut overlay_hash = [0_u8; 32];
+    let mut encoded_journal_bytes = 0_u64;
+    let writes_before_overlay = process_write_bytes();
+    for start in (0..commands).step_by(group_commands) {
+        let end = commands.min(start.saturating_add(group_commands));
+        let frame_started = Instant::now();
+        let (mutations, frame) = build_overlay_frame(
+            database_id,
+            overlay_hash,
+            first_sequence,
+            start,
+            end,
+            workload,
+            retained_entities,
+        )?;
+        overlay_hash = frame.frame_hash();
+        encoded_journal_bytes = encoded_journal_bytes
+            .saturating_add(u64::try_from(frame.as_bytes().len()).unwrap_or(u64::MAX));
+        overlay_frame_build = overlay_frame_build.saturating_add(frame_started.elapsed());
+        let apply_started = Instant::now();
+        for mutation in &mutations {
+            overlay.apply(mutation)?;
+        }
+        overlay_apply = overlay_apply.saturating_add(apply_started.elapsed());
+    }
+    let writes_after_overlay = process_write_bytes();
+
+    const POINT_READS: usize = 16_384;
+    const PAGE_READS: usize = 2_048;
+    const PAGE_LIMIT: usize = 50;
+    let control_read = control
+        .begin_read()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let overlay_read = overlay_base
+        .begin_read()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let point_started = Instant::now();
+    let control_point_read_checksum = point_read_checksum(
+        &control_read,
+        None,
+        first_sequence,
+        workload,
+        retained_entities,
+        commands,
+        POINT_READS,
+    )?;
+    let control_point_reads = point_started.elapsed();
+    let point_started = Instant::now();
+    let point_read_checksum = point_read_checksum(
+        &overlay_read,
+        Some(&overlay),
+        first_sequence,
+        workload,
+        retained_entities,
+        commands,
+        POINT_READS,
+    )?;
+    let overlay_point_reads = point_started.elapsed();
+    let page_started = Instant::now();
+    let control_page_read_checksum =
+        page_read_checksum(&control_read, None, PAGE_READS, PAGE_LIMIT)?;
+    let control_page_reads = page_started.elapsed();
+    let page_started = Instant::now();
+    let page_read_checksum =
+        page_read_checksum(&overlay_read, Some(&overlay), PAGE_READS, PAGE_LIMIT)?;
+    let overlay_page_reads = page_started.elapsed();
+    drop(control_read);
+    drop(overlay_read);
+
+    let overlay_bytes = overlay.charged_bytes;
+    let writes_before_checkpoint = process_write_bytes();
+    let checkpoint_started = Instant::now();
+    let mut checkpoint = overlay_base
+        .begin_write()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    configure(&mut checkpoint, EngineDurability::ImmediateOnePhase)?;
+    for start in (0..commands).step_by(group_commands) {
+        let end = commands.min(start.saturating_add(group_commands));
+        stage_current_state_projection(
+            &checkpoint,
+            first_sequence,
+            start,
+            end,
+            workload,
+            retained_entities,
+        )?;
+    }
+    checkpoint
+        .commit()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let checkpoint_elapsed = checkpoint_started.elapsed();
+    let writes_after_checkpoint = process_write_bytes();
+    overlay.clear();
+
+    Ok(JournalOverlayMechanicsSample {
+        workload,
+        commands,
+        group_commands,
+        retained_entities,
+        current_frame_build,
+        current_redb_apply,
+        overlay_frame_build,
+        overlay_apply,
+        control_point_reads,
+        overlay_point_reads,
+        control_page_reads,
+        overlay_page_reads,
+        checkpoint: checkpoint_elapsed,
+        current_process_write_bytes: writes_after_current.saturating_sub(writes_before_current),
+        overlay_process_write_bytes: writes_after_overlay.saturating_sub(writes_before_overlay),
+        checkpoint_process_write_bytes: writes_after_checkpoint
+            .saturating_sub(writes_before_checkpoint),
+        encoded_journal_bytes,
+        overlay_bytes,
+        overlay_transition_count: commands,
+        checkpointed_transition_count: commands,
+        overlay_rows_after_checkpoint: overlay.rows(),
+        point_read_checksum,
+        control_point_read_checksum,
+        page_read_checksum,
+        control_page_read_checksum,
+    })
+}
+
+fn build_overlay_frame(
+    database_id: DatabaseId,
+    previous_hash: [u8; 32],
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+    workload: StateSegmentWorkload,
+    retained_entities: usize,
+) -> Result<(Vec<JournalMutation>, EncodedJournalFrame), EngineBenchmarkError> {
+    let commands = end
+        .checked_sub(start)
+        .filter(|count| *count != 0)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let command_count = u16::try_from(commands).map_err(|_| EngineBenchmarkError::Engine)?;
+    let first = sequence_at(first_sequence, start)?;
+    let last = sequence_at(
+        first_sequence,
+        end.checked_sub(1)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    )?;
+    let predecessor = CommitSequence::new(
+        first
+            .checked_sub(1)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    )
+    .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let covered = CommitSequence::new(last).ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let prior_admin_value = u64::try_from(start)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .checked_add(u64::try_from(retained_entities).map_err(|_| EngineBenchmarkError::Engine)?)
+        .and_then(|value| value.checked_mul(2))
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let covered_admin_value = prior_admin_value
+        .checked_add(
+            u64::try_from(commands)
+                .map_err(|_| EngineBenchmarkError::Engine)?
+                .checked_mul(2)
+                .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+        )
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let predecessor_admin = AdministrationSequence::new(prior_admin_value)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let covered_admin = AdministrationSequence::new(covered_admin_value)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+
+    let mut before_segment = Vec::with_capacity(commands.saturating_mul(2).saturating_add(1));
+    for offset in start..end {
+        let command_sequence = sequence_at(first_sequence, offset)?;
+        let state_sequence =
+            projection_state_sequence(command_sequence, offset, workload, retained_entities)?;
+        for (table, tag, bytes) in [
+            (JournalTable::Entities, 0x45, ENTITY_VALUE_BYTES),
+            (JournalTable::SecondaryIndexes, 0x49, INDEX_VALUE_BYTES),
+        ] {
+            let key = record_key(state_sequence, tag);
+            let value = record_value(command_sequence, bytes, tag);
+            let mutation =
+                if state_sequence <= u64::try_from(retained_entities).unwrap_or(u64::MAX) {
+                    JournalMutation::replace(
+                        table,
+                        key,
+                        &record_value(state_sequence, bytes, tag),
+                        value,
+                    )
+                } else {
+                    JournalMutation::put(table, key, value)
+                }
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+            before_segment.push(mutation);
+        }
+    }
+    let epoch_key = record_key(first, 0x58);
+    let epoch_value = record_value(first, EPOCH_VALUE_BYTES, 0x58);
+    before_segment.push(
+        JournalMutation::put(JournalTable::IndexEpochs, epoch_key, epoch_value)
+            .map_err(|_| EngineBenchmarkError::Engine)?,
+    );
+    let segment_key = record_key(first, 0x43);
+    let segment_value = record_value(first, segmented_capsule_bytes(commands)?, 0x43);
+    let segment_mutation =
+        JournalMutation::put(JournalTable::Commits, segment_key, segment_value.clone())
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+    let prior_allocator = first.to_be_bytes();
+    let next_allocator = last
+        .checked_add(1)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?
+        .to_be_bytes();
+    let allocator_mutation = JournalMutation::replace(
+        JournalTable::Meta,
+        META_APPLICATION_SEQUENCE.as_bytes(),
+        &prior_allocator,
+        next_allocator,
+    )
+    .map_err(|_| EngineBenchmarkError::Engine)?;
+
+    let mut buffer = JournalMutationBuffer::default();
+    buffer
+        .extend(before_segment.iter().cloned())
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    buffer
+        .push_command_segment(segment_key, segment_value, commands)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    buffer
+        .extend([allocator_mutation.clone()])
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let frame = JournalFrame::encode_buffered_command(
+        database_id,
+        Some(predecessor),
+        Some(covered),
+        Some(predecessor_admin),
+        Some(covered_admin),
+        command_count,
+        previous_hash,
+        buffer,
+    )
+    .map_err(|_| EngineBenchmarkError::Engine)?;
+    let mut mutations = before_segment;
+    mutations.push(segment_mutation);
+    mutations.push(allocator_mutation);
+    Ok((mutations, frame))
+}
+
+fn point_read_checksum(
+    transaction: &redb::ReadTransaction,
+    overlay: Option<&BenchmarkJournalOverlay>,
+    first_sequence: u64,
+    workload: StateSegmentWorkload,
+    retained_entities: usize,
+    commands: usize,
+    reads: usize,
+) -> Result<u64, EngineBenchmarkError> {
+    let table = transaction
+        .open_table(ENTITIES)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let overlay_table = overlay.map(|overlay| overlay.table(JournalTable::Entities));
+    let mut checksum = 0_u64;
+    for read in 0..reads {
+        let offset = read % commands;
+        let command_sequence = sequence_at(first_sequence, offset)?;
+        let state_sequence =
+            projection_state_sequence(command_sequence, offset, workload, retained_entities)?;
+        let key = record_key(state_sequence, 0x45);
+        let overlay_value = overlay_table.and_then(|table| table.get(key.as_slice()));
+        let owned;
+        let value = match overlay_value {
+            Some(Some(value)) => value.as_slice(),
+            Some(None) => return Err(EngineBenchmarkError::Engine),
+            None => {
+                owned = table
+                    .get(key.as_slice())
+                    .map_err(|_| EngineBenchmarkError::Engine)?
+                    .ok_or(EngineBenchmarkError::Engine)?
+                    .value()
+                    .to_vec();
+                owned.as_slice()
+            }
+        };
+        checksum = checksum_value(checksum, &key, value);
+    }
+    Ok(checksum)
+}
+
+fn page_read_checksum(
+    transaction: &redb::ReadTransaction,
+    overlay: Option<&BenchmarkJournalOverlay>,
+    reads: usize,
+    limit: usize,
+) -> Result<u64, EngineBenchmarkError> {
+    let table = transaction
+        .open_table(ENTITIES)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let empty = BTreeMap::new();
+    let overlay_table = overlay
+        .map(|overlay| overlay.table(JournalTable::Entities))
+        .unwrap_or(&empty);
+    let mut checksum = 0_u64;
+    for _ in 0..reads {
+        let mut base = table.iter().map_err(|_| EngineBenchmarkError::Engine)?;
+        let mut delta = overlay_table.iter();
+        let mut base_next = match base.next() {
+            Some(Ok((key, value))) => Some((key.value().to_vec(), value.value().to_vec())),
+            Some(Err(_)) => return Err(EngineBenchmarkError::Engine),
+            None => None,
+        };
+        let mut delta_next = delta.next();
+        let mut emitted = 0_usize;
+        while emitted < limit && (base_next.is_some() || delta_next.is_some()) {
+            match (&base_next, delta_next) {
+                (Some((base_key, base_value)), Some((delta_key, _delta_value)))
+                    if base_key.as_slice() < delta_key.as_slice() =>
+                {
+                    checksum = checksum_value(checksum, base_key, base_value);
+                    emitted += 1;
+                    base_next = match base.next() {
+                        Some(Ok((key, value))) => {
+                            Some((key.value().to_vec(), value.value().to_vec()))
+                        }
+                        Some(Err(_)) => return Err(EngineBenchmarkError::Engine),
+                        None => None,
+                    };
+                }
+                (Some((base_key, _)), Some((delta_key, delta_value)))
+                    if base_key.as_slice() == delta_key.as_slice() =>
+                {
+                    if let Some(value) = delta_value.as_deref() {
+                        checksum = checksum_value(checksum, delta_key, value);
+                        emitted += 1;
+                    }
+                    base_next = match base.next() {
+                        Some(Ok((key, value))) => {
+                            Some((key.value().to_vec(), value.value().to_vec()))
+                        }
+                        Some(Err(_)) => return Err(EngineBenchmarkError::Engine),
+                        None => None,
+                    };
+                    delta_next = delta.next();
+                }
+                (_, Some((delta_key, delta_value))) => {
+                    if let Some(value) = delta_value.as_deref() {
+                        checksum = checksum_value(checksum, delta_key, value);
+                        emitted += 1;
+                    }
+                    delta_next = delta.next();
+                }
+                (Some((base_key, base_value)), None) => {
+                    checksum = checksum_value(checksum, base_key, base_value);
+                    emitted += 1;
+                    base_next = match base.next() {
+                        Some(Ok((key, value))) => {
+                            Some((key.value().to_vec(), value.value().to_vec()))
+                        }
+                        Some(Err(_)) => return Err(EngineBenchmarkError::Engine),
+                        None => None,
+                    };
+                }
+                (None, None) => break,
+            }
+        }
+    }
+    Ok(checksum)
+}
+
+fn checksum_value(mut checksum: u64, key: &[u8], value: &[u8]) -> u64 {
+    for byte in key.iter().chain(value.iter().take(16)) {
+        checksum = checksum.rotate_left(5) ^ u64::from(*byte);
+    }
+    checksum
+}
+
+fn process_write_bytes() -> u64 {
+    fs::read_to_string("/proc/self/io")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                line.strip_prefix("write_bytes:")
+                    .and_then(|value| value.trim().parse().ok())
+            })
+        })
+        .unwrap_or(0)
 }
 
 /// Closed failure from the benchmark-only engine mechanics driver.
@@ -2000,7 +2705,8 @@ mod tests {
         StateSegmentProjection, StateSegmentWorkload, authoritative_table_inventory_v1,
         expected_evidence_page_capacity, initialize_engine_mechanics, measure_clean_startup,
         measure_clean_startup_linear, run_engine_mechanics_window,
-        run_state_segment_projection_window, split_half_page_durations,
+        run_journal_overlay_mechanics_window, run_state_segment_projection_window,
+        split_half_page_durations,
     };
     use std::time::Duration;
 
@@ -2132,6 +2838,33 @@ mod tests {
         assert_eq!(rows(&proposed, "commits"), 1);
         assert_eq!(rows(&current, "outbox"), 0);
         assert_eq!(rows(&proposed, "outbox"), 0);
+    }
+
+    #[test]
+    fn journal_overlay_probe_preserves_exact_rows_and_bounded_reads() {
+        let dir = tempfile_dir();
+        let sample = run_journal_overlay_mechanics_window(
+            &dir.join("journal-overlay.redb"),
+            StateSegmentWorkload::MixedCreatesAndUpdates,
+            128,
+            32,
+            4_096,
+        )
+        .expect("journal overlay mechanics");
+        assert_eq!(sample.commands(), 128);
+        assert_eq!(sample.group_commands(), 32);
+        assert!(sample.encoded_journal_bytes() > 0);
+        assert_eq!(sample.overlay_transition_count(), 128);
+        assert_eq!(sample.checkpointed_transition_count(), 128);
+        assert_eq!(sample.overlay_rows_after_checkpoint(), 0);
+        assert_eq!(
+            sample.point_read_checksum(),
+            sample.control_point_read_checksum()
+        );
+        assert_eq!(
+            sample.page_read_checksum(),
+            sample.control_page_read_checksum()
+        );
     }
 
     #[test]
