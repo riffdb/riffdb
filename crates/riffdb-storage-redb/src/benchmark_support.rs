@@ -183,6 +183,11 @@ pub enum EngineStagingOrder {
     CommandMajor,
     /// Opens each table once and applies the complete command group to that table.
     TableMajor,
+    /// Models the current fused capsule layout without a durable Pending transition.
+    FusedCurrentCapsule,
+    /// Models one segmented capsule authority plus only independently mutable rows.
+    /// This is benchmark-only evidence for a proposed durable-layout ADR.
+    FusedSegmentedCapsule,
 }
 
 impl EngineStagingOrder {
@@ -192,6 +197,8 @@ impl EngineStagingOrder {
         match self {
             Self::CommandMajor => "command_major",
             Self::TableMajor => "table_major",
+            Self::FusedCurrentCapsule => "fused_current_capsule",
+            Self::FusedSegmentedCapsule => "fused_segmented_capsule",
         }
     }
 }
@@ -597,18 +604,23 @@ pub fn run_engine_mechanics_window(
 
     for group_start in (0..commands).step_by(profile.group_commands) {
         let group_end = commands.min(group_start + profile.group_commands);
-        let work_started = Instant::now();
-        let mut transaction = database
-            .begin_write()
-            .map_err(|_| EngineBenchmarkError::Engine)?;
-        configure(&mut transaction, profile.durability)?;
-        stage_admissions(&transaction, first_sequence, group_start, group_end)?;
-        admission_work = admission_work.saturating_add(work_started.elapsed());
-        let commit_started = Instant::now();
-        transaction
-            .commit()
-            .map_err(|_| EngineBenchmarkError::Engine)?;
-        admission_commit = admission_commit.saturating_add(commit_started.elapsed());
+        if matches!(
+            profile.staging_order,
+            EngineStagingOrder::CommandMajor | EngineStagingOrder::TableMajor
+        ) {
+            let work_started = Instant::now();
+            let mut transaction = database
+                .begin_write()
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+            configure(&mut transaction, profile.durability)?;
+            stage_admissions(&transaction, first_sequence, group_start, group_end)?;
+            admission_work = admission_work.saturating_add(work_started.elapsed());
+            let commit_started = Instant::now();
+            transaction
+                .commit()
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+            admission_commit = admission_commit.saturating_add(commit_started.elapsed());
+        }
 
         let work_started = Instant::now();
         let mut transaction = database
@@ -621,6 +633,17 @@ pub fn run_engine_mechanics_window(
             }
             EngineStagingOrder::TableMajor => {
                 stage_terminals_table_major(&transaction, first_sequence, group_start, group_end)?;
+            }
+            EngineStagingOrder::FusedCurrentCapsule => {
+                stage_fused_current_capsule(&transaction, first_sequence, group_start, group_end)?;
+            }
+            EngineStagingOrder::FusedSegmentedCapsule => {
+                stage_fused_segmented_capsule(
+                    &transaction,
+                    first_sequence,
+                    group_start,
+                    group_end,
+                )?;
             }
         }
         terminal_work = terminal_work.saturating_add(work_started.elapsed());
@@ -1198,6 +1221,204 @@ fn stage_terminals_table_major(
             }
         }
     }
+    let last_sequence = sequence_at(
+        first_sequence,
+        end.checked_sub(1)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    )?;
+    transaction
+        .open_table(META)
+        .map_err(|_| EngineBenchmarkError::Engine)?
+        .insert(
+            META_APPLICATION_SEQUENCE,
+            last_sequence
+                .checked_add(1)
+                .ok_or(EngineBenchmarkError::Engine)?
+                .to_be_bytes()
+                .as_slice(),
+        )
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    Ok(())
+}
+
+fn stage_fused_current_capsule(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
+    insert_record_group(
+        transaction,
+        ENTITIES,
+        first_sequence,
+        start,
+        end,
+        0x45,
+        ENTITY_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        SECONDARY_INDEXES,
+        first_sequence,
+        start,
+        end,
+        0x49,
+        INDEX_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        INDEX_EPOCHS,
+        first_sequence,
+        start,
+        end,
+        0x58,
+        EPOCH_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        PROVENANCE,
+        first_sequence,
+        start,
+        end,
+        0x50,
+        32,
+    )?;
+    insert_record_group(
+        transaction,
+        EVENTS,
+        first_sequence,
+        start,
+        end,
+        0x56,
+        EVENT_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        EVENT_ROUTES,
+        first_sequence,
+        start,
+        end,
+        0x52,
+        EVENT_ROUTE_VALUE_BYTES,
+    )?;
+    insert_record_group(transaction, OUTBOX, first_sequence, start, end, 0x4f, 96)?;
+    insert_record_group(
+        transaction,
+        COMMITS,
+        first_sequence,
+        start,
+        end,
+        0x43,
+        PROVENANCE_VALUE_BYTES + COMMIT_VALUE_BYTES + OUTCOME_VALUE_BYTES + 2 * AUDIT_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        IDEMPOTENCY,
+        first_sequence,
+        start,
+        end,
+        0x59,
+        32,
+    )?;
+    insert_dual_locator_group(transaction, AUDIT, first_sequence, start, end, [0xa1, 0xa2])?;
+    insert_dual_locator_group(
+        transaction,
+        AUDIT_BY_REQUEST,
+        first_sequence,
+        start,
+        end,
+        [0xb1, 0xb2],
+    )?;
+    stage_group_allocator(transaction, first_sequence, end)
+}
+
+fn stage_fused_segmented_capsule(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
+    insert_record_group(
+        transaction,
+        ENTITIES,
+        first_sequence,
+        start,
+        end,
+        0x45,
+        ENTITY_VALUE_BYTES,
+    )?;
+    insert_record_group(
+        transaction,
+        SECONDARY_INDEXES,
+        first_sequence,
+        start,
+        end,
+        0x49,
+        INDEX_VALUE_BYTES,
+    )?;
+    // Outbox delivery state is mutable independently of the immutable event
+    // segment, so it remains one compact row per command in this model.
+    insert_record_group(transaction, OUTBOX, first_sequence, start, end, 0x4f, 96)?;
+
+    let commands = end
+        .checked_sub(start)
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    let segment_sequence = sequence_at(first_sequence, start)?;
+    insert_record(
+        transaction,
+        INDEX_EPOCHS,
+        segment_sequence,
+        0x58,
+        EPOCH_VALUE_BYTES,
+    )?;
+    insert_record(
+        transaction,
+        EVENTS,
+        segment_sequence,
+        0x56,
+        EVENT_VALUE_BYTES
+            .checked_mul(commands)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    )?;
+    let capsule_bytes = PROVENANCE_VALUE_BYTES
+        .checked_add(COMMIT_VALUE_BYTES)
+        .and_then(|value| value.checked_add(OUTCOME_VALUE_BYTES))
+        .and_then(|value| value.checked_add(2 * AUDIT_VALUE_BYTES))
+        .and_then(|value| value.checked_mul(commands))
+        .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+    insert_record(transaction, COMMITS, segment_sequence, 0x43, capsule_bytes)?;
+    stage_group_allocator(transaction, first_sequence, end)
+}
+
+fn insert_dual_locator_group(
+    transaction: &WriteTransaction,
+    definition: redb::TableDefinition<&[u8], &[u8]>,
+    first_sequence: u64,
+    start: usize,
+    end: usize,
+    tags: [u8; 2],
+) -> Result<(), EngineBenchmarkError> {
+    let mut table = transaction
+        .open_table(definition)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    for offset in start..end {
+        let sequence = sequence_at(first_sequence, offset)?;
+        for tag in tags {
+            let key = record_key(sequence, tag);
+            let value = record_value(sequence, 32, tag);
+            table
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+        }
+    }
+    Ok(())
+}
+
+fn stage_group_allocator(
+    transaction: &WriteTransaction,
+    first_sequence: u64,
+    end: usize,
+) -> Result<(), EngineBenchmarkError> {
     let last_sequence = sequence_at(
         first_sequence,
         end.checked_sub(1)

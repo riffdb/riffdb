@@ -699,7 +699,9 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
         "into_pending_after_proven_noncommit()",
         "if outcome == uncertain.expected_outcome",
         "StoredAdmissionStateV1::ExecutionFailed(failure)",
-        "if failure.pending() == uncertain.candidate.exact_intent().pending()",
+        "uncertain.candidate.matches_terminal_failure(&failure)",
+        "fn finish_post_apply_group_commit(",
+        "candidate: UncertainCommandCandidate::PostApply(entry.candidate)",
     ] {
         assert!(
             production.contains(required),
@@ -1059,7 +1061,7 @@ fn command_attempt_owns_sealed_authority_around_synchronous_recheck_snapshot_and
         "state.commutative_child_append_proof().is_none()",
         "pub(crate) fn evaluate_acquired_command_attempt(",
         ".acquire_mut(",
-        ".lookup_admission(state.lookup_candidates.clone())",
+        ".lookup_admission(acquired.lookup_candidates().clone())",
         ".read_snapshot(state.snapshot_request.clone())",
         "if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot)",
         ".materialize_command_snapshot(raw_snapshot)",
@@ -1139,22 +1141,51 @@ fn command_attempt_owns_sealed_authority_around_synchronous_recheck_snapshot_and
     assert!(attempt_counter < materialization);
     assert!(materialization < runtime);
 
-    let lookup = production_source
-        .find(".lookup_admission(state.lookup_candidates.clone())")
-        .expect("exact Pending lookup");
-    let replay = production_source[lookup..]
-        .find("return Ok(CommandAttemptResolution::OutcomeReplay(outcome))")
-        .map(|offset| lookup + offset)
-        .expect("terminal replay precedence");
-    let post_lookup_control = production_source[lookup..]
+    let lookup_evaluation = production_source
+        .split_once("pub(crate) fn evaluate_acquired_command_attempt(")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n/// Finishes one acquired attempt after")
+        })
+        .map(|(body, _)| body)
+        .expect("single-attempt lookup evaluation");
+    let lookup = lookup_evaluation
+        .find(".lookup_admission(acquired.lookup_candidates().clone())")
+        .expect("exact acquired-attempt lookup");
+    let lower = lookup_evaluation
+        .find("evaluate_acquired_command_attempt_after_lookup(acquired, durable, snapshots)")
+        .expect("checked lookup lowering");
+    assert!(lookup < lower);
+
+    let checked_evaluation = production_source
+        .split_once("pub(crate) fn evaluate_acquired_command_attempt_after_lookup(")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n/// Finishes one acquired attempt from a snapshot")
+        })
+        .map(|(body, _)| body)
+        .expect("checked lookup evaluation");
+    let lower = checked_evaluation
+        .find("lower_acquired_admission(acquired, durable)?")
+        .expect("checked admission lowering");
+    let post_lookup_control = checked_evaluation
         .find("check_request_control(state.deadline, &state.cancellation)?;")
-        .map(|offset| lookup + offset)
         .expect("post-Pending control point");
-    let snapshot_read = production_source
+    let snapshot_read = checked_evaluation
         .find(".read_snapshot(state.snapshot_request.clone())")
         .expect("snapshot read");
-    assert!(replay < post_lookup_control);
+    assert!(lower < post_lookup_control);
     assert!(post_lookup_control < snapshot_read);
+
+    let admission_lowering = production_source
+        .split_once("fn lower_acquired_admission(")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n/// Deterministically evaluates a fresh synchronous attempt")
+        })
+        .map(|(body, _)| body)
+        .expect("admission lowering");
+    assert!(admission_lowering.contains("CommandAttemptResolution::OutcomeReplay(outcome)"));
+    assert!(
+        admission_lowering.contains("CommandAttemptResolution::ExecutionFailureReplay(failure)")
+    );
 
     for forbidden in [
         "pub mod command_attempt",

@@ -27,6 +27,8 @@ const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_BUNDLE_BYTES: usize = 15 * 1024 * 1024;
 const MAX_QUERY_MODULE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ITEMS: usize = 4_096;
+const MAX_COMMAND_SEGMENT_COMMANDS: usize = 256;
+const MAX_COMMAND_SEGMENT_INDEX_ENTRIES: usize = 65_535;
 const MAX_CONFLICT_HASHES: usize = 2_046;
 const MAX_PACKED_ITEMS: usize = 65_535 + 19;
 const MAX_SHAPE_RULES: usize = 20;
@@ -323,6 +325,42 @@ shape!(COMMAND_CAPSULE_V1 [
     repeated_message(18, MAX_COMMAND_ITEMS, &EVENT_REFERENCE_V2),
     repeated_message(19, MAX_COMMAND_ITEMS, &EVENT_ID),
     message(20, &COMMAND_AUDIT_INVOCATION_V1),
+]);
+shape!(INDEX_GENERATION_TRANSITION_V1[message(1, &INDEX_GENERATION_V2)]);
+shape!(COMMAND_CAPSULE_V2 [
+    message(1, &COMMAND_CAPSULE_V1),
+    repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT),
+    repeated_message(3, MAX_COMMAND_ITEMS, &INDEX_GENERATION_TRANSITION_V1),
+]);
+shape!(COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1[bytes(3, MAX_KEY_BYTES)]);
+shape!(COMMAND_SEGMENT_MANIFEST_V1 [
+    repeated_message(
+        1,
+        MAX_COMMAND_SEGMENT_INDEX_ENTRIES,
+        &COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1,
+    ),
+    fixed_bytes(2, 32),
+]);
+shape!(COMMAND_SEGMENT_BODY_V1 [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V2),
+    message(9, &COMMAND_SEGMENT_MANIFEST_V1),
+]);
+shape!(COMMAND_SEGMENT_V1 [
+    message(1, &COMMAND_SEGMENT_BODY_V1),
+    fixed_bytes(2, 32),
+]);
+shape!(COMMAND_DERIVED_INDEX_CHECKPOINT_V1 [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    fixed_bytes(5, 32),
+    repeated_message(
+        6,
+        MAX_COMMAND_SEGMENT_INDEX_ENTRIES,
+        &COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1,
+    ),
+    fixed_bytes(7, 32),
 ]);
 shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
@@ -703,7 +741,7 @@ shape!(ROOT_RETENTION_ADMINISTRATION [
     message(5, &TIMESTAMP),
 ]);
 
-const ROOTS: [&Shape; 60] = [
+const ROOTS: [&Shape; 63] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -775,6 +813,9 @@ const ROOTS: [&Shape; 60] = [
     &ROOT_EMPTY,
     // StoredCommandAuditLocatorV1 contains a sequence and closed enum scalar.
     &ROOT_EMPTY,
+    &COMMAND_CAPSULE_V2,
+    &COMMAND_SEGMENT_V1,
+    &COMMAND_DERIVED_INDEX_CHECKPOINT_V1,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

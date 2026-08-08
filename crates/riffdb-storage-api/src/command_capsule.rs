@@ -5,7 +5,7 @@ use std::fmt;
 use riffdb_types::{CommitSequence, ServiceAuditLinkV1, ServiceAuditPhaseV1};
 
 use crate::{
-    AffectedEntityV1, StorageValueError, StoredCommitRecordV1, StoredOutcomeV1,
+    StorageValueError, StoredCommitRecordV1, StoredDurableEventV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredServiceAuditRecordV1,
 };
 
@@ -34,17 +34,22 @@ impl StoredCommandCapsuleV1 {
     ) -> Result<Self, StorageValueError> {
         let sequence = commit.commit_sequence();
         let provenance_id = commit.provenance_id();
-        let affected_entities = commit
-            .entity_references()
-            .iter()
-            .map(|reference| {
-                AffectedEntityV1::from_stored_parts(
-                    reference.target().clone(),
-                    reference.entity_version(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let event_ids = commit.event_ids();
+        let affected_entities_match = provenance.affected_entities().len()
+            == commit.entity_references().len()
+            && provenance
+                .affected_entities()
+                .iter()
+                .zip(commit.entity_references())
+                .all(|(affected, reference)| {
+                    affected.target() == reference.target()
+                        && affected.entity_version() == reference.entity_version()
+                });
+        let event_ids_match = provenance.event_ids().len() == commit.events().len()
+            && provenance
+                .event_ids()
+                .iter()
+                .copied()
+                .eq(commit.events().iter().map(StoredDurableEventV1::event_id));
 
         let common_audit = started_audit.request_id() == terminal_audit.request_id()
             && started_audit.operation() == terminal_audit.operation()
@@ -75,8 +80,8 @@ impl StoredCommandCapsuleV1 {
             || provenance.partition_hash() != commit.partition_hash()
             || provenance.conflict_hashes() != commit.conflict_hashes()
             || provenance.outcome_id() != commit.declared_outcome().outcome_id()
-            || provenance.affected_entities() != affected_entities
-            || provenance.event_ids() != event_ids
+            || !affected_entities_match
+            || !event_ids_match
             || provenance.admitted_claims() != outcome.admitted_claims()
             || provenance.causation() != outcome.causation()
             || !common_audit

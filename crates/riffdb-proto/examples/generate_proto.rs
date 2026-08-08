@@ -43,6 +43,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/command_capsule_v1.proto",
+    "riffdb/storage/v1/command_segment_v1.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/consumer_v1.proto",
     "riffdb/storage/v1/contextual_causation_v2.proto",
@@ -72,6 +73,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/command_capsule_v1.proto",
+    "riffdb/storage/v1/command_segment_v1.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/consumer_v1.proto",
     "riffdb/storage/v1/contextual_causation_v2.proto",
@@ -457,6 +459,21 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "command_capsule_v1.proto",
         "StoredCommandAuditLocatorV1",
         PayloadBound::Tiny,
+    ),
+    durable(
+        "command_segment_v1.proto",
+        "StoredCommandCapsuleV2",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "command_segment_v1.proto",
+        "StoredCommandSegmentV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "command_segment_v1.proto",
+        "StoredCommandDerivedIndexCheckpointV1",
+        PayloadBound::EnvelopeMaximum,
     ),
 ];
 
@@ -845,6 +862,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let command_capsule_v1_records = durable_registry
         .get(current_v1_record_count + 28..current_v1_record_count + 31)
         .ok_or_else(|| io::Error::other("durable command-capsule-v1 registry is incomplete"))?;
+    let command_segment_v1_records = durable_registry
+        .get(current_v1_record_count + 31..current_v1_record_count + 34)
+        .ok_or_else(|| io::Error::other("durable command-segment-v1 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1059,6 +1079,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-command-capsule-v1-record-bounds.bin",
         &durable_record_bounds(command_capsule_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-command-segment-v1-schema-hashes.bin",
+        &durable_schema_hashes(command_segment_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-command-segment-v1-record-bounds.bin",
+        &durable_record_bounds(command_segment_v1_records),
     )?;
     write_artifact(
         &output_root,
@@ -1327,9 +1357,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 60 {
+    if DURABLE_RECORDS.len() != 63 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 57 records").into(),
+            io::Error::other("readable durable registry must contain exactly 63 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1353,9 +1383,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 124 || enum_count != 16 {
+    if message_count != 131 || enum_count != 18 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 123 semantic messages plus StoredEnvelope and 16 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 130 semantic messages plus StoredEnvelope and 18 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1614,6 +1644,11 @@ fn durable_writable_registry_fixture(
         .ok_or_else(|| {
             io::Error::other("durable registry is missing command capsule V1 records")
         })?;
+    let command_segment_v1 = records
+        .get(current_v1_record_count + 31..current_v1_record_count + 34)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing command segment V1 records")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1639,10 +1674,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(retention_administration))
         .chain(reactive_consumer_v1.iter())
         .chain(command_capsule_v1.iter())
+        .chain(command_segment_v1.iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 21);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 24);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

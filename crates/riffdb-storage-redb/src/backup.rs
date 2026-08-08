@@ -24,12 +24,13 @@ use riffdb_types::{
 use sha2::{Digest, Sha256};
 
 use crate::codec;
+use crate::command_authority::command_authority_head;
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
 };
 use crate::hooks::{RedbTestController, RedbTestOperation};
-use crate::keys::{decode_application_sequence_key, decode_contract_bundle_key};
+use crate::keys::decode_contract_bundle_key;
 use crate::layout::{
     CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, EVENTS, META,
     META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
@@ -38,6 +39,7 @@ use crate::layout::{
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
 pub(crate) const DATABASE_ARTIFACT_FILE_NAME: &str = "database.redb";
+pub(crate) const JOURNAL_ARTIFACT_FILE_NAME: &str = "journal.riffextent";
 const MANIFEST_MAGIC: &[u8; 16] = b"RIFFDB-BACKUP\0\0\0";
 const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
@@ -378,7 +380,7 @@ struct DatabaseFacts {
 impl DatabaseFacts {
     fn into_manifest(
         self,
-        checksum: BackupIntegrityChecksumV1,
+        checksums: Vec<BackupArtifactChecksumV1>,
         build: BackupBuildMetadataV1,
     ) -> Result<OfflineBackupManifestV1, StorageError> {
         OfflineBackupManifestV1::new(
@@ -392,7 +394,7 @@ impl DatabaseFacts {
             // Prefer explicit Some(0) when the live DB has no key so new backups
             // always carry the post-RT-B watermark presence tag.
             Some(self.retention_watermark_sequence.unwrap_or(0)),
-            vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
+            checksums,
             build,
         )
         .map_err(value_error)
@@ -407,6 +409,7 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
         require_absent(&self.backup_directory)?;
         let mut staging = StagingDirectory::create_sibling(&self.backup_directory, "backup")?;
         let artifact_path = staging.path().join(DATABASE_ARTIFACT_FILE_NAME);
+        let journal_artifact_path = staging.path().join(JOURNAL_ARTIFACT_FILE_NAME);
 
         let (source_database, source_facts) = open_database_with_facts(&self.source_database)?;
         copy_and_sync(&self.source_database, &artifact_path)?;
@@ -415,11 +418,24 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
         if artifact_facts != source_facts {
             return Err(corrupt());
         }
-        let checksum = sha256_file(&artifact_path)?;
-        let manifest = source_facts.into_manifest(checksum, build.clone())?;
+        stage_backup_journal(
+            &self.source_database,
+            &journal_artifact_path,
+            source_facts.database_id,
+            source_facts.last_commit_sequence,
+        )?;
+        let checksums = vec![
+            BackupArtifactChecksumV1::new(NonZeroU32::MIN, sha256_file(&artifact_path)?),
+            BackupArtifactChecksumV1::new(
+                NonZeroU32::new(2).expect("journal artifact ordinal is nonzero"),
+                sha256_file(&journal_artifact_path)?,
+            ),
+        ];
+        let manifest = source_facts.into_manifest(checksums, build.clone())?;
         let manifest_bytes = encode_manifest(&manifest)?;
         write_new_and_sync(&staging.path().join(MANIFEST_FILE_NAME), &manifest_bytes)?;
         validate_backup_inventory(staging.path())?;
+        validate_manifest_inventory(staging.path(), &manifest)?;
         sync_directory(staging.path())?;
 
         if let Some(controller) = &self.test_controller {
@@ -449,6 +465,7 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
             MANIFEST_MAX_BYTES,
         )?;
         let manifest = decode_manifest(&manifest_bytes)?;
+        validate_manifest_inventory(&self.backup_directory, &manifest)?;
 
         let target_state = target_directory_state(&self.target_directory)?;
         if target_state == TargetDirectoryState::NonEmpty
@@ -461,19 +478,55 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         }
 
         let target_artifact = self.target_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+        let target_journal = crate::journal::journal_path(&target_artifact);
         let target_lock = lock_existing_target(&target_artifact)?;
         let mut staged_artifact = StagedArtifact::create(&self.target_directory)?;
+        let mut staged_journal = StagedArtifact::create_named(
+            &self.target_directory,
+            OsStr::new(JOURNAL_ARTIFACT_FILE_NAME),
+        )?;
         copy_and_sync(
             &self.backup_directory.join(DATABASE_ARTIFACT_FILE_NAME),
             staged_artifact.path(),
         )?;
         let staged_lock = validate_artifact(staged_artifact.path(), &manifest)?;
+        match manifest_journal_checksum(&manifest)? {
+            Some(expected) => {
+                copy_and_sync(
+                    &self.backup_directory.join(JOURNAL_ARTIFACT_FILE_NAME),
+                    staged_journal.path(),
+                )?;
+                if sha256_file(staged_journal.path())? != expected {
+                    return Err(corrupt());
+                }
+            }
+            None => {
+                fs::remove_file(staged_journal.path()).map_err(io_unavailable)?;
+                crate::journal::reset_journal(
+                    staged_journal.path(),
+                    &crate::journal::JournalFileHeader::with_frontiers(
+                        manifest.database_id(),
+                        manifest.last_commit_sequence(),
+                        None,
+                        [0; 32],
+                    ),
+                )
+                .map_err(backup_journal_error)?;
+            }
+        }
+        validate_backup_journal(
+            staged_journal.path(),
+            manifest.database_id(),
+            manifest.last_commit_sequence(),
+        )?;
 
         if let Some(controller) = &self.test_controller {
             controller.before_commit(RedbTestOperation::Restore)?;
         }
         fs::rename(staged_artifact.path(), &target_artifact).map_err(io_unavailable)?;
         staged_artifact.mark_published();
+        fs::rename(staged_journal.path(), &target_journal).map_err(io_unavailable)?;
+        staged_journal.mark_published();
         if sync_directory(&self.target_directory).is_err() {
             return Err(unknown());
         }
@@ -571,7 +624,7 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
 
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let last_commit_sequence = match commits.last().map_err(precommit_storage_error)? {
+    let last_commit_sequence = match command_authority_head(&commits, &events)? {
         None => {
             // Empty commits table: either never-written, or fully pruned.
             // Accept an advanced allocator only when the watermark covers the
@@ -591,14 +644,7 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
             }
             None
         }
-        Some((key, value)) => {
-            let sequence = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-            let commit = codec::decode_commit_with_event_table(value.value(), &events)?
-                .into_parts()
-                .0;
-            if commit.commit_sequence() != sequence {
-                return Err(corrupt());
-            }
+        Some(sequence) => {
             // Retained last commit must sit strictly above the pruned prefix
             // when any history was pruned (watermark covers [1, watermark]).
             if effective_watermark > 0 && sequence.get() <= effective_watermark {
@@ -643,11 +689,68 @@ fn validate_artifact(
     // Opening a redb artifact may update engine-owned clean-open metadata. The
     // checksum authenticates the exact immutable backup bytes before that open;
     // semantic metadata is then validated from redb's recovered view.
-    let reconstructed = facts.into_manifest(expected_checksum, manifest.build().clone())?;
+    let reconstructed =
+        facts.into_manifest(manifest.checksums().to_vec(), manifest.build().clone())?;
     if &reconstructed != manifest {
         return Err(corrupt());
     }
     Ok(database)
+}
+
+fn stage_backup_journal(
+    source_database: &Path,
+    destination: &Path,
+    database_id: DatabaseId,
+    checkpoint_sequence: Option<CommitSequence>,
+) -> Result<(), StorageError> {
+    let source = crate::journal::journal_path(source_database);
+    match source.try_exists() {
+        Ok(true) => {
+            validate_backup_journal(&source, database_id, checkpoint_sequence)?;
+            copy_and_sync(&source, destination)?;
+        }
+        Ok(false) => crate::journal::reset_journal(
+            destination,
+            &crate::journal::JournalFileHeader::with_frontiers(
+                database_id,
+                checkpoint_sequence,
+                None,
+                [0; 32],
+            ),
+        )
+        .map_err(backup_journal_error)?,
+        Err(error) => return Err(io_unavailable(error)),
+    }
+    validate_backup_journal(destination, database_id, checkpoint_sequence)
+}
+
+pub(crate) fn validate_backup_journal(
+    path: &Path,
+    database_id: DatabaseId,
+    checkpoint_sequence: Option<CommitSequence>,
+) -> Result<(), StorageError> {
+    let (header, tail) = crate::journal::scan_journal(path, database_id, |_| Ok(()))
+        .map_err(backup_journal_error)?
+        .ok_or_else(corrupt)?;
+    if header.checkpoint_sequence() != checkpoint_sequence
+        || tail.last_sequence != checkpoint_sequence
+        || tail.incomplete_tail
+        || tail.transition_count != 0
+    {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
+fn backup_journal_error(error: crate::journal::JournalIoError) -> StorageError {
+    match error {
+        crate::journal::JournalIoError::Corrupt
+        | crate::journal::JournalIoError::LegacyNonEmpty(_) => corrupt(),
+        crate::journal::JournalIoError::Capacity => limit_exceeded(),
+        crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
+            storage_error(StorageErrorKind::Unavailable)
+        }
+    }
 }
 
 pub(crate) fn validate_immutable_backup(
@@ -657,9 +760,21 @@ pub(crate) fn validate_immutable_backup(
     let manifest_bytes =
         read_bounded_file(&directory.join(MANIFEST_FILE_NAME), MANIFEST_MAX_BYTES)?;
     let manifest = decode_manifest(&manifest_bytes)?;
+    validate_manifest_inventory(directory, &manifest)?;
     let artifact = directory.join(DATABASE_ARTIFACT_FILE_NAME);
     if sha256_file(&artifact)? != manifest_checksum(&manifest)? {
         return Err(corrupt());
+    }
+    if let Some(expected) = manifest_journal_checksum(&manifest)? {
+        let journal = directory.join(JOURNAL_ARTIFACT_FILE_NAME);
+        if sha256_file(&journal)? != expected {
+            return Err(corrupt());
+        }
+        validate_backup_journal(
+            &journal,
+            manifest.database_id(),
+            manifest.last_commit_sequence(),
+        )?;
     }
     let manifest_checksum =
         BackupIntegrityChecksumV1::new(Sha256::digest(&manifest_bytes).to_vec())
@@ -713,10 +828,12 @@ impl DatabaseFacts {
         {
             return Ok(false);
         }
-        let [checksum] = manifest.checksums() else {
+        let Some(checksum) = manifest.checksums().first() else {
             return Ok(false);
         };
-        if checksum.checksum() != expected_checksum {
+        if checksum.artifact_ordinal() != NonZeroU32::MIN
+            || checksum.checksum() != expected_checksum
+        {
             return Ok(false);
         }
         match (manifest.history_incarnation(), self.history_incarnation) {
@@ -736,12 +853,32 @@ impl DatabaseFacts {
 fn manifest_checksum(
     manifest: &OfflineBackupManifestV1,
 ) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    let [checksum] = manifest.checksums() else {
+    manifest_artifact_checksum(manifest, NonZeroU32::MIN)
+}
+
+pub(crate) fn manifest_journal_checksum(
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Option<BackupIntegrityChecksumV1>, StorageError> {
+    let ordinal = NonZeroU32::new(2).expect("journal artifact ordinal is nonzero");
+    if manifest.checksums().len() == 1 {
+        return Ok(None);
+    }
+    manifest_artifact_checksum(manifest, ordinal).map(Some)
+}
+
+fn manifest_artifact_checksum(
+    manifest: &OfflineBackupManifestV1,
+    ordinal: NonZeroU32,
+) -> Result<BackupIntegrityChecksumV1, StorageError> {
+    if !matches!(manifest.checksums().len(), 1 | 2) {
         return Err(corrupt());
-    };
-    if checksum.artifact_ordinal() != NonZeroU32::MIN
-        || checksum.checksum().as_bytes().len() != SHA256_BYTES
-    {
+    }
+    let checksum = manifest
+        .checksums()
+        .iter()
+        .find(|checksum| checksum.artifact_ordinal() == ordinal)
+        .ok_or_else(corrupt)?;
+    if checksum.checksum().as_bytes().len() != SHA256_BYTES {
         return Err(corrupt());
     }
     Ok(checksum.checksum().clone())
@@ -789,13 +926,17 @@ fn encode_manifest_for_era(
     {
         return Err(incompatible());
     }
-    let [checksum] = manifest.checksums() else {
+    if !matches!(manifest.checksums().len(), 1 | 2) {
         return Err(corrupt());
-    };
-    if checksum.artifact_ordinal() != NonZeroU32::MIN
-        || checksum.checksum().as_bytes().len() != SHA256_BYTES
-    {
-        return Err(corrupt());
+    }
+    for (index, checksum) in manifest.checksums().iter().enumerate() {
+        let expected = NonZeroU32::new(u32::try_from(index + 1).map_err(|_| corrupt())?)
+            .ok_or_else(corrupt)?;
+        if checksum.artifact_ordinal() != expected
+            || checksum.checksum().as_bytes().len() != SHA256_BYTES
+        {
+            return Err(corrupt());
+        }
     }
 
     let mut output = ManifestEncoder::new();
@@ -851,9 +992,11 @@ fn encode_manifest_for_era(
             }
         }
     }
-    output.u32(1)?;
-    output.u32(checksum.artifact_ordinal().get())?;
-    output.framed(checksum.checksum().as_bytes())?;
+    output.count(manifest.checksums().len())?;
+    for checksum in manifest.checksums() {
+        output.u32(checksum.artifact_ordinal().get())?;
+        output.framed(checksum.checksum().as_bytes())?;
+    }
     output.framed(manifest.build().semantic_version().as_bytes())?;
     output.framed(manifest.build().git_revision().as_bytes())?;
     output.framed(manifest.build().rust_version().as_bytes())?;
@@ -959,18 +1102,26 @@ fn decode_manifest_body(
         ManifestWireEra::PreRetention | ManifestWireEra::PreFence => None,
     };
 
-    if input.u32()? != 1 {
+    let checksum_count = usize::try_from(input.u32()?).map_err(|_| corrupt())?;
+    if !matches!(checksum_count, 1 | 2) {
         return Err(corrupt());
     }
-    let ordinal = NonZeroU32::new(input.u32()?).ok_or_else(corrupt)?;
-    if ordinal != NonZeroU32::MIN {
-        return Err(corrupt());
+    let mut checksums = Vec::with_capacity(checksum_count);
+    for index in 0..checksum_count {
+        let ordinal = NonZeroU32::new(input.u32()?).ok_or_else(corrupt)?;
+        let expected = NonZeroU32::new(u32::try_from(index + 1).map_err(|_| corrupt())?)
+            .ok_or_else(corrupt)?;
+        if ordinal != expected {
+            return Err(corrupt());
+        }
+        let checksum_bytes = input.framed(MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES)?;
+        if checksum_bytes.len() != SHA256_BYTES {
+            return Err(corrupt());
+        }
+        let checksum =
+            BackupIntegrityChecksumV1::new(checksum_bytes.to_vec()).map_err(value_error)?;
+        checksums.push(BackupArtifactChecksumV1::new(ordinal, checksum));
     }
-    let checksum_bytes = input.framed(MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES)?;
-    if checksum_bytes.len() != SHA256_BYTES {
-        return Err(corrupt());
-    }
-    let checksum = BackupIntegrityChecksumV1::new(checksum_bytes.to_vec()).map_err(value_error)?;
 
     let semantic_version = input.text(MAX_BACKUP_BUILD_VALUE_BYTES)?;
     let git_revision = input.text(MAX_BACKUP_BUILD_VALUE_BYTES)?;
@@ -991,7 +1142,6 @@ fn decode_manifest_body(
         enabled_features,
     )
     .map_err(value_error)?;
-    let checksums = vec![BackupArtifactChecksumV1::new(ordinal, checksum)];
     match era {
         ManifestWireEra::PostRetention => OfflineBackupManifestV1::new(
             storage_format_version,
@@ -1226,10 +1376,10 @@ fn validate_backup_inventory(directory: &Path) -> Result<(), StorageError> {
     if !metadata.file_type().is_dir() {
         return Err(corrupt());
     }
-    let mut names = Vec::with_capacity(2);
+    let mut names = Vec::with_capacity(3);
     for entry in fs::read_dir(directory).map_err(io_unavailable)? {
         let entry = entry.map_err(io_unavailable)?;
-        if names.len() == 2 {
+        if names.len() == 3 {
             return Err(corrupt());
         }
         let metadata = fs::symlink_metadata(entry.path()).map_err(io_unavailable)?;
@@ -1239,12 +1389,32 @@ fn validate_backup_inventory(directory: &Path) -> Result<(), StorageError> {
         names.push(entry.file_name());
     }
     names.sort_unstable();
-    let mut expected = [
+    let mut legacy = [
         OsString::from(DATABASE_ARTIFACT_FILE_NAME),
         OsString::from(MANIFEST_FILE_NAME),
     ];
-    expected.sort_unstable();
-    if names != expected {
+    legacy.sort_unstable();
+    let mut current = [
+        OsString::from(DATABASE_ARTIFACT_FILE_NAME),
+        OsString::from(JOURNAL_ARTIFACT_FILE_NAME),
+        OsString::from(MANIFEST_FILE_NAME),
+    ];
+    current.sort_unstable();
+    if names != legacy && names != current {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
+fn validate_manifest_inventory(
+    directory: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<(), StorageError> {
+    let journal_exists = directory
+        .join(JOURNAL_ARTIFACT_FILE_NAME)
+        .try_exists()
+        .map_err(io_unavailable)?;
+    if journal_exists != manifest_journal_checksum(manifest)?.is_some() {
         return Err(corrupt());
     }
     Ok(())
@@ -1368,12 +1538,12 @@ struct StagedArtifact {
 
 impl StagedArtifact {
     fn create(target_directory: &Path) -> Result<Self, StorageError> {
+        Self::create_named(target_directory, OsStr::new(DATABASE_ARTIFACT_FILE_NAME))
+    }
+
+    fn create_named(target_directory: &Path, stem: &OsStr) -> Result<Self, StorageError> {
         for ordinal in 0..MAX_STAGING_ATTEMPTS {
-            let path = target_directory.join(staging_name(
-                OsStr::new(DATABASE_ARTIFACT_FILE_NAME),
-                "restore",
-                ordinal,
-            ));
+            let path = target_directory.join(staging_name(stem, "restore", ordinal));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
                     drop(file);
@@ -1589,7 +1759,7 @@ mod tests {
         let root = TestRoot::new("round-trip");
         let (_source, backup, manifest) = create_backup(&root);
         assert_eq!(manifest.database_id(), database_id());
-        assert_eq!(manifest.checksums().len(), 1);
+        assert_eq!(manifest.checksums().len(), 2);
 
         let mut names = fs::read_dir(&backup)
             .expect("read backup")
@@ -1600,6 +1770,7 @@ mod tests {
             names,
             [
                 OsString::from(DATABASE_ARTIFACT_FILE_NAME),
+                OsString::from(JOURNAL_ARTIFACT_FILE_NAME),
                 OsString::from(MANIFEST_FILE_NAME),
             ]
         );
@@ -1623,6 +1794,14 @@ mod tests {
             DatabaseIdentityProbe::Existing(database_id())
         );
         assert_eq!(complete_structural_scan(reopened), database_id());
+        let restored_journal =
+            crate::journal::journal_path(&target.join(DATABASE_ARTIFACT_FILE_NAME));
+        assert!(restored_journal.is_file());
+        let (_, tail) = crate::journal::scan_journal(&restored_journal, database_id(), |_| Ok(()))
+            .expect("scan restored journal")
+            .expect("restored journal exists");
+        assert_eq!(tail.transition_count, 0);
+        assert!(!tail.incomplete_tail);
     }
 
     #[test]
@@ -1669,6 +1848,33 @@ mod tests {
         let error = RedbOfflineRestore::bind(&backup, &target)
             .restore_offline_backup(OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive)
             .expect_err("checksum mismatch must reject");
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+        assert_eq!(fs::read(sentinel).expect("read sentinel"), b"unchanged");
+        assert!(!target.join(DATABASE_ARTIFACT_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn corrupt_journal_artifact_is_rejected_before_target_replacement() {
+        let root = TestRoot::new("corrupt-journal-before-replace");
+        let (_source, backup, _) = create_backup(&root);
+        let target = root.join("target");
+        fs::create_dir(&target).expect("create target");
+        let sentinel = target.join("sentinel");
+        fs::write(&sentinel, b"unchanged").expect("write sentinel");
+
+        let journal = backup.join(JOURNAL_ARTIFACT_FILE_NAME);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&journal)
+            .expect("open journal artifact");
+        file.seek(SeekFrom::Start(0)).expect("seek journal");
+        file.write_all(&[0xff]).expect("corrupt journal");
+        file.sync_all().expect("sync corruption");
+
+        let error = RedbOfflineRestore::bind(&backup, &target)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive)
+            .expect_err("journal checksum mismatch must reject");
         assert_eq!(error.kind(), StorageErrorKind::CorruptData);
         assert_eq!(fs::read(sentinel).expect("read sentinel"), b"unchanged");
         assert!(!target.join(DATABASE_ARTIFACT_FILE_NAME).exists());
@@ -1777,7 +1983,10 @@ mod tests {
             history_incarnation: Some(1),
             retention_watermark_sequence: None,
         }
-        .into_manifest(checksum, build_metadata())
+        .into_manifest(
+            vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
+            build_metadata(),
+        )
         .expect("manifest");
         let encoded = encode_manifest(&manifest).expect("encode manifest");
         assert_eq!(
@@ -1947,7 +2156,10 @@ mod tests {
             history_incarnation: Some(1),
             retention_watermark_sequence: None,
         }
-        .into_manifest(checksum, build_metadata())
+        .into_manifest(
+            vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
+            build_metadata(),
+        )
         .expect("post-retention manifest");
         assert_eq!(with_fields.retention_watermark_sequence(), Some(0));
         let post = encode_manifest(&with_fields).expect("encode post-retention");

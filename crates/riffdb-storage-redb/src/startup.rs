@@ -35,6 +35,10 @@ use riffdb_types::{
 };
 
 use crate::codec::{self, IdempotencyRecordV1};
+use crate::command_authority::{
+    command_authority_head, command_member_at, commit_at, commits_in_physical_row,
+    physical_scan_start,
+};
 use crate::error::{precommit_storage_error, storage_error, table_error, transaction_error};
 use crate::gate::ExclusiveLease;
 use crate::hooks::RedbTestOperation;
@@ -123,6 +127,9 @@ struct StructuralCursors {
     /// Table phase: 0 = META, 1.. = BYTE_TABLES[phase-1] / structural phase+1 for inspect.
     phase: usize,
     consumed_in_phase: u64,
+    /// Next logical command expected while walking physical COMMITS rows.
+    next_commit_sequence: Option<CommitSequence>,
+    commit_sequence_initialized: bool,
     meta: Option<Range<'static, &'static str, &'static [u8]>>,
     bytes: Option<Range<'static, &'static [u8], &'static [u8]>>,
 }
@@ -197,6 +204,14 @@ struct HistoricalEvidencePlan {
     next_index: usize,
 }
 
+#[derive(Clone)]
+struct CachedCommandAudit {
+    commit_sequence: CommitSequence,
+    member: riffdb_storage_api::StoredCommandAuditMemberV1,
+    record: riffdb_storage_api::StoredServiceAuditRecordV1,
+    peer_sequence: riffdb_types::AdministrationSequence,
+}
+
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
     shared: Arc<SharedRedb>,
@@ -224,9 +239,23 @@ pub struct RedbStructuralEvidenceSession {
     /// write: a finding of any severity vetoes it (ADR-0019 A1).
     any_finding_seen: bool,
     saw_v1_index: bool,
-    /// Held for the structural evidence pass only; must not outlive the session.
-    structural_read: Option<ReadTransaction>,
+    /// The one immutable snapshot pin owned by the validation session.
+    ///
+    /// Structural and historical validation share this snapshot while the
+    /// exclusive mutation lease is retained. Historical materialization does
+    /// not reopen and recheck every table for every key, and the session never
+    /// owns overlapping read transactions.
+    validation_read: Option<ReadTransaction>,
+    historical_tables: Option<HistoricalMaterializationTables>,
     structural_cursors: Option<StructuralCursors>,
+    /// Exact command-audit members derived once from validated segments. This
+    /// avoids decoding an entire segment again for each audit locator.
+    command_audits:
+        std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
+    command_audit_bytes: usize,
+    command_capsules:
+        std::collections::BTreeMap<CommitSequence, riffdb_storage_api::StoredCommandCapsuleV1>,
+    command_cache_built: bool,
     /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
     entity_chains: Option<EntityChainState>,
     /// Reactive-module hashes a publication record names, collected in ONE
@@ -257,8 +286,8 @@ pub struct RedbStructuralEvidenceSession {
     /// Terminal `ExecutionFailed` rows seen in the IDEMPOTENCY phase — the whole
     /// table on both the full walk and the checkpoint fast path, which classifies
     /// every row of that table either way. Seeds the process census that lets a
-    /// checkpoint's StoredOutcome-only `idempotency_count` be derived from redb's
-    /// IDEMPOTENCY row count instead of a full pass.
+    /// checkpoint's materialized-StoredOutcome-only `idempotency_count` be
+    /// derived from redb's IDEMPOTENCY row count instead of a full pass.
     terminal_execution_failure_rows: u64,
 }
 
@@ -705,8 +734,13 @@ impl StructuralEvidenceOpen for RedbStore {
             authoritative_finding_seen: false,
             any_finding_seen: sample_finding_seen,
             saw_v1_index: false,
-            structural_read: Some(transaction),
+            validation_read: Some(transaction),
+            historical_tables: None,
             structural_cursors: None,
+            command_audits: std::collections::BTreeMap::new(),
+            command_audit_bytes: 0,
+            command_capsules: std::collections::BTreeMap::new(),
+            command_cache_built: false,
             entity_chains: None,
             reactive_publication_witness: None,
             reactive_publication_audit_decodes: 0,
@@ -760,7 +794,6 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             self.structural_cursors = None;
             self.entity_chains = None;
             self.reactive_publication_witness = None;
-            self.structural_read = None;
             return Ok(StructuralEvidencePage::ExactEnd(
                 RedbStructuralEvidenceEnd { cursor },
             ));
@@ -835,11 +868,13 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if self.historical_finished || cursor != self.next_historical {
             return Err(invariant());
         }
-        // Structural pin is released once structural finishes; historical uses fresh reads.
+        // Structural pin is released once structural finishes; historical
+        // installs its own immutable pin for the rest of the startup session.
+        self.ensure_historical_read()?;
         if self.historical_plan.is_none() {
-            let transaction = self.open_snapshot_read()?;
-            self.historical_plan =
-                Some(build_historical_evidence_plan(&transaction, &self.inputs)?);
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            let plan = build_historical_evidence_plan(transaction, &self.inputs)?;
+            self.historical_plan = Some(plan);
         }
         let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
         {
@@ -851,7 +886,8 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 ));
             }
         }
-        let transaction = self.open_snapshot_read()?;
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let materialization_tables = self.historical_tables.as_ref().ok_or_else(invariant)?;
         let mut evidence = Vec::new();
         let mut bytes = 0usize;
         let mut migration_rows = 0usize;
@@ -861,8 +897,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         let plan = self.historical_plan.as_mut().ok_or_else(invariant)?;
         while evidence.len() < requested && plan.next_index < plan.entries.len() {
             let order_key = plan.entries[plan.next_index].0.clone();
-            let item =
-                materialize_historical_evidence(&transaction, &plan.entries[plan.next_index].1)?;
+            let item = materialize_historical_evidence(
+                transaction,
+                materialization_tables,
+                &plan.entries[plan.next_index].1,
+            )?;
             let next_bytes = bytes
                 .checked_add(historical_semantic_bytes(&item)?)
                 .ok_or_else(limit_exceeded)?;
@@ -925,27 +964,38 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         version: ContractVersion,
         hash: ContractBundleHash,
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
-        let transaction = self.open_snapshot_read()?;
-        read_historical_bundle(&transaction, lineage, version, hash)
+        self.ensure_historical_read()?;
+        read_historical_bundle_from_table(
+            &self
+                .historical_tables
+                .as_ref()
+                .ok_or_else(invariant)?
+                .bundles,
+            lineage,
+            version,
+            hash,
+        )
     }
 
     fn read_integrity_entity(
         &mut self,
         target: &riffdb_storage_api::EntityTarget,
     ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
-        let transaction = self.open_snapshot_read()?;
-        let table = transaction.open_table(ENTITIES).map_err(table_error)?;
-        crate::reads::read_entity_record(&table, target)
+        self.ensure_historical_read()?;
+        let tables = self.historical_tables.as_ref().ok_or_else(invariant)?;
+        crate::reads::read_entity_record(&tables.entities, target)
     }
 
     fn read_integrity_unique_occupancy(
         &mut self,
         target: &UniqueIndexTarget,
     ) -> Result<UniqueOccupancyKind, StorageError> {
-        let transaction = self.open_snapshot_read()?;
-        let table = transaction
-            .open_table(SECONDARY_INDEXES)
-            .map_err(table_error)?;
+        self.ensure_historical_read()?;
+        let table = &self
+            .historical_tables
+            .as_ref()
+            .ok_or_else(invariant)?
+            .indexes;
         let prefix = target.prefix().prefix().as_bytes();
         let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
         let mut range = table
@@ -982,6 +1032,8 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if self.authoritative_finding_seen {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        self.historical_tables = None;
+        self.validation_read = None;
         drop(self.open_snapshot_read()?);
         let lease = self.lease.take().ok_or_else(invariant)?;
         if self.saw_v1_index {
@@ -1043,6 +1095,20 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
 }
 
 impl RedbStructuralEvidenceSession {
+    fn ensure_historical_read(&mut self) -> Result<(), StorageError> {
+        if self.validation_read.is_none() {
+            self.validation_read = Some(self.open_snapshot_read()?);
+        }
+        if self.historical_tables.is_none() {
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            self.historical_tables = Some(HistoricalMaterializationTables::open(transaction)?);
+        }
+        if self.historical_tables.is_none() {
+            return Err(invariant());
+        }
+        Ok(())
+    }
+
     fn open_snapshot_read(&self) -> Result<ReadTransaction, StorageError> {
         if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
             return Err(corrupt());
@@ -1063,7 +1129,7 @@ impl RedbStructuralEvidenceSession {
         if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
             return Err(corrupt());
         }
-        let Some(transaction) = self.structural_read.as_ref() else {
+        let Some(transaction) = self.validation_read.as_ref() else {
             return Err(invariant());
         };
         self.verify_structural_continuity(transaction)
@@ -1262,6 +1328,7 @@ fn run_checkpoint_sample_windows(
     use std::ops::Bound::{Included, Unbounded};
 
     let mut inspected = 0_u64;
+    let cached_command_capsules = command_capsule_cache_from_segments(transaction)?;
     if s > 0 {
         let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, s);
         for start in starts {
@@ -1274,8 +1341,10 @@ fn run_checkpoint_sample_windows(
             let Some(lower_seq) = CommitSequence::new(start) else {
                 continue;
             };
-            let lower_key = keys::encode_application_sequence_key(lower_seq);
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let Some(lower_key) = physical_scan_start(&commits, lower_seq)? else {
+                continue;
+            };
             for entry in commits
                 .range::<&[u8]>((Included(lower_key.as_slice()), Unbounded))
                 .map_err(precommit_storage_error)?
@@ -1288,10 +1357,28 @@ fn run_checkpoint_sample_windows(
                     break;
                 }
                 inspected = inspected.saturating_add(1);
-                let index = seq.get().saturating_sub(1);
-                if let Some(finding) =
-                    inspect_commit_row(transaction, index, key.value(), value.value())?
-                {
+                let command_capsules =
+                    match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+                        Ok(segment) => segment
+                            .value()
+                            .commands()
+                            .iter()
+                            .map(|command| (command.commit_sequence(), command.base().clone()))
+                            .collect(),
+                        // The authoritative commit-row inspector below owns all
+                        // malformed-record classification. A corrupt historical
+                        // non-segment must not make this segment-only cache abort
+                        // the evidence walk before that typed finding is emitted.
+                        Err(_) => std::collections::BTreeMap::new(),
+                    };
+                let (finding, _) = inspect_commit_row(
+                    transaction,
+                    &command_capsules,
+                    seq,
+                    key.value(),
+                    value.value(),
+                )?;
+                if let Some(finding) = finding {
                     return Ok((inspected, Some(finding)));
                 }
             }
@@ -1311,13 +1398,19 @@ fn run_checkpoint_sample_windows(
                     break;
                 }
                 inspected = inspected.saturating_add(1);
-                if let Some(finding) = inspect_event_row(transaction, key.value(), value.value())? {
+                if let Some(finding) = inspect_event_row(
+                    transaction,
+                    &cached_command_capsules,
+                    key.value(),
+                    value.value(),
+                )? {
                     return Ok((inspected, Some(finding)));
                 }
             }
         }
     }
     if audit_bound > 0 {
+        let cached_command_audits = command_audit_cache_from_segments(transaction)?;
         let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, audit_bound);
         for start in starts {
             if start == 0 || start > audit_bound {
@@ -1344,9 +1437,17 @@ fn run_checkpoint_sample_windows(
                 }
                 inspected = inspected.saturating_add(1);
                 let index = seq.get().saturating_sub(1);
-                if let Some(finding) =
-                    inspect_audit_row(transaction, index, key.value(), value.value())?
-                {
+                let finding = match inspect_cached_command_audit_row(
+                    transaction,
+                    &cached_command_audits,
+                    index,
+                    key.value(),
+                    value.value(),
+                )? {
+                    Some(finding) => finding,
+                    None => inspect_audit_row(transaction, index, key.value(), value.value())?,
+                };
+                if let Some(finding) = finding {
                     return Ok((inspected, Some(finding)));
                 }
             }
@@ -1403,13 +1504,15 @@ impl RedbStructuralEvidenceSession {
     ) -> Result<Option<StructuralFinding>, StorageError> {
         // Positions are always requested in strictly ascending order by the page loop.
         if position == 0 {
-            let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
             return inspect_header(transaction, self.database_id);
         }
         if self.structural_cursors.is_none() {
             self.structural_cursors = Some(StructuralCursors {
                 phase: 0,
                 consumed_in_phase: 0,
+                next_commit_sequence: None,
+                commit_sequence_initialized: false,
                 meta: None,
                 bytes: None,
             });
@@ -1445,6 +1548,7 @@ impl RedbStructuralEvidenceSession {
             return self.inspect_reactive_module_row_with_witness(&key, &value);
         }
         if phase == 8 {
+            self.ensure_command_cache()?;
             return self.inspect_terminal_row_with_census(&key, &value);
         }
         if let Some(checkpoint) = self.checkpoint.as_ref()
@@ -1461,16 +1565,98 @@ impl RedbStructuralEvidenceSession {
             self.walked_prefix_counts[phase] = self.walked_prefix_counts[phase].saturating_add(1);
             return Ok(None);
         }
-        let inspect_index = match (phase, self.checkpoint.as_ref()) {
-            (10, Some(cp)) => index.saturating_add(cp.counts.commits_count),
-            (21, Some(cp)) => index.saturating_add(cp.counts.audit_count),
+        if phase == 10 {
+            // Successful outcomes may be segment-owned with no physical
+            // IDEMPOTENCY row, so phase 8 is not guaranteed to build this
+            // reciprocal cache before the command-authority walk.
+            self.ensure_command_cache()?;
+            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
+            let needs_initial = !self
+                .structural_cursors
+                .as_ref()
+                .ok_or_else(invariant)?
+                .commit_sequence_initialized;
+            if needs_initial {
+                let retained_floor = self.checkpoint.as_ref().map_or_else(
+                    || {
+                        self.validation_read
+                            .as_ref()
+                            .ok_or_else(invariant)
+                            .and_then(retention_watermark_sequence)
+                    },
+                    |checkpoint| Ok(checkpoint.checkpoint_commit_sequence),
+                )?;
+                let expected = retained_floor.checked_add(1).and_then(CommitSequence::new);
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                cursors.next_commit_sequence = expected;
+                cursors.commit_sequence_initialized = true;
+            }
+            let expected = self
+                .structural_cursors
+                .as_ref()
+                .ok_or_else(invariant)?
+                .next_commit_sequence;
+            let Some(expected) = expected else {
+                return Ok(Some(authoritative(
+                    StructuralFindingCode::SequenceDiscontinuity,
+                )));
+            };
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            let (finding, last) =
+                inspect_commit_row(transaction, &self.command_capsules, expected, &key, &value)?;
+            self.structural_cursors
+                .as_mut()
+                .ok_or_else(invariant)?
+                .next_commit_sequence = last.and_then(CommitSequence::checked_next);
+            return Ok(finding);
+        }
+        if phase == 11 {
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            return inspect_provenance_row(transaction, &self.command_capsules, &key, &value);
+        }
+        if phase == 12 {
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            return inspect_event_row(transaction, &self.command_capsules, &key, &value);
+        }
+        if phase == 13 {
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            return inspect_event_route_row(transaction, &self.command_capsules, &key, &value);
+        }
+        if phase == 14 {
+            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+            return inspect_outbox_row(transaction, &self.command_capsules, &key, &value);
+        }
+        if phase == 21
+            && let Some(finding) = inspect_cached_command_audit_row(
+                self.validation_read.as_ref().ok_or_else(invariant)?,
+                &self.command_audits,
+                keys::decode_audit_key(&key)
+                    .map(|sequence| sequence.get().saturating_sub(1))
+                    .unwrap_or(index),
+                &key,
+                &value,
+            )?
+        {
+            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
+            return Ok(finding);
+        }
+        if phase == 22
+            && let Some(finding) =
+                inspect_cached_command_audit_request_row(&self.command_audits, &key, &value)?
+        {
+            return Ok(finding);
+        }
+        let inspect_index = match phase {
+            21 => keys::decode_audit_key(&key)
+                .map(|sequence| sequence.get().saturating_sub(1))
+                .unwrap_or(index),
             _ => index,
         };
         if crate::validated_prefix::is_range_skipped_phase(phase) {
             self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
         }
-        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
-        inspect_table_row_from_bytes(
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let finding = inspect_table_row_from_bytes(
             transaction,
             &self.inputs,
             self.database_id,
@@ -1478,7 +1664,100 @@ impl RedbStructuralEvidenceSession {
             inspect_index,
             &key,
             &value,
-        )
+        )?;
+        Ok(finding)
+    }
+
+    fn ensure_command_cache(&mut self) -> Result<(), StorageError> {
+        if self.command_cache_built {
+            return Ok(());
+        }
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let mut capsules = std::collections::BTreeMap::new();
+        let mut audits = std::collections::BTreeMap::new();
+        let mut retained_bytes = 0usize;
+        for entry in commits.iter().map_err(precommit_storage_error)? {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            retained_bytes = retained_bytes
+                .checked_add(value.value().len())
+                .ok_or_else(limit_exceeded)?;
+            if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+                return Err(limit_exceeded());
+            }
+            let physical =
+                keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
+            let commands = match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+                Ok(segment) => {
+                    let segment = segment.into_parts().0;
+                    if segment.first_commit_sequence() != physical {
+                        return Err(corrupt());
+                    }
+                    segment
+                        .commands()
+                        .iter()
+                        .map(|command| command.base().clone())
+                        .collect::<Vec<_>>()
+                }
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    match command_member_at(&commits, &events, physical) {
+                        Ok(command) => command
+                            .map(|command| vec![command.into_base()])
+                            .unwrap_or_default(),
+                        Err(error) if error.kind() == StorageErrorKind::CorruptData => Vec::new(),
+                        Err(error) => return Err(error),
+                    }
+                }
+                // The physical commit phase owns malformed-row reporting. Do
+                // not let this auxiliary cache turn that expected finding into
+                // a storage-level abort.
+                Err(_) => Vec::new(),
+            };
+            for command in commands {
+                let sequence = command.commit_sequence();
+                let started = command.started_audit();
+                let terminal = command.terminal_audit();
+                for (member, record, peer_sequence) in [
+                    (
+                        riffdb_storage_api::StoredCommandAuditMemberV1::Started,
+                        started,
+                        terminal.administration_sequence(),
+                    ),
+                    (
+                        riffdb_storage_api::StoredCommandAuditMemberV1::Terminal,
+                        terminal,
+                        started.administration_sequence(),
+                    ),
+                ] {
+                    if audits
+                        .insert(
+                            record.administration_sequence(),
+                            CachedCommandAudit {
+                                commit_sequence: sequence,
+                                member,
+                                record: record.clone(),
+                                peer_sequence,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(corrupt());
+                    }
+                }
+                if capsules.insert(sequence, command).is_some() {
+                    return Err(corrupt());
+                }
+            }
+        }
+        self.command_audit_bytes = retained_bytes;
+        self.command_audits = audits;
+        self.command_capsules = capsules;
+        self.command_cache_built = true;
+        Ok(())
     }
 
     fn ensure_entity_chains_built(&mut self) -> Result<(), StorageError> {
@@ -1497,7 +1776,7 @@ impl RedbStructuralEvidenceSession {
             )),
             None => None,
         };
-        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         self.entity_chains = Some(build_entity_chains(transaction, entity_count, seed)?);
         Ok(())
     }
@@ -1552,7 +1831,7 @@ impl RedbStructuralEvidenceSession {
     ) -> Result<Option<StructuralFinding>, StorageError> {
         // Disjoint field borrows: the snapshot is read-only, the witness and its
         // decode counter are the only mutated state.
-        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         inspect_reactive_module_row(
             transaction,
             &mut self.reactive_publication_witness,
@@ -1594,8 +1873,16 @@ impl RedbStructuralEvidenceSession {
             self.walked_prefix_counts[8] = self.walked_prefix_counts[8].saturating_add(1);
             return Ok(None);
         }
-        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
-        inspect_terminal_row(transaction, &self.inputs, self.database_id, key, value)
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let finding = inspect_terminal_row(
+            transaction,
+            &self.command_capsules,
+            &self.inputs,
+            self.database_id,
+            key,
+            value,
+        )?;
+        Ok(finding)
     }
 
     fn inspect_entity_row_with_chains(
@@ -1630,7 +1917,7 @@ impl RedbStructuralEvidenceSession {
                 StructuralFindingCode::CrossLinkMismatch,
             )));
         }
-        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         if !binding_bundle_exists(transaction, record.schema_binding())? {
             self.maybe_queue_orphans_after_entity_row();
             return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
@@ -1697,7 +1984,7 @@ impl RedbStructuralEvidenceSession {
                     .meta
                     .is_none();
                 if need_open {
-                    let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+                    let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
                     let table: ReadOnlyTable<&'static str, &'static [u8]> =
                         transaction.open_table(META).map_err(table_error)?;
                     let range = table.range::<&str>(..).map_err(precommit_storage_error)?;
@@ -1740,12 +2027,20 @@ impl RedbStructuralEvidenceSession {
                 .bytes
                 .is_none();
             if need_open {
+                // A validated-prefix checkpoint may skip every physical
+                // IDEMPOTENCY and COMMITS row, so phases 8 and 10 need not
+                // initialize the segment-owned command cache. The audit
+                // locator streams remain complete and must use that one-pass
+                // cache instead of decoding a predecessor segment per row.
+                if matches!(phase, 21 | 22) {
+                    self.ensure_command_cache()?;
+                }
                 // ENTITIES phase entry: build chains even when the table is empty so
                 // commit-referenced orphans are still validated.
                 if phase == 5 {
                     self.ensure_entity_chains_built()?;
                 }
-                let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+                let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
                 let table: ReadOnlyTable<&'static [u8], &'static [u8]> = match phase {
                     1 => transaction
                         .open_table(CONTRACT_BUNDLES)
@@ -1883,11 +2178,9 @@ fn inspect_table_row_from_bytes(
         // `inspect_terminal_row_with_census` in `inspect_structural_forward`,
         // which owns the single terminal-class decode.
         9 => inspect_pending_row(transaction, inputs, database_id, key, value),
-        10 => inspect_commit_row(transaction, index, key, value),
-        11 => inspect_provenance_row(transaction, key, value),
-        12 => inspect_event_row(transaction, key, value),
-        13 => inspect_event_route_row(transaction, key, value),
-        14 => inspect_outbox_row(transaction, key, value),
+        10 => Err(invariant()),
+        11 => Err(invariant()),
+        12..=14 => Err(invariant()),
         15 => inspect_outbox_status_row(transaction, key, value),
         16 => inspect_projection_state_row(transaction, key, value),
         17 => inspect_projection_control_row(transaction, key, value),
@@ -2030,9 +2323,10 @@ fn build_reactive_publication_witness(
     for entry in audit.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let sequence = keys::decode_audit_key(key.value()).map_err(|_| corrupt())?;
-        let record = codec::decode_administration_audit_record_v1(value.value())?
-            .into_parts()
-            .0;
+        let Some(record) = decode_non_command_administration_audit(value.value())? else {
+            continue;
+        };
+        let record = record.into_parts().0;
         *audit_decodes = audit_decodes.saturating_add(1);
         // Retained from the per-row scan verbatim: a record whose own sequence
         // disagrees with its key is corruption, not a missing witness.
@@ -2690,6 +2984,10 @@ fn inspect_epoch_row(
 
 fn inspect_terminal_row(
     transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
     inputs: &StartupValidationInputs,
     database_id: DatabaseId,
     key: &[u8],
@@ -2702,10 +3000,28 @@ fn inspect_terminal_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    let (identity, plan) = match &record {
-        IdempotencyRecordV1::StoredOutcome(value) => (value.identity(), value.plan()),
-        IdempotencyRecordV1::ExecutionFailed(value) => {
-            (value.pending().identity(), value.pending().plan())
+    let mut command_capsule = None;
+    let (identity, plan, outcome) = match &record {
+        IdempotencyRecordV1::StoredOutcome(value) => (
+            value.identity().clone(),
+            value.plan().clone(),
+            Some(value.clone()),
+        ),
+        IdempotencyRecordV1::ExecutionFailed(value) => (
+            value.pending().identity().clone(),
+            value.pending().plan().clone(),
+            None,
+        ),
+        IdempotencyRecordV1::CommandLocator(locator) => {
+            let Some(capsule) = command_capsules.get(&locator.commit_sequence()) else {
+                return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+            };
+            command_capsule = Some(capsule);
+            (
+                capsule.outcome().identity().clone(),
+                capsule.outcome().plan().clone(),
+                Some(capsule.outcome().clone()),
+            )
         }
     };
     if identity.storage_key().ok().as_ref() != Some(&physical)
@@ -2720,16 +3036,26 @@ fn inspect_terminal_row(
             StructuralFindingCode::DigestUnavailable,
         )));
     }
-    if !plan_bundle_exists(transaction, plan)? || raw_exists(transaction, IDEMPOTENCY_PENDING, key)?
-    {
+    let terminal_plan_exists = plan_bundle_exists(transaction, &plan)?;
+    let pending_exists = raw_exists(transaction, IDEMPOTENCY_PENDING, key)?;
+    if !terminal_plan_exists || pending_exists {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    if let IdempotencyRecordV1::StoredOutcome(outcome) = &record
-        && !outcome_graph_is_reciprocal(transaction, outcome)?
-    {
-        return Ok(Some(authoritative(
-            StructuralFindingCode::CrossLinkMismatch,
-        )));
+    if let Some(outcome) = outcome.as_ref() {
+        let reciprocal = match command_capsule {
+            Some(capsule) => {
+                outcome == capsule.outcome()
+                    && outcome_matches_commit(outcome, capsule.commit())
+                    && provenance_matches(outcome, capsule.commit(), capsule.provenance())
+                    && command_capsule_graph_is_reciprocal(transaction, capsule)?
+            }
+            None => outcome_graph_is_reciprocal(transaction, outcome)?,
+        };
+        if !reciprocal {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
     }
     Ok(None)
 }
@@ -2767,55 +3093,112 @@ fn inspect_pending_row(
 
 fn inspect_commit_row(
     transaction: &ReadTransaction,
-    index: u64,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
+    expected_first: CommitSequence,
     key: &[u8],
     value: &[u8],
-) -> Result<Option<StructuralFinding>, StorageError> {
+) -> Result<(Option<StructuralFinding>, Option<CommitSequence>), StorageError> {
     let Ok(sequence) = keys::decode_application_sequence_key(key) else {
-        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+        return Ok((
+            Some(authoritative(StructuralFindingCode::MalformedRecord)),
+            None,
+        ));
     };
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let record = match decoded(codec::decode_commit_with_event_table(value, &events)) {
-        Ok(value) => value,
-        Err(code) => return Ok(Some(authoritative(code))),
+    let records = match commits_in_physical_row(value, &events, sequence) {
+        Ok(records) => records,
+        Err(error) => {
+            let code = match error.kind() {
+                StorageErrorKind::LimitExceeded => StructuralFindingCode::LimitExceeded,
+                _ => StructuralFindingCode::MalformedRecord,
+            };
+            return Ok((Some(authoritative(code)), None));
+        }
     };
-    // After offline prune, retained commits start at watermark+1. The table
-    // ordinal `index` is relative to the retained prefix, not absolute history.
-    let watermark = retention_watermark_sequence(transaction)?;
-    let expected = watermark
-        .checked_add(index)
-        .and_then(|base| base.checked_add(1))
-        .and_then(CommitSequence::new);
-    if expected != Some(sequence) || record.commit_sequence() != sequence {
-        return Ok(Some(authoritative(
-            StructuralFindingCode::SequenceDiscontinuity,
-        )));
+    if sequence != expected_first {
+        return Ok((
+            Some(authoritative(StructuralFindingCode::SequenceDiscontinuity)),
+            records
+                .last()
+                .map(|record| record.value().commit_sequence()),
+        ));
     }
-    Ok((!plan_bundle_exists(transaction, record.plan())?
-        || !commit_graph_is_reciprocal(transaction, &record)?)
-    .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    for record in &records {
+        let record = record.value();
+        let plan_exists = plan_bundle_exists(transaction, record.plan())?;
+        let reciprocal = match command_capsules.get(&record.commit_sequence()) {
+            Some(capsule) if capsule.commit() == record => {
+                command_capsule_graph_is_reciprocal(transaction, capsule)?
+            }
+            Some(_) => false,
+            None => commit_graph_is_reciprocal(transaction, record)?,
+        };
+        if !plan_exists || !reciprocal {
+            return Ok((
+                Some(authoritative(StructuralFindingCode::MissingCrossLink)),
+                records
+                    .last()
+                    .map(|record| record.value().commit_sequence()),
+            ));
+        }
+    }
+    Ok((
+        None,
+        records
+            .last()
+            .map(|record| record.value().commit_sequence()),
+    ))
 }
 
 fn inspect_provenance_row(
     transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let Ok(id) = keys::decode_provenance_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
+    let mut command_capsule = None;
     let record = match decoded(codec::decode_provenance_record_v1(value)) {
         Ok(value) => value,
-        Err(code) => return Ok(Some(authoritative(code))),
+        Err(_) => {
+            let locator = match decoded(codec::decode_command_locator_v1(value)) {
+                Ok(locator) => locator,
+                Err(code) => return Ok(Some(authoritative(code))),
+            };
+            let Some(capsule) = command_capsules.get(&locator.commit_sequence()) else {
+                return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+            };
+            command_capsule = Some(capsule);
+            capsule.provenance().clone()
+        }
+    };
+    let reciprocal = match command_capsule {
+        Some(capsule) => {
+            &record == capsule.provenance()
+                && provenance_matches(capsule.outcome(), capsule.commit(), &record)
+        }
+        None => provenance_graph_is_reciprocal(transaction, &record)?,
     };
     Ok((record.provenance_id() != id
         || !plan_bundle_exists(transaction, record.plan())?
-        || !provenance_graph_is_reciprocal(transaction, &record)?)
-    .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
+        || !reciprocal)
+        .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_event_row(
     transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2826,7 +3209,9 @@ fn inspect_event_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    let route_matches = if let Some(commit) = get_commit(transaction, id.commit_sequence())? {
+    let route_matches = if let Some(commit) =
+        get_commit_cached(transaction, command_capsules, id.commit_sequence())?
+    {
         let route_key = keys::encode_event_route_key(commit.partition_hash(), id);
         matches!(
             get_decoded(
@@ -2844,13 +3229,17 @@ fn inspect_event_row(
         false
     };
     Ok((event.event_id() != id
-        || !event_graph_is_reciprocal(transaction, &event)?
+        || !event_graph_is_reciprocal(transaction, command_capsules, &event)?
         || !route_matches)
         .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_event_route_row(
     transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2875,7 +3264,8 @@ fn inspect_event_route_row(
     let Some(event) = get_event(transaction, id)? else {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     };
-    let Some(commit) = get_commit(transaction, id.commit_sequence())? else {
+    let Some(commit) = get_commit_cached(transaction, command_capsules, id.commit_sequence())?
+    else {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     };
     let ordinal = usize::try_from(id.event_ordinal()).map_err(|_| limit_exceeded())?;
@@ -2889,6 +3279,10 @@ fn inspect_event_route_row(
 
 fn inspect_outbox_row(
     transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2900,10 +3294,9 @@ fn inspect_outbox_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    Ok(
-        (intent.event_id() != id || !event_graph_is_reciprocal(transaction, intent.event())?)
-            .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)),
-    )
+    Ok((intent.event_id() != id
+        || !event_graph_is_reciprocal(transaction, command_capsules, intent.event())?)
+    .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_outbox_status_row(
@@ -2918,10 +3311,23 @@ fn inspect_outbox_status_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(derived_outbox(code))),
     };
-    Ok(
-        (status.event_id() != id || !raw_exists(transaction, OUTBOX, key)?)
-            .then(|| derived_outbox(StructuralFindingCode::OrphanedOutboxStatus)),
-    )
+    let intent_exists =
+        raw_exists(transaction, OUTBOX, key)? || command_segment_event_exists(transaction, id)?;
+    Ok((status.event_id() != id || !intent_exists)
+        .then(|| derived_outbox(StructuralFindingCode::OrphanedOutboxStatus)))
+}
+
+fn command_segment_event_exists(
+    transaction: &ReadTransaction,
+    event_id: riffdb_types::EventId,
+) -> Result<bool, StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    Ok(matches!(
+        command_member_at(&commits, &events, event_id.commit_sequence())?,
+        Some(crate::command_authority::CommandAuthorityMember::CapsuleV2(command))
+            if command.events().iter().any(|event| event.event_id() == event_id)
+    ))
 }
 
 fn inspect_projection_state_row(
@@ -3200,6 +3606,201 @@ fn inspect_capability_lookup_row(
     )
 }
 
+fn command_audit_cache_from_segments(
+    transaction: &ReadTransaction,
+) -> Result<
+    std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
+    StorageError,
+> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let mut audits = std::collections::BTreeMap::new();
+    let mut retained_bytes = 0usize;
+    for entry in commits.iter().map_err(precommit_storage_error)? {
+        let (_, value) = entry.map_err(precommit_storage_error)?;
+        let segment = match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            Ok(segment) => segment.into_parts().0,
+            // Segment-only acceleration is advisory during structural
+            // validation. The owning physical-row phase reports malformed
+            // segment or historical bytes with the correct finding.
+            Err(_) => continue,
+        };
+        retained_bytes = retained_bytes
+            .checked_add(value.value().len())
+            .ok_or_else(limit_exceeded)?;
+        if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            return Err(limit_exceeded());
+        }
+        for command in segment.commands() {
+            let started = command.base().started_audit();
+            let terminal = command.base().terminal_audit();
+            for (member, record, peer_sequence) in [
+                (
+                    riffdb_storage_api::StoredCommandAuditMemberV1::Started,
+                    started,
+                    terminal.administration_sequence(),
+                ),
+                (
+                    riffdb_storage_api::StoredCommandAuditMemberV1::Terminal,
+                    terminal,
+                    started.administration_sequence(),
+                ),
+            ] {
+                if audits
+                    .insert(
+                        record.administration_sequence(),
+                        CachedCommandAudit {
+                            commit_sequence: command.commit_sequence(),
+                            member,
+                            record: record.clone(),
+                            peer_sequence,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(corrupt());
+                }
+            }
+        }
+    }
+    Ok(audits)
+}
+
+fn command_capsule_cache_from_segments(
+    transaction: &ReadTransaction,
+) -> Result<
+    std::collections::BTreeMap<CommitSequence, riffdb_storage_api::StoredCommandCapsuleV1>,
+    StorageError,
+> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let mut capsules = std::collections::BTreeMap::new();
+    let mut retained_bytes = 0usize;
+    for entry in commits.iter().map_err(precommit_storage_error)? {
+        let (_, value) = entry.map_err(precommit_storage_error)?;
+        let segment = match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            Ok(segment) => segment.into_parts().0,
+            // See `command_audit_cache_from_segments`: authoritative row
+            // inspection, not this accelerator, classifies corrupt bytes.
+            Err(_) => continue,
+        };
+        retained_bytes = retained_bytes
+            .checked_add(value.value().len())
+            .ok_or_else(limit_exceeded)?;
+        if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            return Err(limit_exceeded());
+        }
+        for command in segment.commands() {
+            if capsules
+                .insert(command.commit_sequence(), command.base().clone())
+                .is_some()
+            {
+                return Err(corrupt());
+            }
+        }
+    }
+    Ok(capsules)
+}
+
+fn inspect_cached_command_audit_row(
+    transaction: &ReadTransaction,
+    cached: &std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
+    index: u64,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<Option<StructuralFinding>>, StorageError> {
+    let Ok(locator) = codec::decode_command_audit_locator_v1(value) else {
+        return Ok(None);
+    };
+    let locator = locator.into_parts().0;
+    let Ok(sequence) = keys::decode_audit_key(key) else {
+        return Ok(Some(Some(authoritative(
+            StructuralFindingCode::MalformedRecord,
+        ))));
+    };
+    let Some(command) = cached.get(&sequence) else {
+        return Ok(Some(Some(authoritative(
+            StructuralFindingCode::MissingCrossLink,
+        ))));
+    };
+    let expected_sequence = index
+        .checked_add(1)
+        .and_then(riffdb_types::AdministrationSequence::new);
+    if expected_sequence != Some(sequence)
+        || locator.commit_sequence() != command.commit_sequence
+        || locator.member() != command.member
+        || command.record.administration_sequence() != sequence
+        || !match command.member {
+            riffdb_storage_api::StoredCommandAuditMemberV1::Started => {
+                command.record.phase() == riffdb_types::ServiceAuditPhaseV1::Started
+                    && command.record.link() == riffdb_types::ServiceAuditLinkV1::None
+            }
+            riffdb_storage_api::StoredCommandAuditMemberV1::Terminal => {
+                command.record.phase() == riffdb_types::ServiceAuditPhaseV1::Succeeded
+                    && matches!(
+                        command.record.link(),
+                        riffdb_types::ServiceAuditLinkV1::Command { commit_sequence, .. }
+                            if commit_sequence == command.commit_sequence
+                    )
+            }
+        }
+    {
+        return Ok(Some(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        ))));
+    }
+    let Some(peer) = cached.get(&command.peer_sequence) else {
+        return Ok(Some(Some(authoritative(
+            StructuralFindingCode::MissingCrossLink,
+        ))));
+    };
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let segment_owned = matches!(
+        command_member_at(&commits, &events, command.commit_sequence)?,
+        Some(crate::command_authority::CommandAuthorityMember::CapsuleV2(
+            _
+        ))
+    );
+    let request_index_exists = segment_owned
+        || service_audit_request_index_exists(transaction, command.record.request_id(), sequence)?;
+    if peer.commit_sequence != command.commit_sequence
+        || peer.record.request_id() != command.record.request_id()
+        || peer.peer_sequence != sequence
+        || peer.member == command.member
+        || !request_index_exists
+    {
+        return Ok(Some(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        ))));
+    }
+    Ok(Some(None))
+}
+
+fn inspect_cached_command_audit_request_row(
+    cached: &std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<Option<StructuralFinding>>, StorageError> {
+    let Ok((request_id, sequence)) = keys::decode_audit_by_request_key(key) else {
+        return Ok(None);
+    };
+    let Some(command) = cached.get(&sequence) else {
+        return Ok(None);
+    };
+    let index = match decoded(codec::decode_service_audit_request_index_v1(value)) {
+        Ok(index) => index,
+        Err(code) => return Ok(Some(Some(authoritative(code)))),
+    };
+    if index.request_id() != request_id
+        || index.administration_sequence() != sequence
+        || command.record.request_id() != request_id
+    {
+        return Ok(Some(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        ))));
+    }
+    Ok(Some(None))
+}
+
 fn inspect_audit_row(
     transaction: &ReadTransaction,
     index: u64,
@@ -3209,7 +3810,7 @@ fn inspect_audit_row(
     let Ok(sequence) = keys::decode_audit_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
-    let record = match decoded(codec::decode_administration_audit_record_v1(value)) {
+    let record = match decoded(decode_administration_audit_in_read(transaction, value)) {
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
@@ -3326,13 +3927,7 @@ fn inspect_audit_by_request_row(
             StructuralFindingCode::CrossLinkMismatch,
         )));
     }
-    let audit_key = keys::encode_audit_key(sequence);
-    let audit = get_decoded(
-        transaction,
-        AUDIT,
-        audit_key.as_slice(),
-        codec::decode_administration_audit_record_v1,
-    )?;
+    let audit = audit_record_at(transaction, sequence)?;
     Ok((!matches!(
         audit,
         Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record)))
@@ -3453,15 +4048,21 @@ fn collect_plan_locators(
         let record =
             decoded(codec::decode_idempotency_record_v1(value.value())).map_err(|_| corrupt())?;
         let (identity, plan) = match &record {
-            IdempotencyRecordV1::StoredOutcome(value) => (value.identity(), value.plan()),
-            IdempotencyRecordV1::ExecutionFailed(value) => {
-                (value.pending().identity(), value.pending().plan())
+            IdempotencyRecordV1::StoredOutcome(value) => {
+                (value.identity().clone(), value.plan().clone())
             }
+            IdempotencyRecordV1::ExecutionFailed(value) => (
+                value.pending().identity().clone(),
+                value.pending().plan().clone(),
+            ),
+            // Successful command plans are collected once from COMMITS below;
+            // structural evidence already proved every locator reciprocal.
+            IdempotencyRecordV1::CommandLocator(_) => continue,
         };
         if identity.storage_key().ok().as_ref() != Some(&physical) {
             return Err(corrupt());
         }
-        push_plan(plan.clone())?;
+        push_plan(plan)?;
     }
     let pending = transaction
         .open_table(IDEMPOTENCY_PENDING)
@@ -3480,23 +4081,32 @@ fn collect_plan_locators(
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
     for entry in commits.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let sequence = keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-        let record = decoded(codec::decode_commit_with_event_table(
-            value.value(),
-            &events,
-        ))
-        .map_err(|_| corrupt())?;
-        if record.commit_sequence() != sequence {
-            return Err(corrupt());
+        let physical_sequence =
+            keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
+        let records = match commits_in_physical_row(value.value(), &events, physical_sequence) {
+            Ok(records) => records,
+            // Historical semantic ordering is an auxiliary view. The
+            // structural commit phase reports this malformed row; omitting it
+            // here avoids converting a typed finding into an aborted scan.
+            Err(error) if error.kind() == StorageErrorKind::CorruptData => continue,
+            Err(error) => return Err(error),
+        };
+        for record in records {
+            push_plan(record.value().plan().clone())?;
         }
-        push_plan(record.plan().clone())?;
     }
     let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
     for entry in provenance.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let id = keys::decode_provenance_key(key.value()).map_err(|_| corrupt())?;
-        let record =
-            decoded(codec::decode_provenance_record_v1(value.value())).map_err(|_| corrupt())?;
+        let record = match decoded(codec::decode_provenance_record_v1(value.value())) {
+            Ok(record) => record,
+            Err(_) => {
+                let _locator = decoded(codec::decode_command_locator_v1(value.value()))
+                    .map_err(|_| corrupt())?;
+                continue;
+            }
+        };
         if record.provenance_id() != id {
             return Err(corrupt());
         }
@@ -3634,16 +4244,39 @@ fn collect_capability_partition_locators(
     Ok(())
 }
 
+struct HistoricalMaterializationTables {
+    bundles: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    entities: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    indexes: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    epochs: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    capabilities: ReadOnlyTable<&'static [u8], &'static [u8]>,
+}
+
+impl HistoricalMaterializationTables {
+    fn open(transaction: &ReadTransaction) -> Result<Self, StorageError> {
+        Ok(Self {
+            bundles: transaction
+                .open_table(CONTRACT_BUNDLES)
+                .map_err(table_error)?,
+            entities: transaction.open_table(ENTITIES).map_err(table_error)?,
+            indexes: transaction
+                .open_table(SECONDARY_INDEXES)
+                .map_err(table_error)?,
+            epochs: transaction.open_table(INDEX_EPOCHS).map_err(table_error)?,
+            capabilities: transaction.open_table(CAPABILITIES).map_err(table_error)?,
+        })
+    }
+}
+
 fn materialize_historical_evidence(
     transaction: &ReadTransaction,
+    tables: &HistoricalMaterializationTables,
     locator: &EvidenceLocator,
 ) -> Result<HistoricalSemanticEvidence, StorageError> {
     match locator {
         EvidenceLocator::Bundle(key) => {
-            let table = transaction
-                .open_table(CONTRACT_BUNDLES)
-                .map_err(table_error)?;
-            let value = table
+            let value = tables
+                .bundles
                 .get(key.as_slice())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(corrupt)?;
@@ -3688,8 +4321,8 @@ fn materialize_historical_evidence(
             )))
         }
         EvidenceLocator::PersistedKeyEntity(key) => {
-            let table = transaction.open_table(ENTITIES).map_err(table_error)?;
-            let value = table
+            let value = tables
+                .entities
                 .get(key.as_slice())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(corrupt)?;
@@ -3704,10 +4337,8 @@ fn materialize_historical_evidence(
             ))
         }
         EvidenceLocator::IndexMigration(key) => {
-            let table = transaction
-                .open_table(SECONDARY_INDEXES)
-                .map_err(table_error)?;
-            let value = table
+            let value = tables
+                .indexes
                 .get(key.as_slice())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(corrupt)?;
@@ -3716,8 +4347,8 @@ fn materialize_historical_evidence(
             Ok(HistoricalSemanticEvidence::IndexMigrationRow(record))
         }
         EvidenceLocator::PersistedKeyEpoch(key) => {
-            let table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-            let value = table
+            let value = tables
+                .epochs
                 .get(key.as_slice())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(corrupt)?;
@@ -3745,9 +4376,9 @@ fn materialize_historical_evidence(
             capability_id,
             entry_ordinal,
         } => {
-            let table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
             let key = keys::encode_capability_key(*capability_id);
-            let value = table
+            let value = tables
+                .capabilities
                 .get(key.as_slice())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(corrupt)?;
@@ -3941,10 +4572,19 @@ fn read_historical_bundle(
     version: ContractVersion,
     hash: ContractBundleHash,
 ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
-    let key = keys::encode_contract_bundle_key(lineage, version).map_err(|_| invariant())?;
     let table = transaction
         .open_table(CONTRACT_BUNDLES)
         .map_err(table_error)?;
+    read_historical_bundle_from_table(&table, lineage, version, hash)
+}
+
+fn read_historical_bundle_from_table(
+    table: &ReadOnlyTable<&'static [u8], &'static [u8]>,
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    hash: ContractBundleHash,
+) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
+    let key = keys::encode_contract_bundle_key(lineage, version).map_err(|_| invariant())?;
     let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(None);
     };
@@ -3975,6 +4615,39 @@ fn decoded<T>(
             StorageErrorKind::LimitExceeded => StructuralFindingCode::LimitExceeded,
             _ => StructuralFindingCode::MalformedRecord,
         })
+}
+
+fn decode_administration_audit_in_read(
+    transaction: &ReadTransaction,
+    encoded: &[u8],
+) -> Result<
+    riffdb_storage_api::EncodedPageItem<riffdb_storage_api::StoredAdministrationAuditRecordV1>,
+    StorageError,
+> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    codec::decode_administration_audit_with_command_tables(encoded, &commits, &events)
+}
+
+/// Decode an administration-owned audit row without resolving command-owned
+/// audit locators through `COMMITS`.
+///
+/// Callers use this only while searching for catalog, module, capability, or
+/// retention records. Command audit rows are validated by the command-cache
+/// pass; resolving every locator here would decode the same bounded command
+/// segment once per audit member and make startup quadratic in segment size.
+fn decode_non_command_administration_audit(
+    encoded: &[u8],
+) -> Result<
+    Option<
+        riffdb_storage_api::EncodedPageItem<riffdb_storage_api::StoredAdministrationAuditRecordV1>,
+    >,
+    StorageError,
+> {
+    if codec::decode_command_audit_locator_v1(encoded).is_ok() {
+        return Ok(None);
+    }
+    codec::decode_administration_audit_record_v1(encoded).map(Some)
 }
 
 fn get_decoded<T>(
@@ -4060,9 +4733,10 @@ fn bundle_has_activation(
         let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
             return Ok(false);
         };
-        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
-        else {
-            return Ok(false);
+        let record = match decode_non_command_administration_audit(value.value()) {
+            Ok(Some(record)) => record.into_parts().0,
+            Ok(None) => continue,
+            Err(_) => return Ok(false),
         };
         if record.administration_sequence() != sequence {
             return Ok(false);
@@ -4137,9 +4811,10 @@ fn query_module_has_activation(
         let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
             return Ok(false);
         };
-        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
-        else {
-            return Ok(false);
+        let record = match decode_non_command_administration_audit(value.value()) {
+            Ok(Some(record)) => record.into_parts().0,
+            Ok(None) => continue,
+            Err(_) => return Ok(false),
         };
         if record.administration_sequence() != sequence {
             return Ok(false);
@@ -4180,9 +4855,10 @@ fn query_module_record_is_reciprocal(
         let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
             return Ok(false);
         };
-        let Ok(candidate) = decoded(codec::decode_administration_audit_record_v1(value.value()))
-        else {
-            return Ok(false);
+        let candidate = match decode_non_command_administration_audit(value.value()) {
+            Ok(Some(record)) => record.into_parts().0,
+            Ok(None) => continue,
+            Err(_) => return Ok(false),
         };
         if candidate.administration_sequence() != sequence {
             return Ok(false);
@@ -4232,9 +4908,10 @@ fn catalog_record_is_reciprocal(
         let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
             return Ok(false);
         };
-        let Ok(candidate) = decoded(codec::decode_administration_audit_record_v1(value.value()))
-        else {
-            return Ok(false);
+        let candidate = match decode_non_command_administration_audit(value.value()) {
+            Ok(Some(record)) => record.into_parts().0,
+            Ok(None) => continue,
+            Err(_) => return Ok(false),
         };
         if candidate.administration_sequence() != sequence {
             return Ok(false);
@@ -4270,9 +4947,10 @@ fn active_catalog_matches_last_activation(
         let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
             return Ok(false);
         };
-        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
-        else {
-            return Ok(false);
+        let record = match decode_non_command_administration_audit(value.value()) {
+            Ok(Some(record)) => record.into_parts().0,
+            Ok(None) => continue,
+            Err(_) => return Ok(false),
         };
         if record.administration_sequence() != sequence {
             return Ok(false);
@@ -4398,21 +5076,39 @@ fn get_commit(
     transaction: &ReadTransaction,
     sequence: CommitSequence,
 ) -> Result<Option<riffdb_storage_api::StoredCommitRecordV1>, StorageError> {
-    let key = keys::encode_application_sequence_key(sequence);
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let Some(value) = commits
-        .get(key.as_slice())
-        .map_err(precommit_storage_error)?
-    else {
-        return Ok(None);
-    };
-    match decoded(codec::decode_commit_with_event_table(
-        value.value(),
-        &events,
-    )) {
-        Ok(record) if record.commit_sequence() == sequence => Ok(Some(record)),
-        Ok(_) | Err(_) => Ok(None),
+    match commit_at(&commits, &events, sequence) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn get_commit_cached(
+    transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
+    sequence: CommitSequence,
+) -> Result<Option<riffdb_storage_api::StoredCommitRecordV1>, StorageError> {
+    if let Some(capsule) = command_capsules.get(&sequence) {
+        return Ok(Some(capsule.commit().clone()));
+    }
+    get_commit(transaction, sequence)
+}
+
+fn get_command_capsule(
+    transaction: &ReadTransaction,
+    sequence: CommitSequence,
+) -> Result<Option<riffdb_storage_api::StoredCommandCapsuleV1>, StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    match command_member_at(&commits, &events, sequence) {
+        Ok(member) => Ok(member.map(|value| value.into_base())),
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -4428,7 +5124,19 @@ fn get_provenance(
         codec::decode_provenance_record_v1,
     )? {
         Ok(value) => Ok(value.filter(|record| record.provenance_id() == id)),
-        Err(_) => Ok(None),
+        Err(_) => {
+            let table = transaction.open_table(PROVENANCE).map_err(table_error)?;
+            let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+                return Ok(None);
+            };
+            let locator = match decoded(codec::decode_command_locator_v1(value.value())) {
+                Ok(locator) => locator,
+                Err(_) => return Ok(None),
+            };
+            Ok(get_command_capsule(transaction, locator.commit_sequence())?
+                .map(|capsule| capsule.provenance().clone())
+                .filter(|record| record.provenance_id() == id))
+        }
     }
 }
 
@@ -4443,6 +5151,14 @@ fn get_terminal(
         key.as_bytes(),
         codec::decode_idempotency_record_v1,
     )? {
+        Ok(Some(IdempotencyRecordV1::CommandLocator(locator))) => {
+            Ok(get_command_capsule(transaction, locator.commit_sequence())?
+                .map(|capsule| IdempotencyRecordV1::StoredOutcome(capsule.outcome().clone()))
+                .filter(|record| {
+                    matches!(record, IdempotencyRecordV1::StoredOutcome(outcome)
+                        if outcome.identity() == identity)
+                }))
+        }
         Ok(value) => Ok(value),
         Err(_) => Ok(None),
     }
@@ -4545,6 +5261,82 @@ fn commit_graph_is_reciprocal(
     Ok(true)
 }
 
+fn command_capsule_graph_is_reciprocal(
+    transaction: &ReadTransaction,
+    capsule: &riffdb_storage_api::StoredCommandCapsuleV1,
+) -> Result<bool, StorageError> {
+    let sequence = capsule.commit_sequence();
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    if let Some(crate::command_authority::CommandAuthorityMember::CapsuleV2(command)) =
+        command_member_at(&commits, &events, sequence)?
+    {
+        if command.base() != capsule {
+            return Ok(false);
+        }
+        for reference in capsule.commit().entity_references() {
+            if !current_entity_covers_reference(transaction, reference)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    let identity_key = capsule
+        .outcome()
+        .identity()
+        .storage_key()
+        .map_err(|_| corrupt())?;
+    let idempotency = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
+    let Some(outcome_row) = idempotency
+        .get(keys::encode_idempotency_key(&identity_key))
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(false);
+    };
+    let outcome_locator = match codec::decode_command_locator_v1(outcome_row.value()) {
+        Ok(locator) => locator.into_parts().0,
+        Err(_) => return Ok(false),
+    };
+    if outcome_locator.commit_sequence() != sequence {
+        return Ok(false);
+    }
+    drop(outcome_row);
+    drop(idempotency);
+
+    let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
+    let provenance_key = keys::encode_provenance_key(capsule.provenance().provenance_id());
+    let Some(provenance_row) = provenance
+        .get(provenance_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(false);
+    };
+    let provenance_locator = match codec::decode_command_locator_v1(provenance_row.value()) {
+        Ok(locator) => locator.into_parts().0,
+        Err(_) => return Ok(false),
+    };
+    if provenance_locator.commit_sequence() != sequence {
+        return Ok(false);
+    }
+
+    for event in capsule.commit().events() {
+        if get_event(transaction, event.event_id())?.as_ref() != Some(event)
+            || get_outbox(transaction, event.event_id())?
+                .as_ref()
+                .map(riffdb_storage_api::StoredOutboxIntentV1::event)
+                != Some(event)
+        {
+            return Ok(false);
+        }
+    }
+    for reference in capsule.commit().entity_references() {
+        if !current_entity_covers_reference(transaction, reference)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn current_entity_covers_reference(
     transaction: &ReadTransaction,
     reference: &riffdb_storage_api::CommittedEntityReferenceV2,
@@ -4588,6 +5380,7 @@ fn build_entity_chains(
     let mut overflow = false;
     let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
     let mut walk_lower_bound = None;
+    let mut walk_after = 0_u64;
     if let Some((s, entities_at_s)) = seed {
         for (target, version) in entities_at_s {
             chains.insert(
@@ -4604,6 +5397,7 @@ fn build_entity_chains(
             );
         }
         if s > 0 {
+            walk_after = s;
             let sequence = CommitSequence::new(s).ok_or_else(corrupt)?;
             walk_lower_bound = Some(keys::encode_application_sequence_key(sequence));
         }
@@ -4614,28 +5408,101 @@ fn build_entity_chains(
             .map_err(precommit_storage_error)?,
         None => table.range::<&[u8]>(..).map_err(precommit_storage_error)?,
     };
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     for entry in range {
         let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(commit_sequence) = keys::decode_application_sequence_key(physical_key.value())
+        let Ok(physical_sequence) = keys::decode_application_sequence_key(physical_key.value())
         else {
             continue;
         };
         // Decode failures are covered by inspect_commit_row (MalformedRecord /
         // CrossLinkMismatch). Continue so sibling entities still validate.
-        let Ok(references) = decoded(codec::decode_commit_entity_references(value.value())) else {
-            continue;
-        };
-        let mut seen_in_commit = std::collections::BTreeSet::new();
-        for reference in references {
-            let target_key = reference.target().clone();
-            if !seen_in_commit.insert(target_key.clone()) {
-                // Duplicate target in one commit: mark chain broken if present.
+        let commit_references =
+            match commits_in_physical_row(value.value(), &events, physical_sequence) {
+                Ok(commits) => commits
+                    .into_iter()
+                    .map(|commit| {
+                        (
+                            commit.value().commit_sequence(),
+                            commit.value().entity_references().to_vec(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                Err(_) => {
+                    let Ok(references) =
+                        decoded(codec::decode_commit_entity_references(value.value()))
+                    else {
+                        continue;
+                    };
+                    vec![(physical_sequence, references)]
+                }
+            };
+        for (commit_sequence, references) in commit_references {
+            if commit_sequence.get() <= walk_after {
+                continue;
+            }
+            let mut seen_in_commit = std::collections::BTreeSet::new();
+            for reference in references {
+                let target_key = reference.target().clone();
+                if !seen_in_commit.insert(target_key.clone()) {
+                    // Duplicate target in one commit: mark chain broken if present.
+                    if let Some(chain) = chains.get_mut(&target_key) {
+                        chain.intact = false;
+                    } else if chains.len() < entity_count_usize {
+                        // INVARIANT: slot allocation assumes ENTITIES rows are never
+                        // removed (true today). If a removal path appears, a dead
+                        // target can steal a live entity's slot → false MissingCrossLink.
+                        chains.insert(
+                            target_key,
+                            EntityChain {
+                                version: reference.entity_version(),
+                                hash: Some(reference.post_image_hash()),
+                                expected_bundle: None,
+                                migration_cursor: 0,
+                                intact: false,
+                                consumed: false,
+                                seeded: false,
+                            },
+                        );
+                    } else {
+                        record_orphan_target(&mut orphan_targets, &mut overflow, target_key);
+                    }
+                    continue;
+                }
                 if let Some(chain) = chains.get_mut(&target_key) {
-                    chain.intact = false;
+                    let mut expected_next = chain.version.checked_next();
+                    while chain.intact && expected_next != Some(reference.entity_version()) {
+                        match advance_entity_chain_through_migration(
+                            transaction,
+                            &migrations,
+                            &target_key,
+                            chain,
+                            Some(commit_sequence),
+                        )? {
+                            MigrationAdvance::Advanced | MigrationAdvance::Skipped => {
+                                expected_next = chain.version.checked_next();
+                            }
+                            MigrationAdvance::Invalid => {
+                                chain.intact = false;
+                            }
+                            MigrationAdvance::Exhausted => break,
+                        }
+                    }
+                    if expected_next != Some(reference.entity_version()) {
+                        chain.intact = false;
+                    }
+                    chain.version = reference.entity_version();
+                    chain.hash = Some(reference.post_image_hash());
+                    chain.expected_bundle = None;
+                    chain.seeded = false;
                 } else if chains.len() < entity_count_usize {
                     // INVARIANT: slot allocation assumes ENTITIES rows are never
                     // removed (true today). If a removal path appears, a dead
                     // target can steal a live entity's slot → false MissingCrossLink.
+                    // Under a pruned floor a chain may START at any version: its
+                    // earlier versions lived in tombstone-covered commits.
+                    let intact = pruned_floor > 0
+                        || reference.entity_version() == riffdb_types::EntityVersion::first();
                     chains.insert(
                         target_key,
                         EntityChain {
@@ -4643,65 +5510,15 @@ fn build_entity_chains(
                             hash: Some(reference.post_image_hash()),
                             expected_bundle: None,
                             migration_cursor: 0,
-                            intact: false,
+                            intact,
                             consumed: false,
                             seeded: false,
                         },
                     );
                 } else {
+                    // At capacity: never grow the map; bound orphan reporting.
                     record_orphan_target(&mut orphan_targets, &mut overflow, target_key);
                 }
-                continue;
-            }
-            if let Some(chain) = chains.get_mut(&target_key) {
-                let mut expected_next = chain.version.checked_next();
-                while chain.intact && expected_next != Some(reference.entity_version()) {
-                    match advance_entity_chain_through_migration(
-                        transaction,
-                        &migrations,
-                        &target_key,
-                        chain,
-                        Some(commit_sequence),
-                    )? {
-                        MigrationAdvance::Advanced | MigrationAdvance::Skipped => {
-                            expected_next = chain.version.checked_next();
-                        }
-                        MigrationAdvance::Invalid => {
-                            chain.intact = false;
-                        }
-                        MigrationAdvance::Exhausted => break,
-                    }
-                }
-                if expected_next != Some(reference.entity_version()) {
-                    chain.intact = false;
-                }
-                chain.version = reference.entity_version();
-                chain.hash = Some(reference.post_image_hash());
-                chain.expected_bundle = None;
-                chain.seeded = false;
-            } else if chains.len() < entity_count_usize {
-                // INVARIANT: slot allocation assumes ENTITIES rows are never
-                // removed (true today). If a removal path appears, a dead
-                // target can steal a live entity's slot → false MissingCrossLink.
-                // Under a pruned floor a chain may START at any version: its
-                // earlier versions lived in tombstone-covered commits.
-                let intact = pruned_floor > 0
-                    || reference.entity_version() == riffdb_types::EntityVersion::first();
-                chains.insert(
-                    target_key,
-                    EntityChain {
-                        version: reference.entity_version(),
-                        hash: Some(reference.post_image_hash()),
-                        expected_bundle: None,
-                        migration_cursor: 0,
-                        intact,
-                        consumed: false,
-                        seeded: false,
-                    },
-                );
-            } else {
-                // At capacity: never grow the map; bound orphan reporting.
-                record_orphan_target(&mut orphan_targets, &mut overflow, target_key);
             }
         }
     }
@@ -4917,9 +5734,18 @@ fn provenance_graph_is_reciprocal(
 
 fn event_graph_is_reciprocal(
     transaction: &ReadTransaction,
+    command_capsules: &std::collections::BTreeMap<
+        CommitSequence,
+        riffdb_storage_api::StoredCommandCapsuleV1,
+    >,
     event: &riffdb_storage_api::StoredDurableEventV1,
 ) -> Result<bool, StorageError> {
-    let Some(commit) = get_commit(transaction, event.event_id().commit_sequence())? else {
+    let Some(commit) = get_commit_cached(
+        transaction,
+        command_capsules,
+        event.event_id().commit_sequence(),
+    )?
+    else {
         return Ok(false);
     };
     let Ok(ordinal) = usize::try_from(event.event_id().event_ordinal()) else {
@@ -5113,12 +5939,15 @@ fn audit_record_at(
     StorageError,
 > {
     let key = keys::encode_audit_key(sequence);
-    get_decoded(
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+        return Ok(Ok(None));
+    };
+    Ok(decoded(decode_administration_audit_in_read(
         transaction,
-        AUDIT,
-        &key,
-        codec::decode_administration_audit_record_v1,
-    )
+        value.value(),
+    ))
+    .map(Some))
 }
 
 fn capability_record_at(
@@ -5374,7 +6203,8 @@ fn service_lifecycle_is_reciprocal(
         else {
             return Ok(false);
         };
-        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(
+        let Ok(record) = decoded(decode_administration_audit_in_read(
+            transaction,
             audit_value.value(),
         )) else {
             return Ok(false);
@@ -5637,7 +6467,12 @@ fn application_allocator_matches(
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let expected = match table.last().map_err(precommit_storage_error)? {
+    let head = match command_authority_head(&table, &events) {
+        Ok(head) => head,
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let expected = match head {
         None => {
             // Empty commits table: never-written, or fully pruned. Accept an
             // advanced allocator exactly when the verified watermark covers
@@ -5656,24 +6491,10 @@ fn application_allocator_matches(
             }
             ApplicationSequenceAllocator::initial()
         }
-        Some((key, value)) => {
-            let Ok(sequence) = keys::decode_application_sequence_key(key.value()) else {
-                return Ok(false);
-            };
-            let Ok(record) = decoded(codec::decode_commit_with_event_table(
-                value.value(),
-                &events,
-            )) else {
-                return Ok(false);
-            };
-            if record.commit_sequence() != sequence {
-                return Ok(false);
-            }
-            sequence.checked_next().map_or(
-                ApplicationSequenceAllocator::Exhausted,
-                ApplicationSequenceAllocator::next,
-            )
-        }
+        Some(sequence) => sequence.checked_next().map_or(
+            ApplicationSequenceAllocator::Exhausted,
+            ApplicationSequenceAllocator::next,
+        ),
     };
     Ok(allocator == expected)
 }
@@ -5683,26 +6504,51 @@ fn administration_allocator_matches(
     allocator: riffdb_storage_api::AdministrationSequenceAllocator,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    let expected = match table.last().map_err(precommit_storage_error)? {
-        None => riffdb_storage_api::AdministrationSequenceAllocator::initial(),
-        Some((key, value)) => {
-            let Ok(sequence) = keys::decode_audit_key(key.value()) else {
-                return Ok(false);
-            };
-            let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
-            else {
-                return Ok(false);
-            };
-            if record.administration_sequence() != sequence {
+    let derived = command_audit_cache_from_segments(transaction)?;
+    let mut derived_sequences = derived.keys().copied().peekable();
+    let mut expected = Some(riffdb_types::AdministrationSequence::first());
+    let mut accept = |sequence| {
+        if expected != Some(sequence) {
+            return false;
+        }
+        expected = sequence.checked_next();
+        true
+    };
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, _) = entry.map_err(precommit_storage_error)?;
+        let Ok(physical) = keys::decode_audit_key(key.value()) else {
+            return Ok(false);
+        };
+        while derived_sequences
+            .peek()
+            .is_some_and(|derived| *derived < physical)
+        {
+            if !accept(
+                derived_sequences
+                    .next()
+                    .expect("peeked derived administration sequence"),
+            ) {
                 return Ok(false);
             }
-            sequence.checked_next().map_or(
-                riffdb_storage_api::AdministrationSequenceAllocator::Exhausted,
-                riffdb_storage_api::AdministrationSequenceAllocator::next,
-            )
         }
-    };
-    Ok(allocator == expected)
+        if derived_sequences
+            .peek()
+            .is_some_and(|derived| *derived == physical)
+            || !accept(physical)
+        {
+            return Ok(false);
+        }
+    }
+    for sequence in derived_sequences {
+        if !accept(sequence) {
+            return Ok(false);
+        }
+    }
+    let exact = expected.map_or(
+        riffdb_storage_api::AdministrationSequenceAllocator::Exhausted,
+        riffdb_storage_api::AdministrationSequenceAllocator::next,
+    );
+    Ok(allocator == exact)
 }
 
 fn read_active_pointer(
@@ -8469,11 +9315,12 @@ contract RedbMigration version 1 {
         let transaction = store.shared.database.begin_read().expect("read");
         let validation = inputs_at(70);
         let plan = build_historical_evidence_plan(&transaction, &validation).expect("plan");
+        let tables = HistoricalMaterializationTables::open(&transaction).expect("tables");
         plan.entries
             .into_iter()
             .map(|(key, locator)| {
-                let evidence =
-                    materialize_historical_evidence(&transaction, &locator).expect("materialize");
+                let evidence = materialize_historical_evidence(&transaction, &tables, &locator)
+                    .expect("materialize");
                 assert_eq!(
                     key,
                     historical_order_key(&evidence),
@@ -9296,10 +10143,12 @@ contract RedbMigration version 1 {
             for ordinal in 0..shape.commits {
                 let sequence = CommitSequence::new(shape.first_commit.saturating_add(ordinal))
                     .expect("commit sequence");
+                let commit = history_commit(sequence, checkpoint_count_plan(bundle), &[]);
+                let encoded = codec::encode_commit_record_v1(&commit).expect("encode commit");
                 commits
                     .insert(
                         keys::encode_application_sequence_key(sequence).as_slice(),
-                        [0x11_u8; 48].as_slice(),
+                        encoded.as_bytes(),
                     )
                     .expect("insert commit");
             }

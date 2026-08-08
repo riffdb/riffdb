@@ -9,6 +9,9 @@
 - **Related work package:** `WP-477`
 - **Amends:** ADR-0005, ADR-0006, ADR-0021, ADR-0061, ADR-0082,
   ADR-0083, ADR-0085, ADR-0098
+- **Amended by:** ADR-0102 for bounded segmented capsule authority,
+  rebuildable exact locators, and transaction-local logical generation
+  overlays
 
 ## Context
 

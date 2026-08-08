@@ -132,6 +132,34 @@ pub struct EncodedAtomicCommandRecordSetV1 {
     actual_charge: CommandWriteClassBreakdownV1,
 }
 
+/// Canonical envelopes shared by the successful-command capsule layout.
+///
+/// The segment path constructs envelopes only for entity/index state that is
+/// stored independently. Outcome, provenance, commit, event, route, and outbox
+/// facts are encoded once in the canonical command segment after audit members
+/// have been allocated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedCapsuleCommandRecordSetV1 {
+    entities: Vec<CanonicalStoredEnvelopeV1>,
+    index_entries: Vec<Option<CanonicalStoredEnvelopeV1>>,
+    index_epochs: Vec<CanonicalStoredEnvelopeV1>,
+}
+
+impl EncodedCapsuleCommandRecordSetV1 {
+    /// Consumes the checked independently stored envelopes.
+    #[allow(clippy::type_complexity)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<CanonicalStoredEnvelopeV1>,
+        Vec<Option<CanonicalStoredEnvelopeV1>>,
+        Vec<CanonicalStoredEnvelopeV1>,
+    ) {
+        (self.entities, self.index_entries, self.index_epochs)
+    }
+}
+
 impl EncodedAtomicCommandRecordSetV1 {
     /// Returns allocator metadata to stage with the command graph.
     #[must_use]
@@ -199,6 +227,43 @@ impl EncodedAtomicCommandRecordSetV1 {
     #[must_use]
     pub const fn actual_charge(&self) -> CommandWriteClassBreakdownV1 {
         self.actual_charge
+    }
+
+    /// Consumes the checked record set into its canonical envelopes.
+    ///
+    /// Storage backends use this after the complete write-set charge has been
+    /// proven so the same owned byte buffers can be inserted into storage and
+    /// retained by a durability frame without cloning every record payload.
+    #[allow(clippy::type_complexity)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        CanonicalStoredEnvelopeV1,
+        Vec<CanonicalStoredEnvelopeV1>,
+        Vec<Option<CanonicalStoredEnvelopeV1>>,
+        Vec<CanonicalStoredEnvelopeV1>,
+        CanonicalStoredEnvelopeV1,
+        Vec<CanonicalStoredEnvelopeV1>,
+        Vec<CanonicalStoredEnvelopeV1>,
+        Vec<CanonicalStoredEnvelopeV1>,
+        CanonicalStoredEnvelopeV1,
+        CanonicalStoredEnvelopeV1,
+        CommandWriteClassBreakdownV1,
+    ) {
+        (
+            self.allocator,
+            self.entities,
+            self.index_entries,
+            self.index_epochs,
+            self.outcome,
+            self.events,
+            self.event_routes,
+            self.outbox_intents,
+            self.provenance,
+            self.commit,
+            self.actual_charge,
+        )
     }
 }
 
@@ -465,6 +530,51 @@ pub fn encode_atomic_command_record_set_v1(
         provenance,
         commit,
         actual_charge,
+    })
+}
+
+/// Encodes only records stored independently by the command-segment layout.
+///
+/// Command-owned immutable facts remain in the retained
+/// [`AtomicCommandRecordSet`] and are encoded once when the audit-complete
+/// segment is constructed. The sequence-free sizing pass already proved their
+/// conservative bound; the final bounded segment encoder remains the exact
+/// canonical-byte gate before the transaction can commit.
+pub fn encode_capsule_command_record_set_v1(
+    records: &AtomicCommandRecordSet,
+) -> Result<EncodedCapsuleCommandRecordSetV1, DurableCodecError> {
+    let entities = records
+        .entities()
+        .iter()
+        .map(|value| encode_entity_record_v1(value.post_image()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let index_entries = records
+        .index_entries()
+        .iter()
+        .map(|value| match value {
+            IndexEntryMutationV1::Delete(_) => Ok(None),
+            IndexEntryMutationV1::Put(value) => encode_index_entry_v2(value).map(Some),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let index_epochs = records
+        .index_epochs()
+        .iter()
+        .map(|value| encode_index_epoch_v1(value.post_image()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let reserved = records.presequence_charge().encoded_upper_bound().classes();
+    let fits = sum_envelope_charges(&entities)? <= reserved.entities()
+        && sum_optional_envelope_charges(&index_entries)? <= reserved.index_entries()
+        && sum_envelope_charges(&index_epochs)? <= reserved.index_epochs();
+    if !fits {
+        return Err(DurableCodecError::new(
+            DurableCodecErrorKind::ReservationExceeded,
+        ));
+    }
+
+    Ok(EncodedCapsuleCommandRecordSetV1 {
+        entities,
+        index_entries,
+        index_epochs,
     })
 }
 

@@ -18,9 +18,10 @@ use riffdb_storage_api::{
     CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
-    CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
-    MAX_RETAINED_QUERY_MODULES, MAX_RETAINED_REACTIVE_MODULES, MAX_SCAN_PAGE_BYTES,
-    QueryModuleActivationIntentV1, QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+    CatalogAdministrationRepository, CatalogRepository, CommandServiceAuditTransitionV1,
+    EncodedPageItem, MAX_READABLE_DIGEST_KEYS, MAX_RETAINED_QUERY_MODULES,
+    MAX_RETAINED_REACTIVE_MODULES, MAX_SCAN_PAGE_BYTES, QueryModuleActivationIntentV1,
+    QueryModuleActivationResult, QueryModuleActiveExpectationV1,
     QueryModuleAdministrationRepository, QueryModuleRepository,
     ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
     ReactiveModulePublicationResult, ReactiveModuleRepository, SequenceAllocationError,
@@ -40,7 +41,7 @@ use riffdb_types::{
 
 use crate::application::stage_admission_group;
 use crate::codec::{
-    decode_active_catalog_pointer_v1, decode_administration_audit_record_v1,
+    decode_active_catalog_pointer_v1, decode_administration_audit_with_command_tables,
     decode_administration_sequence_allocator_v1, decode_capability_bootstrap_marker_v1,
     decode_capability_record_v1, decode_capability_token_lookup_v1, decode_commit_with_event_table,
     decode_contract_bundle_v1, decode_database_identity_v1, decode_provenance_record_v1,
@@ -131,39 +132,120 @@ fn read_administration_allocator_readonly(
     decode_administration_sequence_allocator_v1(value.value()).map(decoded_value)
 }
 
-fn validate_administration_table<T>(
-    table: &T,
-    allocator: AdministrationSequenceAllocator,
-) -> Result<(), StorageError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let mut expected = Some(AdministrationSequence::first());
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
-        let key = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-        let record = decode_administration_audit_record_v1(value.value())?;
-        if expected != Some(key) || record.value().administration_sequence() != key {
-            return Err(corrupt());
-        }
-        expected = key.checked_next();
-    }
-    let matches = match expected {
-        Some(next) => allocator == AdministrationSequenceAllocator::next(next),
-        None => allocator == AdministrationSequenceAllocator::Exhausted,
+fn read_administration_record_readonly(
+    ports: &RedbOperationalPorts,
+    transaction: &redb::ReadTransaction,
+    sequence: AdministrationSequence,
+) -> Result<StoredAdministrationAuditRecordV1, StorageError> {
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let key = encode_audit_key(sequence);
+    let physical = table
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+        .map(|value| {
+            decode_administration_audit_with_command_tables(value.value(), &commits, &events)
+                .map(decoded_value)
+        })
+        .transpose()?;
+    let derived = ports
+        .indexed_command_audit(sequence)?
+        .map(StoredAdministrationAuditRecordV1::Service);
+    let record = match (physical, derived) {
+        (Some(physical), Some(derived)) if physical == derived => physical,
+        (Some(record), None) | (None, Some(record)) => record,
+        (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
     };
-    if !matches {
+    if record.administration_sequence() != sequence {
         return Err(corrupt());
     }
-    Ok(())
+    Ok(record)
 }
 
 fn validate_administration_tail(
-    transaction: &redb::WriteTransaction,
+    access: &crate::store::RedbWriteAccess,
 ) -> Result<AdministrationSequenceAllocator, StorageError> {
+    let transaction = access.transaction()?;
     let allocator = read_administration_allocator(transaction)?;
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    validate_administration_tail_from_table(&table, allocator)
+    let expected_last = match allocator {
+        AdministrationSequenceAllocator::Next(next) => {
+            AdministrationSequence::new(next.get().saturating_sub(1))
+        }
+        AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
+    };
+    let Some(expected_last) = expected_last else {
+        if table.last().map_err(precommit_storage_error)?.is_some() {
+            return Err(corrupt());
+        }
+        return Ok(allocator);
+    };
+    let key = encode_audit_key(expected_last);
+    let physical = match table.get(key.as_slice()).map_err(precommit_storage_error)? {
+        Some(value) => {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            Some(decoded_value(
+                decode_administration_audit_with_command_tables(value.value(), &commits, &events)?,
+            ))
+        }
+        None => None,
+    };
+    let derived = match access.command_audit_record(expected_last)? {
+        Some(indexed) => Some(indexed),
+        None => {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            command_audit_at_transaction_tail(&commits, expected_last)?
+        }
+    }
+    .map(StoredAdministrationAuditRecordV1::Service);
+    let exact = match (physical, derived) {
+        (Some(physical), Some(derived)) if physical == derived => physical,
+        (Some(physical), None) | (None, Some(physical)) => physical,
+        (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
+    };
+    if exact.administration_sequence() != expected_last {
+        return Err(corrupt());
+    }
+    if let Some((last_key, _)) = table.last().map_err(precommit_storage_error)?
+        && decode_audit_key(last_key.value()).map_err(|_| corrupt())? > expected_last
+    {
+        return Err(corrupt());
+    }
+    Ok(allocator)
+}
+
+/// Resolves only the newest command-owned audit member from redb's current
+/// root. This covers a sealed standard-durability epoch that is visible to the
+/// next writer but deliberately absent from the published read indexes until
+/// its journal fence completes. The normal path is the O(1) transient lookup
+/// above; this fallback decodes at most the final command segment.
+fn command_audit_at_transaction_tail<T>(
+    commits: &T,
+    sequence: AdministrationSequence,
+) -> Result<Option<StoredServiceAuditRecordV1>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let Some((_, value)) = commits.last().map_err(precommit_storage_error)? else {
+        return Ok(None);
+    };
+    let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(value.value()) else {
+        return Ok(None);
+    };
+    let Some(command) = segment.value().commands().last() else {
+        return Err(corrupt());
+    };
+    for record in [
+        command.base().started_audit(),
+        command.base().terminal_audit(),
+    ] {
+        if record.administration_sequence() == sequence {
+            return Ok(Some(record.clone()));
+        }
+    }
+    Ok(None)
 }
 
 /// Proves the audit tail agrees with the allocator in O(1) table probes.
@@ -177,46 +259,83 @@ fn validate_administration_tail(
 ///
 /// Shared verbatim by the write path and by the read-transaction republish
 /// probe so the two can never disagree about which streams are admissible.
-fn validate_administration_tail_from_table<T>(
-    table: &T,
-    allocator: AdministrationSequenceAllocator,
-) -> Result<AdministrationSequenceAllocator, StorageError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let (expected_count, expected_last) = match allocator {
+fn validate_administration_tail_readonly(
+    ports: &RedbOperationalPorts,
+    transaction: &redb::ReadTransaction,
+) -> Result<AdministrationSequenceAllocator, StorageError> {
+    let allocator = read_administration_allocator_readonly(transaction)?;
+    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let expected_last = match allocator {
         AdministrationSequenceAllocator::Next(next) => {
-            let count = next.get().checked_sub(1).ok_or_else(corrupt)?;
-            (count, AdministrationSequence::new(count))
+            AdministrationSequence::new(next.get().saturating_sub(1))
         }
-        AdministrationSequenceAllocator::Exhausted => {
-            (u64::MAX, AdministrationSequence::new(u64::MAX))
-        }
+        AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
     };
-    if table.len().map_err(precommit_storage_error)? != expected_count {
+    let Some(expected_last) = expected_last else {
+        if audit.last().map_err(precommit_storage_error)?.is_some() {
+            return Err(corrupt());
+        }
+        return Ok(allocator);
+    };
+    let key = encode_audit_key(expected_last);
+    let physical = match audit.get(key.as_slice()).map_err(precommit_storage_error)? {
+        Some(value) => {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            Some(decoded_value(
+                decode_administration_audit_with_command_tables(value.value(), &commits, &events)?,
+            ))
+        }
+        None => None,
+    };
+    let derived = match ports.indexed_command_audit(expected_last)? {
+        Some(indexed) => Some(indexed),
+        None => {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            command_audit_at_transaction_tail(&commits, expected_last)?
+        }
+    }
+    .map(StoredAdministrationAuditRecordV1::Service);
+    let exact = match (physical, derived) {
+        (Some(physical), Some(derived)) if physical == derived => physical,
+        (Some(record), None) | (None, Some(record)) => record,
+        (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
+    };
+    if exact.administration_sequence() != expected_last {
         return Err(corrupt());
     }
-    let last = table.last().map_err(precommit_storage_error)?;
-    match (expected_last, last) {
-        (None, None) => Ok(allocator),
-        (Some(expected), Some((key, value))) => {
-            let key = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-            let record = decode_administration_audit_record_v1(value.value())?;
-            if key != expected || record.value().administration_sequence() != expected {
-                return Err(corrupt());
-            }
-            Ok(allocator)
-        }
-        _ => Err(corrupt()),
+    if let Some((last_key, _)) = audit.last().map_err(precommit_storage_error)?
+        && decode_audit_key(last_key.value()).map_err(|_| corrupt())? > expected_last
+    {
+        return Err(corrupt());
     }
+    Ok(allocator)
 }
 
 fn validate_administration_stream_readonly(
+    ports: &RedbOperationalPorts,
     transaction: &redb::ReadTransaction,
 ) -> Result<(), StorageError> {
     let allocator = read_administration_allocator_readonly(transaction)?;
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    validate_administration_table(&table, allocator)
+    let mut current = AdministrationSequence::first();
+    loop {
+        let present = match allocator {
+            AdministrationSequenceAllocator::Next(next) => current < next,
+            AdministrationSequenceAllocator::Exhausted => true,
+        };
+        if !present {
+            return Ok(());
+        }
+        read_administration_record_readonly(ports, transaction, current)?;
+        let Some(next) = current.checked_next() else {
+            return if allocator == AdministrationSequenceAllocator::Exhausted {
+                Ok(())
+            } else {
+                Err(corrupt())
+            };
+        };
+        current = next;
+    }
 }
 
 fn allocate_sequences(
@@ -300,19 +419,27 @@ pub(crate) fn append_audit_record(
     Ok(())
 }
 
-fn read_audit_record<T>(
+fn read_audit_record<T, C, E>(
     table: &T,
+    commits: &C,
+    events: &E,
     sequence: AdministrationSequence,
 ) -> Result<StoredAdministrationAuditRecordV1, StorageError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let key = encode_audit_key(sequence);
     let value = table
         .get(key.as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
-    let record = decoded_value(decode_administration_audit_record_v1(value.value())?);
+    let record = decoded_value(decode_administration_audit_with_command_tables(
+        value.value(),
+        commits,
+        events,
+    )?);
     if record.administration_sequence() != sequence {
         return Err(corrupt());
     }
@@ -329,17 +456,25 @@ where
 /// (`validate_administration_tail`), and this runs only on the rare idempotent
 /// republish transition, never on a publication that writes. Two records naming
 /// one module hash is corruption: publication is immutable and single-writer.
-fn published_reactive_module_sequence<T>(
+fn published_reactive_module_sequence<T, C, E>(
     audit: &T,
+    commits: &C,
+    events: &E,
     module_hash: ReactiveModuleHash,
 ) -> Result<Option<AdministrationSequence>, StorageError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let mut found = None;
     for entry in audit.iter().map_err(precommit_storage_error)? {
         let (_, value) = entry.map_err(precommit_storage_error)?;
-        let record = decoded_value(decode_administration_audit_record_v1(value.value())?);
+        let record = decoded_value(decode_administration_audit_with_command_tables(
+            value.value(),
+            commits,
+            events,
+        )?);
         if let StoredAdministrationAuditRecordV1::ReactiveModule(published) = record
             && published.module_hash() == module_hash
             && found.replace(published.administration_sequence()).is_some()
@@ -350,18 +485,26 @@ where
     Ok(found)
 }
 
-fn find_audit_record<T>(
+fn find_audit_record<T, C, E>(
     table: &T,
+    commits: &C,
+    events: &E,
     sequence: AdministrationSequence,
 ) -> Result<Option<StoredAdministrationAuditRecordV1>, StorageError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let key = encode_audit_key(sequence);
     let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(None);
     };
-    let record = decoded_value(decode_administration_audit_record_v1(value.value())?);
+    let record = decoded_value(decode_administration_audit_with_command_tables(
+        value.value(),
+        commits,
+        events,
+    )?);
     if record.administration_sequence() != sequence {
         return Err(corrupt());
     }
@@ -416,17 +559,25 @@ where
     Ok(Some(bundle))
 }
 
-fn last_catalog_activation<T>(
+fn last_catalog_activation<T, C, E>(
     table: &T,
+    commits: &C,
+    events: &E,
 ) -> Result<Option<StoredCatalogAdministrationV1>, StorageError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let mut last = None;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let sequence = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-        let record = decoded_value(decode_administration_audit_record_v1(value.value())?);
+        let record = decoded_value(decode_administration_audit_with_command_tables(
+            value.value(),
+            commits,
+            events,
+        )?);
         if record.administration_sequence() != sequence {
             return Err(corrupt());
         }
@@ -501,14 +652,16 @@ fn active_authority_sequence(
 impl CatalogRepository for RedbOperationalPorts {
     fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
         let transaction = self.begin_read()?;
-        validate_administration_stream_readonly(&transaction)?;
+        validate_administration_stream_readonly(self, &transaction)?;
         let active_table = transaction
             .open_table(CATALOG_ACTIVE)
             .map_err(table_error)?;
         let active = active_catalog_from_table(&active_table)?;
         drop(active_table);
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-        let last = last_catalog_activation(&audit)?;
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let last = last_catalog_activation(&audit, &commits, &events)?;
         drop(audit);
         let migrations = transaction
             .open_table(CONTRACT_MIGRATIONS)
@@ -599,30 +752,26 @@ impl AdministrationAuditReader for RedbOperationalPorts {
         request: AdministrationAuditScanRequest,
     ) -> Result<AdministrationAuditScan, StorageError> {
         let transaction = self.begin_read()?;
-        validate_administration_stream_readonly(&transaction)?;
-        let table = transaction.open_table(AUDIT).map_err(table_error)?;
+        validate_administration_stream_readonly(self, &transaction)?;
+        let allocator = read_administration_allocator_readonly(&transaction)?;
         let mut records = Vec::new();
         let mut bytes = 0usize;
         let mut has_more = false;
-        let mut scan = match request.after() {
-            Some(after) => {
-                let after_key = encode_audit_key(after);
-                table
-                    .range::<&[u8]>((
-                        std::ops::Bound::Excluded(after_key.as_slice()),
-                        std::ops::Bound::Unbounded,
-                    ))
-                    .map_err(precommit_storage_error)?
-            }
-            None => table.iter().map_err(precommit_storage_error)?,
+        let mut next = match request.after() {
+            Some(after) => after.checked_next(),
+            None => Some(AdministrationSequence::first()),
         };
-        for entry in &mut scan {
-            let (key, value) = entry.map_err(precommit_storage_error)?;
-            let sequence = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-            let item = decode_administration_audit_record_v1(value.value())?;
-            if item.value().administration_sequence() != sequence {
-                return Err(corrupt());
+        while let Some(sequence) = next {
+            let present = match allocator {
+                AdministrationSequenceAllocator::Next(frontier) => sequence < frontier,
+                AdministrationSequenceAllocator::Exhausted => true,
+            };
+            if !present {
+                break;
             }
+            let record = read_administration_record_readonly(self, &transaction, sequence)?;
+            let encoded = encode_administration_audit_record_v1(&record)?;
+            let item = EncodedPageItem::new(record, encoded.encoded_content_charge());
             let next_bytes = bytes
                 .checked_add(item.encoded_content_charge().get())
                 .ok_or_else(corrupt)?;
@@ -634,6 +783,7 @@ impl AdministrationAuditReader for RedbOperationalPorts {
             }
             bytes = next_bytes;
             records.push(item);
+            next = sequence.checked_next();
         }
         if records.is_empty() && has_more {
             return Err(corrupt());
@@ -649,7 +799,7 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
     ) -> Result<CatalogActivationResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_tail(transaction)?;
+        let allocator = validate_administration_tail(&access)?;
         let bundles = transaction
             .open_table(CONTRACT_BUNDLES)
             .map_err(table_error)?;
@@ -671,7 +821,9 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         let requested = intent.requested_active();
         if active.as_ref() == Some(&requested) {
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-            let last = last_catalog_activation(&audit)?.ok_or_else(corrupt)?;
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            let last = last_catalog_activation(&audit, &commits, &events)?.ok_or_else(corrupt)?;
             drop(audit);
             let migrations = transaction
                 .open_table(CONTRACT_MIGRATIONS)
@@ -680,6 +832,8 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             drop(migrations);
             let sequence =
                 active_authority_sequence(&requested, Some(&last), last_migration.as_ref())?;
+            drop(events);
+            drop(commits);
             access.abort()?;
             return Ok(CatalogActivationResult::AlreadyActive {
                 active: requested,
@@ -876,7 +1030,7 @@ impl QueryModuleRepository for RedbOperationalPorts {
         contract_bundle_hash: ContractBundleHash,
     ) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
         let transaction = self.begin_read()?;
-        validate_administration_stream_readonly(&transaction)?;
+        validate_administration_stream_readonly(self, &transaction)?;
         let active_table = transaction
             .open_table(QUERY_MODULE_ACTIVE)
             .map_err(table_error)?;
@@ -895,7 +1049,13 @@ impl QueryModuleRepository for RedbOperationalPorts {
             .get(key.as_slice())
             .map_err(precommit_storage_error)?
             .ok_or_else(corrupt)?;
-        let durable = decoded_value(decode_administration_audit_record_v1(durable.value())?);
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let durable = decoded_value(decode_administration_audit_with_command_tables(
+            durable.value(),
+            &commits,
+            &events,
+        )?);
         if durable != StoredAdministrationAuditRecordV1::QueryModule(record.clone()) {
             return Err(corrupt());
         }
@@ -916,7 +1076,7 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
     ) -> Result<QueryModuleActivationResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_tail(transaction)?;
+        let allocator = validate_administration_tail(&access)?;
 
         let bundles = transaction
             .open_table(CONTRACT_BUNDLES)
@@ -1143,9 +1303,10 @@ impl RedbOperationalPorts {
         candidate: &StoredReactiveModuleV1,
     ) -> Result<Option<AdministrationSequence>, StorageError> {
         let transaction = self.begin_read()?;
-        let allocator = read_administration_allocator_readonly(&transaction)?;
+        validate_administration_tail_readonly(self, &transaction)?;
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-        validate_administration_tail_from_table(&audit, allocator)?;
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
 
         let bundles = transaction
             .open_table(CONTRACT_BUNDLES)
@@ -1182,7 +1343,7 @@ impl RedbOperationalPorts {
         // Fail closed exactly as the write path does: a retained module with no
         // publication record in the stream is corruption, not a republish.
         Ok(Some(
-            published_reactive_module_sequence(&audit, candidate.module_hash())?
+            published_reactive_module_sequence(&audit, &commits, &events, candidate.module_hash())?
                 .ok_or_else(corrupt)?,
         ))
     }
@@ -1202,7 +1363,7 @@ impl RedbOperationalPorts {
     ) -> Result<ReactiveModulePublicationResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_tail(transaction)?;
+        let allocator = validate_administration_tail(&access)?;
         let candidate = intent.module();
 
         let bundles = transaction
@@ -1245,10 +1406,18 @@ impl RedbOperationalPorts {
             // transaction: an idempotent republish must record a success linked
             // to that publication, not a linkless failure.
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-            let administration_sequence =
-                published_reactive_module_sequence(&audit, candidate.module_hash())?
-                    .ok_or_else(corrupt)?;
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            let administration_sequence = published_reactive_module_sequence(
+                &audit,
+                &commits,
+                &events,
+                candidate.module_hash(),
+            )?
+            .ok_or_else(corrupt)?;
             drop(audit);
+            drop(events);
+            drop(commits);
             access.abort()?;
             return Ok(ReactiveModulePublicationResult::AlreadyPublished {
                 module_hash: candidate.module_hash(),
@@ -1533,7 +1702,63 @@ fn service_common_matches(
                 && terminal.link() == started.link()))
 }
 
-fn service_lifecycle<T>(
+fn service_lifecycle<T, C, E>(
+    table: &T,
+    commits: &C,
+    events: &E,
+    request_id: RequestId,
+    sequences: &[AdministrationSequence],
+) -> Result<Option<ServiceLifecycle>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut lifecycle = None;
+    for sequence in sequences {
+        let StoredAdministrationAuditRecordV1::Service(record) =
+            read_audit_record(table, commits, events, *sequence)?
+        else {
+            return Err(corrupt());
+        };
+        if record.request_id() != request_id {
+            return Err(corrupt());
+        }
+        lifecycle = Some(match lifecycle {
+            None if record.phase() == ServiceAuditPhaseV1::Started => ServiceLifecycle::Started {
+                record,
+                terminal: false,
+            },
+            None if record.principal().is_some()
+                && record.link() == ServiceAuditLinkV1::None
+                && matches!(
+                    record.phase(),
+                    ServiceAuditPhaseV1::Denied
+                        | ServiceAuditPhaseV1::Cancelled
+                        | ServiceAuditPhaseV1::Failed
+                ) =>
+            {
+                ServiceLifecycle::Standalone
+            }
+            Some(ServiceLifecycle::Started {
+                record: started,
+                terminal: false,
+            }) if record.phase() != ServiceAuditPhaseV1::Started
+                && service_common_matches(&started, &record) =>
+            {
+                ServiceLifecycle::Started {
+                    record: started,
+                    terminal: true,
+                }
+            }
+            _ => return Err(corrupt()),
+        });
+    }
+    Ok(lifecycle)
+}
+
+fn service_lifecycle_in_write<T>(
+    access: &RedbWriteAccess,
     table: &T,
     request_id: RequestId,
     sequences: &[AdministrationSequence],
@@ -1541,11 +1766,32 @@ fn service_lifecycle<T>(
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    if sequences.is_empty() {
+        return Ok(None);
+    }
+    let transaction = access.transaction()?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let mut lifecycle = None;
     for sequence in sequences {
-        let StoredAdministrationAuditRecordV1::Service(record) =
-            read_audit_record(table, *sequence)?
-        else {
+        let key = encode_audit_key(*sequence);
+        let physical = table
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .map(|value| {
+                decode_administration_audit_with_command_tables(value.value(), &commits, &events)
+                    .map(decoded_value)
+            })
+            .transpose()?;
+        let derived = access
+            .command_audit_record(*sequence)?
+            .map(StoredAdministrationAuditRecordV1::Service);
+        let record = match (physical, derived) {
+            (Some(physical), Some(derived)) if physical == derived => physical,
+            (Some(record), None) | (None, Some(record)) => record,
+            (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
+        };
+        let StoredAdministrationAuditRecordV1::Service(record) = record else {
             return Err(corrupt());
         };
         if record.request_id() != request_id {
@@ -1609,7 +1855,11 @@ fn service_link_is_valid(
             administration_sequence,
         } => {
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-            let Some(target) = find_audit_record(&audit, administration_sequence)? else {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            let Some(target) =
+                find_audit_record(&audit, &commits, &events, administration_sequence)?
+            else {
                 return Ok(false);
             };
             Ok(match (intent.operation(), target) {
@@ -1737,7 +1987,7 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         }
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_tail(transaction)?;
+        let allocator = validate_administration_tail(&access)?;
         let distinct_requests = intents
             .iter()
             .map(ServiceAuditAppendIntentV1::request_id)
@@ -1750,7 +2000,8 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
                 .get(&intent.request_id())
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let lifecycle = service_lifecycle(&audit, intent.request_id(), sequences)?;
+            let lifecycle =
+                service_lifecycle_in_write(&access, &audit, intent.request_id(), sequences)?;
             drop(audit);
             let phase_allowed = match lifecycle {
                 None => match intent.phase() {
@@ -1816,6 +2067,112 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         access.commit_for(RedbTestOperation::ServiceAudit)?;
         Ok(results)
     }
+
+    fn submit_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<riffdb_storage_api::ServiceAuditGroupAppend, StorageError> {
+        if !self.standard_writer_journal_enabled() {
+            return self
+                .append_service_audit_group(intents)
+                .map(riffdb_storage_api::ServiceAuditGroupAppend::Complete);
+        }
+        if intents.is_empty()
+            || intents.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+            || intents
+                .iter()
+                .map(ServiceAuditAppendIntentV1::request_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != intents.len()
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let access = self.begin_deferred_service_audit_write()?;
+        let transaction = access.transaction()?;
+        validate_administration_tail(&access)?;
+        let distinct_requests = intents
+            .iter()
+            .map(ServiceAuditAppendIntentV1::request_id)
+            .collect::<BTreeSet<_>>();
+        let sequences_by_request = access.service_audit_sequences_for(&distinct_requests)?;
+        let mut allowed = Vec::with_capacity(intents.len());
+        for intent in intents {
+            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            let sequences = sequences_by_request
+                .get(&intent.request_id())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let lifecycle =
+                service_lifecycle_in_write(&access, &audit, intent.request_id(), sequences)?;
+            drop(audit);
+            let phase_allowed = match lifecycle {
+                None => match intent.phase() {
+                    ServiceAuditPhaseV1::Started => {
+                        intent.principal().is_some() && intent.link() == ServiceAuditLinkV1::None
+                    }
+                    ServiceAuditPhaseV1::Denied
+                    | ServiceAuditPhaseV1::Cancelled
+                    | ServiceAuditPhaseV1::Failed => {
+                        intent.principal().is_some() && intent.link() == ServiceAuditLinkV1::None
+                    }
+                    _ => false,
+                },
+                Some(ServiceLifecycle::Standalone)
+                | Some(ServiceLifecycle::Started { terminal: true, .. }) => false,
+                Some(ServiceLifecycle::Started {
+                    record: started,
+                    terminal: false,
+                }) => {
+                    intent.phase() != ServiceAuditPhaseV1::Started
+                        && started.request_id() == intent.request_id()
+                        && started.operation() == intent.operation()
+                        && started.principal() == intent.principal()
+                        && started.ingress() == intent.ingress()
+                        && started.targets() == intent.targets()
+                        && started.approval_id() == intent.approval_id()
+                        && (started.principal().is_some()
+                            || (intent.phase() == ServiceAuditPhaseV1::Succeeded
+                                && intent.link() == started.link()))
+                }
+            };
+            allowed.push(phase_allowed && service_link_is_valid(transaction, intent)?);
+        }
+        let selected = intents
+            .iter()
+            .zip(&allowed)
+            .filter(|(_, allowed)| **allowed)
+            .map(|(intent, _)| intent.clone())
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            access.abort()?;
+            return Ok(riffdb_storage_api::ServiceAuditGroupAppend::Complete(
+                vec![ServiceAuditAppendResult::PhaseConflict; intents.len()],
+            ));
+        }
+        let records = stage_checked_standalone_service_audit_group_in_write(&access, &selected)?;
+        if records.len() != selected.len() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let mut records = records.into_iter();
+        let mut results = Vec::with_capacity(intents.len());
+        for allowed in allowed {
+            if allowed {
+                let record = records
+                    .next()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                results.push(ServiceAuditAppendResult::Appended(record));
+            } else {
+                results.push(ServiceAuditAppendResult::PhaseConflict);
+            }
+        }
+        if records.next().is_some() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        access
+            .submit_service_audit(results)
+            .map(|fence| riffdb_storage_api::ServiceAuditGroupAppend::Submitted(Box::new(fence)))
+    }
 }
 
 impl AuditedAdmissionRepository for RedbOperationalPorts {
@@ -1836,7 +2193,7 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
 
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_tail(transaction)?;
+        let allocator = validate_administration_tail(&access)?;
         let sequences_by_request = access.service_audit_sequences_for(&request_ids)?;
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
 
@@ -1845,7 +2202,12 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
                 .get(&request.started().request_id())
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let lifecycle = service_lifecycle(&audit, request.started().request_id(), sequences)?;
+            let lifecycle = service_lifecycle_in_write(
+                &access,
+                &audit,
+                request.started().request_id(),
+                sequences,
+            )?;
             if lifecycle.is_some()
                 || request.started().phase() != ServiceAuditPhaseV1::Started
                 || request.started().principal().is_none()
@@ -1860,10 +2222,8 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
         let count = u16::try_from(requests.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let (assigned, next) = allocate_sequences(allocator, count)?;
-        let admissions = stage_admission_group(
-            transaction,
-            requests.iter().map(|request| request.admission()),
-        )?;
+        let admissions =
+            stage_admission_group(&access, requests.iter().map(|request| request.admission()))?;
         let mut outputs = Vec::with_capacity(requests.len());
         for ((request, sequence), (admission, created)) in
             requests.iter().zip(assigned).zip(admissions)
@@ -1903,24 +2263,287 @@ pub(crate) fn stage_service_audit_group_in_write(
     access: &crate::store::RedbWriteAccess,
     intents: &[ServiceAuditAppendIntentV1],
 ) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
-    stage_service_audit_group_with_command_evidence(access, intents, None)
+    stage_service_audit_group_with_command_evidence(access, intents.to_vec(), None)
+}
+
+/// Writes a nonempty subset whose independent lifecycle and link checks were
+/// just completed against this same write transaction by the standalone group
+/// adapter. Unlike the command helper, a lone `Started` is a complete
+/// standalone transition and is not required to have a terminal sibling.
+fn stage_checked_standalone_service_audit_group_in_write(
+    access: &crate::store::RedbWriteAccess,
+    intents: &[ServiceAuditAppendIntentV1],
+) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
+    if intents.is_empty()
+        || intents.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        || intents
+            .iter()
+            .map(ServiceAuditAppendIntentV1::request_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != intents.len()
+    {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    let transaction = access.transaction()?;
+    let allocator = validate_administration_tail(access)?;
+    let count =
+        u16::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+    let (assigned, next) = allocate_sequences(allocator, count)?;
+    let mut journal_mutations =
+        Vec::with_capacity(intents.len().saturating_mul(2).saturating_add(1));
+    let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut records = Vec::with_capacity(intents.len());
+    for (intent, sequence) in intents.iter().zip(assigned) {
+        let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
+        let encoded = encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Service(record.clone()),
+        )?;
+        let key = encode_audit_key(sequence);
+        if audit
+            .insert(key.as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(corrupt());
+        }
+        journal_mutations.push(
+            JournalMutation::put(
+                JournalTable::Audit,
+                key.to_vec(),
+                encoded.as_bytes().to_vec(),
+            )
+            .map_err(|_| invariant())?,
+        );
+        records.push(record);
+    }
+    drop(audit);
+    let mut request_index = transaction
+        .open_table(crate::layout::AUDIT_BY_REQUEST)
+        .map_err(table_error)?;
+    for record in &records {
+        let key = crate::keys::encode_audit_by_request_key(
+            record.request_id(),
+            record.administration_sequence(),
+        );
+        let value = crate::codec::encode_service_audit_request_index_v1(
+            riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+                record.request_id(),
+                record.administration_sequence(),
+            ),
+        )?;
+        if request_index
+            .insert(key.as_slice(), value.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(corrupt());
+        }
+        journal_mutations.push(
+            JournalMutation::put(
+                JournalTable::AuditByRequest,
+                key.to_vec(),
+                value.as_bytes().to_vec(),
+            )
+            .map_err(|_| invariant())?,
+        );
+    }
+    drop(request_index);
+    let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
+    let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
+    write_administration_allocator(transaction, allocator, next)?;
+    journal_mutations.push(
+        JournalMutation::replace(
+            JournalTable::Meta,
+            META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
+            prior_allocator.as_bytes(),
+            encoded_allocator.as_bytes().to_vec(),
+        )
+        .map_err(|_| invariant())?,
+    );
+    access.record_journal_mutations(journal_mutations)?;
+    Ok(records)
 }
 
 /// Stages linked command audit rows using evidence that can only be produced
 /// by consuming complete command graphs already written to this transaction.
+pub(crate) struct StagedCommandAuditRecordsV1 {
+    started: StoredServiceAuditRecordV1,
+    terminal: StoredServiceAuditRecordV1,
+}
+
+impl StagedCommandAuditRecordsV1 {
+    pub(crate) fn into_parts(self) -> (StoredServiceAuditRecordV1, StoredServiceAuditRecordV1) {
+        (self.started, self.terminal)
+    }
+}
+
 pub(crate) fn stage_command_service_audit_group_in_write(
     access: &crate::store::RedbWriteAccess,
-    intents: &[ServiceAuditAppendIntentV1],
+    transitions: Vec<CommandServiceAuditTransitionV1>,
     staged_commands: &[StagedCommandAuditLinkEvidenceV1],
-) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
-    stage_service_audit_group_with_command_evidence(access, intents, Some(staged_commands))
+) -> Result<Vec<StagedCommandAuditRecordsV1>, StorageError> {
+    if transitions.is_empty()
+        || transitions.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        || transitions.len() != staged_commands.len()
+    {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+
+    // Command transitions are already a closed typed lifecycle. Retain the
+    // durable request lookup here so a fresh fused start cannot reuse an audit
+    // identity, but avoid flattening the transitions and rebuilding a generic
+    // lifecycle state machine for every command in the group.
+    let request_ids = transitions
+        .iter()
+        .map(|transition| transition.terminal().request_id())
+        .collect::<BTreeSet<_>>();
+    if request_ids.len() != transitions.len() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let sequences_by_request = access.service_audit_sequences_for(&request_ids)?;
+    let transaction = access.transaction()?;
+    let allocator = validate_administration_tail(access)?;
+    let has_prior_lifecycle = sequences_by_request
+        .values()
+        .any(|sequences| !sequences.is_empty());
+    let audit = has_prior_lifecycle
+        .then(|| transaction.open_table(AUDIT).map_err(table_error))
+        .transpose()?;
+
+    let mut prior_starts = Vec::with_capacity(transitions.len());
+    for (transition, evidence) in transitions.iter().zip(staged_commands) {
+        let terminal = transition.terminal();
+        let ServiceAuditLinkV1::Command {
+            commit_sequence,
+            provenance_id,
+        } = terminal.link()
+        else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        if !evidence.matches(commit_sequence, provenance_id) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let sequences = sequences_by_request
+            .get(&terminal.request_id())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let lifecycle = if sequences.is_empty() {
+            None
+        } else {
+            service_lifecycle_in_write(
+                access,
+                audit
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                terminal.request_id(),
+                sequences,
+            )?
+        };
+        match (transition, lifecycle) {
+            (CommandServiceAuditTransitionV1::StartedAndTerminal { started, terminal }, None) => {
+                if started.timestamp() > terminal.timestamp() {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+                prior_starts.push(None);
+            }
+            (
+                CommandServiceAuditTransitionV1::TerminalOnly(terminal),
+                Some(ServiceLifecycle::Started {
+                    record: started,
+                    terminal: false,
+                }),
+            ) if started.request_id() == terminal.request_id()
+                && started.operation() == terminal.operation()
+                && started.principal() == terminal.principal()
+                && started.ingress() == terminal.ingress()
+                && started.targets() == terminal.targets()
+                && started.approval_id() == terminal.approval_id()
+                && started.principal().is_some()
+                && started.timestamp() <= terminal.timestamp() =>
+            {
+                prior_starts.push(Some(started));
+            }
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        }
+    }
+    drop(audit);
+
+    let row_count = transitions
+        .iter()
+        .try_fold(0_usize, |count, transition| {
+            count.checked_add(match transition {
+                CommandServiceAuditTransitionV1::TerminalOnly(_) => 1,
+                CommandServiceAuditTransitionV1::StartedAndTerminal { .. } => 2,
+            })
+        })
+        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    let count =
+        u16::try_from(row_count).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+    let (assigned, next) = allocate_sequences(allocator, count)?;
+    let mut assigned = assigned.into_iter();
+    let mut records = Vec::with_capacity(transitions.len());
+    for (transition, prior_start) in transitions.into_iter().zip(prior_starts) {
+        match transition {
+            CommandServiceAuditTransitionV1::TerminalOnly(terminal) => {
+                let sequence = assigned
+                    .next()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                let terminal = StoredServiceAuditRecordV1::from_owned_intent(sequence, terminal);
+                records.push(StagedCommandAuditRecordsV1 {
+                    started: prior_start
+                        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                    terminal,
+                });
+            }
+            CommandServiceAuditTransitionV1::StartedAndTerminal { started, terminal } => {
+                if prior_start.is_some() {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+                let started_sequence = assigned
+                    .next()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                let terminal_sequence = assigned
+                    .next()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                records.push(StagedCommandAuditRecordsV1 {
+                    started: StoredServiceAuditRecordV1::from_owned_intent(
+                        started_sequence,
+                        started,
+                    ),
+                    terminal: StoredServiceAuditRecordV1::from_owned_intent(
+                        terminal_sequence,
+                        terminal,
+                    ),
+                });
+            }
+        }
+    }
+    if assigned.next().is_some() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+
+    let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
+    let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
+    write_administration_allocator(transaction, allocator, next)?;
+    access.record_journal_mutations(vec![
+        JournalMutation::replace(
+            JournalTable::Meta,
+            META_ADMINISTRATION_SEQUENCE.as_bytes().to_vec(),
+            prior_allocator.as_bytes(),
+            encoded_allocator.as_bytes().to_vec(),
+        )
+        .map_err(|_| invariant())?,
+    ])?;
+    Ok(records)
 }
 
 fn stage_service_audit_group_with_command_evidence(
     access: &crate::store::RedbWriteAccess,
-    intents: &[ServiceAuditAppendIntentV1],
+    intents: Vec<ServiceAuditAppendIntentV1>,
     staged_commands: Option<&[StagedCommandAuditLinkEvidenceV1]>,
 ) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
+    let command_owned_audits = staged_commands.is_some();
     let maximum_rows = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
         .checked_mul(2)
         .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -1936,7 +2559,7 @@ fn stage_service_audit_group_with_command_evidence(
     }
     let sequences_by_request = access.service_audit_sequences_for(&distinct_requests)?;
     let transaction = access.transaction()?;
-    let allocator = validate_administration_tail(transaction)?;
+    let allocator = validate_administration_tail(access)?;
     let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
     // Independently submitted links retain the complete table decode. The
     // command path instead supplies move-only evidence produced only after the
@@ -1955,16 +2578,16 @@ fn stage_service_audit_group_with_command_evidence(
         None
     };
     let mut staged_commands = staged_commands.unwrap_or(&[]).iter();
-    let mut fused_starts: BTreeMap<riffdb_types::RequestId, ServiceAuditAppendIntentV1> =
-        BTreeMap::new();
-    for intent in intents {
+    let mut fused_starts: BTreeMap<riffdb_types::RequestId, usize> = BTreeMap::new();
+    for (intent_index, intent) in intents.iter().enumerate() {
         let sequences = sequences_by_request
             .get(&intent.request_id())
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let lifecycle = service_lifecycle(&audit, intent.request_id(), sequences)?;
+        let lifecycle = service_lifecycle_in_write(access, &audit, intent.request_id(), sequences)?;
         let had_fused_start = fused_starts.contains_key(&intent.request_id());
-        let allowed = if let Some(started) = fused_starts.get(&intent.request_id()) {
+        let allowed = if let Some(started_index) = fused_starts.get(&intent.request_id()) {
+            let started = &intents[*started_index];
             intent.phase() != ServiceAuditPhaseV1::Started
                 && started.request_id() == intent.request_id()
                 && started.operation() == intent.operation()
@@ -1989,7 +2612,7 @@ fn stage_service_audit_group_with_command_evidence(
                         && started.principal().is_some()
                 }
                 None if intent.phase() == ServiceAuditPhaseV1::Started => {
-                    fused_starts.insert(intent.request_id(), intent.clone());
+                    fused_starts.insert(intent.request_id(), intent_index);
                     true
                 }
                 None
@@ -2032,71 +2655,75 @@ fn stage_service_audit_group_with_command_evidence(
     if !fused_starts.is_empty() || staged_commands.next().is_some() {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
-
     let count =
         u16::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
     let (assigned, next) = allocate_sequences(allocator, count)?;
     let mut records = Vec::with_capacity(intents.len());
     let mut journal_mutations =
         Vec::with_capacity(intents.len().saturating_mul(2).saturating_add(1));
-    for (intent, sequence) in intents.iter().zip(assigned) {
-        let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
-        let encoded = encode_administration_audit_record_v1(
-            &StoredAdministrationAuditRecordV1::Service(record.clone()),
-        )?;
-        let key = encode_audit_key(sequence);
-        if audit
-            .insert(key.as_slice(), encoded.as_bytes())
-            .map_err(precommit_storage_error)?
-            .is_some()
-        {
-            return Err(corrupt());
+    for (intent, sequence) in intents.into_iter().zip(assigned) {
+        let record = StoredServiceAuditRecordV1::from_owned_intent(sequence, intent);
+        if !command_owned_audits {
+            let encoded = encode_administration_audit_record_v1(
+                &StoredAdministrationAuditRecordV1::Service(record.clone()),
+            )?;
+            let key = encode_audit_key(sequence);
+            if audit
+                .insert(key.as_slice(), encoded.as_bytes())
+                .map_err(precommit_storage_error)?
+                .is_some()
+            {
+                return Err(corrupt());
+            }
+            journal_mutations.push(
+                JournalMutation::put(
+                    JournalTable::Audit,
+                    key.to_vec(),
+                    encoded.as_bytes().to_vec(),
+                )
+                .map_err(|_| invariant())?,
+            );
         }
-        journal_mutations.push(
-            JournalMutation::put(
-                JournalTable::Audit,
-                key.to_vec(),
-                encoded.as_bytes().to_vec(),
-            )
-            .map_err(|_| invariant())?,
-        );
         records.push(record);
     }
     drop(audit);
     drop(authoritative_command_tables);
-    // Durable AUDIT_BY_REQUEST rows must land in the same write as fused AUDIT
-    // appends; the transient ServiceAudit delta is not an index authority.
-    let mut request_index = transaction
-        .open_table(crate::layout::AUDIT_BY_REQUEST)
-        .map_err(table_error)?;
-    for record in &records {
-        let index_key = crate::keys::encode_audit_by_request_key(
-            record.request_id(),
-            record.administration_sequence(),
-        );
-        let index_value = crate::codec::encode_service_audit_request_index_v1(
-            riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+    // Successful command request locators are rebuilt exactly from the owning
+    // segment manifest. Standalone service-audit rows retain their durable
+    // request index because no command segment owns them.
+    if !command_owned_audits {
+        let mut request_index = transaction
+            .open_table(crate::layout::AUDIT_BY_REQUEST)
+            .map_err(table_error)?;
+        for record in &records {
+            let index_key = crate::keys::encode_audit_by_request_key(
                 record.request_id(),
                 record.administration_sequence(),
-            ),
-        )?;
-        if request_index
-            .insert(index_key.as_slice(), index_value.as_bytes())
-            .map_err(precommit_storage_error)?
-            .is_some()
-        {
-            return Err(corrupt());
+            );
+            let index_value = crate::codec::encode_service_audit_request_index_v1(
+                riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+                    record.request_id(),
+                    record.administration_sequence(),
+                ),
+            )?;
+            if request_index
+                .insert(index_key.as_slice(), index_value.as_bytes())
+                .map_err(precommit_storage_error)?
+                .is_some()
+            {
+                return Err(corrupt());
+            }
+            journal_mutations.push(
+                JournalMutation::put(
+                    JournalTable::AuditByRequest,
+                    index_key.to_vec(),
+                    index_value.as_bytes().to_vec(),
+                )
+                .map_err(|_| invariant())?,
+            );
         }
-        journal_mutations.push(
-            JournalMutation::put(
-                JournalTable::AuditByRequest,
-                index_key.to_vec(),
-                index_value.as_bytes().to_vec(),
-            )
-            .map_err(|_| invariant())?,
-        );
+        drop(request_index);
     }
-    drop(request_index);
     let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
     let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
     write_administration_allocator(transaction, allocator, next)?;
@@ -2249,7 +2876,7 @@ fn commit_capability_create(
     intent: &CapabilityCreateIntentV1,
 ) -> Result<CapabilityCreateResult, StorageError> {
     let transaction = access.transaction()?;
-    let allocator = validate_administration_tail(transaction)?;
+    let allocator = validate_administration_tail(&access)?;
     if intent.requested().database_id() != read_database_id(transaction)? {
         return Err(invariant());
     }
@@ -2393,7 +3020,7 @@ fn commit_capability_revoke(
     intent: &CapabilityRevokeIntentV1,
 ) -> Result<CapabilityRevokeResult, StorageError> {
     let transaction = access.transaction()?;
-    let allocator = validate_administration_tail(transaction)?;
+    let allocator = validate_administration_tail(&access)?;
     let Some(record) = capability_from_write(transaction, intent.capability_id())? else {
         access.abort()?;
         return Ok(CapabilityRevokeResult::CapabilityNotFound);
@@ -2495,8 +3122,10 @@ fn validate_bootstrap_graph(
         return Err(corrupt());
     }
     let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let StoredAdministrationAuditRecordV1::Capability(transition) =
-        read_audit_record(&audit, marker.administration_sequence())?
+        read_audit_record(&audit, &commits, &events, marker.administration_sequence())?
     else {
         return Err(corrupt());
     };
@@ -2515,13 +3144,19 @@ fn validate_bootstrap_graph(
         .and_then(AdministrationSequence::new)
         .ok_or_else(corrupt)?;
     let StoredAdministrationAuditRecordV1::Service(started) =
-        read_audit_record(&audit, started_sequence)?
+        read_audit_record(&audit, &commits, &events, started_sequence)?
     else {
         return Err(corrupt());
     };
     let sequences = access.service_audit_sequences(started.request_id())?;
     let lifecycle_valid = matches!(
-        service_lifecycle(&audit, started.request_id(), &sequences)?,
+        service_lifecycle(
+            &audit,
+            &commits,
+            &events,
+            started.request_id(),
+            &sequences,
+        )?,
         Some(ServiceLifecycle::Started { record, .. }) if record == started
     );
     if started.request_id() != transition.request_id()
@@ -2553,7 +3188,7 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
     ) -> Result<CapabilityBootstrapResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_tail(transaction)?;
+        let allocator = validate_administration_tail(&access)?;
         let database_id = read_database_id(transaction)?;
         if intent.requested().database_id() != database_id
             || !intent
@@ -2703,7 +3338,8 @@ fn bootstrap_replay(
     let audit = transaction.open_table(AUDIT).map_err(table_error)?;
     let sequences = access.service_audit_sequences(intent.start().request_id())?;
     let request_is_unused =
-        service_lifecycle(&audit, intent.start().request_id(), &sequences)?.is_none();
+        service_lifecycle_in_write(&access, &audit, intent.start().request_id(), &sequences)?
+            .is_none();
     drop(audit);
     if marker.capability_id() != intent.capability_id()
         || !capability.matches_requested(intent.requested())
@@ -2777,6 +3413,11 @@ mod tests {
     impl Drop for TestPath {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+            let journal = crate::journal::journal_path(&self.0);
+            let _ = std::fs::remove_file(&journal);
+            let mut rewrite = journal.into_os_string();
+            rewrite.push(".rewrite");
+            let _ = std::fs::remove_file(PathBuf::from(rewrite));
         }
     }
 
@@ -3089,6 +3730,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(sequences, vec![1, 2, 3]);
         assert_eq!(audit_count(&ports), 3);
+    }
+
+    #[test]
+    fn deferred_service_audit_group_is_invisible_until_fenced_and_reopens_exactly() {
+        let (path, mut ports) = initialized_ports("deferred-audit-group");
+        let intents = [denied_audit(20), denied_audit(21)];
+        let submitted = ports
+            .submit_service_audit_group(&intents)
+            .expect("submit deferred audit group");
+        let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence) = submitted else {
+            panic!("standard redb must submit a journal fence");
+        };
+        assert_eq!(audit_count(&ports), 0, "unfenced roots remain private");
+        let results = fence.wait().expect("fence audit group");
+        assert_eq!(results.len(), intents.len());
+        assert!(
+            results
+                .iter()
+                .all(|result| { matches!(result, ServiceAuditAppendResult::Appended(_)) })
+        );
+        assert_eq!(audit_count(&ports), 2);
+        drop(ports);
+
+        let store = RedbStore::open(&path.0).expect("recover journal suffix");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let reopened = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate recovered ports");
+        assert_eq!(audit_count(&reopened), 2);
     }
 
     #[test]

@@ -1,0 +1,598 @@
+use prost::Message;
+use riffdb_proto::storage::v1 as wire;
+use riffdb_types::{
+    CommitSequence, DatabaseId, IndexEpoch, IndexEpochPosition, hash_command_batch_document,
+};
+
+use crate::{
+    CommandDerivedIndexKindV1, CommandDerivedIndexManifestEntryV1, CommandDerivedMemberV1,
+    CommandSegmentDigestV1, CommandSegmentManifestV1, EncodedPageItem, IndexEpochAdvanceV1,
+    StoredCommandCapsuleV2, StoredCommandDerivedIndexCheckpointV1, StoredCommandSegmentV1,
+};
+
+use super::{
+    CanonicalStoredEnvelopeV1, DurableCodecError, binding_to_proto, decode_message, encode_message,
+    encode_prebuilt_message, fixed, require, storage_result,
+};
+use super::{application, command_capsule};
+
+const COMMAND_CAPSULE_V1: &str = "riffdb.storage.v1.StoredCommandCapsuleV1";
+const COMMAND_CAPSULE_V2: &str = "riffdb.storage.v1.StoredCommandCapsuleV2";
+const COMMAND_SEGMENT_V1: &str = "riffdb.storage.v1.StoredCommandSegmentV1";
+const COMMAND_DERIVED_INDEX_CHECKPOINT_V1: &str =
+    "riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1";
+
+const MANIFEST_DIGEST_LABEL: &[u8] = b"RIFFDB-COMMAND-SEGMENT-MANIFEST-V1\0";
+const SEGMENT_DIGEST_LABEL: &[u8] = b"RIFFDB-COMMAND-SEGMENT-V1\0";
+const CHECKPOINT_DIGEST_LABEL: &[u8] = b"RIFFDB-COMMAND-DERIVED-INDEX-CHECKPOINT-V1\0";
+
+fn component_digest(label: &[u8], bytes: &[u8]) -> CommandSegmentDigestV1 {
+    let mut preimage = Vec::with_capacity(label.len() + bytes.len());
+    preimage.extend_from_slice(label);
+    preimage.extend_from_slice(bytes);
+    CommandSegmentDigestV1::from_bytes(*hash_command_batch_document(&preimage).as_bytes())
+}
+
+fn kind_to_proto(value: CommandDerivedIndexKindV1) -> wire::CommandDerivedIndexKindV1 {
+    match value {
+        CommandDerivedIndexKindV1::Idempotency => {
+            wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindIdempotency
+        }
+        CommandDerivedIndexKindV1::Provenance => {
+            wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindProvenance
+        }
+        CommandDerivedIndexKindV1::AuditSequence => {
+            wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindAuditSequence
+        }
+        CommandDerivedIndexKindV1::AuditRequest => {
+            wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindAuditRequest
+        }
+        CommandDerivedIndexKindV1::EventRoute => {
+            wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindEventRoute
+        }
+        CommandDerivedIndexKindV1::PendingOutbox => {
+            wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindPendingOutbox
+        }
+    }
+}
+
+fn kind_from_proto(value: i32) -> Result<CommandDerivedIndexKindV1, DurableCodecError> {
+    match wire::CommandDerivedIndexKindV1::try_from(value)
+        .map_err(|_| DurableCodecError::corrupt())?
+    {
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindIdempotency => {
+            Ok(CommandDerivedIndexKindV1::Idempotency)
+        }
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindProvenance => {
+            Ok(CommandDerivedIndexKindV1::Provenance)
+        }
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindAuditSequence => {
+            Ok(CommandDerivedIndexKindV1::AuditSequence)
+        }
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindAuditRequest => {
+            Ok(CommandDerivedIndexKindV1::AuditRequest)
+        }
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindEventRoute => {
+            Ok(CommandDerivedIndexKindV1::EventRoute)
+        }
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindPendingOutbox => {
+            Ok(CommandDerivedIndexKindV1::PendingOutbox)
+        }
+        wire::CommandDerivedIndexKindV1::CommandDerivedIndexKindUnspecified => {
+            Err(DurableCodecError::corrupt())
+        }
+    }
+}
+
+fn member_to_proto(value: CommandDerivedMemberV1) -> wire::CommandDerivedMemberV1 {
+    match value {
+        CommandDerivedMemberV1::Command => {
+            wire::CommandDerivedMemberV1::CommandDerivedMemberCommand
+        }
+        CommandDerivedMemberV1::AuditStarted => {
+            wire::CommandDerivedMemberV1::CommandDerivedMemberAuditStarted
+        }
+        CommandDerivedMemberV1::AuditTerminal => {
+            wire::CommandDerivedMemberV1::CommandDerivedMemberAuditTerminal
+        }
+        CommandDerivedMemberV1::Event => wire::CommandDerivedMemberV1::CommandDerivedMemberEvent,
+    }
+}
+
+fn member_from_proto(value: i32) -> Result<CommandDerivedMemberV1, DurableCodecError> {
+    match wire::CommandDerivedMemberV1::try_from(value).map_err(|_| DurableCodecError::corrupt())? {
+        wire::CommandDerivedMemberV1::CommandDerivedMemberCommand => {
+            Ok(CommandDerivedMemberV1::Command)
+        }
+        wire::CommandDerivedMemberV1::CommandDerivedMemberAuditStarted => {
+            Ok(CommandDerivedMemberV1::AuditStarted)
+        }
+        wire::CommandDerivedMemberV1::CommandDerivedMemberAuditTerminal => {
+            Ok(CommandDerivedMemberV1::AuditTerminal)
+        }
+        wire::CommandDerivedMemberV1::CommandDerivedMemberEvent => {
+            Ok(CommandDerivedMemberV1::Event)
+        }
+        wire::CommandDerivedMemberV1::CommandDerivedMemberUnspecified => {
+            Err(DurableCodecError::corrupt())
+        }
+    }
+}
+
+fn manifest_entry_to_proto(
+    value: &CommandDerivedIndexManifestEntryV1,
+) -> wire::CommandDerivedIndexManifestEntryV1 {
+    wire::CommandDerivedIndexManifestEntryV1 {
+        kind: kind_to_proto(value.kind()) as i32,
+        member: member_to_proto(value.member()) as i32,
+        exact_key: value.exact_key().to_vec(),
+        command_ordinal: u32::from(value.command_ordinal()),
+        member_ordinal: u32::from(value.member_ordinal()),
+        segment_first_commit_sequence: value.segment_first_commit_sequence().get(),
+    }
+}
+
+fn manifest_entry_from_proto(
+    value: wire::CommandDerivedIndexManifestEntryV1,
+) -> Result<CommandDerivedIndexManifestEntryV1, DurableCodecError> {
+    storage_result(CommandDerivedIndexManifestEntryV1::new(
+        kind_from_proto(value.kind)?,
+        member_from_proto(value.member)?,
+        value.exact_key,
+        u16::try_from(value.command_ordinal).map_err(|_| DurableCodecError::corrupt())?,
+        u16::try_from(value.member_ordinal).map_err(|_| DurableCodecError::corrupt())?,
+        CommitSequence::new(value.segment_first_commit_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?,
+    ))
+}
+
+fn manifest_to_proto(value: &CommandSegmentManifestV1) -> wire::CommandSegmentManifestV1 {
+    let entries = value
+        .entries()
+        .iter()
+        .map(manifest_entry_to_proto)
+        .collect();
+    let mut manifest = wire::CommandSegmentManifestV1 {
+        entries,
+        digest: Vec::new(),
+    };
+    manifest.digest = component_digest(MANIFEST_DIGEST_LABEL, &manifest.encode_to_vec())
+        .as_bytes()
+        .to_vec();
+    manifest
+}
+
+fn manifest_from_proto(
+    mut value: wire::CommandSegmentManifestV1,
+) -> Result<CommandSegmentManifestV1, DurableCodecError> {
+    let supplied = CommandSegmentDigestV1::from_bytes(fixed(value.digest.clone())?);
+    value.digest.clear();
+    if component_digest(MANIFEST_DIGEST_LABEL, &value.encode_to_vec()) != supplied {
+        return Err(DurableCodecError::corrupt());
+    }
+    storage_result(CommandSegmentManifestV1::new(
+        value
+            .entries
+            .into_iter()
+            .map(manifest_entry_from_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
+fn transition_to_proto(value: &IndexEpochAdvanceV1) -> wire::StoredIndexGenerationTransitionV1 {
+    wire::StoredIndexGenerationTransitionV1 {
+        post_image: Some(application::index_epoch_to_proto(value.post_image())),
+        prior_generation: match value.prior() {
+            IndexEpochPosition::BeforeFirst => None,
+            IndexEpochPosition::Value(value) => Some(value.get()),
+        },
+    }
+}
+
+fn transition_from_proto(
+    value: wire::StoredIndexGenerationTransitionV1,
+) -> Result<IndexEpochAdvanceV1, DurableCodecError> {
+    let post_image = application::index_epoch_from_proto(require(value.post_image)?)?;
+    let prior = match value.prior_generation {
+        None => IndexEpochPosition::BeforeFirst,
+        Some(value) => IndexEpochPosition::Value(
+            IndexEpoch::new(value).ok_or_else(DurableCodecError::corrupt)?,
+        ),
+    };
+    let transition = IndexEpochAdvanceV1::new(
+        post_image.target().clone(),
+        post_image.schema_binding().clone(),
+        prior,
+    )
+    .map_err(|_| DurableCodecError::corrupt())?;
+    if transition.post_image() != &post_image {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(transition)
+}
+
+fn capsule_v2_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCapsuleV2 {
+    wire::StoredCommandCapsuleV2 {
+        base: Some(command_capsule::command_capsule_to_proto(value.base())),
+        events: value
+            .events()
+            .iter()
+            .map(application::event_to_proto)
+            .collect(),
+        index_generation_transitions: value
+            .index_generation_transitions()
+            .iter()
+            .map(transition_to_proto)
+            .collect(),
+    }
+}
+
+fn event_bytes_for_seal(value: &crate::StoredDurableEventV1) -> Result<Vec<u8>, DurableCodecError> {
+    let event_id = value.event_id();
+    let mut event_id_bytes = Vec::new();
+    append_varint_field(&mut event_id_bytes, 0x08, event_id.commit_sequence().get());
+    append_varint_field(
+        &mut event_id_bytes,
+        0x10,
+        u64::from(event_id.event_ordinal()),
+    );
+
+    let mut event = Vec::new();
+    append_length_delimited_field(&mut event, 0x0a, &event_id_bytes)?;
+    append_varint_field(&mut event, 0x10, u64::from(value.event_type_id().get()));
+    append_length_delimited_field(&mut event, 0x1a, value.payload_encoded())?;
+    append_length_delimited_field(&mut event, 0x22, value.event_hash().as_bytes())?;
+    Ok(event)
+}
+
+fn transition_bytes_for_seal(value: &IndexEpochAdvanceV1) -> Result<Vec<u8>, DurableCodecError> {
+    let post_image = value.post_image();
+    let mut post_image_bytes = Vec::new();
+    append_length_delimited_field(
+        &mut post_image_bytes,
+        0x0a,
+        post_image.target().partition_key().as_bytes(),
+    )?;
+    append_varint_field(
+        &mut post_image_bytes,
+        0x10,
+        u64::from(post_image.target().index_id().get()),
+    );
+    let binding = binding_to_proto(post_image.schema_binding()).encode_to_vec();
+    append_length_delimited_field(&mut post_image_bytes, 0x1a, &binding)?;
+    append_varint_field(&mut post_image_bytes, 0x20, post_image.epoch().get());
+
+    let mut transition = Vec::new();
+    append_length_delimited_field(&mut transition, 0x0a, &post_image_bytes)?;
+    if let IndexEpochPosition::Value(prior) = value.prior() {
+        append_varint_field(&mut transition, 0x10, prior.get());
+    }
+    Ok(transition)
+}
+
+fn capsule_v2_bytes_for_seal(value: &StoredCommandCapsuleV2) -> Result<Vec<u8>, DurableCodecError> {
+    let base = command_capsule::command_capsule_bytes_for_seal(value.base())?;
+    let mut capsule = Vec::new();
+    append_length_delimited_field(&mut capsule, 0x0a, &base)?;
+    for event in value.events() {
+        let event = event_bytes_for_seal(event)?;
+        append_length_delimited_field(&mut capsule, 0x12, &event)?;
+    }
+    for transition in value.index_generation_transitions() {
+        let transition = transition_bytes_for_seal(transition)?;
+        append_length_delimited_field(&mut capsule, 0x1a, &transition)?;
+    }
+    Ok(capsule)
+}
+
+fn capsule_v2_from_proto(
+    value: wire::StoredCommandCapsuleV2,
+) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
+    let events = value
+        .events
+        .into_iter()
+        .map(application::event_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let base_envelope = encode_message(COMMAND_CAPSULE_V1, &require(value.base)?)?.into_bytes();
+    let (base, _) =
+        command_capsule::decode_command_capsule_v1(&base_envelope, events.clone())?.into_parts();
+    let transitions = value
+        .index_generation_transitions
+        .into_iter()
+        .map(transition_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    storage_result(StoredCommandCapsuleV2::new(base, events, transitions))
+}
+
+/// Encodes one complete V2 command capsule.
+pub fn encode_command_capsule_v2(
+    value: &StoredCommandCapsuleV2,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(COMMAND_CAPSULE_V2, &capsule_v2_to_proto(value))
+}
+
+/// Decodes one complete V2 command capsule.
+pub fn decode_command_capsule_v2(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredCommandCapsuleV2>, DurableCodecError> {
+    decode_message::<wire::StoredCommandCapsuleV2, _, _>(
+        COMMAND_CAPSULE_V2,
+        encoded,
+        capsule_v2_from_proto,
+    )
+}
+
+fn segment_body_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredCommandSegmentBodyV1 {
+    wire::StoredCommandSegmentBodyV1 {
+        database_id: value.database_id().as_bytes().to_vec(),
+        history_incarnation: value.history_incarnation(),
+        predecessor_segment_hash: value
+            .predecessor_segment_digest()
+            .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
+        first_commit_sequence: value.first_commit_sequence().get(),
+        last_commit_sequence: value.last_commit_sequence().get(),
+        first_administration_sequence: value.first_administration_sequence().get(),
+        last_administration_sequence: value.last_administration_sequence().get(),
+        commands: value.commands().iter().map(capsule_v2_to_proto).collect(),
+        manifest: Some(manifest_to_proto(value.manifest())),
+    }
+}
+
+fn append_length_delimited_field(
+    output: &mut Vec<u8>,
+    key: u8,
+    bytes: &[u8],
+) -> Result<(), DurableCodecError> {
+    let len = u64::try_from(bytes.len()).map_err(|_| DurableCodecError::invariant())?;
+    output.push(key);
+    prost::encoding::encode_varint(len, output);
+    output.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn append_varint_field(output: &mut Vec<u8>, key: u8, value: u64) {
+    if value == 0 {
+        return;
+    }
+    output.push(key);
+    prost::encoding::encode_varint(value, output);
+}
+
+fn append_manifest_entry(
+    output: &mut Vec<u8>,
+    value: &CommandDerivedIndexManifestEntryV1,
+) -> Result<(), DurableCodecError> {
+    let mut entry = Vec::with_capacity(value.exact_key().len().saturating_add(24));
+    append_varint_field(&mut entry, 0x08, kind_to_proto(value.kind()) as u64);
+    append_varint_field(&mut entry, 0x10, member_to_proto(value.member()) as u64);
+    append_length_delimited_field(&mut entry, 0x1a, value.exact_key())?;
+    append_varint_field(&mut entry, 0x20, u64::from(value.command_ordinal()));
+    append_varint_field(&mut entry, 0x28, u64::from(value.member_ordinal()));
+    append_varint_field(
+        &mut entry,
+        0x30,
+        value.segment_first_commit_sequence().get(),
+    );
+    append_length_delimited_field(output, 0x0a, &entry)
+}
+
+fn manifest_bytes_for_seal(value: &CommandSegmentManifestV1) -> Result<Vec<u8>, DurableCodecError> {
+    let mut manifest = Vec::new();
+    for entry in value.entries() {
+        append_manifest_entry(&mut manifest, entry)?;
+    }
+    let manifest_digest = component_digest(MANIFEST_DIGEST_LABEL, &manifest);
+    append_length_delimited_field(&mut manifest, 0x12, manifest_digest.as_bytes())?;
+    Ok(manifest)
+}
+
+/// Streams the canonical body while calculating and inserting the nested
+/// manifest digest. No complete V1 or V2 command capsule wire graph is
+/// constructed; at most one bounded nested generated message and one manifest
+/// entry are resident at a time. The independent full-Prost encoder remains
+/// the validation oracle for this durable byte stream.
+fn segment_body_bytes_for_seal(
+    value: &StoredCommandSegmentV1,
+) -> Result<Vec<u8>, DurableCodecError> {
+    let manifest = manifest_bytes_for_seal(value.manifest())?;
+    let mut body = Vec::new();
+    append_length_delimited_field(&mut body, 0x0a, value.database_id().as_bytes())?;
+    append_varint_field(&mut body, 0x10, value.history_incarnation());
+    if let Some(predecessor) = value.predecessor_segment_digest() {
+        append_length_delimited_field(&mut body, 0x1a, predecessor.as_bytes())?;
+    }
+    append_varint_field(&mut body, 0x20, value.first_commit_sequence().get());
+    append_varint_field(&mut body, 0x28, value.last_commit_sequence().get());
+    append_varint_field(&mut body, 0x30, value.first_administration_sequence().get());
+    append_varint_field(&mut body, 0x38, value.last_administration_sequence().get());
+    for command in value.commands() {
+        let command = capsule_v2_bytes_for_seal(command)?;
+        append_length_delimited_field(&mut body, 0x42, &command)?;
+    }
+    append_length_delimited_field(&mut body, 0x4a, &manifest)?;
+    Ok(body)
+}
+
+/// Computes the canonical digest for a structurally checked segment.
+#[must_use]
+pub fn command_segment_digest_v1(value: &StoredCommandSegmentV1) -> CommandSegmentDigestV1 {
+    component_digest(
+        SEGMENT_DIGEST_LABEL,
+        &segment_body_to_proto(value).encode_to_vec(),
+    )
+}
+
+/// Seals one structurally checked segment and returns its canonical bytes from
+/// the same constructed wire body used to calculate the segment digest.
+///
+/// This is the authoritative write-path operation. It avoids rebuilding and
+/// re-encoding the complete command graph merely to verify a digest that this
+/// call has just calculated; [`encode_command_segment_v1`] remains the
+/// independent validation path for already sealed values.
+pub fn seal_and_encode_command_segment_v1(
+    value: StoredCommandSegmentV1,
+) -> Result<(StoredCommandSegmentV1, CanonicalStoredEnvelopeV1), DurableCodecError> {
+    let body_bytes = segment_body_bytes_for_seal(&value)?;
+    let digest = component_digest(SEGMENT_DIGEST_LABEL, &body_bytes);
+    let value = value.with_segment_digest(digest);
+    let body_len = u64::try_from(body_bytes.len()).map_err(|_| DurableCodecError::invariant())?;
+    let digest_len =
+        u64::try_from(digest.as_bytes().len()).map_err(|_| DurableCodecError::invariant())?;
+    let mut payload = Vec::with_capacity(
+        2_usize
+            .saturating_add(prost::encoding::encoded_len_varint(body_len))
+            .saturating_add(body_bytes.len())
+            .saturating_add(prost::encoding::encoded_len_varint(digest_len))
+            .saturating_add(digest.as_bytes().len()),
+    );
+    append_length_delimited_field(&mut payload, 0x0a, &body_bytes)?;
+    append_length_delimited_field(&mut payload, 0x12, digest.as_bytes())?;
+    let encoded =
+        encode_prebuilt_message::<wire::StoredCommandSegmentV1>(COMMAND_SEGMENT_V1, &payload)?;
+    Ok((value, encoded))
+}
+
+/// Encodes one segment after proving its supplied digest matches its canonical body.
+pub fn encode_command_segment_v1(
+    value: &StoredCommandSegmentV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let body = segment_body_to_proto(value);
+    let digest = component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec());
+    if digest != value.segment_digest() {
+        return Err(DurableCodecError::corrupt());
+    }
+    encode_message(
+        COMMAND_SEGMENT_V1,
+        &wire::StoredCommandSegmentV1 {
+            body: Some(body),
+            segment_digest: digest.as_bytes().to_vec(),
+        },
+    )
+}
+
+/// Decodes and proves one complete segment, its manifests, and hash-chain member.
+pub fn decode_command_segment_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredCommandSegmentV1>, DurableCodecError> {
+    decode_message::<wire::StoredCommandSegmentV1, _, _>(COMMAND_SEGMENT_V1, encoded, |value| {
+        let body = require(value.body)?;
+        let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
+        if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+            return Err(DurableCodecError::corrupt());
+        }
+        let first = CommitSequence::new(body.first_commit_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+        let last = CommitSequence::new(body.last_commit_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+        let first_administration =
+            riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+                .ok_or_else(DurableCodecError::corrupt)?;
+        let last_administration =
+            riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+                .ok_or_else(DurableCodecError::corrupt)?;
+        let predecessor = if body.predecessor_segment_hash.is_empty() {
+            None
+        } else {
+            Some(CommandSegmentDigestV1::from_bytes(fixed(
+                body.predecessor_segment_hash,
+            )?))
+        };
+        let commands = body
+            .commands
+            .into_iter()
+            .map(capsule_v2_from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        let segment = storage_result(StoredCommandSegmentV1::new(
+            DatabaseId::from_bytes(fixed(body.database_id)?)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            body.history_incarnation,
+            predecessor,
+            commands,
+            manifest_from_proto(require(body.manifest)?)?,
+            digest,
+        ))?;
+        if segment.first_commit_sequence() != first
+            || segment.last_commit_sequence() != last
+            || segment.first_administration_sequence() != first_administration
+            || segment.last_administration_sequence() != last_administration
+        {
+            return Err(DurableCodecError::corrupt());
+        }
+        Ok(segment)
+    })
+}
+
+fn checkpoint_to_proto(
+    value: &StoredCommandDerivedIndexCheckpointV1,
+) -> wire::StoredCommandDerivedIndexCheckpointV1 {
+    wire::StoredCommandDerivedIndexCheckpointV1 {
+        database_id: value.database_id().as_bytes().to_vec(),
+        history_incarnation: value.history_incarnation(),
+        registry_digest: value.registry_digest().to_vec(),
+        segment_frontier: value.segment_frontier().get(),
+        segment_root_digest: value.segment_root_digest().as_bytes().to_vec(),
+        entries: value
+            .entries()
+            .iter()
+            .map(manifest_entry_to_proto)
+            .collect(),
+        checkpoint_digest: Vec::new(),
+    }
+}
+
+/// Computes the canonical digest for a structurally checked derived checkpoint.
+#[must_use]
+pub fn command_derived_index_checkpoint_digest_v1(
+    value: &StoredCommandDerivedIndexCheckpointV1,
+) -> CommandSegmentDigestV1 {
+    component_digest(
+        CHECKPOINT_DIGEST_LABEL,
+        &checkpoint_to_proto(value).encode_to_vec(),
+    )
+}
+
+/// Encodes a derived checkpoint after proving its digest binding.
+pub fn encode_command_derived_index_checkpoint_v1(
+    value: &StoredCommandDerivedIndexCheckpointV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let mut wire = checkpoint_to_proto(value);
+    let digest = component_digest(CHECKPOINT_DIGEST_LABEL, &wire.encode_to_vec());
+    if digest != value.checkpoint_digest() {
+        return Err(DurableCodecError::corrupt());
+    }
+    wire.checkpoint_digest = digest.as_bytes().to_vec();
+    encode_message(COMMAND_DERIVED_INDEX_CHECKPOINT_V1, &wire)
+}
+
+/// Decodes and verifies one replaceable exact-index checkpoint.
+pub fn decode_command_derived_index_checkpoint_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredCommandDerivedIndexCheckpointV1>, DurableCodecError> {
+    decode_message::<wire::StoredCommandDerivedIndexCheckpointV1, _, _>(
+        COMMAND_DERIVED_INDEX_CHECKPOINT_V1,
+        encoded,
+        |mut value| {
+            let supplied =
+                CommandSegmentDigestV1::from_bytes(fixed(value.checkpoint_digest.clone())?);
+            value.checkpoint_digest.clear();
+            if component_digest(CHECKPOINT_DIGEST_LABEL, &value.encode_to_vec()) != supplied {
+                return Err(DurableCodecError::corrupt());
+            }
+            storage_result(StoredCommandDerivedIndexCheckpointV1::new(
+                DatabaseId::from_bytes(fixed(value.database_id)?)
+                    .map_err(|_| DurableCodecError::corrupt())?,
+                value.history_incarnation,
+                fixed(value.registry_digest)?,
+                CommitSequence::new(value.segment_frontier)
+                    .ok_or_else(DurableCodecError::corrupt)?,
+                CommandSegmentDigestV1::from_bytes(fixed(value.segment_root_digest)?),
+                value
+                    .entries
+                    .into_iter()
+                    .map(manifest_entry_from_proto)
+                    .collect::<Result<Vec<_>, _>>()?,
+                supplied,
+            ))
+        },
+    )
+}

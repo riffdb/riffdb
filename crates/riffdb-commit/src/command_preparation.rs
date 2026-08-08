@@ -4,7 +4,7 @@ use std::{error::Error, fmt, time::Instant};
 
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_conflict::CancellationToken;
-use riffdb_contract_ir::ExecutionClass;
+use riffdb_contract_ir::{BindingMode, ExecutionClass};
 use riffdb_idempotency::PreparedIdempotencyRecheckV1;
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{AuthorizedCommandExecution, CommandExecutionClass};
@@ -14,6 +14,12 @@ use riffdb_types::{
 };
 
 use crate::AdministrationAuditInputView;
+
+pub(crate) struct PreparedCommandCompatibility {
+    pub(crate) conflict_keys: Vec<riffdb_types::ConflictKey>,
+    pub(crate) binding_accesses: Vec<(BindingMode, riffdb_storage_api::EntityTarget)>,
+    pub(crate) root_validation_targets: Vec<riffdb_storage_api::EntityTarget>,
+}
 
 const QUEUED_PREPARATION_FIXED_BYTES: usize = 4 * 1_024;
 const QUEUED_BYTE_UNIT: usize = 1_024;
@@ -244,6 +250,41 @@ pub(crate) struct CompleteOutcomeReleaseProof {
 }
 
 impl CommandExecutionPreparation {
+    pub(crate) fn deferred_group_compatibility(&self) -> Option<PreparedCommandCompatibility> {
+        self.audited_lifecycle.as_ref()?;
+        let plan = self.resolved_plan.plan();
+        if plan.bindings().len() != self.input_facts.binding_entity_keys().len()
+            || plan.root_validation_reads().len()
+                != self.input_facts.root_validation_entity_keys().len()
+        {
+            return None;
+        }
+        let binding_accesses = plan
+            .bindings()
+            .iter()
+            .zip(self.input_facts.binding_entity_keys())
+            .map(|(binding, key)| {
+                riffdb_storage_api::EntityTarget::new(binding.entity_type(), key.clone())
+                    .map(|target| (binding.mode(), target))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let root_validation_targets = plan
+            .root_validation_reads()
+            .iter()
+            .zip(self.input_facts.root_validation_entity_keys())
+            .map(|(read, key)| {
+                riffdb_storage_api::EntityTarget::new(read.entity_type(), key.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        Some(PreparedCommandCompatibility {
+            conflict_keys: self.input_facts.declared_conflict_keys().to_vec(),
+            binding_accesses,
+            root_validation_targets,
+        })
+    }
+
     /// Consumes and joins every proof required before mutation admission.
     ///
     /// `database_id` and `environment` must come from trusted database process

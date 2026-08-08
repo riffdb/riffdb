@@ -1,6 +1,6 @@
 //! Same-session exact-end historical catalog validation.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
@@ -120,7 +120,7 @@ pub struct CatalogIndexMigrationContext {
     last_physical_key: Option<riffdb_types::IndexEntryKey>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct HistoricalBindingRef {
     lineage: ContractLineage,
     version: ContractVersion,
@@ -879,6 +879,7 @@ struct HistoricalValidationState {
     migration_edges: BTreeSet<(ContractBundleHash, ContractBundleHash)>,
     lineage_budget: LineageBudget,
     lineage_proof: Option<Arc<LineageMaterializationProof>>,
+    loaded_bundles: BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     saw_v1_index: bool,
 }
 
@@ -1063,10 +1064,12 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                 Some(pointer) => {
                     let loaded = load_historical_bundle(
                         session,
+                        &mut state.loaded_bundles,
                         pointer.lineage(),
                         pointer.version(),
                         pointer.bundle_hash(),
-                    )?;
+                    )?
+                    .clone();
                     let proof = ensure_lineage_proof(
                         &state.lineage_bundles,
                         &state.migration_edges,
@@ -1091,7 +1094,7 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                 &state.migration_edges,
                 &mut state.lineage_proof,
             )?;
-            validate_persisted_key(session, proof, &evidence)?;
+            validate_persisted_key(session, &mut state.loaded_bundles, proof, &evidence)?;
         }
         HistoricalSemanticEvidence::IndexMigrationRow(evidence) => {
             let proof = ensure_lineage_proof(
@@ -1099,7 +1102,8 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                 &state.migration_edges,
                 &mut state.lineage_proof,
             )?;
-            state.saw_v1_index |= validate_index_migration_row(session, proof, &evidence)?;
+            state.saw_v1_index |=
+                validate_index_migration_row(session, &mut state.loaded_bundles, proof, &evidence)?;
         }
         HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
             let active = state
@@ -1115,12 +1119,14 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
 
 fn validate_index_migration_row<S: StructuralEvidenceSession>(
     session: &mut S,
+    loaded_bundles: &mut BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     lineage_proof: &LineageMaterializationProof,
     evidence: &IndexMigrationRowEvidence,
 ) -> Result<bool, CatalogError> {
     let binding = evidence.row().schema_binding();
     let bundle = load_historical_bundle(
         session,
+        loaded_bundles,
         binding.lineage(),
         binding.contract_version(),
         binding.bundle_hash(),
@@ -1287,12 +1293,14 @@ fn active_matches_terminal(
 
 fn validate_persisted_key<S: StructuralEvidenceSession>(
     session: &mut S,
+    loaded_bundles: &mut BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     lineage_proof: &LineageMaterializationProof,
     evidence: &HistoricalPersistedKeyEvidenceV1,
 ) -> Result<(), CatalogError> {
     let binding = evidence.schema();
     let bundle = load_historical_bundle(
         session,
+        loaded_bundles,
         binding.lineage(),
         binding.contract_version(),
         binding.bundle_hash(),
@@ -1511,16 +1519,28 @@ fn find_index_owner(schema: &SchemaIr, index_id: IndexId) -> Option<(&EntitySche
     })
 }
 
-fn load_historical_bundle<S: StructuralEvidenceSession>(
+fn load_historical_bundle<'a, S: StructuralEvidenceSession>(
     session: &mut S,
+    loaded_bundles: &'a mut BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     lineage: &riffdb_types::ContractLineage,
     version: riffdb_types::ContractVersion,
     bundle_hash: riffdb_types::ContractBundleHash,
-) -> Result<ValidatedContractBundle, CatalogError> {
-    let evidence = session
-        .read_historical_bundle(lineage, version, bundle_hash)?
-        .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
-    validate_bundle_evidence(&evidence)
+) -> Result<&'a ValidatedContractBundle, CatalogError> {
+    let binding = HistoricalBindingRef {
+        lineage: lineage.clone(),
+        version,
+        bundle_hash,
+    };
+    if !loaded_bundles.contains_key(&binding) {
+        let evidence = session
+            .read_historical_bundle(lineage, version, bundle_hash)?
+            .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+        let bundle = validate_bundle_evidence(&evidence)?;
+        loaded_bundles.insert(binding.clone(), bundle);
+    }
+    loaded_bundles
+        .get(&binding)
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
 }
 
 fn validate_bundle_evidence(

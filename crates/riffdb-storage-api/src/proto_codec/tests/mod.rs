@@ -365,6 +365,299 @@ fn command_capsule_round_trip_reconstructs_every_existing_view_exactly() {
     }
 }
 
+fn sample_command_capsule_v1() -> (crate::StoredCommandCapsuleV1, crate::AtomicCommandRecordSet) {
+    let atomic = sample::atomic_record_set();
+    let capsule = sample_command_capsule_v1_from_atomic(&atomic, AdministrationSequence::first());
+    (capsule, atomic)
+}
+
+fn sample_command_capsule_v1_from_atomic(
+    atomic: &crate::AtomicCommandRecordSet,
+    started_sequence: AdministrationSequence,
+) -> crate::StoredCommandCapsuleV1 {
+    let audit_basis = sample::service_audit_record();
+    let started = crate::StoredServiceAuditRecordV1::from_stored_parts(
+        started_sequence,
+        atomic.commit().admission_request_id(),
+        audit_basis.timestamp(),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Started,
+        audit_basis.principal().cloned(),
+        audit_basis.ingress(),
+        audit_basis.targets().clone(),
+        audit_basis.approval_id().cloned(),
+        ServiceAuditLinkV1::None,
+    )
+    .expect("command start is valid");
+    let terminal = crate::StoredServiceAuditRecordV1::from_stored_parts(
+        started_sequence
+            .checked_next()
+            .expect("second administration sequence"),
+        atomic.commit().admission_request_id(),
+        audit_basis.timestamp(),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Succeeded,
+        audit_basis.principal().cloned(),
+        audit_basis.ingress(),
+        audit_basis.targets().clone(),
+        audit_basis.approval_id().cloned(),
+        ServiceAuditLinkV1::Command {
+            commit_sequence: atomic.commit().commit_sequence(),
+            provenance_id: atomic.commit().provenance_id(),
+        },
+    )
+    .expect("command terminal is valid");
+    crate::StoredCommandCapsuleV1::new(
+        atomic.stored_outcome().clone(),
+        atomic.provenance().clone(),
+        atomic.commit().clone(),
+        started,
+        terminal,
+    )
+    .expect("reciprocal capsule")
+}
+
+#[test]
+fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fields() {
+    let first_atomic = sample::atomic_record_set();
+    let second_sequence = CommitSequence::first()
+        .checked_next()
+        .expect("second commit sequence");
+    let second_atomic = sample::atomic_record_set_at_with_causation(
+        second_sequence,
+        riffdb_types::RequestId::from_bytes(sample::uuid_v7(0x51)).expect("second request"),
+        riffdb_types::ProvenanceId::from_bytes(sample::uuid_v7(0x52)).expect("second provenance"),
+        Some(crate::StoredCommandCausationV1::new(
+            riffdb_types::EventId::new(CommitSequence::first(), 0),
+            sample::request_id(),
+        )),
+    );
+    let (_, first_epoch) = sample::index_records();
+    let first_transition = crate::IndexEpochAdvanceV1::new(
+        first_epoch.target().clone(),
+        first_epoch.schema_binding().clone(),
+        riffdb_types::IndexEpochPosition::Value(riffdb_types::IndexEpoch::first()),
+    )
+    .expect("first generation transition");
+    let first = crate::StoredCommandCapsuleV2::new(
+        sample_command_capsule_v1_from_atomic(&first_atomic, AdministrationSequence::first()),
+        first_atomic.events().to_vec(),
+        vec![first_transition],
+    )
+    .expect("first complete V2 capsule");
+    let second = crate::StoredCommandCapsuleV2::new(
+        sample_command_capsule_v1_from_atomic(
+            &second_atomic,
+            AdministrationSequence::new(3).expect("third administration sequence"),
+        ),
+        second_atomic.events().to_vec(),
+        second_atomic.index_epochs().to_vec(),
+    )
+    .expect("second complete V2 capsule");
+    let first_sequence = first.commit_sequence();
+    let mut entries = vec![
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::Idempotency,
+            crate::CommandDerivedMemberV1::Command,
+            vec![0x01, 0x02],
+            0,
+            0,
+            first_sequence,
+        )
+        .expect("first command entry"),
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::Provenance,
+            crate::CommandDerivedMemberV1::Command,
+            vec![0x03, 0x04, 0x05],
+            1,
+            0,
+            first_sequence,
+        )
+        .expect("second command entry"),
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::AuditSequence,
+            crate::CommandDerivedMemberV1::AuditTerminal,
+            vec![0x06],
+            1,
+            0,
+            first_sequence,
+        )
+        .expect("nonzero command ordinal audit entry"),
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::EventRoute,
+            crate::CommandDerivedMemberV1::Event,
+            vec![0x07, 0x08],
+            1,
+            0,
+            first_sequence,
+        )
+        .expect("event entry"),
+    ];
+    entries.sort();
+    let manifest = crate::CommandSegmentManifestV1::new(entries).expect("canonical rich manifest");
+    let placeholder = crate::CommandSegmentDigestV1::from_bytes([0; 32]);
+    let draft = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL + 1,
+        Some(crate::CommandSegmentDigestV1::from_bytes([0x91; 32])),
+        vec![first, second],
+        manifest,
+        placeholder,
+    )
+    .expect("rich structural draft");
+
+    let (sealed, streamed) =
+        seal_and_encode_command_segment_v1(draft).expect("write-path sealing succeeds");
+    let independent =
+        encode_command_segment_v1(&sealed).expect("independent Prost encoding succeeds");
+    assert_eq!(streamed, independent);
+    assert_eq!(
+        decode_command_segment_v1(streamed.as_bytes())
+            .expect("streamed segment decodes")
+            .value(),
+        &sealed
+    );
+}
+
+#[test]
+fn command_segment_write_path_is_byte_identical_for_large_bounded_manifest() {
+    let (base, atomic) = sample_command_capsule_v1();
+    let capsule = crate::StoredCommandCapsuleV2::new(
+        base,
+        atomic.events().to_vec(),
+        atomic.index_epochs().to_vec(),
+    )
+    .expect("complete V2 capsule");
+    let first = capsule.commit_sequence();
+    // This is larger than any maximum 256-command runtime segment can
+    // currently derive while remaining below the global durable preflight
+    // field-visit budget.
+    let entries = (1..=59_000)
+        .map(|ordinal| {
+            crate::CommandDerivedIndexManifestEntryV1::new(
+                crate::CommandDerivedIndexKindV1::Idempotency,
+                crate::CommandDerivedMemberV1::Command,
+                u32::try_from(ordinal)
+                    .expect("bounded manifest ordinal")
+                    .to_be_bytes()
+                    .to_vec(),
+                0,
+                0,
+                first,
+            )
+            .expect("bounded manifest entry")
+        })
+        .collect();
+    let manifest =
+        crate::CommandSegmentManifestV1::new(entries).expect("maximum canonical manifest");
+    let draft = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        None,
+        vec![capsule],
+        manifest,
+        crate::CommandSegmentDigestV1::from_bytes([0; 32]),
+    )
+    .expect("maximum-manifest structural draft");
+
+    let (sealed, streamed) =
+        seal_and_encode_command_segment_v1(draft).expect("streaming seal accepts the bound");
+    assert_eq!(
+        streamed,
+        encode_command_segment_v1(&sealed).expect("independent encoder accepts the bound")
+    );
+}
+
+#[test]
+fn command_segment_round_trip_proves_hash_manifest_and_semantic_views() {
+    let (base, atomic) = sample_command_capsule_v1();
+    let capsule = crate::StoredCommandCapsuleV2::new(
+        base,
+        atomic.events().to_vec(),
+        atomic.index_epochs().to_vec(),
+    )
+    .expect("complete V2 capsule");
+    assert_round_trip(
+        capsule.clone(),
+        encode_command_capsule_v2,
+        decode_command_capsule_v2,
+    );
+
+    let first = capsule.commit_sequence();
+    let manifest_entry = crate::CommandDerivedIndexManifestEntryV1::new(
+        crate::CommandDerivedIndexKindV1::Idempotency,
+        crate::CommandDerivedMemberV1::Command,
+        vec![0x01],
+        0,
+        0,
+        first,
+    )
+    .expect("bounded manifest entry");
+    let manifest = crate::CommandSegmentManifestV1::new(vec![manifest_entry.clone()])
+        .expect("canonical manifest");
+    let placeholder = crate::CommandSegmentDigestV1::from_bytes([0; 32]);
+    let draft = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        None,
+        vec![capsule.clone()],
+        manifest.clone(),
+        placeholder,
+    )
+    .expect("structural draft");
+    let digest = command_segment_digest_v1(&draft);
+    let segment = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        None,
+        vec![capsule],
+        manifest,
+        digest,
+    )
+    .expect("digest-bound segment");
+    let (sealed, sealed_encoded) =
+        seal_and_encode_command_segment_v1(draft).expect("write-path sealing is canonical");
+    assert_eq!(sealed, segment);
+    let encoded = assert_round_trip(
+        segment.clone(),
+        encode_command_segment_v1,
+        decode_command_segment_v1,
+    );
+    assert_eq!(sealed_encoded, encoded);
+
+    let mut corrupt = encoded.into_bytes();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 0x01;
+    assert!(decode_command_segment_v1(&corrupt).is_err());
+
+    let checkpoint_draft = crate::StoredCommandDerivedIndexCheckpointV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        [0x42; 32],
+        first,
+        digest,
+        vec![manifest_entry.clone()],
+        placeholder,
+    )
+    .expect("structural checkpoint draft");
+    let checkpoint_digest = command_derived_index_checkpoint_digest_v1(&checkpoint_draft);
+    let checkpoint = crate::StoredCommandDerivedIndexCheckpointV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        [0x42; 32],
+        first,
+        digest,
+        vec![manifest_entry],
+        checkpoint_digest,
+    )
+    .expect("digest-bound checkpoint");
+    assert_round_trip(
+        checkpoint,
+        encode_command_derived_index_checkpoint_v1,
+        decode_command_derived_index_checkpoint_v1,
+    );
+}
+
 #[test]
 fn emit_semantic_wire_vectors_for_fixture_regeneration() {
     let legacy_fixture = semantic_wire_fixture(DurableVectorFormat::LegacyV1);

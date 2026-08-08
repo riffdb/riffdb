@@ -118,7 +118,24 @@ pub(crate) fn decode_commit_entity_references(
     encoded: &[u8],
 ) -> Result<storage::EncodedPageItem<Vec<storage::CommittedEntityReferenceV2>>, storage::StorageError>
 {
-    storage::decode_commit_entity_references(encoded).map_err(codec_error)
+    match storage::decode_command_capsule_v2(encoded) {
+        Ok(capsule) => {
+            let (capsule, charge) = capsule.into_parts();
+            return Ok(storage::EncodedPageItem::new(
+                capsule.base().commit().entity_references().to_vec(),
+                charge,
+            ));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+    match storage::decode_command_capsule_entity_references(encoded) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
+            storage::decode_commit_entity_references(encoded).map_err(codec_error)
+        }
+        Err(error) => Err(codec_error(error)),
+    }
 }
 
 pub(crate) fn decode_commit_event_references(
@@ -135,6 +152,13 @@ pub(crate) fn decode_commit_with_event_table<T>(
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    if let Ok(capsule) = decode_command_capsule_with_event_table(encoded, events) {
+        let (capsule, charge) = capsule.into_parts();
+        return Ok(storage::EncodedPageItem::new(
+            capsule.commit().clone(),
+            charge,
+        ));
+    }
     let (prepared, charge) = decode_commit_event_references(encoded)?.into_parts();
     let mut loaded = Vec::with_capacity(prepared.references().len());
     for reference in prepared.references() {
@@ -332,6 +356,58 @@ borrowed_codec!(
     decode_commit_record_v1
 );
 
+pub(crate) fn decode_command_capsule_with_event_table<T>(
+    encoded: &[u8],
+    events: &T,
+) -> Result<storage::EncodedPageItem<storage::StoredCommandCapsuleV1>, storage::StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    match storage::decode_command_capsule_v2(encoded) {
+        Ok(capsule) => {
+            let (capsule, charge) = capsule.into_parts();
+            return Ok(storage::EncodedPageItem::new(
+                capsule.base().clone(),
+                charge,
+            ));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+    let references = storage::decode_command_capsule_event_references(encoded)
+        .map_err(codec_error)?
+        .into_parts()
+        .0;
+    let mut loaded = Vec::with_capacity(references.len());
+    for reference in &references {
+        let key = encode_event_key(reference.event_id());
+        let row = events
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?;
+        let event = decode_durable_event_v1(row.value())?.into_parts().0;
+        if !reference.matches(&event) {
+            return Err(storage_error(storage::StorageErrorKind::CorruptData));
+        }
+        loaded.push(event);
+    }
+    storage::decode_command_capsule_v1(encoded, loaded).map_err(codec_error)
+}
+copied_codec!(
+    encode_command_locator_v1,
+    decode_command_locator_v1,
+    storage::StoredCommandLocatorV1,
+    encode_command_locator_v1,
+    decode_command_locator_v1
+);
+copied_codec!(
+    encode_command_audit_locator_v1,
+    decode_command_audit_locator_v1,
+    storage::StoredCommandAuditLocatorV1,
+    encode_command_audit_locator_v1,
+    decode_command_audit_locator_v1
+);
+
 borrowed_codec!(
     encode_capability_record_v1,
     decode_capability_record_v1,
@@ -434,6 +510,7 @@ borrowed_codec!(
 pub(crate) enum IdempotencyRecordV1 {
     StoredOutcome(storage::StoredOutcomeV1),
     ExecutionFailed(storage::StoredExecutionFailedV1),
+    CommandLocator(storage::StoredCommandLocatorV1),
 }
 
 impl fmt::Debug for IdempotencyRecordV1 {
@@ -441,6 +518,7 @@ impl fmt::Debug for IdempotencyRecordV1 {
         formatter.write_str(match self {
             Self::StoredOutcome(_) => "IdempotencyRecordV1::StoredOutcome([REDACTED])",
             Self::ExecutionFailed(_) => "IdempotencyRecordV1::ExecutionFailed([REDACTED])",
+            Self::CommandLocator(_) => "IdempotencyRecordV1::CommandLocator([REDACTED])",
         })
     }
 }
@@ -455,6 +533,7 @@ pub(crate) fn encode_idempotency_record_v1(
     match value {
         IdempotencyRecordV1::StoredOutcome(value) => encode_stored_outcome_v1(value),
         IdempotencyRecordV1::ExecutionFailed(value) => encode_execution_failed_v1(value),
+        IdempotencyRecordV1::CommandLocator(value) => encode_command_locator_v1(*value),
     }
 }
 
@@ -468,9 +547,17 @@ pub(crate) fn decode_idempotency_record_v1(
     match storage::decode_stored_outcome_v1(encoded) {
         Ok(item) => Ok(map_item(item, IdempotencyRecordV1::StoredOutcome)),
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
-            storage::decode_execution_failed_v1(encoded)
-                .map(|item| map_item(item, IdempotencyRecordV1::ExecutionFailed))
-                .map_err(codec_error)
+            match storage::decode_execution_failed_v1(encoded) {
+                Ok(item) => Ok(map_item(item, IdempotencyRecordV1::ExecutionFailed)),
+                Err(error)
+                    if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    storage::decode_command_locator_v1(encoded)
+                        .map(|item| map_item(item, IdempotencyRecordV1::CommandLocator))
+                        .map_err(codec_error)
+                }
+                Err(error) => Err(codec_error(error)),
+            }
         }
         Err(error) => Err(codec_error(error)),
     }
@@ -565,6 +652,79 @@ pub(crate) fn decode_administration_audit_record_v1(
         }
         Err(error) => Err(codec_error(error)),
     }
+}
+
+pub(crate) fn decode_administration_audit_with_command_tables<C, E>(
+    encoded: &[u8],
+    commits: &C,
+    events: &E,
+) -> Result<
+    storage::EncodedPageItem<storage::StoredAdministrationAuditRecordV1>,
+    storage::StorageError,
+>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    if let Ok(locator) = storage::decode_command_audit_locator_v1(encoded) {
+        let (locator, charge) = locator.into_parts();
+        let key = crate::keys::encode_application_sequence_key(locator.commit_sequence());
+        let mut range = commits
+            .range::<&[u8]>((
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Included(key.as_slice()),
+            ))
+            .map_err(precommit_storage_error)?;
+        let (physical_key, row) = range
+            .next_back()
+            .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?
+            .map_err(precommit_storage_error)?;
+        let physical_sequence = crate::keys::decode_application_sequence_key(physical_key.value())
+            .map_err(|_| storage_error(storage::StorageErrorKind::CorruptData))?;
+        let capsule = match storage::decode_command_segment_v1(row.value()) {
+            Ok(segment) => {
+                let segment = segment.into_parts().0;
+                if segment.first_commit_sequence() != physical_sequence
+                    || locator.commit_sequence() < physical_sequence
+                    || locator.commit_sequence() > segment.last_commit_sequence()
+                {
+                    return Err(storage_error(storage::StorageErrorKind::CorruptData));
+                }
+                let ordinal = locator
+                    .commit_sequence()
+                    .get()
+                    .checked_sub(physical_sequence.get())
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?;
+                segment
+                    .commands()
+                    .get(ordinal)
+                    .filter(|command| command.commit_sequence() == locator.commit_sequence())
+                    .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?
+                    .base()
+                    .clone()
+            }
+            Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
+                if physical_sequence != locator.commit_sequence() {
+                    return Err(storage_error(storage::StorageErrorKind::CorruptData));
+                }
+                decode_command_capsule_with_event_table(row.value(), events)?
+                    .into_parts()
+                    .0
+            }
+            Err(error) => return Err(codec_error(error)),
+        };
+        if capsule.commit_sequence() != locator.commit_sequence() {
+            return Err(storage_error(storage::StorageErrorKind::CorruptData));
+        }
+        return Ok(storage::EncodedPageItem::new(
+            storage::StoredAdministrationAuditRecordV1::Service(
+                capsule.audit(locator.member()).clone(),
+            ),
+            charge,
+        ));
+    }
+    decode_administration_audit_record_v1(encoded)
 }
 
 fn map_item<T, U>(

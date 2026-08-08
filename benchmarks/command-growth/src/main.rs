@@ -246,6 +246,25 @@ fn run() -> Result<bool, ()> {
         comparison.table_major_elapsed_ns,
         configuration.reps,
     );
+    let segmented_vs_current_basis_points = comparison
+        .fused_segmented_elapsed_ns
+        .checked_mul(10_000)
+        .ok_or(())?
+        / comparison.fused_current_elapsed_ns.max(1);
+    let segmented_page_work_vs_current_basis_points = comparison
+        .fused_segmented_table_work_ns
+        .checked_mul(10_000)
+        .ok_or(())?
+        / comparison.fused_current_table_work_ns.max(1);
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"segmented_capsule_projection\",\"engine_durability\":\"immediate_one_phase\",\"group_commands\":{},\"fused_current_elapsed_ns\":{},\"fused_segmented_elapsed_ns\":{},\"segmented_vs_current_basis_points\":{segmented_vs_current_basis_points},\"fused_current_table_work_ns\":{},\"fused_segmented_table_work_ns\":{},\"segmented_page_work_vs_current_basis_points\":{segmented_page_work_vs_current_basis_points},\"authority_note\":\"benchmark_only_proposed_layout\",\"reps\":{}}}",
+        comparison.group_commands,
+        comparison.fused_current_elapsed_ns,
+        comparison.fused_segmented_elapsed_ns,
+        comparison.fused_current_table_work_ns,
+        comparison.fused_segmented_table_work_ns,
+        configuration.reps,
+    );
     let deferred_vs_immediate_basis_points = comparison
         .deferred_group_elapsed_ns
         .checked_mul(10_000)
@@ -302,6 +321,10 @@ struct GroupComparison {
     standard_elapsed_ns: u64,
     grouped_standard_elapsed_ns: u64,
     table_major_elapsed_ns: u64,
+    fused_current_elapsed_ns: u64,
+    fused_segmented_elapsed_ns: u64,
+    fused_current_table_work_ns: u64,
+    fused_segmented_table_work_ns: u64,
     hardened_elapsed_ns: u64,
     commands: usize,
     group_commands: usize,
@@ -317,6 +340,10 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
     let mut standard_elapsed_ns = None;
     let mut grouped_standard_elapsed_ns = None;
     let mut table_major_elapsed_ns = None;
+    let mut fused_current_elapsed_ns = None;
+    let mut fused_segmented_elapsed_ns = None;
+    let mut fused_current_table_work_ns = None;
+    let mut fused_segmented_table_work_ns = None;
     let mut hardened_elapsed_ns = None;
     let mut grouped_standard_database_bytes_per_command = None;
     for (ordinal, (durability, group, staging_order)) in [
@@ -340,6 +367,16 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
             EngineDurability::ImmediateOnePhase,
             16,
             EngineStagingOrder::TableMajor,
+        ),
+        (
+            EngineDurability::ImmediateOnePhase,
+            16,
+            EngineStagingOrder::FusedCurrentCapsule,
+        ),
+        (
+            EngineDurability::ImmediateOnePhase,
+            16,
+            EngineStagingOrder::FusedSegmentedCapsule,
         ),
         (
             EngineDurability::ImmediateTwoPhase,
@@ -397,6 +434,22 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
             && staging_order == EngineStagingOrder::TableMajor
         {
             table_major_elapsed_ns = Some(elapsed_ns);
+        } else if durability == EngineDurability::ImmediateOnePhase
+            && group == 16
+            && staging_order == EngineStagingOrder::FusedCurrentCapsule
+        {
+            fused_current_elapsed_ns = Some(elapsed_ns);
+            fused_current_table_work_ns = Some(
+                u64::try_from(sample.terminal_work().as_nanos()).map_err(|_| ())?,
+            );
+        } else if durability == EngineDurability::ImmediateOnePhase
+            && group == 16
+            && staging_order == EngineStagingOrder::FusedSegmentedCapsule
+        {
+            fused_segmented_elapsed_ns = Some(elapsed_ns);
+            fused_segmented_table_work_ns = Some(
+                u64::try_from(sample.terminal_work().as_nanos()).map_err(|_| ())?,
+            );
         } else if durability == EngineDurability::ImmediateTwoPhase && group == 1 {
             sync_elapsed_ns = Some(elapsed_ns);
             hardened_elapsed_ns = Some(elapsed_ns);
@@ -423,6 +476,10 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
         standard_elapsed_ns: standard_elapsed_ns.ok_or(())?,
         grouped_standard_elapsed_ns: grouped_standard_elapsed_ns.ok_or(())?,
         table_major_elapsed_ns: table_major_elapsed_ns.ok_or(())?,
+        fused_current_elapsed_ns: fused_current_elapsed_ns.ok_or(())?,
+        fused_segmented_elapsed_ns: fused_segmented_elapsed_ns.ok_or(())?,
+        fused_current_table_work_ns: fused_current_table_work_ns.ok_or(())?,
+        fused_segmented_table_work_ns: fused_segmented_table_work_ns.ok_or(())?,
         hardened_elapsed_ns: hardened_elapsed_ns.ok_or(())?,
         commands,
         group_commands: 16,
@@ -500,6 +557,30 @@ fn median_group(values: &[GroupComparison]) -> Result<GroupComparison, ()> {
             &values
                 .iter()
                 .map(|v| v.table_major_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        fused_current_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.fused_current_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        fused_segmented_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.fused_segmented_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        fused_current_table_work_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.fused_current_table_work_ns)
+                .collect::<Vec<_>>(),
+        ),
+        fused_segmented_table_work_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.fused_segmented_table_work_ns)
                 .collect::<Vec<_>>(),
         ),
         hardened_elapsed_ns: median_u64(

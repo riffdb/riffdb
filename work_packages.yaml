@@ -1,4 +1,4 @@
-spec_version: '0.81'
+spec_version: '0.84'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -450,11 +450,11 @@ work_packages:
     reduces full-seed/write cost without material unary or read regression.
   human_review_triggers: *id001
 - id: WP-478
-  name: Pipelined standard-profile durability journal
+  name: Pipelined standard-profile writer journal
   depends_on: [WP-362, WP-364, WP-452, WP-459, WP-466, WP-467, WP-469,
     WP-470, WP-472, WP-473, WP-476]
-  objective: Implement ADR-0101's bounded first-party command-frame journal so the sole ordered
-    standard-profile writer can continue applying complete private redb groups while prior frames
+  objective: Implement ADR-0101's bounded first-party typed writer-frame journal so the sole ordered
+    standard-profile writer can continue applying complete private command and standalone service-audit groups while prior frames
     flush, then publish one exact durable snapshot and independent command results without weakening
     crash, idempotency, atomicity, visibility, or hardened-profile semantics.
   requirements: [PERF-004, PERF-005, PERF-007, PERF-009, PERF-010, PERF-015,
@@ -466,30 +466,33 @@ work_packages:
     adr/0101-pipelined-standard-durability-journal.md,
     proto/riffdb/storage/v1/**, crates/riffdb-proto/**, fixtures/proto/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
-    crates/riffdb-storage-memory/**, crates/riffdb-commit/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-catalog/**, crates/riffdb-commit/**,
     crates/riffdb-server/**, tests/command_semantics/**, tests/recovery/**,
     tests/storage_recovery/**, benchmarks/command-growth/**,
     benchmarks/run-app-baseline, examples/app-baseline/**,
     scripts/generate-proto*, scripts/check-generated, docs/SUMMARY.md,
     docs/architecture/**, docs/reference/**, docs/performance/**]
   deliverables:
-  - A versioned bounded length-delimited checksummed hash-chained frame format carries complete
-    canonical command graphs, exact database incarnation, predecessor/frontier sequences, and
+  - A closed versioned bounded length-delimited checksummed hash-chained frame format carries complete
+    canonical command graphs or validated standalone service-audit groups, exact database incarnation, dual predecessor/frontier sequences, and
     compatibility fixtures; every malformed, torn, substituted, reordered, or cross-database frame
     fails closed except an incomplete terminal tail
-  - Standard-profile contention applies complete FIFO subgroups through redb Durability::None,
+  - Standard-profile contention applies complete FIFO command and standalone service-audit subgroups through redb Durability::None,
     captures each exact post-subgroup snapshot, and submits immutable frames to a dedicated bounded
     journal lane while the sole ordered writer may continue; idle singletons remain direct one-phase
     Immediate and hardened groups remain direct two-phase Immediate
+  - The writer drains every older unpublished command fence before executing a later unit with an
+    overlapping compiler-derived conflict key; incompatible completion groups never retain leases
+    while waiting on a fence that only the same writer can publish
   - The journal lane adds no fixed batching delay, drains only a ready FIFO prefix, performs one
-    sync_data for at most 256 commands and 16 MiB, and never permits more than those bounds to remain
+    sync_data for at most 256 logical writer transitions and 16 MiB, preserves independent command and audit group limits, never permits more than those bounds to remain unpublished, and retains at most a byte-aware 4,096-transition/16-MiB published recovery suffix before redb checkpoint reclamation
     applied but unpublished process-wide
   - A successful journal fence atomically publishes the last covered redb snapshot before releasing
-    any result, notification, transient index, projection, outbox, subscription, or response; every
+    any command or audit result, notification, transient index, projection, outbox, subscription, or response; every
     covered command retains independent identity, sequence, outcome, retry, audit, provenance, event,
     and uncertainty semantics
-  - Append or fence errors retain the predecessor frontier, invalidate unpublished accelerators,
-    release no affected result, and fence writes for exact restart resolution
+  - Append or fence errors retain the predecessor dual frontier, invalidate unpublished accelerators,
+    release no affected result, and fence command and audit writes for exact restart resolution
   - Startup validates the checkpoint-plus-suffix relation, replays complete frames without command
     reevaluation, checkpoints before readiness, and supports crash-safe journal reclamation, backup,
     restore, and shutdown drains
@@ -516,10 +519,295 @@ work_packages:
   - ./scripts/handbook check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
-  exit_gate: Every acknowledged standard-profile command is recoverable from exactly one validated
+  exit_gate: Every acknowledged standard-profile command and standalone service-audit append is recoverable from exactly one validated
     checkpoint-plus-journal prefix, applied roots never outrun public durability, all crash and
     semantic suites pass, idle and hardened paths remain exact, and retained same-run evidence shows
     RiffDB exceeding PostgreSQL safe-app mean throughput without a material c1 regression.
+  human_review_triggers: *id001
+- id: WP-479
+  name: Segmented command authority and rebuildable exact indexes
+  depends_on: [WP-477, WP-478]
+  objective: Replace per-command capsule locator, immutable event-route, outbox-intent, and repeated
+    generation rows with bounded contiguous command/event segments, exact readiness-gated derived
+    indexes, and one final physical generation per target while preserving every typed command,
+    idempotency, audit, provenance, event, outbox, retention, and crash guarantee.
+  requirements: [STO-002, STO-020, STO-021, STO-022, REC-001, REC-002,
+    TXN-041, TXN-042, TXN-043, TXN-044, PERF-008, PERF-009, PERF-010,
+    PERF-016, PERF-017]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009,
+    ADR-0021, ADR-0058, ADR-0060, ADR-0061, ADR-0080, ADR-0082, ADR-0083,
+    ADR-0085, ADR-0098, ADR-0099, ADR-0101, ADR-0102]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0099-canonical-command-capsules.md,
+    adr/0101-pipelined-standard-durability-journal.md,
+    adr/0102-segmented-command-authority-and-derived-locators.md,
+    proto/riffdb/storage/v1/**, crates/riffdb-proto/**, fixtures/proto/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-commit/**,
+    crates/riffdb-server/**, tests/command_semantics/**, tests/recovery/**,
+    tests/storage_recovery/**, benchmarks/command-growth/**,
+    benchmarks/run-app-baseline, examples/app-baseline/**,
+    scripts/generate-proto*, scripts/check-generated, docs/SUMMARY.md,
+    docs/architecture/**, docs/reference/**, docs/performance/**]
+  deliverables:
+  - Closed StoredCommandSegmentV1, StoredCommandCapsuleV2, segment-manifest, and derived-index
+    checkpoint schemas with canonical codecs, exact bounds, compatibility fixtures, and an offline
+    restartable ADR-0099 migration
+  - One segment owns every successful outcome, provenance, commit, command audit, immutable event,
+    event route, outbox intent, and logical generation advance for at most 256 contiguous commands
+    and 16 MiB; entity/index post-images and independently mutable state remain separate authority
+  - Idempotency, provenance, audit sequence/request, event route, and pending-outbox indexes rebuild
+    exactly from validated manifests before readiness, update only after durability, reject every
+    duplicate/missing/substituted member, and use a digest-bound checkpoint plus verified suffix
+  - Transaction-local generation overlays prove every per-command prior/successor chain while redb
+    receives one final post-image per distinct target; journal recovery proves and applies the same
+    final state without changing snapshot or conflict semantics
+  - Point lookup, scans, replay, uncertainty recovery, retention, backup/restore, projection, event
+    consumers, live queries, and outbox delivery reconstruct the current semantic types and fail
+    closed under the same snapshot frontier
+  - Retention handles whole and split segments, materializes cold views required beyond history,
+    rebuilds derived indexes, and preserves exact tombstone/checkpoint semantics
+  - Differential, deterministic-schedule, corruption, migration, and process-kill tests cover every
+    segment boundary, manifest/index checkpoint, generation overlay, journal frame, retention split,
+    and response-loss state
+  - Same-run c1/c8/c32/c128 tri-backend evidence records correctness, throughput, latency, physical
+    row/page work, durable growth, rebuild/startup cost, and proves RiffDB mean throughput exceeds
+    PostgreSQL safe-app without a material unary/read regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --test lost_response_replay
+      --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./scripts/generate-proto --check
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public and recovery semantic remains exact and fail closed, every retained database
+    migrates restartably, derived indexes are positively proven complete before use, and retained
+    same-run evidence shows RiffDB exceeding PostgreSQL safe-app mean throughput across the accepted
+    client sweep without material c1, read, startup, or durable-growth regression.
+  human_review_triggers: *id001
+- id: WP-480
+  name: Preallocated recyclable durability journal
+  depends_on: [WP-479]
+  objective: Replace hot-path extending journal appends with a pre-zeroed, fixed-capacity,
+    positionally written and safely recyclable extent format only when same-device mechanics prove
+    a material synchronous-fence advantage, while preserving acknowledgement, recovery, backup,
+    publication, and replication boundaries.
+  requirements: [REC-001, REC-002, TXN-041, TXN-042, TXN-043, TXN-044, PERF-004,
+    PERF-005, PERF-009, PERF-015, PERF-017]
+  required_adrs: [ADR-0005, ADR-0006, ADR-0009, ADR-0058, ADR-0061, ADR-0098,
+    ADR-0100, ADR-0101, ADR-0103]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0101-pipelined-standard-durability-journal.md,
+    adr/0103-preallocated-recyclable-durability-journal.md,
+    benchmarks/journal-mechanics/**, benchmarks/run-app-baseline,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-server/**,
+    tests/storage_recovery/**, tests/backup_restore/**,
+    examples/app-baseline/**, docs/SUMMARY.md, docs/architecture/**,
+    docs/operations/**, docs/performance/**]
+  deliverables:
+  - A same-filesystem mechanics probe compares extending append plus fdatasync with pre-zeroed
+    positional overwrite plus fdatasync and O_DSYNC across bounded frame sizes and alignment; the
+    format proceeds only if retained evidence shows at least a twofold fence-latency improvement
+  - Fixed-capacity journal extents are fully allocated and zero-filled before readiness, so hot-path
+    fences neither extend files nor convert unwritten extents; insufficient capacity fails during
+    preflight rather than after command acceptance
+  - Every extent and frame binds database incarnation, extent generation, physical position, logical
+    predecessor/frontiers, and checksum; recovery treats a generation mismatch as end-of-log and
+    rejects every same-generation gap, substitution, or mixed-position frame
+  - Process-crash coverage includes a frame torn over stale residue, crash during extent recycle,
+    mixed-generation residue, fence completion, checkpoint, and reuse; recovery observes only the
+    prior frontier or the complete next durable prefix
+  - Activation requires an empty legacy journal after a clean checkpoint; old-format nonempty
+    journals fail with a typed path-bearing operator error, and no dual-format inference occurs
+  - Backup and restore include the complete extent inventory with the checkpoint as one verified
+    unit; replication and changelog contracts remain derived from published frontiers and do not
+    depend on physical journal bytes
+  - Same-run c8/c32/c128 public evidence records correctness, throughput, write latency, fence
+    latency, and establishes whether remaining cost is durability, per-command CPU, or redb apply
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path benchmarks/journal-mechanics/Cargo.toml
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The mechanics threshold is met before format implementation; every journal generation,
+    stale-residue, recycle, upgrade, ENOSPC, backup, and crash test passes; acknowledged state and
+    published-frontier semantics remain exact; and c8/c32/c128 evidence identifies the post-journal
+    performance frontier without a material c1 or read regression.
+  human_review_triggers: *id001
+- id: WP-481
+  name: Constant-time snapshot frontiers and concurrent named-query plan fanout
+  depends_on: [WP-480]
+  objective: Remove the post-segmentation read-path CPU and lock amplification exposed at 32 and
+    128 clients without weakening snapshot identity, catalog selection, query authorization,
+    bounded execution, or corruption handling.
+  requirements: [PERF-001, PERF-002]
+  required_adrs: [ADR-0009, ADR-0056, ADR-0060, ADR-0085, ADR-0099, ADR-0102]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/src/reads.rs,
+    crates/riffdb-storage-redb/src/query.rs, crates/riffdb-storage-redb/src/command_authority.rs,
+    crates/riffdb-storage-redb/tests/**, crates/riffdb-server/src/read_adapters.rs,
+    crates/riffdb-server/src/storage.rs, examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Query and snapshot frontiers derive in O(1) from the application sequence allocator observed in
+    the same redb read transaction as entity/index state; empty, next, and exhausted states remain
+    exact, gross allocator/authority presence mismatch fails closed, and commit scans still prove
+    every requested logical segment member
+  - The hot query path no longer decodes or allocates the complete last command segment merely to
+    obtain its logical tail; startup, recovery, retention, projection scans, and explicit commit
+    reads retain their complete segment integrity proofs
+  - Warm immutable query-module plans admit concurrent cache readers without a mutually exclusive
+    cache-hit lock or blocking-pool fallback; cold compilation and publication remain bounded,
+    exact-hash keyed, and admission checked before any cache answer
+  - Deterministic tests prove grouped-segment snapshot frontiers, allocator/authority mismatch,
+    exhausted-head behavior, concurrent warm-plan fanout, cold single-publication behavior, and
+    stopped-routing refusal
+  - Fresh c1/c32/c128 public-path evidence decomposes plan lookup and execution CPU, RSS, read p50,
+    write p50, correctness, and throughput against WP-480 and PostgreSQL safe-app
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: At c128, named-query plan lookup no longer grows through blocking-pool contention,
+    snapshot-head work is independent of retained segment size, all operations remain error-free,
+    and the public-path throughput/read-latency result materially improves over WP-480 without a
+    material c1 or write regression.
+  human_review_triggers: *id001
+- id: WP-482
+  name: Streaming command-segment sealing and complete serial writer evidence
+  depends_on: [WP-481]
+  objective: Remove whole-segment Protobuf graph materialization from the successful-command hot
+    path and close the transaction-local serial-path telemetry blind spot without changing durable
+    bytes, command ordering, validation, acknowledgement, recovery, or public behavior.
+  requirements: [PERF-004, PERF-005, PERF-016, PERF-017]
+  required_adrs: [ADR-0060, ADR-0099, ADR-0101, ADR-0102, ADR-0103]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/src/proto_codec/command_segment.rs,
+    crates/riffdb-storage-api/src/proto_codec/tests/**,
+    crates/riffdb-commit/src/command_execution.rs, crates/riffdb-commit/src/telemetry.rs,
+    crates/riffdb-observability/src/**, examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - The authoritative command-segment seal writes canonical header fields, capsules, manifest
+    entries, manifest digest, and segment digest incrementally into bounded buffers; at most one
+    capsule wire graph exists at a time and manifest exact keys are borrowed rather than cloned
+  - Streaming seal output is byte-identical to the independent generated-Protobuf encoder for
+    empty/nonempty predecessor digests, multiple commands, nonzero ordinals, events, generation
+    transitions, and maximum bounded manifests; decode and corruption behavior are unchanged
+  - Transaction-local serial groups emit exactly one aggregate evaluation observation and one
+    validation/encoding/staging observation on the successful path, so their elapsed time and
+    command counts can be reconciled with writer busy time without retaining application values
+  - Fresh write-only and interactive c32 evidence reports command CPU decomposition, writer busy
+    time, write p50, throughput, RSS, and durable-byte growth against WP-481
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Durable bytes and all semantic/crash tests remain exact, serial stage counts cover the
+    successful transaction-local command population, and the streaming encoder materially reduces
+    writer CPU or public write latency without a read, c1, memory, or retained-byte regression.
+  human_review_triggers: *id001
+- id: WP-483
+  name: Fully streaming command-capsule sealing
+  depends_on: [WP-482]
+  objective: Remove the remaining whole-capsule Protobuf object graph and repeated-field vectors
+    from successful-command segment sealing while preserving the exact durable bytes, hashes,
+    bounds, recovery behavior, and independent generated-Protobuf validation path.
+  requirements: [PERF-004, PERF-005, PERF-008, PERF-016]
+  required_adrs: [ADR-0060, ADR-0099, ADR-0101, ADR-0102]
+  allowed_paths: [work_packages.yaml,
+    crates/riffdb-storage-api/src/proto_codec/command_capsule.rs,
+    crates/riffdb-storage-api/src/proto_codec/command_segment.rs,
+    crates/riffdb-storage-api/src/proto_codec/tests/**,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Segment sealing writes each command-capsule field, repeated reference, event, generation
+    transition, and audit submessage in canonical field order without materializing the complete
+    V1 or V2 generated-Protobuf graph
+  - Fixed bytes and repeated scalar bytes are borrowed directly; at most one bounded nested
+    generated message is materialized at a time and is dropped after insertion
+  - Independent generated-Protobuf encoding remains byte-identical for multi-command,
+    predecessor, event, transition, audit, optional, and large-manifest cases
+  - Fresh c32 write-only and interactive evidence compares throughput, writer stages, write p50,
+    peak RSS, and durable growth with WP-482
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Durable bytes and recovery remain exact, the authoritative seal retains no complete
+    capsule wire graph, and c32 evidence shows lower encoding/staging cost or memory without a
+    public latency, retained-byte, or correctness regression.
+  human_review_triggers: *id001
+- id: WP-484
+  name: Proven command-segment envelope framing
+  depends_on: [WP-483]
+  objective: Remove the redundant generated durable-wire structural walk after the checked typed
+    command-segment pipeline has already emitted canonical bounded payload bytes, while retaining
+    exact compact framing, checksum, independent encoding, recovery decoding, and corruption
+    rejection.
+  requirements: [STO-002, STO-020, STO-021, STO-022, PERF-004, PERF-008, PERF-016, PERF-017]
+  required_adrs: [ADR-0006, ADR-0060, ADR-0099, ADR-0101, ADR-0102]
+  allowed_paths: [work_packages.yaml,
+    crates/riffdb-proto/src/durable.rs,
+    crates/riffdb-proto/src/envelope.rs,
+    crates/riffdb-storage-api/src/proto_codec/mod.rs,
+    crates/riffdb-storage-api/src/proto_codec/command_segment.rs,
+    crates/riffdb-storage-api/src/proto_codec/tests/**,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - A narrowly named first-party framing entry point accepts only current-schema payloads whose
+    caller has already proved the same canonical shape and bound normally established by durable
+    preflight; it still checks the registered compact identity, exact payload bound, and CRC-32C
+  - Only the authoritative checked command-segment seal uses the proven path; every general
+    durable encoder, external/recovered byte path, independent command-segment encoder, and
+    decoder retains generated structural preflight and complete semantic validation
+  - Tests prove proven framing is byte-identical to ordinary current-schema framing for rich and
+    maximum command segments, rejects an oversized payload, and leaves malformed/corrupt segment
+    rejection unchanged
+  - Fresh c32 write-only and interactive evidence compares throughput, command pipeline stages,
+    write p50, RSS, retained bytes, and failures with WP-483
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Canonical command-segment bytes, checksums, bounds, recovery, and corruption behavior
+    remain exact, no untyped or compatibility path can select the proven framing shortcut, and
+    fresh evidence shows lower writer CPU or public write latency without a memory, retained-byte,
+    read-path, c1, or correctness regression.
   human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope

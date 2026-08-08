@@ -27,23 +27,23 @@ use riffdb_storage_api::{
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
     DatabaseInitializationPort, DeclaredOutcome, DeferredCommandEpoch, DeferredCommandEpochPort,
-    DeferredNonEmptyCommandBatch, DurabilityMode, DurableKeySchemaBindingV1, EmptyCommandBatch,
-    EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation, EntityPostImage,
-    EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit, EventRouteScanRequestV1,
-    EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit, ExecutablePlanRef,
-    ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest, IdempotencyLookupCandidatesV1,
-    IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition, IndexRangeTarget,
-    MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch,
-    OpenSessionId, OutboxPageLimit, OutboxRepository, OutboxStatusObservationV1,
-    OutboxStatusReadResultV1, PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
-    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, SnapshotReader,
-    SnapshotRequest, StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
-    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-    StructuralEvidenceSession, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
+    DeferredCommandFence, DeferredNonEmptyCommandBatch, DurabilityMode, DurableKeySchemaBindingV1,
+    EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
+    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
+    ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
+    IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
+    NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
+    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
+    PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    ServiceAuditAppendIntentV1, SnapshotReader, SnapshotRequest, StartupValidationInputs,
+    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredAdmittedProvenanceClaimsV1,
+    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredReadDependenciesV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingScope,
     StructuralOpenOutcome, StructurallyOpened, command_write_set_upper_bound_v1,
     decode_index_entry_v1, decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
     encode_index_entry_v1_fixture, encode_index_entry_v2, encode_record_registry_v2,
@@ -67,7 +67,6 @@ const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE
 const CHILD_PRUNE_TARGET: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PRUNE_TARGET";
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("secondary_indexes");
-const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("event_routes");
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
 const STORAGE_RECOVERY_CONTRACT: &str = r#"
@@ -122,6 +121,9 @@ impl TestDatabasePath {
 impl Drop for TestDatabasePath {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        let mut journal = self.0.as_os_str().to_os_string();
+        journal.push(".riffjournal");
+        let _ = std::fs::remove_file(PathBuf::from(journal));
     }
 }
 
@@ -231,7 +233,7 @@ fn complete_startup_pass(
             StructuralEvidencePage::Page { findings, next, .. } => {
                 assert!(
                     findings.is_empty(),
-                    "a valid recovery fixture has no findings"
+                    "a valid recovery fixture has no findings: {findings:?}"
                 );
                 structural_cursor = next;
             }
@@ -654,11 +656,14 @@ fn prepare_command_database(path: &Path) {
             None,
         ))
         .expect("activate command recovery catalog");
-    assert!(matches!(
-        result,
-        CatalogActivationResult::Activated { active, .. }
-            if active == riffdb_storage_api::ActiveCatalogPointerV1::from_bundle(&bundle)
-    ));
+    assert!(
+        matches!(
+            &result,
+            CatalogActivationResult::Activated { active, .. }
+                if *active == riffdb_storage_api::ActiveCatalogPointerV1::from_bundle(&bundle)
+        ),
+        "unexpected catalog activation result: {result:?}"
+    );
 }
 
 fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
@@ -1549,6 +1554,163 @@ fn multiple_deferred_subgroups_publish_together_in_sequence_order() {
 }
 
 #[test]
+fn multiple_sealed_epochs_publish_in_fifo_order_after_one_journal_flush() {
+    let path = TestDatabasePath::new("deferred-multiple-epochs");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let first = command_fixture_at(1);
+    let second = command_fixture_at(2);
+
+    let first_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin first standard durability epoch");
+    let first_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(first_epoch, &first))
+            .expect("seal first standard durability epoch");
+    let second_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin second standard durability epoch");
+    let second_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(second_epoch, &second))
+            .expect("seal second standard durability epoch");
+
+    for fixture in [&first, &second] {
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read predecessor entity frontier"),
+            None
+        );
+    }
+    let first_committed = first_fence.wait().expect("publish first journal frame");
+    assert_eq!(first_committed.len(), 1);
+    assert_postcommit_command_state(&ports, &first);
+    assert_eq!(
+        ports
+            .read_entity(&second.target)
+            .expect("read second unpublished entity"),
+        None
+    );
+    let second_committed = second_fence.wait().expect("publish second journal frame");
+    assert_eq!(second_committed.len(), 1);
+    let AdmissionLookupResultV1::Found(admission) = ports
+        .lookup_admission(second.candidates.clone())
+        .expect("lookup second fenced identity")
+    else {
+        panic!("the second fenced identity must be terminal");
+    };
+    assert_eq!(
+        *admission,
+        riffdb_storage_api::StoredAdmissionStateV1::StoredOutcome(
+            second.records.stored_outcome().clone()
+        )
+    );
+    assert_eq!(
+        ports
+            .read_entity(&second.target)
+            .expect("read second entity"),
+        Some(second.records.entities()[0].post_image().clone())
+    );
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::new(2).expect("sequence two"))
+            .expect("read second commit"),
+        Some(second.records.commit().clone())
+    );
+}
+
+#[test]
+fn direct_commit_reanchors_a_drained_journal_before_the_next_deferred_epoch() {
+    let path = TestDatabasePath::new("journal-direct-journal-frontiers");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let first = command_fixture_at(1);
+    let direct = command_fixture_at(2);
+    let third = command_fixture_at(3);
+
+    let first_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin first journal epoch");
+    DeferredCommandEpoch::fence(apply_unpublished_command_fixture(first_epoch, &first))
+        .expect("publish first journal epoch");
+
+    commit_command_fixture(&ports, &direct);
+
+    let third_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin journal epoch after direct commit");
+    DeferredCommandEpoch::fence(apply_unpublished_command_fixture(third_epoch, &third))
+        .expect("publish journal epoch after direct commit");
+
+    for fixture in [&first, &direct, &third] {
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read committed entity"),
+            Some(fixture.records.entities()[0].post_image().clone())
+        );
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read committed command"),
+            Some(fixture.records.commit().clone())
+        );
+    }
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+        ]
+    );
+}
+
+#[test]
+fn direct_commit_reanchors_an_unopened_empty_journal_before_a_deferred_epoch() {
+    let path = TestDatabasePath::new("direct-empty-journal-frontier");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let direct = command_fixture_at(1);
+    let deferred = command_fixture_at(2);
+
+    commit_command_fixture(&ports, &direct);
+
+    let epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin journal epoch after the first direct commit");
+    DeferredCommandEpoch::fence(apply_unpublished_command_fixture(epoch, &deferred))
+        .expect("publish journal epoch after the first direct commit");
+
+    for fixture in [&direct, &deferred] {
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read committed entity"),
+            Some(fixture.records.entities()[0].post_image().clone())
+        );
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read committed command"),
+            Some(fixture.records.commit().clone())
+        );
+    }
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+        ]
+    );
+}
+
+#[test]
 fn unknown_tail_status_keeps_the_predecessor_frontier_and_fences_writes() {
     let path = TestDatabasePath::new("deferred-tail-unknown");
     prepare_command_database(&path.0);
@@ -2204,6 +2366,72 @@ fn serial_group_crash_before_commit_leaves_every_command_absent() {
 }
 
 #[test]
+fn segmented_group_commits_and_reopens_without_a_failpoint() {
+    let path = TestDatabasePath::new("segmented-command-group");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open grouped database"));
+    let fixtures = (1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
+        .map(|ordinal| command_fixture_at(u64::try_from(ordinal).expect("bounded ordinal")))
+        .collect::<Vec<_>>();
+    commit_command_group(&ports, &fixtures);
+    drop(ports);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen grouped database"));
+    for fixture in fixtures {
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read grouped command"),
+            Some(fixture.records.commit().clone())
+        );
+    }
+}
+
+#[test]
+fn retention_splits_a_segment_and_rechains_the_retained_suffix() {
+    let path = TestDatabasePath::new("retention-split-command-segment");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open grouped database"));
+    let fixtures = (1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
+        .map(|ordinal| command_fixture_at(u64::try_from(ordinal).expect("bounded ordinal")))
+        .collect::<Vec<_>>();
+    commit_command_group(&ports, &fixtures);
+    drop(ports);
+    for ordinal in 1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+        retention_deliver_outbox_status_raw(
+            &path.0,
+            u64::try_from(ordinal).expect("bounded ordinal"),
+        );
+    }
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance
+        .add_hold("split-cap", 64, "exercise partial segment retention")
+        .expect("install split hold");
+    maintenance
+        .prune_to(32)
+        .expect("split segment at watermark");
+
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen split"));
+    assert!(
+        findings.is_empty(),
+        "split segment must reopen clean: {findings:?}"
+    );
+    let ports = open_operational(RedbStore::open(&path.0).expect("open split database"));
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::new(33).expect("retained sequence"))
+            .expect("read retained command"),
+        Some(fixtures[32].records.commit().clone())
+    );
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::new(32).expect("pruned sequence"))
+            .expect_err("pruned command is typed")
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::HistoryPruned
+    );
+}
+
+#[test]
 fn serial_group_crash_after_commit_preserves_every_complete_command() {
     let path = TestDatabasePath::new("after-command-group");
     prepare_command_database(&path.0);
@@ -2244,8 +2472,8 @@ fn serial_group_crash_after_commit_preserves_every_complete_command() {
 }
 
 #[test]
-fn missing_event_route_is_authoritative_startup_corruption() {
-    let path = TestDatabasePath::new("missing-event-route");
+fn segment_owned_event_route_requires_no_standalone_row() {
+    let path = TestDatabasePath::new("segment-owned-event-route");
     let (fixture, _) = prepare_committed_command_database(&path.0);
     let event_id = fixture.records.events()[0].event_id();
     let partition_hash = hash_partition_key(fixture.pending.partition_key().as_bytes());
@@ -2253,29 +2481,14 @@ fn missing_event_route_is_authoritative_startup_corruption() {
     route_key[..32].copy_from_slice(partition_hash.as_bytes());
     route_key[32..].copy_from_slice(&event_id.to_be_bytes());
 
-    let database = Database::create(&path.0).expect("open corruption fixture");
-    let transaction = database.begin_write().expect("begin corruption write");
     assert!(
-        transaction
-            .open_table(EVENT_ROUTES)
-            .expect("open event-route table")
-            .remove(route_key.as_slice())
-            .expect("remove event route")
-            .is_some(),
-        "the committed command must have installed its route"
+        !retention_raw_row_present(&path.0, "event_routes", route_key.as_slice()),
+        "the command segment, not a duplicate row, owns its event route"
     );
-    transaction.commit().expect("commit route corruption");
-    drop(database);
-
-    let findings = collect_structural_findings(
-        RedbStore::open(&path.0).expect("open database with missing route"),
-    );
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen database"));
     assert!(
-        findings.iter().any(|finding| {
-            finding.scope() == StructuralFindingScope::Authoritative
-                && finding.code() == StructuralFindingCode::CrossLinkMismatch
-        }),
-        "missing route must fail closed as authoritative cross-link corruption: {findings:?}"
+        findings.is_empty(),
+        "the segment manifest reconstructs the exact route: {findings:?}"
     );
 }
 
@@ -2829,12 +3042,8 @@ fn pre_validated_prefix_registry_digest_migrates_on_open() {
 
 // ===== RT-A fix round: count-guard, write-gate, binding, and seeded-chain coverage =====
 
-const IDEMPOTENCY_RAW: TableDefinition<&[u8], &[u8]> = TableDefinition::new("idempotency");
-const AUDIT_BY_REQUEST_RAW: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("audit_by_request");
 const ENTITIES_RAW: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entities");
 const OUTBOX_STATUS_RAW: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outbox_status");
-const EVENTS_RAW: TableDefinition<&[u8], &[u8]> = TableDefinition::new("events");
 
 const CHECKPOINT_META_KEY: &str = "validated_prefix_checkpoint/v1";
 
@@ -2992,144 +3201,17 @@ fn prepare_checkpointed_command_database(path: &Path) {
     let _ = complete_startup_pass(RedbStore::open(path).expect("seed S=head checkpoint"));
 }
 
-/// Probe-B closure: a vanished below-bound row in each table WITHOUT range
-/// skipping must refuse the checkpointed open, with full-validation parity.
-fn assert_deleted_below_bound_row_fails_closed(
-    label: &str,
-    table: TableDefinition<&'static [u8], &'static [u8]>,
-) {
-    let path = TestDatabasePath::new(label);
+#[test]
+fn command_derived_checkpoint_tables_are_physically_empty() {
+    let path = TestDatabasePath::new("derived-checkpoint-tables-empty");
     prepare_checkpointed_command_database(&path.0);
-    delete_first_raw_row(&path.0, table);
-
-    // Checkpointed open must refuse (sampled windows or the ExactEnd count
-    // guard — both fail closed; neither may complete clean).
-    let fast = drain_tolerating_findings(RedbStore::open(&path.0).expect("checkpointed open"));
+    assert!(!retention_raw_table_has_rows(&path.0, "audit_by_request"));
+    assert!(!retention_raw_table_has_rows(&path.0, "event_routes"));
+    assert!(!retention_raw_table_has_rows(&path.0, "idempotency"));
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen database"));
     assert!(
-        fast.refused() || fast.authoritative_finding(),
-        "{label}: checkpointed open must fail closed on a deleted below-bound row \
-         (verified={} findings={:?} structural_error={} finish_error={})",
-        fast.verified,
-        fast.findings,
-        fast.structural_error,
-        fast.finish_error,
-    );
-    drop(fast);
-
-    // Full-validation parity: the same database must refuse identically.
-    strip_checkpoint_meta(&path.0);
-    let full = drain_tolerating_findings(RedbStore::open(&path.0).expect("full-validation open"));
-    assert!(
-        !full.verified,
-        "{label}: stripped checkpoint must force full validation"
-    );
-    assert!(
-        full.refused() || full.authoritative_finding(),
-        "{label}: full validation must also fail closed on the same database \
-         (findings={:?} structural_error={} finish_error={})",
-        full.findings,
-        full.structural_error,
-        full.finish_error,
-    );
-}
-
-#[test]
-fn deleted_below_bound_audit_by_request_row_fails_closed() {
-    assert_deleted_below_bound_row_fails_closed(
-        "deleted-audit-by-request-row",
-        AUDIT_BY_REQUEST_RAW,
-    );
-}
-
-#[test]
-fn deleted_below_bound_event_route_row_fails_closed() {
-    assert_deleted_below_bound_row_fails_closed("deleted-event-route-row", EVENT_ROUTES);
-}
-
-#[test]
-fn deleted_below_bound_idempotency_row_fails_closed() {
-    assert_deleted_below_bound_row_fails_closed("deleted-idempotency-row", IDEMPOTENCY_RAW);
-}
-
-/// Count-guard isolation: an under-reported recorded count with ALL rows intact
-/// is invisible to bindings, sampled windows, and the cursor-plan mapping — the
-/// ExactEnd prefix-count verification is the ONLY detector, and per ADR-0019 A1
-/// the divergence is authoritative: the open refuses.
-fn assert_underreported_count_is_detected_by_walk_end_guard(
-    label: &str,
-    mutate_counts: impl FnOnce(&mut riffdb_storage_api::ValidatedPrefixSequenceCounts),
-) {
-    use riffdb_storage_api::StoredValidatedPrefixCheckpointV1;
-
-    let path = TestDatabasePath::new(label);
-    prepare_checkpointed_command_database(&path.0);
-    rewrite_checkpoint(&path.0, |original| {
-        let mut counts = original.counts();
-        mutate_counts(&mut counts);
-        assert_ne!(counts, original.counts(), "mutation must change a count");
-        StoredValidatedPrefixCheckpointV1::new(
-            original.database_id(),
-            original.history_incarnation(),
-            original.registry_digest(),
-            original.checkpoint_commit_sequence(),
-            original.audit_sequence_bound(),
-            counts,
-            original.entity_chain_fingerprint(),
-            original.retained(),
-            original.previous_checkpoint_hash(),
-            0,
-        )
-        .expect("rehash doctored counts")
-    });
-
-    let report = drain_tolerating_findings(RedbStore::open(&path.0).expect("doctored open"));
-    assert!(
-        report.verified,
-        "{label}: intact rows and bindings must verify at load; the count \
-         divergence is walk-end detected"
-    );
-    assert!(
-        report.findings.is_empty(),
-        "{label}: intact rows must produce no findings before the count guard \
-         fires (guard isolation): {:?}",
-        report.findings,
-    );
-    assert!(
-        report.structural_error,
-        "{label}: the ExactEnd prefix-count guard must refuse the open"
-    );
-}
-
-#[test]
-fn underreported_event_routes_count_is_detected_by_walk_end_guard() {
-    assert_underreported_count_is_detected_by_walk_end_guard(
-        "underreported-event-routes-count",
-        |counts| {
-            assert!(counts.event_routes_count >= 1);
-            counts.event_routes_count -= 1;
-        },
-    );
-}
-
-#[test]
-fn underreported_idempotency_count_is_detected_by_walk_end_guard() {
-    assert_underreported_count_is_detected_by_walk_end_guard(
-        "underreported-idempotency-count",
-        |counts| {
-            assert!(counts.idempotency_count >= 1);
-            counts.idempotency_count -= 1;
-        },
-    );
-}
-
-#[test]
-fn underreported_audit_by_request_count_is_detected_by_walk_end_guard() {
-    assert_underreported_count_is_detected_by_walk_end_guard(
-        "underreported-audit-by-request-count",
-        |counts| {
-            assert!(counts.audit_by_request_count >= 1);
-            counts.audit_by_request_count -= 1;
-        },
+        findings.is_empty(),
+        "derived indexes rebuild from the segment: {findings:?}"
     );
 }
 
@@ -3145,17 +3227,7 @@ fn finding_vetoes_checkpoint_write_and_is_never_suppressed() {
         let database = Database::create(&path.0).expect("open for garbage row");
         let txn = database.begin_write().expect("begin garbage row");
         {
-            let events = txn.open_table(EVENTS_RAW).expect("open events");
-            let key = {
-                let mut iter = events.iter().expect("iterate events");
-                iter.next()
-                    .expect("committed event present")
-                    .expect("read event")
-                    .0
-                    .value()
-                    .to_vec()
-            };
-            drop(events);
+            let key = retention_event_key(1);
             let mut statuses = txn.open_table(OUTBOX_STATUS_RAW).expect("open statuses");
             statuses
                 .insert(key.as_slice(), &b"garbage-not-a-status"[..])
@@ -3204,17 +3276,7 @@ fn public_checkpoint_write_is_gated_on_clean_validation() {
         let database = Database::create(&path.0).expect("open for garbage row");
         let txn = database.begin_write().expect("begin garbage row");
         {
-            let events = txn.open_table(EVENTS_RAW).expect("open events");
-            let key = {
-                let mut iter = events.iter().expect("iterate events");
-                iter.next()
-                    .expect("committed event present")
-                    .expect("read event")
-                    .0
-                    .value()
-                    .to_vec()
-            };
-            drop(events);
+            let key = retention_event_key(1);
             let mut statuses = txn.open_table(OUTBOX_STATUS_RAW).expect("open statuses");
             statuses
                 .insert(key.as_slice(), &b"garbage-not-a-status"[..])
@@ -3551,6 +3613,15 @@ fn retention_raw_row_present(path: &Path, table_name: &str, key: &[u8]) -> bool 
     table.get(key).expect("get").is_some()
 }
 
+fn retention_raw_table_has_rows(path: &Path, table_name: &str) -> bool {
+    let database = Database::open(path).expect("open raw");
+    let read = database.begin_read().expect("read");
+    let table = read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new(table_name))
+        .expect("table");
+    table.first().expect("first").is_some()
+}
+
 fn retention_meta_present(path: &Path, key: &str) -> bool {
     let database = Database::open(path).expect("open raw");
     let read = database.begin_read().expect("read");
@@ -3614,11 +3685,10 @@ fn retention_prune_refuses_below_undelivered_outbox_intent() {
         "commits",
         &1u64.to_be_bytes()
     ));
-    assert!(retention_raw_row_present(
-        &path.0,
-        "events",
-        &retention_event_key(1)
-    ));
+    assert!(
+        !retention_raw_table_has_rows(&path.0, "events"),
+        "the refused prune leaves segment-owned events in their segment"
+    );
 }
 
 #[test]
@@ -3638,26 +3708,28 @@ fn retention_prune_populated_roundtrip_reopens_clean_and_types_pruned_reads() {
     assert_eq!(status.watermark_sequence, 1);
     assert_eq!(status.tombstone_count, 1);
 
-    for table in ["commits", "events", "outbox", "outbox_status"] {
-        let key: &[u8] = if table == "commits" {
-            &1u64.to_be_bytes()
-        } else {
-            &retention_event_key(1)
-        };
-        assert!(
-            !retention_raw_row_present(&path.0, table, key),
-            "{table} row for sequence 1 must be deleted by the prune"
-        );
-        let retained_key: &[u8] = if table == "commits" {
-            &2u64.to_be_bytes()
-        } else {
-            &retention_event_key(2)
-        };
-        assert!(
-            retention_raw_row_present(&path.0, table, retained_key),
-            "{table} row for sequence 2 must be retained"
-        );
-    }
+    assert!(!retention_raw_row_present(
+        &path.0,
+        "commits",
+        &1u64.to_be_bytes()
+    ));
+    assert!(retention_raw_row_present(
+        &path.0,
+        "commits",
+        &2u64.to_be_bytes()
+    ));
+    assert!(!retention_raw_table_has_rows(&path.0, "events"));
+    assert!(!retention_raw_table_has_rows(&path.0, "outbox"));
+    assert!(!retention_raw_row_present(
+        &path.0,
+        "outbox_status",
+        &retention_event_key(1)
+    ));
+    assert!(retention_raw_row_present(
+        &path.0,
+        "outbox_status",
+        &retention_event_key(2)
+    ));
     let tombstones = retention_tombstones(&path.0);
     assert_eq!(tombstones.len(), 1);
     assert_eq!(
@@ -3858,30 +3930,25 @@ fn retention_absence_above_watermark_remains_corruption() {
     // Deliverable: absence NOT covered by the verified tombstone chain is the
     // same corruption it is today. Doctor away rows ABOVE the watermark; the
     // walk must refuse or produce authoritative findings.
-    for (label, table, key) in [
-        ("event", "events", retention_event_key(2).to_vec()),
-        ("commit", "commits", 2u64.to_be_bytes().to_vec()),
-    ] {
-        let path = TestDatabasePath::new("retention-doctored-above");
-        let _ = prepare_two_command_database(&path.0);
-        retention_deliver_outbox_status_raw(&path.0, 1);
-        retention_deliver_outbox_status_raw(&path.0, 2);
-        let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
-        maintenance.add_hold("cap", 5, "test cap").expect("hold");
-        let _ = maintenance.prune_to(1).expect("prune");
-        retention_delete_raw_row(&path.0, table, &key);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            collect_structural_findings(RedbStore::open(&path.0).expect("reopen doctored database"))
-        }));
-        match outcome {
-            Ok(findings) => assert!(
-                !findings.is_empty(),
-                "doctored {label} above the watermark must stay corruption"
-            ),
-            Err(_) => {
-                // A refused walk (structural error) is an equally valid
-                // fail-closed outcome for uncovered absence.
-            }
+    let path = TestDatabasePath::new("retention-doctored-above");
+    let _ = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let _ = maintenance.prune_to(1).expect("prune");
+    retention_delete_raw_row(&path.0, "commits", &2u64.to_be_bytes());
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        collect_structural_findings(RedbStore::open(&path.0).expect("reopen doctored database"))
+    }));
+    match outcome {
+        Ok(findings) => assert!(
+            !findings.is_empty(),
+            "doctored commit above the watermark must stay corruption"
+        ),
+        Err(_) => {
+            // A refused walk (structural error) is an equally valid
+            // fail-closed outcome for uncovered absence.
         }
     }
 }
@@ -3964,10 +4031,11 @@ fn retention_prune_refuses_when_commit_rows_missing_in_range() {
         err.kind(),
         riffdb_storage_api::StorageErrorKind::CorruptData
     );
-    assert!(
-        retention_raw_row_present(&path.0, "events", &retention_event_key(1)),
-        "a refused prune must not delete sibling rows"
-    );
+    assert!(retention_raw_row_present(
+        &path.0,
+        "outbox_status",
+        &retention_event_key(1)
+    ));
     assert!(retention_tombstones(&path.0).is_empty());
 }
 

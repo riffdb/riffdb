@@ -6,6 +6,7 @@ mod bounds;
 mod capability;
 mod catalog;
 mod command_capsule;
+mod command_segment;
 mod common;
 mod consumer;
 mod contract_migration;
@@ -31,6 +32,7 @@ pub use bounds::*;
 pub use capability::*;
 pub use catalog::*;
 pub use command_capsule::*;
+pub use command_segment::*;
 pub use consumer::*;
 pub use contract_migration::*;
 pub use error::*;
@@ -111,6 +113,20 @@ pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordM
         return Err(DurableCodecError::invariant());
     }
     let bytes = riffdb_proto::durable::encode_current_message(message)
+        .map_err(DurableCodecError::from_encode_envelope)?;
+    let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
+    Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
+}
+
+pub(super) fn encode_prebuilt_message<M: riffdb_proto::durable::WritableRecordMessage>(
+    record_type: &'static str,
+    payload: &[u8],
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let schema = current_record_schema(record_type).ok_or_else(DurableCodecError::invariant)?;
+    if M::record_schema().record_type() != schema.record_type() {
+        return Err(DurableCodecError::invariant());
+    }
+    let bytes = riffdb_proto::durable::encode_current_payload::<M>(payload)
         .map_err(DurableCodecError::from_encode_envelope)?;
     let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })

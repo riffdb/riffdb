@@ -78,7 +78,9 @@ pub struct ValidatedPrefixSequenceCounts {
     pub outbox_count: u64,
     /// Rows in `OUTBOX_STATUS` with event commit sequence ≤ S.
     pub outbox_status_count: u64,
-    /// Terminal idempotency rows whose outcome commit sequence ≤ S.
+    /// Materialized terminal idempotency rows whose outcome commit sequence ≤ S.
+    /// Successful outcomes still owned by retained command segments are not
+    /// physical rows and therefore are not included.
     pub idempotency_count: u64,
     /// Rows in `AUDIT` with administration sequence ≤ audit bound.
     pub audit_count: u64,

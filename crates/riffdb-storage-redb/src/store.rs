@@ -14,9 +14,10 @@ use redb::{
     ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle, WriteTransaction,
 };
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DatabaseInitializationResult, HISTORY_INCARNATION_INITIAL,
-    StorageError, StorageErrorKind, StorageFormatVersion, StoredIndexEpochV1,
+    ApplicationSequenceAllocator, CommandSegmentDigestV1, DatabaseIdentityProbe,
+    DatabaseIdentityProbePort, DatabaseInitializationPort, DatabaseInitializationResult,
+    DeferredCommandFence, HISTORY_INCARNATION_INITIAL, StorageError, StorageErrorKind,
+    StorageFormatVersion, StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
         decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
@@ -26,15 +27,18 @@ use riffdb_storage_api::{
         transcode_durable_record_to_v2,
     },
 };
-use riffdb_types::{DatabaseId, IndexEpoch, IndexId, SchemaHash};
+use riffdb_types::{
+    AdministrationSequence, CommitSequence, DatabaseId, IndexEpoch, IndexId, SchemaHash,
+};
 
 use crate::codec::{
-    decode_administration_audit_record_v1, decode_commit_with_event_table, decode_event_route_v1,
-    decode_index_entry_v2, decode_index_epoch_v1, decode_legacy_index_epoch_v1,
-    decode_outbox_with_event_table, decode_service_audit_request_index_v1, encode_commit_record_v1,
-    encode_event_route_v1, encode_index_epoch_v1, encode_outbox_intent_v1,
-    encode_service_audit_request_index_v1,
+    decode_administration_audit_with_command_tables, decode_commit_with_event_table,
+    decode_event_route_v1, decode_index_entry_v2, decode_index_epoch_v1,
+    decode_legacy_index_epoch_v1, decode_outbox_with_event_table,
+    decode_service_audit_request_index_v1, encode_commit_record_v1, encode_event_route_v1,
+    encode_index_epoch_v1, encode_outbox_intent_v1, encode_service_audit_request_index_v1,
 };
+
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
@@ -54,7 +58,9 @@ use crate::layout::{
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES,
     TABLE_NAMES, create_all_tables,
 };
-use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
+use crate::transient::{
+    TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
+};
 
 pub(crate) struct SharedRedb {
     pub(crate) database: Database,
@@ -70,8 +76,12 @@ pub(crate) struct SharedRedb {
     /// epoch is active every operational reader clones this immutable root;
     /// the epoch writer alone may observe redb's newer deferred roots.
     durable_read_frontier: RwLock<Option<Arc<ReadTransaction>>>,
+    journal_runtime: Mutex<Option<JournalRuntime>>,
     test_controller: Option<RedbTestController>,
-    transient_indexes: Mutex<TransientIndexState>,
+    transient_indexes: RwLock<TransientIndexState>,
+    /// Exact identities in sealed command epochs that are not public yet.
+    /// Writers consult this overlay; operational readers never do.
+    unpublished_command_indexes: Mutex<UnpublishedCommandIndexes>,
     /// True only after this handle's startup validation session finished with
     /// ZERO structural findings of any scope. Gates every validated-prefix
     /// checkpoint write (ADR-0019 A1: a finding of any severity vetoes the
@@ -89,8 +99,9 @@ pub(crate) struct SharedRedb {
     retention_watermark: AtomicU64,
     /// Terminal `ExecutionFailed` rows in `IDEMPOTENCY`.
     ///
-    /// The checkpoint's `idempotency_count` admits only `StoredOutcome` rows,
-    /// which redb's `IDEMPOTENCY` row count cannot distinguish; this census is
+    /// The checkpoint's `idempotency_count` admits only materialized
+    /// `StoredOutcome` rows, which redb's `IDEMPOTENCY` row count cannot
+    /// distinguish; this census is
     /// the one quantity the O(1) checkpoint build cannot read from table
     /// metadata. It is seeded from the startup walk that also opens the
     /// checkpoint write gate — the same statement pair, so a checkpoint can
@@ -313,20 +324,25 @@ pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
     transaction: Option<WriteTransaction>,
     ownership: Option<RedbWriteOwnership>,
-    journal_mutations: Option<RefCell<Vec<crate::journal::JournalMutation>>>,
+    journal_mutations: Option<RefCell<crate::journal::JournalMutationBuffer>>,
+    journal_mutation_start: u32,
+    journal_checkpoint: Option<JournalRuntime>,
 }
 
 enum RedbWriteOwnership {
     Direct { _lease: ExclusiveLease },
     Epoch(RedbDurabilityEpoch),
+    ServiceAudit { _lease: ExclusiveLease },
 }
 
 /// Closed standard-profile durability epoch.
 ///
 /// The value owns the database mutation lease and every unpublished command
-/// result. Dropping it before a successful tail fence permanently fences this
-/// process handle and deliberately leaves the predecessor read frontier
-/// installed.
+/// result. Dropping an epoch that owns unpublished state before a successful
+/// tail fence permanently fences this process handle and deliberately leaves
+/// the predecessor read frontier installed. A pristine epoch may be dropped to
+/// cancel command evaluation after a proven rollback because it has no private
+/// state to publish.
 pub struct RedbDurabilityEpoch {
     shared: Arc<SharedRedb>,
     lease: Option<ExclusiveLease>,
@@ -336,7 +352,58 @@ pub struct RedbDurabilityEpoch {
     last_sequence: Option<riffdb_types::CommitSequence>,
     semantic_bytes: usize,
     reserved_encoded_bytes: usize,
-    journal_mutation_groups: Vec<Vec<crate::journal::JournalMutation>>,
+    journal_mutations: crate::journal::JournalMutationBuffer,
+    journal_mutation_groups: usize,
+    completed: bool,
+}
+
+struct JournalRuntime {
+    lane: Arc<crate::journal::JournalLane>,
+    database_id: DatabaseId,
+    last_sequence: Option<CommitSequence>,
+    last_administration_sequence: Option<AdministrationSequence>,
+    last_hash: [u8; 32],
+    published_sequence: Option<CommitSequence>,
+    published_administration_sequence: Option<AdministrationSequence>,
+    published_hash: [u8; 32],
+    suffix_transitions: usize,
+    suffix_commands: usize,
+    suffix_audits: usize,
+    suffix_bytes: usize,
+    unpublished_transitions: usize,
+    unpublished_commands: usize,
+    unpublished_audits: usize,
+    unpublished_bytes: usize,
+    reanchor_required: bool,
+}
+
+pub struct RedbSubmittedCommandFence {
+    shared: Arc<SharedRedb>,
+    receipt: Option<crate::journal::JournalFenceReceipt>,
+    successor: Arc<ReadTransaction>,
+    applied: Vec<riffdb_storage_api::UnpublishedAuditedBatchV1>,
+    transient_deltas: Vec<TransientIndexDelta>,
+    command_count: usize,
+    encoded_bytes: usize,
+    last_sequence: CommitSequence,
+    predecessor_administration_sequence: Option<AdministrationSequence>,
+    last_administration_sequence: Option<AdministrationSequence>,
+    audit_count: usize,
+    journaled: bool,
+    completed: bool,
+}
+
+pub(crate) struct RedbSubmittedServiceAuditFence {
+    shared: Arc<SharedRedb>,
+    receipt: Option<crate::journal::JournalFenceReceipt>,
+    successor: Arc<ReadTransaction>,
+    results: Option<Vec<riffdb_storage_api::ServiceAuditAppendResult>>,
+    transition_count: usize,
+    encoded_bytes: usize,
+    predecessor_sequence: Option<CommitSequence>,
+    covered_sequence: Option<CommitSequence>,
+    predecessor_administration_sequence: Option<AdministrationSequence>,
+    covered_administration_sequence: Option<AdministrationSequence>,
     completed: bool,
 }
 
@@ -522,8 +589,10 @@ impl RedbStore {
                 write_fenced: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_read_frontier: RwLock::new(None),
+                journal_runtime: Mutex::new(None),
                 test_controller,
-                transient_indexes: Mutex::new(TransientIndexState::Dormant),
+                transient_indexes: RwLock::new(TransientIndexState::Dormant),
+                unpublished_command_indexes: Mutex::new(UnpublishedCommandIndexes::default()),
                 startup_validation_clean: AtomicBool::new(false),
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
@@ -560,6 +629,16 @@ impl RedbStore {
             .map_err(|error| match error {
                 crate::journal::JournalIoError::Corrupt => {
                     storage_error(StorageErrorKind::CorruptData)
+                }
+                crate::journal::JournalIoError::LegacyNonEmpty(path) => {
+                    eprintln!(
+                        "RDB-STORAGE-UPGRADE: legacy durability journal '{}' is nonempty; reopen with the prior binary and perform a clean checkpoint before upgrading",
+                        path.display()
+                    );
+                    storage_error(StorageErrorKind::IncompatibleFormat)
+                }
+                crate::journal::JournalIoError::Capacity => {
+                    storage_error(StorageErrorKind::LimitExceeded)
                 }
                 crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
                     storage_error(StorageErrorKind::Unavailable)
@@ -1762,6 +1841,8 @@ fn migrate_audit_request_index(shared: &SharedRedb) -> Result<(), StorageError> 
         let mut last_key = after.clone();
         {
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
             let mut index = transaction
                 .open_table(AUDIT_BY_REQUEST)
                 .map_err(table_error)?;
@@ -1777,9 +1858,13 @@ fn migrate_audit_request_index(shared: &SharedRedb) -> Result<(), StorageError> 
                 let value_bytes = value.value();
                 let sequence = decode_audit_key(&key_bytes)
                     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-                let record = decode_administration_audit_record_v1(value_bytes)?
-                    .into_parts()
-                    .0;
+                let record = decode_administration_audit_with_command_tables(
+                    value_bytes,
+                    &commits,
+                    &events,
+                )?
+                .into_parts()
+                .0;
                 if record.administration_sequence() != sequence {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
@@ -2171,7 +2256,7 @@ fn activate_operational_ports(
     drop(transaction);
     let mut state = shared
         .transient_indexes
-        .lock()
+        .write()
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
     if !matches!(*state, TransientIndexState::Dormant) {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -2182,6 +2267,71 @@ fn activate_operational_ports(
 }
 
 impl RedbOperationalPorts {
+    pub(crate) fn standard_writer_journal_enabled(&self) -> bool {
+        self.shared.application_commit_profile == RedbCommitProfile::Standard
+    }
+
+    pub(crate) fn command_derived_member(
+        &self,
+        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
+        exact_key: &[u8],
+    ) -> Result<
+        Option<(
+            Arc<riffdb_storage_api::StoredCommandSegmentV1>,
+            crate::transient::CommandDerivedLocator,
+        )>,
+        StorageError,
+    > {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_derived_member(kind, exact_key)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant => Ok(None),
+            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
+    }
+
+    pub(crate) fn indexed_command_at(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<Option<riffdb_storage_api::StoredCommandCapsuleV2>, StorageError> {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_at(sequence)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant => Ok(None),
+            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
+    }
+
+    pub(crate) fn indexed_command_audit(
+        &self,
+        sequence: riffdb_types::AdministrationSequence,
+    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => {
+                Ok(indexes.command_audit_record(sequence).flatten())
+            }
+            TransientIndexState::Dormant => Ok(None),
+            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
+    }
+
     /// Exclusive-gate tickets ever issued on this database.
     ///
     /// Lets a test prove an operation answered without taking the mutation
@@ -2253,11 +2403,16 @@ impl RedbOperationalPorts {
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        let mut transaction = self
-            .shared
-            .database
-            .begin_write()
-            .map_err(transaction_error)?;
+        let journal_checkpoint = self.shared.take_published_journal_suffix_locked(true)?;
+        let mut transaction = match self.shared.database.begin_write() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                if let Some(runtime) = journal_checkpoint {
+                    self.shared.restore_journal_runtime(runtime)?;
+                }
+                return Err(transaction_error(error));
+            }
+        };
         transaction.set_two_phase_commit(self.shared.application_commit_profile.uses_two_phase());
         transaction
             .set_durability(Durability::Immediate)
@@ -2267,6 +2422,8 @@ impl RedbOperationalPorts {
             transaction: Some(transaction),
             ownership: Some(RedbWriteOwnership::Direct { _lease: lease }),
             journal_mutations: None,
+            journal_mutation_start: 0,
+            journal_checkpoint,
         })
     }
 
@@ -2277,21 +2434,22 @@ impl RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        let transaction = Arc::new(
-            self.shared
-                .database
-                .begin_read()
-                .map_err(transaction_error)?,
-        );
+        self.shared
+            .checkpoint_published_journal_suffix_locked(false)?;
         let mut frontier = self
             .shared
             .durable_read_frontier
             .write()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if frontier.is_some() {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        if frontier.is_none() {
+            let transaction = Arc::new(
+                self.shared
+                    .database
+                    .begin_read()
+                    .map_err(transaction_error)?,
+            );
+            *frontier = Some(transaction);
         }
-        *frontier = Some(transaction);
         drop(frontier);
         Ok(RedbDurabilityEpoch {
             shared: Arc::clone(&self.shared),
@@ -2302,8 +2460,55 @@ impl RedbOperationalPorts {
             last_sequence: None,
             semantic_bytes: 0,
             reserved_encoded_bytes: 0,
-            journal_mutation_groups: Vec::new(),
+            journal_mutations: crate::journal::JournalMutationBuffer::default(),
+            journal_mutation_groups: 0,
             completed: false,
+        })
+    }
+
+    pub(crate) fn begin_deferred_service_audit_write(
+        &self,
+    ) -> Result<RedbWriteAccess, StorageError> {
+        let lease = self.shared.mutation_gate.acquire()?;
+        if self.shared.write_fenced.load(Ordering::Acquire)
+            || self.shared.application_commit_profile != RedbCommitProfile::Standard
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        self.shared
+            .checkpoint_published_journal_suffix_locked(false)?;
+        let mut frontier = self
+            .shared
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if frontier.is_none() {
+            *frontier = Some(Arc::new(
+                self.shared
+                    .database
+                    .begin_read()
+                    .map_err(transaction_error)?,
+            ));
+        }
+        drop(frontier);
+        let mut transaction = self
+            .shared
+            .database
+            .begin_write()
+            .map_err(transaction_error)?;
+        transaction.set_two_phase_commit(false);
+        transaction
+            .set_durability(Durability::None)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(RedbWriteAccess {
+            shared: Arc::clone(&self.shared),
+            transaction: Some(transaction),
+            ownership: Some(RedbWriteOwnership::ServiceAudit { _lease: lease }),
+            journal_mutations: Some(RefCell::new(
+                crate::journal::JournalMutationBuffer::default(),
+            )),
+            journal_mutation_start: 0,
+            journal_checkpoint: None,
         })
     }
 
@@ -2338,9 +2543,234 @@ impl RedbOperationalPorts {
     ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
         self.shared.undelivered_outbox_page(after, limit)
     }
+
+    pub(crate) fn outbox_intent_last(&self) -> Result<Option<riffdb_types::EventId>, StorageError> {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .outbox_intent_last()
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                Err(storage_error(StorageErrorKind::Unavailable))
+            }
+        }
+    }
+
+    pub(crate) fn partition_event_route_page(
+        &self,
+        partition_hash: riffdb_types::PartitionKeyHash,
+        after: Option<riffdb_types::EventId>,
+        requested_upper: Option<riffdb_types::EventId>,
+        limit: usize,
+    ) -> Result<
+        (
+            riffdb_storage_api::EventRouteUpperFenceV1,
+            Vec<riffdb_storage_api::StoredEventRouteV1>,
+            bool,
+        ),
+        StorageError,
+    > {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let TransientIndexState::Ready(indexes) = &*state {
+            return indexes
+                .partition_event_route_page(partition_hash, after, requested_upper, limit)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        }
+        if matches!(*state, TransientIndexState::Invalid) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        drop(state);
+        // Dormant low-level conformance handles have no readiness accelerator;
+        // rebuild a private exact view instead of treating absence as proof.
+        let transaction = self.begin_read()?;
+        let indexes = TransientIndexes::rebuild(&transaction)?;
+        indexes
+            .partition_event_route_page(partition_hash, after, requested_upper, limit)
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?
+    }
 }
 
 impl RedbWriteAccess {
+    pub(crate) fn command_segment_tail(
+        &self,
+    ) -> Result<Option<Option<(CommitSequence, CommandSegmentDigestV1)>>, StorageError> {
+        let transient = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let published = match &*transient {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_segment_tail()
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+            TransientIndexState::Dormant => return Ok(None),
+            TransientIndexState::Invalid => {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+        };
+        let unpublished = self
+            .shared
+            .unpublished_command_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .command_segment_tail();
+        let epoch = self
+            .ownership
+            .as_ref()
+            .and_then(|ownership| match ownership {
+                RedbWriteOwnership::Epoch(epoch) => epoch
+                    .transient_deltas
+                    .last()
+                    .and_then(TransientIndexDelta::command_segment)
+                    .map(|segment| (segment.first_commit_sequence(), segment.segment_digest())),
+                RedbWriteOwnership::Direct { .. } | RedbWriteOwnership::ServiceAudit { .. } => None,
+            });
+        drop(transient);
+        let earlier = match (published, unpublished) {
+            (Some(published), Some(unpublished)) => {
+                if unpublished.0 <= published.0 {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                Some(unpublished)
+            }
+            (Some(published), None) => Some(published),
+            (None, Some(unpublished)) => Some(unpublished),
+            (None, None) => None,
+        };
+        if let (Some(earlier), Some(epoch)) = (earlier, epoch)
+            && epoch.0 <= earlier.0
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(Some(epoch.or(earlier)))
+    }
+
+    pub(crate) fn command_derived_member(
+        &self,
+        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
+        exact_key: &[u8],
+    ) -> Result<
+        Option<(
+            Arc<riffdb_storage_api::StoredCommandSegmentV1>,
+            crate::transient::CommandDerivedLocator,
+        )>,
+        StorageError,
+    > {
+        let transient = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let published = match &*transient {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_derived_member(kind, exact_key)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+            TransientIndexState::Dormant => None,
+            TransientIndexState::Invalid => {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+        };
+        let unpublished = self
+            .shared
+            .unpublished_command_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .command_derived_member(kind, exact_key);
+        drop(transient);
+        if published.is_some() && unpublished.is_some() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        if let Some(found) = published.or(unpublished) {
+            return Ok(Some(found));
+        }
+        let mut found = None;
+        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
+            for delta in &epoch.transient_deltas {
+                if let Some(member) = delta.command_derived_member(kind, exact_key)
+                    && found.replace(member).is_some()
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    pub(crate) fn command_derived_key_exists(
+        &self,
+        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
+        exact_key: &[u8],
+    ) -> Result<bool, StorageError> {
+        self.command_derived_member(kind, exact_key)
+            .map(|value| value.is_some())
+    }
+
+    pub(crate) fn command_audit_record(
+        &self,
+        sequence: riffdb_types::AdministrationSequence,
+    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
+        let mut found = {
+            let state = self
+                .shared
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(indexes) => indexes
+                    .command_audit_record(sequence)
+                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+                TransientIndexState::Dormant => None,
+                TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+            }
+        };
+        let unpublished = self
+            .shared
+            .unpublished_command_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .command_audit_record(sequence);
+        if found.is_some() && unpublished.is_some() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        found = found.or(unpublished);
+        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
+            let mut deltas = epoch.transient_deltas.iter().rev();
+            if let Some(record) = deltas
+                .next()
+                .and_then(TransientIndexDelta::command_audit_tail)
+                .filter(|record| record.administration_sequence() == sequence)
+                .cloned()
+            {
+                if found.is_some() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                return Ok(Some(record));
+            }
+            for delta in deltas {
+                if let Some(record) = delta.command_audit_record(sequence)
+                    && found.replace(record).is_some()
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    pub(crate) const fn retains_journal_mutations(&self) -> bool {
+        self.journal_mutations.is_some()
+    }
+
     pub(crate) fn record_journal_mutations(
         &self,
         mutations: Vec<crate::journal::JournalMutation>,
@@ -2351,8 +2781,25 @@ impl RedbWriteAccess {
         retained
             .try_borrow_mut()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .extend(mutations);
+            .extend(mutations)
+            .map_err(journal_storage_error)?;
         Ok(())
+    }
+
+    pub(crate) fn record_command_segment_journal_mutation(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        command_count: usize,
+    ) -> Result<(), StorageError> {
+        let Some(retained) = self.journal_mutations.as_ref() else {
+            return Ok(());
+        };
+        retained
+            .try_borrow_mut()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .push_command_segment(key, value, command_count)
+            .map_err(journal_storage_error)
     }
 
     pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
@@ -2421,11 +2868,17 @@ impl RedbWriteAccess {
             // not have landed.
             return Err(error);
         }
+        if let Some(runtime) = self.journal_checkpoint.take()
+            && let Err(error) = self.shared.finish_journal_checkpoint(runtime)
+        {
+            self.invalidate_transient_indexes();
+            return Err(error);
+        }
         for _ in 0..execution_failure_rows {
             self.shared.note_terminal_execution_failure_row();
         }
         if let Some(delta) = delta
-            && let Ok(mut state) = self.shared.transient_indexes.lock()
+            && let Ok(mut state) = self.shared.transient_indexes.write()
         {
             state.apply_delta(delta);
         }
@@ -2452,7 +2905,7 @@ impl RedbWriteAccess {
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .into_inner();
-        if journal_mutations.is_empty() {
+        if journal_mutations.mutation_count() == self.journal_mutation_start {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if epoch
@@ -2490,7 +2943,11 @@ impl RedbWriteAccess {
         epoch.last_sequence = Some(applied.last_commit_sequence());
         epoch.semantic_bytes = next_semantic;
         epoch.reserved_encoded_bytes = next_reserved;
-        epoch.journal_mutation_groups.push(journal_mutations);
+        epoch.journal_mutations = journal_mutations;
+        epoch.journal_mutation_groups = epoch
+            .journal_mutation_groups
+            .checked_add(1)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
         epoch.applied.push(applied);
         if let Some(delta) = delta {
             epoch.transient_deltas.push(delta);
@@ -2498,8 +2955,156 @@ impl RedbWriteAccess {
         Ok(epoch)
     }
 
+    pub(crate) fn submit_service_audit(
+        mut self,
+        results: Vec<riffdb_storage_api::ServiceAuditAppendResult>,
+    ) -> Result<RedbSubmittedServiceAuditFence, StorageError> {
+        let ownership = self
+            .ownership
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if !matches!(ownership, RedbWriteOwnership::ServiceAudit { .. }) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let transition_count = results
+            .iter()
+            .filter(|result| {
+                matches!(
+                    result,
+                    riffdb_storage_api::ServiceAuditAppendResult::Appended(_)
+                )
+            })
+            .count();
+        if transition_count == 0
+            || transition_count > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let mutations = self
+            .journal_mutations
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .into_inner();
+        if mutations.mutation_count() == self.journal_mutation_start {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if let Some(controller) = &self.shared.test_controller {
+            controller.before_commit(RedbTestOperation::ServiceAudit)?;
+        }
+        let transaction = self
+            .transaction
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = transaction.commit() {
+            self.shared.fence_writes();
+            return Err(commit_error(error));
+        }
+        if let Some(controller) = &self.shared.test_controller
+            && let Err(error) = controller.after_commit(RedbTestOperation::ServiceAudit)
+        {
+            self.shared.fence_writes();
+            return Err(error);
+        }
+        let successor = Arc::new(
+            self.shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?,
+        );
+        let covered_sequence = read_commit_tail(&successor)?;
+        let covered_administration_sequence = read_administration_tail(&successor)?;
+        let (receipt, encoded_bytes, predecessor_sequence, predecessor_administration_sequence) = {
+            let mut runtime_guard = self.shared.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if covered_sequence != runtime.last_sequence {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let audit_count = u16::try_from(transition_count)
+                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            let predecessor_sequence = runtime.last_sequence;
+            let predecessor_administration_sequence = runtime.last_administration_sequence;
+            let frame = crate::journal::JournalFrame::encode_buffered_service_audit(
+                runtime.database_id,
+                predecessor_sequence,
+                predecessor_administration_sequence,
+                covered_administration_sequence,
+                audit_count,
+                runtime.last_hash,
+                mutations,
+            )
+            .map_err(journal_storage_error)?;
+            let encoded_bytes = frame.as_bytes().len();
+            let next_transitions = runtime
+                .suffix_transitions
+                .checked_add(transition_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_audits = runtime
+                .suffix_audits
+                .checked_add(transition_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_bytes = runtime
+                .suffix_bytes
+                .checked_add(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_transitions = runtime
+                .unpublished_transitions
+                .checked_add(transition_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_audits = runtime
+                .unpublished_audits
+                .checked_add(transition_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_bytes = runtime
+                .unpublished_bytes
+                .checked_add(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if next_transitions > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+                || next_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+                || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
+                || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            let frame_hash = frame.frame_hash();
+            let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
+            runtime.last_administration_sequence = covered_administration_sequence;
+            runtime.last_hash = frame_hash;
+            runtime.suffix_transitions = next_transitions;
+            runtime.suffix_audits = next_audits;
+            runtime.suffix_bytes = next_bytes;
+            runtime.unpublished_transitions = next_unpublished_transitions;
+            runtime.unpublished_audits = next_unpublished_audits;
+            runtime.unpublished_bytes = next_unpublished_bytes;
+            (
+                receipt,
+                encoded_bytes,
+                predecessor_sequence,
+                predecessor_administration_sequence,
+            )
+        };
+        let fence = RedbSubmittedServiceAuditFence {
+            shared: Arc::clone(&self.shared),
+            receipt: Some(receipt),
+            successor,
+            results: Some(results),
+            transition_count,
+            encoded_bytes,
+            predecessor_sequence,
+            covered_sequence,
+            predecessor_administration_sequence,
+            covered_administration_sequence,
+            completed: false,
+        };
+        drop(ownership);
+        Ok(fence)
+    }
+
     fn invalidate_transient_indexes(&self) {
-        if let Ok(mut state) = self.shared.transient_indexes.lock() {
+        if let Ok(mut state) = self.shared.transient_indexes.write() {
             *state = TransientIndexState::Invalid;
         }
     }
@@ -2509,7 +3114,21 @@ impl RedbWriteAccess {
             .transaction
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        transaction.abort().map_err(precommit_storage_error)
+        transaction.abort().map_err(precommit_storage_error)?;
+        if let Some(runtime) = self.journal_checkpoint.take() {
+            self.shared.restore_journal_runtime(runtime)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RedbWriteAccess {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.journal_checkpoint.take()
+            && self.shared.restore_journal_runtime(runtime).is_err()
+        {
+            self.shared.fence_writes();
+        }
     }
 }
 
@@ -2539,7 +3158,18 @@ fn checked_epoch_totals(
 }
 
 impl RedbDurabilityEpoch {
-    pub(crate) fn begin_write(self) -> Result<RedbWriteAccess, StorageError> {
+    fn has_unpublished_state(&self) -> bool {
+        !self.applied.is_empty()
+            || !self.transient_deltas.is_empty()
+            || self.command_count != 0
+            || self.last_sequence.is_some()
+            || self.semantic_bytes != 0
+            || self.reserved_encoded_bytes != 0
+            || self.journal_mutations.mutation_count() != 0
+            || self.journal_mutation_groups != 0
+    }
+
+    pub(crate) fn begin_write(mut self) -> Result<RedbWriteAccess, StorageError> {
         if self.completed
             || self.lease.is_none()
             || self.shared.write_fenced.load(Ordering::Acquire)
@@ -2556,40 +3186,612 @@ impl RedbDurabilityEpoch {
             .set_durability(Durability::None)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let shared = Arc::clone(&self.shared);
+        let journal_mutations = std::mem::take(&mut self.journal_mutations);
+        let journal_mutation_start = journal_mutations.mutation_count();
         Ok(RedbWriteAccess {
             shared,
             transaction: Some(transaction),
             ownership: Some(RedbWriteOwnership::Epoch(self)),
-            journal_mutations: Some(RefCell::new(Vec::new())),
+            journal_mutations: Some(RefCell::new(journal_mutations)),
+            journal_mutation_start,
+            journal_checkpoint: None,
         })
     }
 
-    pub(crate) fn fence(
-        mut self,
-    ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
+    pub(crate) fn seal(mut self) -> Result<RedbSubmittedCommandFence, StorageError> {
         if self.applied.is_empty() || self.lease.is_none() || self.completed {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         self.shared
             .before_test_commit(RedbTestOperation::CommandEpochTail)?;
-        let mut transaction = self
-            .shared
-            .database
-            .begin_write()
-            .map_err(transaction_error)?;
+        if self.journal_mutation_groups != self.applied.len()
+            || self.journal_mutations.mutation_count() == 0
+        {
+            self.shared.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let first_sequence = self
+            .applied
+            .first()
+            .map(riffdb_storage_api::UnpublishedAuditedBatchV1::first_commit_sequence)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let last_sequence = self
+            .last_sequence
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut successor = Arc::new(
+            self.shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?,
+        );
+        let last_administration_sequence = read_administration_tail(&successor)?;
+        let mutations = std::mem::take(&mut self.journal_mutations);
+        let (receipt, encoded_bytes, audit_count, predecessor_administration_sequence, journaled) = {
+            let mut runtime_guard = self.shared.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if next_commit_sequence(runtime.last_sequence) != Some(first_sequence) {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let command_count = u16::try_from(self.command_count)
+                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            let predecessor_administration_sequence = runtime.last_administration_sequence;
+            let frame = crate::journal::JournalFrame::encode_buffered_command(
+                runtime.database_id,
+                runtime.last_sequence,
+                Some(last_sequence),
+                runtime.last_administration_sequence,
+                last_administration_sequence,
+                command_count,
+                runtime.last_hash,
+                mutations,
+            )
+            .map_err(journal_storage_error)?;
+            let encoded_bytes = frame.as_bytes().len();
+            let audit_count = usize::from(frame.audit_count());
+            let next_transitions = runtime
+                .suffix_transitions
+                .checked_add(self.command_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_commands = runtime
+                .suffix_commands
+                .checked_add(self.command_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_audits = runtime
+                .suffix_audits
+                .checked_add(audit_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_bytes = runtime
+                .suffix_bytes
+                .checked_add(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_commands = runtime
+                .unpublished_commands
+                .checked_add(self.command_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_transitions = runtime
+                .unpublished_transitions
+                .checked_add(self.command_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_audits = runtime
+                .unpublished_audits
+                .checked_add(audit_count)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_unpublished_bytes = runtime
+                .unpublished_bytes
+                .checked_add(encoded_bytes)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if next_transitions > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+                || next_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+                || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
+                || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            {
+                (None, 0, 0, predecessor_administration_sequence, false)
+            } else {
+                let frame_hash = frame.frame_hash();
+                let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
+                runtime.last_sequence = Some(last_sequence);
+                runtime.last_administration_sequence = last_administration_sequence;
+                runtime.last_hash = frame_hash;
+                runtime.suffix_transitions = next_transitions;
+                runtime.suffix_commands = next_commands;
+                runtime.suffix_audits = next_audits;
+                runtime.suffix_bytes = next_bytes;
+                runtime.unpublished_transitions = next_unpublished_transitions;
+                runtime.unpublished_commands = next_unpublished_commands;
+                runtime.unpublished_audits = next_unpublished_audits;
+                runtime.unpublished_bytes = next_unpublished_bytes;
+                (
+                    Some(receipt),
+                    encoded_bytes,
+                    audit_count,
+                    predecessor_administration_sequence,
+                    true,
+                )
+            }
+        };
+        if !journaled {
+            // The exact frame proved that the bounded recovery suffix is full.
+            // Flush the already-applied private redb root directly instead of
+            // failing the command or guessing a smaller global count ceiling.
+            // Results remain withheld by the returned fence, and the writer
+            // drains earlier journal fences before publishing this successor.
+            let mut transaction = self
+                .shared
+                .database
+                .begin_write()
+                .map_err(transaction_error)?;
+            transaction.set_two_phase_commit(false);
+            transaction
+                .set_durability(Durability::Immediate)
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            self.shared.commit_durable(transaction)?;
+            successor = Arc::new(
+                self.shared
+                    .database
+                    .begin_read()
+                    .map_err(transaction_error)?,
+            );
+        }
+        {
+            let mut unpublished = self
+                .shared
+                .unpublished_command_indexes
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            for delta in &self.transient_deltas {
+                if let Some(segment) = delta.command_segment() {
+                    unpublished.insert_segment(Arc::clone(segment))?;
+                }
+            }
+        }
+        self.completed = true;
+        drop(self.lease.take());
+        Ok(RedbSubmittedCommandFence {
+            shared: Arc::clone(&self.shared),
+            receipt,
+            successor,
+            applied: std::mem::take(&mut self.applied),
+            transient_deltas: std::mem::take(&mut self.transient_deltas),
+            command_count: self.command_count,
+            encoded_bytes,
+            last_sequence,
+            predecessor_administration_sequence,
+            last_administration_sequence,
+            audit_count,
+            journaled,
+            completed: false,
+        })
+    }
+}
+
+impl SharedRedb {
+    fn journal_runtime(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<JournalRuntime>>, StorageError> {
+        let mut runtime = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if runtime.is_none() {
+            let frontier = self
+                .durable_read_frontier
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let predecessor = frontier
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            let database_id = read_identity_from_read_transaction(predecessor)?;
+            let checkpoint_sequence = read_commit_tail(predecessor)?;
+            let checkpoint_administration_sequence = read_administration_tail(predecessor)?;
+            drop(frontier);
+            let path = crate::journal::journal_path(&self.path);
+            let (mut header, mut tail) =
+                match crate::journal::scan_journal(&path, database_id, |_| Ok(()))
+                    .map_err(journal_io_error)?
+                {
+                    Some((header, tail)) => (header, tail),
+                    None => (
+                        crate::journal::JournalFileHeader::with_frontiers(
+                            database_id,
+                            checkpoint_sequence,
+                            checkpoint_administration_sequence,
+                            [0; 32],
+                        ),
+                        crate::journal::JournalScanTail {
+                            last_sequence: checkpoint_sequence,
+                            last_administration_sequence: checkpoint_administration_sequence,
+                            last_hash: [0; 32],
+                            incomplete_tail: false,
+                            complete_bytes: 0,
+                            transition_count: 0,
+                            command_count: 0,
+                            audit_count: 0,
+                        },
+                    ),
+                };
+            let empty_tail_matches_header = header.database_id() == database_id
+                && tail.last_sequence == header.checkpoint_sequence()
+                && tail.last_administration_sequence == header.checkpoint_administration_sequence()
+                && !tail.incomplete_tail
+                && tail.transition_count == 0
+                && tail.command_count == 0
+                && tail.audit_count == 0;
+            if empty_tail_matches_header
+                && header.checkpoint_sequence() <= checkpoint_sequence
+                && header.checkpoint_administration_sequence() <= checkpoint_administration_sequence
+                && (header.checkpoint_sequence() != checkpoint_sequence
+                    || header.checkpoint_administration_sequence()
+                        != checkpoint_administration_sequence)
+            {
+                let checkpoint_hash = tail.last_hash;
+                header = crate::journal::JournalFileHeader::with_frontiers(
+                    database_id,
+                    checkpoint_sequence,
+                    checkpoint_administration_sequence,
+                    checkpoint_hash,
+                );
+                crate::journal::reset_journal(&path, &header).map_err(journal_io_error)?;
+                tail = crate::journal::JournalScanTail {
+                    last_sequence: checkpoint_sequence,
+                    last_administration_sequence: checkpoint_administration_sequence,
+                    last_hash: checkpoint_hash,
+                    incomplete_tail: false,
+                    complete_bytes: tail.complete_bytes,
+                    transition_count: 0,
+                    command_count: 0,
+                    audit_count: 0,
+                };
+            }
+            if header.database_id() != database_id
+                || header.checkpoint_sequence() != checkpoint_sequence
+                || header.checkpoint_administration_sequence() != checkpoint_administration_sequence
+                || tail.last_sequence != checkpoint_sequence
+                || tail.last_administration_sequence != checkpoint_administration_sequence
+                || tail.incomplete_tail
+                || tail.transition_count != 0
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let lane = Arc::new(
+                crate::journal::JournalLane::open(&path, &header).map_err(journal_io_error)?,
+            );
+            *runtime = Some(JournalRuntime {
+                lane,
+                database_id,
+                last_sequence: checkpoint_sequence,
+                last_administration_sequence: checkpoint_administration_sequence,
+                last_hash: header.checkpoint_frame_hash(),
+                published_sequence: checkpoint_sequence,
+                published_administration_sequence: checkpoint_administration_sequence,
+                published_hash: header.checkpoint_frame_hash(),
+                suffix_transitions: 0,
+                suffix_commands: 0,
+                suffix_audits: 0,
+                suffix_bytes: 0,
+                unpublished_transitions: 0,
+                unpublished_commands: 0,
+                unpublished_audits: 0,
+                unpublished_bytes: 0,
+                reanchor_required: false,
+            });
+        }
+        Ok(runtime)
+    }
+
+    fn checkpoint_published_journal_suffix_locked(&self, force: bool) -> Result<(), StorageError> {
+        let Some(runtime) = self.take_published_journal_suffix_locked(force)? else {
+            return Ok(());
+        };
+        let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(false);
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.shared.commit_durable(transaction)?;
-        // An after-commit failpoint models unknown publication status. Keep the
-        // predecessor root installed and let Drop fence the handle.
+        if let Err(error) = self.commit_durable(transaction) {
+            self.fence_writes();
+            return Err(error);
+        }
+        self.finish_journal_checkpoint(runtime)
+    }
+
+    fn take_published_journal_suffix_locked(
+        &self,
+        force: bool,
+    ) -> Result<Option<JournalRuntime>, StorageError> {
+        const CHECKPOINT_TRANSITION_WATERMARK: usize =
+            crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+                - riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+        const CHECKPOINT_BYTE_WATERMARK: usize = crate::journal::MAX_JOURNAL_FRAME_BYTES * 3 / 4;
+
+        let mut runtime = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let Some(current) = runtime.as_ref() else {
+            return Ok(None);
+        };
+        if current.unpublished_transitions != 0 || current.unpublished_bytes != 0 {
+            if force {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            return Ok(None);
+        }
+        if !force
+            && !current.reanchor_required
+            && current.suffix_transitions < CHECKPOINT_TRANSITION_WATERMARK
+            && current.suffix_bytes < CHECKPOINT_BYTE_WATERMARK
+        {
+            return Ok(None);
+        }
+        Ok(runtime.take())
+    }
+
+    fn finish_journal_checkpoint(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
+        drop(runtime.lane);
+        let checkpoint = self.database.begin_read().map_err(transaction_error)?;
+        let checkpoint_database_id = read_identity_from_read_transaction(&checkpoint)?;
+        let checkpoint_sequence = read_commit_tail(&checkpoint)?;
+        let checkpoint_administration_sequence = read_administration_tail(&checkpoint)?;
+        if checkpoint_database_id != runtime.database_id
+            || checkpoint_sequence < runtime.last_sequence
+            || checkpoint_administration_sequence < runtime.last_administration_sequence
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if let Err(error) = crate::journal::reset_journal(
+            &crate::journal::journal_path(&self.path),
+            &crate::journal::JournalFileHeader::with_frontiers(
+                runtime.database_id,
+                checkpoint_sequence,
+                checkpoint_administration_sequence,
+                runtime.last_hash,
+            ),
+        ) {
+            self.fence_writes();
+            return Err(journal_io_error(error));
+        }
+        let mut frontier = self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if frontier.take().is_none() {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        Ok(())
+    }
+
+    fn restore_journal_runtime(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
+        let mut current = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if current.is_some() {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *current = Some(runtime);
+        Ok(())
+    }
+}
+
+fn read_commit_tail(transaction: &ReadTransaction) -> Result<Option<CommitSequence>, StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    crate::command_authority::command_authority_head(&commits, &events)
+}
+
+fn read_administration_tail(
+    transaction: &ReadTransaction,
+) -> Result<Option<AdministrationSequence>, StorageError> {
+    let physical = transaction
+        .open_table(AUDIT)
+        .map_err(table_error)?
+        .last()
+        .map_err(precommit_storage_error)?
+        .map(|(key, _)| crate::keys::decode_audit_key(key.value()))
+        .transpose()
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let command = match commits.last().map_err(precommit_storage_error)? {
+        None => None,
+        Some((_, encoded)) => {
+            match riffdb_storage_api::decode_command_segment_v1(encoded.value()) {
+                Ok(segment) => Some(segment.value().last_administration_sequence()),
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    None
+                }
+                Err(error) => return Err(crate::error::codec_error(error)),
+            }
+        }
+    };
+    match (physical, command) {
+        (Some(physical), Some(command)) if physical == command => {
+            Err(storage_error(StorageErrorKind::CorruptData))
+        }
+        (Some(physical), Some(command)) => Ok(Some(physical.max(command))),
+        (Some(sequence), None) | (None, Some(sequence)) => Ok(Some(sequence)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn next_commit_sequence(sequence: Option<CommitSequence>) -> Option<CommitSequence> {
+    sequence.map_or(Some(CommitSequence::first()), CommitSequence::checked_next)
+}
+
+fn journal_storage_error(error: crate::journal::JournalCodecError) -> StorageError {
+    let kind = if error == crate::journal::JournalCodecError::LimitExceeded {
+        StorageErrorKind::LimitExceeded
+    } else {
+        StorageErrorKind::InvariantViolation
+    };
+    storage_error(kind)
+}
+
+fn journal_io_error(error: crate::journal::JournalIoError) -> StorageError {
+    match error {
+        crate::journal::JournalIoError::Corrupt => storage_error(StorageErrorKind::CorruptData),
+        crate::journal::JournalIoError::LegacyNonEmpty(path) => {
+            eprintln!(
+                "RDB-STORAGE-UPGRADE: legacy durability journal '{}' is nonempty; reopen with the prior binary and perform a clean checkpoint before upgrading",
+                path.display()
+            );
+            storage_error(StorageErrorKind::IncompatibleFormat)
+        }
+        crate::journal::JournalIoError::Capacity => storage_error(StorageErrorKind::LimitExceeded),
+        crate::journal::JournalIoError::Io | crate::journal::JournalIoError::Stopped => {
+            storage_error(StorageErrorKind::CommitStatusUnknown)
+        }
+    }
+}
+
+impl DeferredCommandFence for RedbSubmittedCommandFence {
+    fn requires_pipeline_drain(&self) -> bool {
+        !self.journaled
+    }
+
+    fn try_wait(
+        &mut self,
+    ) -> Result<Option<Vec<riffdb_storage_api::AuditedCommittedBatchV1>>, StorageError> {
+        (|| {
+            if !self.journaled {
+                return self.publish_direct().map(Some);
+            }
+            let fenced = self
+                .receipt
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .try_wait()
+                .map_err(journal_io_error)?;
+            let Some(fenced) = fenced else {
+                return Ok(None);
+            };
+            self.receipt.take();
+            self.publish_fenced(fenced).map(Some)
+        })()
+    }
+
+    fn wait(mut self) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
+        if !self.journaled {
+            return self.publish_direct();
+        }
+        let fenced = self
+            .receipt
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .wait()
+            .map_err(journal_io_error)?;
+        self.publish_fenced(fenced)
+    }
+}
+
+impl RedbSubmittedCommandFence {
+    fn publish_direct(
+        &mut self,
+    ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
+        self.publish_successor()?;
+        {
+            let mut runtime_guard = self.shared.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            let first_sequence = self
+                .applied
+                .first()
+                .map(riffdb_storage_api::UnpublishedAuditedBatchV1::first_commit_sequence);
+            if runtime.unpublished_transitions != 0
+                || runtime.unpublished_bytes != 0
+                || runtime.published_sequence != runtime.last_sequence
+                || runtime.published_administration_sequence != runtime.last_administration_sequence
+                || runtime.published_hash != runtime.last_hash
+                || next_commit_sequence(runtime.published_sequence) != first_sequence
+                || runtime.published_administration_sequence
+                    != self.predecessor_administration_sequence
+            {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            runtime.last_sequence = Some(self.last_sequence);
+            runtime.published_sequence = Some(self.last_sequence);
+            runtime.last_administration_sequence = self.last_administration_sequence;
+            runtime.published_administration_sequence = self.last_administration_sequence;
+            runtime.reanchor_required = true;
+        }
+        self.finish_applied()
+    }
+
+    fn publish_fenced(
+        &mut self,
+        fenced: crate::journal::JournalFence,
+    ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
+        if fenced.covered_sequence != Some(self.last_sequence)
+            || fenced.covered_administration_sequence != self.last_administration_sequence
+        {
+            self.shared.fence_writes();
+            return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+        }
+        self.publish_successor()?;
+
+        {
+            let mut runtime_guard = self.shared.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if next_commit_sequence(runtime.published_sequence)
+                != self
+                    .applied
+                    .first()
+                    .map(riffdb_storage_api::UnpublishedAuditedBatchV1::first_commit_sequence)
+                || runtime.published_administration_sequence
+                    != self.predecessor_administration_sequence
+                || runtime.unpublished_transitions < self.command_count
+                || runtime.unpublished_commands < self.command_count
+                || runtime.unpublished_audits < self.audit_count
+                || runtime.unpublished_bytes < self.encoded_bytes
+            {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            runtime.published_sequence = Some(self.last_sequence);
+            runtime.published_administration_sequence = self.last_administration_sequence;
+            runtime.published_hash = fenced.frame_hash;
+            runtime.unpublished_transitions -= self.command_count;
+            runtime.unpublished_commands -= self.command_count;
+            runtime.unpublished_audits -= self.audit_count;
+            runtime.unpublished_bytes -= self.encoded_bytes;
+            if runtime.unpublished_transitions == 0
+                && runtime.unpublished_bytes == 0
+                && (runtime.published_sequence != runtime.last_sequence
+                    || runtime.published_administration_sequence
+                        != runtime.last_administration_sequence
+                    || runtime.published_hash != runtime.last_hash)
+            {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+
+        self.finish_applied()
+    }
+
+    fn publish_successor(&mut self) -> Result<(), StorageError> {
         self.shared
             .after_test_commit(RedbTestOperation::CommandEpochTail)?;
-
         let mut transient = self
             .shared
             .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let mut unpublished = self
+            .shared
+            .unpublished_command_indexes
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         let mut frontier = self
@@ -2597,26 +3799,24 @@ impl RedbDurabilityEpoch {
             .durable_read_frontier
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if frontier.take().is_none() {
+        if frontier.is_none() {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        *frontier = Some(Arc::clone(&self.successor));
         drop(frontier);
         for delta in self.transient_deltas.drain(..) {
+            if let Some(segment) = delta.command_segment() {
+                unpublished.remove_segment(segment)?;
+            }
             transient.apply_delta(delta);
         }
-        drop(transient);
+        Ok(())
+    }
 
-        if self.journal_mutation_groups.len() != self.applied.len()
-            || self
-                .journal_mutation_groups
-                .iter()
-                .any(std::vec::Vec::is_empty)
-        {
-            self.shared.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        self.journal_mutation_groups.clear();
+    fn finish_applied(
+        &mut self,
+    ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
         let mut committed = Vec::with_capacity(self.applied.len());
         for batch in self.applied.drain(..) {
             let (outcomes, terminals) = batch.into_parts();
@@ -2632,16 +3832,125 @@ impl RedbDurabilityEpoch {
             );
         }
         self.completed = true;
-        drop(self.lease.take());
         Ok(committed)
+    }
+}
+
+impl Drop for RedbSubmittedCommandFence {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.shared.fence_writes();
+            if let Ok(mut state) = self.shared.transient_indexes.write() {
+                *state = TransientIndexState::Invalid;
+            }
+        }
+    }
+}
+
+impl riffdb_storage_api::DeferredServiceAuditFence for RedbSubmittedServiceAuditFence {
+    fn try_wait(
+        &mut self,
+    ) -> Result<Option<Vec<riffdb_storage_api::ServiceAuditAppendResult>>, StorageError> {
+        let fenced = self
+            .receipt
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .try_wait()
+            .map_err(journal_io_error)?;
+        let Some(fenced) = fenced else {
+            return Ok(None);
+        };
+        self.receipt.take();
+        self.publish_fenced(fenced).map(Some)
+    }
+
+    fn wait(
+        mut self: Box<Self>,
+    ) -> Result<Vec<riffdb_storage_api::ServiceAuditAppendResult>, StorageError> {
+        let fenced = self
+            .receipt
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .wait()
+            .map_err(journal_io_error)?;
+        self.publish_fenced(fenced)
+    }
+}
+
+impl RedbSubmittedServiceAuditFence {
+    fn publish_fenced(
+        &mut self,
+        fenced: crate::journal::JournalFence,
+    ) -> Result<Vec<riffdb_storage_api::ServiceAuditAppendResult>, StorageError> {
+        if fenced.covered_sequence != self.covered_sequence
+            || fenced.covered_administration_sequence != self.covered_administration_sequence
+        {
+            self.shared.fence_writes();
+            return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+        }
+        let mut frontier = self
+            .shared
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if frontier.is_none() {
+            self.shared.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *frontier = Some(Arc::clone(&self.successor));
+        drop(frontier);
+        {
+            let mut runtime_guard = self.shared.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if runtime.published_sequence != self.predecessor_sequence
+                || runtime.published_administration_sequence
+                    != self.predecessor_administration_sequence
+                || runtime.unpublished_transitions < self.transition_count
+                || runtime.unpublished_audits < self.transition_count
+                || runtime.unpublished_bytes < self.encoded_bytes
+            {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            runtime.published_sequence = self.covered_sequence;
+            runtime.published_administration_sequence = self.covered_administration_sequence;
+            runtime.published_hash = fenced.frame_hash;
+            runtime.unpublished_transitions -= self.transition_count;
+            runtime.unpublished_audits -= self.transition_count;
+            runtime.unpublished_bytes -= self.encoded_bytes;
+            if runtime.unpublished_transitions == 0
+                && runtime.unpublished_bytes == 0
+                && (runtime.published_sequence != runtime.last_sequence
+                    || runtime.published_administration_sequence
+                        != runtime.last_administration_sequence
+                    || runtime.published_hash != runtime.last_hash)
+            {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        self.completed = true;
+        self.results
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+}
+
+impl Drop for RedbSubmittedServiceAuditFence {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.shared.fence_writes();
+        }
     }
 }
 
 impl Drop for RedbDurabilityEpoch {
     fn drop(&mut self) {
-        if !self.completed {
+        if !self.completed && self.has_unpublished_state() {
             self.shared.fence_writes();
-            if let Ok(mut state) = self.shared.transient_indexes.lock() {
+            if let Ok(mut state) = self.shared.transient_indexes.write() {
                 *state = TransientIndexState::Invalid;
             }
         }
@@ -2677,13 +3986,73 @@ impl RedbWriteAccess {
             .open_table(AUDIT_BY_REQUEST)
             .map_err(table_error)?;
         self.shared.note_audit_sequence_begin_read();
-        service_audit_sequences_from_table(&table, request_ids)
+        let mut sequences = service_audit_sequences_from_table(&table, request_ids)?;
+        {
+            let state = self
+                .shared
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(indexes) => {
+                    let derived = indexes
+                        .command_audit_sequences_for(request_ids)
+                        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))??;
+                    merge_audit_sequences(&mut sequences, derived)?;
+                }
+                TransientIndexState::Dormant => {}
+                TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+            }
+        }
+        let unpublished = self
+            .shared
+            .unpublished_command_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .command_audit_sequences_for(request_ids)?;
+        merge_audit_sequences(&mut sequences, unpublished)?;
+        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
+            let mut derived = std::collections::BTreeMap::new();
+            for delta in &epoch.transient_deltas {
+                delta.command_audit_sequences_for(request_ids, &mut derived)?;
+            }
+            merge_audit_sequences(&mut sequences, derived)?;
+        }
+        Ok(sequences)
     }
 
     pub(crate) fn ensure_outbox_indexes_available(&self) -> Result<(), StorageError> {
         self.shared.pending_outbox_page(None, 0)?;
         self.shared.undelivered_outbox_page(None, 0).map(|_| ())
     }
+}
+
+fn merge_audit_sequences(
+    target: &mut std::collections::BTreeMap<
+        riffdb_types::RequestId,
+        Vec<riffdb_types::AdministrationSequence>,
+    >,
+    source: std::collections::BTreeMap<
+        riffdb_types::RequestId,
+        Vec<riffdb_types::AdministrationSequence>,
+    >,
+) -> Result<(), StorageError> {
+    const MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST: usize = 2;
+    for (request_id, source_sequences) in source {
+        let sequences = target.entry(request_id).or_default();
+        for sequence in source_sequences {
+            if !sequences.contains(&sequence) {
+                sequences.push(sequence);
+            }
+        }
+        sequences.sort_unstable();
+        if sequences.len() > MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    Ok(())
 }
 
 impl SharedRedb {
@@ -2700,7 +4069,7 @@ impl SharedRedb {
     ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
         let state = self
             .transient_indexes
-            .lock()
+            .read()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         match &*state {
             TransientIndexState::Ready(indexes) => indexes
@@ -2719,7 +4088,7 @@ impl SharedRedb {
     ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
         let state = self
             .transient_indexes
-            .lock()
+            .read()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         match &*state {
             TransientIndexState::Ready(indexes) => indexes
@@ -3150,6 +4519,69 @@ mod tests {
                 .expect_err("encoded successor exceeds epoch")
                 .kind(),
             StorageErrorKind::LimitExceeded
+        );
+    }
+
+    #[test]
+    fn dropping_pristine_durability_epoch_is_a_proven_safe_cancellation() {
+        let path = TestDatabasePath::new("empty-epoch-cancellation");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id(0x31))
+            .expect("initialize store");
+        let ports = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+
+        let epoch = ports.begin_deferred_epoch().expect("begin pristine epoch");
+        assert!(!epoch.has_unpublished_state());
+        drop(epoch);
+
+        ports
+            .begin_write()
+            .expect("pristine cancellation must not fence later writes")
+            .abort()
+            .expect("abort probe write");
+        assert!(
+            ports
+                .pending_outbox_page(None, 1)
+                .expect("pristine cancellation keeps transient indexes usable")
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn dropping_nonempty_durability_epoch_remains_fail_closed() {
+        let path = TestDatabasePath::new("nonempty-epoch-drop");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id(0x32))
+            .expect("initialize store");
+        let ports = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+
+        let mut epoch = ports.begin_deferred_epoch().expect("begin epoch");
+        epoch.command_count = 1;
+        assert!(epoch.has_unpublished_state());
+        drop(epoch);
+
+        let error = match ports.begin_write() {
+            Ok(_) => panic!("nonempty dropped epoch must fence later writes"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+        assert_eq!(
+            ports
+                .pending_outbox_page(None, 1)
+                .expect_err("nonempty dropped epoch invalidates transient indexes")
+                .kind(),
+            StorageErrorKind::Unavailable
         );
     }
 

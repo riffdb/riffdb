@@ -88,6 +88,8 @@ artifacts=(
     fixtures/proto/durable-contextual-causation-v2-schema-hashes.bin
     fixtures/proto/durable-command-capsule-v1-record-bounds.bin
     fixtures/proto/durable-command-capsule-v1-schema-hashes.bin
+    fixtures/proto/durable-command-segment-v1-record-bounds.bin
+    fixtures/proto/durable-command-segment-v1-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt

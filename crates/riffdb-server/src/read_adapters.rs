@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
@@ -115,28 +115,32 @@ impl ActiveCatalogView {
 
 fn read_active_catalog_cached<R: CatalogRepository>(
     repository: &R,
-    cache: &Mutex<ActiveCatalogView>,
+    cache: &RwLock<ActiveCatalogView>,
 ) -> Result<Option<ActiveCatalogSnapshot>, CatalogError> {
     let durable_pointer = repository.read_active_catalog()?;
-    if let Some(snapshot) = cache
-        .lock()
+    let cached = cache
+        .read()
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
-        .get(durable_pointer.as_ref())
-    {
+        .get(durable_pointer.as_ref());
+    if let Some(snapshot) = cached {
         // Arc clone only — consumers receive a shared published snapshot.
         return Ok(snapshot.map(|shared| ActiveCatalogSnapshot::clone(shared.as_ref())));
     }
 
-    // A cache miss always takes the complete catalog validation path. The
-    // snapshot read observes the active pointer again, so a concurrent
-    // activation yields either the prior or successor complete snapshot,
-    // never a pointer/bundle mixture.
+    // Keep the cache write lock across this synchronous cold load. Concurrent first
+    // requests otherwise all decode and regenerate the same immutable bundle
+    // before any one of them publishes it. The snapshot read observes the
+    // active pointer again, so a concurrent activation still yields either the
+    // prior or successor complete snapshot, never a pointer/bundle mixture.
+    let mut cache = cache
+        .write()
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+    if let Some(snapshot) = cache.get(durable_pointer.as_ref()) {
+        return Ok(snapshot.map(|shared| ActiveCatalogSnapshot::clone(shared.as_ref())));
+    }
     let snapshot = ActiveCatalogSnapshot::read(repository)?;
     let published = snapshot.as_ref().map(|value| Arc::new(value.clone()));
-    cache
-        .lock()
-        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
-        .replace(published);
+    cache.replace(published);
     Ok(snapshot)
 }
 
@@ -238,7 +242,7 @@ impl QueryModulePlanCache {
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
 pub(crate) struct ServerCatalogReadPort {
     active_storage: SharedRedbOperationalPorts,
-    active_cache: Arc<Mutex<ActiveCatalogView>>,
+    active_cache: Arc<RwLock<ActiveCatalogView>>,
     active: BlockingPortExecutor<(), Option<ActiveCatalogSnapshot>, CatalogError>,
     contract_version:
         BlockingPortExecutor<ContractVersionRequest, Option<ValidatedContractBundle>, CatalogError>,
@@ -257,7 +261,7 @@ pub(crate) struct ServerCatalogReadPort {
     >,
     /// Shared with the blocking executor for non-blocking cache-hit inline lookup.
     module_storage: SharedRedbOperationalPorts,
-    module_cache: Arc<Mutex<QueryModulePlanCache>>,
+    module_cache: Arc<RwLock<QueryModulePlanCache>>,
 }
 
 impl ServerCatalogReadPort {
@@ -267,7 +271,7 @@ impl ServerCatalogReadPort {
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
     pub(crate) fn new(storage: SharedRedbOperationalPorts, driver: &BlockingPortDriver) -> Self {
-        let active_cache = Arc::new(Mutex::new(ActiveCatalogView::default()));
+        let active_cache = Arc::new(RwLock::new(ActiveCatalogView::default()));
         let active_storage = storage.clone();
         let reserved_active_storage = storage.clone();
         let reserved_active_cache = Arc::clone(&active_cache);
@@ -332,7 +336,7 @@ impl ServerCatalogReadPort {
         });
 
         let module_storage = storage.clone();
-        let module_cache = Arc::new(Mutex::new(QueryModulePlanCache::default()));
+        let module_cache = Arc::new(RwLock::new(QueryModulePlanCache::default()));
         let pool_module_storage = module_storage.clone();
         let pool_module_cache = Arc::clone(&module_cache);
         let query_module = driver.executor(move |(contract, selected): QueryModuleReadRequest| {
@@ -494,8 +498,9 @@ impl ReactiveModuleReadPort for ServerCatalogReadPort {
 ///
 /// This is the inline fast path and it is deliberately incapable of failing.
 /// It performs no storage I/O, acquires no write lock, and never blocks: it
-/// reads the already-resident active-module pointer with `try_read` and the
-/// compiled-plan cache with `try_lock`.
+/// reads the already-resident active-module pointer and compiled-plan cache
+/// with shared `try_read` guards. Warm readers therefore do not exclude one
+/// another; a cold publisher remains the sole writer.
 ///
 /// `Some(answer)` is a complete successful result — a cached compiled module,
 /// or `None` for an identity the view already knows has no active module.
@@ -505,7 +510,7 @@ impl ReactiveModuleReadPort for ServerCatalogReadPort {
 /// every cold read, every compile, and therefore the entire error taxonomy.
 fn try_cached_query_module(
     storage: &SharedRedbOperationalPorts,
-    cache: &Mutex<QueryModulePlanCache>,
+    cache: &RwLock<QueryModulePlanCache>,
     contract: &ValidatedContractBundle,
     selected: Option<QueryModuleHash>,
 ) -> Option<Option<ValidatedQueryModule>> {
@@ -520,14 +525,14 @@ fn try_cached_query_module(
             None => return Some(None),
         },
     };
-    let module = cache.try_lock().ok()?.get(module_hash, contract)?;
+    let module = cache.try_read().ok()?.get(module_hash, contract)?;
     Some(Some(module))
 }
 
 /// Full query-module resolution for the blocking pool (unchanged semantics).
 fn resolve_query_module_on_pool(
     storage: &SharedRedbOperationalPorts,
-    cache: &Mutex<QueryModulePlanCache>,
+    cache: &RwLock<QueryModulePlanCache>,
     contract: ValidatedContractBundle,
     selected: Option<QueryModuleHash>,
 ) -> Result<Option<ValidatedQueryModule>, QueryModuleReadError> {
@@ -546,7 +551,7 @@ fn resolve_query_module_on_pool(
         return Ok(None);
     };
     if let Some(module) = cache
-        .lock()
+        .read()
         .map_err(|_| QueryModuleReadError::Integrity)?
         .get(module_hash, &contract)
     {
@@ -560,7 +565,7 @@ fn resolve_query_module_on_pool(
         .transpose()?;
     if let Some(module) = module.as_ref() {
         cache
-            .lock()
+            .write()
             .map_err(|_| QueryModuleReadError::Integrity)?
             .insert(module.clone());
     }
@@ -2427,7 +2432,7 @@ mod tests {
             CatalogActivationResult::Activated { .. }
         ));
 
-        let cache = Mutex::new(ActiveCatalogView::default());
+        let cache = RwLock::new(ActiveCatalogView::default());
         let first = read_active_catalog_cached(&storage, &cache)
             .expect("first read")
             .expect("active catalog present");
@@ -2443,13 +2448,13 @@ mod tests {
             .expect("pointer")
             .expect("active pointer");
         let a = cache
-            .lock()
+            .read()
             .expect("cache")
             .get(Some(&pointer))
             .expect("hit")
             .expect("present");
         let b = cache
-            .lock()
+            .read()
             .expect("cache")
             .get(Some(&pointer))
             .expect("hit")
@@ -2510,7 +2515,7 @@ mod tests {
             CatalogActivationResult::Activated { .. }
         ));
 
-        let cache = Mutex::new(ActiveCatalogView::default());
+        let cache = RwLock::new(ActiveCatalogView::default());
         let warm_v1 = read_active_catalog_cached(&storage, &cache)
             .expect("warm v1")
             .expect("present");
@@ -2560,6 +2565,8 @@ mod tests {
     /// assertion fail.
     #[test]
     fn real_catalog_read_port_serves_warm_plan_lookups_inline_and_pools_everything_else() {
+        use std::sync::{Arc as StdArc, Barrier};
+        use std::thread;
         use std::time::{Duration, Instant};
 
         use riffdb_contract_compiler::compile_contract_source;
@@ -2715,6 +2722,42 @@ mod tests {
                 "an active-pointer cache hit must not enter the blocking pool"
             );
         });
+
+        // Warm immutable plans fan out under shared cache reads. A mutex plus
+        // `try_lock` turns harmless reader overlap into blocking-pool work;
+        // this synchronized burst makes that regression observable.
+        let concurrent_baseline = query_module_pool_dispatch_count();
+        let readers = 64;
+        let barrier = StdArc::new(Barrier::new(readers));
+        thread::scope(|scope| {
+            for _ in 0..readers {
+                let barrier = StdArc::clone(&barrier);
+                let handle = runtime.handle().clone();
+                let bundle = bundle.clone();
+                let port = &port;
+                scope.spawn(move || {
+                    let (control, _cancellation) =
+                        RequestControl::new(Instant::now() + Duration::from_secs(30));
+                    barrier.wait();
+                    for _ in 0..64 {
+                        let resolved = handle
+                            .block_on(port.prepare_query_module(
+                                &control,
+                                bundle.clone(),
+                                module_hash,
+                            ))
+                            .expect("concurrent warm lookup succeeds")
+                            .expect("concurrent module is present");
+                        assert_eq!(resolved.identity(), module_hash);
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            query_module_pool_dispatch_count(),
+            concurrent_baseline,
+            "concurrent warm readers must never fall back to the blocking pool"
+        );
 
         // Admission control: once routing stops, a warm cache must not be a
         // bypass. The request has to reach the pool and be refused there.

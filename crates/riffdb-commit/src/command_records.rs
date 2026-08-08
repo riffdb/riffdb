@@ -17,7 +17,8 @@ use riffdb_types::{EntityVersion, EventId};
 use crate::{
     command_attempt::PendingCommandAttempts,
     command_index::{
-        CheckedCandidateStage, CheckedCommitCandidate, RetainedCheckedCommitCandidate,
+        CheckedCandidateStage, CheckedCommitCandidate, PostApplyCheckedCommitCandidate,
+        RetainedCheckedCommitCandidate,
     },
     outcome::CommittedOutcome,
 };
@@ -133,8 +134,44 @@ pub(super) struct UncertainCommandCommit {
     cause: StorageError,
     lookup_candidates: IdempotencyLookupCandidatesV1,
     expected_outcome: StoredOutcomeV1,
-    candidate: RetainedCheckedCommitCandidate,
+    candidate: UncertainCommandCandidate,
     durability_mode: DurabilityMode,
+}
+
+#[allow(clippy::large_enum_variant)] // Avoid allocating on the normal checked commit path.
+enum UncertainCommandCandidate {
+    Live(RetainedCheckedCommitCandidate),
+    PostApply(PostApplyCheckedCommitCandidate),
+}
+
+impl UncertainCommandCandidate {
+    fn exact_intent(&self) -> &riffdb_storage_api::CommitIntent {
+        match self {
+            Self::Live(candidate) => candidate.exact_intent(),
+            Self::PostApply(candidate) => candidate.exact_intent(),
+        }
+    }
+
+    fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        match self {
+            Self::Live(candidate) => candidate.lookup_candidates(),
+            Self::PostApply(candidate) => candidate.lookup_candidates(),
+        }
+    }
+
+    fn matches_terminal_failure(&self, failure: &StoredExecutionFailedV1) -> bool {
+        match self {
+            Self::Live(candidate) => failure.pending() == candidate.exact_intent().pending(),
+            Self::PostApply(candidate) => candidate.matches_terminal_failure(failure),
+        }
+    }
+
+    fn into_pending_after_proven_noncommit(self) -> Result<PendingCommandAttempts, ()> {
+        match self {
+            Self::Live(candidate) => candidate.into_pending_after_proven_noncommit(),
+            Self::PostApply(candidate) => Ok(candidate.into_pending_after_proven_noncommit()),
+        }
+    }
 }
 
 impl UncertainCommandCommit {
@@ -144,6 +181,7 @@ impl UncertainCommandCommit {
 }
 
 /// Closed result of one consuming same-key uncertain-commit lookup.
+#[allow(clippy::large_enum_variant)] // The large noncommit proof is consumed only after uncertainty.
 pub(super) enum UncertainCommandCommitResolution {
     /// The exact expected outcome committed during this invocation.
     Committed(CommittedOutcome),
@@ -162,7 +200,7 @@ pub(super) enum UncertainCommandCommitResolution {
 
 /// Opaque authority to discard the old attempt and begin a fresh evaluation.
 pub(super) struct ProvenNonCommitCommand {
-    candidate: RetainedCheckedCommitCandidate,
+    candidate: UncertainCommandCandidate,
 }
 
 impl ProvenNonCommitCommand {
@@ -195,9 +233,21 @@ pub(super) struct CheckedStagedCommandEntry {
     expected_outcome: StoredOutcomeV1,
 }
 
+struct PostApplyCheckedCommandEntry {
+    candidate: PostApplyCheckedCommitCandidate,
+    expected_outcome: StoredOutcomeV1,
+}
+
 impl CheckedStagedCommandEntry {
     pub(super) fn into_retry(self) -> Result<PendingCommandAttempts, ()> {
         self.candidate.into_pending_after_group_rollback()
+    }
+
+    fn into_post_apply(self) -> Result<PostApplyCheckedCommandEntry, ()> {
+        Ok(PostApplyCheckedCommandEntry {
+            candidate: self.candidate.into_post_apply_evidence()?,
+            expected_outcome: self.expected_outcome,
+        })
     }
 }
 
@@ -366,26 +416,128 @@ impl<S> CheckedStagedCommand<S>
 where
     S: NonEmptyCommandBatch + DeferredNonEmptyCommandBatch,
 {
-    /// Applies one already-selected non-singleton subgroup without publication,
-    /// then converts it to ordinary committed outcomes only after the backend's
-    /// Immediate tail fence succeeds.
-    pub(super) fn commit_group_deferred(
+    pub(super) fn apply_group_deferred(
         self,
         audits: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
-    ) -> CheckedCommandGroupCommitResult {
+    ) -> CheckedCommandGroupApplyResult<S::Epoch> {
         let Self {
             staged,
             entries,
             durability_mode,
         } = self;
-        if entries.len() < 2 || entries.len() != audits.len() {
+        // An idle singleton remains on the direct Immediate path. A singleton
+        // selected after an unpublished FIFO predecessor is nevertheless a
+        // valid deferred subgroup: its storage transition must extend the
+        // writer-private frontier and share a later journal fence.
+        if entries.is_empty() || entries.len() != audits.len() {
             drop(staged);
             drop(entries);
-            return CheckedCommandGroupCommitResult::Integrity;
+            return CheckedCommandGroupApplyResult::Failed(
+                CheckedCommandGroupCommitResult::Integrity,
+            );
         }
-        let committed = staged
-            .apply_unpublished_with_service_audit_transitions(durability_mode, audits)
-            .and_then(|epoch| epoch.fence())
+        match staged.apply_unpublished_with_service_audit_transitions(durability_mode, audits) {
+            Ok(epoch) => {
+                let entries = entries
+                    .into_iter()
+                    .map(CheckedStagedCommandEntry::into_post_apply)
+                    .collect::<Result<Vec<_>, _>>();
+                match entries {
+                    Ok(entries) => CheckedCommandGroupApplyResult::Applied {
+                        epoch,
+                        batch: CheckedDeferredCommandBatch {
+                            entries,
+                            durability_mode,
+                        },
+                    },
+                    Err(()) => {
+                        drop(epoch);
+                        CheckedCommandGroupApplyResult::Failed(
+                            CheckedCommandGroupCommitResult::Integrity,
+                        )
+                    }
+                }
+            }
+            Err(error) => CheckedCommandGroupApplyResult::Failed(finish_checked_group_commit(
+                entries,
+                durability_mode,
+                Err(StorageError::new(
+                    StorageErrorKind::CommitStatusUnknown,
+                    error.incident_id(),
+                )),
+            )),
+        }
+    }
+}
+
+pub(super) struct CheckedDeferredCommandBatch {
+    entries: Vec<PostApplyCheckedCommandEntry>,
+    durability_mode: DurabilityMode,
+}
+
+pub(super) enum CheckedCommandGroupApplyResult<E> {
+    Applied {
+        epoch: E,
+        batch: CheckedDeferredCommandBatch,
+    },
+    Failed(CheckedCommandGroupCommitResult),
+}
+
+pub(super) trait CheckedCommandGroupFence {
+    fn requires_pipeline_drain(&self) -> bool;
+    fn try_wait(&mut self) -> Option<CheckedCommandGroupCommitResult>;
+    fn wait(self: Box<Self>) -> CheckedCommandGroupCommitResult;
+}
+
+struct TypedCheckedCommandGroupFence<F> {
+    fence: Option<F>,
+    batch: Option<CheckedDeferredCommandBatch>,
+}
+
+impl<F> CheckedCommandGroupFence for TypedCheckedCommandGroupFence<F>
+where
+    F: riffdb_storage_api::DeferredCommandFence,
+{
+    fn requires_pipeline_drain(&self) -> bool {
+        self.fence
+            .as_ref()
+            .is_some_and(riffdb_storage_api::DeferredCommandFence::requires_pipeline_drain)
+    }
+
+    fn try_wait(&mut self) -> Option<CheckedCommandGroupCommitResult> {
+        let fenced = match self.fence.as_mut()?.try_wait() {
+            Ok(Some(mut batches)) => {
+                if batches.len() != 1 {
+                    Err(StorageError::new(
+                        StorageErrorKind::InvariantViolation,
+                        None,
+                    ))
+                } else {
+                    Ok(batches.remove(0).into_parts().0)
+                }
+            }
+            Ok(None) => return None,
+            Err(error) => Err(error),
+        }
+        .map_err(|error| {
+            StorageError::new(StorageErrorKind::CommitStatusUnknown, error.incident_id())
+        });
+        self.fence.take();
+        let batch = self.batch.take()?;
+        Some(finish_post_apply_group_commit(
+            batch.entries,
+            batch.durability_mode,
+            fenced,
+        ))
+    }
+
+    fn wait(self: Box<Self>) -> CheckedCommandGroupCommitResult {
+        let Self { fence, batch } = *self;
+        let (Some(fence), Some(batch)) = (fence, batch) else {
+            return CheckedCommandGroupCommitResult::Integrity;
+        };
+        let fenced = fence
+            .wait()
             .and_then(|mut batches| {
                 if batches.len() != 1 {
                     return Err(StorageError::new(
@@ -398,7 +550,72 @@ where
             .map_err(|error| {
                 StorageError::new(StorageErrorKind::CommitStatusUnknown, error.incident_id())
             });
-        finish_checked_group_commit(entries, durability_mode, committed)
+        finish_post_apply_group_commit(batch.entries, batch.durability_mode, fenced)
+    }
+}
+
+pub(super) fn seal_checked_deferred_group<E>(
+    epoch: E,
+    batch: CheckedDeferredCommandBatch,
+) -> Result<Box<dyn CheckedCommandGroupFence>, CheckedCommandGroupCommitResult>
+where
+    E: DeferredCommandEpoch,
+    E::Fence: 'static,
+{
+    match epoch.seal() {
+        Ok(fence) => Ok(Box::new(TypedCheckedCommandGroupFence {
+            fence: Some(fence),
+            batch: Some(batch),
+        })),
+        Err(error) => Err(finish_post_apply_group_commit(
+            batch.entries,
+            batch.durability_mode,
+            Err(StorageError::new(
+                StorageErrorKind::CommitStatusUnknown,
+                error.incident_id(),
+            )),
+        )),
+    }
+}
+
+fn finish_post_apply_group_commit(
+    entries: Vec<PostApplyCheckedCommandEntry>,
+    durability_mode: DurabilityMode,
+    committed: Result<CommittedBatchV1, StorageError>,
+) -> CheckedCommandGroupCommitResult {
+    match committed {
+        Ok(batch)
+            if batch.durability_mode() == durability_mode
+                && batch.outcomes().len() == entries.len()
+                && batch
+                    .outcomes()
+                    .iter()
+                    .zip(&entries)
+                    .all(|(outcome, entry)| {
+                        outcome == &entry.expected_outcome
+                            && entry.candidate.matches_terminal_outcome(outcome)
+                    }) =>
+        {
+            CheckedCommandGroupCommitResult::Committed(
+                entries
+                    .into_iter()
+                    .map(|entry| CommittedOutcome::first_commit(entry.expected_outcome))
+                    .collect(),
+            )
+        }
+        Ok(_) => CheckedCommandGroupCommitResult::Integrity,
+        Err(cause) => CheckedCommandGroupCommitResult::StatusUnknown(
+            entries
+                .into_iter()
+                .map(|entry| UncertainCommandCommit {
+                    cause: cause.clone(),
+                    lookup_candidates: entry.candidate.lookup_candidates().clone(),
+                    expected_outcome: entry.expected_outcome,
+                    candidate: UncertainCommandCandidate::PostApply(entry.candidate),
+                    durability_mode,
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -437,7 +654,7 @@ fn finish_checked_group_commit(
                     cause: cause.clone(),
                     lookup_candidates: entry.candidate.lookup_candidates().clone(),
                     expected_outcome: entry.expected_outcome,
-                    candidate: entry.candidate,
+                    candidate: UncertainCommandCandidate::Live(entry.candidate),
                     durability_mode,
                 })
                 .collect();
@@ -494,7 +711,7 @@ fn finish_checked_commit(
                 cause,
                 lookup_candidates,
                 expected_outcome,
-                candidate,
+                candidate: UncertainCommandCandidate::Live(candidate),
                 durability_mode,
             }))
         }
@@ -512,9 +729,11 @@ pub(super) fn resolve_uncertain_command_commit(
 ) -> UncertainCommandCommitResolution {
     if uncertain.cause.kind() != StorageErrorKind::CommitStatusUnknown
         || uncertain.expected_outcome.durability_mode() != uncertain.durability_mode
-        || !uncertain
-            .candidate
-            .matches_intent(uncertain.candidate.exact_intent())
+        || uncertain.expected_outcome.plan()
+            != uncertain.candidate.exact_intent().evaluated().plan()
+        || uncertain.expected_outcome.provenance_id()
+            != uncertain.candidate.exact_intent().provenance_id()
+        || uncertain.lookup_candidates != *uncertain.candidate.lookup_candidates()
     {
         return UncertainCommandCommitResolution::Integrity;
     }
@@ -548,7 +767,7 @@ pub(super) fn resolve_uncertain_command_commit(
                 UncertainCommandCommitResolution::Committed(CommittedOutcome::first_commit(outcome))
             }
             StoredAdmissionStateV1::ExecutionFailed(failure)
-                if failure.pending() == uncertain.candidate.exact_intent().pending() =>
+                if uncertain.candidate.matches_terminal_failure(&failure) =>
             {
                 UncertainCommandCommitResolution::ExecutionFailureReplay(Box::new(failure))
             }

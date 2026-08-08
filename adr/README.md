@@ -117,6 +117,11 @@ direction, merged draft, or implementation choice.
 | [0096](0096-dynamic-groups-under-static-safety-ceiling.md) | Dynamic Physical Groups Under a Static Safety Ceiling | Accepted |
 | [0097](0097-bounded-generated-batch-writer-feeding.md) | Bounded Generated-Batch Writer Feeding | Accepted |
 | [0098](0098-bounded-redb-durability-epochs.md) | Bounded Redb Durability Epochs | Accepted |
+| [0099](0099-canonical-command-capsules.md) | Canonical Command Capsules and Locator Rows | Accepted |
+| [0100](0100-changelog-frames-follow-published-durable-frontiers.md) | Changelog Frames Follow Published Durable Frontiers | Proposed |
+| [0101](0101-pipelined-standard-durability-journal.md) | Pipelined Standard Durability Journal | Accepted |
+| [0102](0102-segmented-command-authority-and-derived-locators.md) | Segmented Command Authority and Rebuildable Exact Locators | Accepted |
+| [0103](0103-preallocated-recyclable-durability-journal.md) | Preallocated Recyclable Durability Journal | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

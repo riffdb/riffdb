@@ -2,11 +2,12 @@
 
 use std::ops::Bound::{Excluded, Included, Unbounded};
 
-use redb::{ReadOnlyTable, ReadTransaction, ReadableTable};
+use redb::{ReadOnlyTable, ReadTransaction, ReadableTableMetadata};
 use riffdb_storage_api::{
-    AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
-    AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EncodedPageItem,
-    EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
+    ApplicationSequenceAllocator, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
+    AuthoritativePointReader, AuthoritativeScanReader, CommandDerivedIndexKindV1,
+    CommandDerivedMemberV1, CommitScanPageV1, CommitScanRequest, EncodedContentCharge,
+    EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
     EventRouteUpperFenceV1, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
     IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
@@ -19,19 +20,26 @@ use riffdb_storage_api::{
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::codec::{
-    IdempotencyRecordV1, decode_commit_with_event_table, decode_durable_event_v1,
-    decode_entity_record_v1, decode_event_route_v1, decode_idempotency_record_v1,
+    IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_command_locator_v1,
+    decode_durable_event_v1, decode_entity_record_v1, decode_idempotency_record_v1,
     decode_index_entry_v2, decode_index_epoch_v1, decode_provenance_record_v1,
+    encode_event_route_v1,
+};
+use crate::command_authority::{
+    command_authority_head, command_member_at, commit_at, commits_in_physical_row,
+    physical_scan_start,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
+#[cfg(test)]
+use crate::keys::encode_event_route_key;
 use crate::keys::{
-    decode_application_sequence_key, decode_event_route_key, decode_index_entry_key,
-    encode_application_sequence_key, encode_entity_key, encode_event_key, encode_event_route_key,
-    encode_idempotency_key, encode_partition_index_key, encode_provenance_key,
+    decode_application_sequence_key, decode_index_entry_key, encode_application_sequence_key,
+    encode_entity_key, encode_event_key, encode_idempotency_key, encode_partition_index_key,
+    encode_provenance_key,
 };
 use crate::layout::{
-    COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, INDEX_EPOCHS, PROVENANCE,
-    SECONDARY_INDEXES,
+    COMMITS, ENTITIES, EVENTS, IDEMPOTENCY, INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE,
+    PROVENANCE, SECONDARY_INDEXES,
 };
 use crate::store::RedbOperationalPorts;
 
@@ -39,6 +47,20 @@ type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
 impl SnapshotReader for RedbOperationalPorts {
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError> {
+        let mut snapshots = self.read_snapshot_group(vec![request])?;
+        snapshots
+            .pop()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn read_snapshot_group(
+        &self,
+        requests: Vec<SnapshotRequest>,
+    ) -> Result<Vec<ReadSnapshot>, StorageError> {
+        if requests.is_empty() || requests.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
         let transaction = self.begin_read()?;
         let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
         let index_entries = transaction
@@ -47,54 +69,75 @@ impl SnapshotReader for RedbOperationalPorts {
         let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
 
-        let observed_through = read_commit_head(&transaction, &commits)?;
-        let mut snapshot =
-            ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
-
-        for target in request.binding_targets() {
-            snapshot
-                .push_binding(read_entity_observation(&entities, target)?)
-                .map_err(materialization_value)?;
-        }
-        for target in request.root_validation_targets() {
-            snapshot
-                .push_root_validation(read_entity_observation(&entities, target)?)
-                .map_err(materialization_value)?;
-        }
-        for target in request.range_targets() {
-            let epoch = read_epoch_position(&index_epochs, target.generation_target())?;
-            let mut range = snapshot
-                .begin_range(target.clone(), epoch)
-                .map_err(materialization_value)?;
-            let prefix = target.prefix().as_bytes();
-            let mut entries = index_entries
-                .range(prefix..)
-                .map_err(precommit_storage_error)?;
-            for entry in &mut entries {
-                let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-                if !physical_key.value().starts_with(prefix) {
-                    break;
-                }
-                let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-                let decoded = decode_index_entry_v2(encoded.value())?;
-                if decoded.value().key() != &key {
-                    return Err(corrupt());
-                }
-                if decoded.value().partition_key() != target.generation_target().partition_key() {
-                    continue;
-                }
-                let row = IndexRangeEntry::new(
-                    key.index_id(),
-                    key,
-                    decoded.value().covered_values().clone(),
+        let observed_through = read_snapshot_head(&transaction, &commits)?;
+        requests
+            .into_iter()
+            .map(|request| {
+                read_snapshot_from_tables(
+                    request,
+                    observed_through,
+                    &entities,
+                    &index_entries,
+                    &index_epochs,
                 )
-                .map_err(corrupt_value)?;
-                range.push_entry(row).map_err(materialization_value)?;
-            }
-            range.finish().map_err(materialization_value)?;
-        }
-        snapshot.finish().map_err(materialization_value)
+            })
+            .collect()
     }
+}
+
+fn read_snapshot_from_tables(
+    request: SnapshotRequest,
+    observed_through: Option<CommitSequence>,
+    entities: &BytesTable,
+    index_entries: &BytesTable,
+    index_epochs: &BytesTable,
+) -> Result<ReadSnapshot, StorageError> {
+    let mut snapshot =
+        ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
+
+    for target in request.binding_targets() {
+        snapshot
+            .push_binding(read_entity_observation(entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.root_validation_targets() {
+        snapshot
+            .push_root_validation(read_entity_observation(entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.range_targets() {
+        let epoch = read_epoch_position(index_epochs, target.generation_target())?;
+        let mut range = snapshot
+            .begin_range(target.clone(), epoch)
+            .map_err(materialization_value)?;
+        let prefix = target.prefix().as_bytes();
+        let mut entries = index_entries
+            .range(prefix..)
+            .map_err(precommit_storage_error)?;
+        for entry in &mut entries {
+            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+            if !physical_key.value().starts_with(prefix) {
+                break;
+            }
+            let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
+            let decoded = decode_index_entry_v2(encoded.value())?;
+            if decoded.value().key() != &key {
+                return Err(corrupt());
+            }
+            if decoded.value().partition_key() != target.generation_target().partition_key() {
+                continue;
+            }
+            let row = IndexRangeEntry::new(
+                key.index_id(),
+                key,
+                decoded.value().covered_values().clone(),
+            )
+            .map_err(corrupt_value)?;
+            range.push_entry(row).map_err(materialization_value)?;
+        }
+        range.finish().map_err(materialization_value)?;
+    }
+    snapshot.finish().map_err(materialization_value)
 }
 
 impl AuthoritativePointReader for RedbOperationalPorts {
@@ -114,12 +157,25 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         let key = identity
             .storage_key()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let encoded_key = encode_idempotency_key(&key);
+        if let Some((segment, locator)) =
+            self.command_derived_member(CommandDerivedIndexKindV1::Idempotency, encoded_key)?
+        {
+            if locator.member != CommandDerivedMemberV1::Command || locator.member_ordinal != 0 {
+                return Err(corrupt());
+            }
+            let command = segment
+                .commands()
+                .get(usize::from(locator.command_ordinal))
+                .ok_or_else(corrupt)?;
+            if command.base().outcome().identity() != identity {
+                return Err(corrupt());
+            }
+            return Ok(Some(command.base().outcome().clone()));
+        }
         let transaction = self.begin_read()?;
         let table = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
-        let Some(encoded) = table
-            .get(encode_idempotency_key(&key))
-            .map_err(precommit_storage_error)?
-        else {
+        let Some(encoded) = table.get(encoded_key).map_err(precommit_storage_error)? else {
             return Ok(None);
         };
         let decoded = decode_idempotency_record_v1(encoded.value())?;
@@ -135,6 +191,19 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             IdempotencyRecordV1::StoredOutcome(_) | IdempotencyRecordV1::ExecutionFailed(_) => {
                 Err(corrupt())
             }
+            IdempotencyRecordV1::CommandLocator(locator) => {
+                let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+                let events = transaction.open_table(EVENTS).map_err(table_error)?;
+                let capsule = command_member_at(&commits, &events, locator.commit_sequence())?
+                    .ok_or_else(corrupt)?
+                    .into_base();
+                if capsule.commit_sequence() != locator.commit_sequence()
+                    || capsule.outcome().identity() != identity
+                {
+                    return Err(corrupt());
+                }
+                Ok(Some(capsule.outcome().clone()))
+            }
         }
     }
 
@@ -142,27 +211,24 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         &self,
         sequence: CommitSequence,
     ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
+        if let Some(command) = self.indexed_command_at(sequence)? {
+            if command.commit_sequence() != sequence {
+                return Err(corrupt());
+            }
+            return Ok(Some(command.base().commit().clone()));
+        }
         let transaction = self.begin_read()?;
         // Verified once at open; prune runs only under exclusive OFFLINE
         // access, so the watermark cannot change under a live handle.
         let watermark = self.shared.retention_watermark();
         let table = transaction.open_table(COMMITS).map_err(table_error)?;
-        let encoded_key = encode_application_sequence_key(sequence);
-        let Some(encoded) = table
-            .get(encoded_key.as_slice())
-            .map_err(precommit_storage_error)?
-        else {
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let Some(record) = commit_at(&table, &events, sequence)? else {
             if crate::retention::sequence_covered_by_watermark(sequence.get(), watermark) {
                 return Err(storage_error(StorageErrorKind::HistoryPruned));
             }
             return Ok(None);
         };
-        let record = decode_commit_in_snapshot(&transaction, encoded.value())?
-            .into_parts()
-            .0;
-        if record.commit_sequence() != sequence {
-            return Err(corrupt());
-        }
         Ok(Some(record))
     }
 
@@ -170,16 +236,47 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         &self,
         provenance_id: ProvenanceId,
     ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
+        let encoded_key = encode_provenance_key(provenance_id);
+        if let Some((segment, locator)) = self.command_derived_member(
+            CommandDerivedIndexKindV1::Provenance,
+            encoded_key.as_slice(),
+        )? {
+            if locator.member != CommandDerivedMemberV1::Command || locator.member_ordinal != 0 {
+                return Err(corrupt());
+            }
+            let command = segment
+                .commands()
+                .get(usize::from(locator.command_ordinal))
+                .ok_or_else(corrupt)?;
+            let record = command.base().provenance();
+            if record.provenance_id() != provenance_id {
+                return Err(corrupt());
+            }
+            return Ok(Some(record.clone()));
+        }
         let transaction = self.begin_read()?;
         let table = transaction.open_table(PROVENANCE).map_err(table_error)?;
-        let encoded_key = encode_provenance_key(provenance_id);
         let Some(encoded) = table
             .get(encoded_key.as_slice())
             .map_err(precommit_storage_error)?
         else {
             return Ok(None);
         };
-        let record = decode_provenance_record_v1(encoded.value())?.into_parts().0;
+        let record = match decode_command_locator_v1(encoded.value()) {
+            Ok(locator) => {
+                let locator = locator.into_parts().0;
+                let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+                let events = transaction.open_table(EVENTS).map_err(table_error)?;
+                let capsule = command_member_at(&commits, &events, locator.commit_sequence())?
+                    .ok_or_else(corrupt)?
+                    .into_base();
+                if capsule.commit_sequence() != locator.commit_sequence() {
+                    return Err(corrupt());
+                }
+                capsule.provenance().clone()
+            }
+            Err(_) => decode_provenance_record_v1(encoded.value())?.into_parts().0,
+        };
         if record.provenance_id() != provenance_id {
             return Err(corrupt());
         }
@@ -190,6 +287,14 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         &self,
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
+        if let Some(command) = self.indexed_command_at(event_id.commit_sequence())? {
+            let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+            let event = command.events().get(ordinal).ok_or_else(corrupt)?;
+            if event.event_id() != event_id {
+                return Err(corrupt());
+            }
+            return Ok(Some(event.clone()));
+        }
         let transaction = self.begin_read()?;
         // Verified once at open (see read_commit).
         let watermark = self.shared.retention_watermark();
@@ -220,112 +325,26 @@ impl PartitionEventRouteReader for RedbOperationalPorts {
         &self,
         request: EventRouteScanRequestV1,
     ) -> Result<EventRouteScanV1, StorageError> {
-        let transaction = self.begin_read()?;
-        let routes = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let partition_hash = request.partition_hash();
-        let mut partition_lower = [0_u8; 44];
-        partition_lower[..32].copy_from_slice(partition_hash.as_bytes());
-        let mut partition_upper = [0xff_u8; 44];
-        partition_upper[..32].copy_from_slice(partition_hash.as_bytes());
-
-        let inclusive_upper = match request.inclusive_upper() {
-            Some(upper) => {
-                let upper_key = encode_event_route_key(partition_hash, upper);
-                if routes
-                    .get(upper_key.as_slice())
-                    .map_err(precommit_storage_error)?
-                    .is_none()
-                {
-                    return Err(corrupt());
-                }
-                EventRouteUpperFenceV1::Inclusive(upper)
-            }
-            None => {
-                let mut partition = routes
-                    .range::<&[u8]>((
-                        Included(partition_lower.as_slice()),
-                        Included(partition_upper.as_slice()),
-                    ))
-                    .map_err(precommit_storage_error)?;
-                match partition.next_back() {
-                    Some(entry) => {
-                        let (key, _) = entry.map_err(precommit_storage_error)?;
-                        let (stored_partition, event_id) =
-                            decode_event_route_key(key.value()).map_err(|_| corrupt())?;
-                        if stored_partition != partition_hash {
-                            return Err(corrupt());
-                        }
-                        EventRouteUpperFenceV1::Inclusive(event_id)
-                    }
-                    None => EventRouteUpperFenceV1::BeforeFirst,
-                }
-            }
-        };
+        let wanted = usize::from(request.limit().get().get());
+        let (inclusive_upper, routes, mut has_more) = self.partition_event_route_page(
+            request.partition_hash(),
+            request.after(),
+            request.inclusive_upper(),
+            wanted.saturating_add(1),
+        )?;
         let EventRouteUpperFenceV1::Inclusive(upper) = inclusive_upper else {
             return EventRouteScanV1::exact_end(request, inclusive_upper, Vec::new())
                 .map_err(materialization_value);
         };
-        if request.after().is_some_and(|after| after >= upper) {
-            return EventRouteScanV1::exact_end(request, inclusive_upper, Vec::new())
-                .map_err(materialization_value);
-        }
-
-        let upper_key = encode_event_route_key(partition_hash, upper);
-        let lower_key = request
-            .after()
-            .map(|after| encode_event_route_key(partition_hash, after));
-        let lower_bound = lower_key
-            .as_ref()
-            .map_or(Included(partition_lower.as_slice()), |key| {
-                Excluded(key.as_slice())
-            });
-        let mut scan = routes
-            .range::<&[u8]>((lower_bound, Included(upper_key.as_slice())))
-            .map_err(precommit_storage_error)?;
-        let wanted = usize::from(request.limit().get().get());
         let mut items = Vec::with_capacity(wanted);
         let mut encoded_bytes = 0usize;
-        let mut has_more = false;
-        for entry in &mut scan {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            let (stored_partition, event_id) =
-                decode_event_route_key(physical_key.value()).map_err(|_| corrupt())?;
-            if stored_partition != partition_hash {
-                return Err(corrupt());
-            }
+        for route in routes {
             if items.len() == wanted {
                 has_more = true;
                 break;
             }
-            let decoded = decode_event_route_v1(encoded.value())?;
-            if decoded.value().event_id() != event_id {
-                return Err(corrupt());
-            }
-            let event_key = encode_event_key(event_id);
-            let Some(event) = events
-                .get(event_key.as_slice())
-                .map_err(precommit_storage_error)?
-            else {
-                // Routes are RETAINED under prune; a route resolving below
-                // the watermark is history that existed and was retired —
-                // the typed pruned outcome, never corruption (ADR-0085 A2).
-                if crate::retention::sequence_covered_by_watermark(
-                    event_id.commit_sequence().get(),
-                    self.shared.retention_watermark(),
-                ) {
-                    return Err(storage_error(StorageErrorKind::HistoryPruned));
-                }
-                return Err(corrupt());
-            };
-            let event = decode_durable_event_v1(event.value())?.into_parts().0;
-            if event.event_id() != event_id
-                || event.event_type_id() != decoded.value().event_type_id()
-                || event.event_hash() != decoded.value().event_hash()
-            {
-                return Err(corrupt());
-            }
-            let (route, charge) = decoded.into_parts();
+            let encoded = encode_event_route_v1(route)?;
+            let charge = EncodedContentCharge::new(encoded.as_bytes().len()).ok_or_else(corrupt)?;
             let next_bytes = encoded_bytes
                 .checked_add(charge.get())
                 .ok_or_else(corrupt)?;
@@ -344,14 +363,6 @@ impl PartitionEventRouteReader for RedbOperationalPorts {
                 .map_err(materialization_value)
         }
     }
-}
-
-pub(crate) fn decode_commit_in_snapshot(
-    transaction: &ReadTransaction,
-    encoded: &[u8],
-) -> Result<EncodedPageItem<StoredCommitRecordV1>, StorageError> {
-    let table = transaction.open_table(EVENTS).map_err(table_error)?;
-    decode_commit_with_event_table(encoded, &table)
 }
 
 impl AuthoritativeScanReader for RedbOperationalPorts {
@@ -425,6 +436,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
         let transaction = self.begin_read()?;
         let table = transaction.open_table(COMMITS).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
         let inclusive_upper = match request.inclusive_upper() {
             Some(sequence) => FrontierPosition::AppliedThrough(sequence),
             None => read_commit_head(&transaction, &table)?.map_or(
@@ -447,7 +459,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
             return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
                 .map_err(corrupt_value);
         }
-        let start = encode_application_sequence_key(first_expected);
+        let start = physical_scan_start(&table, first_expected)?.ok_or_else(corrupt)?;
         let end = encode_application_sequence_key(upper);
         let mut scan = table
             .range::<&[u8]>((Included(start.as_slice()), Included(end.as_slice())))
@@ -457,35 +469,56 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
         let mut encoded_bytes = 0usize;
         let mut has_more = false;
         let mut expected = Some(first_expected);
+        let mut expected_physical = None;
 
-        for entry in &mut scan {
+        'rows: for entry in &mut scan {
             let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            let sequence =
+            let physical_sequence =
                 decode_application_sequence_key(physical_key.value()).map_err(|_| corrupt())?;
-            if Some(sequence) != expected {
+            if expected_physical.is_some_and(|value| value != physical_sequence) {
                 return Err(corrupt());
             }
-            if records.len() == wanted {
-                has_more = true;
-                break;
-            }
-            let decoded = decode_commit_in_snapshot(&transaction, encoded.value())?;
-            if decoded.value().commit_sequence() != sequence {
-                return Err(corrupt());
-            }
-            let next_bytes = encoded_bytes
-                .checked_add(decoded.encoded_content_charge().get())
-                .ok_or_else(corrupt)?;
-            if next_bytes > MAX_COMMIT_SCAN_PAGE_BYTES {
-                if records.is_empty() {
-                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+            let logical = commits_in_physical_row(encoded.value(), &events, physical_sequence)?;
+            let last_physical = logical
+                .last()
+                .ok_or_else(corrupt)?
+                .value()
+                .commit_sequence();
+            expected_physical = last_physical.checked_next();
+
+            for decoded in logical {
+                let sequence = decoded.value().commit_sequence();
+                if sequence < first_expected {
+                    continue;
                 }
-                has_more = true;
-                break;
+                if sequence > upper {
+                    break 'rows;
+                }
+                if Some(sequence) != expected {
+                    return Err(corrupt());
+                }
+                if records.len() == wanted {
+                    has_more = true;
+                    break 'rows;
+                }
+                let next_bytes = encoded_bytes
+                    .checked_add(decoded.encoded_content_charge().get())
+                    .ok_or_else(corrupt)?;
+                if next_bytes > MAX_COMMIT_SCAN_PAGE_BYTES {
+                    if records.is_empty() {
+                        return Err(storage_error(StorageErrorKind::LimitExceeded));
+                    }
+                    has_more = true;
+                    break 'rows;
+                }
+                encoded_bytes = next_bytes;
+                records.push(decoded);
+                expected = sequence.checked_next();
             }
-            encoded_bytes = next_bytes;
-            records.push(decoded);
-            expected = sequence.checked_next();
+        }
+
+        if !has_more && expected.is_some_and(|sequence| sequence <= upper) {
+            return Err(corrupt());
         }
 
         if has_more {
@@ -657,15 +690,39 @@ pub(crate) fn read_commit_head(
     transaction: &ReadTransaction,
     table: &BytesTable,
 ) -> Result<Option<CommitSequence>, StorageError> {
-    let Some((physical_key, encoded)) = table.last().map_err(precommit_storage_error)? else {
-        return Ok(None);
-    };
-    let sequence = decode_application_sequence_key(physical_key.value()).map_err(|_| corrupt())?;
-    let commit = decode_commit_in_snapshot(transaction, encoded.value())?;
-    if commit.value().commit_sequence() != sequence {
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    command_authority_head(table, &events)
+}
+
+/// Reads the snapshot-visible application frontier without decoding retained
+/// command history. The allocator is advanced in the same authoritative redb
+/// transaction as every entity/index post-image and command segment, so its
+/// predecessor is the exact frontier of this read transaction.
+pub(crate) fn read_snapshot_head(
+    transaction: &ReadTransaction,
+    commits: &BytesTable,
+) -> Result<Option<CommitSequence>, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let encoded = meta
+        .get(META_APPLICATION_SEQUENCE)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    let allocator = *decode_application_sequence_allocator_v1(encoded.value())?.value();
+    let head = snapshot_head_from_allocator(allocator);
+    if commits.is_empty().map_err(precommit_storage_error)? != head.is_none() {
         return Err(corrupt());
     }
-    Ok(Some(sequence))
+    Ok(head)
+}
+
+const fn snapshot_head_from_allocator(
+    allocator: ApplicationSequenceAllocator,
+) -> Option<CommitSequence> {
+    match allocator {
+        ApplicationSequenceAllocator::Next(next) if next.get() == 1 => None,
+        ApplicationSequenceAllocator::Next(next) => CommitSequence::new(next.get() - 1),
+        ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
+    }
 }
 
 fn materialization_value(error: StorageValueError) -> StorageError {
@@ -715,8 +772,9 @@ mod tests {
 
     use super::*;
     use crate::codec::{
-        encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
-        encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
+        encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
+        encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2,
+        encode_index_epoch_v1,
     };
     use crate::layout::{COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, SECONDARY_INDEXES};
     use crate::store::RedbStore;
@@ -959,6 +1017,12 @@ mod tests {
 
     fn seed_commit(ports: &RedbOperationalPorts, sequence: CommitSequence) {
         let encoded = encode_commit_record_v1(&stored_commit(sequence)).expect("encode commit");
+        let next = sequence.checked_next().map_or(
+            ApplicationSequenceAllocator::Exhausted,
+            ApplicationSequenceAllocator::Next,
+        );
+        let encoded_allocator =
+            encode_application_sequence_allocator_v1(next).expect("encode allocator");
         let key = encode_application_sequence_key(sequence);
         let access = ports.begin_write().expect("begin commit seed");
         {
@@ -974,7 +1038,41 @@ mod tests {
                     .is_none()
             );
         }
+        {
+            let mut meta = access
+                .transaction()
+                .expect("seed transaction")
+                .open_table(META)
+                .expect("meta table");
+            assert!(
+                meta.insert(META_APPLICATION_SEQUENCE, encoded_allocator.as_bytes())
+                    .expect("advance allocator")
+                    .is_some()
+            );
+        }
         access.commit().expect("commit seed");
+    }
+
+    fn replace_application_allocator(
+        ports: &RedbOperationalPorts,
+        allocator: ApplicationSequenceAllocator,
+    ) {
+        let encoded =
+            encode_application_sequence_allocator_v1(allocator).expect("encode allocator");
+        let access = ports.begin_write().expect("begin allocator update");
+        {
+            let mut meta = access
+                .transaction()
+                .expect("allocator transaction")
+                .open_table(META)
+                .expect("meta table");
+            assert!(
+                meta.insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
+                    .expect("replace allocator")
+                    .is_some()
+            );
+        }
+        access.commit().expect("commit allocator update");
     }
 
     fn event_partition_hash() -> riffdb_types::PartitionKeyHash {
@@ -1068,6 +1166,75 @@ mod tests {
                 records,
                 inclusive_upper: FrontierPosition::BeforeFirst,
             } if records.is_empty()
+        ));
+    }
+
+    #[test]
+    fn snapshot_frontier_allocator_mapping_is_closed_and_exact() {
+        let second = CommitSequence::first().checked_next().expect("second");
+        assert_eq!(
+            snapshot_head_from_allocator(ApplicationSequenceAllocator::initial()),
+            None
+        );
+        assert_eq!(
+            snapshot_head_from_allocator(ApplicationSequenceAllocator::Next(second)),
+            Some(CommitSequence::first())
+        );
+        assert_eq!(
+            snapshot_head_from_allocator(ApplicationSequenceAllocator::Exhausted),
+            CommitSequence::new(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn snapshot_frontier_rejects_allocator_authority_presence_mismatch() {
+        let (_path, ports) = operational("snapshot-frontier-presence");
+        let second = CommitSequence::first().checked_next().expect("second");
+        replace_application_allocator(&ports, ApplicationSequenceAllocator::Next(second));
+        let transaction = ports.begin_read().expect("read transaction");
+        let commits = transaction.open_table(COMMITS).expect("commit table");
+        assert!(matches!(
+            read_snapshot_head(&transaction, &commits),
+            Err(error) if error.kind() == StorageErrorKind::CorruptData
+        ));
+    }
+
+    #[test]
+    fn snapshot_frontier_does_not_decode_retained_command_history() {
+        let (_path, ports) = operational("snapshot-frontier-constant");
+        let first = CommitSequence::first();
+        let access = ports.begin_write().expect("begin malformed history seed");
+        {
+            let mut commits = access
+                .transaction()
+                .expect("history transaction")
+                .open_table(COMMITS)
+                .expect("commit table");
+            assert!(
+                commits
+                    .insert(
+                        encode_application_sequence_key(first).as_slice(),
+                        &[0x5a_u8; 4096][..],
+                    )
+                    .expect("insert opaque retained history")
+                    .is_none()
+            );
+        }
+        access.commit().expect("commit malformed history seed");
+        replace_application_allocator(
+            &ports,
+            ApplicationSequenceAllocator::Next(first.checked_next().expect("second")),
+        );
+
+        let transaction = ports.begin_read().expect("read transaction");
+        let commits = transaction.open_table(COMMITS).expect("commit table");
+        assert_eq!(
+            read_snapshot_head(&transaction, &commits).expect("constant-time frontier"),
+            Some(first)
+        );
+        assert!(matches!(
+            read_commit_head(&transaction, &commits),
+            Err(error) if error.kind() == StorageErrorKind::CorruptData
         ));
     }
 

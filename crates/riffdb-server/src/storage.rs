@@ -752,6 +752,13 @@ impl SnapshotReader for SharedRedbOperationalPorts {
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError> {
         SnapshotReader::read_snapshot(&self.shared, request)
     }
+
+    fn read_snapshot_group(
+        &self,
+        requests: Vec<SnapshotRequest>,
+    ) -> Result<Vec<ReadSnapshot>, StorageError> {
+        SnapshotReader::read_snapshot_group(&self.shared, requests)
+    }
 }
 
 impl ApplicationCommandTransactionPort for SharedRedbOperationalPorts {

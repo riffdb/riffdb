@@ -24,7 +24,9 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey, PartitionKey};
 
-use crate::command_attempt::{PendingCommandAttempts, RolledBackCandidateDisposition};
+use crate::command_attempt::{
+    PendingCommandAttempts, PostApplyCommandEvidence, RolledBackCandidateDisposition,
+};
 #[cfg(test)]
 use crate::command_validation::CheckedCandidateSeal;
 use crate::command_validation::{
@@ -375,6 +377,40 @@ pub(super) struct RetainedCheckedCommitCandidate {
     affected_targets: AffectedIndexEpochTargets,
 }
 
+/// Checked same-attempt evidence after private storage apply has consumed the
+/// conflict capability.
+pub(super) struct PostApplyCheckedCommitCandidate {
+    evidence: PostApplyCommandEvidence,
+}
+
+impl PostApplyCheckedCommitCandidate {
+    pub(super) const fn exact_intent(&self) -> &CommitIntent {
+        self.evidence.exact_intent()
+    }
+
+    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        self.evidence.lookup_candidates()
+    }
+
+    pub(super) fn matches_terminal_outcome(
+        &self,
+        outcome: &riffdb_storage_api::StoredOutcomeV1,
+    ) -> bool {
+        self.evidence.matches_terminal_outcome(outcome)
+    }
+
+    pub(super) fn matches_terminal_failure(
+        &self,
+        failure: &riffdb_storage_api::StoredExecutionFailedV1,
+    ) -> bool {
+        self.evidence.matches_terminal_failure(failure)
+    }
+
+    pub(super) fn into_pending_after_proven_noncommit(self) -> PendingCommandAttempts {
+        self.evidence.into_pending_after_proven_noncommit()
+    }
+}
+
 enum RetainedCheckedAttemptAuthority {
     Validated(Box<StagedValidatedCommand>),
     #[cfg(test)]
@@ -408,6 +444,7 @@ impl RetainedCheckedCommitCandidate {
         &self.affected_targets
     }
 
+    #[cfg(test)]
     pub(super) fn matches_intent(&self, intent: &CommitIntent) -> bool {
         match &self.authority {
             RetainedCheckedAttemptAuthority::Validated(checked) => {
@@ -464,6 +501,26 @@ impl RetainedCheckedCommitCandidate {
     /// storage batch has been rolled back.
     pub(super) fn into_pending_after_group_rollback(self) -> Result<PendingCommandAttempts, ()> {
         self.into_pending_after_proven_noncommit()
+    }
+
+    /// Consumes the live attempt only after storage returned a complete private
+    /// applied epoch, releasing its conflict lease while retaining uncertainty
+    /// resolution evidence.
+    pub(super) fn into_post_apply_evidence(self) -> Result<PostApplyCheckedCommitCandidate, ()> {
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        drop(entry_mutations);
+        drop(affected_targets);
+        match authority {
+            RetainedCheckedAttemptAuthority::Validated(checked) => checked
+                .into_post_apply_evidence()
+                .map(|evidence| PostApplyCheckedCommitCandidate { evidence }),
+            #[cfg(test)]
+            RetainedCheckedAttemptAuthority::Fixture { .. } => Err(()),
+        }
     }
 
     #[cfg(test)]

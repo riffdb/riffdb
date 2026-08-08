@@ -14,7 +14,7 @@ use super::failpoint::{RedbMaintenanceFailpoint, RedbMaintenanceTestController};
 use super::path_guard::PinnedDirectory;
 use crate::backup::{
     DATABASE_ARTIFACT_FILE_NAME, RedbOfflineRestore, sha256_file, sha256_reader, sync_parent,
-    validate_database_semantics, validate_immutable_backup,
+    validate_backup_journal, validate_database_semantics, validate_immutable_backup,
 };
 use crate::error::storage_error;
 
@@ -26,6 +26,7 @@ pub struct RedbStagedRestore {
     backup_name: BackupNameV1,
     backup_directory: PathBuf,
     staged_database_file: PathBuf,
+    staged_journal_file: PathBuf,
     configured_database_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
@@ -90,11 +91,13 @@ impl RedbStagedRestore {
         match materialized {
             Ok(manifest) => {
                 let staged_database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+                let staged_journal_file = crate::journal::journal_path(&staged_database_file);
                 Ok(Self {
                     operation_id,
                     backup_name,
                     backup_directory,
                     staged_database_file,
+                    staged_journal_file,
                     configured_database_file,
                     manifest,
                     manifest_identity,
@@ -160,6 +163,12 @@ impl RedbStagedRestore {
             return Err(corrupt());
         }
         let sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
+        validate_backup_journal(
+            &self.staged_journal_file,
+            self.manifest.database_id(),
+            self.manifest.last_commit_sequence(),
+        )?;
+        let sealed_journal_checksum = sha256_file(&self.staged_journal_file)?;
         self.verify_paths()?;
         Ok(RedbSealedStagedRestore {
             operation_id: self.operation_id,
@@ -167,10 +176,12 @@ impl RedbStagedRestore {
             backup_directory: self.backup_directory,
             configured_database_file: self.configured_database_file,
             staged_database_file: self.staged_database_file,
+            staged_journal_file: self.staged_journal_file,
             manifest: self.manifest,
             manifest_identity: self.manifest_identity,
             staged_history_incarnation,
             sealed_artifact_checksum,
+            sealed_journal_checksum,
             backup_directory_guard: self.backup_directory_guard,
             configured_parent_guard: self.configured_parent_guard,
             stage_cleanup: self.stage_cleanup,
@@ -203,10 +214,12 @@ pub struct RedbSealedStagedRestore {
     backup_directory: PathBuf,
     configured_database_file: PathBuf,
     staged_database_file: PathBuf,
+    staged_journal_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
     staged_history_incarnation: u64,
     sealed_artifact_checksum: BackupIntegrityChecksumV1,
+    sealed_journal_checksum: BackupIntegrityChecksumV1,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
     stage_cleanup: StagedDirectoryCleanup,
@@ -293,12 +306,26 @@ impl RedbSealedStagedRestore {
         if sha256_reader(staged_file)? != self.sealed_artifact_checksum {
             return Err(corrupt());
         }
+        let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
+        let staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
+        if sha256_reader(staged_journal)? != self.sealed_journal_checksum {
+            return Err(corrupt());
+        }
         self.stage_cleanup.verify()?;
 
         let target_lock = lock_existing_target(&self.configured_parent_guard, target_name)?;
+        let configured_journal = crate::journal::journal_path(&self.configured_database_file);
+        let target_journal_name = configured_journal.file_name().ok_or_else(invariant)?;
+        let target_journal_lock =
+            lock_existing_target(&self.configured_parent_guard, target_journal_name)?;
         let (mut temporary, mut temporary_file) = TargetTemporaryFile::create(
             &self.configured_parent_guard,
             target_name,
+            self.operation_id,
+        )?;
+        let (mut journal_temporary, mut journal_temporary_file) = TargetTemporaryFile::create(
+            &self.configured_parent_guard,
+            target_journal_name,
             self.operation_id,
         )?;
         let mut staged_file = self
@@ -307,6 +334,12 @@ impl RedbSealedStagedRestore {
         copy_and_sync(&mut staged_file, &mut temporary_file)?;
         drop(temporary_file);
         if sha256_reader(temporary.reopen()?)? != self.sealed_artifact_checksum {
+            return Err(corrupt());
+        }
+        let mut staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
+        copy_and_sync(&mut staged_journal, &mut journal_temporary_file)?;
+        drop(journal_temporary_file);
+        if sha256_reader(journal_temporary.reopen()?)? != self.sealed_journal_checksum {
             return Err(corrupt());
         }
         if target_file_state(&self.configured_parent_guard, target_name)?
@@ -321,6 +354,10 @@ impl RedbSealedStagedRestore {
             &self.configured_parent_guard,
             target_name,
             target_lock.as_ref(),
+        )? || !target_lock_matches(
+            &self.configured_parent_guard,
+            target_journal_name,
+            target_journal_lock.as_ref(),
         )? {
             return Err(corrupt());
         }
@@ -331,6 +368,7 @@ impl RedbSealedStagedRestore {
             return Ok(OfflineRestoreResultV1::TargetNotEmpty);
         }
         temporary.publish(target_name)?;
+        journal_temporary.publish(target_journal_name)?;
         self.stage_cleanup.disarm();
         self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
         if self.configured_parent_guard.sync().is_err()
@@ -339,6 +377,7 @@ impl RedbSealedStagedRestore {
             return Err(unknown());
         }
         drop(target_lock);
+        drop(target_journal_lock);
         self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(self.manifest),

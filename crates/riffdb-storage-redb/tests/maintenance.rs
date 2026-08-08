@@ -816,6 +816,12 @@ fn zero_byte_target_needs_no_confirmation_but_every_nonempty_target_does() {
     );
 
     fs::remove_file(&database).expect("remove corrupt target");
+    let journal = {
+        let mut path = database.as_os_str().to_os_string();
+        path.push(".riffjournal");
+        PathBuf::from(path)
+    };
+    fs::remove_file(journal).expect("remove paired journal");
     initialize(&database);
     assert_eq!(
         storage
@@ -1031,7 +1037,7 @@ fn named_backup_publication_retry_resolves_only_the_reserved_operation_artifact(
         fs::read_dir(&backup_directory)
             .expect("published backup")
             .count(),
-        2
+        3
     );
 
     let (manifest, identity) = storage

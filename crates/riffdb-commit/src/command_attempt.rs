@@ -303,6 +303,51 @@ pub(super) struct ProvenanceBoundCommandAttempt {
     intent: CommitIntent,
 }
 
+/// Same-attempt evidence retained after the sole writer has privately applied
+/// the complete command graph.
+///
+/// This state intentionally contains no [`CommandMutationAuthority`]. The
+/// ordered writer and private redb successor now own serialization; retaining
+/// the conflict lease until the independent durability fence would prevent a
+/// later FIFO command from evaluating against that successor and collapse the
+/// journal pipeline on ordinary shared partition/index keys.
+pub(super) struct PostApplyCommandEvidence {
+    state: PendingCommandAttempts,
+    intent: CommitIntent,
+}
+
+impl PostApplyCommandEvidence {
+    pub(super) const fn exact_intent(&self) -> &CommitIntent {
+        &self.intent
+    }
+
+    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        &self.state.lookup_candidates
+    }
+
+    pub(super) fn matches_terminal_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
+        outcome_matches_state(outcome, &self.state)
+            && outcome.plan() == self.intent.evaluated().plan()
+            && outcome.provenance_id() == self.intent.provenance_id()
+    }
+
+    pub(super) fn matches_terminal_failure(&self, failure: &StoredExecutionFailedV1) -> bool {
+        failure_matches_state(failure, &self.state)
+    }
+
+    pub(super) fn into_pending_after_proven_noncommit(self) -> PendingCommandAttempts {
+        let Self { state, intent } = self;
+        drop(intent);
+        state
+    }
+}
+
+impl fmt::Debug for PostApplyCommandEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PostApplyCommandEvidence([REDACTED])")
+    }
+}
+
 impl ProvenanceBoundCommandAttempt {
     pub(super) const fn commit_intent(&self) -> &CommitIntent {
         &self.intent
@@ -409,6 +454,35 @@ impl ProvenanceBoundCommandAttempt {
         drop(snapshot);
         drop(lease);
         state
+    }
+
+    /// Transfers serialization authority from the conflict manager to the
+    /// sole writer after storage has accepted the complete private transition.
+    /// No constructor exists before that post-apply call site.
+    pub(super) fn into_post_apply_evidence(self) -> Result<PostApplyCommandEvidence, ()> {
+        if !self.has_exact_semantic_join() {
+            return Err(());
+        }
+        let Self { attempt, intent } = self;
+        let EvaluatedCommandAttempt {
+            state,
+            lease,
+            snapshot,
+            evaluated,
+        } = attempt;
+        drop(evaluated);
+        drop(snapshot);
+        drop(lease);
+        let evidence = PostApplyCommandEvidence { state, intent };
+        if evidence.exact_intent().pending() != evidence.state.commit_context.pending()
+            || evidence.exact_intent().partition_hash()
+                != evidence.state.commit_context.partition_hash()
+            || evidence.exact_intent().conflict_hashes()
+                != evidence.state.commit_context.conflict_hashes()
+        {
+            return Err(());
+        }
+        Ok(evidence)
     }
 
     fn finish_after_candidate_rollback(
@@ -845,6 +919,10 @@ pub(crate) struct TransactionLocalSerialGroupLease {
 }
 
 impl AcquiredCommandAttempt {
+    pub(crate) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        &self.state.lookup_candidates
+    }
+
     pub(crate) fn into_pending_without_evaluation(self) -> PendingCommandAttempts {
         let Self { state, lease } = self;
         drop(lease);
@@ -893,10 +971,61 @@ pub(crate) fn evaluate_acquired_command_attempt(
     admission: &dyn AdmissionRepository,
     snapshots: &dyn SnapshotReader,
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
-    let AcquiredCommandAttempt { state, lease } = acquired;
     let durable = admission
-        .lookup_admission(state.lookup_candidates.clone())
+        .lookup_admission(acquired.lookup_candidates().clone())
         .map_err(CommandAttemptError::PendingRecheck)?;
+    evaluate_acquired_command_attempt_after_lookup(acquired, durable, snapshots)
+}
+
+/// Finishes one acquired attempt after a bounded group lookup established the
+/// exact durable admission state for every member under its retained conflict
+/// capability.
+pub(crate) fn evaluate_acquired_command_attempt_after_lookup(
+    acquired: AcquiredCommandAttempt,
+    durable: AdmissionLookupResultV1,
+    snapshots: &dyn SnapshotReader,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let (state, lease) = match lower_acquired_admission(acquired, durable)? {
+        AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
+        AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
+    };
+    check_request_control(state.deadline, &state.cancellation)?;
+
+    let raw_snapshot = snapshots
+        .read_snapshot(state.snapshot_request.clone())
+        .map_err(CommandAttemptError::SnapshotRead)?;
+    finish_acquired_evaluation(state, lease, raw_snapshot)
+}
+
+/// Finishes one acquired attempt from a snapshot materialized in the same
+/// bounded backend snapshot group as its FIFO peers.
+pub(crate) fn evaluate_acquired_command_attempt_after_lookup_and_snapshot(
+    acquired: AcquiredCommandAttempt,
+    durable: AdmissionLookupResultV1,
+    raw_snapshot: ReadSnapshot,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let (state, lease) = match lower_acquired_admission(acquired, durable)? {
+        AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
+        AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
+    };
+    check_request_control(state.deadline, &state.cancellation)?;
+    finish_acquired_evaluation(state, lease, raw_snapshot)
+}
+
+#[allow(clippy::large_enum_variant)] // Move-only capability state stays inline on the hot path.
+enum AcquiredAdmissionDecision {
+    Continue {
+        state: PendingCommandAttempts,
+        lease: CommandMutationAuthority,
+    },
+    Complete(CommandAttemptResolution),
+}
+
+fn lower_acquired_admission(
+    acquired: AcquiredCommandAttempt,
+    durable: AdmissionLookupResultV1,
+) -> Result<AcquiredAdmissionDecision, CommandAttemptError> {
+    let AcquiredCommandAttempt { state, lease } = acquired;
     match durable {
         AdmissionLookupResultV1::Found(found) => match *found {
             StoredAdmissionStateV1::Pending(pending)
@@ -904,12 +1033,16 @@ pub(crate) fn evaluate_acquired_command_attempt(
             StoredAdmissionStateV1::StoredOutcome(outcome)
                 if outcome_matches_state(&outcome, &state) =>
             {
-                return Ok(CommandAttemptResolution::OutcomeReplay(outcome));
+                return Ok(AcquiredAdmissionDecision::Complete(
+                    CommandAttemptResolution::OutcomeReplay(outcome),
+                ));
             }
             StoredAdmissionStateV1::ExecutionFailed(failure)
                 if failure_matches_state(&failure, &state) =>
             {
-                return Ok(CommandAttemptResolution::ExecutionFailureReplay(failure));
+                return Ok(AcquiredAdmissionDecision::Complete(
+                    CommandAttemptResolution::ExecutionFailureReplay(failure),
+                ));
             }
             _ => return Err(CommandAttemptError::Integrity),
         },
@@ -918,12 +1051,7 @@ pub(crate) fn evaluate_acquired_command_attempt(
             return Err(CommandAttemptError::Integrity);
         }
     }
-    check_request_control(state.deadline, &state.cancellation)?;
-
-    let raw_snapshot = snapshots
-        .read_snapshot(state.snapshot_request.clone())
-        .map_err(CommandAttemptError::SnapshotRead)?;
-    finish_acquired_evaluation(state, lease, raw_snapshot)
+    Ok(AcquiredAdmissionDecision::Continue { state, lease })
 }
 
 /// Deterministically evaluates a fresh synchronous attempt from the exact
@@ -1097,6 +1225,30 @@ pub(crate) async fn acquire_transaction_local_serial_group(
     {
         return Err((states, CommandAttemptError::Integrity));
     }
+    acquire_transaction_local_fifo_authority(states, conflicts).await
+}
+
+/// Acquires the FIFO writer authority for successors of an unpublished root.
+///
+/// Unlike a fresh serial micro-batch, this path also admits one command and a
+/// resumable command whose `Started` audit is already durable. The sole writer
+/// has already selected a private successor frontier, so every member must use
+/// transaction-local evaluation; falling back to the public snapshot would be
+/// stale by construction.
+pub(crate) async fn acquire_writer_private_fifo_group(
+    states: Vec<PendingCommandAttempts>,
+    conflicts: &dyn ConflictManager,
+) -> Result<Vec<AcquiredCommandAttempt>, (Vec<PendingCommandAttempts>, CommandAttemptError)> {
+    if states.is_empty() || states.iter().any(|state| !state.has_audited_lifecycle()) {
+        return Err((states, CommandAttemptError::Integrity));
+    }
+    acquire_transaction_local_fifo_authority(states, conflicts).await
+}
+
+async fn acquire_transaction_local_fifo_authority(
+    states: Vec<PendingCommandAttempts>,
+    conflicts: &dyn ConflictManager,
+) -> Result<Vec<AcquiredCommandAttempt>, (Vec<PendingCommandAttempts>, CommandAttemptError)> {
     if let Some(error) = states.iter().find_map(|state| {
         if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
             Some(CommandAttemptError::RetryBudgetExhausted)
@@ -2649,6 +2801,63 @@ contract AttemptMaterialization version {version} {{
         runtime
             .block_on(competing)
             .expect("dropping retained lease grants competitor")
+            .release();
+    }
+
+    #[test]
+    fn post_apply_evidence_releases_the_conflict_lease_but_retains_exact_recovery_identity() {
+        let (state, snapshot) = execution_fixture();
+        let keys = state.raw_conflict_keys.clone();
+        let expected_lookup = state.lookup_candidates.clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+        let CommandAttemptResolution::Evaluated(attempt) = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("evaluation attempt")
+        else {
+            panic!("fixture must require a commit")
+        };
+        let bound = attempt
+            .bind_provenance(provenance_id())
+            .expect("bind exact provenance");
+        let expected_intent = bound.commit_intent().clone();
+
+        let mut competing = manager.acquire_mut(keys, future_deadline(), CancellationToken::new());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            competing.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+
+        // Production can construct this evidence only after storage has
+        // accepted the complete private command graph. The conversion consumes
+        // the live attempt and therefore its mutation authority.
+        let evidence = bound
+            .into_post_apply_evidence()
+            .expect("exact attempt becomes post-apply evidence");
+        assert_eq!(evidence.exact_intent(), &expected_intent);
+        assert_eq!(evidence.lookup_candidates(), &expected_lookup);
+        runtime
+            .block_on(competing)
+            .expect("post-apply handoff releases the conflict lease")
             .release();
     }
 
