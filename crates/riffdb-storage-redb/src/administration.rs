@@ -3642,6 +3642,8 @@ mod tests {
             let _ = std::fs::remove_file(&self.0);
             let journal = crate::journal::journal_path(&self.0);
             let _ = std::fs::remove_file(&journal);
+            let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
+            let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
             let mut rewrite = journal.into_os_string();
             rewrite.push(".rewrite");
             let _ = std::fs::remove_file(PathBuf::from(rewrite));

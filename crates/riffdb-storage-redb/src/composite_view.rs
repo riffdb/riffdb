@@ -286,6 +286,34 @@ impl RedbCompositePublication {
         *current = Arc::clone(&successor);
         Ok(successor)
     }
+
+    /// Replaces only the physical checkpoint beneath an identical logical
+    /// published frontier after asynchronous materialization succeeds.
+    pub(crate) fn publish_rebased(
+        &self,
+        expected: &Arc<RedbCompositeReadView>,
+        successor: Arc<RedbCompositeReadView>,
+    ) -> Result<Arc<RedbCompositeReadView>, StorageError> {
+        let mut current = self
+            .current
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if !Arc::ptr_eq(&current, expected)
+            || Arc::ptr_eq(&successor.root, &expected.root)
+            || successor.overlay.published_application() != expected.overlay.published_application()
+            || successor.overlay.published_administration()
+                != expected.overlay.published_administration()
+            || successor.overlay.terminal_frame_hash() != expected.overlay.terminal_frame_hash()
+            || successor.overlay.checkpoint().application_frontier()
+                < expected.overlay.checkpoint().application_frontier()
+            || successor.overlay.checkpoint().administration_frontier()
+                < expected.overlay.checkpoint().administration_frontier()
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *current = Arc::clone(&successor);
+        Ok(successor)
+    }
 }
 
 impl RedbCompositeReadView {
@@ -299,6 +327,22 @@ impl RedbCompositeReadView {
 
     pub(crate) fn overlay(&self) -> &FrozenCompositeOverlay {
         &self.overlay
+    }
+
+    /// Re-roots the exact published successor after `covered` has become the
+    /// durable redb checkpoint, retaining only concurrent newer final states.
+    pub(crate) fn rebase_after(
+        &self,
+        covered: &Self,
+        root: Arc<ReadTransaction>,
+        checkpoint_frame_hash: [u8; 32],
+    ) -> Result<Self, StorageError> {
+        let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
+        let overlay = self
+            .overlay
+            .rebase_after(&covered.overlay, checkpoint)
+            .map_err(corrupt_value)?;
+        Ok(Self { root, overlay })
     }
 
     pub(crate) fn resolve_point(
@@ -703,6 +747,9 @@ mod tests {
     impl Drop for TestDatabasePath {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
+            let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
+            let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
         }
     }
 

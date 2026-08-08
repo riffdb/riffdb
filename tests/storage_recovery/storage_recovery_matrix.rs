@@ -124,6 +124,12 @@ impl Drop for TestDatabasePath {
         let mut journal = self.0.as_os_str().to_os_string();
         journal.push(".riffjournal");
         let _ = std::fs::remove_file(PathBuf::from(journal));
+        let mut checkpoint = self.0.as_os_str().to_os_string();
+        checkpoint.push(".riffjournal.checkpoint");
+        let _ = std::fs::remove_file(PathBuf::from(checkpoint));
+        let mut spare = self.0.as_os_str().to_os_string();
+        spare.push(".riffjournal.next");
+        let _ = std::fs::remove_file(PathBuf::from(spare));
     }
 }
 
