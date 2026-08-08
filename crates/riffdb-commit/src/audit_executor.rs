@@ -463,6 +463,10 @@ const POST_COMMIT_COALESCE_BUDGET: Duration = Duration::from_millis(2);
 /// that rounding does not intentionally extend the accepted logical budget.
 const POST_COMMIT_COALESCE_TIMER_GUARD: Duration = Duration::from_millis(1);
 
+const fn completion_edge_coalescing_enabled(durability: CoordinatorDurability) -> bool {
+    matches!(durability, CoordinatorDurability::Sync)
+}
+
 /// Exact number of coordinator workload messages admitted independently of shutdown.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CoordinatorWorkloadCapacity(NonZeroU16);
@@ -1709,6 +1713,7 @@ impl RunningCommandCoordinator {
         let operations_telemetry = Arc::clone(&telemetry);
         Self::spawn_with_operations(
             workload_capacity,
+            completion_edge_coalescing_enabled(durability),
             notifications,
             telemetry,
             move |lifecycle| {
@@ -1730,6 +1735,7 @@ impl RunningCommandCoordinator {
 
     fn spawn_with_operations(
         workload_capacity: CoordinatorWorkloadCapacity,
+        completion_edge_coalescing_enabled: bool,
         notifications: Arc<dyn ApplicationCommitNotificationSink>,
         telemetry: Arc<dyn CommitTelemetry>,
         operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
@@ -1795,6 +1801,11 @@ impl RunningCommandCoordinator {
             telemetry,
             lifecycle: lifecycle_publisher,
             feedback: feedback_rx,
+            // ADR-0104 makes the Standard journal lane self-coalescing: work
+            // accumulated while the prior fence is in flight should dispatch
+            // immediately. The accepted two-millisecond completion-edge
+            // window remains useful only for the direct-redb Sync oracle.
+            completion_edge_coalescing_enabled,
             #[cfg(test)]
             post_dispatch_hooks: Some(post_dispatch_hook_rx),
         };
@@ -1872,6 +1883,7 @@ impl RunningCommandCoordinator {
     {
         Self::spawn_with_operations(
             workload_capacity,
+            false,
             Arc::new(DiscardApplicationCommitNotifications),
             Arc::new(NoopCommitTelemetry),
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
@@ -1891,6 +1903,7 @@ impl RunningCommandCoordinator {
     {
         Self::spawn_with_operations(
             workload_capacity,
+            false,
             Arc::new(DiscardApplicationCommitNotifications),
             telemetry,
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
@@ -2604,6 +2617,7 @@ struct CommandCoordinatorActor {
     telemetry: Arc<dyn CommitTelemetry>,
     lifecycle: ActorLifecyclePublisher,
     feedback: mpsc::Receiver<UnitCompleted>,
+    completion_edge_coalescing_enabled: bool,
     #[cfg(test)]
     post_dispatch_hooks: Option<std::sync::mpsc::Receiver<Box<dyn FnOnce() + Send>>>,
 }
@@ -2876,7 +2890,9 @@ impl CommandCoordinatorActor {
                                     }
                                     return;
                                 }
-                                if post_commit_command_window_eligible(&pending) {
+                                if self.completion_edge_coalescing_enabled
+                                    && post_commit_command_window_eligible(&pending)
+                                {
                                     formation_anchor = Instant::now();
                                     completion_edge_coalescing = true;
                                     formation_deadline = Some(

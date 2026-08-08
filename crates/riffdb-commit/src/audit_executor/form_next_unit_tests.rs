@@ -884,6 +884,16 @@ fn audited_singleton_is_eligible_for_standard_deferred_publication() {
 }
 
 #[test]
+fn completion_edge_delay_is_confined_to_the_direct_redb_oracle() {
+    assert!(completion_edge_coalescing_enabled(
+        crate::CoordinatorDurability::Sync
+    ));
+    assert!(!completion_edge_coalescing_enabled(
+        crate::CoordinatorDurability::Group
+    ));
+}
+
+#[test]
 fn preflight_rejects_a_group_that_dynamic_compatibility_would_split() {
     let first = audited_command_preparation(1);
     let same_target = audited_command_preparation(2);
