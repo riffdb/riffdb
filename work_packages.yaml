@@ -142,6 +142,27 @@ gates:
   name: Public marketing website
   requires:
   - WP-495
+- id: P10
+  name: Deployable Application Alpha
+  requires:
+  - WP-497
+  - WP-498
+  - WP-499
+  - WP-500
+  - WP-501
+  - WP-502
+  - WP-503
+  - WP-504
+  - WP-505
+  - WP-506
+  - WP-507
+  - WP-508
+  - WP-509
+  - WP-510
+  - WP-511
+  - WP-512
+  - WP-513
+  - WP-514
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -9816,4 +9837,675 @@ work_packages:
       a derived entry actually collide, which is rare and bounded by the audit stream the matcher
       already walks once. No new scan, no new index, no additional memory residency - the same
       single pass over the AUDIT table and the same segment-derived cache the matcher already built.
+  human_review_triggers: *id001
+- id: WP-497
+  name: Deployable application alpha architecture and requirement freeze
+  depends_on: [WP-398, WP-414, WP-484]
+  objective: Resolve the six cross-cutting alpha blockers into exact accepted trust, driver,
+    compiler, query, workflow, provisioning, compatibility, and release-gate requirements before
+    implementation changes any public, durable, language, IR, authority, or dependency boundary.
+  requirements: []
+  required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
+    ADR-0080, ADR-0087, ADR-0095, ADR-0105, ADR-0106, ADR-0107, ADR-0108,
+    ADR-0109, ADR-0110]
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, diagrams/**,
+    fixtures/alpha-release/**, docs/SUMMARY.md, docs/architecture/**,
+    docs/contributing/**, docs/known-limitations.md]
+  deliverables:
+  - Exact human acceptance or explicit revision/rejection of ADR-0105 through ADR-0110
+  - Normative NET, DRV, BLK, OQ, WF, and APE requirement families in SPEC.md, with one owning
+    implementation package and one final-evidence package per requirement
+  - Frozen format-owner map for listener configuration, driver-host protocol, Go/TypeScript/Python
+    public APIs, bulk command grammar/IR/durable graph, operational query grammar/IR/cursors/text
+    profiles, workflow plans, installation plans/receipts, and adapter manifests
+  - Dependency and threat-model review for TLS, Unicode normalization, language packaging, and
+    every proposed new critical dependency; no production placeholder implementation before review
+  - Alpha negative-capability matrix proving that insecure remote transport, raw transactions,
+    arbitrary predicates, unfenced workflow writes, silent authority widening, and adapter hooks
+    remain unexpressible
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - ./scripts/generate-handbook-diagrams --check
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: All six ADRs are Accepted exactly, provisional requirement families are normative and
+    completely owned, compatibility fixtures are enumerated, critical dependencies are reviewed,
+    and no implementation package can weaken a safety invariant to satisfy an adapter.
+  human_review_triggers: *id001
+- id: WP-498
+  name: TLS-only remote application ingress and endpoint identity
+  depends_on: [WP-497]
+  objective: Add authenticated non-loopback application gRPC and protected local-socket ingress
+    with mandatory peer verification, bounded lifecycle, and no proxy-asserted application
+    authority while preserving the current loopback development profile.
+  requirements: [API-001, SYS-002, SEC-001, SEC-002, SEC-003, SEC-004, VAL-003,
+    AAA-004, AAA-005]
+  required_adrs: [ADR-0007, ADR-0009, ADR-0029, ADR-0040, ADR-0055, ADR-0063,
+    ADR-0071, ADR-0105]
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-errors/**,
+    crates/riffdb-config/**, crates/riffdb-auth/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Closed loopback-cleartext, direct-TLS, and protected-local-socket listener configuration with
+    canonical endpoint identity and pre-bind validation
+  - Rust-owned TLS handshake, CA/server-name verification, HTTP/2, connection/stream/drain bounds,
+    and atomic certificate/trust snapshot reload
+  - Proxy interoperability that ignores forwarded identity, database, tenant, principal, and
+    authorization assertions and repeats normal bearer authentication/current authorization
+  - Public endpoint/client configuration, structured safe diagnostics, and old/current protocol and
+    configuration fixtures without an insecure-remote selector
+  - Real-process hostile certificate, downgrade, header-injection, saturation, reload, revocation,
+    and graceful-drain tests
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-config -p riffdb-auth -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test remote_ingress --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo deny check
+  exit_gate: A separate host/container reaches the application service only through verified TLS
+    or a protected local socket, every insecure/downgrade/proxy-identity attempt fails before
+    protected output, and loopback compatibility plus shared-service parity remain exact.
+  human_review_triggers: *id001
+- id: WP-499
+  name: Container deployment, health, and credential rotation
+  depends_on: [WP-498]
+  objective: Make remote ingress operable through Compose and Kubernetes with truthful health,
+    certificate reload, least-authority application credential rotation, protected secrets, and
+    bounded connection drain/recovery.
+  requirements: [API-001, SEC-001, SEC-002, SEC-003, SEC-004, DX-010, DX-011,
+    DX-012, AAA-003, AAA-004, AAA-005]
+  required_adrs: [ADR-0041, ADR-0055, ADR-0063, ADR-0065, ADR-0072, ADR-0105]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-config/**, crates/riffdb-auth/**,
+    crates/riffdb-service/**, crates/riffdb-client-rust/**, crates/riffdb-server/**,
+    crates/riffdb-cli/**, crates/riffdb-observability/**, proto/**, fixtures/**, tests/**,
+    scripts/**, templates/**, release/**, docs/**, .github/**]
+  deliverables:
+  - Payload-free unauthenticated liveness and authenticated database-selected readiness across
+    gRPC, CLI, and deployment probes
+  - Resumable role-exact credential rotation with successor proof, bounded overlap, explicit old
+    revocation, protected atomic credential publication, and no bearer output
+  - Certificate/key/trust rotation and bounded connection drain independent from capability rotation
+  - Compose and Kubernetes examples using separate application/operator credentials, sibling
+    services, TLS, health checks, secret mounts, proxy forwarding, backup roots, and graceful stop
+  - Crash/retry matrix at every rotation phase plus pooled-connection revocation evidence
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-auth -p riffdb-service -p riffdb-client-rust -p riffdb-server -p riffdb-cli --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test remote_deployment_rotation --all-features
+  - ./scripts/remote-compose-acceptance
+  - ./scripts/remote-kubernetes-render-check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A fresh container deployment reaches Ready, survives certificate and application-
+    credential rotation without protected downtime or authority widening, rejects the predecessor
+    after revocation, and publishes no secret through health, config, logs, or artifacts.
+  human_review_triggers: *id001
+- id: WP-500
+  name: Rust driver host and local application protocol
+  depends_on: [WP-497, WP-498, WP-419]
+  objective: Centralize remote transport trust, pooling, retry, cancellation, errors,
+    read-after-commit, and reactive resumption in one long-lived Rust driver host that exposes only
+    exact generated application operations to local target-language bindings.
+  requirements: [API-001, SYS-002, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009,
+    AAA-010, PYD-002, PYD-003, PYD-006, PYD-007]
+  required_adrs: [ADR-0037, ADR-0040, ADR-0055, ADR-0056, ADR-0074, ADR-0080,
+    ADR-0105, ADR-0106]
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    fixtures/driver/**, crates/riffdb-types/**, crates/riffdb-errors/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    clients/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned bounded driver-host protocol and exact handshake binding application lock, operation
+    schemas, roles, database, remote endpoint, and error/value registries
+  - Protected Unix-socket ownership and peer checks, one child/sidecar lifecycle, graceful drain,
+    crash containment, and no bearer or remote endpoint carriage on the local protocol
+  - Bounded Rust connection pools, stream queues, cancellation/deadline propagation, retries,
+    uncertainty resolution, read-after-commit, reactive cursor resumption, and typed local overload
+  - Application-only catalog dispatch with architecture checks rejecting kernel, administration,
+    ad-hoc query, deployment, raw Protobuf, and arbitrary method surfaces
+  - Host protocol goldens, fuzzing, hostile identities/lengths, concurrency schedules, and real
+    TLS daemon acceptance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-rust -p riffdb-driver-host --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test driver_host --all-features
+  - cargo +1.97.0 fuzz run driver_host_protocol -- -max_total_time=60
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A long-lived host safely executes every stable application/reactive operation over
+    pooled verified remote connections, cancellation and uncertainty remain exact, and no local
+    caller can express a kernel operation or weaken transport trust.
+  human_review_triggers: *id001
+- id: WP-501
+  name: Stable Go bindings and long-lived TypeScript transport
+  depends_on: [WP-500]
+  objective: Generate complete Go and TypeScript stable-application facades over the Rust driver
+    host with typed values/outcomes/errors, cancellation, streaming, and no handwritten transport
+    or language-owned remote trust semantics.
+  requirements: [SYS-002, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009, AAA-010,
+    LIVE-004, LIVE-005, LIVE-006, LIVE-007]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0080, ADR-0106]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+    crates/riffdb-driver-host/**, clients/go/**, clients/typescript/**, templates/**,
+    fixtures/application-parity/**, fixtures/driver/**, examples/**, tests/**, scripts/**,
+    docs/**, release/**, .github/**]
+  deliverables:
+  - Deterministic generated Go values, params, outcomes, query pages, errors, batches, and reactive
+    iterators with context cancellation and exact identity constants
+  - Long-lived generated TypeScript transport with AbortSignal, async iterators, server-runtime
+    shutdown, one retained driver-host session, and no per-operation subprocess
+  - Offline-buildable Go and TypeScript scaffolds using the same application manifest, lock,
+    schemas, driver-host protocol, and golden observations
+  - Boundary lint proving neither language contains a gRPC client, RiffDB credential parser,
+    remote retry classifier, raw protocol import, or kernel/admin operation
+  - Cross-language daemon acceptance for success, declared outcomes, typed errors, replay,
+    cancellation, read-after-commit, cursor reset, stream reconnect, and saturation
+  acceptance_commands:
+  - ./scripts/agent-application-go-acceptance
+  - ./scripts/agent-application-typescript-acceptance
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Installed Go and TypeScript applications complete the common workload through one
+    long-lived Rust host with zero handwritten RiffDB glue and semantically identical errors,
+    retries, cancellation, read-after-commit, and reactive behavior.
+  human_review_triggers: *id001
+- id: WP-502
+  name: Expanded Python wheel and runtime support
+  depends_on: [WP-398, WP-500]
+  objective: Expand the accepted Rust-backed Python driver across a reviewed CPython/platform
+    matrix while preserving the exact native transport, public API, packaging, cancellation,
+    credential, and source-distribution boundaries.
+  requirements: [PYD-001, PYD-002, PYD-003, PYD-004, PYD-005, PYD-006, PYD-007,
+    PYD-008, PYD-009, PYD-010, PYD-011, PYD-012, AAA-001, AAA-002]
+  required_adrs: [ADR-0037, ADR-0055, ADR-0056, ADR-0074, ADR-0106]
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml,
+    crates/riffdb-client-python-native/**, clients/python/**, templates/python/**,
+    fixtures/application-parity/**, tests/**, scripts/**, docs/**, release/**, .github/**]
+  deliverables:
+  - Clean-host probe and exact supported CPython, manylinux, musllinux, macOS, Windows, x86_64,
+    and aarch64 tier table with unsupported combinations explicit
+  - Reproducible abi3 wheels and self-contained sdist for every accepted tier, with linkage,
+    inventory, hashes, licenses, advisories, and offline installation evidence
+  - Unchanged sync/async public facade, Rust-owned transport semantics, cancellation, GIL release,
+    typed errors, pooling, read-after-commit, batches, and reactive iterators
+  - Installed cross-database parity corpus and negative packaging/credential/native panic tests
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-python-native --all-features
+  - ./scripts/agent-application-python-acceptance
+  - ./scripts/build-python-distributions --check
+  - ./scripts/test-python-platform-matrix
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo deny check
+  exit_gate: Every claimed Python tier installs a reproducible artifact without a checkout,
+    completes the common workload with Rust-owned semantics, and exposes neither a pure-Python
+    fallback nor native/credential/internal details.
+  human_review_triggers: *id001
+- id: WP-503
+  name: Cross-language driver conformance and deployment proof
+  depends_on: [WP-499, WP-501, WP-502]
+  objective: Freeze and prove one installed Rust, Go, TypeScript, and Python driver contract for
+    pooling, cancellation, typed errors, retry/uncertainty, read-after-commit, reactive streams,
+    remote TLS, and overload before adapters claim support.
+  requirements: [API-001, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009, AAA-010,
+    PYD-004, PYD-005, PYD-006, PYD-007, LIVE-004, LIVE-005, LIVE-006, LIVE-007]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0080, ADR-0105, ADR-0106]
+  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/driver/**,
+    fixtures/application-parity/**, crates/riffdb-testkit/**, clients/**, examples/**,
+    tests/**, scripts/**, docs/**, release/**, .github/**]
+  deliverables:
+  - Machine-readable conformance manifest and exact golden digest for every released driver
+  - Same remote daemon, database, contract, role, operation, and fault corpus across all languages
+  - Pool/queue saturation, cancellation, uncertain command, retry exhaustion, revocation,
+    read-after-commit, cursor, reactive reconnect, shutdown, and malformed-host evidence
+  - Installed artifact/platform matrix with explicit unavailable feature cells and no silently
+    emulated behavior
+  acceptance_commands:
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Every released language passes identical semantic observations against one remote
+    service, every claimed feature is backed by installed evidence, and an absent feature is
+    explicit rather than implemented by handwritten application glue.
+  human_review_triggers: *id001
+- id: WP-504
+  name: Bounded collection command language and IR
+  depends_on: [WP-300, WP-497]
+  objective: Freeze and implement compiler-visible bounded collection inputs, one non-nestable
+    element expansion, statically enumerable aggregate/conflict/access sets, and checked deletion
+    policy without introducing general loops, transactions, callbacks, or raw mutations.
+  requirements: [DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, DSL-006, DSL-007,
+    DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004, SAFE-005, PERF-004,
+    PERF-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0013, ADR-0055, ADR-0059, ADR-0107]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
+    crates/riffdb-types/**, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-diagnostics/**,
+    fixtures/compiler/**, fixtures/contracts/**, fuzz/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned bulk-command/list/delete grammar, formatter, parser, source spans, diagnostics, IR,
+    canonical codec, plan hash, old/current fixtures, and compatibility classification
+  - Static proof of one partition, finite element plan, at most 256 elements/aggregate instances,
+    canonical conflict acquisition, complete capacity charge, and no nested/dynamic iteration
+  - Explicit delete-policy model with no-inbound or indexed-restrict proof; cascade, set-null,
+    unindexed discovery, cross-partition delete, and physical history purge rejected
+  - Compiler negative corpus for every unsafe/unbounded construct and adapter-shaped positive
+    sources for tuple, metric, document-graph, and pipeline-step mutations
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-features
+  - cargo +1.97.0 fuzz run contract_parser -- -max_total_time=60
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The compiler emits one bounded complete mutation/access/conflict plan for every
+    accepted collection command, every dynamic/unbounded/delete-unsafe shape fails with a span,
+    and ordinary command and batch meanings remain byte-identical.
+  human_review_triggers: *id001
+- id: WP-505
+  name: Atomic collection command runtime, storage, and recovery
+  depends_on: [WP-490, WP-504]
+  objective: Execute one accepted bounded collection command as one typed idempotent atomic command
+    graph through the ordinary runtime, authorization, coordinator, journal overlay, recovery,
+    audit, provenance, and event paths.
+  requirements: [ID-001, ID-004, OUT-001, OUT-002, REC-001, REC-002, STO-001,
+    STO-002, TXN-001, TXN-010, TXN-011, TXN-012, TXN-013, TXN-040,
+    TXN-041, TXN-042, TXN-043, TXN-044, PERF-004, PERF-005]
+  required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0012, ADR-0058, ADR-0059,
+    ADR-0095, ADR-0101, ADR-0102, ADR-0104, ADR-0107]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
+    crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-command-runtime/**,
+    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Sealed runtime collection execution with precharged bounds and no storage iterator/callback/raw
+    transaction handle crossing the semantic port
+  - One whole-command outcome/idempotency/audit/provenance/sequence and one atomic complete-or-
+    absent graph preserving submitted element/event ordinal and canonical conflict order
+  - Complete relationship, uniqueness, revision, delete-restrict, transaction-current, capacity,
+    and current-policy validation before publication
+  - Memory/redb conformance, deterministic overlap schedules, cancellation, same-identity races,
+    journal fence uncertainty, replay, crash recovery, startup integrity, backup, and migration
+    compatibility evidence
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-command-runtime -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every accepted collection command is one ordinary atomic durable command, every crash
+    yields the complete original outcome or absence, and no partial element, raw mutation, weaker
+    authorization, or alternate recovery path exists.
+  human_review_triggers: *id001
+- id: WP-506
+  name: Generated collection clients and adapter corpus
+  depends_on: [WP-503, WP-505]
+  objective: Expose typed bounded collection commands and delete outcomes across generated Rust,
+    Go, TypeScript, Python, CLI, and MCP application surfaces and prove real adapter-shaped atomic
+    workloads without handwritten transactions.
+  requirements: [AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010,
+    PYD-004, PYD-005, PYD-006, SAFE-007, SAFE-008]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0107]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, clients/**, templates/**, fixtures/application-parity/**,
+    fixtures/adapters/**, examples/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Generated bounded collection inputs, methods, whole-command outcomes, error decoding,
+    idempotency helpers, and exact identities in every supported language and MCP schema
+  - CLI natural JSON and files/streams with pre-submit count/byte validation and no generic row
+    batch or transaction option
+  - OpenFGA tuple, MLflow metric, Payload document graph, and Woodpecker pipeline-step acceptance
+    with atomicity, replay, conflict, delete-restrict, and negative kernel/glue assertions
+  - Cross-language golden observations and boundary lint for raw write/transaction/storage access
+  acceptance_commands:
+  - ./scripts/adapter-bulk-command-acceptance --all-languages
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: All supported languages perform each adapter-shaped atomic collection mutation through
+    one generated command and one declared outcome, with zero raw mutations, transaction callbacks,
+    kernel imports, or handwritten encoding/transport glue.
+  human_review_triggers: *id001
+- id: WP-507
+  name: Operational RiffQL grammar, finite plan families, and cursors
+  depends_on: [WP-492, WP-497]
+  objective: Add bounded optional/dynamic predicate declarations, null/existence tests, stable
+    top-N/cursor ordering, multiple exact aggregate declarations, and safe symbolic catalog schemas
+    while keeping runtime selection inside a finite compiler-owned access family.
+  requirements: [RQL-001, RQL-002, RQL-003, RQL-004, RQL-005, RQL-006, QRY-001,
+    QRY-002, QRY-003, QRY-004, QRY-005, SAFE-001, SAFE-003, SAFE-006]
+  required_adrs: [ADR-0051, ADR-0052, ADR-0053, ADR-0054, ADR-0055, ADR-0087,
+    ADR-0108]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
+    crates/riffdb-query-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-catalog/**, fixtures/riffql/**,
+    fixtures/query-modules/**, fuzz/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned syntax/formatter/AST/IR/module/cost/hash fixtures for optional predicate presence,
+    bounded AND/OR/in, null/existence, prefix, top-N order, and multiple aggregates
+  - Finite plan-family enumeration with one partition, complete authorization union, per-member
+    index/projection access, total order, cursor identity, and whole-family cost ceiling
+  - Source-spanned rejection of excessive combinations, unindexed members, offsets, unstable
+    ordering, caller field/operator/index names, unbounded candidates, and unsupported aggregation
+  - Versioned bounded symbolic catalog response schemas with indistinguishable unauthorized absence
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog --all-features
+  - cargo +1.97.0 fuzz run riffql_parser -- -max_total_time=60
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every accepted dynamic parameter shape selects one precompiled bounded authorized plan
+    and cursor identity, no caller supplies query structure, and every missing safe access path is
+    rejected before deployment with an actionable span.
+  human_review_triggers: *id001
+- id: WP-508
+  name: Operational query execution, text indexes, exact aggregates, and catalog service
+  depends_on: [WP-490, WP-507]
+  objective: Execute operational plan families against one published snapshot with declared
+    versioned text indexes, null/existence semantics, stable pagination, exact decimal aggregates,
+    inference protection, and policy-filtered catalog introspection.
+  requirements: [QRY-001, QRY-002, QRY-004, SAFE-002, SAFE-003, SAFE-006, STO-001,
+    STO-002, VAL-003, PERF-001, PERF-007, PERF-008]
+  required_adrs: [ADR-0011, ADR-0035, ADR-0038, ADR-0053, ADR-0055, ADR-0070,
+    ADR-0086, ADR-0087, ADR-0104, ADR-0108]
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
+    fixtures/proto/**, fixtures/riffql/**, crates/riffdb-types/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-executor/**,
+    crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Canonical versioned text-key transform and declared index maintenance with Unicode/profile
+    fixtures, prefix bounds, migration/rebuild, and no locale/platform collation
+  - One-snapshot finite-plan selection and execution for null/existence, bounded in/OR, stable
+    top-N pages, cursor validation, multiple aggregates, exact decimal overflow, and currency rules
+  - Complete query fuel, projection/read priority, cancellation, inference minimums, authorization
+    union, no partial result, and redaction enforcement
+  - Bounded symbolic catalog service and protocol through the same authentication/policy/service
+    boundary, with hidden-symbol and revocation tests
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-executor -p riffdb-catalog -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-policy -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Operational queries return exact bounded authorized results and stable pages from one
+    snapshot, text/aggregate behavior is platform-independent and migration-safe, and catalog
+    introspection leaks no hidden symbol or numeric/storage identity.
+  human_review_triggers: *id001
+- id: WP-509
+  name: Operational query generated clients and adapter acceptance
+  depends_on: [WP-503, WP-508]
+  objective: Generate ergonomic operational query builders and catalog feature preflight across all
+    supported languages and prove adapter pages/search/aggregates without runtime query structure,
+    client filtering, N+1 reads, or kernel inspection.
+  requirements: [AAA-001, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010,
+    PYD-004, PYD-005, QRY-004, SAFE-007, SAFE-008]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0108]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, clients/**, templates/**, fixtures/application-parity/**,
+    fixtures/adapters/**, examples/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Generated typed optional filters, null/existence/prefix values, page cursors, total order,
+    aggregate/group results, and catalog feature views in Rust, Go, TypeScript, and Python
+  - Equivalent CLI/MCP symbolic schemas with no caller field/operator/index/plan identifiers
+  - Adapter acceptance for OpenFGA tuple lookup, MLflow metrics dashboards, Payload document
+    lists/search, and Woodpecker pipeline queues with exact cross-language observations
+  - Negative boundary evidence for client filtering, raw catalog/kernel access, N+1 composition,
+    unauthorized aggregates, stale cursors, and feature-claim mismatch
+  acceptance_commands:
+  - ./scripts/adapter-operational-query-acceptance --all-languages
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Every required adapter page/search/dashboard is one generated bounded query operation
+    with identical typed observations in all supported languages and no handwritten query,
+    filtering, decoding, catalog, or kernel glue.
+  human_review_triggers: *id001
+- id: WP-510
+  name: Revision transitions, fenced leases, and service-owned values
+  depends_on: [WP-420, WP-497]
+  objective: Add compiler-lowered workflow state transitions, exact revisions, fenced lease
+    claim/renew/release/expire commands, and replayable service-owned UUID/time values without a
+    generic CAS, lock, caller clock, callback, or hidden mutation path.
+  requirements: [DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, ID-001, ID-002,
+    ID-003, ID-004, OUT-001, OUT-002, TXN-001, TXN-010, TXN-011, TXN-012,
+    TXN-013, REC-001, SAFE-001, SAFE-008]
+  required_adrs: [ADR-0003, ADR-0005, ADR-0012, ADR-0018, ADR-0055, ADR-0059,
+    ADR-0080, ADR-0095, ADR-0109]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-command-runtime/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, fixtures/workflows/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned workflow/transition/lease/service-value grammar, IR, plans, diagnostics, old/current
+    fixtures, generated schemas, and compatibility/migration classifications
+  - Required exact revision and legal-state requirements visible in source/explain, with generated
+    successor revisions and no unconditional update or automatic revision substitution
+  - Fenced claim/renew/release/expire semantics using transaction time, checked durations, exact
+    owner/revision/token, and current authorization; lease possession grants no authority
+  - Deterministic and crash schedules for transition, claim, expiration, stale holder, clock
+    rollback/overflow, service UUID/time replay, cancellation, and same-key uncertainty
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-command-runtime --all-features
+  - cargo +1.97.0 test -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-client-rust --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test workflow_concurrency --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Lost-update, illegal-transition, stale-lease, caller-clock, and duplicate-scheduler
+    patterns are unexpressible through generated workflow operations, while every mutation remains
+    an ordinary compiled idempotent command with exact recovery.
+  human_review_triggers: *id001
+- id: WP-511
+  name: Bounded scheduler and workflow adapter acceptance
+  depends_on: [WP-503, WP-510]
+  objective: Run due work through named queries/events and exact fenced commands under a symbolic
+    scheduler role, with bounded attempts, durable idempotency, restart recovery, and generated
+    clients for workflow-shaped adapters.
+  requirements: [CON-001, CON-002, CON-003, CON-004, CON-005, CON-006, CON-007,
+    CON-008, EVT-005, EVT-006, ID-004, REC-001, REC-002, SAFE-001, SAFE-007]
+  required_adrs: [ADR-0049, ADR-0055, ADR-0056, ADR-0080, ADR-0106, ADR-0109]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, crates/riffdb-types/**,
+    crates/riffdb-query-module/**, crates/riffdb-catalog/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-scheduler/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    crates/riffdb-observability/**, clients/**, templates/**, fixtures/workflows/**,
+    fixtures/adapters/**, examples/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Bounded scheduler worker using only named query/event consumption and exact compiled commands
+    under a least-authority symbolic role
+  - Stable attempt identity from schedule/due instant/target/kind, at-least-once recovery, fenced
+    claim, bounded retry/backoff, payload-free wakeup, and no exact-once external-effect claim
+  - Generated workflow methods/types and equivalent Rust, Go, TypeScript, and Python observations
+  - MLflow run and Woodpecker pipeline scheduler acceptance with kill points before/after query,
+    claim, business command, event, ack/checkpoint, revocation, and restart
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-scheduler -p riffdb-service -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test scheduler_recovery --all-features
+  - ./scripts/adapter-workflow-acceptance --all-languages
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Scheduler death, duplicate wakeup, lease expiry, stale worker, revocation, and restart
+    lose no eligible work and duplicate no business state, while the scheduler has no mutation or
+    authority path outside compiled commands.
+  human_review_triggers: *id001
+- id: WP-512
+  name: Programmatic exact application installation and upgrade campaigns
+  depends_on: [WP-413, WP-497, WP-499, WP-503]
+  objective: Compile, start, observe, resume, and recover one exact application installation or
+    upgrade campaign across contract/module publication, migration, role reconciliation,
+    credential rotation, driver proof, and ordinary seed commands without claiming false atomicity
+    or adding a privileged installer bypass.
+  requirements: [AAA-003, AAA-004, AAA-005, AAA-008, AAA-013, AAA-014, DX-007,
+    DX-008, DX-009, MIG-006, MIG-007, MIG-008, MIG-009, MIG-010, MIG-016,
+    MIG-017, MIG-018, SAI-001, SAI-002, SAI-003, SAI-004, SAI-005, SAI-006,
+    SEC-001, SEC-002, SEC-003]
+  required_adrs: [ADR-0057, ADR-0062, ADR-0065, ADR-0066, ADR-0075, ADR-0076,
+    ADR-0079, ADR-0105, ADR-0106, ADR-0110]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    fixtures/proto/**, fixtures/application-manifests/**, fixtures/application-locks/**,
+    fixtures/installation/**, crates/riffdb-types/**, crates/riffdb-application/**,
+    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned deterministic installation plan/diff, permission, operation identity, service
+    start/observe protocol, phase model, receipt, CLI/operator SDK, and compatibility fixtures
+  - Exact resumable stage composition for preflight, deployment/migration, query/reactive modules,
+    role diff/reconciliation, successor credential proof/rotation, driver handshake, and seed batch
+  - Explicit migration hash/confirmation/backup/downtime gate and explicit approval for role
+    widening; no automatic rollback, skipped invalid data, credential overwrite, or second bootstrap
+  - Crash/retry/same-ID-different-plan/partial-campaign tests with safe completed identities and
+    exact next-action diagnostics after every stage
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-application -p riffdb-auth -p riffdb-policy -p riffdb-service -p riffdb-commit -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p riffdb-cli --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test application_installation --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A programmatic campaign installs or upgrades exactly the reviewed application and
+    authority, every interruption resumes from verified identities, partial completion is never
+    reported as success, and no stage bypasses its existing compiler/service/coordinator owner.
+  human_review_triggers: *id001
+- id: WP-513
+  name: Adapter conformance manifests and four-domain evolution proof
+  depends_on: [WP-506, WP-509, WP-511, WP-512]
+  objective: Let adapter repositories declare exact RiffDB feature, artifact, role, driver,
+    platform, conformance, and evolution requirements as bounded data and prove four unfamiliar
+    adapter shapes without executable server plugins or hidden product workarounds.
+  requirements: [AAA-003, AAA-010, AAA-011, AAA-012, AAA-013, AAA-014, AAA-018,
+    MIG-001, MIG-002, MIG-003, MIG-019, SAFE-007, SAFE-008]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0075, ADR-0076, ADR-0106,
+    ADR-0107, ADR-0108, ADR-0109, ADR-0110]
+  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/installation/**,
+    fixtures/adapters/**, crates/riffdb-application/**, crates/riffdb-catalog/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    clients/**, templates/**, examples/**, tests/**, scripts/**, docs/**, release/**]
+  deliverables:
+  - Versioned content-addressed adapter conformance manifest, schema, deterministic validation,
+    feature catalog, receipt binding, and old/current fixtures
+  - Manifest restrictions rejecting raw permissions/IDs, storage/kernel access, arbitrary methods,
+    server hooks, unbounded version ranges, shell execution, and unsupported silent fallback
+  - Empty install and populated upgrade/evolution campaigns for OpenFGA, MLflow, Payload, and
+    Woodpecker shapes, including role/credential rotation and exact conformance observations
+  - Immutable failed-campaign evidence, feature/platform gaps, no source access, no handwritten
+    transport/query/mutation glue, and actionable product-defect classification
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-application -p riffdb-catalog -p riffdb-cli --all-features
+  - ./scripts/adapter-conformance --all-domains --all-languages
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: All four adapter shapes install, operate, and upgrade through exact public symbolic
+    surfaces; every claimed feature has manifest-backed evidence; and no adapter executes server
+    code, imports kernel APIs, hardcodes identities, or obtains broader authority than its role.
+  human_review_triggers: *id001
+- id: WP-514
+  name: Deployable Application Alpha release gate
+  depends_on: [WP-421, WP-490, WP-493, WP-494, WP-496, WP-503, WP-506, WP-509,
+    WP-511, WP-513]
+  objective: Close the first alpha release with installed, remote, multi-language, adapter-shaped,
+    upgrade, rotation, correctness, recovery, security, performance, and documentation evidence
+    over only generated and public symbolic application surfaces.
+  requirements: [API-001, SYS-002, SYS-004, SEC-001, SEC-002, SEC-003, SEC-004,
+    AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010, AAA-012,
+    AAA-018, SAFE-001, SAFE-002, SAFE-006, SAFE-007, SAFE-008, PERF-001,
+    PERF-002, PERF-003, PERF-004, PERF-007, PERF-008, PERF-009, PERF-013,
+    PERF-014]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
+    ADR-0080, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0105, ADR-0106,
+    ADR-0107, ADR-0108, ADR-0109, ADR-0110]
+  allowed_paths: [SPEC.md, PLAN.md, work_packages.yaml, Cargo.lock, crates/**, proto/**,
+    clients/**, fixtures/**, fuzz/**, tests/**, examples/**, benchmarks/**, scripts/**,
+    templates/**, docs/**, release/**, .github/**]
+  deliverables:
+  - Release-derived Compose/Kubernetes deployment with TLS, proxy path, liveness/readiness,
+    certificate and application-credential rotation, backup/restore, and no host-loopback shortcut
+  - Installed Rust, Go, TypeScript, and Python driver conformance over pooling, cancellation,
+    typed errors, retries/uncertainty, read-after-commit, reactive streams, and overload
+  - OpenFGA, MLflow, Payload, and Woodpecker empty-install/populated-upgrade workloads exercising
+    collection commands, operational queries, workflows, events, migrations, and adapter manifests
+  - Crash/network/revocation/expiry/deploy-under-load/history-growth/security-negative matrix with
+    exact final-state reconciliation and no unavailable/storage errors under supported load
+  - Retained WP-490 same-run performance gate, public compatibility matrix, release artifacts,
+    handbook, operator runbooks, incident/rotation procedures, and honest known limitations
+  - Fresh independent public-only agent evaluation proving zero kernel imports, raw IDs, generic
+    writes, handwritten transport/query/transaction glue, or RiffDB implementation-source access
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/deployable-alpha-acceptance --all-domains --all-languages --remote
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./benchmarks/run-app-baseline --full --load interactive --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable
+  - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable
+  - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/check-application-bindings
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo +1.97.0 doc --workspace --no-deps
+  - cargo deny check
+  exit_gate: A design partner can deploy, install, operate, upgrade, rotate, recover, and develop a
+    non-critical adapter workload through generated public symbolic surfaces; every provisional
+    alpha requirement and prior correctness/performance gate passes; and no waiver introduces an
+    insecure listener, kernel/storage bypass, raw transaction, unbounded query, unfenced workflow,
+    silent authority widening, or language-owned transport trust.
   human_review_triggers: *id001

@@ -123,6 +123,12 @@ direction, merged draft, or implementation choice.
 | [0102](0102-segmented-command-authority-and-derived-locators.md) | Segmented Command Authority and Rebuildable Exact Locators | Accepted |
 | [0103](0103-preallocated-recyclable-durability-journal.md) | Preallocated Recyclable Durability Journal | Accepted |
 | [0104](0104-journal-authoritative-state-overlay.md) | Journal-Authoritative Published State Overlay | Accepted |
+| [0105](0105-authenticated-remote-application-ingress.md) | Authenticated Remote Application Ingress | Proposed |
+| [0106](0106-rust-owned-multilanguage-driver-platform.md) | Rust-Owned Multilanguage Driver Platform | Proposed |
+| [0107](0107-compiler-bounded-collection-mutations.md) | Compiler-Bounded Collection Mutations | Proposed |
+| [0108](0108-bounded-operational-riffql.md) | Bounded Operational RiffQL and Safe Catalog Introspection | Proposed |
+| [0109](0109-compiled-workflow-concurrency.md) | Compiled Workflow Concurrency and Fenced Leases | Proposed |
+| [0110](0110-application-installation-and-adapter-conformance.md) | Exact Application Installation and Adapter Conformance | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
