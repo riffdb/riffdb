@@ -6,8 +6,8 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.86
-**Status:** Contract-migration, reactive-application, and public-website implementation
+**Version:** 0.87
+**Status:** Contract-migration, reactive-application, public-website, and repository-ownership implementation
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
@@ -20,8 +20,9 @@
 
 | Field | Value |
 |---|---|
-| Technical owner | TBD |
-| Product owner | TBD |
+| Technical owner | Kevin O'Shea |
+| Product owner | O'Shea & Sons, LLC |
+| Copyright owners | Kevin O'Shea; O'Shea & Sons, LLC |
 | Repository | `riffdb` |
 | Primary language | Rust |
 | POC deployment | Standalone, single-node server |
@@ -36,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.87 | 2026-08-09 | Defined the repository-wide RiffDB ownership notice through WP-571: original project source, documentation, website content, graphics, and release artifacts name Kevin O'Shea and O'Shea & Sons, LLC while retaining the existing MIT or Apache-2.0 open-source choice and preserving separate third-party and contributor notices. |
 | 0.86 | 2026-08-09 | Defined the public RiffDB marketing website and early-access boundary through WP-495: an honest vision-led static site at `riffdb.com`, canonical GitHub and handbook links, a bounded double-opt-in waitlist protected by server-side bot verification, reproducible accessibility and browser checks, and least-privilege Cloudflare Pages deployment. |
 | 0.85 | 2026-08-08 | Applied the maintainer-approved ADR-0104 Amendment 1: asynchronous checkpointing begins at 4,096 transitions or 16 MiB while the compiled published-plus-in-flight suffix ceilings become 8,192 transitions, 32 MiB encoded bytes, and 128 MiB overlay charge. Individual frames and the writer-private unpublished prefix remain capped at 256 transitions and 16 MiB; the fixed 40-MiB physical extent retains an independently charged maximum-frame reserve. |
 | 0.84 | 2026-08-07 | Accepted ADR-0103 and planned WP-480 after a same-filesystem probe measured fully zero-filled positional journal fences at 880 us p50 versus 4,479 us for extending append. The standard-profile journal becomes a fixed-capacity recyclable extent with dual generation headers, generation/position-bound frames, preflight allocation, empty-journal activation, and unchanged published-frontier replication semantics. |
@@ -624,6 +626,25 @@ be replaced with deterministic fakes in automated tests.
 `WEB-009` Production publication MUST use a least-privilege GitHub Actions
 environment and pinned Cloudflare deployment tooling. No deployment, provider,
 or bot-verification credential may be committed or exposed to preview builds.
+
+## 4.7.2 Repository ownership and open-source notices
+
+`OWN-001` The repository MUST publish the canonical notice `Copyright © 2026
+Kevin O'Shea and O'Shea & Sons, LLC.` in a root ownership file and the MIT
+license text. The notice applies to original RiffDB source, documentation,
+website content, graphics, and other project materials.
+
+`OWN-002` Public project documentation and the marketing website MUST display
+the canonical ownership notice. The website MUST link O'Shea & Sons, LLC to
+`https://osheaandsons.com/`.
+
+`OWN-003` Verified release bundles and installed documentation MUST include the
+root ownership file with both existing license texts. The project MUST remain
+available under either MIT or Apache-2.0, at the recipient's option.
+
+`OWN-004` The project ownership notice MUST NOT replace, remove, or claim
+third-party material or contributions identified by separate ownership or
+license notices.
 
 ## 4.8 Robust contract migration
 
@@ -7126,6 +7147,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `PYD-*` | Python generated application driver, packaging, and language parity |
 | `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
 | `WEB-*` | Public marketing website, early-access signup, accessibility, and deployment |
+| `OWN-*` | Repository ownership, open-source notices, and release attribution |
 | `MIG-*` | Deterministic offline contract-data migration, cutover, recovery, and administration |
 | `EVT-*` | Partitioned typed domain-event catalog, routing, replay, and presentation |
 | `CON-*` | Durable bounded event-consumer delivery and recovery |

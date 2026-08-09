@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" role="img" aria-label="RiffDB logo mark">
+  <title>RiffDB logo mark</title>
+  <g>
+    <!-- Main R bowl + sharp diagonal leg -->
+    <path fill="#F85C5F" d="
+      M 394 248
+      C 349 248 316 282 316 327
+      C 316 371 350 406 394 406
+      L 720 406
+      C 775 406 819 450 819 505
+      C 819 558 776 601 722 601
+      L 610 601
+      C 574 601 545 630 545 669
+      C 545 690 553 708 568 725
+      L 786 1012
+      L 1021 1080
+      L 790 754
+      C 910 726 990 627 990 504
+      C 990 363 875 248 727 248
+      Z"/>
+
+    <!-- Separate rounded left stem -->
+    <rect x="316" y="518" width="156" height="514" rx="78" fill="#F85C5F"/>
+
+    <!-- Single intentional facet on the diagonal leg -->
+    <path fill="#FF7476" d="M 588 752 L 889 892 L 1021 1080 L 786 1012 Z"/>
+  </g>
+</svg>

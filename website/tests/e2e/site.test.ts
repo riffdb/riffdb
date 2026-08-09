@@ -21,6 +21,12 @@ test("home presents the product thesis and honest POC boundary", async ({
   page,
 }) => {
   await page.goto("/");
+  const mark = page.locator("[data-riffdb-mark]").first();
+  await expect(mark).toHaveAttribute("src", /^data:image\/svg\+xml/);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute(
+    "href",
+    (await mark.getAttribute("src")) ?? "missing-mark",
+  );
   await expect(page.getByRole("heading", { level: 1 })).toContainText(
     "Vibe fast",
   );
@@ -36,6 +42,12 @@ test("home presents the product thesis and honest POC boundary", async ({
     "href",
     "https://docs.riffdb.com/api/rust/riffdb_client_rust/index.html",
   );
+  await expect(
+    page.getByText("Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "O'Shea & Sons, LLC" }),
+  ).toHaveAttribute("href", "https://osheaandsons.com/");
 });
 
 test("waitlist form renders a generic successful outcome", async ({ page }) => {

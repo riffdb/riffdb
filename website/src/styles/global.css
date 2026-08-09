@@ -104,17 +104,11 @@ input {
   text-decoration: none;
 }
 
-.logo svg {
+.logo-mark {
+  display: block;
   height: 36px;
+  object-fit: contain;
   width: 36px;
-}
-
-.logo-box {
-  fill: var(--red);
-}
-
-.logo-letter {
-  fill: var(--paper);
 }
 
 .site-header nav {
@@ -1022,13 +1016,6 @@ input {
   background: #111817;
   color: white;
   padding: 4.5rem 0 2rem;
-}
-
-.logo--footer .logo-box {
-  fill: var(--paper);
-}
-.logo--footer .logo-letter {
-  fill: var(--red);
 }
 
 .footer-grid {

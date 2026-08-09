@@ -1,4 +1,6 @@
 ---
+import markUrl from "../../../assets/riffdb-mark.svg?url";
+
 interface Props {
   href?: string;
   footer?: boolean;
@@ -8,9 +10,6 @@ const { href = "/", footer = false } = Astro.props;
 ---
 
 <a class:list={["logo", { "logo--footer": footer }]} href={href} aria-label="RiffDB home">
-  <svg aria-hidden="true" viewBox="0 0 44 44">
-    <rect x="1" y="1" width="42" height="42" rx="11" class="logo-box"></rect>
-    <path d="M12 33V11h12c6.3 0 9.8 3.1 9.8 8.3 0 3.6-1.9 6.2-5.5 7.2L35 33h-8.2l-5.5-5.9h-2.5V33H12Zm6.8-11.8h5c2.2 0 3.3-.8 3.3-2.4 0-1.6-1.1-2.4-3.3-2.4h-5v4.8Z" class="logo-letter"></path>
-  </svg>
+  <img class="logo-mark" src={markUrl} alt="" aria-hidden="true" data-riffdb-mark />
   <span>RiffDB</span>
 </a>

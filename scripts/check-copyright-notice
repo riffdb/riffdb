@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+notice="Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC."
+notice_files=(
+    COPYRIGHT
+    LICENSE-MIT
+    README.md
+    docs/installation.md
+    docs/release.md
+    release/README.md
+    release/RELEASE_NOTES.md
+    website/src/components/SiteFooter.astro
+)
+
+for notice_file in "${notice_files[@]}"; do
+    if [[ ! -f "$notice_file" ]]; then
+        printf 'copyright notice file is missing: %s\n' "$notice_file" >&2
+        exit 1
+    fi
+    if ! grep -Fq "$notice" "$notice_file"; then
+        printf 'canonical copyright notice is missing from %s\n' "$notice_file" >&2
+        exit 1
+    fi
+done
+
+if ! grep -Fq 'COPYRIGHT' scripts/release-poc; then
+    printf '%s\n' 'release bundle does not include COPYRIGHT' >&2
+    exit 1
+fi
+
+if ! grep -Fq 'COPYRIGHT' scripts/release-install-smoke; then
+    printf '%s\n' 'release installation does not include COPYRIGHT' >&2
+    exit 1
+fi
+
+printf '%s\n' 'Copyright notice is consistent across source, documentation, website, and release paths.'

@@ -26,7 +26,7 @@ treated as complete crash coverage.
 
 `scripts/release-poc --verify`:
 
-1. rejects a dirty checkout or missing repository license;
+1. rejects a dirty checkout or missing repository ownership or license notice;
 2. reruns `./scripts/demo --assert` to replace all ignored target evidence at
    the exact clean revision, then runs `./scripts/ci-all` and validates checked
    evidence, systemd units, closed-stdin/SIGTERM behavior, authenticated MCP
@@ -51,7 +51,10 @@ treated as complete crash coverage.
 No `locally_verified` report is published under `target/wp200/release/` after a
 failed run. The private staging directory is removed on normal failure. Outputs
 are local artifacts until a maintainer signs the POC requirements. The source
-and bundle are offered under `MIT OR Apache-2.0` and include both license texts.
+and bundle are offered under `MIT OR Apache-2.0` and include the canonical
+ownership notice and both license texts.
+
+Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
 
 The systemd check combines `systemd-analyze verify`, exact hardening-directive
 checks, direct daemon lifecycle execution, and the bridge's newline-delimited
