@@ -550,6 +550,23 @@ impl RedbReadAccess {
         end_exclusive: &[u8],
         max_rows: usize,
     ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        self.read_range_to(table, start_inclusive, Some(end_exclusive), max_rows)
+    }
+
+    /// Overlay-aware forward scan whose upper bound may be open.
+    ///
+    /// ADR-0104 section 2 requires every operational scan of a table named by
+    /// [`crate::journal::JournalTable`] to merge the captured checkpoint with
+    /// the published overlay. `Deref` exposes the checkpoint root alone, so a
+    /// caller that needs an open-ended page must use this method rather than
+    /// iterating the dereferenced table.
+    pub(crate) fn read_range_to(
+        &self,
+        table: crate::journal::JournalTable,
+        start_inclusive: &[u8],
+        end_exclusive: Option<&[u8]>,
+        max_rows: usize,
+    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
         if max_rows == 0 {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
@@ -558,7 +575,7 @@ impl RedbReadAccess {
                 .merge_bounded(
                     table.composite(),
                     start_inclusive,
-                    Some(end_exclusive),
+                    end_exclusive,
                     max_rows,
                     max_rows.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS),
                 )
@@ -570,7 +587,7 @@ impl RedbReadAccess {
             .map_err(table_error)?
             .range::<&[u8]>((
                 std::ops::Bound::Included(start_inclusive),
-                std::ops::Bound::Excluded(end_exclusive),
+                end_exclusive.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
             ))
             .map_err(precommit_storage_error)?
             .take(max_rows)
