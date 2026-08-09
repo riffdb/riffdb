@@ -6,7 +6,9 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 if [[ "${1:-}" == "--check" ]]; then
-    generated="$(mktemp -d)"
+    task_tmp_root="${HOME}/tmp"
+    mkdir -p "$task_tmp_root"
+    generated="$(mktemp -d "$task_tmp_root/riffdb-query-clients.XXXXXX")"
     trap 'rm -rf "$generated"' EXIT
     cargo run --quiet -p riffdb-query-module --example generate_clients -- "$generated"
     cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$generated"
@@ -31,6 +33,91 @@ if [[ "${1:-}" == "--check" ]]; then
         "$generated/examples/agent-alpha/generated/rust/client.rs"
     diff -u examples/agent-alpha/web/src/generated/client.ts \
         "$generated/examples/agent-alpha/web/src/generated/client.ts"
+
+    # The root agent-alpha application is a compiler-owned source/lock closure,
+    # not a hand-pinned legacy manifest. Rebuild the complete closure in an
+    # isolated application root and compare every generated identity artifact.
+    agent_alpha="$generated/agent-alpha-lock"
+    mkdir -p "$agent_alpha"
+    cp examples/agent-alpha/riffdb.application.json "$agent_alpha/"
+    cp -R examples/agent-alpha/riffdb "$agent_alpha/"
+    cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
+        "$agent_alpha/riffdb.application.json" \
+        --lock riffdb.application.lock.json >/dev/null
+    diff -u examples/agent-alpha/riffdb.application.lock.json \
+        "$agent_alpha/riffdb.application.lock.json"
+    diff -u examples/agent-alpha/generated/riffdb.application.exact.json \
+        "$agent_alpha/generated/riffdb.application.exact.json"
+    diff -u examples/agent-alpha/generated/riffdb.contract.bundle \
+        "$agent_alpha/generated/riffdb.contract.bundle"
+    diff -u examples/agent-alpha/generated/mcp/tools.json \
+        "$agent_alpha/generated/mcp/tools.json"
+    diff -u examples/agent-alpha/generated/rust/client.rs \
+        "$agent_alpha/generated/rust/client.rs"
+    diff -u examples/agent-alpha/web/src/generated/client.ts \
+        "$agent_alpha/web/src/generated/client.ts"
+
+    expect_lock_refusal() {
+        local label="$1"
+        shift
+        local output
+        if output="$("$@" 2>&1)"; then
+            echo "$label unexpectedly accepted an inexact application closure" >&2
+            exit 1
+        fi
+        if ! rg -q 'RDB-AL008|application_lock_inexact' <<<"$output"; then
+            echo "$label returned the wrong refusal" >&2
+            echo "$output" >&2
+            exit 1
+        fi
+    }
+
+    # Source/lock drift must stop every local and server-touching application
+    # path before a deployment journal or transport connection can be created.
+    stale_lock="$generated/agent-alpha-stale-lock"
+    cp -R "$agent_alpha" "$stale_lock"
+    sed -i '/            title/d' "$stale_lock/riffdb/queries/item_page.riffq"
+    expect_lock_refusal "application check with stale lock" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application check \
+        "$stale_lock/riffdb.application.json" --output json
+    expect_lock_refusal "lock check with stale source" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
+        "$stale_lock/riffdb.application.json" --lock riffdb.application.lock.json \
+        --output json
+    expect_lock_refusal "deploy with stale lock" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application deploy \
+        "$stale_lock/riffdb.application.json" --lock riffdb.application.lock.json \
+        --endpoint http://127.0.0.1:1 --database default --output json
+    expect_lock_refusal "role reconciliation with stale lock" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application bind-dev-role \
+        "$stale_lock/riffdb.application.json" --lock riffdb.application.lock.json \
+        --role AgentAlphaApplication --endpoint http://127.0.0.1:1 \
+        --database default --output json
+    test ! -e "$stale_lock/.riffdb"
+
+    # A substituted generated client is the opposite neuter. It must trip the
+    # same exactness gate before any server-touching path begins.
+    stale_client="$generated/agent-alpha-stale-client"
+    cp -R "$agent_alpha" "$stale_client"
+    printf '\n// substituted generated artifact\n' \
+        >>"$stale_client/web/src/generated/client.ts"
+    expect_lock_refusal "application check with stale client" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application check \
+        "$stale_client/riffdb.application.json" --output json
+    expect_lock_refusal "lock check with stale client" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
+        "$stale_client/riffdb.application.json" --lock riffdb.application.lock.json \
+        --output json
+    expect_lock_refusal "deploy with stale client" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application deploy \
+        "$stale_client/riffdb.application.json" --lock riffdb.application.lock.json \
+        --endpoint http://127.0.0.1:1 --database default --output json
+    expect_lock_refusal "role reconciliation with stale client" \
+        cargo run --quiet -p riffdb-cli --bin riffdb -- application bind-dev-role \
+        "$stale_client/riffdb.application.json" --lock riffdb.application.lock.json \
+        --role AgentAlphaApplication --endpoint http://127.0.0.1:1 \
+        --database default --output json
+    test ! -e "$stale_client/.riffdb"
     diff -u examples/agent-alpha/domains/agent-blog/generated/rust/client.rs \
         "$generated/examples/agent-alpha/domains/agent-blog/generated/rust/client.rs"
     diff -u examples/agent-alpha/domains/agent-blog/generated/typescript/client.ts \
@@ -47,6 +134,9 @@ if [[ "${1:-}" == "--check" ]]; then
     cargo check --quiet -p riffdb-ticketdesk --all-targets
     cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
         examples/ticketdesk/riffdb.application.json \
+        --lock riffdb.application.lock.json --output json >/dev/null
+    cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
+        examples/agent-alpha/riffdb.application.json \
         --lock riffdb.application.lock.json --output json >/dev/null
     cargo check --quiet --manifest-path examples/agent-alpha/domains/rust/Cargo.toml
     if command -v tsc >/dev/null 2>&1; then
