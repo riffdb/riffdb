@@ -150,7 +150,7 @@ pub fn build_board_projected_request_with_encoding(
             }],
             limit: Some(limit),
             group_by: Vec::new(),
-            aggregate: None,
+            aggregates: Vec::new(),
         }),
         freshness: Some(freshness),
         response_encoding: response_encoding.map(|encoding| encoding as i32),

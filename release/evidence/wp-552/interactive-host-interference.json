@@ -1,0 +1,360 @@
+{
+  "schema": "riffdb.app-baseline-non-evidentiary/v1",
+  "status": "non_evidentiary",
+  "reason": {
+    "code": "host_interference",
+    "retry": "rerun_on_idle_host"
+  },
+  "requested": {
+    "mode": "full",
+    "profile": "interactive",
+    "duration_secs": 90,
+    "reps": 3,
+    "postgres_comparator": "safe-app",
+    "concurrency_sweep": true
+  },
+  "host_validity": {
+    "preflight": {
+      "active_processes": [
+        {
+          "comm": "pytest",
+          "cpu_percent_of_one_logical_cpu": 74.666,
+          "pid": 1918638,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 540790784,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 21.333,
+          "pid": 2501831,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 413995008,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 19.0,
+          "pid": 1859969,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 314953728,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 10.0,
+          "pid": 463563,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 607240192,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 5.333,
+          "pid": 3056147,
+          "read_bytes_per_sec": 6826,
+          "rss_bytes": 308961280,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "pid": 119133,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 709910528,
+          "write_bytes_per_sec": 17749
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 4.0,
+          "pid": 119347,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 168120320,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "docker-proxy",
+          "cpu_percent_of_one_logical_cpu": 3.667,
+          "pid": 1920017,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 4702208,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "grok",
+          "cpu_percent_of_one_logical_cpu": 3.333,
+          "pid": 3378650,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 35753984,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "clickhouse-serv",
+          "cpu_percent_of_one_logical_cpu": 2.667,
+          "pid": 1634502,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 1029136384,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 2.333,
+          "pid": 119568,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 856293376,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "grok",
+          "cpu_percent_of_one_logical_cpu": 1.667,
+          "pid": 1019836,
+          "read_bytes_per_sec": 60074,
+          "rss_bytes": 190001152,
+          "write_bytes_per_sec": 10922
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 1.333,
+          "pid": 344877,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 73412608,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "containerd",
+          "cpu_percent_of_one_logical_cpu": 1.0,
+          "pid": 1998,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 36880384,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "dockerd",
+          "cpu_percent_of_one_logical_cpu": 1.0,
+          "pid": 3523,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 268574720,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "waybar",
+          "cpu_percent_of_one_logical_cpu": 1.0,
+          "pid": 12830,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 34775040,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "kworker/u128:0-dm_vblank_control_workqueue",
+          "cpu_percent_of_one_logical_cpu": 1.0,
+          "pid": 1911108,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 0,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "postgres",
+          "cpu_percent_of_one_logical_cpu": 1.0,
+          "pid": 1919937,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 32055296,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 1.0,
+          "pid": 3960165,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 557219840,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "node",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 3463925,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 113582080,
+          "write_bytes_per_sec": 2730
+        },
+        {
+          "comm": "systemd-resolve",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 1726,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 12492800,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 31085,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 433950720,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 1480549,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 299184128,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "java",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 1631721,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 719990784,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "temporal-server",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 1634882,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 119443456,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "kworker/u130:10-events_unbound",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 1850749,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 0,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "python3",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 1853520,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 460509184,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 2600581,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 92360704,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 0.667,
+          "pid": 3505174,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 522194944,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 0.333,
+          "pid": 119349,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 121741312,
+          "write_bytes_per_sec": 16383
+        },
+        {
+          "comm": "tailscaled",
+          "cpu_percent_of_one_logical_cpu": 0.333,
+          "pid": 1953,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 62902272,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 0.333,
+          "pid": 397100,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 314064896,
+          "write_bytes_per_sec": 0
+        }
+      ],
+      "interfering_processes": [
+        {
+          "comm": "pytest",
+          "cpu_percent_of_one_logical_cpu": 74.666,
+          "pid": 1918638,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 540790784,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 21.333,
+          "pid": 2501831,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 413995008,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 19.0,
+          "pid": 1859969,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 314953728,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 10.0,
+          "pid": 463563,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 607240192,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "claude",
+          "cpu_percent_of_one_logical_cpu": 5.333,
+          "pid": 3056147,
+          "read_bytes_per_sec": 6826,
+          "rss_bytes": 308961280,
+          "write_bytes_per_sec": 0
+        },
+        {
+          "comm": "chrome",
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "pid": 119133,
+          "read_bytes_per_sec": 0,
+          "rss_bytes": 709910528,
+          "write_bytes_per_sec": 17749
+        }
+      ],
+      "inventory_bounds": {
+        "maximum_reported_processes": 32,
+        "process_arguments_included": false
+      },
+      "load_average_after": [
+        3.09,
+        3.02,
+        3.06
+      ],
+      "load_average_before": [
+        3.01,
+        3.0,
+        3.05
+      ],
+      "logical_cpus": 32,
+      "memory_available_bytes": 28592467968,
+      "reason": "host_interference",
+      "sample_interval_ms": 3000,
+      "schema": "riffdb.app-baseline-host-validity/v1",
+      "thresholds": {
+        "cpu_percent_of_one_logical_cpu": 5.0,
+        "io_bytes_per_sec": 8388608
+      },
+      "valid": false
+    },
+    "postflight": null
+  },
+  "evidence_eligibility": {
+    "eligible": false,
+    "host_idle": false,
+    "reason_codes": [
+      "host_interference"
+    ]
+  }
+}

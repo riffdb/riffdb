@@ -72,6 +72,23 @@ The full matrix is eligible only when:
 - the generated Rust, TypeScript, and Python surfaces pass boundary checks and
   agree on the canonical semantic observation.
 
+`--require-stable` additionally requires bounded host-validity inventories
+before and after the measured phases. A process outside the harness crossing
+the frozen CPU or I/O threshold yields the typed reason
+`host_interference`; a preflight refusal skips measurement, while a postflight
+finding preserves the raw result but makes it non-evidentiary. Process arguments
+are never retained.
+
+## WP-552 evidence status
+
+The 2026-08-09 acceptance attempt is deliberately non-evidentiary. Both the
+interactive and write-only 90-second sweep commands refused at preflight with
+the typed reason `host_interference`; no database timing was collected or
+presented as a performance result. The bounded receipts are retained under
+`release/evidence/wp-552/`. WP-552's valid 90-second corpus and the alpha
+performance gate remain outstanding until these same commands run on an idle
+host.
+
 Smoke matrix success means only that the orchestration works. Its manifest sets
 `eligible: false` by construction.
 

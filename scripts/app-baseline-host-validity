@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Emit a bounded, value-free host-interference inventory for benchmark gates."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import time
+
+
+SCHEMA = "riffdb.app-baseline-host-validity/v1"
+MAX_REPORTED_PROCESSES = 32
+
+
+def ancestors(pid: int) -> set[int]:
+    result: set[int] = set()
+    current = pid
+    for _ in range(64):
+        if current <= 1 or current in result:
+            break
+        result.add(current)
+        try:
+            stat = Path(f"/proc/{current}/stat").read_text(encoding="utf-8")
+            close = stat.rfind(")")
+            current = int(stat[close + 2 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return result
+
+
+def read_process(pid: int) -> dict[str, int | str] | None:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        open_paren = stat.find("(")
+        close_paren = stat.rfind(")")
+        if open_paren < 0 or close_paren <= open_paren:
+            return None
+        comm = stat[open_paren + 1 : close_paren][:64]
+        fields = stat[close_paren + 2 :].split()
+        cpu_ticks = int(fields[11]) + int(fields[12])
+        rss_pages = max(0, int(fields[21]))
+        read_bytes = 0
+        write_bytes = 0
+        try:
+            for line in Path(f"/proc/{pid}/io").read_text(encoding="utf-8").splitlines():
+                if line.startswith("read_bytes:"):
+                    read_bytes = int(line.split(":", 1)[1])
+                elif line.startswith("write_bytes:"):
+                    write_bytes = int(line.split(":", 1)[1])
+        except (OSError, ValueError):
+            pass
+        return {
+            "pid": pid,
+            "comm": comm,
+            "cpu_ticks": cpu_ticks,
+            "rss_bytes": rss_pages * os.sysconf("SC_PAGE_SIZE"),
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+        }
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def snapshot(excluded: set[int]) -> dict[int, dict[str, int | str]]:
+    result: dict[int, dict[str, int | str]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in excluded:
+            continue
+        process = read_process(pid)
+        if process is not None:
+            result[pid] = process
+    return result
+
+
+def load_average() -> list[float]:
+    try:
+        values = Path("/proc/loadavg").read_text(encoding="utf-8").split()[:3]
+        return [float(value) for value in values]
+    except (OSError, ValueError):
+        return []
+
+
+def memory_available() -> int | None:
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--interval-ms", type=int, default=3000)
+    parser.add_argument("--cpu-percent", type=float, default=5.0)
+    parser.add_argument("--io-bytes-per-sec", type=int, default=8 * 1024 * 1024)
+    args = parser.parse_args()
+    if not 50 <= args.interval_ms <= 10_000:
+        parser.error("--interval-ms must be between 50 and 10000")
+    if not 0.1 <= args.cpu_percent <= 1000.0:
+        parser.error("--cpu-percent must be between 0.1 and 1000")
+    if not 1 <= args.io_bytes_per_sec <= 1024 * 1024 * 1024:
+        parser.error("--io-bytes-per-sec must be between 1 and 1073741824")
+
+    excluded = ancestors(os.getpid())
+    before_load = load_average()
+    before = snapshot(excluded)
+    started = time.monotonic()
+    time.sleep(args.interval_ms / 1000.0)
+    elapsed = max(time.monotonic() - started, 0.001)
+    after = snapshot(excluded)
+    ticks_per_second = os.sysconf("SC_CLK_TCK")
+
+    active = []
+    for pid, current in after.items():
+        prior = before.get(pid)
+        if prior is None:
+            continue
+        cpu_ticks = max(0, int(current["cpu_ticks"]) - int(prior["cpu_ticks"]))
+        cpu_percent = cpu_ticks / ticks_per_second / elapsed * 100.0
+        read_rate = max(0, int(current["read_bytes"]) - int(prior["read_bytes"])) / elapsed
+        write_rate = max(0, int(current["write_bytes"]) - int(prior["write_bytes"])) / elapsed
+        if cpu_percent < 0.1 and read_rate < 1.0 and write_rate < 1.0:
+            continue
+        active.append(
+            {
+                "pid": pid,
+                "comm": current["comm"],
+                "cpu_percent_of_one_logical_cpu": round(cpu_percent, 3),
+                "read_bytes_per_sec": int(read_rate),
+                "write_bytes_per_sec": int(write_rate),
+                "rss_bytes": int(current["rss_bytes"]),
+            }
+        )
+
+    active.sort(
+        key=lambda row: (
+            float(row["cpu_percent_of_one_logical_cpu"]),
+            int(row["read_bytes_per_sec"]) + int(row["write_bytes_per_sec"]),
+        ),
+        reverse=True,
+    )
+    active = active[:MAX_REPORTED_PROCESSES]
+    interferers = [
+        row
+        for row in active
+        if float(row["cpu_percent_of_one_logical_cpu"]) >= args.cpu_percent
+        or int(row["read_bytes_per_sec"]) >= args.io_bytes_per_sec
+        or int(row["write_bytes_per_sec"]) >= args.io_bytes_per_sec
+    ]
+    valid = not interferers
+    report = {
+        "schema": SCHEMA,
+        "valid": valid,
+        "reason": None if valid else "host_interference",
+        "sample_interval_ms": int(elapsed * 1000),
+        "logical_cpus": os.cpu_count(),
+        "load_average_before": before_load,
+        "load_average_after": load_average(),
+        "memory_available_bytes": memory_available(),
+        "thresholds": {
+            "cpu_percent_of_one_logical_cpu": args.cpu_percent,
+            "io_bytes_per_sec": args.io_bytes_per_sec,
+        },
+        "active_processes": active,
+        "interfering_processes": interferers,
+        "inventory_bounds": {
+            "maximum_reported_processes": MAX_REPORTED_PROCESSES,
+            "process_arguments_included": False,
+        },
+    }
+    print(json.dumps(report, sort_keys=True))
+    return 0 if valid else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

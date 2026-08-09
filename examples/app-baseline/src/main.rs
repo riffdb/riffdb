@@ -1832,6 +1832,11 @@ fn run_load(args: Args) -> Result<(), String> {
             "tenant_count": base_config.tenant_count,
             "hot_tenant_percent": base_config.hot_tenant_percent,
             "history_mode": sweep_isolation,
+            "comparator_contract": comparator_contract(
+                args.postgres_comparator,
+                &base_config,
+                args.riffdb_transport.as_report_str(),
+            ),
             "notes": if args.load_concurrency_sweep {
                 if args.load_sweep_per_level_daemon {
                     json!([
@@ -1886,6 +1891,56 @@ fn run_load(args: Args) -> Result<(), String> {
         return Err(detail);
     }
     Ok(())
+}
+
+fn comparator_contract(
+    postgres: PostgresComparisonProfile,
+    config: &LoadConfig,
+    riffdb_transport: &str,
+) -> serde_json::Value {
+    json!({
+        "schema": "riffdb.app-baseline-comparator-contract/v1",
+        "postgres_backend_id": postgres.backend_id(),
+        "postgres_obligations": postgres.obligations(),
+        "backend_isolation_requirement": "sequential_exclusive_phases; counterbalanced when repetitions are at least two",
+        "durability_profiles": {
+            "postgres": "fsync_on+synchronous_commit_on+full_page_writes_on",
+            "riffdb": "standard_acknowledged_checkpoint_plus_durable_journal_suffix",
+        },
+        "client_transport_shapes": {
+            "postgres": "one_warm_tcp_connection_per_session",
+            "riffdb": riffdb_transport,
+            "automatic_command_retries": false,
+        },
+        "workload": {
+            "profile": config.profile.as_str(),
+            "operation_weights": config.profile.weights().iter().map(|(operation, weight)| json!({
+                "operation": operation.as_str(),
+                "weight": weight,
+            })).collect::<Vec<_>>(),
+            "duration_ms": config.duration.as_millis() as u64,
+            "warmup_ms": config.warmup.as_millis() as u64,
+            "zipf_s": config.zipf_s,
+            "contention": config.contended,
+            "tenant_count": config.tenant_count,
+            "hot_tenant_percent": config.hot_tenant_percent,
+        },
+        "dataset": "report.scale",
+        "correctness": [
+            "canonical_seed_reconciliation",
+            "row_and_order_equivalence",
+            "idempotency_replay_equivalence",
+            "declared_outcome_equivalence",
+            "zero_unavailable_or_decode_failures",
+        ],
+        "calculations": {
+            "throughput": "completed_operations / measured_elapsed_seconds",
+            "ratio": "riffdb_metric / postgres_metric",
+            "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
+            "repetition_summary": "median_with_min_max_spread; stable_when_max_over_min_lte_2",
+        },
+        "host_validity": "bounded preflight and postflight inventories; no threshold-crossing non-harness process",
+    })
 }
 
 /// Server-side proof that a Postgres load point/phase is finished.
@@ -2968,9 +3023,41 @@ mod tests {
 
     use super::{
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
-        assert_write_parity, gated_ratio, load_rep_summaries, median_scenarios,
+        assert_write_parity, comparator_contract, gated_ratio, load_rep_summaries, median_scenarios,
         require_load_stable, require_stable, scalar_summary,
     };
+
+    #[test]
+    fn safe_app_comparator_contract_freezes_obligations_and_calculations() {
+        let config = riffdb_app_baseline_core::LoadConfig::standard(
+            WorkloadProfile::Interactive,
+            32,
+        );
+        let contract = comparator_contract(
+            riffdb_app_baseline_postgres::PostgresComparisonProfile::SafeApp,
+            &config,
+            "per_session_http2_channel",
+        );
+
+        assert_eq!(
+            contract["schema"],
+            "riffdb.app-baseline-comparator-contract/v1"
+        );
+        assert_eq!(contract["postgres_backend_id"], "postgres_safe_app");
+        assert_eq!(contract["postgres_obligations"].as_array().unwrap().len(), 7);
+        assert_eq!(
+            contract["workload"]["operation_weights"].as_array().unwrap().len(),
+            WorkloadProfile::Interactive.weights().len()
+        );
+        assert_eq!(
+            contract["calculations"]["ratio"],
+            "riffdb_metric / postgres_metric"
+        );
+        assert_eq!(
+            contract["client_transport_shapes"]["automatic_command_retries"],
+            false
+        );
+    }
 
     fn parity_report(seed_ratio: f64, write_ratio: f64) -> Value {
         let scenarios = [

@@ -436,6 +436,23 @@ impl PostgresComparisonProfile {
         }
     }
 
+    /// Closed application obligations included by this comparator profile.
+    #[must_use]
+    pub const fn obligations(self) -> &'static [&'static str] {
+        match self {
+            Self::Minimal => &["transactional_domain_mutation"],
+            Self::SafeApp => &[
+                "symbolic_operation_authorization",
+                "idempotency_admission_and_equal_input_replay",
+                "domain_mutation",
+                "audit_and_provenance",
+                "domain_event",
+                "outbox_intent",
+                "one_atomic_transaction",
+            ],
+        }
+    }
+
     /// Parses a CLI profile name.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
@@ -1685,6 +1702,18 @@ mod tests {
             Some("postgres_safe_app")
         );
         assert!(PostgresComparisonProfile::parse("sql-is-unsafe").is_none());
+        assert_eq!(
+            PostgresComparisonProfile::SafeApp.obligations(),
+            [
+                "symbolic_operation_authorization",
+                "idempotency_admission_and_equal_input_replay",
+                "domain_mutation",
+                "audit_and_provenance",
+                "domain_event",
+                "outbox_intent",
+                "one_atomic_transaction",
+            ]
+        );
     }
 
     #[test]

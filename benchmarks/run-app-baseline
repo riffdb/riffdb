@@ -42,6 +42,20 @@ if [[ "${1:-}" == "--self-test" ]]; then
         exit 2
     fi
     printf 'self-test: building riffdbd (release)\n'
+    host_fixture="$(mktemp "$task_tmp_root/riffdb-host-validity.XXXXXX")"
+    set +e
+    ./scripts/app-baseline-host-validity --interval-ms 50 >"$host_fixture"
+    host_fixture_status=$?
+    set -e
+    [[ "$host_fixture_status" == 0 || "$host_fixture_status" == 3 ]] || exit 1
+    jq -e '
+      .schema == "riffdb.app-baseline-host-validity/v1"
+      and (.valid | type == "boolean")
+      and (.active_processes | type == "array")
+      and (.interfering_processes | type == "array")
+      and .inventory_bounds.process_arguments_included == false
+    ' "$host_fixture" >/dev/null
+    rm -f "$host_fixture"
     cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
     riffdbd_bin="$repo_root/target/release/riffdbd"
     [[ -x "$riffdbd_bin" ]] || {
@@ -499,7 +513,60 @@ if [[ -n "$load_profile" ]]; then
         report="${output:-$repo_root/$out_dir/load-report-v1.json}"
     fi
 else
-    report="${output:-$repo_root/$out_dir/report-v1.json}"
+report="${output:-$repo_root/$out_dir/report-v1.json}"
+fi
+
+host_validity_preflight=
+host_validity_postflight=
+if ((require_stable)) && [[ -n "$load_profile" ]]; then
+    host_validity_preflight="$(mktemp "$task_tmp_root/riffdb-host-preflight.XXXXXX")"
+    set +e
+    ./scripts/app-baseline-host-validity >"$host_validity_preflight"
+    host_status=$?
+    set -e
+    if ((host_status != 0)); then
+        if ((host_status != 3)); then
+            printf 'host validity inventory failed\n' >&2
+            exit 1
+        fi
+        python3 - "$host_validity_preflight" "$report" "$mode" "$load_profile" \
+            "${load_duration_secs:-90}" "${reps:-3}" "$postgres_comparator" \
+            "$load_concurrency_sweep" <<'PY'
+import json
+import sys
+
+inventory_path, output_path, mode, profile, duration, reps, comparator, sweep = sys.argv[1:]
+inventory = json.load(open(inventory_path, encoding="utf-8"))
+receipt = {
+    "schema": "riffdb.app-baseline-non-evidentiary/v1",
+    "status": "non_evidentiary",
+    "reason": {
+        "code": "host_interference",
+        "retry": "rerun_on_idle_host",
+    },
+    "requested": {
+        "mode": mode,
+        "profile": profile,
+        "duration_secs": int(duration),
+        "reps": int(reps),
+        "postgres_comparator": comparator,
+        "concurrency_sweep": sweep == "1",
+    },
+    "host_validity": {"preflight": inventory, "postflight": None},
+    "evidence_eligibility": {
+        "eligible": False,
+        "host_idle": False,
+        "reason_codes": ["host_interference"],
+    },
+}
+with open(output_path, "w", encoding="utf-8") as destination:
+    json.dump(receipt, destination, indent=2)
+    destination.write("\n")
+PY
+        printf 'non-evidentiary host-interference receipt: %s\n' "$report" >&2
+        rm -f "$host_validity_preflight"
+        exit 1
+    fi
 fi
 
 # Both engines place durable state under the same real-disk tree by default.
@@ -597,6 +664,8 @@ postgres_exec_sql() {
 
 cleanup() {
     stop_postgres
+    [[ -z "$host_validity_preflight" ]] || rm -f "$host_validity_preflight"
+    [[ -z "$host_validity_postflight" ]] || rm -f "$host_validity_postflight"
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -1134,4 +1203,41 @@ else
     fi
     "${cmd[@]}"
     printf 'report: %s\n' "$report"
+fi
+
+if [[ -n "$host_validity_preflight" ]]; then
+    host_validity_postflight="$(mktemp "$task_tmp_root/riffdb-host-postflight.XXXXXX")"
+    set +e
+    ./scripts/app-baseline-host-validity >"$host_validity_postflight"
+    host_post_status=$?
+    set -e
+    [[ "$host_post_status" == 0 || "$host_post_status" == 3 ]] || {
+        printf 'postflight host validity inventory failed\n' >&2
+        exit 1
+    }
+    python3 - "$report" "$host_validity_preflight" "$host_validity_postflight" <<'PY'
+import json
+import sys
+
+report_path, preflight_path, postflight_path = sys.argv[1:]
+report = json.load(open(report_path, encoding="utf-8"))
+preflight = json.load(open(preflight_path, encoding="utf-8"))
+postflight = json.load(open(postflight_path, encoding="utf-8"))
+host_idle = bool(preflight.get("valid")) and bool(postflight.get("valid"))
+report["host_validity"] = {"preflight": preflight, "postflight": postflight}
+eligibility = report.setdefault("evidence_eligibility", {})
+eligibility["host_idle"] = host_idle
+reasons = list(eligibility.get("reason_codes") or [])
+if not host_idle and "host_interference" not in reasons:
+    reasons.append("host_interference")
+eligibility["reason_codes"] = reasons
+eligibility["eligible"] = bool(eligibility.get("eligible")) and host_idle
+with open(report_path, "w", encoding="utf-8") as destination:
+    json.dump(report, destination, indent=2)
+    destination.write("\n")
+PY
+    if ((require_stable)) && ! jq -e '.evidence_eligibility.host_idle == true' "$report" >/dev/null; then
+        printf 'measurement-integrity: host interference invalidated %s\n' "$report" >&2
+        exit 1
+    fi
 fi
