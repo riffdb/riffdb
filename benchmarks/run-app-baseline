@@ -514,6 +514,11 @@ postgres_container="riffdb-app-baseline-$$"
 postgres_label="riffdb.app-baseline.postgres=1"
 postgres_started=0
 postgres_url_from_harness=0
+# Set by start_postgres; survive stop so merge notes and docker-exec helpers
+# still know the proxy-free path/port (host-network uses a non-5432 listen port).
+postgres_connect_path=""
+postgres_connect_host=""
+postgres_connect_port=""
 
 # Kill-orphaned / prior-run containers. Name prefix covers legacy runs without labels;
 # label covers current harness. SIGKILL of the shell skips EXIT traps, so this must
@@ -539,9 +544,28 @@ sweep_harness_postgres_containers() {
     docker rm -f $ids >/dev/null 2>&1 || true
 }
 
+# Free TCP port on 127.0.0.1 for host-network Postgres (avoids clashing with a
+# system postmaster on :5432 while still keeping the client path proxy-free).
+pick_free_loopback_port() {
+    python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+# Container bridge IPv4 (first attached network). Used only when host network
+# is unavailable so we can still skip docker-proxy (no -p publish).
+postgres_bridge_ip() {
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+        "$postgres_container" 2>/dev/null | head -n1 | tr -d '[:space:]'
+}
+
 stop_postgres() {
     if ((postgres_started)); then
-        printf 'stopping PostgreSQL phase (docker container + docker-proxy)\n' >&2
+        printf 'stopping PostgreSQL phase (harness docker container)\n' >&2
         docker exec "$postgres_container" \
             chmod -R a+rwx /var/lib/postgresql >/dev/null 2>&1 || true
         docker rm -f "$postgres_container" >/dev/null 2>&1 || true
@@ -549,12 +573,26 @@ stop_postgres() {
         postgres_started=0
         if ((postgres_url_from_harness)); then
             unset RIFFDB_APP_BASELINE_POSTGRES_URL || true
+            # Keep RIFFDB_APP_BASELINE_POSTGRES_CONNECT_PATH / postgres_connect_*
+            # so dual-phase merge notes still record the measured client path.
             postgres_url_from_harness=0
         fi
     fi
     # Always sweep: covers trap after partial start, dual-phase handoff, and
     # containers owned by killed sibling harnesses.
     sweep_harness_postgres_containers
+}
+
+# docker exec psql/pg_isready against harness PG (must honor custom host-network port).
+postgres_exec_sql() {
+    local args=(-U riffdb -d riffdb_app_baseline)
+    if [[ -n "${postgres_connect_port:-}" ]]; then
+        args+=(-p "$postgres_connect_port")
+    fi
+    if [[ -n "${postgres_connect_host:-}" && "$postgres_connect_path" == "host_network_loopback" ]]; then
+        args+=(-h 127.0.0.1)
+    fi
+    docker exec "$postgres_container" psql "${args[@]}" "$@"
 }
 
 cleanup() {
@@ -568,7 +606,8 @@ sweep_harness_postgres_containers
 start_postgres() {
     if [[ -n "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then
         # External URL: harness does not own the process; dual-backend runs cannot
-        # fully isolate docker-proxy for that instance.
+        # fully tear it down between phases. Caller is responsible for a proxy-free
+        # connect path (host install, host-network container, or bridge IP).
         printf 'using external RIFFDB_APP_BASELINE_POSTGRES_URL (not stopped between phases)\n' >&2
         return 0
     fi
@@ -587,31 +626,118 @@ start_postgres() {
         pg_args+=(-c max_connections=200)
     fi
     mkdir -p "$postgres_database_root"
+
+    # Measurement integrity: never publish -p HOST:5432. That path runs every
+    # benchmark byte through Docker userland docker-proxy (extra copies + cores
+    # inside the PG window). Prefer host network + free loopback port; fall
+    # back to the container bridge IP with no publish (still proxy-free).
+    local run_rc=0 host_port
+    host_port="$(pick_free_loopback_port)"
+    [[ -n "$host_port" ]] || {
+        printf 'failed to allocate free loopback port for harness Postgres\n' >&2
+        exit 1
+    }
+
     # Bind-mount PG data onto the same real-disk tree as RiffDB.
     # Label enables reliable orphan sweep after SIGKILL (no EXIT trap).
+    set +e
     docker run -d --rm \
         --name "$postgres_container" \
         --label "$postgres_label" \
         --label "riffdb.app-baseline.role=postgres" \
+        --label "riffdb.app-baseline.postgres.connect=host_network_loopback" \
+        --network=host \
         -e POSTGRES_USER=riffdb \
         -e POSTGRES_PASSWORD=riffdb \
         -e POSTGRES_DB=riffdb_app_baseline \
         --mount "type=bind,source=$postgres_database_root,target=/var/lib/postgresql" \
-        -p 127.0.0.1::5432 \
-        "$image" "${pg_args[@]}" >/dev/null
+        "$image" -c "port=${host_port}" "${pg_args[@]}" >/dev/null 2>"$task_tmp_root/riffdb-app-baseline-pg-run.err"
+    run_rc=$?
+    set -e
+    if ((run_rc == 0)); then
+        postgres_connect_host="127.0.0.1"
+        postgres_connect_port="$host_port"
+        postgres_connect_path="host_network_loopback"
+        printf 'postgres connect path: host network loopback (no docker-proxy) port=%s\n' \
+            "$postgres_connect_port" >&2
+    else
+        # Rootless / restricted Docker: host network unavailable. Bridge IP with
+        # no -p still avoids userland-proxy (clients hit the container veth).
+        printf 'host network unavailable; falling back to bridge IP (still no port publish / docker-proxy)\n' >&2
+        cat "$task_tmp_root/riffdb-app-baseline-pg-run.err" >&2 || true
+        docker run -d --rm \
+            --name "$postgres_container" \
+            --label "$postgres_label" \
+            --label "riffdb.app-baseline.role=postgres" \
+            --label "riffdb.app-baseline.postgres.connect=bridge_ip_no_publish" \
+            -e POSTGRES_USER=riffdb \
+            -e POSTGRES_PASSWORD=riffdb \
+            -e POSTGRES_DB=riffdb_app_baseline \
+            --mount "type=bind,source=$postgres_database_root,target=/var/lib/postgresql" \
+            "$image" "${pg_args[@]}" >/dev/null
+        postgres_connect_path="bridge_ip_no_publish"
+        postgres_connect_port="5432"
+        for _ in $(seq 1 40); do
+            postgres_connect_host="$(postgres_bridge_ip)"
+            if [[ -n "$postgres_connect_host" ]]; then
+                break
+            fi
+            sleep 0.1
+        done
+        if [[ -z "$postgres_connect_host" ]]; then
+            printf 'failed to resolve Postgres bridge IP\n' >&2
+            exit 1
+        fi
+        printf 'postgres connect path: bridge IP %s:%s (no docker-proxy)\n' \
+            "$postgres_connect_host" "$postgres_connect_port" >&2
+    fi
+
     postgres_started=1
     postgres_url_from_harness=1
+    export RIFFDB_APP_BASELINE_POSTGRES_CONNECT_PATH="$postgres_connect_path"
+
+    # Container-local readiness (postmaster up on the real listen port). Host-
+    # visible TCP is checked separately so we never export a URL that still
+    # depends on docker-proxy or an unpublished port we cannot reach.
+    tcp_ready() {
+        python3 - "$1" "$2" <<'PY'
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(0.5)
+try:
+    s.connect((host, port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+sys.exit(0)
+PY
+    }
+
     for _ in $(seq 1 90); do
-        host_port="$(docker port "$postgres_container" 5432/tcp 2>/dev/null | head -n1 | awk -F: '{print $NF}')"
-        if [[ -n "$host_port" ]] && docker exec "$postgres_container" pg_isready -U riffdb -d riffdb_app_baseline >/dev/null 2>&1; then
+        if [[ "$postgres_connect_path" == "bridge_ip_no_publish" ]]; then
+            local ip
+            ip="$(postgres_bridge_ip)"
+            [[ -n "$ip" ]] && postgres_connect_host="$ip"
+        fi
+        # Must pass -p: host-network PG listens on a free port, not 5432. Default
+        # pg_isready probes the wrong socket and falsely reports not ready.
+        if [[ -n "$postgres_connect_host" ]] \
+            && docker exec "$postgres_container" \
+                pg_isready -h 127.0.0.1 -p "$postgres_connect_port" -U riffdb -d riffdb_app_baseline \
+                >/dev/null 2>&1 \
+            && tcp_ready "$postgres_connect_host" "$postgres_connect_port"; then
             # pg_isready can race the postmaster still accepting first clients.
             sleep 1
-            export RIFFDB_APP_BASELINE_POSTGRES_URL="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
+            export RIFFDB_APP_BASELINE_POSTGRES_URL="postgres://riffdb:riffdb@${postgres_connect_host}:${postgres_connect_port}/riffdb_app_baseline"
             return 0
         fi
         sleep 0.25
     done
-    printf 'failed to start PostgreSQL for app baseline\n' >&2
+    printf 'failed to start PostgreSQL for app baseline (connect_path=%s host=%s port=%s)\n' \
+        "$postgres_connect_path" "$postgres_connect_host" "$postgres_connect_port" >&2
+    docker logs "$postgres_container" 2>&1 | tail -n 40 >&2 || true
     exit 1
 }
 
@@ -656,9 +782,10 @@ export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
 ((assert_all_parity)) && extra_args+=(--assert-all-parity)
 
-# Dual-backend load: run sequential exclusive phases so Postgres (and docker-proxy)
-# are fully stopped before RiffDB measures. Concurrent dual load competes for CPU/IO
-# and makes throughput curves non-evidentiary.
+# Dual-backend load: run sequential exclusive phases so Postgres is fully stopped
+# before RiffDB measures. Concurrent dual load competes for CPU/IO and makes
+# throughput curves non-evidentiary. (Harness PG uses host-network/bridge-IP —
+# not published ports — so docker-proxy is not in the measured path.)
 dual_load_phases=0
 if [[ -n "$load_profile" ]] && ((skip_postgres == 0)) && ((skip_riffdb == 0)); then
     dual_load_phases=1
@@ -699,11 +826,18 @@ for src in (pg, rd):
         if note not in notes:
             notes.append(note)
 notes.append(
-    "Backend isolation: PostgreSQL phase fully stopped (container/docker-proxy torn down) before RiffDB phase."
+    "Backend isolation: PostgreSQL phase fully stopped (container torn down) before RiffDB phase."
 )
+connect_path = __import__("os").environ.get("RIFFDB_APP_BASELINE_POSTGRES_CONNECT_PATH")
+if connect_path:
+    notes.append(
+        f"PostgreSQL client path: {connect_path} (no Docker published-port / docker-proxy hop)."
+    )
 comparison = dict(pg.get("comparison") or {})
 comparison.update(rd.get("comparison") or {})
 comparison["backend_isolation"] = "sequential_exclusive_phases"
+if connect_path:
+    comparison["postgres_connect_path"] = connect_path
 comparison["notes"] = notes
 # Prefer client_points from either side.
 if "client_points" not in comparison:
@@ -956,8 +1090,7 @@ elif ((dual_load_phases)); then
     # Belt-and-suspenders: even if the binary exited cleanly, refuse to tear down
     # (or advance) while the server still shows other client backends.
     if ((postgres_started)); then
-        remaining="$(docker exec "$postgres_container" \
-            psql -U riffdb -d riffdb_app_baseline -Atc \
+        remaining="$(postgres_exec_sql -Atc \
             "SELECT count(*) FROM pg_stat_activity
              WHERE datname = current_database()
                AND pid <> pg_backend_pid()
@@ -965,8 +1098,7 @@ elif ((dual_load_phases)); then
         if [[ "$remaining" != "0" ]]; then
             printf 'measurement-integrity: refusing to stop PostgreSQL: foreign client backends=%s\n' \
                 "$remaining" >&2
-            docker exec "$postgres_container" \
-                psql -U riffdb -d riffdb_app_baseline -c \
+            postgres_exec_sql -c \
                 "SELECT pid, state, left(query, 120) AS query
                  FROM pg_stat_activity
                  WHERE datname = current_database()
@@ -979,7 +1111,7 @@ elif ((dual_load_phases)); then
         printf 'postgres-quiesce: harness gate ok (foreign client backends=0); stopping Docker PG\n'
     fi
     stop_postgres
-    printf 'phase 2/2: RiffDB only (PostgreSQL stopped; no docker-proxy contention)\n'
+    printf 'phase 2/2: RiffDB only (PostgreSQL stopped; exclusive phase)\n'
     rd_cmd=("$runner" "${extra_args[@]}" --skip-postgres --output "$rd_report")
     rd_cmd+=(--riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN")
     "${rd_cmd[@]}"

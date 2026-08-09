@@ -184,10 +184,24 @@ Default report path: `target/app-baseline/load-concurrency-sweep-v1.json`.
 
 **Backend isolation:** dual-backend load runs use **sequential exclusive phases**
 in `benchmarks/run-app-baseline`: finish every PostgreSQL measure point, then
-`docker rm` the harness Postgres (killing `docker-proxy`), then run RiffDB.
-The engines never load at the same time, so CPU/IO and docker-proxy do not
-compete. Reports are merged into one suite JSON with
-`comparison.backend_isolation = sequential_exclusive_phases`.
+`docker rm` the harness Postgres, then run RiffDB. The engines never load at
+the same time, so CPU/IO do not compete. Reports are merged into one suite JSON
+with `comparison.backend_isolation = sequential_exclusive_phases`.
+
+**PostgreSQL client path (measurement integrity):** the harness must **not**
+publish Postgres as `-p 127.0.0.1::5432`. That path forces every client byte
+through Docker’s userland `docker-proxy` (extra copies, latency, and multi-core
+CPU inside the PG window). Instead:
+
+1. Prefer **`--network=host`** with a free loopback port (`postgres -c port=N`,
+   URL `postgres://…@127.0.0.1:N/…`) — no proxy, no NAT.
+2. If host network is unavailable (e.g. restricted/rootless Docker), fall back
+   to the container **bridge IP with no port publish** — still proxy-free.
+3. Operators may also set Docker `"userland-proxy": false`, but the harness does
+   not rely on that.
+
+`comparison.postgres_connect_path` records which path was used
+(`host_network_loopback` or `bridge_ip_no_publish`).
 
 **Docker leak hygiene:** harness Postgres containers are labeled
 `riffdb.app-baseline.postgres=1` and named `riffdb-app-baseline-*`. On every
