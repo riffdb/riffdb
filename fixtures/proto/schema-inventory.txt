@@ -180,7 +180,7 @@ messages
     4 freshness optional .riffdb.app.v1.FreshnessPolicyProto
     5 response_encoding optional .riffdb.app.v1.ProjectedResponseEncoding proto3-optional oneof=_response_encoding
     100 request_id optional bytes
-  riffdb.app.v1.ExecuteProjectedQueryResponse fields=7
+  riffdb.app.v1.ExecuteProjectedQueryResponse fields=8
     1 ready optional .riffdb.app.v1.ProjectedQueryReady oneof=outcome
     2 lagging optional .riffdb.app.v1.ProjectedQueryLagging oneof=outcome
     3 building optional .riffdb.app.v1.ProjectedQueryBuilding oneof=outcome
@@ -188,6 +188,7 @@ messages
     5 degraded optional .riffdb.app.v1.ProjectedQueryDegraded oneof=outcome
     6 invalid optional .riffdb.app.v1.ProjectedQueryInvalid oneof=outcome
     7 ready_packed optional .riffdb.app.v1.ProjectedReadyPacked oneof=outcome
+    8 ready_aggregates optional .riffdb.app.v1.ProjectedReadyAggregates oneof=outcome
   riffdb.app.v1.ExecuteQueryRequest fields=8
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
@@ -243,6 +244,15 @@ messages
   riffdb.app.v1.ProjectedAggregate fields=2
     1 field optional string
     2 op optional .riffdb.app.v1.ProjectedAggregateOp
+  riffdb.app.v1.ProjectedAggregateGroup fields=2
+    1 keys repeated .riffdb.v1.Value
+    2 values repeated .riffdb.app.v1.ProjectedAggregateValue
+  riffdb.app.v1.ProjectedAggregateScalar fields=1
+    1 value optional .riffdb.v1.Value proto3-optional oneof=_value
+  riffdb.app.v1.ProjectedAggregateValue fields=3
+    1 count optional uint64 oneof=value
+    2 sum optional .riffdb.v1.Decimal oneof=value
+    3 scalar optional .riffdb.app.v1.ProjectedAggregateScalar oneof=value
   riffdb.app.v1.ProjectedOrder fields=2
     1 field optional string
     2 descending optional bool
@@ -257,7 +267,7 @@ messages
     4 order repeated .riffdb.app.v1.ProjectedOrder
     5 limit optional uint32 proto3-optional oneof=_limit
     6 group_by repeated string
-    7 aggregate optional .riffdb.app.v1.ProjectedAggregate proto3-optional oneof=_aggregate
+    7 aggregates repeated .riffdb.app.v1.ProjectedAggregate
   riffdb.app.v1.ProjectedQueryBuilding fields=2
     1 applied_through optional bytes
     2 head optional bytes
@@ -288,6 +298,13 @@ messages
     2 upper optional .riffdb.v1.Value proto3-optional oneof=_upper
     3 lower_inclusive optional bool
     4 upper_inclusive optional bool
+  riffdb.app.v1.ProjectedReadyAggregates fields=6
+    1 group_key_fields repeated string
+    2 aggregates repeated .riffdb.app.v1.ProjectedAggregate
+    3 groups repeated .riffdb.app.v1.ProjectedAggregateGroup
+    4 frontier optional bytes
+    5 head optional bytes
+    6 commit_token optional bytes
   riffdb.app.v1.ProjectedReadyPacked fields=7
     1 fields repeated string
     2 primary_key_fields repeated string

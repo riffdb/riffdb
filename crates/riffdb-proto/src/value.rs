@@ -421,6 +421,46 @@ pub fn money_to_proto(value: CanonicalMoney) -> v1::Money {
     }
 }
 
+/// Encodes one exact `i128` aggregate sum as a scale-0 `v1::Decimal`.
+///
+/// The projected aggregate surface sums integer columns into an exact `i128`,
+/// which no `v1::Value` arm can hold: the union's widest integers are 64 bits
+/// and the codebase admits no floating point. `Decimal`'s minimal big-endian
+/// two's-complement coefficient is exactly `i128`-wide, so a scale-0 decimal
+/// carries the sum without loss.
+///
+/// `precision` is deliberately absent rather than asserted: an `i128` needs up
+/// to 39 significant digits and a decimal precision can assert at most 38, so
+/// any precision claim would either be wrong or reject the extremes.
+///
+/// The sole encoder for this carriage; [`aggregate_sum_from_proto`] is its
+/// sole decoder.
+#[must_use]
+pub fn aggregate_sum_to_proto(value: i128) -> v1::Decimal {
+    v1::Decimal {
+        coefficient_twos_complement: encode_minimal_i128(value),
+        scale: 0,
+        precision: None,
+    }
+}
+
+/// Decodes one scale-0 aggregate sum written by [`aggregate_sum_to_proto`].
+///
+/// Fail-closed against a hostile peer: the coefficient must be 1 through 16
+/// bytes in minimal two's-complement form, the scale must be exactly 0, and
+/// `precision` must be absent. This carriage is a closed integer format, not a
+/// general decimal, so an asserted precision is a protocol violation rather
+/// than an optional hint.
+pub fn aggregate_sum_from_proto(value: &v1::Decimal) -> Result<i128, ValueValidationError> {
+    if value.scale != 0 {
+        return Err(ValueValidationError::DecimalScaleOutOfRange);
+    }
+    if value.precision.is_some() {
+        return Err(ValueValidationError::DecimalTypeMismatch);
+    }
+    decode_minimal_i128(&value.coefficient_twos_complement)
+}
+
 fn encode_minimal_i128(value: i128) -> Vec<u8> {
     let bytes = value.to_be_bytes();
     let mut start = 0;

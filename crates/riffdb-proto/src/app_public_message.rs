@@ -665,9 +665,9 @@ app_message!(
     app_v1::ExecuteProjectedQueryResponse,
     None,
     MAX_PUBLIC_RESPONSE_BYTES,
-    7,
+    8,
     &[],
-    &[1, 2, 3, 4, 5, 6, 7],
+    &[1, 2, 3, 4, 5, 6, 7, 8],
     |value: &app_v1::ExecuteProjectedQueryResponse| {
         if value.outcome.is_none() {
             return Err(PublicWireError::MissingRequiredField);
@@ -777,6 +777,43 @@ mod ready_packed_preflight_pins {
         assert!(
             decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_err(),
             "two outcome arms must fail preflight"
+        );
+    }
+
+    /// Review pin mirroring `duplicate_ready_packed_arm_is_rejected` for the
+    /// hand-registered aggregate arm 8: two arm-8 occurrences are one too many.
+    /// This only holds while `maximum_known_field` covers field 8.
+    #[test]
+    fn duplicate_ready_aggregates_arm_is_rejected() {
+        // field 8, wire type 2 (LEN), empty payload — twice.
+        let bytes = [0x42, 0x00, 0x42, 0x00];
+        assert!(
+            decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_err(),
+            "duplicate ready_aggregates arms must fail preflight"
+        );
+    }
+
+    /// Review pin: ready_aggregates (field 8) is exclusive with every other
+    /// outcome arm, including the two Ready-shaped ones.
+    #[test]
+    fn ready_aggregates_with_any_other_arm_is_rejected() {
+        for other in [0x0a_u8, 0x12, 0x1a, 0x22, 0x2a, 0x32, 0x3a] {
+            let bytes = [other, 0x00, 0x42, 0x00];
+            assert!(
+                decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_err(),
+                "arm {other:#04x} together with ready_aggregates must fail preflight"
+            );
+        }
+    }
+
+    /// A lone aggregate arm still decodes: the exclusivity pins above must not
+    /// be passing because field 8 is rejected outright.
+    #[test]
+    fn lone_ready_aggregates_arm_decodes() {
+        let bytes = [0x42, 0x00];
+        assert!(
+            decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_ok(),
+            "a single ready_aggregates arm must decode"
         );
     }
 }

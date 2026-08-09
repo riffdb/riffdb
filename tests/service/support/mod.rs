@@ -4806,6 +4806,8 @@ contract TicketDeskBoard version 1 {
     field assignee_id: uuid
     field status: TicketStatus
     field title: string<128>
+    field story_points: i64
+    field cost: money<USD>
     index by_project_status (organization_id, project_id, status, ticket_id)
   }
 
@@ -4835,6 +4837,8 @@ contract TicketDeskBoard version 1 {
     input assignee_id: uuid
     input status: TicketStatus
     input title: string<128>
+    input story_points: i64
+    input cost: money<USD>
     idempotency_key idempotency_key
     create Ticket(organization_id, ticket_id) as ticket
       else TicketExists { ticket_id: ticket_id }
@@ -4843,6 +4847,8 @@ contract TicketDeskBoard version 1 {
     set ticket.assignee_id = assignee_id
     set ticket.status = status
     set ticket.title = title
+    set ticket.story_points = story_points
+    set ticket.cost = cost
     return Created { ticket: ticket }
   }
 
@@ -4960,6 +4966,8 @@ fn board_ticket_input(
                 "title",
                 CanonicalValue::string("seed").expect("bounded title"),
             ),
+            ("story_points", CanonicalValue::I64(0)),
+            ("cost", ServiceHarness::board_cost(0)),
         ],
     )
 }
@@ -5099,6 +5107,10 @@ impl HarnessColumnar {
                     ticket("assignee_id"),
                     ticket("status"),
                     ticket("title"),
+                    // Summable integer column and a deliberately unsummable
+                    // money column for the aggregate acceptance arc.
+                    ticket("story_points"),
+                    ticket("cost"),
                 ],
                 org_scope_field: ticket("organization_id"),
             },
@@ -5415,7 +5427,7 @@ impl ServiceHarness {
         ticket_status_value(self.board_bundle(), variant)
     }
 
-    /// One real CreateTicket command request.
+    /// One real CreateTicket command request with the default metrics.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_ticket_request(
         &self,
@@ -5427,6 +5439,47 @@ impl ServiceHarness {
         assignee_id: [u8; 16],
         status: &str,
         title: &str,
+    ) -> ExecuteCommandRequest {
+        self.create_ticket_request_with_metrics(
+            caller_key,
+            organization_id,
+            ticket_id,
+            project_id,
+            reporter_id,
+            assignee_id,
+            status,
+            title,
+            0,
+            0,
+        )
+    }
+
+    /// Canonical `money<USD>` value from minor units (fixed v1 spec 38,2).
+    pub(crate) fn board_cost(cost_minor_units: i64) -> CanonicalValue {
+        CanonicalValue::Money(riffdb_types::Money::new(
+            riffdb_types::CurrencyCode::new("USD").expect("currency"),
+            riffdb_types::Decimal::new(
+                riffdb_types::DecimalSpec::new(38, 2).expect("money v1 spec"),
+                i128::from(cost_minor_units),
+            )
+            .expect("bounded money amount"),
+        ))
+    }
+
+    /// One real CreateTicket command request carrying explicit metrics.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_ticket_request_with_metrics(
+        &self,
+        caller_key: &str,
+        organization_id: [u8; 16],
+        ticket_id: [u8; 16],
+        project_id: [u8; 16],
+        reporter_id: [u8; 16],
+        assignee_id: [u8; 16],
+        status: &str,
+        title: &str,
+        story_points: i64,
+        cost_minor_units: i64,
     ) -> ExecuteCommandRequest {
         let bundle = self.board_bundle();
         let plan = bundle
@@ -5451,6 +5504,8 @@ impl ServiceHarness {
                     "title",
                     CanonicalValue::string(title).expect("bounded title"),
                 ),
+                ("story_points", CanonicalValue::I64(story_points)),
+                ("cost", Self::board_cost(cost_minor_units)),
             ],
         );
         ExecuteCommandRequest::new(
