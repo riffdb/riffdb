@@ -131,7 +131,7 @@ direction, merged draft, or implementation choice.
 | [0110](0110-application-installation-and-adapter-conformance.md) | Exact Application Installation and Adapter Conformance | Proposed |
 | [0111](0111-compiled-principal-row-policies.md) | Compiled Principal-Aware Row Policies | Accepted |
 | [0112](0112-alpha-format-compatibility-and-application-portability.md) | Alpha Format Compatibility and Application Portability | Accepted |
-| [0113](0113-deterministic-simulation-testing.md) | Deterministic Simulation Testing for the Durable Engine | Proposed |
+| [0113](0113-deterministic-simulation-testing.md) | Deterministic Simulation Testing for the Durable Engine | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
