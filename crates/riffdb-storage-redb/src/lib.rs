@@ -8,6 +8,7 @@ mod backup;
 #[cfg(feature = "benchmark-support")]
 #[doc(hidden)]
 pub mod benchmark_support;
+mod changelog;
 mod codec;
 mod command_authority;
 mod composite_view;
@@ -36,6 +37,10 @@ mod validated_prefix;
 
 pub use backup::{
     RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,
+};
+pub use changelog::{
+    DEFAULT_CHANGELOG_BUFFER_ADVANCEMENTS, RedbChangelogEmitter, RedbChangelogEmitterHandle,
+    start_changelog_emitter,
 };
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]

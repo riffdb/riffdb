@@ -624,3 +624,82 @@ fn live_migration_preflight_reads_the_published_overlay_not_the_checkpoint_alone
     assert!(range.contains("Self::Composite(view)=self"));
     assert!(range.contains("merge_bounded(table.composite(),start_inclusive,end_exclusive,"));
 }
+
+#[test]
+fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
+    // ADR-0100 §2 made structural. The emitter derives frames from published
+    // durable state only; this pin proves the module has no other way to read.
+    // The `RedbPublishedSnapshot` adapter at the top of the file is the single
+    // bridge, and it is constructed only at a publication site.
+    let emitter = production_source(crate_root().join("src/changelog.rs"));
+    let derivation = emitter
+        .split_once("impl PublishedDurableSnapshot for RedbPublishedSnapshot")
+        .expect("the published-snapshot adapter opens the module")
+        .1;
+
+    for forbidden in [
+        // Writer-private state and the roots that carry it.
+        "private_composite_frontier",
+        "unpublished_command_indexes",
+        "durable_read_frontier",
+        "composite_publication",
+        "SharedRedb",
+        "RedbDurabilityEpoch",
+        "RedbWriteAccess",
+        // Any way to open a read of its own, rather than being handed one.
+        "begin_read",
+        "begin_write",
+        "begin_operational_read",
+        "begin_composite_operational_read",
+        "open_table",
+        "ReadTransaction",
+        // Journal bytes and composite-overlay internals are not a wire format
+        // (ADR-0101 §6, ADR-0104 §8).
+        "JournalFrame",
+        "EncodedJournalFrame",
+        "encoded_frame_bytes",
+        "CompositeMutationV1",
+        "FrozenCompositeOverlay",
+        "RedbCompositeReadView",
+        "overlay(",
+    ] {
+        assert!(
+            !derivation.contains(forbidden),
+            "the changelog derivation must not reach `{forbidden}`"
+        );
+    }
+
+    // The gate is present and fails closed on anything but the exact frontier.
+    assert!(derivation.contains("fn assert_snapshot_is_the_published_frontier"));
+    assert!(derivation.contains("ChangelogResyncReasonV1::UnpublishedStateVisible"));
+    assert!(derivation.contains("fn derive_frame"));
+
+    // Every publication site hands over the snapshot it just installed, after
+    // the swap, and no site hands over a writer-private root.
+    let store = production_source(crate_root().join("src/store.rs"));
+    assert_eq!(
+        store.matches("observe_changelog_publication(").count(),
+        4,
+        "one definition plus exactly three publication sites"
+    );
+    let observer = store
+        .split_once("fn observe_changelog_publication")
+        .expect("the publication observer helper")
+        .1
+        .split_once("\n    }")
+        .expect("observer helper end")
+        .0;
+    assert!(observer.contains("RedbPublishedSnapshot::new"));
+    assert!(!observer.contains("private_composite_frontier"));
+    for site in ["fn publish_direct", "fn publish_fenced"] {
+        let body = store.split(site).nth(1).expect("publication site");
+        assert!(
+            !body
+                .split("observe_changelog_publication")
+                .next()
+                .expect("prefix before the observation")
+                .contains("private_composite_frontier"),
+            "{site} must never hand a writer-private root to the observer"
+        );
+    }
+}
