@@ -6347,9 +6347,21 @@ fn service_link_is_valid(
                     )
                 }
             };
-            Ok(commit_side
-                && get_provenance(transaction, provenance_id)?
-                    .is_some_and(|provenance| provenance.commit_sequence() == commit_sequence))
+            let provenance_side = match get_provenance(transaction, provenance_id)? {
+                Some(provenance) => provenance.commit_sequence() == commit_sequence,
+                // ADR-0102: a segmented command owns no independent provenance
+                // row -- provenance identity is a rebuildable index and the
+                // authoritative record lives inside the canonical segment
+                // member. Reciprocate against that member instead of reading a
+                // row the segmented writer never emits.
+                // `known_command_and_control_plane_replays_keep_the_exact_succeeded_link`
+                // goes red if this arm is removed.
+                None => get_command_capsule(transaction, commit_sequence)?.is_some_and(|capsule| {
+                    capsule.provenance().provenance_id() == provenance_id
+                        && capsule.provenance().commit_sequence() == commit_sequence
+                }),
+            };
+            Ok(commit_side && provenance_side)
         }
         riffdb_types::ServiceAuditLinkV1::ControlPlane {
             administration_sequence,

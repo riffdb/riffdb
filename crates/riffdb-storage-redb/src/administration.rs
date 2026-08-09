@@ -52,7 +52,7 @@ use crate::codec::{
     encode_capability_record_v1, encode_capability_token_lookup_v1, encode_contract_bundle_v1,
     encode_query_module_administration_v1, encode_query_module_v1, encode_reactive_module_v1,
 };
-use crate::command_authority::command_member_at_access;
+use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::{JournalMutation, JournalTable};
@@ -2200,6 +2200,36 @@ where
     E: ReadableTable<&'static [u8], &'static [u8]>,
     P: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    // ADR-0102: a committed command is a member of a bounded segment keyed by the
+    // segment's first commit sequence, and its provenance record is carried inside
+    // that member rather than in an independent `provenance` row. Resolve the
+    // logical sequence through the shared segmented lookup, which proves the
+    // requested sequence lies inside the canonical segment, and take both halves of
+    // the link from the one canonical member. `known_command_and_control_plane_replays_keep_the_exact_succeeded_link`
+    // goes red if this degrades back to an exact-key commit row read.
+    //
+    // A link naming a sequence that no retained segment covers is an unprovable
+    // link, not a corrupt database: the predecessor segment simply does not
+    // contain it, and no independent row can exist at that key either, because a
+    // row there would have been the predecessor. Classify that miss as "not
+    // valid" so a stale or forged link stays a refused append, exactly as the
+    // pre-segmentation absent-row branch did. This mirrors the same
+    // CorruptData-to-absence mapping `startup::get_commit` already applies.
+    let member = match command_member_at(commits, events, commit_sequence) {
+        Ok(member) => member,
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if let Some(member) = member {
+        let base = member.base();
+        let commit = base.commit();
+        let provenance = base.provenance();
+        return Ok(commit.commit_sequence() == commit_sequence
+            && commit.provenance_id() == provenance_id
+            && provenance.provenance_id() == provenance_id
+            && provenance.commit_sequence() == commit_sequence);
+    }
+    // Pre-segmentation history keeps an independent commit row and provenance row.
     let key = encode_application_sequence_key(commit_sequence);
     let Some(commit_guard) = commits
         .get(key.as_slice())
