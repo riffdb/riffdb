@@ -7,7 +7,7 @@
   application/conformance manifest format
 - **Requires:** ADR-0055, ADR-0057, ADR-0062, ADR-0065, ADR-0066,
   ADR-0075, ADR-0076, ADR-0079, and ADR-0105 through ADR-0109
-- **Defines or blocks:** WP-568 through WP-570
+- **Defines or blocks:** WP-568, WP-569, WP-574, WP-576, WP-578, and WP-579
 
 ## Context
 
@@ -183,8 +183,8 @@ detail or mutation.
 
 - **Provisional requirements:** `APE-001` through `APE-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-568, WP-569, WP-570.
-- **Final evidence:** WP-570.
+- **Defines or blocks:** WP-568, WP-569, WP-574, WP-576, WP-578, and WP-579.
+- **Final evidence:** WP-578 and WP-579.
 
 ## Decision Deadline
 

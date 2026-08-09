@@ -6,7 +6,7 @@
 - **Decision deadline:** Before WP-563 changes RiffQL grammar or query IR
 - **Requires:** ADR-0035, ADR-0038, ADR-0051, ADR-0053, ADR-0054,
   ADR-0055, ADR-0070, ADR-0086, ADR-0087, and ADR-0092
-- **Defines or blocks:** WP-563 through WP-565 and WP-570
+- **Defines or blocks:** WP-563 through WP-565 and WP-579
 
 ## Context
 
@@ -209,8 +209,8 @@ budgets remain mandatory.
 
 - **Provisional requirements:** `OQ-001` through `OQ-016`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-563, WP-564, WP-565, and WP-570.
-- **Final evidence:** WP-565 and WP-570.
+- **Defines or blocks:** WP-563, WP-564, WP-565, and WP-579.
+- **Final evidence:** WP-565 and WP-579.
 
 ## Decision Deadline
 

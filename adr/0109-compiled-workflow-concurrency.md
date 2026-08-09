@@ -7,7 +7,7 @@
   context, or scheduler interfaces
 - **Requires:** ADR-0003, ADR-0005, ADR-0012, ADR-0018, ADR-0055,
   ADR-0059, ADR-0080, ADR-0093, and ADR-0095
-- **Defines or blocks:** WP-566, WP-567, and WP-570
+- **Defines or blocks:** WP-566, WP-567, and WP-579
 
 ## Context
 
@@ -164,8 +164,8 @@ and authorizes current capability facts.
 
 - **Provisional requirements:** `WF-001` through `WF-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-566, WP-567, and WP-570.
-- **Final evidence:** WP-567 and WP-570.
+- **Defines or blocks:** WP-566, WP-567, and WP-579.
+- **Final evidence:** WP-567 and WP-579.
 
 ## Decision Deadline
 
