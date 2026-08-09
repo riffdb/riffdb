@@ -6,7 +6,7 @@
 - **Decision deadline:** Before WP-555 freezes the driver-host protocol or Go
   and TypeScript runtime contract
 - **Requires:** ADR-0037, ADR-0040, ADR-0055, ADR-0056, ADR-0074, and ADR-0105
-- **Defines or blocks:** WP-555 through WP-558 and WP-570
+- **Defines or blocks:** WP-555 through WP-558 and WP-579
 
 ## Context
 
@@ -167,8 +167,8 @@ redacted.
 
 - **Provisional requirements:** `DRV-001` through `DRV-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-555, WP-556, WP-557, WP-558, and WP-570.
-- **Final evidence:** WP-558 and WP-570.
+- **Defines or blocks:** WP-555, WP-556, WP-557, WP-558, and WP-579.
+- **Final evidence:** WP-558 and WP-579.
 
 ## Decision Deadline
 

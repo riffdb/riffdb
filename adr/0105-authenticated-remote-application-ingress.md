@@ -7,7 +7,7 @@
   health, or credential-rotation interfaces
 - **Requires:** ADR-0007, ADR-0009, ADR-0025, ADR-0029, ADR-0040,
   ADR-0055, ADR-0063, and ADR-0071
-- **Defines or blocks:** WP-550, WP-553, WP-554, and WP-570
+- **Defines or blocks:** WP-550, WP-553, WP-554, and WP-579
 
 Direction approval records the alpha blocker and intended product shape. This
 record is not authoritative until the human maintainer accepts its exact text.
@@ -155,6 +155,12 @@ credential to the application.
 - A reverse proxy is optional and never authoritative for application policy.
 - OAuth, internet-facing hosted MCP, public certificate automation, and
   multi-region routing remain later decisions.
+- Per-principal request-rate limits and per-tenant storage/work quotas on the
+  remote application gRPC ingress are explicitly deferred for alpha. Existing
+  bounded global admission, per-query/command budgets, connection/stream
+  ceilings, and current authorization remain mandatory. This deferral permits
+  controlled design-partner networks only; it must be revisited before an
+  untrusted internet-facing or shared multi-tenant service claim.
 
 ## Compatibility
 
@@ -198,8 +204,8 @@ architecture pins named above.
 
 - **Provisional requirements:** `NET-001` through `NET-012`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-550, WP-553, WP-554, and WP-570.
-- **Final evidence:** WP-570.
+- **Defines or blocks:** WP-550, WP-553, WP-554, and WP-579.
+- **Final evidence:** WP-579.
 
 ## Decision Deadline
 

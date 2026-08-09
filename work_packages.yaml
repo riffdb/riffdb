@@ -166,6 +166,14 @@ gates:
   - WP-568
   - WP-569
   - WP-570
+  - WP-572
+  - WP-573
+  - WP-574
+  - WP-575
+  - WP-576
+  - WP-577
+  - WP-578
+  - WP-579
 - id: P11
   name: Repository ownership notices
   requires:
@@ -9854,14 +9862,14 @@ work_packages:
   requirements: []
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
     ADR-0080, ADR-0087, ADR-0095, ADR-0105, ADR-0106, ADR-0107, ADR-0108,
-    ADR-0109, ADR-0110]
+    ADR-0109, ADR-0110, ADR-0111, ADR-0112]
   allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, diagrams/**,
     fixtures/alpha-release/**, docs/SUMMARY.md, docs/architecture/**,
     docs/contributing/**, docs/known-limitations.md]
   deliverables:
-  - Exact human acceptance or explicit revision/rejection of ADR-0105 through ADR-0110
-  - Normative NET, DRV, BLK, OQ, WF, and APE requirement families in SPEC.md, with one owning
-    implementation package and one final-evidence package per requirement
+  - Exact human acceptance or explicit revision/rejection of ADR-0105 through ADR-0112
+  - Normative NET, DRV, BLK, OQ, WF, APE, RAP, AFC, EXP, and endurance requirement families in
+    SPEC.md, with one owning implementation package and one final-evidence package per requirement
   - Frozen format-owner map for listener configuration, driver-host protocol, Go/TypeScript/Python
     public APIs, bulk command grammar/IR/durable graph, operational query grammar/IR/cursors/text
     profiles, workflow plans, installation plans/receipts, and adapter manifests
@@ -9869,11 +9877,14 @@ work_packages:
     every proposed new critical dependency; no production placeholder implementation before review
   - Exact replacement posture for the two server TLS architecture pins, a recorded sequencing
     revision against active RE2 ShipChangelog transport work, and reservation of WP-550 through
-    WP-570 exclusively for this alpha program
+    WP-570 plus WP-572 through WP-579 exclusively for this alpha program; WP-571 remains P11
   - ADR-0100 delete/tombstone amendment and validated-prefix/entity-chain audit ownership precede
     delete activation; ADR-0108 identity changes have one receipted repository-wide rotation
-  - Every implementing package in WP-553 through WP-569 carries explicit interface-safety and
-    scale standing-design-test answers; omission is a work-package definition failure
+  - Every implementing package in WP-553 through WP-570 and WP-572 through WP-578 carries explicit
+    interface-safety and scale standing-design-test answers; omission is a work-package definition
+    failure
+  - Per-row policy is enforced before every read shape/rank/aggregate/export and transaction-current
+    on writes; the alpha format, export/reimport, disaster drill, and endurance policy are exact
   - A fresh normative performance-comparator requirement ID is assigned without reusing PERF-017,
     which remains the accepted journal-authoritative-state requirement
   - Alpha negative-capability matrix proving that insecure remote transport, raw transactions,
@@ -9884,7 +9895,7 @@ work_packages:
   - ./scripts/generate-handbook-diagrams --check
   - ./scripts/handbook check
   - cargo +1.97.0 fmt --all -- --check
-  exit_gate: All six ADRs are Accepted exactly, provisional requirement families are normative and
+  exit_gate: All eight ADRs are Accepted exactly, provisional requirement families are normative and
     completely owned, compatibility fixtures are enumerated, critical dependencies are reviewed,
     and no implementation package can weaken a safety invariant to satisfy an adapter.
   standing_design_tests:
@@ -10713,9 +10724,365 @@ work_packages:
       workload ceilings; no adapter requires global discovery or whole-database materialization.
   human_review_triggers: *id001
 - id: WP-570
+  name: Principal-aware row-policy language, IR, roles, and identity
+  depends_on: [WP-550, WP-563]
+  objective: Freeze one closed compiler-owned row-policy language and role/capability fact model so
+    principal-specific entity access is statically visible, bounded, index-backed, and impossible
+    for application requests or generated clients to bypass.
+  requirements: [SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-003,
+    SAFE-006, SAFE-007, QRY-001, QRY-002, QRY-004]
+  required_adrs: [ADR-0007, ADR-0009, ADR-0038, ADR-0055, ADR-0065,
+    ADR-0086, ADR-0087, ADR-0108, ADR-0111]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
+    crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
+    crates/riffdb-diagnostics/**, fixtures/compiler/**, fixtures/riffql/**,
+    fixtures/application-manifests/**, fixtures/application-locks/**,
+    tests/**, fuzz/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned row-policy/principal-fact grammar, formatter, source spans, typed IR, plan codec,
+    role/module/application identity, old/current fixtures, and receipted rotation closure
+  - Closed predicates over row fields, principal ID/kind, bounded current capability facts,
+    constants, null/existence, bounded membership/AND/OR, and one indexed local relationship exists
+  - Static field/fact/index/relationship/partition/cost proof with exact fixed ceilings and source-
+    spanned rejection of scans, callbacks, dynamic fields, recursion, cross-partition or caller ASTs
+  - Role compilation and delegation rules make principal facts canonical, revisioned, expiring,
+    audience/tenant bound, and narrowing-only; operation requests cannot add or override them
+  - Explain/catalog output names visible symbolic policies and fact schemas without policy bytecode,
+    capability contents, hidden branches, row values, numeric IDs, or existence leaks
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-auth -p riffdb-policy -p riffdb-diagnostics --all-features
+  - cargo +1.97.0 fuzz run contract_parser -- -max_total_time=60
+  - cargo +1.97.0 fuzz run riffql_parser -- -max_total_time=60
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every accepted policy is finite, single-partition, index-backed, identity-pinned, and
+    attached symbolically to exact roles/operations; callers cannot submit, alter, skip, or locally
+    evaluate it, and every unsafe/unbounded form fails at compile time with an actionable span.
+  standing_design_tests:
+    interface_safety: Public requests contain values only and no policy structure or bypass; role
+      compilation derives one closed policy proof, so a forgotten application middleware check is
+      unexpressible rather than discouraged.
+    scale: Policy nodes, facts, values, probes, bytes, and partitions have compiler maxima and use
+      declared indexes; no full-state or global-principal expansion enters authorization.
+  human_review_triggers: *id001
+- id: WP-572
+  name: Transaction-current row-policy enforcement across every application surface
+  depends_on: [WP-559, WP-561, WP-564, WP-566, WP-570]
+  objective: Enforce one compiled row-policy decision before every read disclosure and against
+    transaction-current plus successor state for every mutation, including projections, search,
+    reactive contexts, bulk commands, workflows, and later export.
+  requirements: [SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-003,
+    SAFE-006, SAFE-008, TXN-001, TXN-010, TXN-011, TXN-012, QRY-001,
+    QRY-002, QRY-004, REC-001]
+  required_adrs: [ADR-0007, ADR-0038, ADR-0055, ADR-0080, ADR-0086,
+    ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
+    crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-command-runtime/**,
+    crates/riffdb-query-executor/**, crates/riffdb-projection/**,
+    crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    tests/**, fuzz/**, scripts/**, docs/**]
+  deliverables:
+  - Shared policy proof and evaluator used before selection, hydration, limit/cursor, aggregation,
+    FTS/vector scoring/statistics/snippets, live diff, contextual hydration, and protected release
+  - Create evaluates proposed state; update evaluates transaction-current and successor state;
+    delete evaluates transaction-current state; owner/visibility/ACL escape requires a named policy
+  - Commit verifier rechecks row/relationship evidence and capability revision after evaluation;
+    stale/revoked facts produce no mutation and no hidden-row oracle
+  - Policy narrowing removes no-longer-visible live values and closes/resets streams before further
+    delivery; cached plans contain no frozen principal-specific allow decision
+  - Differential and inference corpus proves identical decisions across authoritative/projected/
+    search/reactive paths and no hidden row affects counts, rank, page identity, output, or work class
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-auth -p riffdb-policy -p riffdb-service -p riffdb-runtime -p riffdb-query-executor -p riffdb-projection -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test row_policy_conformance --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test row_policy_inference --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: No supported read, mutation, projection, search, reactive, scheduler, or bulk path can
+    observe or change an unauthorized row; policy/ACL races fail closed transaction-current, and
+    every surface agrees with the pure reference evaluator without post-filter leakage.
+  standing_design_tests:
+    interface_safety: Every service path consumes the same typed policy proof and storage/runtime
+      ports cannot accept an application-created allow decision; policy omission is an architecture
+      test failure, not an endpoint convention.
+    scale: Evaluation is per bounded candidate/current row plus bounded indexed relationship probes,
+      with one partition and existing page/work ceilings; no global ACL scan is introduced.
+  human_review_triggers: *id001
+- id: WP-573
+  name: Generated row-policy clients and realistic Payload/MLflow acceptance
+  depends_on: [WP-565, WP-567, WP-572]
+  objective: Generate principal-fact administration and policy-aware application operations and
+    prove Payload document ACLs plus MLflow experiment/run permissions without client filtering,
+    middleware authorization, hidden queries, or broader roles.
+  requirements: [AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009,
+    AAA-010, AAA-012, AAA-018, PYD-004, PYD-005, SAFE-007, SAFE-008]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0106,
+    ADR-0108, ADR-0111]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+    crates/riffdb-cli/**, crates/riffdb-api-mcp/**, clients/**, templates/**,
+    fixtures/application-parity/**, fixtures/adapters/**, examples/**,
+    tests/**, scripts/**, docs/**, release/**]
+  deliverables:
+  - Rust, Go, TypeScript, Python, CLI, and MCP parity for policy-aware queries/commands/errors and
+    operator-only bounded principal-fact/role binding; applications never receive policy bytecode
+  - Payload corpus covers public/private, owner, team grant, draft, transfer, ACL revocation,
+    document lists/detail/search/live update, and aggregate inference
+  - MLflow corpus covers experiment/run owners and groups, nested metrics/artifacts, transition
+    races, revocation, dashboards, events, and agents under least-authority roles
+  - Boundary lint rejects middleware/client filtering, raw capability facts, alternate queries,
+    administrator credentials, hidden row IDs, and per-language policy implementations
+  acceptance_commands:
+  - ./scripts/adapter-row-policy-acceptance --all-languages --domains payload,mlflow
+  - ./scripts/check-application-bindings
+  - ./scripts/driver-conformance --all-languages --row-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Realistic Payload and MLflow workloads enforce identical per-record decisions in every
+    language and surface, including revocation/races/inference, with no application-owned policy
+    code, client filter, raw identity, or authority widening.
+  standing_design_tests:
+    interface_safety: Generated application APIs expose only ordinary typed operations; principal-
+      fact administration is operator-only and no language can evaluate or override policy locally.
+    scale: Adapter corpora use bounded indexed ACL relations, page/query ceilings, and finite
+      principals/groups; no generated client materializes all ACLs or rows.
+  human_review_triggers: *id001
+- id: WP-574
+  name: Alpha durable-format manifest and upgrade/refusal policy
+  depends_on: [WP-486, WP-550, WP-551]
+  objective: Freeze an honest release-to-release durable-format contract with generated manifests,
+    refusal-before-mutation, supported upgrade edges, and explicit export/reimport-only epochs so
+    an alpha binary never discovers incompatibility by damaging or resetting existing data.
+  requirements: [STO-001, STO-002, STO-020, STO-021, STO-022, REC-001,
+    REC-002, MIG-001, MIG-002, MIG-003]
+  required_adrs: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082,
+    ADR-0085, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0112]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    fixtures/proto/**, fixtures/storage/**, fixtures/compatibility/**,
+    crates/riffdb-types/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-proto/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    tests/storage_recovery/**, tests/**, scripts/**, docs/**, release/**]
+  deliverables:
+  - Generated durable-format manifest naming alpha epoch, writer, complete readable/writable
+    registry/record/storage/journal/backup/receipt versions, supported release edges, and fixture hash
+  - Startup/preflight comparison before mutation with typed current/binary epoch, compatible action,
+    backup/free-space/downtime requirements, and no automatic reset or decoder-shaped error
+  - Same-epoch release-pair matrix proves preservation or refusal-before-mutation; breaking epochs
+    require explicit export/reimport-only classification, release notes, and retained old binary
+  - Backup manifests state compatible restore range; incompatible restore fails before target
+    replacement; downgrade remains explicitly unsupported
+  - Handbook compatibility table and release-template check prevent publishing an artifact without
+    exact format/upgrade/export posture
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-service -p riffdb-server -p riffdb-cli --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test release_format_compatibility --all-features
+  - ./scripts/check-durable-format-manifest
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Every supported release pair preserves existing data or refuses before mutation with
+    one exact recovery path, every breaking epoch has an export/reimport ceremony, and no release
+    artifact can omit or overstate its durable-format compatibility.
+  standing_design_tests:
+    interface_safety: A binary cannot select ignore/force/reset on incompatible data; preflight and
+      manifest types admit only supported upgrade, export/reimport, or refusal outcomes.
+    scale: Compatibility reads bounded manifests/registries and uses existing restartable migration;
+      it neither loads nor rewrites full state merely to decide whether opening is safe.
+  human_review_triggers: *id001
+- id: WP-575
+  name: Snapshot-consistent symbolic application export and reimport receipts
+  depends_on: [WP-558, WP-568, WP-570, WP-574]
+  objective: Provide a public operator-authorized, resumable, snapshot-consistent export of symbolic
+    entities/events and optional provenance/audit, plus adapter-declared compiled reimport mappings,
+    without exposing storage bytes or creating a generic import write path.
+  requirements: [API-001, SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002,
+    SAFE-003, SAFE-006, SAFE-007, REC-001, REC-002, MIG-001, MIG-002]
+  required_adrs: [ADR-0007, ADR-0055, ADR-0057, ADR-0065, ADR-0072,
+    ADR-0080, ADR-0110, ADR-0111, ADR-0112]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
+    fixtures/export/**, crates/riffdb-types/**, crates/riffdb-auth/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+    crates/riffdb-cli/**, clients/**, tests/**, scripts/**, docs/**, release/**]
+  deliverables:
+  - Closed start/page/status/cancel export operations and CLI over one immutable published snapshot,
+    bounded rows/bytes/time/state, opaque scoped cursor, lease, durable checkpoint, and receipt
+  - Canonical JSONL entity/event files plus separately authorized provenance/public-audit files and
+    manifest binding database/history, contract/module, row-policy scope, frontier, counts, hashes,
+    omissions, operation identity, and terminal state
+  - Natural typed values and symbolic names only; numeric/storage IDs, keys, envelopes, journal/
+    changelog bytes, credentials, hidden schema, paths, and unredacted submitted secrets are absent
+  - Whole-application export uses distinct operator authority; principal export applies row/field
+    policy before serialization; audit/provenance never follows from entity visibility alone
+  - Adapter manifests map portable classes to declared idempotent compiled commands/migrations and
+    reconcile observations after empty-database reimport without claiming stable commit sequences
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-policy -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-cli --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test application_export --all-features
+  - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
+  - ./scripts/generate-proto --check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Each adapter exports a complete receipted symbolic snapshot, an empty database is
+    repopulated only through declared compiled behavior, observations reconcile exactly within
+    declared omissions, and neither export nor reimport exposes a storage/policy/write bypass.
+  standing_design_tests:
+    interface_safety: Export selectors are closed symbolic classes/scopes, not tables or field IDs;
+      whole-app/audit authority is explicit, and reimport can invoke only declared compiled plans.
+    scale: Export is paged, leased, resumable, snapshot-bound, and byte/row/time bounded; neither
+      server nor client holds the complete dataset in memory.
+  human_review_triggers: *id001
+- id: WP-576
+  name: Remote offline backup, destructive restore, and adapter disaster drills
+  depends_on: [WP-155, WP-554, WP-569, WP-574]
+  objective: Exercise the existing public offline maintenance protocol from a separate operator
+    container for every adapter, destroy the live database, restore its verified checkpoint-plus-
+    journal unit, and prove the restored application rather than treating backup as a paper claim.
+  requirements: [API-001, SEC-001, SEC-002, SEC-003, REC-001, REC-002,
+    STO-001, STO-002, STO-020, STO-021, STO-022]
+  required_adrs: [ADR-0019, ADR-0050, ADR-0072, ADR-0085, ADR-0101,
+    ADR-0103, ADR-0104, ADR-0105, ADR-0110, ADR-0112]
+  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/backup/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+    crates/riffdb-server/**, crates/riffdb-cli/**, templates/**, examples/**,
+    tests/**, scripts/**, docs/**, release/**, .github/**]
+  deliverables:
+  - Separate operator container invokes public create/status/restore with least-authority credential;
+    server-owned configured roots remain invisible and application credentials cannot maintain data
+  - Each adapter reaches quiescence, creates and externally retains a verified immutable backup,
+    loses/destroys its database volume, restores into an empty replacement, and reaches readiness
+  - Post-restore structural/startup validation, history-incarnation handling, credential/role/module
+    identity, events/projections, and complete adapter conformance match the backup frontier
+  - Corrupt/missing/mixed/incompatible manifest, redb, extent, receipt, credential, database, and
+    confirmation cases fail before target replacement with exact recovery guidance
+  - Disaster receipt records backup/restore operation identities, manifests, frontiers, checksums,
+    expected destroyed suffix, validation result, and adapter observation digest without secrets
+  acceptance_commands:
+  - ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
+  - ./scripts/remote-compose-acceptance --backup-restore
+  - cargo +1.97.0 test -p riffdb-testkit --test remote_backup_restore --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Every alpha adapter can lose its database volume and recover the exact backed-up state
+    through public remote maintenance with full conformance, while corruption, incompatible format,
+    insufficient authority, or ambiguous publication replaces nothing.
+  standing_design_tests:
+    interface_safety: Only the accepted operator maintenance operations can quiesce/replace a
+      database; clients cannot supply paths, bypass confirmation, reuse application authority, or
+      convert a corrupt/incompatible artifact into a target.
+    scale: Backup/restore streams/copies bounded files on the server and validates the exact closed
+      inventory; it does not require database contents in memory or all databases offline together.
+  human_review_triggers: *id001
+- id: WP-577
+  name: Long-duration lifecycle and resource-growth harness
+  depends_on: [WP-490, WP-552, WP-554, WP-558, WP-559]
+  objective: Build a reproducible remote mixed-load endurance harness that forces history growth,
+    checkpoints, retention windows, journal extent recycling, reactive consumers, backup windows,
+    and restart cycles while measuring bounded memory/file/queue/resource behavior.
+  requirements: [PERF-001, PERF-002, PERF-003, PERF-004, PERF-005, PERF-007,
+    PERF-008, PERF-009, PERF-013, PERF-014, REC-001, REC-002, STO-002]
+  required_adrs: [ADR-0050, ADR-0058, ADR-0061, ADR-0080, ADR-0085,
+    ADR-0101, ADR-0103, ADR-0104]
+  allowed_paths: [SPEC.md, work_packages.yaml, examples/app-baseline/**,
+    benchmarks/**, fixtures/endurance/**, crates/riffdb-observability/**,
+    tests/**, scripts/**, docs/performance/**, release/evidence/**]
+  deliverables:
+  - Closed workload manifest with remote Rust/Go/TypeScript/Python clients, mixed reads/writes/
+    workflows/events/live queries, hot/cold keys, tenant mix, bounded rates, seeds, and fault schedule
+  - Instrumentation/receipts for RSS/allocator, database/journal/backup bytes, extent generations,
+    checkpoints, retention watermarks/tombstones, queues, consumers, projections, errors, latency,
+    throughput, restarts, and conformance checkpoints
+  - Harness forces many journal recycle generations, multiple checkpoint/recovery and supported
+    offline retention/backup cycles, sustained contention, capability rotation, and deploy under load
+  - Growth assertions compare memory/file/backlog slopes with modeled retained live/history data and
+    reject leaks, unbounded queues, repeated O(history) lifecycle work, starvation, or hidden retries
+  - Idle-host/environment/process inventory and typed non-evidentiary outcomes prevent interference,
+    early exit, missing generations, or incomplete observations from passing
+  acceptance_commands:
+  - ./scripts/alpha-endurance --self-test
+  - cargo +1.97.0 test -p riffdb-testkit --test endurance_harness --all-features
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: The harness reproducibly exercises every duration/size lifecycle named above, detects
+    injected leaks/quadratic shutdown/recycle/queue faults, and cannot emit a passing receipt for a
+    short, interfered, incomplete, or structurally invalid run.
+  standing_design_tests:
+    interface_safety: The harness uses release public surfaces and fault controls outside production
+      interfaces; it cannot add a benchmark-only bypass or waive correctness to sustain load.
+    scale: Load, clients, retention, artifacts, diagnostics, and fault cadence are explicitly bounded
+      while duration and history are large enough to expose growth/recycling defects.
+  human_review_triggers: *id001
+- id: WP-578
+  name: Portability, disaster-recovery, and 72-hour endurance evidence
+  depends_on: [WP-573, WP-575, WP-576, WP-577]
+  objective: Bank release-candidate evidence that every adapter preserves policy and portable data,
+    restores after total local disk loss, and remains correct/resource-bounded for 72 continuous
+    hours through repeated journal, checkpoint, retention, backup, rotation, and restart cycles.
+  requirements: [AAA-003, AAA-010, AAA-012, AAA-013, AAA-014, AAA-018,
+    SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-006, SAFE-007,
+    SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
+    PERF-014, REC-001, REC-002, STO-001, STO-002]
+  required_adrs: [ADR-0050, ADR-0080, ADR-0082, ADR-0085, ADR-0101,
+    ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112]
+  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
+    fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
+    docs/**, release/evidence/**, .github/**]
+  deliverables:
+  - One retained 72-hour remote mixed-load receipt with all four adapter shapes/languages, periodic
+    conformance and policy probes, zero silent loss/leak, and no unsupported storage-unavailable path
+  - Forced journal recycling across many generations, repeated checkpoint/recovery, supported
+    retention and backup cycles, capability/certificate rotation, deploy-under-load, and restarts
+  - Bounded RSS/file/backlog/queue slopes after accounting for declared retained data; final full
+    startup validation and every adapter conformance manifest pass
+  - Each adapter completes symbolic export/reimport and remote destroy/restore drills, with receipts
+    linked to the exact format manifest and observation digests
+  - A 24-hour rehearsal may qualify harness changes, but cannot satisfy alpha; interruption,
+    interference, missing lifecycle coverage, or an invalid observation makes the 72-hour run fail
+  acceptance_commands:
+  - ./scripts/alpha-endurance --duration-hours 72 --all-domains --all-languages --remote --require-idle-host --require-all-lifecycles
+  - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
+  - ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-durable-format-manifest
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Retained 72-hour evidence covers every required lifecycle with bounded growth and exact
+    correctness, every adapter exits/reimports and restores after disk loss, and no short/interfered/
+    partial run or policy/format/backup omission can be classified as an alpha pass.
+  standing_design_tests:
+    interface_safety: Evidence uses the same installed public and generated surfaces alpha ships;
+      every policy/export/restore negative is required and no test-only authority enters the daemon.
+    scale: The run proves bounded growth over sustained history/recycling and multiple tenants while
+      receipts/artifacts remain capped; it does not claim infinite retention or global co-location.
+  human_review_triggers: *id001
+- id: WP-579
   name: Deployable Application Alpha release gate
   depends_on: [WP-421, WP-490, WP-493, WP-494, WP-496, WP-551, WP-552, WP-558,
-    WP-562, WP-565, WP-567, WP-569]
+    WP-562, WP-565, WP-567, WP-569, WP-573, WP-574, WP-575, WP-576, WP-578]
   objective: Close the first alpha release with installed, remote, multi-language, adapter-shaped,
     upgrade, rotation, correctness, recovery, security, performance, and documentation evidence
     over only generated and public symbolic application surfaces.
@@ -10726,7 +11093,7 @@ work_packages:
     PERF-014]
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
     ADR-0080, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0105, ADR-0106,
-    ADR-0107, ADR-0108, ADR-0109, ADR-0110]
+    ADR-0107, ADR-0108, ADR-0109, ADR-0110, ADR-0111, ADR-0112]
   allowed_paths: [SPEC.md, PLAN.md, work_packages.yaml, Cargo.lock, crates/**, proto/**,
     clients/**, fixtures/**, fuzz/**, tests/**, examples/**, benchmarks/**, scripts/**,
     templates/**, docs/**, release/**, .github/**]
@@ -10736,7 +11103,12 @@ work_packages:
   - Installed Rust, Go, TypeScript, and Python driver conformance over pooling, cancellation,
     typed errors, retries/uncertainty, read-after-commit, reactive streams, and overload
   - OpenFGA, MLflow, Payload, and Woodpecker empty-install/populated-upgrade workloads exercising
-    collection commands, operational queries, workflows, events, migrations, and adapter manifests
+    collection commands, operational queries, row policies, workflows, events, migrations,
+    portability/disaster recovery, and adapter manifests
+  - Payload document and MLflow experiment/run policy probes cover owner/group/public access,
+    revocation, mutation races, projections/search/aggregates/live queries, and inference negatives
+  - Published durable-format compatibility manifest plus same-epoch upgrade/refusal and breaking-
+    epoch export/reimport evidence; no unsupported binary opens or resets existing data
   - Crash/network/revocation/expiry/deploy-under-load/history-growth/security-negative matrix with
     exact final-state reconciliation and no unavailable/storage errors under supported load
   - Retained WP-490 same-run performance gate, public compatibility matrix, release artifacts,
@@ -10744,12 +11116,19 @@ work_packages:
   - WP-551 application-binding closure is green before any release run, and WP-552 contributes
     retained idle-host 90-second interactive/write-only comparator evidence; short runs are not
     accepted as substitutes
+  - WP-576 remote destroy/restore drills pass every adapter, and WP-578 contributes the complete
+    retained 72-hour lifecycle/resource-growth receipt; a 24-hour rehearsal cannot satisfy release
   - Fresh independent public-only agent evaluation proving zero kernel imports, raw IDs, generic
     writes, handwritten transport/query/transaction glue, or RiffDB implementation-source access
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/deployable-alpha-acceptance --all-domains --all-languages --remote
   - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/adapter-row-policy-acceptance --all-languages --domains payload,mlflow
+  - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
+  - ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
+  - ./scripts/alpha-endurance --verify-release-receipt release/evidence/alpha-endurance-v1.json
+  - ./scripts/check-durable-format-manifest
   - ./benchmarks/run-app-baseline --full --load interactive --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable
   - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable
   - ./scripts/release-source-bootstrap-smoke
@@ -10767,6 +11146,7 @@ work_packages:
     non-critical adapter workload through generated public symbolic surfaces; every provisional
     alpha requirement and prior correctness/performance gate passes; and no waiver introduces an
     insecure listener, kernel/storage bypass, raw transaction, unbounded query, unfenced workflow,
+    missing row policy, silent format reset, nonportable data, untested restore, shortened soak,
     silent authority widening, or language-owned transport trust.
   standing_design_tests:
     interface_safety: The final installed matrix must prove all unsafe alternatives absent across

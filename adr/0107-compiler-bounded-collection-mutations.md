@@ -8,7 +8,7 @@
   ADR-0055, ADR-0059, ADR-0093, ADR-0095, ADR-0100, and ADR-0104
 - **Amends if accepted:** ADR-0100's closed changelog-entry algebra, plus
   `DSL-001`, `PERF-004`, and `PERF-005`
-- **Defines or blocks:** WP-559 through WP-562 and WP-570
+- **Defines or blocks:** WP-559 through WP-562 and WP-579
 
 ## Context
 
@@ -215,8 +215,8 @@ entity type, field, index, partition, or operation dynamically.
 
 - **Provisional requirements:** `BLK-001` through `BLK-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-559, WP-560, WP-561, WP-562, and WP-570.
-- **Final evidence:** WP-562 and WP-570.
+- **Defines or blocks:** WP-559, WP-560, WP-561, WP-562, and WP-579.
+- **Final evidence:** WP-562 and WP-579.
 
 ## Decision Deadline
 
