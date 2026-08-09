@@ -551,3 +551,76 @@ fn the_shutdown_checkpoint_reads_row_counts_and_counts_every_terminal_failure_on
          self.shared.set_startup_validation_clean(true);"
     ));
 }
+
+#[test]
+fn live_migration_preflight_reads_the_published_overlay_not_the_checkpoint_alone() {
+    // ADR-0104 section 2: every operational scan and point read of a table
+    // named by `JournalTable` captures one published checkpoint-plus-overlay
+    // view. `RedbReadAccess` still derefs to the checkpoint root, so opening
+    // `ENTITIES` or `IDEMPOTENCY_PENDING` on a read access reads the
+    // checkpoint alone and silently omits every transition that is durable in
+    // the journal suffix but not yet checkpointed.
+    //
+    // Contract-migration preflight is the fail-closed gate over predecessor
+    // rows. Reading it from the checkpoint alone lets a migration be admitted
+    // against rows it never inspected, which is corruption acceptance rather
+    // than a stale read. ADR-0104 section 1 routes every standard-profile
+    // command, including an idle singleton, through that suffix, so the
+    // omission is the ordinary case and not a rare race.
+    let migration_stage = without_whitespace(&production_source(
+        crate_root().join("src/migration_stage.rs"),
+    ));
+
+    let scan = migration_stage
+        .split_once("fnscan_rows(")
+        .expect("preflight row scan")
+        .1
+        .split_once("fntarget_exists(")
+        .expect("preflight row scan end")
+        .0;
+    assert!(scan.contains("ports.begin_composite_read()"));
+    assert!(scan.contains("read_range_to(JournalTable::Entities,"));
+    assert!(
+        !scan.contains("open_table(ENTITIES)"),
+        "a checkpoint-only entity scan cannot refuse an invalid predecessor that is still journal-suffix durable"
+    );
+
+    let exists = migration_stage
+        .split_once("fntarget_exists(")
+        .expect("preflight target probe")
+        .1
+        .split_once("fnhas_pending_admissions(")
+        .expect("preflight target probe end")
+        .0;
+    assert!(exists.contains("ports.begin_composite_read()"));
+    assert!(exists.contains("read_value(JournalTable::Entities,"));
+    assert!(!exists.contains("open_table(ENTITIES)"));
+
+    let admissions = migration_stage
+        .split_once("fnhas_pending_admissions(")
+        .expect("preflight admission probe")
+        .1
+        .split_once("fnread_active(")
+        .expect("preflight admission probe end")
+        .0;
+    assert!(admissions.contains("ports.begin_composite_read()"));
+    assert!(admissions.contains("read_range_to(JournalTable::IdempotencyPending,"));
+    assert!(
+        !admissions.contains("open_table(IDEMPOTENCY_PENDING)"),
+        "an unresolved admission that is only journal-suffix durable must still hold the migration closed"
+    );
+
+    // The open-ended overlay merge these reads depend on must keep merging the
+    // overlay when the upper bound is absent; a checkpoint-only fallback there
+    // would reintroduce the same omission one level down.
+    let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
+    let range = store
+        .split_once("pub(crate)fnread_range_to(")
+        .expect("open-ended overlay range")
+        .1
+        .split_once("pub(crate)fnapplication_frontier(")
+        .expect("open-ended overlay range end")
+        .0;
+    assert!(range.contains("Self::Composite(view)=self"));
+    assert!(range.contains("merge_bounded(table.composite(),start_inclusive,end_exclusive,"));
+}

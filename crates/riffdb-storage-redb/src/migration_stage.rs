@@ -1,9 +1,8 @@
 //! Private staged-database implementation of commit-owned contract migration.
 
-use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
-use redb::{ReadableTable, ReadableTableMetadata, TableHandle};
+use redb::{ReadableTable, TableHandle};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AuditPrincipalV1, ContractMigrationArtifactsV1,
     ContractMigrationJournalStepV1, ContractMigrationOperationArtifactsV1,
@@ -30,6 +29,7 @@ use crate::codec::{
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
+use crate::journal::JournalTable;
 use crate::keys::{
     encode_contract_bundle_key, encode_contract_migration_operation_key,
     encode_contract_write_retirement_key, encode_entity_key, encode_index_entry_key,
@@ -857,28 +857,46 @@ impl MigrationStagePort for RedbContractMigrationStage {
     }
 }
 
+/// Returns the exact exclusive lower bound `key` as an inclusive start key.
+///
+/// `key || 0x00` is the least byte string strictly greater than `key`: any
+/// greater string either extends `key`, and is therefore at least
+/// `key || 0x00`, or diverges upward at an earlier position and therefore
+/// already exceeds `key || 0x00` at that same position.
+fn exclusive_start(key: &[u8]) -> Vec<u8> {
+    let mut start = Vec::with_capacity(key.len().saturating_add(1));
+    start.extend_from_slice(key);
+    start.push(0);
+    start
+}
+
 fn scan_rows(
     ports: &RedbOperationalPorts,
     cursor: &MigrationScanCursor,
 ) -> Result<MigrationScanPage, MigrationStageError> {
-    let transaction = ports.begin_read().map_err(stage_error)?;
-    let table = transaction
-        .open_table(ENTITIES)
-        .map_err(|_| MigrationStageError::Integrity)?;
+    // ADR-0104 section 2: preflight is an operational scan and must read one
+    // published checkpoint-plus-overlay view. Iterating the dereferenced
+    // `ENTITIES` table reads the checkpoint alone and silently omits every
+    // transition already durable in the journal suffix but not yet
+    // checkpointed -- exactly the predecessor rows a fail-closed check exists
+    // to refuse.
+    let access = ports.begin_composite_read().map_err(stage_error)?;
+    let start = cursor
+        .exclusive_lower_bound()
+        .map(|target| exclusive_start(encode_entity_key(target.key())))
+        .unwrap_or_default();
+    let page = access
+        .read_range_to(
+            JournalTable::Entities,
+            &start,
+            None,
+            riffdb_storage_api::MAX_MIGRATION_SCAN_ROWS + 1,
+        )
+        .map_err(stage_error)?;
     let mut rows = Vec::with_capacity(riffdb_storage_api::MAX_MIGRATION_SCAN_ROWS + 1);
-    let mut scan = match cursor.exclusive_lower_bound() {
-        Some(target) => table
-            .range::<&[u8]>((Excluded(encode_entity_key(target.key())), Unbounded))
-            .map_err(|_| MigrationStageError::Integrity)?,
-        None => table.iter().map_err(|_| MigrationStageError::Integrity)?,
-    };
-    for item in scan
-        .by_ref()
-        .take(riffdb_storage_api::MAX_MIGRATION_SCAN_ROWS + 1)
-    {
-        let (key, value) = item.map_err(|_| MigrationStageError::Integrity)?;
-        let decoded = decode_entity_record_v1(value.value()).map_err(stage_error)?;
-        if encode_entity_key(decoded.value().target().key()) != key.value() {
+    for (key, value) in page {
+        let decoded = decode_entity_record_v1(&value).map_err(stage_error)?;
+        if encode_entity_key(decoded.value().target().key()) != key.as_ref() {
             return Err(MigrationStageError::Integrity);
         }
         rows.push(decoded.into_parts().0);
@@ -897,17 +915,17 @@ fn target_exists(
     ports: &RedbOperationalPorts,
     target: &riffdb_storage_api::EntityTarget,
 ) -> Result<bool, MigrationStageError> {
-    let transaction = ports.begin_read().map_err(stage_error)?;
-    let table = transaction
-        .open_table(ENTITIES)
-        .map_err(|_| MigrationStageError::Integrity)?;
-    let Some(value) = table
-        .get(encode_entity_key(target.key()))
-        .map_err(|_| MigrationStageError::Integrity)?
+    // Same ADR-0104 section 2 rule as `scan_rows`: an overlay value can create
+    // the target and an overlay tombstone is authoritative absence, so neither
+    // answer may come from the checkpoint alone.
+    let access = ports.begin_composite_read().map_err(stage_error)?;
+    let Some(value) = access
+        .read_value(JournalTable::Entities, encode_entity_key(target.key()))
+        .map_err(stage_error)?
     else {
         return Ok(false);
     };
-    let decoded = decode_entity_record_v1(value.value()).map_err(stage_error)?;
+    let decoded = decode_entity_record_v1(&value).map_err(stage_error)?;
     if decoded.value().target() != target {
         return Err(MigrationStageError::Integrity);
     }
@@ -915,13 +933,14 @@ fn target_exists(
 }
 
 fn has_pending_admissions(ports: &RedbOperationalPorts) -> Result<bool, MigrationStageError> {
-    let transaction = ports.begin_read().map_err(stage_error)?;
-    let table = transaction
-        .open_table(IDEMPOTENCY_PENDING)
-        .map_err(|_| MigrationStageError::Integrity)?;
-    Ok(!table
-        .is_empty()
-        .map_err(|_| MigrationStageError::Integrity)?)
+    // An unresolved admission that is still journal-suffix durable must hold
+    // the migration closed, so emptiness is decided on the merged view rather
+    // than by table metadata on the checkpoint root.
+    let access = ports.begin_composite_read().map_err(stage_error)?;
+    Ok(!access
+        .read_range_to(JournalTable::IdempotencyPending, &[], None, 1)
+        .map_err(stage_error)?
+        .is_empty())
 }
 
 fn read_active(
@@ -1117,4 +1136,73 @@ fn stage_error(error: StorageError) -> MigrationStageError {
 
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exclusive_start;
+
+    /// `exclusive_start` converts the migration cursor's exclusive lower bound
+    /// into the inclusive start the overlay-aware range accessor takes. It is
+    /// only correct if `key || 0x00` is the exact successor of `key`: strictly
+    /// greater than `key`, and less than or equal to every other byte string
+    /// that is greater than `key`. A wrong bound here silently skips or repeats
+    /// a preflight page, which would re-open the same fail-closed hole one
+    /// pagination step later.
+    #[test]
+    fn exclusive_start_is_the_exact_successor_of_its_key() {
+        for key in [
+            [].as_slice(),
+            b"a".as_slice(),
+            b"entity".as_slice(),
+            &[0x00],
+            &[0xff],
+            &[0xff, 0xff, 0xff],
+            &[0x10, 0x00, 0x20],
+            &[0x41; 24],
+        ] {
+            let start = exclusive_start(key);
+            assert!(start.as_slice() > key, "successor must exceed its key");
+
+            // Nothing sorts strictly between `key` and its successor.
+            let mut between = key.to_vec();
+            between.push(0);
+            assert_eq!(between, start);
+
+            // Every candidate greater than `key` is at or after the successor.
+            for candidate in [
+                {
+                    let mut value = key.to_vec();
+                    value.push(0);
+                    value.push(0);
+                    value
+                },
+                {
+                    let mut value = key.to_vec();
+                    value.push(0xff);
+                    value
+                },
+                {
+                    let mut value = key.to_vec();
+                    value.extend_from_slice(b"zzz");
+                    value
+                },
+            ] {
+                assert!(candidate.as_slice() > key);
+                assert!(
+                    candidate >= start,
+                    "successor must not skip a key greater than its cursor"
+                );
+            }
+        }
+
+        // A key that diverges upward before the cursor ends still sorts after
+        // the successor, so a fixed-length keyspace loses no row either.
+        let key = [0x10, 0x20, 0x30];
+        let start = exclusive_start(&key);
+        for greater in [[0x10, 0x20, 0x31], [0x10, 0x21, 0x00], [0x11, 0x00, 0x00]] {
+            assert!(greater.as_slice() > key.as_slice());
+            assert!(greater.as_slice() > start.as_slice());
+        }
+    }
 }
