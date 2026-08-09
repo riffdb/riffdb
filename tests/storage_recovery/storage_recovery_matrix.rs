@@ -18,9 +18,11 @@ use riffdb_catalog::{
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_storage_api::{
     AdministrationAuditReader, AdministrationAuditScan, AdministrationAuditScanRequest,
-    AdmissionLookupResultV1, AdmissionRepository, AffectedEntityV1, AffectedEpochCurrentState,
+    AdministrationSequenceAllocator, AdmissionLookupResultV1, AdmissionRepository,
+    AdmissionRequestV1, AdmissionResultV1, AffectedEntityV1, AffectedEpochCurrentState,
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
-    AtomicCommandRecordSet, AuditPrincipalV1, AuthoritativeIndexScanPage,
+    AtomicCommandRecordSet, AuditPrincipalV1, AuditedAdmissionRepository,
+    AuditedAdmissionRequestV1, AuditedAdmissionResultV1, AuthoritativeIndexScanPage,
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
     CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
@@ -44,26 +46,29 @@ use riffdb_storage_api::{
     PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
     SnapshotReader, SnapshotRequest, StartupValidationInputs, StorageScanLimit,
-    StoredAdministrationAuditRecordV1, StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
-    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-    StructuralEvidenceSession, StructuralFinding, StructuralFindingScope, StructuralOpenOutcome,
-    StructurallyOpened, command_write_set_upper_bound_v1, decode_index_entry_v1,
-    decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
+    StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
+    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructuralEvidenceCursor,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
+    decode_index_migration_row, derive_event_hash_v1, encode_administration_sequence_allocator_v1,
     encode_index_entry_v1_fixture, encode_index_entry_v2, encode_record_registry_v2,
+    encode_service_audit_record_v2,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts,
     RedbStartupIndexMigrationPort, RedbStore, RedbTestController, RedbTestOperation,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AggregateTypeId, CanonicalInputHash, CanonicalRecord, CanonicalValue,
-    CapabilityId, CommitSequence, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId,
-    EntityVersion, Environment, EventId, EventTypeId, FieldId, IndexEntryKey, IndexEntryKeyBuilder,
-    IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, OutcomeId, PartitionKeyBuilder,
-    ProvenanceId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp, hash_partition_key,
+    ActorId, ActorKind, AdministrationSequence, AggregateTypeId, CanonicalInputHash,
+    CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence, DatabaseId, DigestKeyId,
+    EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventId, EventTypeId, FieldId,
+    IndexEntryKey, IndexEntryKeyBuilder, IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
+    OutcomeId, PartitionKeyBuilder, ProvenanceId, RequestId, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantId,
+    TenantScope, Timestamp, hash_partition_key,
 };
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
@@ -72,6 +77,8 @@ const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE
 const CHILD_PRUNE_TARGET: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PRUNE_TARGET";
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("secondary_indexes");
+const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit");
+const META_ADMINISTRATION_SEQUENCE: &str = "next_administration_sequence";
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
 const STORAGE_RECOVERY_CONTRACT: &str = r#"
@@ -318,10 +325,26 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         .expect("activate storage fixture; WP-130 owns catalog-proof composition")
 }
 
+/// Which durable admission state the committing writer expects to find.
+///
+/// The two shapes are not interchangeable durable histories: the fused shape
+/// never writes a `Pending` row or a physical audit row, while the two-phase
+/// shape leaves both behind for the commit to consume.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AdmissionShape {
+    /// One transaction proves every candidate identity vacant and commits the
+    /// terminal record — the shape every other fixture in this matrix uses.
+    VacantTerminal,
+    /// A durable `Pending` row already exists, admitted by an earlier
+    /// transaction that also appended its physical `Started` audit row.
+    ExistingPending,
+}
+
 #[derive(Clone)]
 struct CommandFixture {
     candidates: IdempotencyLookupCandidatesV1,
     pending: StoredPendingAdmissionV1,
+    context: PreEvaluationCommitContext,
     intent: riffdb_storage_api::CommitIntent,
     affected_targets: AffectedIndexEpochTargets,
     write_plan: CommandWriteSetPlanV1,
@@ -404,7 +427,13 @@ fn command_fixture() -> CommandFixture {
 /// Ordinal-parameterized committed command: ordinal 1 reproduces the original
 /// fixture exactly; ordinal N commits sequence N over a disjoint entity.
 fn command_fixture_at(ordinal: u64) -> CommandFixture {
-    build_command_fixture(ordinal, ordinal, None)
+    build_command_fixture(ordinal, ordinal, None, AdmissionShape::VacantTerminal)
+}
+
+/// The same command as `command_fixture_at`, committed as the second phase of a
+/// two-phase admission instead of a fused vacant-terminal one.
+fn two_phase_command_fixture_at(ordinal: u64) -> CommandFixture {
+    build_command_fixture(ordinal, ordinal, None, AdmissionShape::ExistingPending)
 }
 
 /// A second write to the SAME entity as `prior`, committed at `ordinal`.
@@ -419,13 +448,19 @@ fn superseding_command_fixture_at(
     target_ordinal: u64,
     prior: &CommandFixture,
 ) -> CommandFixture {
-    build_command_fixture(ordinal, target_ordinal, Some(prior))
+    build_command_fixture(
+        ordinal,
+        target_ordinal,
+        Some(prior),
+        AdmissionShape::VacantTerminal,
+    )
 }
 
 fn build_command_fixture(
     ordinal: u64,
     target_ordinal: u64,
     prior: Option<&CommandFixture>,
+    admission_shape: AdmissionShape,
 ) -> CommandFixture {
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
@@ -522,13 +557,21 @@ fn build_command_fixture(
         .expect("commit context");
     let candidates =
         IdempotencyLookupCandidatesV1::new(vec![identity.clone()]).expect("lookup candidates");
-    let intent = riffdb_storage_api::CommitIntent::new_for_vacant_terminal_admission(
-        context,
-        candidates.clone(),
-        evaluated,
-        provenance_id,
-    )
-    .expect("fused terminal commit intent");
+    let intent = match admission_shape {
+        AdmissionShape::VacantTerminal => {
+            riffdb_storage_api::CommitIntent::new_for_vacant_terminal_admission(
+                context.clone(),
+                candidates.clone(),
+                evaluated,
+                provenance_id,
+            )
+            .expect("fused terminal commit intent")
+        }
+        AdmissionShape::ExistingPending => {
+            riffdb_storage_api::CommitIntent::new(context.clone(), evaluated, provenance_id)
+                .expect("existing-pending commit intent")
+        }
+    };
 
     let stored_entity = StoredEntityRecordV1::new(
         target.clone(),
@@ -683,6 +726,7 @@ fn build_command_fixture(
     CommandFixture {
         candidates,
         pending,
+        context,
         intent,
         affected_targets,
         write_plan,
@@ -730,6 +774,14 @@ fn prepare_command_database(path: &Path) {
 }
 
 fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
+    commit_command_fixture_with_audit(ports, fixture, command_audit_transition(fixture));
+}
+
+fn commit_command_fixture_with_audit(
+    ports: &RedbOperationalPorts,
+    fixture: &CommandFixture,
+    transition: riffdb_storage_api::CommandServiceAuditTransitionV1,
+) {
     let candidate = ports
         .begin_empty_batch()
         .expect("begin command batch")
@@ -739,7 +791,7 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         .recheck_admission()
         .expect("recheck pending admission")
     else {
-        panic!("fresh vacant terminal admission must proceed");
+        panic!("the fixture's expected admission state must proceed");
     };
     let (candidate, current) = candidate
         .read_transaction_current()
@@ -767,10 +819,7 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
     candidate
         .stage(fixture.records.clone())
         .expect("stage complete command graph")
-        .commit_with_service_audit_transitions(
-            DurabilityMode::Sync,
-            vec![command_audit_transition(fixture)],
-        )
+        .commit_with_service_audit_transitions(DurabilityMode::Sync, vec![transition])
         .expect("commit complete command graph and audit lifecycle");
 }
 
@@ -906,9 +955,14 @@ fn try_commit_command_group(
         .map(|_| ())
 }
 
-fn command_audit_transition(
+/// The one `Started`/`Succeeded` pair every fixture's command lifecycle uses.
+///
+/// Both phases of a two-phase admission must present the same common fields, so
+/// the durable `Started` written at admission time and the terminal written at
+/// commit time are produced here from one definition.
+fn command_audit_intents(
     fixture: &CommandFixture,
-) -> riffdb_storage_api::CommandServiceAuditTransitionV1 {
+) -> (ServiceAuditAppendIntentV1, ServiceAuditAppendIntentV1) {
     let principal = catalog_principal();
     let started = ServiceAuditAppendIntentV1::new(
         fixture.pending.admission_request_id(),
@@ -937,8 +991,43 @@ fn command_audit_transition(
         },
     )
     .expect("terminal audit");
+    (started, terminal)
+}
+
+fn command_audit_transition(
+    fixture: &CommandFixture,
+) -> riffdb_storage_api::CommandServiceAuditTransitionV1 {
+    let (started, terminal) = command_audit_intents(fixture);
     riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(started, terminal)
         .expect("fused command audit lifecycle")
+}
+
+/// Phase one of a two-phase admission: one durable `Pending` row and its
+/// physical `Started` audit row, written atomically by the audited-admission
+/// port before any command graph exists.
+fn admit_audited_command(
+    ports: &RedbOperationalPorts,
+    fixture: &CommandFixture,
+) -> AuditedAdmissionResultV1 {
+    let (started, _) = command_audit_intents(fixture);
+    let admission = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+        .expect("audited admission request");
+    let request =
+        AuditedAdmissionRequestV1::new(admission, started).expect("audited admission request pair");
+    let mut results = ports
+        .admit_or_resolve_audited_group(vec![request])
+        .expect("audited admission group");
+    assert_eq!(results.len(), 1, "one request admits exactly one result");
+    results.pop().expect("one audited admission result")
+}
+
+/// Phase two: the ordinary candidate chain, contributing only the terminal row
+/// because the `Started` row is already durable.
+fn commit_two_phase_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
+    let (_, terminal) = command_audit_intents(fixture);
+    let transition = riffdb_storage_api::CommandServiceAuditTransitionV1::terminal_only(terminal)
+        .expect("terminal-only command audit transition");
+    commit_command_fixture_with_audit(ports, fixture, transition);
 }
 
 fn command_audit_phases(ports: &RedbOperationalPorts) -> Vec<ServiceAuditPhaseV1> {
@@ -5321,5 +5410,313 @@ fn a_frame_carries_the_post_image_of_its_own_frontier_not_a_later_one() {
             .get(&("entities", entity_key))
             .expect("the superseded key survives in the final snapshot"),
         &second_value
+    );
+}
+
+/// The physical AUDIT key: the backend's singleton-namespace prefix byte
+/// followed by the big-endian administration sequence.
+fn audit_key(sequence: AdministrationSequence) -> [u8; 9] {
+    let mut key = [0_u8; 9];
+    key[0] = 0x01;
+    key[1..].copy_from_slice(&sequence.get().to_be_bytes());
+    key
+}
+
+/// Replaces one existing physical AUDIT row and returns the bytes it displaced.
+///
+/// Requiring a prior row keeps the fixture honest: it can only corrupt a row the
+/// storage boundary really wrote, never invent an audit stream position.
+fn overwrite_raw_audit_row(path: &Path, sequence: AdministrationSequence, value: &[u8]) -> Vec<u8> {
+    let database = Database::create(path).expect("open raw audit fixture");
+    let transaction = database.begin_write().expect("begin raw audit write");
+    let prior = {
+        let mut table = transaction.open_table(AUDIT).expect("open raw audit table");
+        table
+            .insert(audit_key(sequence).as_slice(), value)
+            .expect("write raw audit row")
+            .map(|prior| prior.value().to_vec())
+            .expect("an audit row the storage boundary already wrote")
+    };
+    transaction.commit().expect("commit raw audit fixture");
+    prior
+}
+
+fn overwrite_raw_administration_allocator(path: &Path, allocator: AdministrationSequenceAllocator) {
+    let encoded = encode_administration_sequence_allocator_v1(allocator)
+        .expect("encode administration allocator");
+    let database = Database::create(path).expect("open raw allocator fixture");
+    let transaction = database.begin_write().expect("begin raw allocator write");
+    {
+        let mut table = transaction
+            .open_table(META)
+            .expect("open raw metadata table");
+        table
+            .insert(META_ADMINISTRATION_SEQUENCE, encoded.as_bytes())
+            .expect("write raw administration allocator")
+            .expect("an allocator the storage boundary already wrote");
+    }
+    transaction.commit().expect("commit raw allocator fixture");
+}
+
+/// Builds the complete two-phase durable shape: a durable `Pending` row and its
+/// physical `Started` audit row from the audited-admission port, then the
+/// command commit that consumes both and contributes only the terminal row.
+fn prepare_two_phase_admitted_command(path: &Path) -> (CommandFixture, AdministrationSequence) {
+    prepare_command_database(path);
+    let fixture = two_phase_command_fixture_at(1);
+    let ports = open_operational(RedbStore::open(path).expect("reopen for audited admission"));
+    let admitted = admit_audited_command(&ports, &fixture);
+    let started_sequence = admitted.started().administration_sequence();
+    commit_two_phase_command_fixture(&ports, &fixture);
+    drop(ports);
+    (fixture, started_sequence)
+}
+
+/// A two-phase admitted command puts one audit record at one administration
+/// sequence twice, and both carriers are legitimate.
+///
+/// Phase one appends the `Started` row physically, because the durable `Pending`
+/// admission it accompanies must be atomic with it. Phase two commits the
+/// command against that already-durable start, and the command segment's
+/// manifest unconditionally names both audit members — so the segment derives an
+/// entry at the same sequence the physical row already occupies.
+///
+/// The startup allocator matcher used to treat physical and segment-derived
+/// audit sequences as disjoint sets and reported that overlap as an
+/// authoritative `SequenceDiscontinuity`: the database refused to open on state
+/// it had written itself. An equal pair at one sequence is one record — the same
+/// join `read_administration_record_readonly` and every neighbouring
+/// physical/derived reader already apply.
+#[test]
+fn two_phase_admitted_command_reopens_clean() {
+    let path = TestDatabasePath::new("two-phase-admission");
+    let (fixture, started_sequence) = prepare_two_phase_admitted_command(&path.0);
+    assert_eq!(
+        started_sequence,
+        AdministrationSequence::new(2).expect("started administration sequence"),
+        "catalog activation owns sequence 1; the audited admission owns sequence 2"
+    );
+
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen after the two-phase commit"),
+    );
+    assert!(
+        findings.is_empty(),
+        "a two-phase admitted command is legitimate durable state, not a \
+         discontinuity: {findings:?}"
+    );
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("open after two-phase commit"));
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+        "the physically admitted start and the committed terminal read back as \
+         one contiguous lifecycle"
+    );
+    assert_eq!(
+        ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("look up the committed identity"),
+        AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::StoredOutcome(
+            fixture.records.stored_outcome().clone()
+        ))),
+        "phase two consumed the durable Pending row and left the terminal outcome"
+    );
+
+    // A completed startup pass installs the validated-prefix checkpoint, so the
+    // next open takes the fast path. The overlap must be tolerated on both.
+    drop(ports);
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen after a completed startup pass"),
+    );
+    assert!(
+        findings.is_empty(),
+        "the checkpointed reopen must tolerate the overlap too: {findings:?}"
+    );
+}
+
+/// The tolerance is for an EQUAL pair only. Two different records at one
+/// administration sequence remain a real discontinuity and must still refuse.
+#[test]
+fn conflicting_physical_and_derived_audit_records_refuse_open() {
+    let path = TestDatabasePath::new("audit-pair-conflict");
+    let (fixture, started_sequence) = prepare_two_phase_admitted_command(&path.0);
+
+    // Same sequence and same request, different timestamp: the physical row and
+    // the segment-derived record now describe two different records at one
+    // administration sequence. That is not one record with two carriers.
+    let (started, _) = command_audit_intents(&fixture);
+    let conflicting = ServiceAuditAppendIntentV1::new(
+        started.request_id(),
+        Timestamp::new(1_700_000_009, 0).expect("conflicting started timestamp"),
+        started.operation(),
+        started.phase(),
+        started
+            .principal()
+            .cloned()
+            .expect("the durable start is principal-authenticated"),
+        started.ingress(),
+        started.targets().clone(),
+        None,
+        started.link(),
+    )
+    .expect("conflicting started audit");
+    let conflicting = StoredServiceAuditRecordV1::from_intent(started_sequence, &conflicting);
+    let encoded =
+        encode_service_audit_record_v2(&conflicting).expect("encode the conflicting audit row");
+    let displaced = overwrite_raw_audit_row(&path.0, started_sequence, encoded.as_bytes());
+    assert_ne!(
+        displaced,
+        encoded.as_bytes(),
+        "the fixture must actually change the physical row"
+    );
+
+    let findings =
+        collect_structural_findings(RedbStore::open(&path.0).expect("reopen after the conflict"));
+    assert!(
+        findings.iter().any(|finding| {
+            finding.scope() == StructuralFindingScope::Authoritative
+                && finding.code() == StructuralFindingCode::SequenceDiscontinuity
+        }),
+        "a physical/derived pair that disagrees at one sequence is a genuine \
+         discontinuity and must still be refused: {findings:?}"
+    );
+}
+
+/// The matcher's other half: an allocator that runs ahead of the audit stream it
+/// allocates from is still a discontinuity, overlap or no overlap.
+#[test]
+fn administration_allocator_ahead_of_the_audit_stream_refuses_open() {
+    let path = TestDatabasePath::new("audit-allocator-gap");
+    let (_, started_sequence) = prepare_two_phase_admitted_command(&path.0);
+    let terminal_sequence = started_sequence
+        .checked_next()
+        .expect("terminal administration sequence");
+    let gap = terminal_sequence
+        .checked_next()
+        .and_then(AdministrationSequence::checked_next)
+        .expect("one sequence beyond the stream's exact frontier");
+    overwrite_raw_administration_allocator(&path.0, AdministrationSequenceAllocator::next(gap));
+
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen after the allocator gap"),
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding.scope() == StructuralFindingScope::Authoritative
+                && finding.code() == StructuralFindingCode::SequenceDiscontinuity
+        }),
+        "an allocator ahead of the complete physical-plus-derived audit coverage \
+         must be refused: {findings:?}"
+    );
+}
+
+/// First coverage for the audited-admission port: the durable `Pending` row and
+/// its physical `Started` audit row are one atomic transition, and re-admitting
+/// the same identity resumes the unchanged pending state.
+#[test]
+fn audited_admission_writes_pending_and_started_atomically() {
+    let path = TestDatabasePath::new("audited-admission");
+    prepare_command_database(&path.0);
+    let fixture = two_phase_command_fixture_at(1);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen for audited admission"));
+
+    let admitted = admit_audited_command(&ports, &fixture);
+    assert_eq!(
+        admitted.admission(),
+        &AdmissionResultV1::Created(fixture.pending.clone()),
+        "a vacant identity is created, not resumed"
+    );
+    let started = admitted.started();
+    assert_eq!(started.phase(), ServiceAuditPhaseV1::Started);
+    assert_eq!(started.link(), ServiceAuditLinkV1::None);
+    assert_eq!(
+        started.request_id(),
+        fixture.pending.admission_request_id(),
+        "the created admission and its start name one invocation"
+    );
+    assert_eq!(
+        started.administration_sequence(),
+        AdministrationSequence::new(2).expect("started administration sequence")
+    );
+    assert_eq!(
+        ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("look up the admitted identity"),
+        AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+            fixture.pending.clone()
+        )))
+    );
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![ServiceAuditPhaseV1::Started]
+    );
+
+    // Atomicity is only meaningful across the durable boundary: both rows must
+    // survive a reopen together, on their own, without any command graph.
+    drop(ports);
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen after the audited admission"),
+    );
+    assert!(
+        findings.is_empty(),
+        "a durable Pending row and its physical start are valid state: {findings:?}"
+    );
+    let ports = open_operational(RedbStore::open(&path.0).expect("open after audited admission"));
+    assert_eq!(
+        ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("look up the admitted identity after reopen"),
+        AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+            fixture.pending.clone()
+        )))
+    );
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![ServiceAuditPhaseV1::Started]
+    );
+
+    // A second invocation of the same identity resumes the unchanged durable
+    // pending state and appends its own start; it never creates a second row.
+    let (started, _) = command_audit_intents(&fixture);
+    let resumed_start = ServiceAuditAppendIntentV1::new(
+        RequestId::from_bytes(uuid_bytes(0x77)).expect("resuming request ID"),
+        Timestamp::new(1_700_000_004, 0).expect("resuming started timestamp"),
+        started.operation(),
+        started.phase(),
+        started
+            .principal()
+            .cloned()
+            .expect("the durable start is principal-authenticated"),
+        started.ingress(),
+        started.targets().clone(),
+        None,
+        started.link(),
+    )
+    .expect("resuming started audit");
+    let request = AuditedAdmissionRequestV1::new(
+        AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("resuming admission request"),
+        resumed_start,
+    )
+    .expect("resuming audited admission request");
+    let mut resumed = ports
+        .admit_or_resolve_audited_group(vec![request])
+        .expect("resume the audited admission");
+    assert_eq!(resumed.len(), 1);
+    let resumed: AuditedAdmissionResultV1 = resumed.pop().expect("one resumed result");
+    assert_eq!(
+        resumed.admission(),
+        &AdmissionResultV1::Resumed(fixture.pending.clone()),
+        "the existing pending state is replayed unchanged"
+    );
+    assert_eq!(
+        resumed.started().administration_sequence(),
+        AdministrationSequence::new(3).expect("resumed administration sequence"),
+        "the resumed invocation still appends exactly one new audit row"
+    );
+    assert_eq!(
+        command_audit_phases(&ports),
+        vec![ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Started]
     );
 }

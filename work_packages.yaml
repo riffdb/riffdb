@@ -9755,3 +9755,65 @@ work_packages:
     the documented POC boundary, a verified signup enters the provider's double-opt-in flow without enumeration,
     and the pinned main-branch workflow can publish the artifact after environment credentials are provisioned.
   human_review_triggers: *id001
+- id: WP-496
+  name: Two-phase admitted command audit overlap at startup
+  depends_on: [WP-473, WP-494]
+  objective: Stop the startup allocator matcher from refusing to open a database whose durable
+    state it wrote itself. `administration_allocator_matches` assumed physical AUDIT sequences and
+    segment-derived audit sequences are disjoint sets, but a two-phase admitted command legitimately
+    occupies one administration sequence with both carriers, and the overlap was reported as an
+    authoritative SequenceDiscontinuity.
+  requirements: [STO-002, REC-001, REC-002]
+  required_adrs: [ADR-0060, ADR-0099, ADR-0102]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**, tests/storage_recovery/**]
+  deliverables:
+  - The startup allocator matcher resolves an equal physical/derived pair at one administration
+    sequence to one record, matching the join every neighbouring physical/derived audit reader
+    already applies (`read_administration_record_readonly`, `service_lifecycle_in_write`,
+    `validate_administration_tail`, and `merge_audit_sequences`)
+  - Only a provably equal pair collapses; a pair whose records disagree, or whose physical bytes
+    cannot be decoded, still refuses, and no other discontinuity detection is weakened
+  - A two-phase admitted command (durable `Pending` plus physical `Started` from the audited
+    admission port, then a terminal-only command commit) reopens with no structural findings and
+    reads back as one contiguous Started/Succeeded lifecycle
+  - A physical/derived pair that disagrees at one sequence, and an administration allocator that
+    runs ahead of complete physical-plus-derived coverage, are both still refused as authoritative
+    SequenceDiscontinuity
+  - First test coverage anywhere for `admit_or_resolve_audited_group` on redb - the durable
+    `Pending` row and its physical `Started` audit row are one atomic transition that survives
+    reopen together, and re-admitting the same identity resumes the unchanged pending state while
+    appending exactly one further start
+  - No durable format change, no manifest emission change, no new production caller of the durable
+    Pending writers, and no public interface change
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A two-phase admitted command reopens clean, a conflicting physical/derived pair and an
+    allocator ahead of its stream each still refuse with an authoritative SequenceDiscontinuity, the
+    audited-admission port has durable atomicity and replay coverage, and the full workspace suite
+    passes.
+  reachability: The durable-Pending writers (`admit_or_resolve`, `admit_or_resolve_group`,
+    `admit_or_resolve_audited_group`) have no production callers today and riffdb-commit's
+    architecture test forbids them, and `CommandServiceAuditTransitionV1::terminal_only` arises
+    only from `resume_pending` on `IdempotencyRecheckResultV1::Pending`. The refusal is therefore
+    reachable on a legacy or migration-carried database holding durable Pending rows, or the moment
+    the plumbed-but-dormant audited-admission port is enabled - a loaded gun rather than a live
+    outage. Refuse-open on legitimate self-written state is brick-class, so it is fixed now rather
+    than when the port is turned on.
+  standing_design_tests:
+    interface_safety: No. The change has no public surface at all - `administration_allocator_matches`
+      and its new equality helper are private functions inside the redb startup module, and no
+      application-facing type, request, option, or error is added or relaxed. It removes a refusal
+      that fired on legitimate durable state; the refusal for genuinely inconsistent state is
+      preserved and separately pinned in both neuter directions.
+    scale: No. The equality proof is per-sequence-pair local and runs only where a physical row and
+      a derived entry actually collide, which is rare and bounded by the audit stream the matcher
+      already walks once. No new scan, no new index, no additional memory residency - the same
+      single pass over the AUDIT table and the same segment-derived cache the matcher already built.
+  human_review_triggers: *id001

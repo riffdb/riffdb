@@ -6511,6 +6511,38 @@ fn application_allocator_matches(
     Ok(allocator == expected)
 }
 
+/// Proves the physical AUDIT row and the segment-derived record sharing one
+/// administration sequence are the same record carried twice.
+///
+/// A two-phase admitted command writes its `Started` row physically when the
+/// durable `Pending` admission is created, and the later command segment derives
+/// that same already-durable record through its manifest. The two carriers are
+/// then both present at one sequence. That is the ordinary equal-pair join every
+/// other physical/derived audit reader already applies — see
+/// `administration.rs::read_administration_record_readonly`,
+/// `service_lifecycle_in_write`, and `validate_administration_tail`, which all
+/// resolve `(Some(physical), Some(derived)) if physical == derived` to one
+/// record and reject a disagreeing pair.
+///
+/// Equality is what makes the pair one record. Bytes that disagree, or that
+/// cannot be decoded at all, prove nothing and leave the caller refusing; the
+/// audit-row inspection phase classifies a malformed row on its own terms.
+fn physical_audit_row_repeats_derived(
+    transaction: &ReadTransaction,
+    encoded: &[u8],
+    derived: &riffdb_storage_api::StoredServiceAuditRecordV1,
+) -> Result<bool, StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let Ok(physical) =
+        codec::decode_administration_audit_with_command_tables(encoded, &commits, &events)
+    else {
+        return Ok(false);
+    };
+    Ok(physical.into_parts().0
+        == riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(derived.clone()))
+}
+
 fn administration_allocator_matches(
     transaction: &ReadTransaction,
     allocator: riffdb_storage_api::AdministrationSequenceAllocator,
@@ -6527,7 +6559,7 @@ fn administration_allocator_matches(
         true
     };
     for entry in table.iter().map_err(precommit_storage_error)? {
-        let (key, _) = entry.map_err(precommit_storage_error)?;
+        let (key, value) = entry.map_err(precommit_storage_error)?;
         let Ok(physical) = keys::decode_audit_key(key.value()) else {
             return Ok(false);
         };
@@ -6546,8 +6578,22 @@ fn administration_allocator_matches(
         if derived_sequences
             .peek()
             .is_some_and(|derived| *derived == physical)
-            || !accept(physical)
         {
+            // One record with two carriers occupies one sequence, so consume the
+            // derived entry and count the pair once. Physical and derived audit
+            // sequences are not disjoint: two-phase admission makes the overlap
+            // legitimate. Only a provably equal pair collapses — a disagreeing
+            // pair falls through to the refusal below, exactly as a gap does.
+            let derived_record = derived
+                .get(&physical)
+                .map(|cached| &cached.record)
+                .expect("peeked derived administration sequence is a cache key");
+            if !physical_audit_row_repeats_derived(transaction, value.value(), derived_record)? {
+                return Ok(false);
+            }
+            derived_sequences.next();
+        }
+        if !accept(physical) {
             return Ok(false);
         }
     }
