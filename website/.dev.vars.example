@@ -1,0 +1,6 @@
+# Cloudflare Pages Function runtime values. Never commit real secrets.
+LOOPS_FORM_ENDPOINT=https://app.loops.so/api/newsletter-form/replace-me
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+
+# Astro public build value. The always-pass key is for local testing only.
+PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA

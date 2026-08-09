@@ -1,0 +1,58 @@
+---
+const siteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY;
+const configured = typeof siteKey === "string" && siteKey.length > 0;
+---
+
+<div class="waitlist-panel" id="early-access">
+  <div>
+    <p class="eyebrow eyebrow--light">Managed RiffDB</p>
+    <h2>Be first in line.</h2>
+    <p>
+      We’re working toward a managed service. Join the early-access list for material project updates and the first invitations.
+    </p>
+  </div>
+  <form class="waitlist-form" data-waitlist-form data-configured={String(configured)} novalidate>
+    <label for="waitlist-email">Work email</label>
+    <div class="form-row">
+      <input
+        id="waitlist-email"
+        name="email"
+        type="email"
+        autocomplete="email"
+        inputmode="email"
+        maxlength="254"
+        placeholder="you@company.com"
+        required
+        disabled={!configured}
+      />
+      <button type="submit" disabled={!configured}>Join early access</button>
+    </div>
+    <div class="honeypot" aria-hidden="true">
+      <label for="waitlist-website">Website</label>
+      <input id="waitlist-website" name="website" type="text" tabindex="-1" autocomplete="off" />
+    </div>
+    {
+      configured ? (
+        <div
+          class="cf-turnstile"
+          data-sitekey={siteKey}
+          data-action="waitlist"
+          data-size="flexible"
+          data-theme="dark"
+          data-response-field="true"
+        />
+      ) : (
+        <p class="form-setup">Early access is being configured. Email <a href="mailto:hello@riffdb.com">hello@riffdb.com</a> in the meantime.</p>
+      )
+    }
+    <p class="form-status" data-form-status aria-live="polite"></p>
+    <p class="form-note">
+      Confirm by email. No spam, tracking, or surprise launch promises. <a href="/privacy/">Privacy details</a>.
+    </p>
+  </form>
+</div>
+
+{configured && <script is:inline src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>}
+<script>
+  import "../scripts/waitlist";
+</script>

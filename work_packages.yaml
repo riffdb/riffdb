@@ -1,7 +1,7 @@
-spec_version: '0.85'
+spec_version: '0.86'
 product: RiffDB
 repository: riffdb
-status: contract-migration-and-reactive-application-implementation
+status: contract-migration-reactive-application-and-public-website-implementation
 source_spec: SPEC.md
 normative_terms:
 - MUST
@@ -138,6 +138,10 @@ gates:
   - WP-419
   - WP-420
   - WP-421
+- id: P9
+  name: Public marketing website
+  requires:
+  - WP-495
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -9709,4 +9713,45 @@ work_packages:
     Rust SDK, and the CLI, and every value it returns equals the same value recomputed
     client-side from the rows it summarized over a real service, real storage, and real columnar
     apply; row-path bytes, packed goldens, preflight pins, and row plan hashes are unchanged.
+  human_review_triggers: *id001
+- id: WP-495
+  name: Public marketing website and early-access signup
+  depends_on: [WP-404]
+  objective: Publish an honest, accessible, vision-led RiffDB marketing website and a bounded double-opt-in
+    early-access path without changing database semantics or overstating the current POC.
+  requirements: [WEB-001, WEB-002, WEB-003, WEB-004, WEB-005, WEB-006, WEB-007, WEB-008, WEB-009]
+  required_adrs: []
+  allowed_paths: [SPEC.md, work_packages.yaml, README.md, .gitignore, .github/workflows/website.yml,
+    docs/CNAME, website/**]
+  deliverables:
+  - Pinned Astro static site with one responsive product page, privacy notice, 404 page, canonical metadata,
+    social preview, sitemap, and original first-party visual system
+  - Vision-led product narrative grounded in implemented contract-first semantics, with prominent POC,
+    security, compatibility, and known-limitations boundaries
+  - Bounded same-origin waitlist function with server-side Turnstile validation, generic public outcomes,
+    Loops double-opt-in forwarding, no address enumeration, and no analytics or cookies
+  - Deterministic unit and browser acceptance covering waitlist failures, links, responsive layouts,
+    keyboard interaction, reduced motion, and automated WCAG 2.2 AA checks
+  - Least-privilege GitHub Actions verification and Cloudflare Pages publication, plus the canonical
+    `docs.riffdb.com` handbook domain
+  acceptance_commands:
+  - npm --prefix website ci
+  - npm --prefix website run check
+  - npm --prefix website test
+  - npm --prefix website run build
+  - npm --prefix website run test:e2e
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  design_tests:
+    interface_safety: The only new public input accepts one bounded email address and one bot-verification token;
+      it cannot express a database operation, bypass RiffDB authorization, or acquire application authority.
+      Server-side validation precedes provider submission, public outcomes do not enumerate addresses, provider
+      details and credentials remain private, and confirmed consent is owned by the double-opt-in email flow.
+    scale: The site is static except for one bounded request handler. Each accepted request performs one
+      verification call and one provider call, retains no local state, and inherits provider and edge rate limits.
+    reversibility: The website, DNS names, mailing-list adapter, and deployment workflow are operationally
+      independent from database protocols and durable formats and may be replaced without a compatibility change.
+  exit_gate: A clean checkout reproducibly builds and tests the public site, every marketing claim remains within
+    the documented POC boundary, a verified signup enters the provider's double-opt-in flow without enumeration,
+    and the pinned main-branch workflow can publish the artifact after environment credentials are provisioned.
   human_review_triggers: *id001

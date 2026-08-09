@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#f4eddf"/>
+  <path d="M0 86h1200M0 544h1200M96 0v630M1104 0v630" stroke="#d8cdbb"/>
+  <g fill="none" stroke="#087c78" opacity=".28">
+    <circle cx="963" cy="315" r="206"/><circle cx="963" cy="315" r="142"/><circle cx="963" cy="315" r="78"/>
+  </g>
+  <circle cx="963" cy="315" r="42" fill="#b72e3b"/>
+  <path d="M947 337v-44h24c12 0 19 6 19 16 0 7-4 12-11 14l13 14h-16l-11-12h-5v12h-13Zm13-24h10c4 0 6-2 6-5s-2-5-6-5h-10v10Z" fill="#f4eddf"/>
+  <text x="96" y="152" fill="#1d2525" font-family="Arial, sans-serif" font-size="34" font-weight="700">RiffDB</text>
+  <text x="96" y="294" fill="#1d2525" font-family="Georgia, serif" font-size="76" font-weight="700">Vibe fast.</text>
+  <text x="96" y="378" fill="#b72e3b" font-family="Georgia, serif" font-size="76" font-style="italic">Commit safely.</text>
+  <text x="96" y="467" fill="#59615f" font-family="Arial, sans-serif" font-size="27">Contract-first OLTP for agent-built applications.</text>
+  <text x="96" y="585" fill="#087c78" font-family="monospace" font-size="18" letter-spacing="2">RIFFDB.COM  /  WRITTEN IN RUST</text>
+</svg>

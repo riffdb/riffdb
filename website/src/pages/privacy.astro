@@ -1,0 +1,49 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+---
+
+<BaseLayout
+  title="Privacy — RiffDB"
+  description="How RiffDB handles information submitted to the managed-service early-access list."
+  pathname="/privacy/"
+>
+  <SiteHeader />
+  <main id="main-content" class="legal-main" tabindex="-1">
+    <div class="shell legal-shell">
+      <p class="eyebrow">Plain-language privacy</p>
+      <h1>Early-access list privacy</h1>
+      <p class="legal-updated">Effective 9 August 2026</p>
+
+      <div class="legal-intro">
+        <p>We collect one thing: the email address you choose to submit for RiffDB managed-service early access.</p>
+      </div>
+
+      <div class="legal-content">
+        <section>
+          <h2>What we use it for</h2>
+          <p>We use your address to confirm your subscription and send material RiffDB project updates and early-access invitations. We do not use it for unrelated marketing or sell it.</p>
+        </section>
+        <section>
+          <h2>How signup works</h2>
+          <p>Cloudflare hosts this website and verifies that the submission is not automated. Loops receives the email address and manages confirmation, the mailing list, delivery, and unsubscribe status. You are not subscribed unless you confirm through the email Loops sends.</p>
+        </section>
+        <section>
+          <h2>What we do not collect</h2>
+          <p>This site has no product analytics, advertising pixels, behavioral tracking, or analytics cookies. The early-access form does not ask for your name, employer, phone number, or RiffDB application data.</p>
+        </section>
+        <section>
+          <h2>Your choices</h2>
+          <p>Every list email includes an unsubscribe path. To ask what address we hold or request deletion, email <a href="mailto:hello@riffdb.com">hello@riffdb.com</a> from that address.</p>
+        </section>
+        <section>
+          <h2>Changes</h2>
+          <p>If the purpose, processors, or data collected changes, this page will be updated before the new use begins. We will not silently broaden consent already given.</p>
+        </section>
+      </div>
+      <a class="button button--primary" href="/">Back to RiffDB</a>
+    </div>
+  </main>
+  <SiteFooter />
+</BaseLayout>

@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.85
-**Status:** Contract-migration and reactive-application implementation
-**Date:** 8 August 2026
+**Version:** 0.86
+**Status:** Contract-migration, reactive-application, and public-website implementation
+**Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.86 | 2026-08-09 | Defined the public RiffDB marketing website and early-access boundary through WP-495: an honest vision-led static site at `riffdb.com`, canonical GitHub and handbook links, a bounded double-opt-in waitlist protected by server-side bot verification, reproducible accessibility and browser checks, and least-privilege Cloudflare Pages deployment. |
 | 0.85 | 2026-08-08 | Applied the maintainer-approved ADR-0104 Amendment 1: asynchronous checkpointing begins at 4,096 transitions or 16 MiB while the compiled published-plus-in-flight suffix ceilings become 8,192 transitions, 32 MiB encoded bytes, and 128 MiB overlay charge. Individual frames and the writer-private unpublished prefix remain capped at 256 transitions and 16 MiB; the fixed 40-MiB physical extent retains an independently charged maximum-frame reserve. |
 | 0.84 | 2026-08-07 | Accepted ADR-0103 and planned WP-480 after a same-filesystem probe measured fully zero-filled positional journal fences at 880 us p50 versus 4,479 us for extending append. The standard-profile journal becomes a fixed-capacity recyclable extent with dual generation headers, generation/position-bound frames, preflight allocation, empty-journal activation, and unchanged published-frontier replication semantics. |
 | 0.83 | 2026-08-07 | Amended ADR-0101 after mixed-load evidence showed ordinary same-tenant overlap collapsing the writer journal: once storage accepts a complete checked subgroup, serialization authority transfers to the sole FIFO writer, and overlapping successors must evaluate through the closed transaction-local protocol against the exact writer-private frontier while all public visibility and effects remain withheld until the covering fence. |
@@ -576,6 +577,53 @@ configuration, installation, operations, compatibility, or SDK behavior MUST
 update the affected handbook page in the same change. Pull requests MUST state
 their documentation impact, and generated handbook artifacts MUST remain
 reproducible.
+
+## 4.7.1 Public marketing website and early access
+
+`WEB-001` The repository MUST contain one reproducibly built, responsive public
+marketing website for `riffdb.com`. Its primary path MUST explain what RiffDB
+is, which application-safety problems it addresses, and why contract-first OLTP
+is suited to agent-built applications.
+
+`WEB-002` Marketing copy MUST distinguish the future managed-service thesis
+from implemented behavior. The primary path MUST identify the current project
+as a standalone, local-only proof of concept and link the public security and
+known-limitations pages. Proposed hosting, replication, authentication,
+availability, performance, or release dates MUST NOT be described as available.
+
+`WEB-003` The site MUST link the canonical public source repository, handbook,
+and generated stable Rust client API. The handbook MUST remain a separately
+reproducible GitHub Pages artifact available at `docs.riffdb.com`.
+
+`WEB-004` Early-access collection MUST accept only one bounded email address and
+bot-verification token, require successful server-side bot verification, and
+forward no IP address, user agent, credential, or unrelated form value to the
+mailing-list provider. A successful provider submission MUST use double opt-in.
+
+`WEB-005` The waitlist endpoint MUST use generic public outcomes that do not
+reveal whether an address already exists. Invalid, oversized, automated,
+rate-limited, and unavailable-provider requests MUST fail without disclosing
+provider internals or credentials.
+
+`WEB-006` The website MUST publish a privacy notice describing the email's sole
+early-access purpose, the named infrastructure and email processors, the
+double-opt-in and unsubscribe paths, and the public deletion-request contact.
+It MUST NOT add analytics, cookies, behavioral tracking, or unrelated personal
+data collection in this stage.
+
+`WEB-007` The default experience MUST be keyboard navigable, readable in light
+and dark presentation, responsive at phone and desktop sizes, honor reduced
+motion, retain visible focus, and meet automated WCAG 2.2 AA checks for the
+tested primary flows.
+
+`WEB-008` Pull-request CI MUST reproduce the pinned install and production build
+and verify types, formatting, unit behavior, internal links, primary desktop
+and mobile flows, and accessibility. Provider and bot-verification calls MUST
+be replaced with deterministic fakes in automated tests.
+
+`WEB-009` Production publication MUST use a least-privilege GitHub Actions
+environment and pinned Cloudflare deployment tooling. No deployment, provider,
+or bot-verification credential may be committed or exposed to preview builds.
 
 ## 4.8 Robust contract migration
 
@@ -7077,6 +7125,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `SAI-*` | Exact successor application identity before mutation |
 | `PYD-*` | Python generated application driver, packaging, and language parity |
 | `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
+| `WEB-*` | Public marketing website, early-access signup, accessibility, and deployment |
 | `MIG-*` | Deterministic offline contract-data migration, cutover, recovery, and administration |
 | `EVT-*` | Partitioned typed domain-event catalog, routing, replay, and presentation |
 | `CON-*` | Durable bounded event-consumer delivery and recovery |

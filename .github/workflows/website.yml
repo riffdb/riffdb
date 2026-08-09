@@ -1,0 +1,105 @@
+name: Website
+
+on:
+  pull_request:
+    paths:
+      - "website/**"
+      - ".github/workflows/website.yml"
+      - "README.md"
+      - "docs/CNAME"
+      - "SPEC.md"
+      - "work_packages.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/website.yml"
+      - "README.md"
+      - "docs/CNAME"
+      - "SPEC.md"
+      - "work_packages.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riffdb-website-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "26.3.0"
+  PUBLIC_TURNSTILE_SITE_KEY: "1x00000000000000000000AA"
+
+jobs:
+  verify:
+    name: Build and verify
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Check formatting and types
+        run: npm run check
+      - name: Run unit tests
+        run: npm test
+      - name: Build production artifact
+        run: npm run build
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser and accessibility acceptance
+        run: npm run test:e2e
+
+  deploy:
+    name: Publish Cloudflare Pages
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' || vars.CLOUDFLARE_DEPLOY_ENABLED == 'true')
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      deployments: write
+    environment:
+      name: production
+      url: https://riffdb.com
+    env:
+      PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.PUBLIC_TURNSTILE_SITE_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
+      - name: Require production sitekey
+        if: env.PUBLIC_TURNSTILE_SITE_KEY == ''
+        run: exit 1
+      - name: Build production artifact
+        working-directory: website
+        run: npm run build
+      - name: Deploy
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.120.0"
+          workingDirectory: website
+          command: pages deploy dist --project-name=riffdb --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
