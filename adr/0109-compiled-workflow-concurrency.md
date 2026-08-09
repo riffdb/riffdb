@@ -1,8 +1,8 @@
 # ADR-0109: Compiled Workflow Concurrency and Fenced Leases
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-566 changes command grammar, transaction
   context, or scheduler interfaces
 - **Requires:** ADR-0003, ADR-0005, ADR-0012, ADR-0018, ADR-0055,

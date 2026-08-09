@@ -1,0 +1,53 @@
+{
+  "schema": "riffdb.alpha-architecture-freeze/v1",
+  "accepted_on": "2026-08-09",
+  "accepted_adrs": [
+    "ADR-0105",
+    "ADR-0106",
+    "ADR-0107",
+    "ADR-0108",
+    "ADR-0109",
+    "ADR-0110",
+    "ADR-0111",
+    "ADR-0112"
+  ],
+  "dependency_baseline": {
+    "WP-398": "59c51a2",
+    "WP-414": "aec343f",
+    "WP-484": "10edda9",
+    "WP-491": "c48802b",
+    "WP-492": "078802c",
+    "WP-496": "ea3f8ac"
+  },
+  "replication_sequence": {
+    "baseline": "RE1",
+    "revision": "c48802b",
+    "ship_changelog_present": false,
+    "rule": "rebase_wp_553_on_merged_re2_before_transport_inventory_change"
+  },
+  "requirement_families": {
+    "NET": 12,
+    "DRV": 14,
+    "BLK": 14,
+    "OQ": 16,
+    "WF": 14,
+    "APE": 14,
+    "RAP": 16,
+    "AFC": 12,
+    "EXP": 14,
+    "END": 10
+  },
+  "performance_comparator_requirement": "PERF-018",
+  "critical_dependencies": {
+    "tls": {
+      "candidate": "tonic 0.14.6 tls-ring with one rustls/tokio-rustls/ring closure",
+      "human_dependency_approval": "required_before_WP-553"
+    },
+    "unicode": {
+      "candidate": "unicode-normalization 0.1.25 plus first-party Unicode 17.0.0 full non-Turkic casefold tables",
+      "rejected": "unicode-casefold 0.2.0 uses Unicode 9.0.0",
+      "human_dependency_approval": "required_before_WP-563"
+    }
+  },
+  "remote_rate_and_quota_posture": "deferred_for_controlled_design_partner_alpha"
+}

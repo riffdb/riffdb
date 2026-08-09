@@ -1,8 +1,8 @@
 # ADR-0112: Alpha Format Compatibility and Application Portability
 
-- **Status:** Proposed
-- **Direction proposed:** 2026-08-09
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-09
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before the first alpha release artifact or WP-575 adds
   an application export operation
 - **Requires:** ADR-0007, ADR-0019, ADR-0050, ADR-0055, ADR-0057,

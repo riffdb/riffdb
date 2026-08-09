@@ -1,8 +1,8 @@
 # ADR-0111: Compiled Principal-Aware Row Policies
 
-- **Status:** Proposed
-- **Direction proposed:** 2026-08-09
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-09
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-570 changes contract/policy grammar or a
   Payload/MLflow adapter claims per-record authorization
 - **Requires:** ADR-0007, ADR-0009, ADR-0038, ADR-0055, ADR-0065,

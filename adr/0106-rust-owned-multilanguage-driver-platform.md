@@ -1,8 +1,8 @@
 # ADR-0106: Rust-Owned Multilanguage Driver Platform
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-555 freezes the driver-host protocol or Go
   and TypeScript runtime contract
 - **Requires:** ADR-0037, ADR-0040, ADR-0055, ADR-0056, ADR-0074, and ADR-0105
