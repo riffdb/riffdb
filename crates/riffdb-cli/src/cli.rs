@@ -471,7 +471,17 @@ pub(crate) enum QueryCommand {
         /// Order key as `FIELD` or `FIELD:desc` (repeatable).
         #[arg(long = "order", value_name = "FIELD[:desc]")]
         order: Vec<String>,
-        /// Post-sort row limit.
+        /// Aggregate as `OP:FIELD` where OP is `sum`, `min`, or `max`, or the
+        /// bare word `count` (repeatable). Any aggregate returns groups
+        /// instead of rows; more than one requires `--group-by`.
+        #[arg(long = "aggregate", value_name = "OP:FIELD|count")]
+        aggregate: Vec<String>,
+        /// Group-by key field name (repeatable).
+        #[arg(long = "group-by", value_name = "FIELD")]
+        group_by: Vec<String>,
+        /// Post-sort row limit. With `--group-by` this is the maximum number
+        /// of groups instead, and exceeding it is rejected rather than
+        /// truncated; it does not apply to an aggregate without `--group-by`.
         #[arg(long, value_name = "ROWS")]
         limit: Option<String>,
         /// Freshness policy: `available`, `bounded:N`, or `causal` (requires token).
@@ -1033,6 +1043,80 @@ mod tests {
                 command: QueryCommand::Projected { packed: false, .. },
             } => {}
             other => panic!("default must not be packed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_projected_accepts_repeated_aggregate_and_group_by_flags() {
+        let cli = Cli::try_parse_from([
+            "riffdb",
+            "query",
+            "projected",
+            "board",
+            "--org-scope",
+            r#"{"type":"uuid","value":"11111111-1111-1111-1111-111111111111"}"#,
+            "--group-by",
+            "status",
+            "--group-by",
+            "project_id",
+            "--aggregate",
+            "count",
+            "--aggregate",
+            "sum:story_points",
+            "--aggregate",
+            "min:title",
+            "--freshness",
+            "available",
+        ])
+        .expect("accepted aggregate query");
+        match cli.command {
+            TopLevel::Query {
+                command:
+                    QueryCommand::Projected {
+                        aggregate,
+                        group_by,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    aggregate,
+                    vec![
+                        "count".to_owned(),
+                        "sum:story_points".to_owned(),
+                        "min:title".to_owned()
+                    ],
+                    "aggregates must arrive repeatable and in request order"
+                );
+                assert_eq!(group_by, vec!["status".to_owned(), "project_id".to_owned()]);
+            }
+            other => panic!("expected Query::Projected, got {other:?}"),
+        }
+
+        // A row query keeps both lists empty.
+        let row = Cli::try_parse_from([
+            "riffdb",
+            "query",
+            "projected",
+            "board",
+            "--org-scope",
+            r#"{"type":"uuid","value":"11111111-1111-1111-1111-111111111111"}"#,
+            "--freshness",
+            "available",
+        ])
+        .expect("row default");
+        match row.command {
+            TopLevel::Query {
+                command:
+                    QueryCommand::Projected {
+                        aggregate,
+                        group_by,
+                        ..
+                    },
+            } => {
+                assert!(aggregate.is_empty());
+                assert!(group_by.is_empty());
+            }
+            other => panic!("expected Query::Projected, got {other:?}"),
         }
     }
 

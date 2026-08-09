@@ -360,6 +360,11 @@ message ProjectedOrder {
   bool descending = 2;
 }
 
+// One aggregate descriptor.
+//
+// COUNT counts matching rows and MUST carry an empty `field`; SUM, MIN, and
+// MAX MUST name one projected column. A descriptor that names a column for
+// COUNT is rejected typed rather than silently ignored.
 message ProjectedAggregate {
   string field = 1;
   ProjectedAggregateOp op = 2;
@@ -379,8 +384,38 @@ message ProjectedQueryBody {
   repeated ProjectedPredicate predicates = 3;
   repeated ProjectedOrder order = 4;
   optional uint32 limit = 5;
+  // Bounded group-by keys (ADR-0087). Non-empty keys make the request grouped.
+  //
+  // `select` does not apply to a grouped or aggregate request: those results
+  // carry no row cells, so there is nothing to narrow. It remains validated.
+  //
+  // `limit` DOES apply to a grouped request, as the maximum number of GROUPS
+  // it may return: grouped results are measured in groups rather than rows, and
+  // `limit` is the caller's declared result bound either way. A grouped query
+  // whose matching set produces more groups than `limit` is rejected typed and
+  // returns nothing — never the first `limit` groups, because a truncated fold
+  // is indistinguishable from a complete one.
+  //
+  // `limit` has no effect on an ungrouped aggregate. Those results are
+  // fixed-cardinality — one value per requested descriptor — however large the
+  // matching set is.
   repeated string group_by = 6;
-  optional ProjectedAggregate aggregate = 7;
+  // Aggregate descriptors. Empty = row request (unchanged behaviour).
+  //
+  // A grouped request (`group_by` non-empty) accepts zero or more descriptors.
+  // A global request (`group_by` empty) accepts exactly one: the engine's
+  // whole-set aggregate path computes a single function and is the only path
+  // that answers an empty matching set with identity values rather than zero
+  // groups. Two or more descriptors without `group_by` are rejected typed.
+  //
+  // Any request carrying at least one descriptor is answered by the
+  // `ready_aggregates` outcome arm; see ProjectedReadyAggregates.
+  //
+  // Field 7 previously carried `optional ProjectedAggregate aggregate`. That
+  // singular form was rejected typed at the boundary from the day it was
+  // defined (no response carriage existed), so no client can ever have used
+  // it; proto3 encodes both forms identically for field 7.
+  repeated ProjectedAggregate aggregates = 7;
 }
 
 // Opt-in response encoding for ExecuteProjectedQuery (CP4).
@@ -438,6 +473,78 @@ message PackedColumn {
   repeated uint32 offsets = 2;
 }
 
+// MIN / MAX carriage.
+//
+// An absent `value` means "no row contributed to this group" and is distinct
+// from a present `null_value`, which is a real NULL extreme over an optional
+// column. Absence is carried by field presence, exactly as ProjectedRange
+// carries an unbounded end; `null_value` keeps its ordinary Value meaning.
+message ProjectedAggregateScalar {
+  optional riffdb.v1.Value value = 1;
+}
+
+// One aggregate result cell, positionally aligned with the descriptor at the
+// same index in ProjectedReadyAggregates.aggregates. The arm always matches
+// that descriptor's op: COUNT -> count, SUM -> sum, MIN/MAX -> scalar.
+message ProjectedAggregateValue {
+  oneof value {
+    // COUNT: exact number of matching rows in this group.
+    uint64 count = 1;
+    // SUM: exact integer sum carried as a scale-0 Decimal.
+    //
+    // The engine sums i64/u64 columns into an exact i128, which no Value arm
+    // can hold. `coefficient_twos_complement` is the minimal big-endian two's
+    // complement encoding of that i128 (1 through 16 bytes), `scale` is always
+    // 0, and `precision` is always absent: an i128 needs up to 39 significant
+    // digits, one more than a decimal precision can assert.
+    riffdb.v1.Decimal sum = 2;
+    // MIN / MAX: the extreme column value, or absent for an empty group.
+    ProjectedAggregateScalar scalar = 3;
+  }
+}
+
+// One aggregate group.
+message ProjectedAggregateGroup {
+  // Group key cells, aligned with ProjectedReadyAggregates.group_key_fields.
+  // Empty for the single group of a global (non-grouped) aggregate.
+  repeated riffdb.v1.Value keys = 1;
+  // Aggregate cells, aligned with ProjectedReadyAggregates.aggregates.
+  repeated ProjectedAggregateValue values = 2;
+}
+
+// Aggregate / grouped Ready payload.
+//
+// This arm answers every request whose body carries at least one aggregate
+// descriptor, grouped or not. A global (non-grouped) aggregate answers with
+// exactly one group whose `keys` list is empty — there is no second response
+// shape for the ungrouped case.
+//
+// ProjectedResponseEncoding chooses between the two ROW-shaped arms (`ready`
+// and `ready_packed`) and is INAPPLICABLE here. Requesting PACKED together
+// with an aggregate body is NOT an error: aggregate results carry no row
+// cells, so there is nothing to pack, and the field is simply ignored.
+//
+// Group order is deterministic and is the ascending byte order of the
+// engine's length-prefixed encoded group key — NOT collation order of the key
+// values and not insertion order. Neither the service nor the wire adapter
+// re-sorts groups.
+message ProjectedReadyAggregates {
+  // Group key field names; column order for every group's `keys`. Empty for a
+  // global aggregate.
+  repeated string group_key_fields = 1;
+  // The request's aggregate descriptors echoed in request order; column order
+  // for every group's `values`. Present so the response is self-describing.
+  repeated ProjectedAggregate aggregates = 2;
+  // Groups in deterministic encoded-group-key byte order (see above).
+  repeated ProjectedAggregateGroup groups = 3;
+  // Opaque ProjectionFrontier bytes.
+  bytes frontier = 4;
+  // Opaque ProjectionFrontier bytes for application head.
+  bytes head = 5;
+  // Opaque CommitToken for the served frontier (causal chaining).
+  bytes commit_token = 6;
+}
+
 message ProjectedQueryLagging {
   bytes required = 1;
   bytes current = 2;
@@ -491,6 +598,9 @@ message ExecuteProjectedQueryResponse {
     ProjectedQueryInvalid invalid = 6;
     // Present only when the request opted into PACKED and the outcome is Ready.
     ProjectedReadyPacked ready_packed = 7;
+    // Present only when the request body carried aggregate descriptors and the
+    // outcome is Ready. Independent of response_encoding.
+    ProjectedReadyAggregates ready_aggregates = 8;
   }
 }
 

@@ -1445,10 +1445,14 @@ Options:
 
       --order <FIELD[:desc]>
           Order key as `FIELD` or `FIELD:desc` (repeatable)
+      --aggregate <OP:FIELD|count>
+          Aggregate as `OP:FIELD` where OP is `sum`, `min`, or `max`, or the bare word `count` (repeatable). Any aggregate returns groups instead of rows; more than one requires `--group-by`
       --credential-file <PATH>
 
+      --group-by <FIELD>
+          Group-by key field name (repeatable)
       --limit <ROWS>
-          Post-sort row limit
+          Post-sort row limit. With `--group-by` this is the maximum number of groups instead, and exceeding it is rejected rather than truncated; it does not apply to an aggregate without `--group-by`
       --freshness <POLICY>
           Freshness policy: `available`, `bounded:N`, or `causal` (requires token) [default: available]
       --token-hex <HEX>

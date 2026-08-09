@@ -15,10 +15,11 @@ use riffdb_client_rust::{
     BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, ClientError,
     CommitToken, ContractMigrationOperationId, CreateOfflineBackup, FreshnessPolicy,
     IdempotentCommand, MigrationBundleHash, NormalCapabilityCreateTemplate,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedOrder,
-    ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome, ProjectedResponseEncoding,
-    ProjectedSortDirection, RestoreOfflineBackup, RiffDbClient, app_v1, generate_capability_id,
-    generate_offline_maintenance_operation_id, generate_request_id, v1,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedAggregate,
+    ProjectedAggregateValue, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
+    ProjectedQueryOutcome, ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup,
+    RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
+    generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -2448,6 +2449,8 @@ async fn query_command(
             eq,
             range,
             order,
+            aggregate,
+            group_by,
             limit,
             freshness,
             token_hex,
@@ -2468,6 +2471,8 @@ async fn query_command(
                 eq,
                 range,
                 order,
+                aggregate,
+                group_by,
                 limit,
                 freshness,
                 token_hex,
@@ -2547,6 +2552,8 @@ async fn execute_projected_query_cli(
     eq: Vec<String>,
     range: Vec<String>,
     order: Vec<String>,
+    aggregate: Vec<String>,
+    group_by: Vec<String>,
     limit: Option<String>,
     freshness: String,
     token_hex: Option<String>,
@@ -2585,6 +2592,14 @@ async fn execute_projected_query_cli(
         Ok(order) => order,
         Err(()) => return invalid_input(identity),
     };
+    let aggregates = match aggregate
+        .into_iter()
+        .map(|item| parse_aggregate_spec(&item))
+        .collect::<Result<Vec<_>, ()>>()
+    {
+        Ok(aggregates) => aggregates,
+        Err(()) => return invalid_input(identity),
+    };
     let limit = match limit.as_deref().map(parse_u32).transpose() {
         Ok(limit) => limit,
         Err(()) => return invalid_input(identity),
@@ -2601,13 +2616,19 @@ async fn execute_projected_query_cli(
         Err(()) => return invalid_input(identity),
     };
     let query = match ProjectedQuery::new(contract, projection_name, org_scope) {
-        Ok(query) => query
-            .select(select)
-            .predicates(predicates)
-            .order(order)
-            .limit(limit)
-            .freshness(freshness)
-            .encoding(projected_response_encoding(packed)),
+        Ok(query) => {
+            let query = aggregates
+                .into_iter()
+                .fold(query, ProjectedQuery::aggregate)
+                .group_by(group_by);
+            query
+                .select(select)
+                .predicates(predicates)
+                .order(order)
+                .limit(limit)
+                .freshness(freshness)
+                .encoding(projected_response_encoding(packed))
+        }
         Err(_) => return invalid_input(identity),
     };
     match client.execute_projected_query(query, metadata).await {
@@ -2794,6 +2815,32 @@ fn parse_order_spec(raw: &str) -> Result<ProjectedOrder, ()> {
     })
 }
 
+/// Parses `OP:FIELD` for sum/min/max, or the bare word `count`.
+///
+/// `count` reads no column, so `count:anything` is refused rather than
+/// silently ignoring the column the caller named.
+fn parse_aggregate_spec(raw: &str) -> Result<ProjectedAggregate, ()> {
+    if raw == "count" {
+        return Ok(ProjectedAggregate::Count);
+    }
+    let (op, field) = raw.split_once(':').ok_or(())?;
+    if field.is_empty() {
+        return Err(());
+    }
+    match op {
+        "sum" => Ok(ProjectedAggregate::Sum {
+            field: field.to_owned(),
+        }),
+        "min" => Ok(ProjectedAggregate::Min {
+            field: field.to_owned(),
+        }),
+        "max" => Ok(ProjectedAggregate::Max {
+            field: field.to_owned(),
+        }),
+        _ => Err(()),
+    }
+}
+
 fn parse_u32(value: &str) -> Result<u32, ()> {
     value.parse().map_err(|_| ())
 }
@@ -2885,6 +2932,31 @@ fn render_projected_outcome(
                 "commit_token": commit_token.as_ref().map(|token| hex(token.as_bytes())),
             }),
         ),
+        ProjectedQueryOutcome::ReadyAggregates {
+            group_key_fields,
+            aggregates,
+            groups,
+            frontier,
+            head,
+            commit_token,
+        } => success(
+            identity,
+            "ready_aggregates",
+            &serde_json::json!({
+                "status": "ready_aggregates",
+                "group_key_fields": group_key_fields,
+                "aggregates": aggregates.iter().map(projected_aggregate_json).collect::<Vec<_>>(),
+                // Server order: ascending byte order of the encoded group keys,
+                // not collation order of the key values. Never re-sorted here.
+                "groups": groups.iter().map(|group| serde_json::json!({
+                    "keys": group.keys.iter().map(canonical_value_json).collect::<Vec<_>>(),
+                    "values": group.values.iter().map(projected_aggregate_value_json).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "frontier": hex(frontier.as_bytes()),
+                "head": hex(head.as_bytes()),
+                "commit_token": commit_token.as_ref().map(|token| hex(token.as_bytes())),
+            }),
+        ),
         ProjectedQueryOutcome::Lagging {
             required,
             current,
@@ -2950,6 +3022,34 @@ fn render_projected_outcome(
                 "found_fingerprint": hex(found_fingerprint),
             }),
         ),
+    }
+}
+
+fn projected_aggregate_json(aggregate: &ProjectedAggregate) -> serde_json::Value {
+    match aggregate {
+        ProjectedAggregate::Count => serde_json::json!({"op": "count"}),
+        ProjectedAggregate::Sum { field } => serde_json::json!({"op": "sum", "field": field}),
+        ProjectedAggregate::Min { field } => serde_json::json!({"op": "min", "field": field}),
+        ProjectedAggregate::Max { field } => serde_json::json!({"op": "max", "field": field}),
+    }
+}
+
+fn projected_aggregate_value_json(value: &ProjectedAggregateValue) -> serde_json::Value {
+    match value {
+        ProjectedAggregateValue::Count(count) => {
+            serde_json::json!({"type": "count", "value": count.to_string()})
+        }
+        // Decimal string like every other wide integer this renderer emits:
+        // an i128 sum does not survive a JSON number.
+        ProjectedAggregateValue::Sum(sum) => {
+            serde_json::json!({"type": "sum", "value": sum.to_string()})
+        }
+        // `value: null` means no row contributed; a real NULL extreme renders
+        // as the ordinary `{"type": "null"}` canonical value.
+        ProjectedAggregateValue::Scalar(scalar) => serde_json::json!({
+            "type": "scalar",
+            "value": scalar.as_ref().map(canonical_value_json),
+        }),
     }
 }
 
@@ -8868,6 +8968,152 @@ mod tests {
         // Fixed-width hash parsing stays exactly 64 characters.
         assert!(parse_hash(&"ab".repeat(18)).is_err());
         assert!(parse_hash(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn aggregate_spec_parser_accepts_the_documented_forms_only() {
+        assert_eq!(
+            parse_aggregate_spec("count").expect("bare count"),
+            ProjectedAggregate::Count
+        );
+        assert_eq!(
+            parse_aggregate_spec("sum:story_points").expect("sum"),
+            ProjectedAggregate::Sum {
+                field: "story_points".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_aggregate_spec("min:title").expect("min"),
+            ProjectedAggregate::Min {
+                field: "title".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_aggregate_spec("max:title").expect("max"),
+            ProjectedAggregate::Max {
+                field: "title".to_owned()
+            }
+        );
+
+        for raw in [
+            // count reads no column: naming one would be silently ignored.
+            "count:story_points",
+            // Unknown function.
+            "avg:story_points",
+            // Missing column.
+            "sum:",
+            "min:",
+            // Missing separator.
+            "sum",
+            // Empty and separator-only.
+            "",
+            ":",
+            // Order-spec shape, not an aggregate spec.
+            "story_points:desc",
+        ] {
+            assert!(
+                parse_aggregate_spec(raw).is_err(),
+                "accepted malformed aggregate {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_outcome_renders_groups_values_and_scalar_absence() {
+        let outcome = ProjectedQueryOutcome::ReadyAggregates {
+            group_key_fields: vec!["status".to_owned()],
+            aggregates: vec![
+                ProjectedAggregate::Count,
+                ProjectedAggregate::Sum {
+                    field: "story_points".to_owned(),
+                },
+                ProjectedAggregate::Min {
+                    field: "title".to_owned(),
+                },
+            ],
+            groups: vec![
+                riffdb_client_rust::ProjectedAggregateGroup {
+                    keys: vec![CanonicalValue::string("open").expect("s")],
+                    values: vec![
+                        ProjectedAggregateValue::Count(2),
+                        // Beyond an f64 mantissa: the renderer must not emit a
+                        // JSON number for a sum.
+                        ProjectedAggregateValue::Sum(i128::from(i64::MAX) + 1),
+                        ProjectedAggregateValue::Scalar(Some(
+                            CanonicalValue::string("a").expect("s"),
+                        )),
+                    ],
+                },
+                riffdb_client_rust::ProjectedAggregateGroup {
+                    keys: vec![CanonicalValue::string("closed").expect("s")],
+                    values: vec![
+                        ProjectedAggregateValue::Count(0),
+                        ProjectedAggregateValue::Sum(0),
+                        ProjectedAggregateValue::Scalar(None),
+                    ],
+                },
+            ],
+            frontier: riffdb_types::ProjectionFrontier::new(
+                4,
+                riffdb_types::FrontierPosition::BeforeFirst,
+            ),
+            head: riffdb_types::ProjectionFrontier::new(
+                4,
+                riffdb_types::FrontierPosition::BeforeFirst,
+            ),
+            commit_token: None,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let _ = render_projected_outcome(CommandIdentity::QueryProjected, &outcome).emit(
+            crate::cli::OutputMode::Json,
+            &mut stdout,
+            &mut stderr,
+        );
+        assert!(stderr.is_empty());
+        let rendered: serde_json::Value = serde_json::from_slice(&stdout).expect("rendered JSON");
+        let result = rendered.pointer("/result").expect("result body");
+        assert_eq!(
+            result
+                .pointer("/status")
+                .and_then(serde_json::Value::as_str),
+            Some("ready_aggregates")
+        );
+        assert_eq!(
+            result.pointer("/group_key_fields/0"),
+            Some(&serde_json::Value::String("status".to_owned()))
+        );
+        assert_eq!(
+            result.pointer("/aggregates/0/op"),
+            Some(&serde_json::Value::String("count".to_owned()))
+        );
+        assert_eq!(
+            result.pointer("/aggregates/1/field"),
+            Some(&serde_json::Value::String("story_points".to_owned()))
+        );
+        // Server order is preserved: "open" before "closed".
+        assert_eq!(
+            result.pointer("/groups/0/keys/0/value"),
+            Some(&serde_json::Value::String("open".to_owned()))
+        );
+        assert_eq!(
+            result.pointer("/groups/1/keys/0/value"),
+            Some(&serde_json::Value::String("closed".to_owned()))
+        );
+        // Wide integers ride as decimal strings, like every other integer here.
+        assert_eq!(
+            result.pointer("/groups/0/values/1/value"),
+            Some(&serde_json::Value::String("9223372036854775808".to_owned()))
+        );
+        // An empty group's extreme is null; a present extreme is a value doc.
+        assert_eq!(
+            result.pointer("/groups/1/values/2/value"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            result.pointer("/groups/0/values/2/value/value"),
+            Some(&serde_json::Value::String("a".to_owned()))
+        );
     }
 
     #[test]
