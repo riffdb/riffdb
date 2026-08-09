@@ -9439,3 +9439,56 @@ work_packages:
     same-host evidence reduces validation/staging CPU or total seed without a material unary
     regression.
   human_review_triggers: *id001
+- id: WP-494
+  name: Segmented independent command-audit link resolution
+  depends_on: [WP-473, WP-479]
+  objective: Restore replay of a known command outcome after ADR-0102 segmentation by resolving an
+    independently supplied Command audit link through the canonical segment member instead of the
+    pre-segmentation per-command commit and provenance rows, on both the audit append path and the
+    startup structural-validation walk.
+  requirements: [STO-002, STO-020, TXN-041, TXN-042, TXN-043, TXN-044, REC-001, REC-002]
+  required_adrs: [ADR-0021, ADR-0058, ADR-0060, ADR-0099, ADR-0102]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
+    tests/service/**, tests/service_audit/**, tests/storage_recovery/**]
+  deliverables:
+  - An independently supplied Command audit link resolves its commit through the shared segmented
+    lookup, which proves the requested sequence lies inside the canonical segment, rather than an
+    exact-key commit-row read that decodes a segment as a single commit record
+  - Both halves of the link reciprocity (commit-to-provenance and provenance-to-commit) are proven
+    from the one canonical segment member, because a segmented command owns no independent
+    provenance row
+  - The startup structural-validation walk reciprocates a Command audit link against the segment
+    member when no provenance row exists, preserving the existing retention/prune tolerance and the
+    permissive treatment of already-durable records
+  - Pre-segmentation per-command commit rows, capsule revisions, and provenance rows retain their
+    complete existing decoding and reciprocal identity checks
+  - Replaying a known command returns its persisted outcome with the exact original commit sequence,
+    provenance identity, and Succeeded audit link, and submits exactly one fused coordinator message
+  - No durable format, key, transaction membership, acknowledgement, uncertainty, or public
+    application/transport interface changes
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-service --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A known-command replay and a control-plane already-active replay each keep the exact
+    original Succeeded link, the audit append and startup validation paths agree about which
+    Command links are admissible under segmented authority, legacy row shapes remain fully decoded,
+    and the full workspace suite passes.
+  standing_design_tests:
+    interface_safety: No. This restores an existing guarantee rather than adding surface. It changes
+      only how storage internals resolve a durable link that is already established below the public
+      boundary; no application-facing type, request, or option is added or relaxed, and the repaired
+      behaviour makes idempotent replay honour its persisted outcome instead of returning a public
+      outcome-unknown error.
+    scale: No. Both resolutions are bounded point lookups against the same co-located redb authority
+      already assumed by ADR-0102 — one predecessor range lookup plus in-segment membership proof.
+      No new single-node memory residency, full-state rewrite, or whole-history scan is introduced,
+      so the billion-row tier is not foreclosed any further than the accepted segmented design
+      already does.
+  human_review_triggers: *id001

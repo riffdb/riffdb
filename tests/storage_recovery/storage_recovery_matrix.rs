@@ -8,7 +8,9 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
+use redb::{
+    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
+};
 use riffdb_catalog::{
     CatalogHistoryOutcome, CatalogIndexMigrationContext, CatalogIndexMigrationDriveError,
     CatalogIndexMigrationDriver, ValidatedContractBundle, validate_catalog_history,
@@ -38,14 +40,15 @@ use riffdb_storage_api::{
     OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
     PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
     ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-    ServiceAuditAppendIntentV1, SnapshotReader, SnapshotRequest, StartupValidationInputs,
-    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredAdmittedProvenanceClaimsV1,
-    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
-    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingScope,
-    StructuralOpenOutcome, StructurallyOpened, command_write_set_upper_bound_v1,
-    decode_index_entry_v1, decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, SnapshotReader, SnapshotRequest,
+    StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralFinding, StructuralFindingScope, StructuralOpenOutcome,
+    StructurallyOpened, command_write_set_upper_bound_v1, decode_index_entry_v1,
+    decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
     encode_index_entry_v1_fixture, encode_index_entry_v2, encode_record_registry_v2,
 };
 use riffdb_storage_redb::{
@@ -2390,6 +2393,137 @@ fn segmented_group_commits_and_reopens_without_a_failpoint() {
             Some(fixture.records.commit().clone())
         );
     }
+}
+
+/// ADR-0102 regression (WP-493): the *independently supplied* Command audit
+/// link — the replay shape, where the appending transaction stages no command
+/// and therefore carries no sealed move-only evidence — must resolve through
+/// the canonical segment member.
+///
+/// The pre-segmentation decoder read `commits` at the exact
+/// `encode_application_sequence_key(commit_sequence)` and decoded that row as a
+/// single commit record. Under segmentation both halves of that are wrong: the
+/// row is keyed by the segment's *first* sequence, so every non-first member
+/// misses entirely, and the row a first member does find is a
+/// `StoredCommandSegmentV1`, not a commit. This commits one segment holding
+/// several commands and then replays an independent linked audit against every
+/// member, so both the first-member decode and the non-first-member key miss
+/// stay covered.
+#[test]
+fn independent_command_audit_links_resolve_every_member_of_one_segment() {
+    let path = TestDatabasePath::new("independent-command-link-segment");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open grouped database"));
+    let fixtures = (1..=4_u64).map(command_fixture_at).collect::<Vec<_>>();
+    commit_command_group(&ports, &fixtures);
+    drop(ports);
+
+    // Precondition: one physical row holds every command, so members 2..=4 have
+    // no row at their own key and member 1's row is a segment, not a commit.
+    let database = Database::open(&path.0).expect("open raw for segment shape");
+    let read = database.begin_read().expect("raw read");
+    let commits = read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new("commits"))
+        .expect("commits table");
+    assert_eq!(
+        commits.len().expect("commits row count"),
+        1,
+        "the grouped commit must produce exactly one physical segment row"
+    );
+    drop(commits);
+    drop(read);
+    drop(database);
+
+    let mut ports = open_operational(RedbStore::open(&path.0).expect("reopen for replay audits"));
+    for (index, fixture) in fixtures.iter().enumerate() {
+        let request = RequestId::from_bytes(uuid_bytes(
+            0xa0_u8.wrapping_add(u8::try_from(index).expect("bounded fixture index")),
+        ))
+        .expect("replay request ID");
+        let principal = catalog_principal();
+        let started = ServiceAuditAppendIntentV1::new(
+            request,
+            Timestamp::new(1_700_000_010, 0).expect("replay started timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Started,
+            principal.clone(),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("replay started audit");
+        let terminal = ServiceAuditAppendIntentV1::new(
+            request,
+            Timestamp::new(1_700_000_011, 0).expect("replay terminal timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Succeeded,
+            principal,
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::Command {
+                commit_sequence: fixture.records.commit().commit_sequence(),
+                provenance_id: fixture.records.provenance().provenance_id(),
+            },
+        )
+        .expect("replay terminal audit");
+        ports
+            .append_service_audit_fused_pair(&started, &terminal)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "replaying the link for segment member {:?} must be admissible: {error:?}",
+                    fixture.records.commit().commit_sequence()
+                )
+            });
+    }
+
+    // A link naming a sequence no retained segment covers stays a refused
+    // append rather than a corruption signal.
+    let principal = catalog_principal();
+    let absent_request = RequestId::from_bytes(uuid_bytes(0xaf)).expect("absent-link request ID");
+    let absent_started = ServiceAuditAppendIntentV1::new(
+        absent_request,
+        Timestamp::new(1_700_000_012, 0).expect("absent started timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Started,
+        principal.clone(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("absent-link started audit");
+    let absent_terminal = ServiceAuditAppendIntentV1::new(
+        absent_request,
+        Timestamp::new(1_700_000_013, 0).expect("absent terminal timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Succeeded,
+        principal,
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::Command {
+            commit_sequence: CommitSequence::new(4_096).expect("uncommitted sequence"),
+            provenance_id: fixtures[0].records.provenance().provenance_id(),
+        },
+    )
+    .expect("absent-link terminal audit");
+    let refused = ports
+        .append_service_audit_fused_pair(&absent_started, &absent_terminal)
+        .expect_err("a link past the retained segment is not admissible");
+    assert_eq!(
+        refused.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation,
+        "an unprovable link is a refused append, not corrupt data"
+    );
+
+    drop(ports);
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen replayed"));
+    assert!(
+        findings.is_empty(),
+        "independently linked replay audits must reopen clean: {findings:?}"
+    );
 }
 
 #[test]
