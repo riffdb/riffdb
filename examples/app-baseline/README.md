@@ -291,6 +291,14 @@ an accumulated-history curve, language conformance, and resilience. There is del
 score: one missing, unstable, incorrect, mixed-device, or non-evidentiary cell
 makes the release manifest ineligible.
 
+Evidentiary `--require-stable` load runs also sample the host process inventory
+before and after the database phases. A non-harness process using at least 5%
+of one logical CPU or 8 MiB/s of process I/O makes the run non-evidentiary.
+Reports retain only bounded process IDs, command names, rates, RSS, load, and
+memory availability—never command arguments. Preflight interference produces a
+typed `riffdb.app-baseline-non-evidentiary/v1` receipt and performs no database
+measurement; postflight interference marks the completed report ineligible.
+
 Or directly after provisioning:
 
 ```bash
