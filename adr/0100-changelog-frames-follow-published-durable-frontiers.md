@@ -1,6 +1,6 @@
 # ADR-0100: Changelog Frames Follow Published Durable Frontiers (Amendment 1 to ADR-0093)
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-07
 - **Decision owners:** RiffDB maintainers
 - **Amends:** ADR-0093 (replicated availability via authoritative changelog
@@ -171,4 +171,7 @@ the gate must turn exactly that test red.
 
 ## Acceptance
 
-Pending maintainer review.
+Accepted by the maintainer on 2026-08-08, as revised against ADR-0101:
+changelog frames follow published durable frontiers, dual-frontier
+addressed; the replication implementation arc opens with the emitter
+package against this boundary.
