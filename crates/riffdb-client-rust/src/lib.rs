@@ -61,9 +61,10 @@ pub use metadata::{
     TraceParent,
 };
 pub use projected::{
-    ProjectedDegradedReason, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
-    ProjectedQueryOutcome, ProjectedReadyRow, ProjectedRebuildingReason, ProjectedResponseEncoding,
-    ProjectedSortDirection,
+    ProjectedAggregate, ProjectedAggregateGroup, ProjectedAggregateValue, ProjectedDegradedReason,
+    ProjectedOrder, ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome, ProjectedReadyRow,
+    ProjectedRebuildingReason, ProjectedResponseEncoding, ProjectedSortDirection,
+    raise_projected_response_for_query,
 };
 pub use reactive::{
     ApplicationContextualBatch, ApplicationContextualHydration, ApplicationContextualReaction,

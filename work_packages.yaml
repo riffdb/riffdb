@@ -9610,3 +9610,103 @@ work_packages:
     invisible with a recorded falsifiability transcript, a stalled consumer never delays
     publication, and no durable, registry, transport, or public surface changes.
   human_review_triggers: *id001
+- id: WP-492
+  name: Projected aggregate and group-by wire carriage (CP2b deferral closure)
+  depends_on: [WP-433, WP-434]
+  objective: Finish the deliberately deferred half of the ADR-0087 projected grammar — the engine
+    has folded count/sum/min/max and bounded group-by since CP2a and the service has authorized
+    and carried those results since CP2b, but the wire rejected every aggregate body typed because
+    no response arm existed. Add the response arm, the conversion lowering, the SDK facade, and
+    the CLI verb so a bounded aggregate is expressible and readable end to end.
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0087, ADR-0011]
+  allowed_paths: [work_packages.yaml, docs/reference/CLI.md, proto/riffdb/app/v1/application.proto,
+    fixtures/proto/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-service/**,
+    crates/riffdb-client-rust/**, crates/riffdb-cli/**, tests/service/**]
+  deliverables:
+  - ExecuteProjectedQueryResponse gains one aggregate arm at tag 8 carrying group key names, an
+    echo of the request's aggregate descriptors, groups, and the same frontier/head/commit_token
+    a row Ready carries; a whole-set aggregate is exactly one group with an empty key list, with
+    no second ungrouped response shape
+  - ProjectedQueryBody field 7 becomes repeated aggregates; the singular form was rejected typed
+    from the day it was defined so no client can have used it, and proto3 encodes both identically
+  - Aggregate sums ride as a scale-0 riffdb.v1.Decimal through one encoder/decoder pair shared by
+    the adapter and the SDK, exact across the full i128 range, with no asserted precision and no
+    floating point anywhere on the path
+  - An empty group's MIN/MAX is carried by field absence and stays distinguishable from a real
+    NULL extreme over an optional column
+  - Response encoding governs the two row arms only; requesting PACKED with an aggregate body is
+    documented and pinned as inapplicable rather than an error
+  - Group emission order is the engine's encoded-group-key byte order, documented on the wire,
+    never re-sorted by the service, the adapter, the SDK, or the CLI, and verified strictly
+    ascending on decode so a repeated key cannot double-count in a folding caller
+  - The declared row limit bounds grouped output volume - the service clamps the grouping budget
+    to the authorized row count before execution, and an overrun stays a typed rejection
+  - The SDK checks every aggregate response against the request that produced it - echoed group
+    key names, echoed descriptors, and exactly one empty-key group for a whole-set fold - so a
+    self-consistent answer to a different question cannot pass
+  - The conversion handles every engine result variant exhaustively; the wildcard that silently
+    dropped non-row results is gone and a future variant breaks compilation
+  - Projected plan hashes incorporate group keys and aggregate op kinds so a filter and an
+    aggregate over the same columns no longer collide, with row-shaped plan hashes pinned
+    byte-identical to their pre-extension values
+  - SDK builder gains repeatable aggregate and group_by, a typed ReadyAggregates outcome, and
+    decode rigor mirroring the packed decoder — per-group arity, descriptor/arm agreement,
+    bounded sum coefficients, and arm-versus-request cross-checks in both directions
+  - riffdb query projected gains repeatable --aggregate OP:FIELD (bare count) and --group-by FIELD
+    with a JSON renderer that keeps wide sums as decimal strings
+  - Differential truth acceptance over real storage, real columnar apply, and real authorization
+    — every engine fold equals the same value recomputed client-side from the row results of the
+    same query, plus org isolation, typed budget rejections, empty-set identity values, a typed
+    actionable money-sum rejection, and shape-independent causal frontier and token
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --all-features
+  - cargo +1.97.0 test -p riffdb-api-grpc --all-features
+  - cargo +1.97.0 test -p riffdb-api-grpc
+  - cargo +1.97.0 test -p riffdb-service --test projected_read_acceptance --all-features
+  - cargo +1.97.0 test -p riffdb-client-rust --all-features
+  - cargo +1.97.0 test -p riffdb-cli --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-handbook-source
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  design_tests:
+    interface_safety: An aggregate adds no unsafe expressibility, on either the field axis or
+      the volume axis. Fields - an aggregate is authorized against the union of selected,
+      predicate, order, group-key, and aggregate-input fields that ADR-0086 section 5 already
+      required, so it cannot read a column a row read could not, and it is confined to exactly
+      one organization scope. Volume - grouped output is bounded by the minimum of the caller's
+      declared row limit and the server grouping budget; the service clamps
+      max_group_cardinality to the authorized row count before execution, because the engine
+      ignores limit on the grouped path and would otherwise return up to the full server budget
+      in group rows of raw key-column values to a caller that declared one row. Ungrouped
+      aggregates return a fixed cardinality - one value per requested descriptor - independent of
+      how many rows were folded. Budgets stay server-side with no wire vocabulary, so a caller
+      cannot raise a bound, and an exceeded budget is a typed rejection, never a partial fold.
+      Accepted current semantics - a pure COUNT with primary-key-only field visibility discloses
+      row cardinality without naming a field; this matches the disclosure a caller already has by
+      listing rows under the same grant, and is not a new capability.
+    scale: Aggregation folds over the same published-snapshot org partition scan a row read
+      already performs, adding no co-location assumption, no cross-partition fan-out, and no new
+      storage access. Group cardinality is bounded before results are materialized.
+    reversibility: The arm is additive at tag 8 and the request field change is wire-compatible;
+      clients that never send aggregates are byte-for-byte unaffected, and row plan hashes are
+      pinned unchanged.
+  deferred:
+  - Wire budget vocabulary (ADR-0087 per-query scan/grouping/memory/wall-time budgets remain
+    server-side defaults; callers cannot yet declare or observe them)
+  - Explain output for projected queries (ADR-0087 requires reporting access shape and budget
+    consumption without executing; no ExplainProjected surface exists)
+  - Decimal and money column sums (engine limitation - sum accepts i64/u64 only; rejected typed
+    with a distinct type_mismatch code and an actionable fix, not silently coerced)
+  - Two or more whole-set aggregates in one ungrouped request (the engine computes a single
+    whole-set function and is the only path that answers an empty matching set with identity
+    values rather than zero groups; rejected typed, and accepted today with group keys)
+  exit_gate: A bounded aggregate or grouped projected query is expressible from the proto, the
+    Rust SDK, and the CLI, and every value it returns equals the same value recomputed
+    client-side from the rows it summarized over a real service, real storage, and real columnar
+    apply; row-path bytes, packed goldens, preflight pins, and row plan hashes are unchanged.
+  human_review_triggers: *id001

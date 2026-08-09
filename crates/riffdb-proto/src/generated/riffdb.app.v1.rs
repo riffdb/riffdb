@@ -418,8 +418,8 @@ pub struct ProjectedQueryBody {
     pub limit: ::core::option::Option<u32>,
     #[prost(string, repeated, tag = "6")]
     pub group_by: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(message, optional, tag = "7")]
-    pub aggregate: ::core::option::Option<ProjectedAggregate>,
+    #[prost(message, repeated, tag = "7")]
+    pub aggregates: ::prost::alloc::vec::Vec<ProjectedAggregate>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteProjectedQueryRequest {
@@ -473,6 +473,50 @@ pub struct PackedColumn {
     #[prost(uint32, repeated, tag = "2")]
     pub offsets: ::prost::alloc::vec::Vec<u32>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedAggregateScalar {
+    #[prost(message, optional, tag = "1")]
+    pub value: ::core::option::Option<super::super::v1::Value>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedAggregateValue {
+    #[prost(oneof = "projected_aggregate_value::Value", tags = "1, 2, 3")]
+    pub value: ::core::option::Option<projected_aggregate_value::Value>,
+}
+/// Nested message and enum types in `ProjectedAggregateValue`.
+pub mod projected_aggregate_value {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        #[prost(uint64, tag = "1")]
+        Count(u64),
+        #[prost(message, tag = "2")]
+        Sum(super::super::super::v1::Decimal),
+        #[prost(message, tag = "3")]
+        Scalar(super::ProjectedAggregateScalar),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedAggregateGroup {
+    #[prost(message, repeated, tag = "1")]
+    pub keys: ::prost::alloc::vec::Vec<super::super::v1::Value>,
+    #[prost(message, repeated, tag = "2")]
+    pub values: ::prost::alloc::vec::Vec<ProjectedAggregateValue>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedReadyAggregates {
+    #[prost(string, repeated, tag = "1")]
+    pub group_key_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "2")]
+    pub aggregates: ::prost::alloc::vec::Vec<ProjectedAggregate>,
+    #[prost(message, repeated, tag = "3")]
+    pub groups: ::prost::alloc::vec::Vec<ProjectedAggregateGroup>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub frontier: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub head: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub commit_token: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectedQueryLagging {
     #[prost(bytes = "vec", tag = "1")]
@@ -520,7 +564,7 @@ pub struct ProjectedQueryInvalid {
 pub struct ExecuteProjectedQueryResponse {
     #[prost(
         oneof = "execute_projected_query_response::Outcome",
-        tags = "1, 2, 3, 4, 5, 6, 7"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8"
     )]
     pub outcome: ::core::option::Option<execute_projected_query_response::Outcome>,
 }
@@ -542,6 +586,8 @@ pub mod execute_projected_query_response {
         Invalid(super::ProjectedQueryInvalid),
         #[prost(message, tag = "7")]
         ReadyPacked(super::ProjectedReadyPacked),
+        #[prost(message, tag = "8")]
+        ReadyAggregates(super::ProjectedReadyAggregates),
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
