@@ -1,8 +1,8 @@
 # ADR-0105: Authenticated Remote Application Ingress
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-553 changes listener, endpoint, certificate,
   health, or credential-rotation interfaces
 - **Requires:** ADR-0007, ADR-0009, ADR-0025, ADR-0029, ADR-0040,

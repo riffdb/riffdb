@@ -1,8 +1,8 @@
 # ADR-0110: Exact Application Installation and Adapter Conformance
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-568 adds installation operations or a new
   application/conformance manifest format
 - **Requires:** ADR-0055, ADR-0057, ADR-0062, ADR-0065, ADR-0066,

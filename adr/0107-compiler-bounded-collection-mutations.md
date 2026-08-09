@@ -1,8 +1,8 @@
 # ADR-0107: Compiler-Bounded Collection Mutations
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-560 changes contract grammar or command IR
 - **Requires:** ADR-0002, ADR-0003, ADR-0005, ADR-0012, ADR-0031,
   ADR-0055, ADR-0059, ADR-0093, ADR-0095, ADR-0100, and ADR-0104

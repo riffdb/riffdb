@@ -1,8 +1,8 @@
 # Deployable Application Alpha Plan
 
 > Status: proposed roadmap. The capabilities on this page are not available
-> until their work packages pass. ADR-0105 through ADR-0112 remain Proposed and
-> do not override the accepted specification.
+> until their work packages pass. ADR-0105 through ADR-0112 were accepted
+> exactly on 2026-08-09 and now govern their implementation work packages.
 
 The first alpha release must prove more than a good local symbolic API. A real
 adapter must be able to install an application, connect from another container,

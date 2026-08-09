@@ -1,7 +1,7 @@
-spec_version: '0.87'
+spec_version: '0.88'
 product: RiffDB
 repository: riffdb
-status: contract-migration-reactive-application-public-website-and-repository-ownership-implementation
+status: deployable-application-alpha-architecture-accepted
 source_spec: SPEC.md
 normative_terms:
 - MUST
@@ -9856,7 +9856,7 @@ work_packages:
 - id: WP-550
   name: Deployable application alpha architecture and requirement freeze
   depends_on: [WP-398, WP-414, WP-484, WP-491, WP-492, WP-496]
-  objective: Resolve the six cross-cutting alpha blockers into exact accepted trust, driver,
+  objective: Resolve the cross-cutting alpha blockers into exact accepted trust, driver,
     compiler, query, workflow, provisioning, compatibility, and release-gate requirements before
     implementation changes any public, durable, language, IR, authority, or dependency boundary.
   requirements: []
@@ -9951,7 +9951,7 @@ work_packages:
     same-run performance corpus so the alpha gate depends on banked evidence rather than short
     diagnostic runs or an operator scratchpad.
   requirements: [PERF-001, PERF-002, PERF-003, PERF-004, PERF-005, PERF-007,
-    PERF-008, PERF-009, PERF-013, PERF-014]
+    PERF-008, PERF-009, PERF-013, PERF-014, PERF-018]
   required_adrs: [ADR-0055, ADR-0058, ADR-0061, ADR-0101, ADR-0104]
   allowed_paths: [SPEC.md, work_packages.yaml, examples/app-baseline/**,
     benchmarks/run-app-baseline, fixtures/app-baseline/**, scripts/**,
@@ -9990,7 +9990,8 @@ work_packages:
     with mandatory peer verification, bounded lifecycle, and no proxy-asserted application
     authority while preserving the current loopback development profile.
   requirements: [API-001, SYS-002, SEC-001, SEC-002, SEC-003, SEC-004, VAL-003,
-    AAA-004, AAA-005]
+    AAA-004, AAA-005, NET-001, NET-002, NET-003, NET-004, NET-005, NET-006,
+    NET-007, NET-011, NET-012]
   required_adrs: [ADR-0007, ADR-0009, ADR-0029, ADR-0040, ADR-0055, ADR-0063,
     ADR-0071, ADR-0105]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
@@ -10042,7 +10043,7 @@ work_packages:
     certificate reload, least-authority application credential rotation, protected secrets, and
     bounded connection drain/recovery.
   requirements: [API-001, SEC-001, SEC-002, SEC-003, SEC-004, DX-010, DX-011,
-    DX-012, AAA-003, AAA-004, AAA-005]
+    DX-012, AAA-003, AAA-004, AAA-005, NET-008, NET-009, NET-010]
   required_adrs: [ADR-0041, ADR-0055, ADR-0063, ADR-0065, ADR-0072, ADR-0105]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-config/**, crates/riffdb-auth/**,
     crates/riffdb-service/**, crates/riffdb-client-rust/**, crates/riffdb-server/**,
@@ -10084,7 +10085,8 @@ work_packages:
     read-after-commit, and reactive resumption in one long-lived Rust driver host that exposes only
     exact generated application operations to local target-language bindings.
   requirements: [API-001, SYS-002, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009,
-    AAA-010, PYD-002, PYD-003, PYD-006, PYD-007]
+    AAA-010, PYD-002, PYD-003, PYD-006, PYD-007, DRV-001, DRV-002, DRV-003,
+    DRV-004, DRV-005, DRV-006, DRV-010, DRV-011, DRV-012]
   required_adrs: [ADR-0037, ADR-0040, ADR-0055, ADR-0056, ADR-0074, ADR-0080,
     ADR-0105, ADR-0106]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
@@ -10129,7 +10131,7 @@ work_packages:
     host with typed values/outcomes/errors, cancellation, streaming, and no handwritten transport
     or language-owned remote trust semantics.
   requirements: [SYS-002, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009, AAA-010,
-    LIVE-004, LIVE-005, LIVE-006, LIVE-007]
+    LIVE-004, LIVE-005, LIVE-006, LIVE-007, DRV-007, DRV-008, DRV-009]
   required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0080, ADR-0106]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-driver-host/**, clients/go/**, clients/typescript/**, templates/**,
@@ -10169,7 +10171,7 @@ work_packages:
     matrix while preserving the exact native transport, public API, packaging, cancellation,
     credential, and source-distribution boundaries.
   requirements: [PYD-001, PYD-002, PYD-003, PYD-004, PYD-005, PYD-006, PYD-007,
-    PYD-008, PYD-009, PYD-010, PYD-011, PYD-012, AAA-001, AAA-002]
+    PYD-008, PYD-009, PYD-010, PYD-011, PYD-012, AAA-001, AAA-002, DRV-013]
   required_adrs: [ADR-0037, ADR-0055, ADR-0056, ADR-0074, ADR-0106]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml,
     crates/riffdb-client-python-native/**, clients/python/**, templates/python/**,
@@ -10208,7 +10210,8 @@ work_packages:
     pooling, cancellation, typed errors, retry/uncertainty, read-after-commit, reactive streams,
     remote TLS, and overload before adapters claim support.
   requirements: [API-001, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009, AAA-010,
-    PYD-004, PYD-005, PYD-006, PYD-007, LIVE-004, LIVE-005, LIVE-006, LIVE-007]
+    PYD-004, PYD-005, PYD-006, PYD-007, LIVE-004, LIVE-005, LIVE-006, LIVE-007,
+    DRV-014]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0080, ADR-0105, ADR-0106]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/driver/**,
     fixtures/application-parity/**, crates/riffdb-testkit/**, clients/**, examples/**,
@@ -10242,7 +10245,7 @@ work_packages:
     tombstones and repair every validated-prefix, entity-chain, bootstrap, and follower proof that
     currently assumes counted authoritative tables never lose live rows.
   requirements: [REC-001, REC-002, STO-001, STO-002, TXN-001, TXN-040,
-    TXN-041, TXN-042, TXN-043, TXN-044]
+    TXN-041, TXN-042, TXN-043, TXN-044, BLK-011, BLK-012]
   required_adrs: [ADR-0019, ADR-0083, ADR-0085, ADR-0093, ADR-0100, ADR-0107]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/0100-*.md, adr/0107-*.md,
     proto/**, fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-storage-api/**,
@@ -10289,7 +10292,7 @@ work_packages:
     policy without introducing general loops, transactions, callbacks, or raw mutations.
   requirements: [DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, DSL-006, DSL-007,
     DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004, SAFE-005, PERF-004,
-    PERF-005]
+    PERF-005, BLK-001, BLK-002, BLK-003, BLK-004, BLK-005, BLK-007, BLK-010]
   required_adrs: [ADR-0002, ADR-0003, ADR-0013, ADR-0055, ADR-0059, ADR-0093,
     ADR-0100, ADR-0107]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
@@ -10333,7 +10336,8 @@ work_packages:
     audit, provenance, and event paths.
   requirements: [ID-001, ID-004, OUT-001, OUT-002, REC-001, REC-002, STO-001,
     STO-002, TXN-001, TXN-010, TXN-011, TXN-012, TXN-013, TXN-040,
-    TXN-041, TXN-042, TXN-043, TXN-044, PERF-004, PERF-005]
+    TXN-041, TXN-042, TXN-043, TXN-044, PERF-004, PERF-005, BLK-006, BLK-008,
+    BLK-009, BLK-013]
   required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0012, ADR-0058, ADR-0059,
     ADR-0093, ADR-0095, ADR-0100, ADR-0101, ADR-0102, ADR-0104, ADR-0107]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
@@ -10380,7 +10384,7 @@ work_packages:
     Go, TypeScript, Python, CLI, and MCP application surfaces and prove real adapter-shaped atomic
     workloads without handwritten transactions.
   requirements: [AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010,
-    PYD-004, PYD-005, PYD-006, SAFE-007, SAFE-008]
+    PYD-004, PYD-005, PYD-006, SAFE-007, SAFE-008, BLK-014]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0107]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
@@ -10416,7 +10420,9 @@ work_packages:
     top-N/cursor ordering, multiple exact aggregate declarations, and safe symbolic catalog schemas
     while keeping runtime selection inside a finite compiler-owned access family.
   requirements: [RQL-001, RQL-002, RQL-003, RQL-004, RQL-005, RQL-006, QRY-001,
-    QRY-002, QRY-003, QRY-004, QRY-005, SAFE-001, SAFE-003, SAFE-006]
+    QRY-002, QRY-003, QRY-004, QRY-005, SAFE-001, SAFE-003, SAFE-006,
+    OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-007, OQ-008, OQ-009,
+    OQ-010, OQ-015]
   required_adrs: [ADR-0051, ADR-0052, ADR-0053, ADR-0054, ADR-0055, ADR-0087,
     ADR-0108]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
@@ -10465,7 +10471,8 @@ work_packages:
     versioned text indexes, null/existence semantics, stable pagination, exact decimal aggregates,
     inference protection, and policy-filtered catalog introspection.
   requirements: [QRY-001, QRY-002, QRY-004, SAFE-002, SAFE-003, SAFE-006, STO-001,
-    STO-002, VAL-003, PERF-001, PERF-007, PERF-008]
+    STO-002, VAL-003, PERF-001, PERF-007, PERF-008, OQ-011, OQ-012, OQ-013,
+    OQ-014]
   required_adrs: [ADR-0011, ADR-0035, ADR-0038, ADR-0053, ADR-0055, ADR-0070,
     ADR-0086, ADR-0087, ADR-0092, ADR-0104, ADR-0108]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
@@ -10512,7 +10519,7 @@ work_packages:
     supported languages and prove adapter pages/search/aggregates without runtime query structure,
     client filtering, N+1 reads, or kernel inspection.
   requirements: [AAA-001, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010,
-    PYD-004, PYD-005, QRY-004, SAFE-007, SAFE-008]
+    PYD-004, PYD-005, QRY-004, SAFE-007, SAFE-008, OQ-016]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0108]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
@@ -10549,7 +10556,8 @@ work_packages:
     generic CAS, lock, caller clock, callback, or hidden mutation path.
   requirements: [DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, ID-001, ID-002,
     ID-003, ID-004, OUT-001, OUT-002, TXN-001, TXN-010, TXN-011, TXN-012,
-    TXN-013, REC-001, SAFE-001, SAFE-008]
+    TXN-013, REC-001, SAFE-001, SAFE-008, WF-001, WF-002, WF-003, WF-004,
+    WF-005, WF-006, WF-007, WF-008, WF-009, WF-010]
   required_adrs: [ADR-0003, ADR-0005, ADR-0012, ADR-0018, ADR-0055, ADR-0059,
     ADR-0080, ADR-0095, ADR-0109]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
@@ -10598,7 +10606,8 @@ work_packages:
     scheduler role, with bounded attempts, durable idempotency, restart recovery, and generated
     clients for workflow-shaped adapters.
   requirements: [CON-001, CON-002, CON-003, CON-004, CON-005, CON-006, CON-007,
-    CON-008, EVT-005, EVT-006, ID-004, REC-001, REC-002, SAFE-001, SAFE-007]
+    CON-008, EVT-005, EVT-006, ID-004, REC-001, REC-002, SAFE-001, SAFE-007,
+    WF-011, WF-012, WF-013, WF-014]
   required_adrs: [ADR-0049, ADR-0055, ADR-0056, ADR-0080, ADR-0106, ADR-0109]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, crates/riffdb-types/**,
     crates/riffdb-query-module/**, crates/riffdb-catalog/**, crates/riffdb-policy/**,
@@ -10644,7 +10653,8 @@ work_packages:
   requirements: [AAA-003, AAA-004, AAA-005, AAA-008, AAA-013, AAA-014, DX-007,
     DX-008, DX-009, MIG-006, MIG-007, MIG-008, MIG-009, MIG-010, MIG-016,
     MIG-017, MIG-018, SAI-001, SAI-002, SAI-003, SAI-004, SAI-005, SAI-006,
-    SEC-001, SEC-002, SEC-003]
+    SEC-001, SEC-002, SEC-003, APE-001, APE-002, APE-003, APE-004, APE-005,
+    APE-006, APE-007, APE-008, APE-009, APE-012, APE-014]
   required_adrs: [ADR-0057, ADR-0062, ADR-0065, ADR-0066, ADR-0075, ADR-0076,
     ADR-0079, ADR-0105, ADR-0106, ADR-0110]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
@@ -10690,7 +10700,8 @@ work_packages:
     platform, conformance, and evolution requirements as bounded data and prove four unfamiliar
     adapter shapes without executable server plugins or hidden product workarounds.
   requirements: [AAA-003, AAA-010, AAA-011, AAA-012, AAA-013, AAA-014, AAA-018,
-    MIG-001, MIG-002, MIG-003, MIG-019, SAFE-007, SAFE-008]
+    MIG-001, MIG-002, MIG-003, MIG-019, SAFE-007, SAFE-008, APE-010, APE-011,
+    APE-013]
   required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0075, ADR-0076, ADR-0106,
     ADR-0107, ADR-0108, ADR-0109, ADR-0110]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/installation/**,
@@ -10730,7 +10741,8 @@ work_packages:
     principal-specific entity access is statically visible, bounded, index-backed, and impossible
     for application requests or generated clients to bypass.
   requirements: [SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-003,
-    SAFE-006, SAFE-007, QRY-001, QRY-002, QRY-004]
+    SAFE-006, SAFE-007, QRY-001, QRY-002, QRY-004, RAP-001, RAP-002, RAP-003,
+    RAP-004, RAP-005, RAP-012, RAP-013, RAP-014]
   required_adrs: [ADR-0007, ADR-0009, ADR-0038, ADR-0055, ADR-0065,
     ADR-0086, ADR-0087, ADR-0108, ADR-0111]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
@@ -10780,7 +10792,8 @@ work_packages:
     reactive contexts, bulk commands, workflows, and later export.
   requirements: [SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-003,
     SAFE-006, SAFE-008, TXN-001, TXN-010, TXN-011, TXN-012, QRY-001,
-    QRY-002, QRY-004, REC-001]
+    QRY-002, QRY-004, REC-001, RAP-006, RAP-007, RAP-008, RAP-009, RAP-010,
+    RAP-011, RAP-015]
   required_adrs: [ADR-0007, ADR-0038, ADR-0055, ADR-0080, ADR-0086,
     ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
@@ -10829,7 +10842,7 @@ work_packages:
     prove Payload document ACLs plus MLflow experiment/run permissions without client filtering,
     middleware authorization, hidden queries, or broader roles.
   requirements: [AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009,
-    AAA-010, AAA-012, AAA-018, PYD-004, PYD-005, SAFE-007, SAFE-008]
+    AAA-010, AAA-012, AAA-018, PYD-004, PYD-005, SAFE-007, SAFE-008, RAP-016]
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0106,
     ADR-0108, ADR-0111]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
@@ -10869,7 +10882,8 @@ work_packages:
     refusal-before-mutation, supported upgrade edges, and explicit export/reimport-only epochs so
     an alpha binary never discovers incompatibility by damaging or resetting existing data.
   requirements: [STO-001, STO-002, STO-020, STO-021, STO-022, REC-001,
-    REC-002, MIG-001, MIG-002, MIG-003]
+    REC-002, MIG-001, MIG-002, MIG-003, AFC-001, AFC-002, AFC-003, AFC-004,
+    AFC-005, AFC-006, AFC-007, AFC-008, AFC-009, AFC-010, AFC-011, AFC-012]
   required_adrs: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082,
     ADR-0085, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0112]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
@@ -10914,7 +10928,9 @@ work_packages:
     entities/events and optional provenance/audit, plus adapter-declared compiled reimport mappings,
     without exposing storage bytes or creating a generic import write path.
   requirements: [API-001, SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002,
-    SAFE-003, SAFE-006, SAFE-007, REC-001, REC-002, MIG-001, MIG-002]
+    SAFE-003, SAFE-006, SAFE-007, REC-001, REC-002, MIG-001, MIG-002,
+    EXP-001, EXP-002, EXP-003, EXP-004, EXP-005, EXP-006, EXP-007, EXP-008,
+    EXP-009, EXP-010, EXP-011, EXP-012, EXP-013, EXP-014]
   required_adrs: [ADR-0007, ADR-0055, ADR-0057, ADR-0065, ADR-0072,
     ADR-0080, ADR-0110, ADR-0111, ADR-0112]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
@@ -10961,7 +10977,8 @@ work_packages:
     container for every adapter, destroy the live database, restore its verified checkpoint-plus-
     journal unit, and prove the restored application rather than treating backup as a paper claim.
   requirements: [API-001, SEC-001, SEC-002, SEC-003, REC-001, REC-002,
-    STO-001, STO-002, STO-020, STO-021, STO-022]
+    STO-001, STO-002, STO-020, STO-021, STO-022, END-001, END-002, END-003,
+    END-004]
   required_adrs: [ADR-0019, ADR-0050, ADR-0072, ADR-0085, ADR-0101,
     ADR-0103, ADR-0104, ADR-0105, ADR-0110, ADR-0112]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/backup/**,
@@ -11003,7 +11020,8 @@ work_packages:
     checkpoints, retention windows, journal extent recycling, reactive consumers, backup windows,
     and restart cycles while measuring bounded memory/file/queue/resource behavior.
   requirements: [PERF-001, PERF-002, PERF-003, PERF-004, PERF-005, PERF-007,
-    PERF-008, PERF-009, PERF-013, PERF-014, REC-001, REC-002, STO-002]
+    PERF-008, PERF-009, PERF-013, PERF-014, REC-001, REC-002, STO-002,
+    END-005, END-006, END-007, END-008]
   required_adrs: [ADR-0050, ADR-0058, ADR-0061, ADR-0080, ADR-0085,
     ADR-0101, ADR-0103, ADR-0104]
   allowed_paths: [SPEC.md, work_packages.yaml, examples/app-baseline/**,
@@ -11044,7 +11062,7 @@ work_packages:
   requirements: [AAA-003, AAA-010, AAA-012, AAA-013, AAA-014, AAA-018,
     SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-006, SAFE-007,
     SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
-    PERF-014, REC-001, REC-002, STO-001, STO-002]
+    PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010]
   required_adrs: [ADR-0050, ADR-0080, ADR-0082, ADR-0085, ADR-0101,
     ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
@@ -11090,7 +11108,27 @@ work_packages:
     AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010, AAA-012,
     AAA-018, SAFE-001, SAFE-002, SAFE-006, SAFE-007, SAFE-008, PERF-001,
     PERF-002, PERF-003, PERF-004, PERF-007, PERF-008, PERF-009, PERF-013,
-    PERF-014]
+    PERF-014, PERF-018,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012,
+    DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007, DRV-008,
+    DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014,
+    BLK-001, BLK-002, BLK-003, BLK-004, BLK-005, BLK-006, BLK-007, BLK-008,
+    BLK-009, BLK-010, BLK-011, BLK-012, BLK-013, BLK-014,
+    OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-007, OQ-008,
+    OQ-009, OQ-010, OQ-011, OQ-012, OQ-013, OQ-014, OQ-015, OQ-016,
+    WF-001, WF-002, WF-003, WF-004, WF-005, WF-006, WF-007, WF-008,
+    WF-009, WF-010, WF-011, WF-012, WF-013, WF-014,
+    APE-001, APE-002, APE-003, APE-004, APE-005, APE-006, APE-007, APE-008,
+    APE-009, APE-010, APE-011, APE-012, APE-013, APE-014,
+    RAP-001, RAP-002, RAP-003, RAP-004, RAP-005, RAP-006, RAP-007, RAP-008,
+    RAP-009, RAP-010, RAP-011, RAP-012, RAP-013, RAP-014, RAP-015, RAP-016,
+    AFC-001, AFC-002, AFC-003, AFC-004, AFC-005, AFC-006, AFC-007, AFC-008,
+    AFC-009, AFC-010, AFC-011, AFC-012,
+    EXP-001, EXP-002, EXP-003, EXP-004, EXP-005, EXP-006, EXP-007, EXP-008,
+    EXP-009, EXP-010, EXP-011, EXP-012, EXP-013, EXP-014,
+    END-001, END-002, END-003, END-004, END-005, END-006, END-007, END-008,
+    END-009, END-010]
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
     ADR-0080, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0105, ADR-0106,
     ADR-0107, ADR-0108, ADR-0109, ADR-0110, ADR-0111, ADR-0112]

@@ -6,8 +6,8 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.87
-**Status:** Contract-migration, reactive-application, public-website, and repository-ownership implementation
+**Version:** 0.88
+**Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.88 | 2026-08-09 | Accepted ADR-0105 through ADR-0112 and froze the Deployable Application Alpha requirements: authenticated remote ingress, Rust-owned Go/TypeScript/Python drivers, compiler-bounded collection commands, operational RiffQL, fenced workflows, exact installation/adapters, principal-aware row policy, durable-format compatibility, symbolic export/reimport, exercised disaster recovery, 72-hour endurance evidence, and the distinct PERF-018 comparator gate. |
 | 0.87 | 2026-08-09 | Defined the repository-wide RiffDB ownership notice through WP-571: original project source, documentation, website content, graphics, and release artifacts name Kevin O'Shea and O'Shea & Sons, LLC while retaining the existing MIT or Apache-2.0 open-source choice and preserving separate third-party and contributor notices. |
 | 0.86 | 2026-08-09 | Defined the public RiffDB marketing website and early-access boundary through WP-495: an honest vision-led static site at `riffdb.com`, canonical GitHub and handbook links, a bounded double-opt-in waitlist protected by server-side bot verification, reproducible accessibility and browser checks, and least-privilege Cloudflare Pages deployment. |
 | 0.85 | 2026-08-08 | Applied the maintainer-approved ADR-0104 Amendment 1: asynchronous checkpointing begins at 4,096 transitions or 16 MiB while the compiled published-plus-in-flight suffix ceilings become 8,192 transitions, 32 MiB encoded bytes, and 128 MiB overlay charge. Individual frames and the writer-private unpublished prefix remain capped at 256 transitions and 16 MiB; the fixed 40-MiB physical extent retains an independently charged maximum-frame reserve. |
@@ -6991,6 +6992,509 @@ dependency graph pass, ADR-0056, ADR-0057, ADR-0058, ADR-0060, ADR-0061, and
 every language or public/durable interface decision required by those packages
 is accepted, and the raw sealed evaluation reports are published.
 
+## 24.5 Deployable Application Alpha milestone
+
+This milestone is governed by accepted ADR-0105 through ADR-0112. It extends
+the symbolic application platform across authenticated remote deployment,
+language drivers, bounded operational application shapes, principal-aware row
+policy, explicit compatibility and exit, disaster recovery, and endurance. It
+does not create a kernel or storage escape hatch.
+
+### 24.5.1 Authenticated remote ingress
+
+- `NET-001`: A non-loopback application TCP listener MUST use the closed
+  `direct_tls` profile with a complete validated certificate, private key,
+  trust configuration, and canonical public endpoint identity before bind.
+  Loopback cleartext and protected local sockets remain distinct profiles.
+- `NET-002`: Configuration and public clients MUST NOT express insecure remote
+  cleartext, disabled peer verification, trust-all certificates, redirect
+  fallback, or silent downgrade. Invalid remote configuration MUST fail before
+  opening a socket.
+- `NET-003`: Direct-TLS clients MUST validate the configured CA chain, DNS name
+  or IP subject alternative name, validity interval, ALPN, protocol versions,
+  key type, and bounded chain size against the canonical endpoint identity.
+- `NET-004`: Proxies and optional client certificates MUST NOT assert a RiffDB
+  principal, tenant, database, role, or permission. Every protected operation
+  MUST still authenticate the opaque RiffDB credential and repeat current
+  service authorization.
+- `NET-005`: Production TLS MUST use exactly one human-reviewed, version-pinned
+  Rust TLS/provider dependency closure, default-disabled for the loopback
+  profile. Alternate providers, native trust discovery, compression, or a
+  second cryptographic stack require a new accepted ADR and architecture-pin
+  amendment.
+- `NET-006`: Remote endpoint and pool configuration MUST bound DNS/IP length,
+  port, connect and handshake time, headers, bodies, idle/keepalive periods,
+  connections, streams, queueing, and graceful drain. Saturation MUST return a
+  typed capacity outcome without an unbounded accept queue.
+- `NET-007`: Certificate and trust-root reload MUST validate a complete new
+  snapshot and publish it atomically for new handshakes. Invalid reload MUST
+  retain the last valid snapshot; old connections MUST drain within a bounded
+  interval.
+- `NET-008`: Unauthenticated liveness MUST reveal only process/protocol-alive
+  facts. Database readiness, alias, history, contract, audience, and degraded
+  state MUST require authenticated database-selected authority.
+- `NET-009`: Application credential rotation MUST create and prove a successor
+  for the same exact role/scope before switching new connections and explicitly
+  revoking the predecessor; it MUST NOT overwrite the only credential, print
+  bearer material, or widen authority implicitly.
+- `NET-010`: Release-derived Compose and Kubernetes deployments MUST prove
+  separate-container application access, proxy pass-through or re-encryption,
+  liveness/readiness, bounded shutdown, certificate reload, and credential
+  rotation without a host-loopback shortcut.
+- `NET-011`: Remote ingress diagnostics and fixtures MUST be versioned, bounded,
+  structured, and redacted. Hostile certificate, downgrade, forwarded-header,
+  saturation, reload, revocation, and drain cases MUST fail before protected
+  output or authority change.
+- `NET-012`: Alpha remote deployment MUST retain global admission, connection,
+  stream, query, and command bounds and be limited to controlled design-partner
+  networks. Per-principal request rates and per-tenant storage/work quotas are
+  explicitly deferred and MUST be resolved before an untrusted shared-service
+  claim.
+
+### 24.5.2 Rust-owned multilanguage drivers
+
+- `DRV-001`: The first-party Rust application client MUST remain the sole owner
+  of remote endpoint/TLS trust, connection pooling, credential/database
+  handshake, public-status validation, retry, replay, uncertainty recovery,
+  cancellation, read-after-commit, and reactive cursor resumption.
+- `DRV-002`: Go and server-side TypeScript MUST use one long-lived first-party
+  Rust `riffdb-driverd` process over a protected local socket; generated target
+  code MUST NOT implement remote gRPC trust or start one subprocess per call.
+- `DRV-003`: The driver host MUST load one exact application lock, generated
+  operation catalog, database selector, and protected role credentials and
+  expose only named application operations present in that catalog.
+- `DRV-004`: The local driver protocol MUST be closed, versioned, length-bounded,
+  schema-hashed, and identity-pinned. It MUST NOT carry bearer credentials,
+  numeric IDs, field masks, raw Protobuf, arbitrary methods, endpoints, kernel
+  operations, administration, or ad-hoc RiffQL.
+- `DRV-005`: Driver handshake MUST prove protocol, application lock, contract,
+  module, role, generated schema, database alias, and driver identities before
+  accepting an operation.
+- `DRV-006`: The alpha local transport MUST use a protected Unix-domain socket
+  and reject world-readable permissions, symlink substitution, disallowed peer
+  UID/GID, stale lock, and duplicate ownership. Windows named pipes and direct
+  browser access remain unsupported.
+- `DRV-007`: Generated Go bindings MUST provide typed immutable values,
+  operations/outcomes/errors, context cancellation, bounded iterators, explicit
+  attempt/read options, deterministic generation, and one declared toolchain
+  floor without owning remote trust semantics.
+- `DRV-008`: Generated TypeScript bindings MUST provide typed values,
+  operations/outcomes/errors, one long-lived async transport, abort signals,
+  async iterators, bounded host pooling, and explicit shutdown without owning
+  remote trust semantics.
+- `DRV-009`: Browser code MUST connect only through an application-owned
+  authenticated HTTP/SSE relay and MUST NOT receive a RiffDB credential,
+  driver-host socket path, or direct database authority.
+- `DRV-010`: Rust connection pools and driver-host queues MUST have explicit
+  connection, stream, idle, connect, and queue bounds; overload MUST return a
+  typed local capacity error and MUST NOT create unbounded tasks or sockets.
+- `DRV-011`: Cancellation MUST propagate to the exact Rust-owned in-flight
+  operation and release nondurable resources. A possibly durable command MUST
+  preserve its idempotency identity and resolve uncertainty rather than claim
+  cancellation.
+- `DRV-012`: Rust, Go, TypeScript, and Python MUST preserve the same closed
+  semantic error code, retryability, recovery action, authorized identities,
+  safe symbol path, and trace identity; prose matching MUST NOT classify
+  errors.
+- `DRV-013`: Python MUST continue through the accepted PyO3/Rust transport
+  boundary and publish an exact abi3 CPython/platform/architecture wheel matrix.
+  Unsupported combinations MUST fail installation without pure-Python fallback.
+- `DRV-014`: Every driver release MUST publish a machine-readable conformance
+  manifest and pass the same installed-artifact golden corpus for every claimed
+  operation, value, error, pooling, cancellation, retry, read-after-commit,
+  reactive, platform, and toolchain feature.
+
+### 24.5.3 Compiler-bounded collection mutations
+
+- `BLK-001`: Only an explicit compiled `bulk command` with a bounded list input
+  may perform one atomic repeated mutation. Ordinary commands and public batch
+  execution MUST retain their current meanings; no generic transaction or
+  storage batch is introduced.
+- `BLK-002`: Bulk iteration MUST expand exactly one submitted list under a
+  compiler-fixed maximum. Nested/general loops, recursion, collection growth,
+  callbacks, query-result iteration, scans, and dynamic dispatch MUST be
+  rejected with source-spanned diagnostics.
+- `BLK-003`: Every key, partition route, relationship, uniqueness dependency,
+  conflict capability, mutation, event, and charge MUST be computable from the
+  closed plan, scalar input, current element, and deterministic transaction
+  context before authoritative staging.
+- `BLK-004`: Every element and mutation in one bulk command MUST route to one
+  exact partition. Cross-partition collections MUST fail before evaluation or
+  durable admission.
+- `BLK-005`: The first bulk format MUST cap one list and distinct mutation
+  aggregates at 256 and the complete canonical input plus write graph at 16
+  MiB; a compiled command MAY impose a lower bound and callers cannot raise it.
+- `BLK-006`: One bulk invocation MUST retain one command identity, canonical
+  input hash, authorization, deterministic context, declared whole-command
+  outcome, commit sequence, provenance, audit lifecycle, and atomic durable
+  graph. Partial element commits/outcomes MUST NOT be exposed.
+- `BLK-007`: Submitted element order MUST participate in the input hash and
+  event ordinals while conflict keys are acquired in canonical sorted order.
+  Duplicate handling MUST be explicit and compiler-checked.
+- `BLK-008`: Deterministic business failure MUST select one declared bounded
+  whole-command outcome and persist no partial mutation or hidden submitted
+  values.
+- `BLK-009`: Repeated create/update MUST reuse ordinary checked entity,
+  relationship, uniqueness, invariant, row-policy, and transaction-current
+  validation; blind overwrite and upsert remain unavailable.
+- `BLK-010`: Delete MUST be a compiler-visible checked binding with an explicit
+  deletion policy. Alpha permits only no inbound relation or indexed bounded
+  `restrict`; cascade, set-null, orphaning, unindexed discovery, history purge,
+  cross-partition removal, and physical erasure are forbidden.
+- `BLK-011`: Production delete activation MUST follow a versioned ADR-0100
+  changelog delete/tombstone entry through primary emission, shipping, follower
+  apply, bootstrap, compatibility fixtures, and projection tombstone masking.
+- `BLK-012`: Delete-aware startup validation MUST replace count/fingerprint
+  proofs that assumed insert-or-replace tables before any entity delete plan is
+  accepted; a follower MUST never retain state removed by an acknowledged
+  primary command.
+- `BLK-013`: Bulk authorization MUST be derived from the compiled element plan
+  and revalidated for every element/current-successor row inside the one commit;
+  caller-supplied masks, policy, or partial authorization are forbidden.
+- `BLK-014`: Rust, Go, TypeScript, Python, CLI, and MCP generated bulk methods
+  MUST share one schema/outcome/error corpus and prove OpenFGA, MLflow, Payload,
+  and Woodpecker atomic collection shapes without handwritten transport or raw
+  storage access.
+
+### 24.5.4 Bounded operational RiffQL
+
+- `OQ-001`: Operational RiffQL MAY select only from a finite compiler-enumerated
+  plan family. Requests MUST carry typed values and presence choices, never a
+  predicate AST, field/operator/order/index name, or arbitrary expression.
+- `OQ-002`: Optional predicates and bounded predicate groups MUST prove the same
+  partition route, authorization shape, explicit cost, bounded output, and a
+  declared index/projection access path for every family member.
+- `OQ-003`: Operational predicates are limited to typed equality, range,
+  bounded membership, null/existence, prefix, conjunction, and compiler-capped
+  disjunction. An unindexed or excessive family MUST fail at compilation with
+  a source-spanned safe remedy.
+- `OQ-004`: Every operational collection MUST be explicitly bounded and use a
+  snapshot-bound opaque cursor. Offset pagination remains unavailable.
+- `OQ-005`: Top-N MUST use a total declared index/projection order or a fully
+  charged compiler-bounded candidate set and MUST append a deterministic unique
+  tie-breaker.
+- `OQ-006`: A cursor MUST bind predicate selection, ordering, module/plan,
+  authorization, text profile, projection generation, database history, and
+  snapshot; drift MUST fail closed or return an already-declared typed reset.
+- `OQ-007`: Case-insensitive and prefix lookup MUST use a declared versioned
+  text-key index with one first-party canonical transform. Runtime locale,
+  platform collation, engine collation, and caller normalization are forbidden.
+- `OQ-008`: Alpha text-key profiles are exact binary UTF-8 and one frozen
+  Unicode normalization-plus-case-fold profile with checked tables. Changing a
+  profile/table version MUST require index migration and identity rotation.
+- `OQ-009`: Operational text keys provide exact/leading-byte lookup only and
+  MUST NOT duplicate tokenization, stemming, scoring, corpus statistics,
+  snippets, or ranking from ADR-0092 full-text search.
+- `OQ-010`: Null/existence indexes MUST distinguish the contract's missing,
+  null, and non-null states; the planner MUST NOT answer existence through an
+  unbounded fetch-and-filter.
+- `OQ-011`: Operational aggregates MAY include multiple count, sum, min, max,
+  and bounded group-by expressions only under existing query/projection
+  budgets, exact arithmetic, and authorized inputs/outputs.
+- `OQ-012`: Aggregate semantics MUST reuse WP-492's canonical descriptors and
+  carriage: checked i128 integer accumulation exposed as Decimal, exact empty-
+  set/min/max meanings, canonical group order, and requested-limit group clamp.
+- `OQ-013`: Row and field policy MUST run before grouping, aggregation, FTS/
+  vector ranking, statistics, snippets, cursor formation, or output release;
+  inference-sensitive aggregates MAY additionally require a minimum group size.
+- `OQ-014`: Catalog introspection MUST be symbolic, authorization-filtered,
+  paged, bounded, and redacted and MUST NOT reveal numeric IDs, hidden symbols,
+  capability contents, storage layouts, or arbitrary compiler internals.
+- `OQ-015`: Grammar, query IR, canonical source, plan/module hashes, exact locks,
+  roles, and generated bindings MUST rotate through one receipted repository-
+  wide campaign retaining old decoders and detecting every partial mismatch.
+- `OQ-016`: Generated Rust, Go, TypeScript, Python, CLI, and MCP operational
+  query methods MUST share one plan/schema/cursor/error corpus and prove all
+  four adapter shapes without SQL, client filtering, or raw catalog access.
+
+### 24.5.5 Compiled workflow concurrency
+
+- `WF-001`: A workflow transition MUST declare its state field, legal source
+  states, destination, exact observed entity revision, and stale/illegal typed
+  outcomes in compiler-visible source.
+- `WF-002`: Commit-time transaction-current validation MUST recheck workflow
+  state and revision so a generated caller cannot omit optimistic concurrency,
+  substitute a newer revision, or request unconditional last-write-wins.
+- `WF-003`: A workflow lease MUST be aggregate-local and contain optional owner,
+  service-owned expiry, monotonically increasing nonzero fencing token,
+  revision, and optional bounded attempt count.
+- `WF-004`: Claim MUST succeed only for unowned or transaction-time-expired
+  state, increment the fencing token, and return owner, expiry, revision, and
+  token. Renew/release MUST require exact current owner, revision, and token.
+- `WF-005`: Every lease-protected command MUST declare and validate the current
+  fencing token in addition to ordinary authentication and authorization; lease
+  possession alone never grants authority.
+- `WF-006`: Passage of wall time MUST NOT mutate state or emit events. Expiry is
+  an ordinary compiled command and authoritative availability changes only
+  through claim/expire transaction-current validation.
+- `WF-007`: `service uuid_v7` and `service transaction_time` values MUST be
+  obtained before deterministic evaluation, sealed into transaction context and
+  command evidence, persisted in outcomes, and replayed byte-for-byte.
+- `WF-008`: Callers MUST NOT override service-owned values. Lease duration MUST
+  be a bounded typed duration checked against trusted transaction time; clock
+  rollback, overflow, excessive duration, or unavailable observation fails
+  before mutation.
+- `WF-009`: The deterministic runtime MUST receive only sealed service values
+  and MUST perform no clock, randomness, network, filesystem, or process-global
+  operation while evaluating a workflow command.
+- `WF-010`: Aggregate lease tokens, database-history incarnation, and future
+  replication leadership epochs MUST use distinct types, namespaces,
+  encodings, validation, and diagnostics; promotion never resets a lease token.
+- `WF-011`: The scheduler MUST discover work through named queries/events and
+  invoke exact compiled commands under a dedicated symbolic role; it receives
+  no entity editor, lock table, storage handle, callback, or hidden transaction.
+- `WF-012`: Scheduled attempt idempotency MUST derive from schedule identity,
+  logical due instant, target key, and attempt kind. Crash after commit and
+  before checkpoint MUST replay the original outcome without duplicate state.
+- `WF-013`: Selection, claims, timers, wakeups, in-flight work, retries, and
+  queues MUST be bounded and partition-local. Distributed/global scheduler
+  locks and exactly-once external effects remain unavailable.
+- `WF-014`: Generated workflow methods and MLflow/Woodpecker acceptance MUST
+  prove transition, claim/renew/release/expire, stale-fence, crash, and
+  service-value semantics through public symbolic operations only.
+
+### 24.5.6 Exact application installation and adapter conformance
+
+- `APE-001`: Installation MUST compile one content-addressed plan from the exact
+  application source/lock, artifacts, target database/environment, optional
+  migration, roles, credential destinations, seeds, required features, and
+  adapter conformance manifest without remote mutation during planning.
+- `APE-002`: Start/observe MUST be shared application-service operator
+  operations keyed by one caller-stable campaign identity. MCP and stable
+  application clients MUST NOT gain installation authority.
+- `APE-003`: A campaign MUST validate local artifacts and inspect exact remote
+  state before mutation, then advance through individually idempotent deploy,
+  migration, module, role, credential, driver-proof, seed, and receipt stages.
+- `APE-004`: Every resume MUST verify completed-stage identities. Failure MUST
+  return a typed partial campaign and exact next action; installation MUST NOT
+  claim cross-stage atomicity or automatic rollback.
+- `APE-005`: Installation authority MUST be explicit for one database,
+  environment, and application lineage and MUST NOT be implied by deploy,
+  migration, capability administration, backup, or application roles alone.
+- `APE-006`: Initial role bindings MUST be symbolic and exact. A widening MUST
+  expose a bounded authority diff and require explicit confirmation before new
+  capability creation; existing credentials MUST NOT be silently widened or
+  overwritten.
+- `APE-007`: Empty-database bootstrap retains the principal-less singleton
+  rule; installation begins only under an authenticated bootstrap owner or
+  delegated installer and MUST NOT create a second bootstrap path.
+- `APE-008`: Migration-required installation MUST bind exact parent, successor,
+  migration hash, confirmation, backup policy, and downtime class and stop
+  before mutation when any requirement is absent.
+- `APE-009`: Installation MUST NOT approve destructive migration, suppress
+  backup, skip invalid predecessor data, translate old writers, activate an
+  inexact version, or roll back an activated contract implicitly.
+- `APE-010`: An adapter conformance manifest MUST be versioned and content-
+  addressed and declare exact feature, artifact, role, driver/platform,
+  conformance, evolution, and known optional/degraded requirements.
+- `APE-011`: Adapter manifests are bounded data and MUST NOT request raw
+  permissions/IDs, storage/kernel access, arbitrary methods, server hooks,
+  executable shell behavior, unbounded versions, or silent fallback.
+- `APE-012`: One bounded terminal receipt MUST bind campaign/plan, database/
+  history, exact artifacts, nonsecret role/capability identities, migration/
+  backup receipts, seed checkpoint, conformance digest, terminal state, and safe
+  remediation without credentials, paths, values, or hidden schema.
+- `APE-013`: OpenFGA, MLflow, Payload, and Woodpecker adapters MUST each prove
+  empty installation, populated compatible evolution or explicit migration,
+  role/credential rotation, and exact public conformance without RiffDB source
+  or implementation hooks.
+- `APE-014`: Programmatic installation, CLI, operator SDK, and deployment
+  controllers MUST share one plan/receipt/error corpus and preserve the existing
+  compiler, service, migration, authorization, and commit owners at every stage.
+
+### 24.5.7 Compiled principal-aware row policy
+
+- `RAP-001`: Row policy MUST be a named contract program attached symbolically
+  to an entity, role, and operation class and compiled into a closed typed plan;
+  application callbacks, middleware, plugins, and request predicates are not
+  policy enforcement.
+- `RAP-002`: Alpha row predicates are limited to declared row scalar/key fields,
+  stable principal ID/kind, bounded current capability facts, constants/enums,
+  equality/inequality, null/existence, bounded membership, conjunction,
+  compiler-capped disjunction, and one indexed local relationship existence.
+- `RAP-003`: Policy recursion, nested traversal, runtime functions, dynamic
+  fields, arbitrary code, network/filesystem/clock/random access, scans, and
+  cross-partition relationships MUST fail compilation with a source span.
+- `RAP-004`: Every policy plan MUST prove one partition route, field/fact union,
+  relationship/index dependencies, and exact node/fact/value/probe/byte/cost
+  bounds before deployment.
+- `RAP-005`: Principal facts MUST be canonical typed capability/role facts bound
+  to revision, expiry, audience, tenant, and delegation. Operation requests
+  MUST NOT add, override, or reveal them; delegation may only narrow them.
+- `RAP-006`: Policy MUST run before selection, hydration, pagination, cursor
+  advancement, count, grouping, aggregation, FTS/vector ranking/statistics/
+  snippets, live diff, contextual hydration, available-command presentation,
+  or principal-scoped export.
+- `RAP-007`: Unauthorized rows MUST have indistinguishable absence and MUST NOT
+  affect released count, rank, page identity, cursor, aggregate, output,
+  diagnostic, or observable work class beyond an explicitly accepted bounded-
+  filtering inference contract.
+- `RAP-008`: Protected output MUST revalidate current policy/capability revision
+  before release. Revocation/narrowing MUST remove no-longer-visible live values
+  and close or reset streams before further delivery.
+- `RAP-009`: Create policy MUST evaluate proposed state; delete policy MUST
+  evaluate transaction-current state; update policy MUST evaluate both
+  transaction-current and successor state plus policy-dependent relationship
+  evidence inside the authoritative commit transaction.
+- `RAP-010`: Owner, tenant, visibility, project, or ACL-field mutation MUST NOT
+  escape policy unless a separately compiled named transition explicitly proves
+  current and successor authority.
+- `RAP-011`: Bulk, workflow, scheduler, import, MCP, and agent commands MUST use
+  the same policy proof and transaction-current verifier and expose no skip,
+  administrator-mode, caller mask, or partial-policy option.
+- `RAP-012`: Role compilation MUST derive exact policy plans, principal-fact
+  schema, visible fields, indexes/relationships, and maximum work. Generated
+  application calls carry ordinary typed values only, never policy bytecode.
+- `RAP-013`: Policy diagnostics/catalog MUST name only authorized symbolic role,
+  policy, entity, operation, missing fact schema, and safe span and MUST NOT
+  confirm a hidden row, reveal fact values, capability contents, branches,
+  bytecode, or numeric IDs.
+- `RAP-014`: Cached plans MUST bind complete policy/module/role identity but MUST
+  NOT cache a principal-specific allow decision across capability revision,
+  expiry, relationship change, or transaction frontier.
+- `RAP-015`: Administrative backup retains separate whole-database authority;
+  application export MUST explicitly select principal-filtered or separately
+  authorized whole-application scope and record that scope in its receipt.
+- `RAP-016`: Payload document ACL and MLflow experiment/run authorization MUST
+  pass cross-language, cross-surface, race, revocation, and inference corpora
+  without application-side filtering, middleware checks, hidden queries, or
+  broader credentials.
+
+### 24.5.8 Alpha format compatibility and application portability
+
+- `AFC-001`: Every release artifact MUST carry one generated exact durable-
+  format manifest naming alpha epoch, writer, complete readable/writable
+  registry/record/storage/journal/backup/receipt versions, supported release
+  edges, action class, and compatibility-fixture digest.
+- `AFC-002`: Startup MUST compare immutable database and binary format identity
+  before mutation, migration, allocator repair, journal replay, readiness, or
+  automatic empty-database creation.
+- `AFC-003`: Unknown, corrupt, ambiguous, or unsupported format combinations
+  MUST fail with a typed current/binary identity and safe supported action
+  before changing any target byte.
+- `AFC-004`: Within one alpha format epoch, a release pair MUST either preserve
+  the database according to its manifest or refuse before mutation. Destructive
+  reset is never an upgrade.
+- `AFC-005`: A breaking pre-1.0 epoch MUST be declared export/reimport-only with
+  release notes, expected downtime, unsupported data classes, old-binary
+  retention, and a complete tested ceremony; downgrade is not implied.
+- `AFC-006`: A breaking-epoch ceremony MUST validate and back up old state,
+  export portable state, install an empty new epoch, reimport through compiled
+  behavior, reconcile observations, and retain old artifacts until validation.
+- `AFC-007`: Backup manifests MUST state their compatible restore range and an
+  incompatible restore MUST fail before replacing the target. A physical backup
+  MUST NOT be represented as a universal migration format.
+- `AFC-008`: Format compatibility decisions MUST be generated from one owner
+  registry and release-pair fixture matrix; decoder success alone is not
+  evidence that an upgrade edge is supported.
+- `AFC-009`: Upgrade preflight MUST state required backup, free space, downtime,
+  one-way behavior, and exact next command without a force/ignore/reset option.
+- `AFC-010`: Release verification MUST reject an artifact lacking its exact
+  durable-format manifest, fixture digest, upgrade table, export posture, or
+  honest known limitations.
+- `AFC-011`: Same-epoch and breaking-epoch evidence MUST cover all current
+  durable records, registries, redb layout, journal extents, backup inventory,
+  maintenance receipts, history identity, and recovery validation.
+- `AFC-012`: No public application, operator, migration, restore, or startup
+  path may reinterpret unsupported durable bytes, silently discard data, or
+  claim compatibility from a best-effort decode.
+
+### 24.5.9 Snapshot-consistent symbolic export
+
+- `EXP-001`: The public operator surface MUST provide versioned start, page,
+  status, and cancel application-export operations through the shared service,
+  gRPC, Rust operator client, and CLI for one selected database.
+- `EXP-002`: The server MUST bind an export to one immutable published snapshot
+  and frontier; clients MUST NOT supply a filesystem path, storage table, raw
+  key range, or arbitrary query as export scope.
+- `EXP-003`: Export MUST page current symbolic entities and retained typed domain
+  events in bounded canonical JSONL using natural application values and stable
+  contract/event names.
+- `EXP-004`: Provenance and public-safe audit MUST be optional, independently
+  authorized export classes. Entity visibility alone MUST NOT grant either.
+- `EXP-005`: Output MUST exclude numeric entity/field/index IDs, storage keys/
+  envelopes, credentials, digest keys, internal journal/changelog bytes, hidden
+  schema, private paths, and unredacted submitted secrets.
+- `EXP-006`: One manifest/receipt MUST bind database/history, contract/module,
+  selected policy scope, snapshot frontier, operation identity, counts, byte
+  hashes, omissions, and terminal state without protected values.
+- `EXP-007`: Pages and retained server state MUST have exact row, byte, time,
+  lease, and total-operation bounds. The opaque cursor MUST bind operation,
+  snapshot, principal, scope, and format.
+- `EXP-008`: Expiry MUST return a typed restart outcome and MUST NOT splice a
+  newer snapshot. Cancellation/crash MUST leave an explicitly incomplete
+  resumable or terminal receipt, never a falsely complete artifact.
+- `EXP-009`: Principal-scoped export MUST apply current row and field policy
+  before serialization. Whole-application export requires a distinct explicit
+  operator permission and the receipt MUST identify that scope.
+- `EXP-010`: Export MUST refuse corrupt or incompletely validated source state;
+  success is published only after all page hashes, manifest, receipt, and final
+  validation are durable.
+- `EXP-011`: Reimport MUST map portable record classes to declared idempotent
+  compiled commands or an accepted application migration and MUST NOT expose a
+  generic entity/storage import API.
+- `EXP-012`: Reimport MUST enforce current types, invariants, references, row
+  policy, provenance, outcomes, and idempotency and explicitly declare any
+  event/audit/history class that cannot be regenerated.
+- `EXP-013`: Export/reimport reconciliation MUST compare application identities,
+  counts, hashes, event semantics, and adapter observations while explicitly
+  permitting new physical commit sequences/identities where declared.
+- `EXP-014`: All four adapters and supported languages MUST complete export to
+  an empty database and compiled reimport with receipted observations and no
+  storage, policy, or write bypass.
+
+### 24.5.10 Disaster and endurance evidence
+
+- `END-001`: Every adapter MUST invoke offline backup and restore from a
+  separate operator container through the public maintenance protocol and a
+  least-authority maintenance credential; application credentials cannot
+  perform maintenance.
+- `END-002`: The disaster drill MUST quiesce, create and externally retain a
+  verified immutable checkpoint-plus-journal backup, destroy the original
+  database volume, restore into an empty replacement, and reach readiness.
+- `END-003`: Restored state MUST pass structural/startup validation and the
+  adapter's complete conformance manifest at the exact backup frontier,
+  including contract/module/role, events, projections, and history handling.
+- `END-004`: Corrupt, incomplete, mixed, incompatible, unauthorized, or
+  ambiguously selected backup/restore input MUST fail before target replacement
+  with a bounded exact recovery action.
+- `END-005`: A reproducible remote endurance harness MUST exercise mixed reads,
+  writes, workflows, events, live queries, hot/cold keys, tenants, and all four
+  language clients under a closed workload and fault manifest.
+- `END-006`: Endurance MUST force sustained history growth, many journal extent
+  generations, checkpoint/recovery, supported retention, backup, capability and
+  certificate rotation, deploy-under-load, restart, and reactive-consumer
+  cycles.
+- `END-007`: Evidence MUST record bounded redaction-safe RSS/allocator,
+  database/journal/backup bytes, generation, watermark/tombstone, queue,
+  consumer, projection, error, latency, throughput, restart, and conformance
+  observations.
+- `END-008`: Passing evidence MUST reject memory/file/backlog/queue growth beyond
+  modeled retained data, repeated O(history) lifecycle work, starvation, hidden
+  retry, data loss, policy mismatch, or unsupported storage-unavailable errors.
+- `END-009`: The alpha release MUST retain one uninterrupted valid 72-hour run;
+  a 24-hour run is rehearsal only, and host interference, early exit, missing
+  lifecycle coverage, or invalid observations cannot pass.
+- `END-010`: The final endurance receipt MUST bind the release artifacts,
+  workload/fault manifest, environment and process inventory, format manifest,
+  export/reimport and disaster receipts, observation digests, and complete
+  adapter conformance without secrets or unbounded diagnostics.
+
+- `PERF-018`: The alpha performance comparator MUST freeze the safe-application
+  PostgreSQL obligations, backend isolation, durability, transport/client
+  shapes, dataset, weights, correctness reconciliation, percentile/throughput
+  calculations, and host-validity rules. Release evidence requires at least
+  three same-run 90-second post-warmup repetitions for interactive and write-
+  only concurrency sweeps on an idle inventoried host; short, unstable,
+  interfered, drifted, or incorrect runs are non-evidentiary.
+
+The Deployable Application Alpha milestone is complete only when WP-550 through
+WP-570 and WP-572 through WP-579 pass in dependency order, every accepted
+format/interface fixture and release artifact is current, and WP-579's
+installed remote four-adapter, four-language, policy, compatibility, export,
+restore, endurance, security, correctness, and performance matrix passes
+without a waiver that makes an unsafe pattern expressible.
+
 ---
 
 # Appendix A. Core state and storage key examples
@@ -7173,5 +7677,15 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `SAFE-*` | Safety-by-construction application authority, declared integrity, budgets, and negative acceptance |
 | `PERF-*` | Application-path measurement and performance gates |
 | `AAA-*` | Agent Application Alpha bindings, roles, diagnostics, batches, scaffolding, language parity, and evaluation |
+| `NET-*` | Authenticated remote application ingress, endpoint identity, lifecycle, and rotation |
+| `DRV-*` | Rust-owned multilanguage driver host, generated bindings, pooling, and conformance |
+| `BLK-*` | Compiler-bounded atomic collection commands and checked deletion |
+| `OQ-*` | Bounded operational RiffQL, text keys, cursors, aggregates, and catalog introspection |
+| `WF-*` | Revision transitions, service-owned values, fenced leases, and scheduler safety |
+| `APE-*` | Exact application installation, evolution campaigns, receipts, and adapter conformance |
+| `RAP-*` | Compiled principal-aware row policy and cross-surface enforcement |
+| `AFC-*` | Alpha durable-format compatibility, upgrade refusal, and epoch ceremony |
+| `EXP-*` | Snapshot-consistent symbolic application export and compiled reimport |
+| `END-*` | Exercised disaster recovery, sustained lifecycle load, and bounded-growth evidence |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

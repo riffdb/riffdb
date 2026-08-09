@@ -1,8 +1,8 @@
 # ADR-0108: Bounded Operational RiffQL and Safe Catalog Introspection
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-563 changes RiffQL grammar or query IR
 - **Requires:** ADR-0035, ADR-0038, ADR-0051, ADR-0053, ADR-0054,
   ADR-0055, ADR-0070, ADR-0086, ADR-0087, and ADR-0092
