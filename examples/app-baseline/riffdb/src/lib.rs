@@ -49,8 +49,16 @@ pub use server::{
 };
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
-const DEFAULT_SEED_CONCURRENCY: usize = 384;
-const MAX_SEED_CONCURRENCY: usize = riffdb_client_rust::MAX_GENERATED_BATCH_CONCURRENCY;
+///
+/// The general generated client permits 384 items, but that is a protocol
+/// ceiling rather than a safe default for one shared benchmark daemon. At 384,
+/// a full 19,220-command seed can produce a burst of request-scoped audit
+/// deadline failures large enough to trip the deliberately fail-closed audit
+/// readiness threshold. The benchmark therefore owns the smaller operational
+/// ceiling it documents. Operators can lower it, but cannot turn an evidence
+/// run into an audit-saturation probe through the environment.
+const DEFAULT_SEED_CONCURRENCY: usize = 128;
+const MAX_SEED_CONCURRENCY: usize = 128;
 
 /// Public symbolic application backend.
 #[derive(Clone)]

@@ -48,6 +48,7 @@ All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
 | `riffdb.app-baseline/v1` | parity report |
 | `riffdb.app-baseline-load/v1` | one backend/client load point |
 | `riffdb.app-baseline-load-suite/v1` | repetitions, curve, environment, correctness |
+| `riffdb.app-baseline-performance-sentinel/v1` | short, RiffDB-only, non-evidentiary regression receipt |
 | `riffdb.app-baseline-resilience/v1` | process/failpoint recovery cells |
 | `riffdb.app-baseline-language-conformance-result/v1` | generated-client semantic/boundary result |
 | `riffdb.app-baseline-alpha-matrix/v1` | required cells and evidence hashes |
@@ -81,13 +82,33 @@ are never retained.
 
 ## WP-552 evidence status
 
-The 2026-08-09 acceptance attempt is deliberately non-evidentiary. Both the
-interactive and write-only 90-second sweep commands refused at preflight with
-the typed reason `host_interference`; no database timing was collected or
-presented as a performance result. The bounded receipts are retained under
-`release/evidence/wp-552/`. WP-552's valid 90-second corpus and the alpha
-performance gate remain outstanding until these same commands run on an idle
-host.
+WP-552 completed its idle-host evidence on 2026-08-09. Both the interactive and
+write-only corpora contain three counterbalanced, isolated 90-second
+repetitions at 1, 8, 32, and 128 clients for RiffDB public gRPC and the frozen
+safe-app PostgreSQL comparator. Both reports are stable, correctness-clean,
+same-device comparable, host-idle, and eligible.
+
+Median throughput in operations/second:
+
+| Profile / clients | PG safe-app | RiffDB | RiffDB / PG |
+|---|---:|---:|---:|
+| interactive / 1 | 2,581 | 1,909 | 0.74× |
+| interactive / 8 | 13,538 | 13,321 | 0.98× |
+| interactive / 32 | 39,286 | 32,902 | 0.84× |
+| interactive / 128 | 32,024 | 38,929 | 1.22× |
+| write-only / 1 | 563 | 475 | 0.84× |
+| write-only / 8 | 1,651 | 2,621 | 1.59× |
+| write-only / 32 | 5,964 | 5,794 | 0.97× |
+| write-only / 128 | 4,131 | 6,369 | 1.54× |
+
+The write-only c128 median p99 was 48.2 ms for RiffDB and 906.0 ms for the
+safe-app comparator. That result describes this exact same-device workload;
+it is not a general PostgreSQL latency claim.
+
+The raw merged reports and their earlier typed `host_interference` refusal
+receipts are retained under `release/evidence/wp-552/` with SHA-256 hashes.
+The refusal receipts remain useful proof that an interfered host cannot produce
+publishable evidence.
 
 Smoke matrix success means only that the orchestration works. Its manifest sets
 `eligible: false` by construction.

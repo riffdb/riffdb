@@ -1,6 +1,23 @@
-# WP-552 host-validity receipts
+# WP-552 performance evidence
 
-Status: non-evidentiary; no performance claim.
+Status: complete; interactive and write-only evidence banked.
+
+The interactive corpus passed on an idle host on 2026-08-09. It contains three
+counterbalanced, isolated 90-second repetitions at 1, 8, 32, and 128 clients
+for both RiffDB public gRPC and the frozen safe-app PostgreSQL comparator. The
+merged report is stable, correctness-clean, same-device comparable, and marks
+itself eligible.
+
+| Evidence | SHA-256 |
+|---|---|
+| `interactive-90s-reps3.json` | `18022333a18622c6b4347116bb7806def34d39285347f1e54b9edbb6b78dec07` |
+| `write-only-90s-reps3.json` | `dd9f5c13cdddb8925c656ac7e8e4e0216e156b06b05f9f6a06d406cad1be6f2e` |
+
+Both corpora contain three counterbalanced repetitions and are stable,
+correctness-clean, same-device comparable, host-idle, and eligible under the
+frozen safe-app comparator contract.
+
+## Earlier fail-closed receipts
 
 The required interactive and write-only 90-second concurrency sweeps were
 attempted on 2026-08-09. Both stopped before database startup because bounded
@@ -17,7 +34,7 @@ Each receipt contains only bounded process IDs, command names, CPU/I/O rates,
 RSS, load, and memory availability. Process arguments and application values
 are absent.
 
-Rerun on an idle host:
+Reproduce the idle-host evidence:
 
 ```bash
 ./benchmarks/run-app-baseline --full --load interactive \

@@ -55,6 +55,35 @@ if [[ "${1:-}" == "--self-test" ]]; then
       and (.interfering_processes | type == "array")
       and .inventory_bounds.process_arguments_included == false
     ' "$host_fixture" >/dev/null
+    receipt_fixture="$(mktemp "$task_tmp_root/riffdb-non-evidentiary.XXXXXX")"
+    ./scripts/app-baseline-non-evidentiary-receipt \
+        --output "$receipt_fixture" \
+        --reason backend_execution_failed \
+        --mode full \
+        --profile interactive \
+        --duration-secs 90 \
+        --reps 3 \
+        --postgres-comparator safe-app \
+        --concurrency-sweep 1 \
+        --preflight "$host_fixture" \
+        --postflight "$host_fixture" \
+        --backend riffdb_public_grpc \
+        --rep 1 \
+        --phase-exit-status 1 \
+        --partial-phase-evidence "$host_fixture"
+    jq -e '
+      .schema == "riffdb.app-baseline-non-evidentiary/v1"
+      and .status == "non_evidentiary"
+      and .reason.code == "backend_execution_failed"
+      and .reason.backend == "riffdb_public_grpc"
+      and .reason.rep == 1
+      and .reason.phase_exit_status == 1
+      and .evidence_eligibility.eligible == false
+      and (.partial_phase_evidence.sha256 | test("^[0-9a-f]{64}$"))
+    ' "$receipt_fixture" >/dev/null
+    ./scripts/app-baseline-performance-sentinel-check --self-test
+    bash -n ./scripts/app-baseline-performance-sentinel
+    rm -f "$receipt_fixture"
     rm -f "$host_fixture"
     cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
     riffdbd_bin="$repo_root/target/release/riffdbd"
@@ -529,40 +558,16 @@ if ((require_stable)) && [[ -n "$load_profile" ]]; then
             printf 'host validity inventory failed\n' >&2
             exit 1
         fi
-        python3 - "$host_validity_preflight" "$report" "$mode" "$load_profile" \
-            "${load_duration_secs:-90}" "${reps:-3}" "$postgres_comparator" \
-            "$load_concurrency_sweep" <<'PY'
-import json
-import sys
-
-inventory_path, output_path, mode, profile, duration, reps, comparator, sweep = sys.argv[1:]
-inventory = json.load(open(inventory_path, encoding="utf-8"))
-receipt = {
-    "schema": "riffdb.app-baseline-non-evidentiary/v1",
-    "status": "non_evidentiary",
-    "reason": {
-        "code": "host_interference",
-        "retry": "rerun_on_idle_host",
-    },
-    "requested": {
-        "mode": mode,
-        "profile": profile,
-        "duration_secs": int(duration),
-        "reps": int(reps),
-        "postgres_comparator": comparator,
-        "concurrency_sweep": sweep == "1",
-    },
-    "host_validity": {"preflight": inventory, "postflight": None},
-    "evidence_eligibility": {
-        "eligible": False,
-        "host_idle": False,
-        "reason_codes": ["host_interference"],
-    },
-}
-with open(output_path, "w", encoding="utf-8") as destination:
-    json.dump(receipt, destination, indent=2)
-    destination.write("\n")
-PY
+        ./scripts/app-baseline-non-evidentiary-receipt \
+            --output "$report" \
+            --reason host_interference \
+            --mode "$mode" \
+            --profile "$load_profile" \
+            --duration-secs "${load_duration_secs:-90}" \
+            --reps "${reps:-3}" \
+            --postgres-comparator "$postgres_comparator" \
+            --concurrency-sweep "$load_concurrency_sweep" \
+            --preflight "$host_validity_preflight"
         printf 'non-evidentiary host-interference receipt: %s\n' "$report" >&2
         rm -f "$host_validity_preflight"
         exit 1
@@ -1098,6 +1103,47 @@ if [[ -z "$balanced_rep_count" ]]; then
     [[ "$mode" == full ]] && balanced_rep_count=3 || balanced_rep_count=1
 fi
 
+# Preserve a machine-readable refusal when an evidentiary backend phase dies.
+# Without this boundary `set -e` leaves, at best, a private partial phase file
+# and the release gate cannot distinguish a product failure from an omitted
+# run. The receipt contains only closed classifications, bounded host
+# inventory, and hashes/relative paths to partial evidence; it never copies
+# credentials, submitted values, process arguments, or daemon stderr.
+write_backend_phase_failure_receipt() {
+    local backend="$1" rep_index="$2" phase_status="$3" partial_report="$4"
+    local postflight_path="" postflight_status=0
+    if [[ -n "$host_validity_preflight" ]]; then
+        postflight_path="$(mktemp "$task_tmp_root/riffdb-host-failure-postflight.XXXXXX")"
+        set +e
+        ./scripts/app-baseline-host-validity >"$postflight_path"
+        postflight_status=$?
+        set -e
+        if ((postflight_status != 0 && postflight_status != 3)); then
+            rm -f "$postflight_path"
+            postflight_path=""
+        fi
+    fi
+    receipt_args=(
+        --output "$report"
+        --reason backend_execution_failed
+        --mode "$mode"
+        --profile "$load_profile"
+        --duration-secs "${load_duration_secs:-90}"
+        --reps "$balanced_rep_count"
+        --postgres-comparator "$postgres_comparator"
+        --concurrency-sweep "$load_concurrency_sweep"
+        --preflight "$host_validity_preflight"
+        --backend "$backend"
+        --rep "$rep_index"
+        --phase-exit-status "$phase_status"
+        --partial-phase-evidence "$partial_report"
+    )
+    [[ -z "$postflight_path" ]] || receipt_args+=(--postflight "$postflight_path")
+    ./scripts/app-baseline-non-evidentiary-receipt "${receipt_args[@]}"
+    [[ -z "$postflight_path" ]] || rm -f "$postflight_path"
+    printf 'non-evidentiary backend-failure receipt: %s\n' "$report" >&2
+}
+
 if ((dual_load_phases)) && ((balanced_rep_count >= 2)); then
     [[ -z "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]] || {
         printf 'balanced dual-backend evidence requires harness-owned PostgreSQL so it can be fully stopped between phases\n' >&2
@@ -1123,14 +1169,32 @@ if ((dual_load_phases)) && ((balanced_rep_count >= 2)); then
         rd_report="$out_dir/.phase-riffdb-rep-${rep_index}.json"
         run_pg_phase() {
             start_postgres
+            set +e
             "$runner" "${phase_args[@]}" --reps 1 --skip-riffdb \
                 --postgres-url "$RIFFDB_APP_BASELINE_POSTGRES_URL" --output "$pg_report"
+            local phase_status=$?
+            set -e
             stop_postgres
+            if ((phase_status != 0)); then
+                ((require_stable)) \
+                    && write_backend_phase_failure_receipt \
+                        "postgres_${postgres_comparator}" "$rep_index" "$phase_status" "$pg_report"
+                return "$phase_status"
+            fi
             phase_reports+=("$pg_report")
         }
         run_riffdb_phase() {
+            set +e
             "$runner" "${phase_args[@]}" --reps 1 --skip-postgres \
                 --riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" --output "$rd_report"
+            local phase_status=$?
+            set -e
+            if ((phase_status != 0)); then
+                ((require_stable)) \
+                    && write_backend_phase_failure_receipt \
+                        riffdb_public_grpc "$rep_index" "$phase_status" "$rd_report"
+                return "$phase_status"
+            fi
             phase_reports+=("$rd_report")
         }
         if ((rep_index % 2 == 0)); then

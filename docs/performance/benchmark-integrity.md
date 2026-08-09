@@ -106,6 +106,25 @@ without it member crates (and most T2 unit tests) are skipped.
 - Parity gates evaluate the **median** of reps and **refuse** (do not pass)
   when either backend’s gated metric is unstable.
 
+### Development performance sentinel
+
+Performance-sensitive changes should use
+`./scripts/app-baseline-performance-sentinel` before and after the change. This
+RiffDB-only diagnostic uses 5-second windows for an interactive concurrency
+sweep and one write-only saturation cell. The diagnostic sweep uses one daemon
+and accumulated history to avoid repeated setup; release evidence retains fresh
+per-level isolation. Each sentinel phase includes the full seed and checks
+versioned floors/ceilings for seed time, throughput, p50/p99 latency,
+unary-write p50, and correctness. It reruns only a failed cell once and normally
+finishes in 60–90 seconds.
+
+The sentinel is intentionally marked `evidentiary: false`: it detects a large
+regression early and creates useful bisect points, but it cannot establish a
+cross-engine ratio or close a release requirement. PostgreSQL is not a useful
+per-commit regression oracle because its own run-to-run variation would hide
+the identity of the changed RiffDB code. The retained 90-second,
+three-repetition, same-device comparison remains the milestone/release path.
+
 ## Device baseline
 
 Once per invocation the harness runs a cheap probe (no `fio` dependency):
