@@ -5,6 +5,7 @@
 # Start Here
 
 - [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md)
+- [Why RiffDB Exists](VISION.md)
 - [Installation](installation.md)
 - [Your First Application](getting-started/FIRST-APPLICATION.md)
 - [Agent Application Quickstart](getting-started/AGENT-APPLICATION-QUICKSTART.md)
