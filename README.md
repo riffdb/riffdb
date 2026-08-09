@@ -260,5 +260,10 @@ and authorization fact from that suffix must be discarded. Read
 
 ## License
 
+Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
+
+RiffDB is an open-source project of
+[O'Shea & Sons, LLC](https://osheaandsons.com/).
+
 RiffDB is licensed under either the MIT License or the Apache License, Version
-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
+2.0, at your option. See `COPYRIGHT`, `LICENSE-MIT`, and `LICENSE-APACHE`.

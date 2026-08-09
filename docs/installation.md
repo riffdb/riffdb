@@ -5,7 +5,10 @@ depend on Linux `/proc/self/status` and exact owner/mode checks. Public
 interfaces are loopback-only and do not include TLS.
 
 RiffDB is available under either the MIT License or the Apache License, Version
-2.0, at your option. A verified release bundle includes both license texts.
+2.0, at your option. A verified release bundle includes the ownership notice
+and both license texts.
+
+Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
 
 ## Source Checkout Convenience Install
 
@@ -461,7 +464,7 @@ sudo install -o root -g root -m 0755 -d \
   /usr/share/doc/riffdb/release/config \
   /usr/share/doc/riffdb/examples/contracts
 sudo install -o root -g root -m 0644 \
-  README.md LICENSE-MIT LICENSE-APACHE /usr/share/doc/riffdb/
+  README.md COPYRIGHT LICENSE-MIT LICENSE-APACHE /usr/share/doc/riffdb/
 sudo install -o root -g root -m 0755 demo /usr/share/doc/riffdb/demo
 sudo install -o root -g root -m 0644 docs/*.md \
   /usr/share/doc/riffdb/docs/
@@ -520,7 +523,7 @@ sudo install -o root -g root -m 0755 -d \
   /usr/share/doc/riffdb/release/config \
   /usr/share/doc/riffdb/examples/contracts
 sudo install -o root -g root -m 0644 \
-  README.md LICENSE-MIT LICENSE-APACHE /usr/share/doc/riffdb/
+  README.md COPYRIGHT LICENSE-MIT LICENSE-APACHE /usr/share/doc/riffdb/
 sudo install -o root -g root -m 0755 release/demo \
   /usr/share/doc/riffdb/demo
 sudo install -o root -g root -m 0644 docs/*.md \

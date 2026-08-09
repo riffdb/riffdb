@@ -54,6 +54,7 @@ workspace_license="$(awk -F' *= *' '
 ' Cargo.toml)"
 license_files=()
 for license_file in \
+    COPYRIGHT \
     LICENSE \
     LICENSE.md \
     LICENSE.txt \

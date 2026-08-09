@@ -43,8 +43,10 @@ effect delivery.
 ## License
 
 RiffDB is offered under either the MIT License or the Apache License, Version
-2.0, at your option. The release bundle includes `LICENSE-MIT` and
-`LICENSE-APACHE`.
+2.0, at your option. The release bundle includes `COPYRIGHT`, `LICENSE-MIT`,
+and `LICENSE-APACHE`.
+
+Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
 
 ## Destructive Restore Warning
 

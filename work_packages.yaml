@@ -1,7 +1,7 @@
-spec_version: '0.86'
+spec_version: '0.87'
 product: RiffDB
 repository: riffdb
-status: contract-migration-reactive-application-and-public-website-implementation
+status: contract-migration-reactive-application-public-website-and-repository-ownership-implementation
 source_spec: SPEC.md
 normative_terms:
 - MUST
@@ -166,6 +166,10 @@ gates:
   - WP-568
   - WP-569
   - WP-570
+- id: P11
+  name: Repository ownership notices
+  requires:
+  - WP-571
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -9746,7 +9750,7 @@ work_packages:
   requirements: [WEB-001, WEB-002, WEB-003, WEB-004, WEB-005, WEB-006, WEB-007, WEB-008, WEB-009]
   required_adrs: []
   allowed_paths: [SPEC.md, work_packages.yaml, README.md, .gitignore, .github/workflows/website.yml,
-    docs/CNAME, website/**]
+    assets/riffdb-mark.svg, docs/CNAME, website/**]
   deliverables:
   - Pinned Astro static site with one responsive product page, privacy notice, 404 page, canonical metadata,
     social preview, sitemap, and original first-party visual system
@@ -10772,4 +10776,38 @@ work_packages:
       load, recovery, and adapter data shapes without requiring co-location, whole-state memory,
       unbounded scans, or benchmark-only semantics.
   human_review_triggers: *id001
+- id: WP-571
+  name: Repository ownership and open-source notices
+  depends_on: [WP-200, WP-495]
+  objective: Identify Kevin O'Shea and O'Shea & Sons, LLC as the copyright owners of
+    original RiffDB project materials while retaining the existing dual open-source license,
+    preserving separate notices, and carrying attribution into public and release artifacts.
+  requirements: [OWN-001, OWN-002, OWN-003, OWN-004]
+  required_adrs: []
+  allowed_paths: [SPEC.md, work_packages.yaml, COPYRIGHT, LICENSE-MIT, README.md,
+    scripts/check-copyright-notice, scripts/release-poc, scripts/release-install-smoke,
+    docs/installation.md, docs/release.md, release/README.md, release/RELEASE_NOTES.md,
+    website/src/components/SiteFooter.astro, website/tests/e2e/site.test.ts]
+  deliverables:
+  - Canonical root ownership notice naming Kevin O'Shea and O'Shea & Sons, LLC without
+    altering the MIT or Apache-2.0 license choice
+  - Public README, handbook, and marketing-site attribution with the company website link
+  - Release assembly and installation checks that carry the ownership notice beside both licenses
+  - Repository check preventing the canonical notice and release propagation from drifting
+  acceptance_commands:
+  - ./scripts/check-copyright-notice
+  - bash -n scripts/check-copyright-notice scripts/release-poc scripts/release-install-smoke
+  - npm --prefix website run check
+  - npm --prefix website run test:e2e
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  exit_gate: Source, public documentation, the marketing website, and verified release installation
+    all carry the same ownership notice, the company link is correct, both open-source license
+    choices remain intact, and separately noticed third-party or contributor material is excluded.
+  standing_design_tests:
+    interface_safety: No application-facing database interface, authority, operation, or guarantee
+      changes. The work changes ownership and distribution notices only.
+    reversibility: Notice placement and release propagation are independent of database protocols,
+      durable formats, and application compatibility. A future ownership change requires explicit
+      maintainer and legal review rather than an implementation shortcut.
   human_review_triggers: *id001

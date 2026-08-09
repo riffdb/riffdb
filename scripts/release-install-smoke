@@ -138,8 +138,8 @@ install_one 0644 \
 install_one 0644 \
     "$bundle_root/examples/contracts/budget.riff" \
     "$doc_root/examples/contracts/budget.riff"
-for license in LICENSE-MIT LICENSE-APACHE; do
-    install_one 0644 "$bundle_root/$license" "$doc_root/$license"
+for legal_notice in COPYRIGHT LICENSE-MIT LICENSE-APACHE; do
+    install_one 0644 "$bundle_root/$legal_notice" "$doc_root/$legal_notice"
 done
 while IFS= read -r document; do
     install_one 0644 "$document" "$doc_root/docs/${document##*/}"

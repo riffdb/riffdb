@@ -34,4 +34,7 @@ command-specific `sudoers` exception.
 
 RiffDB is offered under either the MIT License or the Apache License, Version
 2.0, at your option. The release verifier requires matching workspace metadata
-and both root license texts before it can publish a bundle.
+plus the root ownership notice and both license texts before it can publish a
+bundle.
+
+Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
