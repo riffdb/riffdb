@@ -7,7 +7,11 @@ individual work packages and the final WP-579 evidence gate remain mandatory.
 ## Acceptance and dependency baseline
 
 ADR-0105 through ADR-0112 were accepted exactly by the human maintainer on
-2026-08-09. Their implementation baseline contains:
+2026-08-09. That acceptance closes WP-550's architecture freeze. It does not
+pre-approve adding the reviewed dependency candidates: WP-553 and WP-563 must
+still obtain the explicit implementation-time approvals described below before
+changing the workspace dependency closure. The accepted implementation baseline
+contains:
 
 | Dependency | Merged revision | Evidence represented |
 |---|---|---|
