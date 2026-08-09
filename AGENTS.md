@@ -29,6 +29,13 @@ The specification and accepted architecture decision records are authoritative. 
     a public surface must answer the interface-safety design test in the ADR
     template; weakening this boundary requires explicit human acceptance, never
     an implementation-package deviation.
+12. Opinions live only in the data layer (`docs/VISION.md`). The capability
+    model governs data authority for application principals; RiffDB does not
+    implement end-user identity, sessions, sign-in flows, or OAuth, and no
+    feature may require an application to adopt RiffDB-owned userland
+    machinery. Pillars are independently adoptable, and the changelog/export
+    path out of any pillar is a supported surface, never removed to retain
+    data.
 
 ## Authoritative files
 
