@@ -3,11 +3,12 @@
 - **Status:** Proposed
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** No
-- **Decision deadline:** Before WP-504 changes contract grammar or command IR
+- **Decision deadline:** Before WP-560 changes contract grammar or command IR
 - **Requires:** ADR-0002, ADR-0003, ADR-0005, ADR-0012, ADR-0031,
-  ADR-0055, ADR-0059, ADR-0095, and ADR-0104
-- **Amends if accepted:** `DSL-001`, `PERF-004`, and `PERF-005`
-- **Defines or blocks:** WP-504 through WP-506 and WP-514
+  ADR-0055, ADR-0059, ADR-0093, ADR-0095, ADR-0100, and ADR-0104
+- **Amends if accepted:** ADR-0100's closed changelog-entry algebra, plus
+  `DSL-001`, `PERF-004`, and `PERF-005`
+- **Defines or blocks:** WP-559 through WP-562 and WP-570
 
 ## Context
 
@@ -109,6 +110,39 @@ delete removes current entity/index state atomically while immutable commands,
 outcomes, events, provenance, and history remain retained under existing
 policy. Delete event emission is explicit and bounded like every other event.
 
+### Replication and durable-validation prerequisite
+
+Checked deletion is not enabled merely by accepting its compiler syntax. The
+accepted ADR-0093/ADR-0100 changelog currently derives insert-or-replace entry
+classes only; it has no representation for removal of current entity or index
+state. Shipping a delete without changing that closed entry algebra would let
+the primary advance while a follower retained deleted state.
+
+Before WP-560 can accept a production delete plan, WP-559 must amend ADR-0100
+and implement a versioned delete/tombstone changelog entry class through frame
+encoding, validation, shipping, follower apply, bootstrap, and compatibility
+fixtures. The entry binds the database/history identity, frame and command
+sequence, canonical table class and key, prior-value identity, and entity-chain
+transition. Repetition is idempotent only for the exact same transition;
+missing, stale, reordered, or mismatched tombstones fail closed. A delete is
+therefore an ordinary sequence-attributed authoritative transition, not
+retention and not physical history purge. Its type and namespace are also
+distinct from ADR-0101/ADR-0104 composite-view overlay tombstones and ADR-0085
+retention-range tombstones; none can be decoded or accepted as another.
+
+WP-559 also owns a delete-aware audit of the GB validated-prefix checkpoint.
+Any proof using `len() == count-at-bound`, or an entity-chain fingerprint that
+assumes counted current-state tables only grow or replace, must be amended
+before command-time deletes exist. The replacement must distinguish live-row
+cardinality from historical transition count, incorporate tombstones into the
+canonical entity-chain fingerprint, and prove checkpoint/bootstrap equality
+across create-update-delete-recreate histories. Retention deletion below a
+validated bound remains a different operation and cannot satisfy this audit.
+
+Until both the changelog entry and validation proof pass, the compiler rejects
+`delete` with a typed feature-unavailable diagnostic. Repeated creates and
+updates do not depend on the tombstone work and may proceed independently.
+
 ### Runtime and recovery
 
 The deterministic runtime receives a sealed collection plan and precharged
@@ -181,8 +215,8 @@ entity type, field, index, partition, or operation dynamically.
 
 - **Provisional requirements:** `BLK-001` through `BLK-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-504, WP-505, WP-506, and WP-514.
-- **Final evidence:** WP-506 and WP-514.
+- **Defines or blocks:** WP-559, WP-560, WP-561, WP-562, and WP-570.
+- **Final evidence:** WP-562 and WP-570.
 
 ## Decision Deadline
 

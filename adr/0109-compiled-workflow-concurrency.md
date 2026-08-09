@@ -3,11 +3,11 @@
 - **Status:** Proposed
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** No
-- **Decision deadline:** Before WP-510 changes command grammar, transaction
+- **Decision deadline:** Before WP-566 changes command grammar, transaction
   context, or scheduler interfaces
 - **Requires:** ADR-0003, ADR-0005, ADR-0012, ADR-0018, ADR-0055,
-  ADR-0059, ADR-0080, and ADR-0095
-- **Defines or blocks:** WP-510, WP-511, and WP-514
+  ADR-0059, ADR-0080, ADR-0093, and ADR-0095
+- **Defines or blocks:** WP-566, WP-567, and WP-570
 
 ## Context
 
@@ -72,6 +72,22 @@ Lease durations are typed bounded durations, not absolute caller timestamps.
 Expiration is computed by checked arithmetic from transaction time. Clock
 rollback, overflow, excessive duration, and unavailable trusted time fail
 closed before mutation.
+
+This complies explicitly with architecture boundary 4. The service may observe
+an authorized UUID/time source before deterministic evaluation, but it must
+seal the resulting value into the admitted transaction context and persisted
+command evidence. The command runtime receives only that value; it performs no
+operating-system clock call, randomness call, network access, filesystem
+access, or process-global mutation. Retry and recovery reuse the persisted
+observation byte-for-byte.
+
+An aggregate-local **lease fencing token** is not ADR-0093's database-history
+incarnation and is not a replication leadership epoch. They use distinct
+types, namespaces, encodings, and diagnostics. A future promoted leader must
+validate both the routing/leadership epoch appropriate to the request and the
+aggregate's current lease token; a token issued before promotion does not by
+itself authorize or route a post-promotion write. Promotion never resets or
+reinterprets an aggregate's monotonically increasing lease token.
 
 ### Scheduler ownership
 
@@ -148,8 +164,8 @@ and authorizes current capability facts.
 
 - **Provisional requirements:** `WF-001` through `WF-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-510, WP-511, and WP-514.
-- **Final evidence:** WP-511 and WP-514.
+- **Defines or blocks:** WP-566, WP-567, and WP-570.
+- **Final evidence:** WP-567 and WP-570.
 
 ## Decision Deadline
 

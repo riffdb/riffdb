@@ -21,20 +21,49 @@ The release gate is:
 > RiffQL, fenced workflow concurrency, exact upgrade/provisioning receipts, and
 > no raw kernel/storage access.
 
-The gate has six tracks.
+The gate has eight tracks, including two prerequisite tracks that cannot be
+deferred into release day.
 
 | Track | Proposed ADR | Work packages | Required proof |
 |---|---|---|---|
-| Remote ingress | ADR-0105 | WP-498–WP-499 | TLS-only non-loopback gRPC, proxy interoperability, container health, certificate and capability rotation |
-| Drivers | ADR-0106 | WP-500–WP-503 | Stable Go, long-lived TypeScript, expanded Python artifacts, pooling/cancellation/errors/retry/read-after parity owned by Rust |
-| Bulk commands | ADR-0107 | WP-504–WP-506 | One compiler-visible bounded atomic collection command; no generic transaction or storage batch |
-| Operational queries | ADR-0108 | WP-507–WP-509 | Finite dynamic predicate families, cursors/top-N, declared text indexes, null/existence, exact aggregates, safe catalog pages |
-| Workflow concurrency | ADR-0109 | WP-510–WP-511 | Revision checks, legal transitions, fenced leases, service time/IDs, and scheduler-through-commands only |
-| Provisioning/evolution | ADR-0110 | WP-512–WP-513 | Programmatic resumable install/upgrade, explicit authority diffs, migration integration, and adapter conformance manifests |
+| Release prerequisites | existing ADRs | WP-550–WP-552 | Exact architecture freeze, repaired application-binding closure, and retained idle-host 90-second comparator evidence |
+| Remote ingress | ADR-0105 | WP-553–WP-554 | TLS-only non-loopback gRPC, proxy interoperability, container health, certificate and capability rotation |
+| Drivers | ADR-0106 | WP-555–WP-558 | Stable Go, long-lived TypeScript, expanded Python artifacts, pooling/cancellation/errors/retry/read-after parity owned by Rust |
+| Delete/replication prerequisite | ADR-0100/0107 | WP-559 | Changelog tombstones plus delete-aware validated-prefix and entity-chain proofs before delete activation |
+| Bulk commands | ADR-0107 | WP-560–WP-562 | One compiler-visible bounded atomic collection command; no generic transaction or storage batch |
+| Operational queries | ADR-0108 | WP-563–WP-565 | Finite dynamic predicate families, cursors/top-N, declared text indexes, shared exact aggregates, safe catalog pages, receipted identity rotation |
+| Workflow concurrency | ADR-0109 | WP-566–WP-567 | Revision checks, legal transitions, fenced leases, service time/IDs, and scheduler-through-commands only |
+| Provisioning/evolution | ADR-0110 | WP-568–WP-569 | Programmatic resumable install/upgrade, explicit authority diffs, migration integration, and adapter conformance manifests |
 
-WP-497 freezes accepted text and adds normative requirement IDs before any
-track changes a public or durable interface. WP-514 runs the installed final
-gate after all tracks and existing correctness/performance blockers close.
+WP-550 freezes accepted text and adds normative requirement IDs before any
+track changes a public or durable interface. WP-551 and WP-552 close the two
+already-red release prerequisites rather than hiding them inside the final
+gate. WP-570 runs the installed final gate after all tracks close. The
+WP-550–WP-570 range is reserved for this program; active replication packages
+must allocate outside it.
+
+As of 2026-08-09, `./scripts/check-application-bindings` exits nonzero at the
+agent-alpha manifest-versus-generated module-hash assertion, and no retained
+idle-host 90-second comparator corpus exists. A successful short benchmark or
+an unrelated generated-artifact check does not clear either blocker.
+
+## Active replication coordination
+
+Replication is not a later hypothetical phase. RE1 (WP-491) is merged and
+RE2–RE4 are active work. This program therefore has two hard coordination
+fences:
+
+- WP-559 amends ADR-0100 with delete/tombstone changelog entries and the
+  delete-aware durable-validation proof before any bulk delete can compile for
+  production.
+- RE2's `ShipChangelog` RPC and WP-553 both touch the exact streaming transport
+  inventory. WP-550 records the exact RE2 revision or an explicit pre-RE2
+  sequence, and WP-553 rebases on that inventory rather than allocating fields
+  or replacing architecture pins concurrently.
+
+The physical durability journal remains separate from the replication wire
+format. TLS changes transport protection only; it does not change changelog
+framing or follower semantics.
 
 ## Safety invariants across every track
 
@@ -57,17 +86,22 @@ gate after all tracks and existing correctness/performance blockers close.
 
 ## Ordered delivery
 
-1. **WP-497 — architecture and requirement freeze.** Accept or revise the six
+1. **WP-550 — architecture and requirement freeze.** Accept or revise the six
    ADRs, add exact `NET-*`, `DRV-*`, `BLK-*`, `OQ-*`, `WF-*`, and `APE-*`
-   requirements to `SPEC.md`, and freeze compatibility manifests.
-2. **Remote and driver foundation.** WP-498–WP-503 make one application
+   requirements to `SPEC.md`, freeze compatibility manifests, record the RE2
+   transport revision, and require standing design tests on every package.
+2. **Existing red gates.** WP-551 repairs agent-alpha's exact binding closure;
+   WP-552 freezes and banks the evidentiary 90-second safe-app comparison.
+3. **Remote and driver foundation.** WP-553–WP-558 make one application
    operation reliable across process/container/language boundaries.
-3. **Compiler/runtime capability tracks.** WP-504–WP-511 implement bulk,
-   operational query, and workflow semantics independently with negative and
-   crash evidence.
-4. **Installation and adapter ownership.** WP-512–WP-513 compose exact
+4. **Replication deletion prerequisite.** WP-559 closes changelog/bootstrap/
+   checkpoint deletion semantics before compiler delete activation.
+5. **Compiler/runtime capability tracks.** WP-560–WP-567 implement bulk,
+   operational query, and workflow semantics independently with negative,
+   rotation, and crash evidence.
+6. **Installation and adapter ownership.** WP-568–WP-569 compose exact
    deployment, migration, role/credential rotation, and feature conformance.
-5. **WP-514 — installed alpha gate.** Run every adapter shape across the
+7. **WP-570 — installed alpha gate.** Run every adapter shape across the
    supported language/platform matrix, recovery boundaries, and security
    negatives. No waiver may introduce a kernel import, handwritten transport,
    unencrypted remote listener, raw transaction, or unbounded query.
@@ -93,5 +127,6 @@ manifest without accessing RiffDB source or kernel APIs.
 This program does not add SQL, arbitrary transactions, callbacks, unbounded
 loops, cross-partition writes, online dual-schema migration, global scheduler
 locks, proxy-asserted principals, direct browser credentials, pure-Go transport
-semantics, or automatic role widening. Replication and partitioning remain
-separate later phases.
+semantics, or automatic role widening. Replication remains its own active arc
+with the explicit coordination fences above; partitioning remains a later
+phase.

@@ -3,11 +3,11 @@
 - **Status:** Proposed
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** No
-- **Decision deadline:** Before WP-498 changes listener, endpoint, certificate,
+- **Decision deadline:** Before WP-553 changes listener, endpoint, certificate,
   health, or credential-rotation interfaces
 - **Requires:** ADR-0007, ADR-0009, ADR-0025, ADR-0029, ADR-0040,
   ADR-0055, ADR-0063, and ADR-0071
-- **Defines or blocks:** WP-497 through WP-499 and WP-514
+- **Defines or blocks:** WP-550, WP-553, WP-554, and WP-570
 
 Direction approval records the alpha blocker and intended product shape. This
 record is not authoritative until the human maintainer accepts its exact text.
@@ -60,6 +60,33 @@ TLS client certificates may be configured as an additional ingress admission
 condition. They do not become a RiffDB principal, capability, role, tenant, or
 authorization decision. Bearer capability authentication remains mandatory for
 protected operations in the first alpha.
+
+### Architecture-pin amendment and replication sequencing
+
+This decision deliberately supersedes two current server architecture pins:
+
+- `production_transport_features_are_exact_and_default_disabled`; and
+- `lockfile_has_one_base64_and_no_tls_or_compression_stack`.
+
+They are not deleted or weakened opportunistically. WP-550 must first freeze
+their replacements. The production-feature pin becomes an exact allowlist for
+the one reviewed TLS implementation and its minimum feature closure while
+retaining `default = []` and keeping TLS disabled in the
+`loopback_cleartext` profile. The lockfile pin continues to require exactly one
+accepted `base64`, forbids compression and alternate TLS/cryptographic stacks,
+and permits only the reviewed, version-pinned TLS dependency closure. Adding a
+second backend, default feature, compression codec, or native cryptographic
+dependency remains an architecture-test failure requiring another accepted
+ADR.
+
+The replication arc is active: WP-491 is merged and RE2's `ShipChangelog`
+streaming RPC will amend the exact public transport inventory. WP-553 may not
+change the streaming-RPC exactness pin or allocate overlapping Protobuf fields
+against an unrecorded RE2 revision. WP-550 records the exact merged RE2
+transport revision (or an explicit pre-RE2 sequencing decision); WP-553 then
+rebases on that inventory. TLS wraps the accepted service surface and does not
+reinterpret changelog authorization, ordering, framing, resumption, or
+backpressure.
 
 ### Endpoints, bounds, and lifecycle
 
@@ -142,7 +169,9 @@ Private keys are loaded only from protected files or injected secret handles,
 never CLI literals or public diagnostics. Credentials, certificate material,
 submitted values, peer prose, and absolute paths remain redacted. TLS parsing
 and cryptographic dependencies require explicit dependency and feature review
-before ADR acceptance or implementation.
+before ADR acceptance or implementation. That review includes the complete
+transitive lockfile closure and the exact replacement assertions for both
+architecture pins named above.
 
 ## Standing Design Tests
 
@@ -169,8 +198,8 @@ before ADR acceptance or implementation.
 
 - **Provisional requirements:** `NET-001` through `NET-012`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-497, WP-498, WP-499, and WP-514.
-- **Final evidence:** WP-514.
+- **Defines or blocks:** WP-550, WP-553, WP-554, and WP-570.
+- **Final evidence:** WP-570.
 
 ## Decision Deadline
 

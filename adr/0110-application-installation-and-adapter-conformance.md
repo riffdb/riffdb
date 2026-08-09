@@ -3,11 +3,11 @@
 - **Status:** Proposed
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** No
-- **Decision deadline:** Before WP-512 adds installation operations or a new
+- **Decision deadline:** Before WP-568 adds installation operations or a new
   application/conformance manifest format
 - **Requires:** ADR-0055, ADR-0057, ADR-0062, ADR-0065, ADR-0066,
   ADR-0075, ADR-0076, ADR-0079, and ADR-0105 through ADR-0109
-- **Defines or blocks:** WP-512 through WP-514
+- **Defines or blocks:** WP-568 through WP-570
 
 ## Context
 
@@ -183,8 +183,8 @@ detail or mutation.
 
 - **Provisional requirements:** `APE-001` through `APE-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-512, WP-513, WP-514.
-- **Final evidence:** WP-514.
+- **Defines or blocks:** WP-568, WP-569, WP-570.
+- **Final evidence:** WP-570.
 
 ## Decision Deadline
 

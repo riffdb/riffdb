@@ -3,10 +3,10 @@
 - **Status:** Proposed
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** No
-- **Decision deadline:** Before WP-500 freezes the driver-host protocol or Go
+- **Decision deadline:** Before WP-555 freezes the driver-host protocol or Go
   and TypeScript runtime contract
 - **Requires:** ADR-0037, ADR-0040, ADR-0055, ADR-0056, ADR-0074, and ADR-0105
-- **Defines or blocks:** WP-500 through WP-503 and WP-514
+- **Defines or blocks:** WP-555 through WP-558 and WP-570
 
 ## Context
 
@@ -98,7 +98,7 @@ the closed error registry.
 
 The accepted Python semantics remain unchanged while release work expands the
 tested abi3 runtime and platform matrix. The exact CPython floor, manylinux,
-musllinux, macOS, Windows, x86_64, and aarch64 tiers are frozen by WP-502 after
+musllinux, macOS, Windows, x86_64, and aarch64 tiers are frozen by WP-557 after
 clean-host build probes. Unsupported combinations fail installation clearly;
 they do not fall back to an unreviewed pure-Python transport.
 
@@ -167,8 +167,8 @@ redacted.
 
 - **Provisional requirements:** `DRV-001` through `DRV-014`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-500, WP-501, WP-502, WP-503, and WP-514.
-- **Final evidence:** WP-503 and WP-514.
+- **Defines or blocks:** WP-555, WP-556, WP-557, WP-558, and WP-570.
+- **Final evidence:** WP-558 and WP-570.
 
 ## Decision Deadline
 
