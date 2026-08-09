@@ -182,6 +182,31 @@ Postgres is started with `max_connections=200` so the c=128 point is reachable.
 
 Default report path: `target/app-baseline/load-concurrency-sweep-v1.json`.
 
+### Fast development regression sentinel
+
+Use the RiffDB-only sentinel before and after performance-sensitive changes:
+
+```bash
+./scripts/app-baseline-performance-sentinel
+```
+
+It runs an interactive 5-second concurrency sweep and a separate 5-second
+write-only 32-client cell. The interactive sweep deliberately uses one daemon
+and accumulated history; the release suite retains fresh per-level isolation.
+The gate checks the 1-, 32-, and 128-client interactive points plus write
+saturation at 32 clients. Each phase starts with the full 19,220-command seed.
+It checks seed time, throughput, aggregate p50/p99, unary write
+p50, and semantic outcomes against deliberately loose, versioned guardrails in
+`fixtures/app-baseline/performance-sentinel-v1.json`. A failed cell is rerun
+once; only the failed cell is repeated.
+
+The sentinel normally completes in about 60–90 seconds and never starts
+PostgreSQL. It refuses to judge a busy preflight host and writes
+`target/app-baseline/performance-sentinel-v1.json` with
+`evidentiary: false`. It is a bisect/development alarm, not evidence for a
+PostgreSQL comparison or an alpha gate. Continue to use the 90-second,
+three-repetition, idle-host suite for retained milestone evidence.
+
 **Backend isolation:** dual-backend load runs use **sequential exclusive phases**
 in `benchmarks/run-app-baseline`: finish every PostgreSQL measure point, then
 `docker rm` the harness Postgres, then run RiffDB. The engines never load at

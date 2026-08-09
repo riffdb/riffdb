@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Build a bounded, non-evidentiary RiffDB performance sentinel receipt."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+MAX_THRESHOLDS_BYTES = 64 * 1024
+MAX_REPORT_BYTES = 8 * 1024 * 1024
+EXPECTED_THRESHOLD_SCHEMA = "riffdb.app-baseline-performance-sentinel-thresholds/v1"
+OUTPUT_SCHEMA = "riffdb.app-baseline-performance-sentinel/v1"
+LOAD_SCHEMA = "riffdb.app-baseline-load-suite/v1"
+
+
+def read_json(path: Path, maximum_bytes: int) -> dict[str, Any]:
+    size = path.stat().st_size
+    if size <= 0 or size > maximum_bytes:
+        raise ValueError(f"{path.name}: JSON size {size} is outside 1..={maximum_bytes}")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path.name}: top-level JSON value must be an object")
+    return value
+
+
+def milliseconds(nanoseconds: Any, field: str) -> float:
+    if not isinstance(nanoseconds, int) or isinstance(nanoseconds, bool) or nanoseconds < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return nanoseconds / 1_000_000.0
+
+
+def non_success_outcomes(outcomes: dict[str, Any]) -> int:
+    ignored = {"success", "logical_operations", "replayed"}
+    total = 0
+    for name, value in outcomes.items():
+        if name in ignored:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"outcome {name} must be a non-negative integer")
+        total += value
+    return total
+
+
+def evaluate_cell(
+    cell_id: str,
+    threshold: dict[str, Any],
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    if report.get("schema") != LOAD_SCHEMA:
+        raise ValueError(f"{cell_id}: expected load report schema {LOAD_SCHEMA}")
+    expected_profile = threshold.get("profile")
+    expected_clients = threshold.get("clients")
+    backends = report.get("backends")
+    if not isinstance(backends, list):
+        raise ValueError(f"{cell_id}: backends must be an array")
+    matches = [
+        backend
+        for backend in backends
+        if isinstance(backend, dict)
+        and backend.get("backend_id") == "riffdb_public_grpc"
+        and backend.get("profile") == expected_profile
+        and backend.get("clients") == expected_clients
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"{cell_id}: expected exactly one matching RiffDB backend report")
+    backend = matches[0]
+    if backend.get("backend_id") != "riffdb_public_grpc":
+        raise ValueError(f"{cell_id}: backend must be riffdb_public_grpc")
+    if backend.get("profile") != expected_profile or backend.get("clients") != expected_clients:
+        raise ValueError(f"{cell_id}: report profile/client identity does not match thresholds")
+    expected_duration_ms = int(threshold["duration_seconds"]) * 1000
+    expected_warmup_ms = int(threshold["warmup_seconds"]) * 1000
+    if backend.get("duration_ms") != expected_duration_ms or backend.get("warmup_ms") != expected_warmup_ms:
+        raise ValueError(f"{cell_id}: report duration/warmup does not match thresholds")
+
+    aggregate = backend.get("aggregate")
+    operations = backend.get("operations")
+    if not isinstance(aggregate, dict) or not isinstance(operations, dict):
+        raise ValueError(f"{cell_id}: aggregate and operations must be objects")
+    latency = aggregate.get("latency")
+    outcomes = aggregate.get("outcomes")
+    create_comment = operations.get("create_comment")
+    if not isinstance(latency, dict) or not isinstance(outcomes, dict):
+        raise ValueError(f"{cell_id}: aggregate latency/outcomes are absent")
+    if not isinstance(create_comment, dict) or not isinstance(create_comment.get("latency"), dict):
+        raise ValueError(f"{cell_id}: create_comment latency is absent")
+
+    seed_ms = milliseconds(backend.get("seed_ns"), f"{cell_id}.seed_ns")
+    aggregate_p50_ms = milliseconds(latency.get("p50_ns"), f"{cell_id}.aggregate.p50_ns")
+    aggregate_p99_ms = milliseconds(latency.get("p99_ns"), f"{cell_id}.aggregate.p99_ns")
+    create_comment_p50_ms = milliseconds(
+        create_comment["latency"].get("p50_ns"),
+        f"{cell_id}.create_comment.p50_ns",
+    )
+    throughput = backend.get("throughput_ops_s")
+    if not isinstance(throughput, int) or isinstance(throughput, bool) or throughput < 0:
+        raise ValueError(f"{cell_id}.throughput_ops_s must be a non-negative integer")
+
+    checks = {
+        "correctness_clean": report.get("correctness", {}).get("clean") is True,
+        "zero_non_success_outcomes": non_success_outcomes(outcomes) == 0,
+        "seed_within_ceiling": seed_ms <= float(threshold["seed_max_ms"]),
+        "throughput_above_floor": throughput >= int(threshold["throughput_min_ops_s"]),
+        "aggregate_p50_within_ceiling": aggregate_p50_ms
+        <= float(threshold["aggregate_p50_max_ms"]),
+        "aggregate_p99_within_ceiling": aggregate_p99_ms
+        <= float(threshold["aggregate_p99_max_ms"]),
+        "create_comment_p50_within_ceiling": create_comment_p50_ms
+        <= float(threshold["create_comment_p50_max_ms"]),
+    }
+    return {
+        "cell_id": cell_id,
+        "profile": expected_profile,
+        "clients": expected_clients,
+        "passed": all(checks.values()),
+        "checks": checks,
+        "observed": {
+            "seed_ms": round(seed_ms, 3),
+            "throughput_ops_s": throughput,
+            "aggregate_p50_ms": round(aggregate_p50_ms, 6),
+            "aggregate_p99_ms": round(aggregate_p99_ms, 6),
+            "create_comment_p50_ms": round(create_comment_p50_ms, 6),
+            "non_success_outcomes": non_success_outcomes(outcomes),
+        },
+        "guardrails": {
+            name: threshold[name]
+            for name in (
+                "seed_max_ms",
+                "throughput_min_ops_s",
+                "aggregate_p50_max_ms",
+                "aggregate_p99_max_ms",
+                "create_comment_p50_max_ms",
+            )
+        },
+    }
+
+
+def build_receipt(
+    thresholds: dict[str, Any],
+    reports: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if thresholds.get("schema") != EXPECTED_THRESHOLD_SCHEMA:
+        raise ValueError(f"expected threshold schema {EXPECTED_THRESHOLD_SCHEMA}")
+    configured_cells = thresholds.get("cells")
+    if not isinstance(configured_cells, dict) or not configured_cells:
+        raise ValueError("threshold cells must be a non-empty object")
+    if set(reports) != set(configured_cells):
+        raise ValueError("report cell IDs must exactly match threshold cell IDs")
+    seed_max_ms = thresholds.get("seed_max_ms")
+    if not isinstance(seed_max_ms, (int, float)) or isinstance(seed_max_ms, bool):
+        raise ValueError("seed_max_ms must be numeric")
+
+    cells = []
+    for cell_id in configured_cells:
+        threshold = configured_cells[cell_id]
+        if not isinstance(threshold, dict):
+            raise ValueError(f"{cell_id}: threshold must be an object")
+        expanded = dict(threshold)
+        expanded["seed_max_ms"] = seed_max_ms
+        expanded["duration_seconds"] = thresholds.get("duration_seconds")
+        expanded["warmup_seconds"] = thresholds.get("warmup_seconds")
+        cells.append(evaluate_cell(cell_id, expanded, reports[cell_id]))
+    failed_cells = [cell["cell_id"] for cell in cells if not cell["passed"]]
+    return {
+        "schema": OUTPUT_SCHEMA,
+        "status": "passed" if not failed_cells else "regression_suspected",
+        "evidentiary": False,
+        "purpose": "short-window development regression sentinel",
+        "configuration": {
+            "backend_id": thresholds.get("backend_id"),
+            "duration_seconds": thresholds.get("duration_seconds"),
+            "warmup_seconds": thresholds.get("warmup_seconds"),
+            "repetitions": 1,
+            "automatic_rerun_of_failed_cells": True,
+        },
+        "cells": cells,
+        "failed_cells": failed_cells,
+    }
+
+
+def self_test() -> None:
+    threshold = {
+        "schema": EXPECTED_THRESHOLD_SCHEMA,
+        "backend_id": "riffdb_public_grpc",
+        "duration_seconds": 5,
+        "warmup_seconds": 1,
+        "seed_max_ms": 3000,
+        "cells": {
+            "write-only-c1": {
+                "profile": "write_only",
+                "clients": 1,
+                "throughput_min_ops_s": 250,
+                "aggregate_p50_max_ms": 4.5,
+                "aggregate_p99_max_ms": 10.0,
+                "create_comment_p50_max_ms": 4.5,
+            }
+        },
+    }
+    backend = {
+        "backend_id": "riffdb_public_grpc",
+        "profile": "write_only",
+        "clients": 1,
+        "duration_ms": 5_000,
+        "warmup_ms": 1_000,
+        "seed_ns": 2_400_000_000,
+        "throughput_ops_s": 320,
+        "aggregate": {
+            "latency": {"p50_ns": 3_000_000, "p99_ns": 7_000_000},
+            "outcomes": {"success": 3200, "logical_operations": 3200, "error": 0},
+        },
+        "operations": {"create_comment": {"latency": {"p50_ns": 3_000_000}}},
+    }
+    decoy = dict(backend)
+    decoy["clients"] = 32
+    report = {
+        "schema": LOAD_SCHEMA,
+        "correctness": {"clean": True},
+        "backends": [decoy, backend],
+    }
+    receipt = build_receipt(threshold, {"write-only-c1": report})
+    assert receipt["status"] == "passed"
+    backend["throughput_ops_s"] = 249
+    receipt = build_receipt(threshold, {"write-only-c1": report})
+    assert receipt["status"] == "regression_suspected"
+    assert receipt["failed_cells"] == ["write-only-c1"]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--thresholds", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--cell", action="append", default=[])
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.thresholds is None or args.output is None or not args.cell:
+        parser.error("--thresholds, --output, and at least one --cell ID=PATH are required")
+
+    reports: dict[str, dict[str, Any]] = {}
+    for specification in args.cell:
+        cell_id, separator, raw_path = specification.partition("=")
+        if not separator or not cell_id or not raw_path or cell_id in reports:
+            parser.error("each --cell must be a unique ID=PATH")
+        reports[cell_id] = read_json(Path(raw_path), MAX_REPORT_BYTES)
+    thresholds = read_json(args.thresholds, MAX_THRESHOLDS_BYTES)
+    receipt = build_receipt(thresholds, reports)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    for cell in receipt["cells"]:
+        observed = cell["observed"]
+        print(
+            f"{cell['cell_id']}: {'PASS' if cell['passed'] else 'FAIL'} "
+            f"seed={observed['seed_ms']:.1f}ms throughput={observed['throughput_ops_s']}ops/s "
+            f"p50={observed['aggregate_p50_ms']:.3f}ms "
+            f"p99={observed['aggregate_p99_ms']:.3f}ms "
+            f"write_p50={observed['create_comment_p50_ms']:.3f}ms"
+        )
+    return 0 if receipt["status"] == "passed" else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"performance sentinel receipt failed: {error}", file=sys.stderr)
+        raise SystemExit(2) from error

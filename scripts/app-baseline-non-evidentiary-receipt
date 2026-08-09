@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Write one bounded, redacted app-baseline evidence-refusal receipt."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+MAX_INVENTORY_BYTES = 1_048_576
+
+
+def load_inventory(path: str | None) -> dict[str, object] | None:
+    if path is None:
+        return None
+    candidate = Path(path)
+    if candidate.stat().st_size > MAX_INVENTORY_BYTES:
+        raise ValueError("host inventory exceeds the bounded receipt input")
+    with candidate.open(encoding="utf-8") as source:
+        value = json.load(source)
+    if value.get("schema") != "riffdb.app-baseline-host-validity/v1":
+        raise ValueError("host inventory has the wrong schema")
+    return value
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--reason",
+        required=True,
+        choices=("host_interference", "backend_execution_failed"),
+    )
+    parser.add_argument("--mode", required=True, choices=("smoke", "full"))
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--duration-secs", required=True, type=int)
+    parser.add_argument("--reps", required=True, type=int)
+    parser.add_argument(
+        "--postgres-comparator", required=True, choices=("minimal", "safe-app")
+    )
+    parser.add_argument("--concurrency-sweep", required=True, choices=("0", "1"))
+    parser.add_argument("--preflight", required=True)
+    parser.add_argument("--postflight")
+    parser.add_argument("--backend")
+    parser.add_argument("--rep", type=int)
+    parser.add_argument("--phase-exit-status", type=int)
+    parser.add_argument("--partial-phase-evidence")
+    arguments = parser.parse_args()
+
+    if arguments.duration_secs <= 0 or arguments.reps <= 0:
+        raise ValueError("duration and repetitions must be positive")
+    if arguments.reason == "backend_execution_failed" and (
+        arguments.backend is None
+        or arguments.rep is None
+        or arguments.rep < 0
+        or arguments.phase_exit_status is None
+        or arguments.phase_exit_status <= 0
+    ):
+        raise ValueError("backend failures require backend, rep, and nonzero status")
+
+    preflight = load_inventory(arguments.preflight)
+    postflight = load_inventory(arguments.postflight)
+    host_idle = bool(preflight and preflight.get("valid")) and bool(
+        postflight and postflight.get("valid")
+    )
+
+    reason: dict[str, object] = {
+        "code": arguments.reason,
+        "retry": (
+            "rerun_on_idle_host"
+            if arguments.reason == "host_interference"
+            else "inspect_backend_failure_and_rerun"
+        ),
+    }
+    if arguments.reason == "backend_execution_failed":
+        reason.update(
+            {
+                "backend": arguments.backend,
+                "rep": arguments.rep,
+                "phase_exit_status": arguments.phase_exit_status,
+            }
+        )
+
+    partial = None
+    if arguments.partial_phase_evidence:
+        partial_path = Path(arguments.partial_phase_evidence)
+        if partial_path.is_file():
+            partial = {
+                "path": arguments.partial_phase_evidence,
+                "sha256": sha256_file(partial_path),
+            }
+
+    reason_codes = [arguments.reason]
+    if arguments.reason == "backend_execution_failed" and not host_idle:
+        reason_codes.append("host_interference")
+    receipt = {
+        "schema": "riffdb.app-baseline-non-evidentiary/v1",
+        "status": "non_evidentiary",
+        "reason": reason,
+        "requested": {
+            "mode": arguments.mode,
+            "profile": arguments.profile,
+            "duration_secs": arguments.duration_secs,
+            "reps": arguments.reps,
+            "postgres_comparator": arguments.postgres_comparator,
+            "concurrency_sweep": arguments.concurrency_sweep == "1",
+        },
+        "partial_phase_evidence": partial,
+        "host_validity": {"preflight": preflight, "postflight": postflight},
+        "evidence_eligibility": {
+            "eligible": False,
+            "host_idle": host_idle,
+            "reason_codes": reason_codes,
+        },
+    }
+    output = Path(arguments.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as destination:
+        json.dump(receipt, destination, indent=2)
+        destination.write("\n")
+
+
+if __name__ == "__main__":
+    main()

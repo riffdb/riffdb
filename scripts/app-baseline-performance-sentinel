@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Fast RiffDB-only regression sentinel. This is deliberately not release evidence.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+
+if [[ "${1:-}" == "--self-test" ]]; then
+    (($# == 1)) || {
+        printf 'scripts/app-baseline-performance-sentinel --self-test takes no other arguments\n' >&2
+        exit 2
+    }
+    ./scripts/app-baseline-performance-sentinel-check --self-test
+    printf 'performance sentinel self-test: ok\n'
+    exit 0
+fi
+
+if (($# != 0 && $# != 2)); then
+    printf 'usage: scripts/app-baseline-performance-sentinel [--output PATH]\n' >&2
+    exit 2
+fi
+if (($# == 2)) && [[ "$1" != "--output" ]]; then
+    printf 'usage: scripts/app-baseline-performance-sentinel [--output PATH]\n' >&2
+    exit 2
+fi
+
+output="${2:-$repo_root/target/app-baseline/performance-sentinel-v1.json}"
+thresholds="$repo_root/fixtures/app-baseline/performance-sentinel-v1.json"
+run_root="$repo_root/target/app-baseline/performance-sentinel"
+mkdir -p "$run_root"
+
+host_pre="$run_root/host-preflight.json"
+set +e
+./scripts/app-baseline-host-validity --interval-ms 250 >"$host_pre"
+host_status=$?
+set -e
+if ((host_status != 0)); then
+    if ((host_status == 3)); then
+        printf 'performance sentinel: host is busy; refusing to make a regression judgment\n' >&2
+    else
+        printf 'performance sentinel: host-validity preflight failed\n' >&2
+    fi
+    exit "$host_status"
+fi
+
+mapfile -t cell_rows < <(jq -r '.cells | to_entries[] | [.key, .value.profile, (.value.clients|tostring)] | @tsv' "$thresholds")
+declare -A cell_profile cell_clients cell_report cell_log
+interactive_sweep_report="$run_root/interactive-sweep.json"
+for row in "${cell_rows[@]}"; do
+    IFS=$'\t' read -r cell profile clients <<<"$row"
+    cell_profile["$cell"]="$profile"
+    cell_clients["$cell"]="$clients"
+    if [[ "$profile" == interactive ]]; then
+        cell_report["$cell"]="$interactive_sweep_report"
+    else
+        cell_report["$cell"]="$run_root/$cell.json"
+    fi
+    cell_log["$cell"]="$run_root/$cell.log"
+done
+
+build_cell_args() {
+    cell_args=()
+    local row cell
+    for row in "${cell_rows[@]}"; do
+        IFS=$'\t' read -r cell _ <<<"$row"
+        cell_args+=(--cell "$cell=${cell_report[$cell]}")
+    done
+}
+
+run_cell() {
+    local cell="$1" profile="${cell_profile[$1]}" clients="${cell_clients[$1]}"
+    printf 'performance sentinel: %s (%s, clients=%s)\n' "$cell" "$profile" "$clients"
+    if ! ./benchmarks/run-app-baseline \
+        --full \
+        --load "$profile" \
+        --load-clients "$clients" \
+        --load-duration-secs 5 \
+        --load-warmup-secs 1 \
+        --reps 1 \
+        --skip-postgres \
+        --output "${cell_report[$cell]}" \
+        >"${cell_log[$cell]}" 2>&1; then
+        printf 'performance sentinel: %s execution failed; tail follows\n' "$cell" >&2
+        tail -n 40 "${cell_log[$cell]}" >&2
+        return 1
+    fi
+}
+
+printf 'performance sentinel: interactive concurrency sweep (clients=1/8/32/128)\n'
+interactive_log="$run_root/interactive-sweep.log"
+if ! ./benchmarks/run-app-baseline \
+    --full \
+    --load interactive \
+    --load-concurrency-sweep \
+    --load-accumulate-history \
+    --load-duration-secs 5 \
+    --load-warmup-secs 1 \
+    --reps 1 \
+    --skip-postgres \
+    --output "$interactive_sweep_report" \
+    >"$interactive_log" 2>&1; then
+    printf 'performance sentinel: interactive sweep execution failed; tail follows\n' >&2
+    tail -n 40 "$interactive_log" >&2
+    exit 1
+fi
+run_cell write-only-c32
+build_cell_args
+
+initial="$run_root/initial-receipt.json"
+set +e
+./scripts/app-baseline-performance-sentinel-check \
+    --thresholds "$thresholds" \
+    --output "$initial" \
+    "${cell_args[@]}" \
+    >"$run_root/initial-check.log"
+initial_status=$?
+set -e
+if ((initial_status == 1)); then
+    mapfile -t failed_cells < <(jq -r '.failed_cells[]' "$initial")
+    printf 'performance sentinel: rerunning %s failed cell(s) once\n' "${#failed_cells[@]}"
+    for cell in "${failed_cells[@]}"; do
+        cell_report["$cell"]="$run_root/$cell-rerun.json"
+        run_cell "$cell"
+    done
+    build_cell_args
+elif ((initial_status != 0)); then
+    exit "$initial_status"
+fi
+
+./scripts/app-baseline-performance-sentinel-check \
+    --thresholds "$thresholds" \
+    --output "$output" \
+    "${cell_args[@]}"
+printf 'performance sentinel receipt: %s\n' "$output"
