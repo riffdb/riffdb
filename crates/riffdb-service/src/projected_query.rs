@@ -10,14 +10,19 @@ use std::time::{Duration, Instant};
 
 use riffdb_columnar::{
     AggregateOp, ColumnPredicate, ColumnarQueryRequest, DefinitionFingerprint, DegradedReason,
-    GroupBySpec, OrderSpec, QueryBudget, QueryError, QueryResult, QueryRow, QueryRows,
-    RebuildingReason, SortDirection, query_snapshot,
+    GroupBySpec, OrderSpec, QueryBudget, QueryError, QueryRow, QueryRows, RebuildingReason,
+    SortDirection, query_snapshot,
 };
 
 pub use riffdb_columnar::{
     DegradedReason as ProjectedDegradedReason, RebuildingReason as ProjectedRebuildingReason,
     SortDirection as ProjectedSortDirection,
 };
+// Non-row engine results ride inside [`ExecuteProjectedQueryResult::Ready`],
+// so every adapter that renders one needs these two types. Re-exporting them
+// keeps the engine crate out of adapter dependency graphs — riffdb-columnar
+// stays a dev-dependency of riffdb-api-grpc — instead of adding a new edge.
+pub use riffdb_columnar::{AggregateValue as ProjectedAggregateValue, QueryResult};
 use riffdb_errors::{
     ApplicationErrorCode, PublicError, ValidationCode, ValidationIssue, ValidationIssues,
     ValidationPath,
@@ -338,14 +343,29 @@ pub enum ExecuteProjectedQueryResult {
     /// Published snapshot served under the requested freshness policy.
     Ready {
         /// Selected projected field names (wire order for each row's cells).
+        ///
+        /// When `result` is [`QueryResult::Groups`] this carries the group-key
+        /// field names in group-key order instead: a grouped result has no row
+        /// cells to name, and the engine addresses group keys by field id
+        /// only. Empty for a whole-set aggregate and for grouped results with
+        /// no keys.
         fields: Vec<String>,
         /// Selected projected field ids aligned with [`Self::Ready::fields`].
+        ///
+        /// Carries group-key ids for [`QueryResult::Groups`], matching
+        /// [`Self::Ready::fields`].
         field_ids: Vec<FieldId>,
         /// Entity primary-key field names aligned with each row's primary_key vector.
+        ///
+        /// Always empty for aggregate and grouped results.
         primary_key_fields: Vec<String>,
         /// Matching rows (empty when the engine returned aggregates/groups only).
         rows: Vec<QueryRow>,
         /// Optional non-row result (aggregate / groups).
+        ///
+        /// `None` means a row result; the row metadata above is authoritative.
+        /// `Some` means the engine folded the matching set, and `rows` plus
+        /// `primary_key_fields` are empty rather than meaningful.
         result: Option<QueryResult>,
         /// Served projection frontier.
         frontier: ProjectionFrontier,
@@ -489,7 +509,12 @@ async fn execute_projected_query(
                 ApplicationErrorCode::QueryInvalid,
             )
         })?;
-    let plan_hash = projected_plan_hash(request.projection_name(), &resolved.plan_shape_fields);
+    let plan_hash = projected_plan_hash(
+        request.projection_name(),
+        &resolved.plan_shape_fields,
+        resolved.group_by.as_ref(),
+        resolved.aggregate.as_ref(),
+    );
     let target = ApplicationQueryTarget::new(
         bundle.lineage().clone(),
         bundle.contract_version(),
@@ -528,7 +553,23 @@ async fn execute_projected_query(
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
 
-    let engine_request = resolved.into_engine_request(org_scope, request.body().budget());
+    // The declared row bound must bound what the caller actually receives.
+    // The engine ignores `limit` on the grouped path (it returns before the
+    // sort/truncate), so without this clamp a request declaring `limit = 1` —
+    // which satisfies every grant this system can issue — could still receive
+    // up to `max_group_cardinality` group rows of raw key-column values.
+    // Clamping the grouping budget to the authorized row count keeps the
+    // volume bound the authorization decision was made against. Server-side
+    // only: no engine change and no wire budget vocabulary (R8), and an
+    // overrun stays the typed GroupCardinalityExceeded rejection rather than a
+    // truncated answer.
+    let mut budget = request.body().budget();
+    if resolved.group_by.is_some() {
+        budget.max_group_cardinality = budget
+            .max_group_cardinality
+            .min(usize::from(maximum_rows.get()));
+    }
+    let engine_request = resolved.into_engine_request(org_scope, budget);
     let outcome = match request.freshness() {
         FreshnessPolicy::Available => {
             serve_available(
@@ -881,12 +922,27 @@ fn query_ready(
             head,
             commit_token,
         },
-        other => ExecuteProjectedQueryResult::Ready {
+        // Grouped aggregates: the engine names group keys by field id, and the
+        // wire needs names. `fields`/`field_ids` carry the group-key order for
+        // this shape (there are no row cells to name). Row metadata stays
+        // empty and adapters must not serialize it.
+        QueryResult::Groups { key_fields, groups } => ExecuteProjectedQueryResult::Ready {
+            fields: field_ids_to_names(entity, &key_fields)?,
+            field_ids: key_fields.clone(),
+            primary_key_fields: Vec::new(),
+            rows: Vec::new(),
+            result: Some(QueryResult::Groups { key_fields, groups }),
+            frontier,
+            head,
+            commit_token,
+        },
+        // Whole-set aggregate: no group keys, so no names to resolve.
+        aggregate @ QueryResult::Aggregate(_) => ExecuteProjectedQueryResult::Ready {
             fields: Vec::new(),
             field_ids: Vec::new(),
             primary_key_fields: Vec::new(),
             rows: Vec::new(),
-            result: Some(other),
+            result: Some(aggregate),
             frontier,
             head,
             commit_token,
@@ -921,10 +977,18 @@ fn map_query_error(service: &RiffDbServiceInner, error: QueryError) -> ServiceFa
         | QueryError::DuplicateSelectField { .. }
         | QueryError::UnprojectedSelectField { .. }
         | QueryError::OrderNotValueOrderPreserving { .. }
-        | QueryError::InvalidAggregate(_)
         | QueryError::InvalidOrgScope
         | QueryError::OrgScopeTypeMismatch { .. } => application_validation_failure(
             ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryInvalid,
+        ),
+        // The aggregate is well formed but its column type cannot carry the
+        // fold — today `sum` accepts only i64/u64, so a decimal or money
+        // column lands here. A distinct `type_mismatch` code tells the caller
+        // to change the column or the function rather than the value, which
+        // the generic `invalid_value` code does not.
+        QueryError::InvalidAggregate(_) => application_validation_failure(
+            ValidationCode::TypeMismatch,
             ApplicationErrorCode::QueryInvalid,
         ),
         QueryError::ScanBudgetExceeded { .. } | QueryError::GroupCardinalityExceeded { .. } => {
@@ -1201,7 +1265,22 @@ fn projected_cost_vector(rows: u16, fields: u64) -> Option<QueryCostVectorV1> {
     QueryCostVectorV1::new(1, rows, 0, 0, rows, projected_values, encoded_bytes)
 }
 
-fn projected_plan_hash(projection_name: &str, fields: &[FieldId]) -> QueryPlanHash {
+/// Plan identity for one projected query.
+///
+/// The plan shape is the projection name plus the sorted, deduplicated set of
+/// referenced fields, then the result shape. Result shape matters because a
+/// filter and an aggregate over the same fields read the same columns but are
+/// different access programs; without it they collide on one plan hash.
+///
+/// ROW-shaped plans (no group keys, no aggregate) append nothing, so every
+/// hash minted before aggregates had wire carriage stays byte-identical — see
+/// `row_plan_hashes_are_unchanged_by_the_aggregate_shape_extension`.
+fn projected_plan_hash(
+    projection_name: &str,
+    fields: &[FieldId],
+    group_by: Option<&GroupBySpec>,
+    aggregate: Option<&AggregateOp>,
+) -> QueryPlanHash {
     let mut payload = Vec::with_capacity(8 + projection_name.len() + fields.len() * 4);
     payload.extend_from_slice(b"cp2b-projected\0");
     payload.extend_from_slice(&(projection_name.len() as u32).to_be_bytes());
@@ -1209,7 +1288,50 @@ fn projected_plan_hash(projection_name: &str, fields: &[FieldId]) -> QueryPlanHa
     for field in fields {
         payload.extend_from_slice(&field.get().to_be_bytes());
     }
+    if group_by.is_none() && aggregate.is_none() {
+        return hash_query_plan(&payload);
+    }
+    payload.extend_from_slice(b"\0shape\0");
+    match group_by {
+        None => payload.push(0),
+        Some(spec) => {
+            payload.push(1);
+            payload.extend_from_slice(&(spec.keys.len() as u32).to_be_bytes());
+            for key in &spec.keys {
+                payload.extend_from_slice(&key.get().to_be_bytes());
+            }
+            payload.extend_from_slice(&(spec.aggregates.len() as u32).to_be_bytes());
+            for op in &spec.aggregates {
+                extend_with_aggregate_shape(&mut payload, op);
+            }
+        }
+    }
+    match aggregate {
+        None => payload.push(0),
+        Some(op) => {
+            payload.push(1);
+            extend_with_aggregate_shape(&mut payload, op);
+        }
+    }
     hash_query_plan(&payload)
+}
+
+/// Appends one aggregate's kind and column to a plan-shape payload.
+///
+/// Order-sensitive by design: `[sum(a), min(b)]` and `[min(b), sum(a)]` return
+/// their values in the requested order, so they are different access programs.
+fn extend_with_aggregate_shape(payload: &mut Vec<u8>, op: &AggregateOp) {
+    let (kind, field) = match op {
+        AggregateOp::Count => (1_u8, None),
+        AggregateOp::Sum { field } => (2, Some(*field)),
+        AggregateOp::Min { field } => (3, Some(*field)),
+        AggregateOp::Max { field } => (4, Some(*field)),
+    };
+    payload.push(kind);
+    match field {
+        None => payload.extend_from_slice(&0_u32.to_be_bytes()),
+        Some(field) => payload.extend_from_slice(&field.get().to_be_bytes()),
+    }
 }
 
 fn application_validation_failure(
@@ -1358,11 +1480,109 @@ mod tests {
 
     #[test]
     fn projected_plan_hash_is_stable_for_same_shape() {
-        let a = projected_plan_hash("board", &[FieldId::first()]);
-        let b = projected_plan_hash("board", &[FieldId::first()]);
-        let c = projected_plan_hash("other", &[FieldId::first()]);
+        let a = projected_plan_hash("board", &[FieldId::first()], None, None);
+        let b = projected_plan_hash("board", &[FieldId::first()], None, None);
+        let c = projected_plan_hash("other", &[FieldId::first()], None, None);
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    fn hex_plan_hash(hash: QueryPlanHash) -> String {
+        hash.as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// R6 compatibility pin. Extending the plan hash with the result shape must
+    /// not move any hash that already existed. Only ROW-shaped plans existed:
+    /// the wire rejected every aggregate and grouped body until this package,
+    /// so no aggregate plan hash was ever minted.
+    ///
+    /// The two literals were computed from the pre-extension implementation at
+    /// base commit `687cda3f`. If this test fails, the row plan identity moved
+    /// and every persisted or audited projected plan hash changed with it.
+    #[test]
+    fn row_plan_hashes_are_unchanged_by_the_aggregate_shape_extension() {
+        let fields = [
+            FieldId::new(2).expect("field id"),
+            FieldId::new(5).expect("field id"),
+            FieldId::new(9).expect("field id"),
+        ];
+        assert_eq!(
+            hex_plan_hash(projected_plan_hash("board", &fields, None, None)),
+            "ed07880b5ed67c801ce42129f8e16366de6800eabd2bb77ddaa27df6bfeca977",
+            "row plan hash for (board, [2,5,9]) moved"
+        );
+        assert_eq!(
+            hex_plan_hash(projected_plan_hash("board", &[], None, None)),
+            "dd7fde99353b0c1dc474fae3c21249088412e7076a319b78c6e228177642e29f",
+            "row plan hash for (board, []) moved"
+        );
+    }
+
+    /// The collision R6 exists to remove: a filter and an aggregate over the
+    /// same columns are different access programs and must not share one plan
+    /// identity. Every distinct shape below must hash differently.
+    #[test]
+    fn aggregate_and_group_shapes_do_not_collide_with_rows_or_each_other() {
+        let field = FieldId::new(2).expect("field id");
+        let other = FieldId::new(5).expect("field id");
+        let shapes: Vec<QueryPlanHash> = vec![
+            projected_plan_hash("board", &[field], None, None),
+            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Count)),
+            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Sum { field })),
+            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Min { field })),
+            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Max { field })),
+            projected_plan_hash(
+                "board",
+                &[field],
+                Some(&GroupBySpec {
+                    keys: vec![field],
+                    aggregates: vec![AggregateOp::Count],
+                }),
+                None,
+            ),
+            projected_plan_hash(
+                "board",
+                &[field],
+                Some(&GroupBySpec {
+                    keys: vec![other],
+                    aggregates: vec![AggregateOp::Count],
+                }),
+                None,
+            ),
+            projected_plan_hash(
+                "board",
+                &[field],
+                Some(&GroupBySpec {
+                    keys: vec![field],
+                    aggregates: vec![AggregateOp::Sum { field }, AggregateOp::Count],
+                }),
+                None,
+            ),
+            // Same aggregate multiset, different requested order: the response
+            // column order differs, so the plan differs.
+            projected_plan_hash(
+                "board",
+                &[field],
+                Some(&GroupBySpec {
+                    keys: vec![field],
+                    aggregates: vec![AggregateOp::Count, AggregateOp::Sum { field }],
+                }),
+                None,
+            ),
+        ];
+        for (left_index, left) in shapes.iter().enumerate() {
+            for (right_index, right) in shapes.iter().enumerate() {
+                if left_index != right_index {
+                    assert_ne!(
+                        left, right,
+                        "plan shapes {left_index} and {right_index} collide"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

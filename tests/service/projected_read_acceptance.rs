@@ -21,21 +21,28 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use riffdb_columnar::QueryBudget;
 use riffdb_errors::PublicErrorKind;
 use riffdb_service::{
-    CommandApplication, ExecuteCommandRequest, ExecuteCommandResult, ExecuteProjectedQueryResult,
-    ExecuteSymbolicQueryResult, ProjectedQueryApplication, SymbolicQueryApplication,
-    SymbolicResultField,
+    CommandApplication, ExecuteCommandRequest, ExecuteCommandResult, ExecuteProjectedQueryRequest,
+    ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ProjectedAggregateOp,
+    ProjectedAggregateValue as AggregateValue, ProjectedColumnPredicate, ProjectedGroupBySpec,
+    ProjectedQueryApplication, ProjectedQueryBody, QueryResult, SymbolicContractSelector,
+    SymbolicQueryApplication, SymbolicResultField,
 };
 use riffdb_types::{
     CanonicalValue, CommitSequence, CommitToken, FreshnessPolicy, FrontierPosition,
     ProjectionFrontier, encode_canonical_value,
 };
 
-use support::{BOARD_HISTORY_INCARNATION, BOARD_SELECT, ServiceHarness, run_async_threads};
+use support::{
+    BOARD_HISTORY_INCARNATION, BOARD_PROJECTION_NAME, BOARD_SELECT, ServiceHarness,
+    run_async_threads,
+};
 
 /// Comparison field order for one board row (ticket_id via primary-key return).
 const BOARD_ROW_FIELDS: [&str; 6] = [
@@ -912,6 +919,1190 @@ fn empty_board_is_empty_on_both_paths() {
             .await
             .expect("empty compiled board executes");
         assert!(symbolic_board_rows(&symbolic).is_empty());
+        harness.stop_coordinator();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate / group-by carriage acceptance.
+//
+// The spine is DIFFERENTIAL TRUTH: every aggregate the engine folds must equal
+// the same value computed client-side from the row results of the same query,
+// over the same real storage, real columnar apply, and real authorization.
+// A fold that quietly disagreed with the rows it summarized would be invisible
+// to any test that only checked the fold against a hand-written constant.
+// ---------------------------------------------------------------------------
+
+/// Seeded aggregate fixture: `(story_points, cost_minor_units, status, title)`.
+const AGGREGATE_SEED: [(i64, i64, &str, &str); 6] = [
+    (3, 500, "Open", "alpha"),
+    (5, 250, "Open", "bravo"),
+    (-2, 125, "Closed", "charlie"),
+    (13, 900, "InProgress", "delta"),
+    (0, 0, "Closed", "echo"),
+    (8, 75, "Open", "foxtrot"),
+];
+
+/// The neighbour organization's fixture, deliberately unlike [`AGGREGATE_SEED`]
+/// in every dimension an aggregate can report: a different row count, sums that
+/// share no digits, and titles at the opposite end of the alphabet. Seeding
+/// both orgs from one constant would separate "folded both orgs" from "folded
+/// one", but not "folded mine" from "folded the neighbour's".
+const NEIGHBOUR_SEED: [(i64, i64, &str, &str); 3] = [
+    (1000, 10, "Open", "zulu"),
+    (2000, 20, "Closed", "yankee"),
+    (4000, 40, "Open", "xray"),
+];
+
+/// Seeds [`AGGREGATE_SEED`] into `org` and returns the last commit sequence.
+async fn seed_aggregate_board(
+    harness: &ServiceHarness,
+    org: [u8; 16],
+    project: [u8; 16],
+    ticket_seed_base: u8,
+    caller_prefix: &str,
+) -> CommitSequence {
+    seed_fixture(
+        harness,
+        org,
+        project,
+        ticket_seed_base,
+        caller_prefix,
+        &AGGREGATE_SEED,
+    )
+    .await
+}
+
+/// Seeds an explicit fixture into `org` and returns the last commit sequence.
+async fn seed_fixture(
+    harness: &ServiceHarness,
+    org: [u8; 16],
+    project: [u8; 16],
+    ticket_seed_base: u8,
+    caller_prefix: &str,
+    fixture: &[(i64, i64, &str, &str)],
+) -> CommitSequence {
+    // Request seeds derive from the ticket base so two seeding passes in one
+    // test never reuse a request identity.
+    let reporter = uuid(0x52);
+    let assignee = uuid(0x53);
+    let mut sequence = None;
+    for (index, (points, cost, status, title)) in fixture.iter().enumerate() {
+        let request = harness.create_ticket_request_with_metrics(
+            &format!("{caller_prefix}-{index}"),
+            org,
+            uuid(ticket_seed_base.wrapping_add(index as u8)),
+            project,
+            reporter,
+            assignee,
+            status,
+            title,
+            *points,
+            *cost,
+        );
+        sequence =
+            Some(journaled(harness, ticket_seed_base.wrapping_add(index as u8), request).await);
+    }
+    sequence.expect("aggregate fixture seeds at least one ticket")
+}
+
+/// The row-shaped twin of an aggregate request: same org, same predicates, all
+/// aggregate input columns selected so the client can fold them itself.
+fn row_twin_request(
+    org: [u8; 16],
+    predicates: Vec<ProjectedColumnPredicate>,
+    select: &[&str],
+) -> ExecuteProjectedQueryRequest {
+    let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+        .with_select(select.iter().map(|name| (*name).to_owned()).collect())
+        .with_predicates(predicates)
+        // Authorization bounds every projected read by declared rows; the
+        // engine ignores `limit` on the aggregate path, so the aggregate twin
+        // below folds the whole matching set under the same declared bound.
+        .with_limit(Some(50));
+    ExecuteProjectedQueryRequest::new(
+        SymbolicContractSelector::active(),
+        BOARD_PROJECTION_NAME,
+        body,
+        FreshnessPolicy::Available,
+    )
+}
+
+fn aggregate_request(
+    org: [u8; 16],
+    predicates: Vec<ProjectedColumnPredicate>,
+    aggregate: ProjectedAggregateOp,
+) -> ExecuteProjectedQueryRequest {
+    let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+        .with_predicates(predicates)
+        .with_limit(Some(50))
+        .with_aggregate(Some(aggregate));
+    ExecuteProjectedQueryRequest::new(
+        SymbolicContractSelector::active(),
+        BOARD_PROJECTION_NAME,
+        body,
+        FreshnessPolicy::Available,
+    )
+}
+
+fn grouped_request(
+    org: [u8; 16],
+    keys: Vec<&str>,
+    aggregates: Vec<ProjectedAggregateOp>,
+) -> ExecuteProjectedQueryRequest {
+    let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+        .with_limit(Some(50))
+        .with_group_by(Some(ProjectedGroupBySpec {
+            keys: keys.into_iter().map(str::to_owned).collect(),
+            aggregates,
+        }));
+    ExecuteProjectedQueryRequest::new(
+        SymbolicContractSelector::active(),
+        BOARD_PROJECTION_NAME,
+        body,
+        FreshnessPolicy::Available,
+    )
+}
+
+/// Extracts the single whole-set aggregate value from a Ready outcome, proving
+/// on the way that the row metadata is empty for this shape.
+fn whole_set_value(result: &ExecuteProjectedQueryResult) -> AggregateValue {
+    let ExecuteProjectedQueryResult::Ready {
+        fields,
+        primary_key_fields,
+        rows,
+        result: Some(QueryResult::Aggregate(value)),
+        ..
+    } = result
+    else {
+        panic!("expected a whole-set aggregate, got {result:?}");
+    };
+    assert!(
+        fields.is_empty() && primary_key_fields.is_empty() && rows.is_empty(),
+        "a whole-set aggregate carries no row metadata"
+    );
+    value.clone()
+}
+
+/// One engine group: key cells then aggregate cells.
+type EngineGroup = (Vec<CanonicalValue>, Vec<AggregateValue>);
+
+/// Extracts group key names and groups, checking positional alignment.
+fn grouped_values(result: &ExecuteProjectedQueryResult) -> (Vec<String>, Vec<EngineGroup>) {
+    let ExecuteProjectedQueryResult::Ready {
+        fields,
+        primary_key_fields,
+        rows,
+        result: Some(QueryResult::Groups { key_fields, groups }),
+        ..
+    } = result
+    else {
+        panic!("expected grouped aggregates, got {result:?}");
+    };
+    assert!(
+        primary_key_fields.is_empty() && rows.is_empty(),
+        "a grouped result carries no row metadata"
+    );
+    assert_eq!(
+        fields.len(),
+        key_fields.len(),
+        "group-key names must cover every engine key field"
+    );
+    for (keys, _) in groups {
+        assert_eq!(keys.len(), key_fields.len(), "group key arity must match");
+    }
+    (fields.clone(), groups.clone())
+}
+
+/// Returns the served rows' cells for a row query, keyed by select position.
+fn row_cells(result: &ExecuteProjectedQueryResult, select: &[&str]) -> Vec<Vec<CanonicalValue>> {
+    let ExecuteProjectedQueryResult::Ready {
+        fields,
+        rows,
+        result: non_row,
+        ..
+    } = result
+    else {
+        panic!("expected rows, got {result:?}");
+    };
+    assert!(non_row.is_none(), "a row query returns no folded result");
+    let expected: Vec<String> = select.iter().map(|name| (*name).to_owned()).collect();
+    assert_eq!(fields, &expected, "served select must be the requested one");
+    rows.iter().map(|row| row.cells.clone()).collect()
+}
+
+fn as_i64(value: &CanonicalValue) -> i64 {
+    match value {
+        CanonicalValue::I64(value) => *value,
+        other => panic!("expected an i64 cell, got {other:?}"),
+    }
+}
+
+/// THE DIFFERENTIAL TRUTH GATE.
+///
+/// Every fold the engine performs is recomputed client-side from the row
+/// results of the same predicate over the same snapshot, and the two must
+/// agree exactly — count, sum, min, max, and a grouped fold with its keys.
+/// Run-aborting on divergence; the client-side fold never consults the engine
+/// result, and the engine fold never sees the rows.
+#[test]
+fn engine_aggregates_equal_client_side_folds_of_the_same_rows() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-truth").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        let mut seed: u8 = 0xc0;
+        let mut next_context = || {
+            seed = seed.wrapping_add(1);
+            harness.context(seed)
+        };
+
+        // ---- the row twin: one query, every aggregate input column ----
+        let select = ["story_points", "status", "title"];
+        let (context, _cancellation) = next_context();
+        let rows = harness
+            .service
+            .execute_projected_query(context, row_twin_request(org, Vec::new(), &select))
+            .await
+            .expect("row twin serves");
+        let cells = row_cells(&rows, &select);
+        assert_eq!(
+            cells.len(),
+            AGGREGATE_SEED.len(),
+            "the row twin must see the whole seeded set"
+        );
+
+        // ---- client-side folds, computed only from the rows above ----
+        let expected_count = cells.len() as u64;
+        let expected_sum: i128 = cells.iter().map(|row| i128::from(as_i64(&row[0]))).sum();
+        let expected_min_points = cells
+            .iter()
+            .map(|row| as_i64(&row[0]))
+            .min()
+            .expect("non-empty");
+        let expected_max_points = cells
+            .iter()
+            .map(|row| as_i64(&row[0]))
+            .max()
+            .expect("non-empty");
+        // MIN/MAX use typed value order — for strings, lexicographic on the
+        // string itself. That is deliberately NOT the length-prefixed encoded
+        // byte order that governs group emission, and one result can carry
+        // both: see `min_max_use_typed_order_not_group_key_byte_order`.
+        let expected_min_title = cells
+            .iter()
+            .map(|row| row[2].clone())
+            .min_by(|left, right| match (left, right) {
+                (CanonicalValue::String(left), CanonicalValue::String(right)) => {
+                    left.as_str().cmp(right.as_str())
+                }
+                other => panic!("expected string title cells, got {other:?}"),
+            })
+            .expect("non-empty");
+
+        // ---- the engine folds ----
+        let (context, _cancellation) = next_context();
+        let count = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(org, Vec::new(), ProjectedAggregateOp::Count),
+            )
+            .await
+            .expect("count serves");
+        assert_eq!(
+            whole_set_value(&count),
+            AggregateValue::Count(expected_count),
+            "engine count must equal the client-side row count"
+        );
+
+        let (context, _cancellation) = next_context();
+        let sum = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Sum {
+                        field: "story_points".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("sum serves");
+        assert_eq!(
+            whole_set_value(&sum),
+            AggregateValue::Sum(expected_sum),
+            "engine sum must equal the client-side row sum"
+        );
+
+        let (context, _cancellation) = next_context();
+        let min = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Min {
+                        field: "story_points".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("min serves");
+        assert_eq!(
+            whole_set_value(&min),
+            AggregateValue::Scalar(Some(CanonicalValue::I64(expected_min_points))),
+            "engine min must equal the client-side row minimum"
+        );
+
+        let (context, _cancellation) = next_context();
+        let max = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Max {
+                        field: "story_points".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("max serves");
+        assert_eq!(
+            whole_set_value(&max),
+            AggregateValue::Scalar(Some(CanonicalValue::I64(expected_max_points))),
+            "engine max must equal the client-side row maximum"
+        );
+
+        // A string column exercises the non-numeric comparison path.
+        let (context, _cancellation) = next_context();
+        let min_title = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Min {
+                        field: "title".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("min title serves");
+        assert_eq!(
+            whole_set_value(&min_title),
+            AggregateValue::Scalar(Some(expected_min_title)),
+            "engine string min must equal the client-side row minimum"
+        );
+
+        // ---- grouped fold versus the client-side grouping of the same rows ----
+        let (context, _cancellation) = next_context();
+        let grouped = harness
+            .service
+            .execute_projected_query(
+                context,
+                grouped_request(
+                    org,
+                    vec!["status"],
+                    vec![
+                        ProjectedAggregateOp::Count,
+                        ProjectedAggregateOp::Sum {
+                            field: "story_points".to_owned(),
+                        },
+                        ProjectedAggregateOp::Max {
+                            field: "story_points".to_owned(),
+                        },
+                    ],
+                ),
+            )
+            .await
+            .expect("grouped serves");
+        let (key_names, groups) = grouped_values(&grouped);
+        assert_eq!(key_names, vec!["status".to_owned()]);
+
+        // Client-side grouping keyed by the encoded status cell.
+        let mut expected_groups: BTreeMap<Vec<u8>, (CanonicalValue, u64, i128, i64)> =
+            BTreeMap::new();
+        for row in &cells {
+            let entry =
+                expected_groups
+                    .entry(encode(&row[1]))
+                    .or_insert((row[1].clone(), 0, 0, i64::MIN));
+            entry.1 += 1;
+            entry.2 += i128::from(as_i64(&row[0]));
+            entry.3 = entry.3.max(as_i64(&row[0]));
+        }
+        assert_eq!(
+            groups.len(),
+            expected_groups.len(),
+            "engine group count must equal the client-side group count"
+        );
+        for ((keys, values), (_, (expected_key, count, sum, max))) in
+            groups.iter().zip(expected_groups.iter())
+        {
+            assert_eq!(
+                encode(&keys[0]),
+                encode(expected_key),
+                "grouped keys must match the client-side grouping, byte for byte"
+            );
+            assert_eq!(values.len(), 3, "three functions, three cells");
+            assert_eq!(values[0], AggregateValue::Count(*count));
+            assert_eq!(values[1], AggregateValue::Sum(*sum));
+            assert_eq!(
+                values[2],
+                AggregateValue::Scalar(Some(CanonicalValue::I64(*max)))
+            );
+        }
+
+        harness.board_columnar().assert_no_apply_error();
+        harness.stop_coordinator();
+    });
+}
+
+/// One aggregate result can carry two different orders, and conflating them
+/// silently reports the wrong extreme. MIN/MAX compare typed values; group
+/// emission compares length-prefixed encoded keys. The seeded titles separate
+/// the two: lexicographic min is "alpha", encoded-byte min is the shortest.
+#[test]
+fn min_max_use_typed_order_not_group_key_byte_order() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-orders").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        let titles: Vec<CanonicalValue> = AGGREGATE_SEED
+            .iter()
+            .map(|(_, _, _, title)| CanonicalValue::string(*title).expect("bounded title"))
+            .collect();
+        let typed_min = titles
+            .iter()
+            .min_by(|left, right| match (left, right) {
+                (CanonicalValue::String(left), CanonicalValue::String(right)) => {
+                    left.as_str().cmp(right.as_str())
+                }
+                other => panic!("string titles only, got {other:?}"),
+            })
+            .expect("non-empty")
+            .clone();
+        let encoded_min = titles
+            .iter()
+            .min_by(|left, right| encode(left).cmp(&encode(right)))
+            .expect("non-empty")
+            .clone();
+        assert_ne!(
+            typed_min, encoded_min,
+            "the fixture must separate the two orders, or this test proves nothing"
+        );
+
+        let (context, _cancellation) = harness.context(0xd8);
+        let min = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Min {
+                        field: "title".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("min title serves");
+        assert_eq!(
+            whole_set_value(&min),
+            AggregateValue::Scalar(Some(typed_min)),
+            "MIN must use typed value order, not encoded-key byte order"
+        );
+
+        // The same query grouped by title emits in encoded-key byte order.
+        let (context, _cancellation) = harness.context(0xd9);
+        let grouped = harness
+            .service
+            .execute_projected_query(
+                context,
+                grouped_request(org, vec!["title"], vec![ProjectedAggregateOp::Count]),
+            )
+            .await
+            .expect("grouped serves");
+        let (_, groups) = grouped_values(&grouped);
+        assert_eq!(
+            encode(&groups[0].0[0]),
+            encode(&encoded_min),
+            "the first emitted group is the encoded-byte minimum, not the typed one"
+        );
+        harness.stop_coordinator();
+    });
+}
+
+/// Group emission order is the engine's encoded-key byte order, and the
+/// service reports it untouched. Sorting anywhere downstream would make the
+/// documented ordering contract a lie.
+#[test]
+fn grouped_results_arrive_in_encoded_group_key_byte_order() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-order").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        let (context, _cancellation) = harness.context(0xd1);
+        let grouped = harness
+            .service
+            .execute_projected_query(
+                context,
+                grouped_request(org, vec!["title"], vec![ProjectedAggregateOp::Count]),
+            )
+            .await
+            .expect("grouped serves");
+        let (_, groups) = grouped_values(&grouped);
+        let observed: Vec<Vec<u8>> = groups.iter().map(|(keys, _)| encode(&keys[0])).collect();
+        let mut sorted = observed.clone();
+        sorted.sort();
+        assert_eq!(
+            observed, sorted,
+            "groups must arrive in ascending encoded-key byte order"
+        );
+        assert_eq!(groups.len(), AGGREGATE_SEED.len(), "titles are distinct");
+        harness.stop_coordinator();
+    });
+}
+
+/// An aggregate is an org-scoped fold. A count that crossed the partition would
+/// disclose another tenant's row cardinality with no field ever named.
+#[test]
+fn aggregates_never_fold_another_organizations_rows() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org_a = uuid(0x41);
+        let org_b = uuid(0x42);
+        let project = uuid(0x51);
+        seed_fixture(&harness, org_a, project, 0x60, "agg-iso-a", &AGGREGATE_SEED).await;
+        let sequence =
+            seed_fixture(&harness, org_b, project, 0x80, "agg-iso-b", &NEIGHBOUR_SEED).await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        let expected = |fixture: &[(i64, i64, &str, &str)]| {
+            let count = fixture.len() as u64;
+            let sum: i128 = fixture
+                .iter()
+                .map(|(points, _, _, _)| i128::from(*points))
+                .sum();
+            let min_title = fixture
+                .iter()
+                .map(|(_, _, _, title)| (*title).to_owned())
+                .min()
+                .expect("non-empty fixture");
+            (count, sum, min_title)
+        };
+        let (count_a, sum_a, title_a) = expected(&AGGREGATE_SEED);
+        let (count_b, sum_b, title_b) = expected(&NEIGHBOUR_SEED);
+        // The fixtures must actually be distinguishable, or this test proves
+        // only that both orgs were not folded together.
+        assert_ne!(count_a, count_b);
+        assert_ne!(sum_a, sum_b);
+        assert_ne!(title_a, title_b);
+        // Neither org's answer is the answer for both orgs combined.
+        let combined_count = count_a + count_b;
+        let combined_sum = sum_a + sum_b;
+
+        for (org, label, count, sum, min_title) in [
+            (org_a, "org_a", count_a, sum_a, title_a),
+            (org_b, "org_b", count_b, sum_b, title_b),
+        ] {
+            let (context, _cancellation) = harness.context(0xe1);
+            let observed_count = harness
+                .service
+                .execute_projected_query(
+                    context,
+                    aggregate_request(org, Vec::new(), ProjectedAggregateOp::Count),
+                )
+                .await
+                .expect("count serves");
+            assert_eq!(
+                whole_set_value(&observed_count),
+                AggregateValue::Count(count),
+                "{label} must count exactly its own rows"
+            );
+            assert_ne!(
+                whole_set_value(&observed_count),
+                AggregateValue::Count(combined_count),
+                "{label} must not count both partitions"
+            );
+
+            let (context, _cancellation) = harness.context(0xe2);
+            let observed_sum = harness
+                .service
+                .execute_projected_query(
+                    context,
+                    aggregate_request(
+                        org,
+                        Vec::new(),
+                        ProjectedAggregateOp::Sum {
+                            field: "story_points".to_owned(),
+                        },
+                    ),
+                )
+                .await
+                .expect("sum serves");
+            assert_eq!(
+                whole_set_value(&observed_sum),
+                AggregateValue::Sum(sum),
+                "{label} must sum only its own column values"
+            );
+            assert_ne!(
+                whole_set_value(&observed_sum),
+                AggregateValue::Sum(combined_sum),
+                "{label} must not sum across partitions"
+            );
+
+            // An extreme is the sharpest probe: it names one row, so folding
+            // the wrong partition changes the answer to a value that exists
+            // only over there.
+            let (context, _cancellation) = harness.context(0xe3);
+            let observed_min = harness
+                .service
+                .execute_projected_query(
+                    context,
+                    aggregate_request(
+                        org,
+                        Vec::new(),
+                        ProjectedAggregateOp::Min {
+                            field: "title".to_owned(),
+                        },
+                    ),
+                )
+                .await
+                .expect("min serves");
+            assert_eq!(
+                whole_set_value(&observed_min),
+                AggregateValue::Scalar(Some(
+                    CanonicalValue::string(&min_title).expect("bounded title")
+                )),
+                "{label} must take its extreme from its own partition only"
+            );
+
+            // Grouping is the other disclosure surface: the neighbour's key
+            // values must never appear among this org's group keys.
+            let (context, _cancellation) = harness.context(0xe4);
+            let grouped = harness
+                .service
+                .execute_projected_query(
+                    context,
+                    grouped_request(org, vec!["title"], vec![ProjectedAggregateOp::Count]),
+                )
+                .await
+                .expect("grouped serves");
+            let (_, groups) = grouped_values(&grouped);
+            let observed_titles: Vec<CanonicalValue> =
+                groups.iter().map(|(keys, _)| keys[0].clone()).collect();
+            let foreign = if org == org_a {
+                &NEIGHBOUR_SEED[..]
+            } else {
+                &AGGREGATE_SEED[..]
+            };
+            for (_, _, _, title) in foreign {
+                assert!(
+                    !observed_titles
+                        .contains(&CanonicalValue::string(*title).expect("bounded title")),
+                    "{label} leaked the neighbour's group key {title}"
+                );
+            }
+            assert_eq!(observed_titles.len(), count as usize);
+        }
+        harness.board_columnar().assert_no_apply_error();
+        harness.stop_coordinator();
+    });
+}
+
+/// Empty matching set: a whole-set fold still answers, with identity values and
+/// an absent extreme. Reporting "no groups" here would be indistinguishable
+/// from a query that had never run.
+#[test]
+fn empty_matching_set_answers_with_identity_values_and_an_absent_extreme() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-empty").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        // A project no ticket belongs to: the predicate matches nothing.
+        let empty = vec![ProjectedColumnPredicate::Eq {
+            field: "project_id".to_owned(),
+            value: CanonicalValue::Uuid(uuid(0x5f)),
+        }];
+
+        let (context, _cancellation) = harness.context(0xf1);
+        let count = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(org, empty.clone(), ProjectedAggregateOp::Count),
+            )
+            .await
+            .expect("count over an empty set still serves");
+        assert_eq!(
+            whole_set_value(&count),
+            AggregateValue::Count(0),
+            "an empty matching set counts zero, it does not vanish"
+        );
+
+        let (context, _cancellation) = harness.context(0xf2);
+        let sum = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    empty.clone(),
+                    ProjectedAggregateOp::Sum {
+                        field: "story_points".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("sum over an empty set still serves");
+        assert_eq!(whole_set_value(&sum), AggregateValue::Sum(0));
+
+        for op in [
+            ProjectedAggregateOp::Min {
+                field: "story_points".to_owned(),
+            },
+            ProjectedAggregateOp::Max {
+                field: "story_points".to_owned(),
+            },
+        ] {
+            let (context, _cancellation) = harness.context(0xf3);
+            let extreme = harness
+                .service
+                .execute_projected_query(context, aggregate_request(org, empty.clone(), op))
+                .await
+                .expect("extreme over an empty set still serves");
+            assert_eq!(
+                whole_set_value(&extreme),
+                AggregateValue::Scalar(None),
+                "an empty matching set has no extreme; absence is not NULL"
+            );
+        }
+
+        // Grouped: no matching rows means no groups, which is the correct
+        // grouped answer and is why the whole-set path is used for globals.
+        let (context, _cancellation) = harness.context(0xf4);
+        let grouped = harness
+            .service
+            .execute_projected_query(context, {
+                let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+                    .with_predicates(empty)
+                    .with_limit(Some(50))
+                    .with_group_by(Some(ProjectedGroupBySpec {
+                        keys: vec!["status".to_owned()],
+                        aggregates: vec![ProjectedAggregateOp::Count],
+                    }));
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                )
+            })
+            .await
+            .expect("grouped over an empty set still serves");
+        let (_, groups) = grouped_values(&grouped);
+        assert!(groups.is_empty(), "no matching rows means no groups");
+        harness.stop_coordinator();
+    });
+}
+
+/// A budget the fold exceeds must return a typed rejection, never a truncated
+/// or partial answer (ADR-0087 governance).
+#[test]
+fn exceeded_group_cardinality_budget_is_a_typed_rejection_not_a_partial_answer() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-budget").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        // Six distinct titles against a two-group ceiling.
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+            .with_limit(Some(50))
+            .with_group_by(Some(ProjectedGroupBySpec {
+                keys: vec!["title".to_owned()],
+                aggregates: vec![ProjectedAggregateOp::Count],
+            }))
+            .with_budget(QueryBudget {
+                max_scanned_rows: 100_000,
+                max_group_cardinality: 2,
+            });
+        let (context, _cancellation) = harness.context(0xa1);
+        let failure = harness
+            .service
+            .execute_projected_query(
+                context,
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                ),
+            )
+            .await
+            .expect_err("an exceeded grouping budget must never serve a partial fold");
+        assert_eq!(
+            failure.public_error().map(riffdb_errors::PublicError::kind),
+            Some(PublicErrorKind::Validation),
+            "budget rejection stays a typed public failure: {failure:?}"
+        );
+
+        // The scan budget is the same contract on the other axis.
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+            .with_limit(Some(50))
+            .with_aggregate(Some(ProjectedAggregateOp::Count))
+            .with_budget(QueryBudget {
+                max_scanned_rows: 1,
+                max_group_cardinality: 10_000,
+            });
+        let (context, _cancellation) = harness.context(0xa2);
+        let failure = harness
+            .service
+            .execute_projected_query(
+                context,
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                ),
+            )
+            .await
+            .expect_err("an exceeded scan budget must never serve a partial fold");
+        assert_eq!(
+            failure.public_error().map(riffdb_errors::PublicError::kind),
+            Some(PublicErrorKind::Validation)
+        );
+
+        // The same query inside its budget still answers, so the rejections
+        // above are about the budget and not about the shape.
+        let (context, _cancellation) = harness.context(0xa3);
+        let ok = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(org, Vec::new(), ProjectedAggregateOp::Count),
+            )
+            .await
+            .expect("the default budget still serves");
+        assert_eq!(
+            whole_set_value(&ok),
+            AggregateValue::Count(AGGREGATE_SEED.len() as u64)
+        );
+        harness.stop_coordinator();
+    });
+}
+
+/// F3 — the declared row limit must bound grouped output volume, not only the
+/// authorization decision.
+///
+/// The engine ignores `limit` on the grouped path, so without the service-side
+/// clamp a caller declaring `limit = 1` — a declaration every grant this system
+/// can issue admits — could receive up to the whole server grouping budget in
+/// group rows of raw key-column values. The clamp makes the authorized row
+/// count the grouping ceiling, and an overrun stays a typed rejection rather
+/// than a truncated answer.
+#[test]
+fn the_declared_row_limit_bounds_grouped_output_volume() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-clamp").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        // Six distinct titles, one declared row. The default server grouping
+        // budget (10,000) would happily return all six.
+        let grouped_with_limit = |limit: u32| {
+            let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+                .with_limit(Some(limit as usize))
+                .with_group_by(Some(ProjectedGroupBySpec {
+                    keys: vec!["title".to_owned()],
+                    aggregates: vec![ProjectedAggregateOp::Count],
+                }));
+            ExecuteProjectedQueryRequest::new(
+                SymbolicContractSelector::active(),
+                BOARD_PROJECTION_NAME,
+                body,
+                FreshnessPolicy::Available,
+            )
+        };
+
+        let (context, _cancellation) = harness.context(0xaa);
+        let failure = harness
+            .service
+            .execute_projected_query(context, grouped_with_limit(1))
+            .await
+            .expect_err("one declared row must not admit six group rows");
+        assert_eq!(
+            failure.public_error().map(riffdb_errors::PublicError::kind),
+            Some(PublicErrorKind::Validation),
+            "the overrun must be typed, not truncated: {failure:?}"
+        );
+
+        // Exactly at the boundary the same query is served in full, so the
+        // clamp is the declared bound and not an unconditional refusal.
+        let (context, _cancellation) = harness.context(0xab);
+        let served = harness
+            .service
+            .execute_projected_query(context, grouped_with_limit(AGGREGATE_SEED.len() as u32))
+            .await
+            .expect("a limit that covers the group count still serves");
+        let (_, groups) = grouped_values(&served);
+        assert_eq!(groups.len(), AGGREGATE_SEED.len());
+
+        // One below the boundary is refused: the ceiling is exact.
+        let (context, _cancellation) = harness.context(0xac);
+        assert!(
+            harness
+                .service
+                .execute_projected_query(
+                    context,
+                    grouped_with_limit(AGGREGATE_SEED.len() as u32 - 1)
+                )
+                .await
+                .is_err(),
+            "the clamp must be exact, not approximate"
+        );
+
+        // A whole-set aggregate is unaffected: its result cardinality is fixed
+        // by the descriptor count, not by the matching set.
+        let (context, _cancellation) = harness.context(0xad);
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+            .with_limit(Some(1))
+            .with_aggregate(Some(ProjectedAggregateOp::Count));
+        let whole_set = harness
+            .service
+            .execute_projected_query(
+                context,
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                ),
+            )
+            .await
+            .expect("a whole-set fold returns one value regardless of the limit");
+        assert_eq!(
+            whole_set_value(&whole_set),
+            AggregateValue::Count(AGGREGATE_SEED.len() as u64)
+        );
+
+        // Row reads keep their own behaviour: limit truncates, never rejects.
+        let (context, _cancellation) = harness.context(0xae);
+        let rows = harness
+            .service
+            .execute_projected_query(context, {
+                let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+                    .with_select(vec!["title".to_owned()])
+                    .with_limit(Some(1));
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                )
+            })
+            .await
+            .expect("row reads still truncate rather than reject");
+        assert_eq!(row_cells(&rows, &["title"]).len(), 1);
+        harness.stop_coordinator();
+    });
+}
+
+/// Summing a money column is a real engine limitation. It must surface as a
+/// typed, actionable rejection naming a wrong *type* — not the generic invalid
+/// value code every other projected rejection uses.
+#[test]
+fn summing_a_money_column_is_a_typed_actionable_rejection() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-money").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        let (context, _cancellation) = harness.context(0xa8);
+        let failure = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Sum {
+                        field: "cost".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect_err("money columns cannot be summed by the engine");
+        let error = failure
+            .public_error()
+            .expect("the rejection must be public and typed");
+        assert_eq!(error.kind(), PublicErrorKind::Validation);
+        let riffdb_errors::PublicErrorDetails::Validation(issues) = error.details() else {
+            panic!("a validation failure carries its issues, got {error:?}");
+        };
+        assert!(
+            issues
+                .as_slice()
+                .iter()
+                .any(|issue| issue.code() == riffdb_errors::ValidationCode::TypeMismatch),
+            "the caller must be told the column type is wrong, not that a value is: {issues:?}"
+        );
+
+        // Min and max over the same money column still work: the rejection is
+        // specific to the fold that needs integer arithmetic.
+        let (context, _cancellation) = harness.context(0xa9);
+        let min = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Min {
+                        field: "cost".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect("money columns still compare");
+        assert!(matches!(
+            whole_set_value(&min),
+            AggregateValue::Scalar(Some(CanonicalValue::Money(_)))
+        ));
+        harness.stop_coordinator();
+    });
+}
+
+/// Freshness is orthogonal to result shape: a causal aggregate parks, wakes on
+/// real apply, and reports the same frontier and chaining token a row read at
+/// that frontier reports.
+#[test]
+fn causal_aggregates_carry_the_same_frontier_and_token_as_rows() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-causal").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+        let token = CommitToken::new(BOARD_HISTORY_INCARNATION, sequence);
+
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+            .with_limit(Some(50))
+            .with_aggregate(Some(ProjectedAggregateOp::Count));
+        let (context, _cancellation) = harness.context(0xb8);
+        let aggregate = harness
+            .service
+            .execute_projected_query(
+                context,
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    causal(token.clone(), Duration::from_secs(10)),
+                ),
+            )
+            .await
+            .expect("a causal aggregate serves at the token");
+
+        let (context, _cancellation) = harness.context(0xb9);
+        let rows = harness
+            .service
+            .execute_projected_query(context, {
+                let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+                    .with_select(vec!["story_points".to_owned()])
+                    .with_limit(Some(50));
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    causal(token, Duration::from_secs(10)),
+                )
+            })
+            .await
+            .expect("a causal row read serves at the token");
+
+        let ExecuteProjectedQueryResult::Ready {
+            frontier: aggregate_frontier,
+            head: aggregate_head,
+            commit_token: aggregate_token,
+            ..
+        } = &aggregate
+        else {
+            panic!("expected Ready, got {aggregate:?}");
+        };
+        let ExecuteProjectedQueryResult::Ready {
+            frontier: row_frontier,
+            head: row_head,
+            commit_token: row_token,
+            ..
+        } = &rows
+        else {
+            panic!("expected Ready, got {rows:?}");
+        };
+        assert_eq!(
+            aggregate_frontier.as_bytes(),
+            row_frontier.as_bytes(),
+            "both shapes report the same served frontier"
+        );
+        assert_eq!(aggregate_head.as_bytes(), row_head.as_bytes());
+        assert_eq!(
+            aggregate_token.as_ref().map(CommitToken::as_bytes),
+            row_token.as_ref().map(CommitToken::as_bytes),
+            "the chaining token must not depend on the result shape"
+        );
+        assert!(
+            aggregate_token.is_some(),
+            "a sequenced frontier yields a chaining token"
+        );
+        assert_eq!(
+            whole_set_value(&aggregate),
+            AggregateValue::Count(AGGREGATE_SEED.len() as u64)
+        );
+        harness.board_columnar().assert_no_apply_error();
         harness.stop_coordinator();
     });
 }

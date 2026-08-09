@@ -36,6 +36,16 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   evidence. The synchronized report records no production gap, but this is
   crash evidence for the POC matrix rather than a general disaster-recovery
   guarantee.
+- Projected ad-hoc aggregates are deliberately narrow. `count`, `sum`, `min`,
+  and `max` with bounded `group_by` are available; `sum` accepts integer
+  columns only and rejects decimal or money columns with a typed
+  `type_mismatch`. One ungrouped request computes exactly one function — ask
+  for several by grouping. Scan and grouping budgets are server-side with no
+  request vocabulary and no explain surface; a grouped query returns at most
+  the row limit it declared, and an exceeded budget is a typed rejection rather
+  than a partial result. Groups arrive in the server's deterministic
+  encoded-key byte order, which is not collation order; sort client-side for
+  presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
 - Reactive applications are partition-local and bounded. P8 does not provide
