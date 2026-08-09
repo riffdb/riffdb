@@ -1,0 +1,21 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+---
+
+<BaseLayout title="Not found — RiffDB" description="This RiffDB page could not be found." pathname="/404/">
+  <SiteHeader />
+  <main id="main-content" class="not-found" tabindex="-1">
+    <div class="shell not-found-grid">
+      <div class="not-found-code" aria-hidden="true"><span>RDB-WEB0404</span><strong>404</strong></div>
+      <div>
+        <p class="eyebrow">Typed outcome</p>
+        <h1>Page not found.</h1>
+        <p>The request was valid. The target was not. No state was changed.</p>
+        <a class="button button--primary" href="/">Return home</a>
+      </div>
+    </div>
+  </main>
+  <SiteFooter />
+</BaseLayout>

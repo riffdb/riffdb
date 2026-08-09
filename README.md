@@ -1,5 +1,11 @@
 # RiffDB
 
+**Website:** [riffdb.com](https://riffdb.com) explains the product thesis and
+hosts the managed-service early-access list. Its source and deployment notes are
+in [`website/`](website/README.md). The managed service is not available yet;
+the current implementation remains the standalone, local-only proof of concept
+described below.
+
 **Documentation:** Start with the [RiffDB Handbook](docs/README.md) for the
 application tutorial, language guides, MCP cookbook, operations, architecture,
 and reference material. The repository builds the same handbook locally with

@@ -1,0 +1,207 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import SystemMap from "../components/SystemMap.astro";
+import WaitlistForm from "../components/WaitlistForm.astro";
+
+const title = "RiffDB — OLTP for agent-built applications";
+const description =
+  "RiffDB is a contract-first operational database that makes application writes safe, typed, attributable, and recoverable by construction.";
+
+const guarantees = [
+  {
+    number: "01",
+    title: "Commands, not arbitrary writes",
+    copy: "Applications invoke compiled domain operations. There is no generic insert, update, delete, or transaction callback in the supported application surface."
+  },
+  {
+    number: "02",
+    title: "Uncertainty is a first-class outcome",
+    copy: "Idempotency identity and durable outcomes let a caller retry after a lost response without duplicating the mutation or its events."
+  },
+  {
+    number: "03",
+    title: "One atomic fact",
+    copy: "State, outcome, events, provenance, outbox intent, and the commit record become durable together—or none of them do."
+  },
+  {
+    number: "04",
+    title: "Agents get a safe vocabulary",
+    copy: "Native MCP exposes only authorized commands and bounded context. It is a policy-filtered transport, never a privileged storage bypass."
+  }
+];
+---
+
+<BaseLayout title={title} description={description}>
+  <SiteHeader />
+  <main id="main-content" tabindex="-1">
+    <section class="hero">
+      <div class="shell hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow"><span></span>Contract-first operational database</p>
+          <h1>Vibe fast.<br /><em>Commit safely.</em></h1>
+          <p class="hero-lede">
+            RiffDB is OLTP designed for software built by agents: business rules become checked contracts, writes become compiled commands, and unsafe paths disappear from the application interface.
+          </p>
+          <div class="hero-actions">
+            <a class="button button--primary" href="#early-access">Join early access</a>
+            <a class="button button--text" href="https://github.com/riffdb/riffdb">
+              Explore on GitHub
+              <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+          <div class="poc-note">
+            <span>POC</span>
+            <p>
+              Open source and running today as a standalone, local-only Rust proof of concept—not a production release.
+              <a href="https://docs.riffdb.com/known-limitations.html">See the boundaries</a>.
+            </p>
+          </div>
+        </div>
+        <SystemMap />
+      </div>
+      <div class="hero-ruler" aria-hidden="true">
+        <span>contract</span><i></i><span>authorize</span><i></i><span>evaluate</span><i></i><span>commit</span>
+      </div>
+    </section>
+
+    <section class="problem section" id="why">
+      <div class="shell">
+        <div class="section-heading split-heading">
+          <div>
+            <p class="eyebrow">The application changed</p>
+            <h2>Code is abundant.<br />Correctness isn’t.</h2>
+          </div>
+          <p>
+            Agents can produce a remarkable amount of application code. They can also reproduce every fragile pattern we spent decades learning to avoid—faster, across more services, in more variations.
+          </p>
+        </div>
+        <div class="risk-grid">
+          <article>
+            <span class="risk-mark">×2</span>
+            <h3>Retries become duplicate effects</h3>
+            <p>The write committed. The response vanished. Does the caller try again?</p>
+          </article>
+          <article>
+            <span class="risk-mark risk-mark--split">↯</span>
+            <h3>Read, check, write becomes a race</h3>
+            <p>Each line looks reasonable. Concurrent execution breaks the business rule.</p>
+          </article>
+          <article>
+            <span class="risk-mark risk-mark--scatter">•••</span>
+            <h3>Invariants scatter across code</h3>
+            <p>Every service remembers a different fragment of what must remain true.</p>
+          </article>
+        </div>
+        <div class="thesis">
+          <p class="thesis-label">RiffDB’s thesis</p>
+          <blockquote>
+            The safest operation is the one an application <em>cannot express incorrectly.</em>
+          </blockquote>
+        </div>
+      </div>
+    </section>
+
+    <section class="contract-section section">
+      <div class="shell contract-grid">
+        <div class="contract-copy">
+          <p class="eyebrow eyebrow--light">The contract is executable</p>
+          <h2>Move the rules to where state becomes fact.</h2>
+          <p>
+            A RiffDB contract declares entities, commands, outcomes, invariants, relationships, durable events, indexes, and projections. The compiler resolves and bounds the plan before it can run.
+          </p>
+          <a class="inline-link" href="https://docs.riffdb.com/concepts/CONTRACT-FIRST.html">Understand contract-first state <span aria-hidden="true">→</span></a>
+        </div>
+        <div class="code-card" aria-label="Example RiffDB command contract">
+          <div class="code-top"><span></span><span></span><span></span><b>budget.riff</b></div>
+          <pre><code><span class="token-key">command</span> AllocateBudget(
+  organization_id: Uuid,
+  amount: Decimal&lt;2&gt;
+) <span class="token-key">returns</span> Allocated
+  | InsufficientFunds {"{"}
+
+  <span class="token-muted">// one declared dependency</span>
+  <span class="token-key">read</span> budget <span class="token-key">by</span> organization_id
+    <span class="token-key">else</span> BudgetNotFound;
+
+  <span class="token-key">require</span> budget.remaining &gt;= amount
+    <span class="token-key">else</span> InsufficientFunds;
+
+  <span class="token-key">set</span> budget.remaining =
+    budget.remaining - amount;
+
+  <span class="token-key">emit</span> BudgetAllocated {"{"} amount {"}"};
+{"}"}</code></pre>
+          <div class="code-result"><i></i><span>Bounds proven · dependencies visible · outcome closed</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="guarantees section" id="architecture">
+      <div class="shell">
+        <div class="section-heading guarantee-heading">
+          <p class="eyebrow">Database-enforced semantics</p>
+          <h2>Correctness is not a convention.</h2>
+          <p>The guarantees travel with the command, regardless of which supported interface invokes it.</p>
+        </div>
+        <div class="guarantee-list">
+          {guarantees.map((item) => (
+            <article>
+              <span>{item.number}</span>
+              <h3>{item.title}</h3>
+              <p>{item.copy}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <section class="path-section section">
+      <div class="shell">
+        <div class="path-card">
+          <div class="path-copy">
+            <p class="eyebrow eyebrow--light">One semantic path</p>
+            <h2>Every door leads to the same rules.</h2>
+            <p>Generated clients, CLI, gRPC, and native MCP share authentication, authorization, deterministic execution, conflict validation, and commit coordination.</p>
+          </div>
+          <div class="path-diagram" role="img" aria-label="SDK, CLI, gRPC, and MCP flow through shared semantics to authoritative state">
+            <div class="path-inputs"><span>SDK</span><span>CLI</span><span>gRPC</span><span>MCP</span></div>
+            <div class="path-line" aria-hidden="true"></div>
+            <div class="path-stages">
+              <span>Authorize</span><i>→</i><span>Evaluate</span><i>→</i><span>Validate</span><i>→</i><strong>Commit</strong>
+            </div>
+            <div class="path-output"><span>Authoritative state</span><small>sequence 0042</small></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="future section">
+      <div class="shell future-grid">
+        <div>
+          <p class="eyebrow">Why now</p>
+          <h2>The future of OLTP is a safer interface.</h2>
+        </div>
+        <div class="future-copy">
+          <p>
+            Agent-built applications need more than a faster way to emit queries. They need an operational substrate that turns intent into a bounded, attributable, recoverable state transition.
+          </p>
+          <p>
+            RiffDB begins with a single-node semantic kernel. The long path points toward managed, replicated execution without giving up the contracts that make automated development trustworthy.
+          </p>
+          <div class="future-links">
+            <a href="https://docs.riffdb.com/">Read the handbook <span aria-hidden="true">↗</span></a>
+            <a href="https://docs.riffdb.com/security.html">Review the security posture <span aria-hidden="true">↗</span></a>
+            <a href="https://docs.riffdb.com/api/rust/riffdb_client_rust/index.html">Browse the Rust API <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="waitlist-section section">
+      <div class="shell"><WaitlistForm /></div>
+    </section>
+  </main>
+  <SiteFooter />
+</BaseLayout>

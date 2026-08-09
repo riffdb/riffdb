@@ -1,0 +1,33 @@
+---
+import Logo from "./Logo.astro";
+---
+
+<footer class="site-footer">
+  <div class="shell footer-grid">
+    <div>
+      <Logo footer />
+      <p>Contract-first OLTP for agent-built applications.</p>
+    </div>
+    <div class="footer-links" aria-label="Project links">
+      <div>
+        <span>Build</span>
+        <a href="https://docs.riffdb.com/">Handbook</a>
+        <a href="https://docs.riffdb.com/api/rust/riffdb_client_rust/index.html">Rust API</a>
+      </div>
+      <div>
+        <span>Project</span>
+        <a href="https://github.com/riffdb/riffdb">GitHub</a>
+        <a href="https://docs.riffdb.com/known-limitations.html">Known limitations</a>
+      </div>
+      <div>
+        <span>Contact</span>
+        <a href="mailto:hello@riffdb.com">hello@riffdb.com</a>
+        <a href="/privacy/">Privacy</a>
+      </div>
+    </div>
+  </div>
+  <div class="shell footer-bottom">
+    <span>Open source. Written in Rust.</span>
+    <span>© {new Date().getFullYear()} RiffDB</span>
+  </div>
+</footer>
