@@ -1,14 +1,10 @@
 # ADR-0113: Deterministic Simulation Testing for the Durable Engine
 
-- **Status:** Proposed
-- **Direction approved:** Not yet
-- **Exact text accepted:** No
-- **Decision deadline:** Before the first simulation work package merges
-  production-code seams (journal media port, backend-parameterized store open,
-  conflict-path collection hygiene)
-
-Direction approval records planning consensus. This ADR is not authoritative
-until a human accepts its exact text and changes the status to Accepted.
+- **Status:** Accepted
+- **Direction approved:** 2026-08-09
+- **Exact text accepted:** Yes — 2026-08-09, maintainer acceptance as written
+- **Decision deadline:** Satisfied — accepted before any simulation work
+  package merged production-code seams
 
 ## Context
 
