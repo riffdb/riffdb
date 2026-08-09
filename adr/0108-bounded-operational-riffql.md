@@ -3,10 +3,10 @@
 - **Status:** Proposed
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** No
-- **Decision deadline:** Before WP-507 changes RiffQL grammar or query IR
+- **Decision deadline:** Before WP-563 changes RiffQL grammar or query IR
 - **Requires:** ADR-0035, ADR-0038, ADR-0051, ADR-0053, ADR-0054,
-  ADR-0055, ADR-0070, ADR-0086, and ADR-0087
-- **Defines or blocks:** WP-507 through WP-509 and WP-514
+  ADR-0055, ADR-0070, ADR-0086, ADR-0087, and ADR-0092
+- **Defines or blocks:** WP-563 through WP-565 and WP-570
 
 ## Context
 
@@ -69,6 +69,15 @@ Changing the profile or Unicode table version is an index migration, not a
 silent software upgrade. Prefix bounds operate on canonical text-key bytes and
 return original authorized field values, never normalized substitutes.
 
+This text-key surface is not a second full-text-search engine. It performs
+exact equality or leading-byte-range lookup over a declared canonical key. It
+has no tokenization, stemming, relevance score, corpus statistic, phrase
+matching, snippet, or ranking vocabulary. Those remain exclusively governed by
+ADR-0092's projection-backed FTS, including fixed-point scoring, per-tenant
+corpus statistics, policy-before-scoring, and inference protections. A query
+requiring token or relevance semantics must use that projection rather than
+silently degrading to an operational text-key scan.
+
 ### Null and existence
 
 Optional-field predicates have explicit index semantics distinguishing missing,
@@ -88,6 +97,42 @@ Every predicate field, group key, aggregate input, and returned value is
 authorized before execution. Row policy applies before aggregation, and
 inference-sensitive aggregates may require a policy-owned minimum group size.
 No partial aggregate is released on budget exhaustion.
+
+This is one aggregate semantics surface, not a competing implementation beside
+the projected aggregate path shipped by WP-492. Named operational queries
+lower to the same canonical aggregate descriptors, exact evaluator, and result
+carriage wherever their access source is a projection. The following WP-492
+decisions are normative here as well: integer sums accumulate as checked i128
+and cross the public boundary as `Decimal`; empty-set identity and absent
+`min`/`max` meanings remain exact; group order is canonical encoded-key order;
+and the requested row limit clamps maximum group cardinality before execution.
+Decimal and money extensions must preserve that shared result algebra rather
+than add a second response arm. Policy-owned minimum group size supplements,
+and never replaces, the output-volume clamp and authorization union.
+
+### Receipted module-identity rotation
+
+The grammar, query IR, canonical source, plan hash, and module hash are durable
+application identities. A new operational construct may not silently
+reinterpret an already deployed module or let local locks and generated
+bindings disagree with server state. Before activation, WP-563 performs one
+receipted identity-rotation campaign:
+
+1. freeze an additive grammar/IR/module format version and keep old decoders;
+2. regenerate compiler and protocol fixtures plus every frozen literal;
+3. rewrite exact application locks and role bindings through the canonical
+   compiler/deploy path, never by hand;
+4. regenerate Rust, Go, TypeScript, Python, and MCP bindings for every checked
+   example, explicitly including TicketDesk and `examples/agent-alpha`;
+5. record old/new source, plan, module, lock, binding, and generated-artifact
+   identities in a redacted receipt; and
+6. prove `application check`, deploy, role reconciliation, and
+   `check-application-bindings` agree before any new module becomes active.
+
+A partial rotation is a typed incomplete campaign with an exact next action,
+not a successful deploy. The c063c95 identity-rotation failure is the standing
+regression: no grammar/IR change can merge on a false-green lock or stale
+generated binding.
 
 ### Safe catalog introspection
 
@@ -130,7 +175,9 @@ feature preflight; there is no direct catalog/storage handle.
 Grammar, query IR, module hash, cursor, text-index, projected request/response,
 and catalog schemas require additive versioned successors. Existing named
 queries and row plan hashes remain pinned. A text-profile change requires
-migration and rebuild of the affected index/projection.
+migration and rebuild of the affected index/projection. Activation additionally
+requires the complete receipted rotation above; repository fixtures, examples,
+locks, roles, and generated clients are part of the compatibility closure.
 
 ## Security
 
@@ -162,8 +209,8 @@ budgets remain mandatory.
 
 - **Provisional requirements:** `OQ-001` through `OQ-016`, to be added to
   `SPEC.md` only after exact acceptance.
-- **Defines or blocks:** WP-507, WP-508, WP-509, and WP-514.
-- **Final evidence:** WP-509 and WP-514.
+- **Defines or blocks:** WP-563, WP-564, WP-565, and WP-570.
+- **Final evidence:** WP-565 and WP-570.
 
 ## Decision Deadline
 
