@@ -9439,3 +9439,87 @@ work_packages:
     same-host evidence reduces validation/staging CPU or total seed without a material unary
     regression.
   human_review_triggers: *id001
+- id: WP-491
+  name: Changelog emitter core at the storage boundary
+  depends_on: [WP-487, WP-488, WP-489]
+  objective: Open the replication arc by attaching an ADR-0100 changelog emitter to the ADR-0101
+    publication edge, so a first-party in-process consumer obtains exact, gap-free, checksummed
+    changelog frames derived only from published durable snapshots, with no wire format, no
+    capability, no RPC, and no durable state of its own.
+  requirements: [PERF-015, PERF-017]
+  required_adrs: [ADR-0019, ADR-0061, ADR-0082, ADR-0083, ADR-0085, ADR-0086,
+    ADR-0093, ADR-0098, ADR-0100, ADR-0101, ADR-0102, ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-types/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    tests/storage_recovery/**]
+  deliverables:
+  - A dual-frontier pair type in riffdb-types addresses a changelog frame by application
+    commit-sequence and administration-sequence, each independently optional with explicit
+    unchanged encoding, compared under a partial componentwise order that refuses to call an
+    incomparable pair an advance; CommitToken and ProjectionFrontier are untouched
+  - A publication observer port in riffdb-storage-api receives one published durable-frontier
+    advancement per publication as a wakeup carrying a pinned published snapshot; it is
+    fire-and-forget, cannot fail, cannot wait on its consumer, and absorbs overflow as a typed
+    lagging state instead of applying backpressure to the writer
+  - A closed, versioned, canonically ordered, checksummed changelog frame and entry encoding that
+    shares no magic, version space, or code path with the durability journal (ADR-0101 section 6,
+    ADR-0104 section 8), with a length-delimited footer that discriminates a torn tail, plus a
+    fail-closed validating decode covering database identity, history incarnation, frontier gaps,
+    hash-chain continuity, per-class counts, canonical order, and checksum
+  - The emitter derives every frame by range-reading and point-reading the pinned published
+    snapshot for the covered interval only; it holds no storage handle, opens no transaction, and
+    reads no journal byte or overlay internal, pinned by a source guard architecture test
+  - The publication observer is called at all three durable-frontier publication sites strictly
+    after the frontier swap, at the same release rank as every other covered effect; the default
+    port observes nothing and changes no durable byte
+  - Frame-boundary coalescing for a lagging emitter is a named deferral; v1 emits exactly one
+    frame per observed advancement, and a resynced emitter re-anchors through the later bootstrap
+    path rather than inventing boundaries ADR-0100 section 1 defines as observed facts
+  - Differential exactness evidence applies every emitted frame to a bootstrap anchor and compares
+    byte-for-byte against the materialized final published snapshot across command and
+    service-audit frames; a supersession fixture writes one entity key in two separate fenced
+    epochs and asserts the earlier frame carries the earlier post-image, so prefix exactness is
+    proven at an intermediate frame boundary and not only at the final state
+  - The redb-Immediate control-plane lane, which publishes durable frontiers for catalog,
+    capability, query-module, reactive-module, migration and retention writes, is deliberately not
+    observed; no frame covers it, rows it writes are only incidentally swept into a later frame's
+    range read, and rows before the first or after the last observed advancement are never emitted.
+    The frame chain is an exact gap-free tail, never a complete history from empty, and RE3's
+    bootstrap is the only correct way to close that. Recorded on ChangelogPublicationPort and at
+    the lane itself
+  - The ADR-0100 section 2 gating obligation is discharged by a falsifiable test in which a
+    sealed applied-but-unflushed sibling subgroup is invisible to the framing pass, and neutering
+    the gate turns exactly that test red
+  - No durable table, meta key, ServiceOperationV1 variant, capability kind, proto message, server
+    configuration, lifecycle stage, or MCP surface is added
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  design_tests:
+    interface_safety: RE1 adds no application-facing interface. The port, snapshot, frame, and
+      consumer types are internal crate surfaces consumed only by first-party storage and by the
+      later replication packages; no application developer or agent can reach them, and no public
+      operation, capability, tool, or configuration is added. Unsafety is unexpressible rather than
+      merely discouraged. The one read capability an emitter is handed is a pinned published
+      snapshot, so opting out of the durability guarantee is not a call it can make wrongly; it is
+      a call it cannot make at all. Every decode fails closed, and every stop is typed rather than
+      silent.
+    scale: The emitter reads published snapshots through the same bounded range-scan discipline as
+      every other reader, over the covered sequence interval only; it never rewrites or rescans
+      full state, and its per-frame work is bounded by the same flush-cover ceiling ADR-0101
+      section 3 already imposes. It holds no durable state and no second bookkeeping structure.
+      The only co-location it assumes is the in-process consumer ADR-0093 section 1 already
+      records for a local emitter; nothing in the frame, its addressing, or its validation assumes
+      one node, and the bounded delivery buffer converts a slow consumer into typed lag rather than
+      into memory growth.
+  exit_gate: An in-process consumer receives a gap-free checksummed frame chain whose entries
+    reconstruct the published snapshot byte-for-byte, an applied-but-unflushed subgroup is provably
+    invisible with a recorded falsifiability transcript, a stalled consumer never delays
+    publication, and no durable, registry, transport, or public surface changes.
+  human_review_triggers: *id001

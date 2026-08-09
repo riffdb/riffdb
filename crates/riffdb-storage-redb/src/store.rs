@@ -126,6 +126,12 @@ pub(crate) struct SharedRedb {
     /// zero for the whole life of a handle whose checkpoints are all built from
     /// table metadata (test observability; pins the O(1) claim).
     checkpoint_count_rows_walked: AtomicU64,
+    /// The ADR-0100 changelog publication observer.
+    ///
+    /// Set once, at the single open site, and never replaced: the publication
+    /// edge therefore needs no lock to reach it and cannot be re-pointed at
+    /// runtime. The default observes nothing.
+    changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
 }
 
 /// Closed redb durability profiles for authoritative application writes.
@@ -187,6 +193,35 @@ impl SharedRedb {
 
     pub(crate) fn fence_writes(&self) {
         self.write_fenced.store(true, Ordering::Release);
+    }
+
+    /// Hands one published durable-frontier advancement to the ADR-0100
+    /// changelog publication observer.
+    ///
+    /// Called strictly AFTER the frontier swap, at the same release rank as
+    /// every other covered effect (ADR-0101 §4). It returns `()` and cannot
+    /// fail: the frontier is already published, so there is nothing left for
+    /// an observer to refuse. The observer receives the exact published
+    /// snapshot, pinned — it can never reach a writer-private applied root.
+    fn observe_changelog_publication(
+        &self,
+        predecessor: riffdb_types::DualFrontier,
+        covered: riffdb_types::DualFrontier,
+        frame_hash: [u8; 32],
+        transition_count: usize,
+        journaled: bool,
+        published: RedbReadAccess,
+    ) {
+        self.changelog_port.observe_published_advancement(
+            riffdb_storage_api::PublishedFrontierAdvancement::new(
+                predecessor,
+                covered,
+                frame_hash,
+                u32::try_from(transition_count).unwrap_or(u32::MAX),
+                journaled,
+                Arc::new(crate::changelog::RedbPublishedSnapshot::new(published)),
+            ),
+        );
     }
 
     /// Retention watermark sequence verified once at open (0 = unpruned).
@@ -638,6 +673,16 @@ impl RedbReadAccess {
         }
     }
 
+    pub(crate) fn administration_frontier(
+        &self,
+    ) -> Result<Option<AdministrationSequence>, StorageError> {
+        match self {
+            Self::Current(transaction) => read_administration_tail(transaction),
+            Self::Durable(transaction) => read_administration_tail(transaction),
+            Self::Composite(view) => Ok(view.overlay().published_administration()),
+        }
+    }
+
     pub(crate) fn checkpoint_application_frontier(&self) -> Option<CommitSequence> {
         match self {
             Self::Composite(view) => view.overlay().checkpoint().application_frontier(),
@@ -764,6 +809,11 @@ pub fn reset_last_repair_progress_for_tests() {
     LAST_REPAIR_PROGRESS_BPS.store(REPAIR_PROGRESS_SENTINEL, Ordering::Relaxed);
 }
 
+/// The default publication observer: a port that observes nothing.
+fn default_changelog_port() -> Arc<dyn riffdb_storage_api::ChangelogPublicationPort> {
+    Arc::new(riffdb_storage_api::NoChangelogPublicationPort)
+}
+
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
     ///
@@ -771,7 +821,12 @@ impl RedbStore {
     /// Initialization and migration retain their independently hardened
     /// durability boundary.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        Self::open_inner(path.as_ref(), RedbCommitProfile::Standard, None)
+        Self::open_inner(
+            path.as_ref(),
+            RedbCommitProfile::Standard,
+            None,
+            default_changelog_port(),
+        )
     }
 
     /// Opens a database with an explicit process-wide application commit profile.
@@ -779,7 +834,30 @@ impl RedbStore {
         path: impl AsRef<Path>,
         application_commit_profile: RedbCommitProfile,
     ) -> Result<Self, StorageError> {
-        Self::open_inner(path.as_ref(), application_commit_profile, None)
+        Self::open_inner(
+            path.as_ref(),
+            application_commit_profile,
+            None,
+            default_changelog_port(),
+        )
+    }
+
+    /// Opens a database with a changelog publication observer installed.
+    ///
+    /// This is the single construction site for the ADR-0100 emitter binding:
+    /// the port is fixed for the life of the handle, so no later caller can
+    /// re-point the publication edge at a different observer.
+    pub fn open_with_changelog_publication_port(
+        path: impl AsRef<Path>,
+        application_commit_profile: RedbCommitProfile,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner(
+            path.as_ref(),
+            application_commit_profile,
+            None,
+            changelog_port,
+        )
     }
 
     /// Opens a database with one closed process-test failpoint controller.
@@ -788,7 +866,12 @@ impl RedbStore {
         path: impl AsRef<Path>,
         controller: RedbTestController,
     ) -> Result<Self, StorageError> {
-        Self::open_inner(path.as_ref(), RedbCommitProfile::Standard, Some(controller))
+        Self::open_inner(
+            path.as_ref(),
+            RedbCommitProfile::Standard,
+            Some(controller),
+            default_changelog_port(),
+        )
     }
 
     /// Opens a database with one explicit profile and process-test controller.
@@ -798,13 +881,19 @@ impl RedbStore {
         application_commit_profile: RedbCommitProfile,
         controller: RedbTestController,
     ) -> Result<Self, StorageError> {
-        Self::open_inner(path.as_ref(), application_commit_profile, Some(controller))
+        Self::open_inner(
+            path.as_ref(),
+            application_commit_profile,
+            Some(controller),
+            default_changelog_port(),
+        )
     }
 
     fn open_inner(
         path: &Path,
         application_commit_profile: RedbCommitProfile,
         test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
     ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
         let database = Builder::new()
@@ -839,6 +928,7 @@ impl RedbStore {
                 retention_watermark: AtomicU64::new(0),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
+                changelog_port,
             }),
         };
         store.ensure_current_storage_format()?;
@@ -3302,6 +3392,16 @@ impl RedbWriteAccess {
         self.commit_with_observations(operation, delta, 0)
     }
 
+    /// The redb-`Immediate` control-plane commit lane.
+    ///
+    /// This publishes a durable frontier (`refresh_durable_read_frontier`
+    /// below) **without** notifying the ADR-0100 changelog publication port, so
+    /// no changelog frame covers anything committed here. That is deliberate
+    /// for RE1 and documented in full on
+    /// `riffdb_storage_api::ChangelogPublicationPort`; a follower closes the
+    /// gap through the RE3 bootstrap, never by assuming the frame chain is a
+    /// complete history. If this lane ever gains an observer, it needs
+    /// dual-frontier attribution it does not currently keep.
     fn commit_with_observations(
         mut self,
         operation: RedbTestOperation,
@@ -4925,6 +5025,7 @@ impl RedbSubmittedCommandFence {
     ) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
         self.publish_successor(true)?;
         self.shared.clear_composite_publication()?;
+        let predecessor_application;
         {
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
@@ -4946,12 +5047,29 @@ impl RedbSubmittedCommandFence {
                 self.shared.fence_writes();
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
+            predecessor_application = runtime.published_sequence;
             runtime.last_sequence = Some(self.last_sequence);
             runtime.published_sequence = Some(self.last_sequence);
             runtime.last_administration_sequence = self.last_administration_sequence;
             runtime.published_administration_sequence = self.last_administration_sequence;
             runtime.reanchor_required = true;
         }
+        // ADR-0100 §1: the direct `Immediate` singleton path publishes a
+        // single-group frame with no covering journal flush.
+        self.shared.observe_changelog_publication(
+            riffdb_types::DualFrontier::new(
+                predecessor_application,
+                self.predecessor_administration_sequence,
+            ),
+            riffdb_types::DualFrontier::new(
+                Some(self.last_sequence),
+                self.last_administration_sequence,
+            ),
+            [0; 32],
+            self.command_count,
+            false,
+            RedbReadAccess::Durable(Arc::clone(&self.successor)),
+        );
         self.finish_applied()
     }
 
@@ -4974,8 +5092,10 @@ impl RedbSubmittedCommandFence {
             .composite_successor
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let published_snapshot = Arc::clone(&composite_successor);
         self.publish_fenced_successor(composite_successor)?;
 
+        let predecessor_application;
         {
             let mut runtime_guard = self.shared.journal_runtime()?;
             let runtime = runtime_guard
@@ -4996,6 +5116,7 @@ impl RedbSubmittedCommandFence {
                 self.shared.fence_writes();
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
+            predecessor_application = runtime.published_sequence;
             runtime.published_sequence = Some(self.last_sequence);
             runtime.published_administration_sequence = self.last_administration_sequence;
             runtime.published_hash = fenced.frame_hash;
@@ -5015,6 +5136,22 @@ impl RedbSubmittedCommandFence {
             }
         }
 
+        // ADR-0101 §4 publication edge: one successful journal flush is one
+        // ADR-0100 changelog frame.
+        self.shared.observe_changelog_publication(
+            riffdb_types::DualFrontier::new(
+                predecessor_application,
+                self.predecessor_administration_sequence,
+            ),
+            riffdb_types::DualFrontier::new(
+                Some(self.last_sequence),
+                self.last_administration_sequence,
+            ),
+            fenced.frame_hash,
+            self.command_count,
+            true,
+            RedbReadAccess::Composite(published_snapshot),
+        );
         self.finish_applied()
     }
 
@@ -5179,6 +5316,7 @@ impl RedbSubmittedServiceAuditFence {
             .composite_successor
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let published_snapshot = Arc::clone(&composite_successor);
         self.shared
             .publish_composite_successor(&self.composite_predecessor, composite_successor)?;
         let mut frontier = self
@@ -5224,6 +5362,23 @@ impl RedbSubmittedServiceAuditFence {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
+        // The administration-sequence-only publication edge: a standalone
+        // service-audit flush is an ADR-0100 frame whose application component
+        // is explicitly unchanged.
+        self.shared.observe_changelog_publication(
+            riffdb_types::DualFrontier::new(
+                self.predecessor_sequence,
+                self.predecessor_administration_sequence,
+            ),
+            riffdb_types::DualFrontier::new(
+                self.covered_sequence,
+                self.covered_administration_sequence,
+            ),
+            fenced.frame_hash,
+            self.transition_count,
+            true,
+            RedbReadAccess::Composite(published_snapshot),
+        );
         self.completed = true;
         self.results
             .take()
