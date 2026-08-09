@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "6f095150f10a7668cda6325173afb100995517b2a4c4ced17b066f26c7aaeb66",
+  "application_manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "26ad9a9d1b67644ca151981d54a4bd3091a25a6c641f484457a9a40c8d57f1b4",
+      "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
       "description": "Execute the exact CreateItem compiled command from contract AgentAlpha.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -92,6 +92,7 @@
       "title": "Run CreateItem"
     }
   ],
+  "reactive_tools": [],
   "schema": "riffdb-generated-mcp-tools-v1",
   "tools": [
     {
@@ -115,7 +116,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "30408cd94c7b82ab8dcf38557af7dc7ab0db223f6350abf7b81b52d6238be16d",
+      "module_hash": "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb",
       "name": "agent_alpha_item_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -10,3 +10,11 @@ Handwritten code belongs in `src/`. Files below `generated/` are compiler-owned.
 Application code must use generated named queries and symbolic commands; kernel
 gRPC requests, numeric schema IDs, field masks, encoded keys, and handwritten
 transport adapters are rejected by the application-boundary check.
+
+`riffdb.application.json` contains symbolic author intent. The compiler-owned
+`riffdb.application.lock.json` pins the exact contract, query, plan, role, and
+generated-artifact identities. Refresh them only through
+`riffdb application lock --write`; do not copy hashes into the source manifest
+or edit generated clients. `riffdb application check` and
+`riffdb application lock --check` both fail with `RDB-AL008` when either side
+of that closure drifts.
