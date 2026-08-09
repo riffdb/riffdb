@@ -24,27 +24,29 @@ use riffdb_storage_api::{
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
     CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
-    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    ChangelogEmissionStateV1, ChangelogEntryClassV1, ChangelogFrameConsumer, ChangelogFrameV1,
+    ChangelogResyncReasonV1, ChangelogStreamValidatorV1, CommandCandidateAdmission,
+    CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
     DatabaseInitializationPort, DeclaredOutcome, DeferredCommandEpoch, DeferredCommandEpochPort,
     DeferredCommandFence, DeferredNonEmptyCommandBatch, DurabilityMode, DurableKeySchemaBindingV1,
-    EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
-    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit,
-    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
-    ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
-    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
-    IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
-    NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
-    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
-    PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
-    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, SnapshotReader, SnapshotRequest,
-    StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
-    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    EmptyCommandBatch, EncodedChangelogFrameV1, EncodedWriteSetUpperBoundResultV1, EntityMutation,
+    EntityObservation, EntityPostImage, EntityTarget, EvaluationBudget, EventIntent,
+    EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
+    EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
+    IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1,
+    IndexEpochPosition, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit,
+    OutboxRepository, OutboxStatusObservationV1, OutboxStatusReadResultV1,
+    PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
+    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+    SnapshotReader, SnapshotRequest, StartupValidationInputs, StorageScanLimit,
+    StoredAdministrationAuditRecordV1, StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
     StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
     StructuralEvidenceSession, StructuralFinding, StructuralFindingScope, StructuralOpenOutcome,
     StructurallyOpened, command_write_set_upper_bound_v1, decode_index_entry_v1,
@@ -402,10 +404,40 @@ fn command_fixture() -> CommandFixture {
 /// Ordinal-parameterized committed command: ordinal 1 reproduces the original
 /// fixture exactly; ordinal N commits sequence N over a disjoint entity.
 fn command_fixture_at(ordinal: u64) -> CommandFixture {
+    build_command_fixture(ordinal, ordinal, None)
+}
+
+/// A second write to the SAME entity as `prior`, committed at `ordinal`.
+///
+/// This is the ADR-0083 supersession chain in fixture form: two commit sequences
+/// whose entity post-images occupy one physical key with different bytes. It is
+/// what makes intermediate-frame prefix exactness observable at all — with only
+/// disjoint entities, a frame derived from a later snapshot would be
+/// indistinguishable from one derived correctly.
+fn superseding_command_fixture_at(
+    ordinal: u64,
+    target_ordinal: u64,
+    prior: &CommandFixture,
+) -> CommandFixture {
+    build_command_fixture(ordinal, target_ordinal, Some(prior))
+}
+
+fn build_command_fixture(
+    ordinal: u64,
+    target_ordinal: u64,
+    prior: Option<&CommandFixture>,
+) -> CommandFixture {
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
     let ordinal_u8 = u8::try_from(ordinal % 256).expect("bounded fixture ordinal");
-    let (target, index_key, range) = target_and_index_at(ordinal);
+    let (target, index_key, range) = target_and_index_at(target_ordinal);
+    // A superseding write must carry different canonical bytes, or the frame
+    // under test could not distinguish the two post-images.
+    let payload = if prior.is_some() { 2 } else { 1 };
+    let prior_entity = prior.map(|fixture| fixture.records.entities()[0].post_image().clone());
+    let prior_epoch = prior.map_or(IndexEpochPosition::BeforeFirst, |_| {
+        IndexEpochPosition::Value(riffdb_types::IndexEpoch::first())
+    });
     let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
     let principal = ActorId::new("principal-a").expect("principal");
     let actor = riffdb_types::AdmittedActorContext::new(
@@ -434,7 +466,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("logical timestamp"));
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
     partition
-        .push_u64(6 + ordinal)
+        .push_u64(6 + target_ordinal)
         .expect("partition component");
     let partition = partition.finish().expect("partition key");
     let pending = StoredPendingAdmissionV1::new(
@@ -455,20 +487,31 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let snapshot = ReadSnapshot::new(
         &snapshot_request,
         None,
-        vec![EntityObservation::Absent(target.clone())],
+        vec![prior_entity.clone().map_or_else(
+            || EntityObservation::Absent(target.clone()),
+            EntityObservation::Present,
+        )],
         Vec::new(),
         Vec::new(),
     )
     .expect("read snapshot");
-    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(1))
+    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(payload))
         .expect("entity post-image");
-    let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(1))
+    let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(payload))
         .expect("event intent");
-    let declared_outcome = DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(1))
-        .expect("declared outcome");
+    let declared_outcome =
+        DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(payload))
+            .expect("declared outcome");
+    let entity_mutation = prior_entity.as_ref().map_or_else(
+        || EntityMutation::Create(post_image.clone()),
+        |entity| EntityMutation::Replace {
+            expected_version: entity.entity_version(),
+            post_image: post_image.clone(),
+        },
+    );
     let evaluated = riffdb_storage_api::EvaluatedCommand::new(
         &snapshot,
-        vec![EntityMutation::Create(post_image.clone())],
+        vec![entity_mutation],
         vec![event_intent],
         declared_outcome.clone(),
         EvaluationBudget::v1(),
@@ -489,21 +532,32 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
 
     let stored_entity = StoredEntityRecordV1::new(
         target.clone(),
-        EntityVersion::first(),
+        prior_entity
+            .as_ref()
+            .map_or_else(EntityVersion::first, |entity| {
+                entity
+                    .entity_version()
+                    .checked_next()
+                    .expect("superseding entity version")
+            }),
         plan.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(1),
+        record(payload),
     )
     .expect("stored entity");
     let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
-        ExpectedEntityState::Absent,
+        prior_entity
+            .as_ref()
+            .map_or(ExpectedEntityState::Absent, |entity| {
+                ExpectedEntityState::Present(entity.entity_version())
+            }),
         stored_entity,
     )
     .expect("committed entity mutation");
     let index_record = StoredIndexEntryV2::new(
         index_key.clone(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(1),
+        record(payload),
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
@@ -515,14 +569,14 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         &affected_targets,
         vec![CurrentIndexGenerationObservation::new(
             generation.clone(),
-            IndexEpochPosition::BeforeFirst,
+            prior_epoch,
         )],
     )
     .expect("affected current state");
     let epoch_advance = IndexEpochAdvanceV1::new(
         generation,
         DurableKeySchemaBindingV1::from_plan(&plan),
-        IndexEpochPosition::BeforeFirst,
+        prior_epoch,
     )
     .expect("epoch advance");
     let upper_bound = match command_write_set_upper_bound_v1(
@@ -550,7 +604,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let assignment = AssignedCommandSequence::from_assigned(sequence);
     let event_id = EventId::new(sequence, 0);
     let event_type_id = EventTypeId::new(1).expect("event type");
-    let event_payload = record(1);
+    let event_payload = record(payload);
     let event = StoredDurableEventV1::new(
         event_id,
         event_type_id,
@@ -692,7 +746,8 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         .expect("read transaction-current state");
     assert_eq!(
         current.bindings()[0].expected_state(),
-        ExpectedEntityState::Absent
+        fixture.records.entities()[0].expected(),
+        "transaction-current state must match the fixture's committed expectation"
     );
     let candidate = candidate
         .plan_validated(fixture.affected_targets.clone())
@@ -738,7 +793,8 @@ fn apply_unpublished_command_fixture(
         .expect("read deferred transaction-current state");
     assert_eq!(
         current.bindings()[0].expected_state(),
-        ExpectedEntityState::Absent
+        fixture.records.entities()[0].expected(),
+        "transaction-current state must match the fixture's committed expectation"
     );
     let candidate = candidate
         .plan_validated(fixture.affected_targets.clone())
@@ -4618,4 +4674,652 @@ fn retention_backup_of_pruned_database_restores_and_validates() {
     assert_eq!(restored_status.watermark_sequence, 1);
     assert_eq!(restored_status.tombstone_count, 1);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ===========================================================================
+// ADR-0100 changelog emitter: exactness, gating, gap-freeness, non-blocking.
+//
+// The emitter is wired at the ADR-0101 §4 publication edge and derives frames
+// only from the snapshot that publication pinned. These tests are the evidence
+// for that: a differential reconstruction, the §2 gate obligation in its
+// falsifiable form, the typed-lagging boundary, and the writer-independence of
+// a stalled consumer.
+// ===========================================================================
+
+/// Physical tables the v1 entry classes claim, paired with their class.
+///
+/// The differential comparison is restricted to exactly these, because these
+/// are exactly the tables the emitter promises. A class added without a
+/// matching row here would silently escape the exactness proof, so the mapping
+/// is asserted against the closed registry.
+const CHANGELOG_CLAIMED_TABLES: [(&str, ChangelogEntryClassV1); 8] = [
+    ("commits", ChangelogEntryClassV1::Commit),
+    ("events", ChangelogEntryClassV1::Event),
+    ("event_routes", ChangelogEntryClassV1::EventRoute),
+    ("outbox", ChangelogEntryClassV1::OutboxIntent),
+    ("provenance", ChangelogEntryClassV1::Provenance),
+    ("entities", ChangelogEntryClassV1::Entity),
+    ("audit", ChangelogEntryClassV1::AdministrationAudit),
+    (
+        "audit_by_request",
+        ChangelogEntryClassV1::ServiceAuditRequestIndex,
+    ),
+];
+
+type ClaimedRows = std::collections::BTreeMap<(&'static str, Vec<u8>), Vec<u8>>;
+
+#[derive(Default)]
+struct RecordingChangelogConsumer {
+    accepted: std::sync::Mutex<Vec<(ChangelogFrameV1, Vec<u8>)>>,
+    resyncs: std::sync::Mutex<Vec<ChangelogResyncReasonV1>>,
+    stall: std::sync::Mutex<bool>,
+    released: std::sync::Condvar,
+}
+
+impl RecordingChangelogConsumer {
+    fn stalled() -> Self {
+        Self {
+            stall: std::sync::Mutex::new(true),
+            ..Self::default()
+        }
+    }
+
+    fn release(&self) {
+        *self.stall.lock().expect("stall lock") = false;
+        self.released.notify_all();
+    }
+
+    fn frames(&self) -> Vec<ChangelogFrameV1> {
+        self.accepted
+            .lock()
+            .expect("frame lock")
+            .iter()
+            .map(|(frame, _)| frame.clone())
+            .collect()
+    }
+
+    fn encoded(&self) -> Vec<Vec<u8>> {
+        self.accepted
+            .lock()
+            .expect("frame lock")
+            .iter()
+            .map(|(_, bytes)| bytes.clone())
+            .collect()
+    }
+
+    fn resyncs(&self) -> Vec<ChangelogResyncReasonV1> {
+        self.resyncs.lock().expect("resync lock").clone()
+    }
+}
+
+impl ChangelogFrameConsumer for RecordingChangelogConsumer {
+    fn accept_frame(&self, frame: &ChangelogFrameV1, encoded: &EncodedChangelogFrameV1) {
+        let mut stalled = self.stall.lock().expect("stall lock");
+        while *stalled {
+            stalled = self.released.wait(stalled).expect("stall wait");
+        }
+        drop(stalled);
+        self.accepted
+            .lock()
+            .expect("frame lock")
+            .push((frame.clone(), encoded.as_bytes().to_vec()));
+    }
+
+    fn note_resync_required(&self, reason: ChangelogResyncReasonV1) {
+        self.resyncs.lock().expect("resync lock").push(reason);
+    }
+}
+
+/// A port that forwards every advancement except one, to manufacture a gap.
+#[derive(Debug)]
+struct DroppingChangelogPort {
+    inner: std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    drop_ordinal: u64,
+    seen: AtomicU64,
+}
+
+impl riffdb_storage_api::ChangelogPublicationPort for DroppingChangelogPort {
+    fn observe_published_advancement(
+        &self,
+        advancement: riffdb_storage_api::PublishedFrontierAdvancement,
+    ) {
+        if self.seen.fetch_add(1, Ordering::Relaxed) == self.drop_ordinal {
+            return;
+        }
+        self.inner.observe_published_advancement(advancement);
+    }
+}
+
+/// Reads the claimed tables as one materialized durable state.
+///
+/// The standard profile's authoritative state is a redb checkpoint plus an
+/// exact journal suffix (ADR-0104), so a raw redb read alone would see only the
+/// checkpoint. Reopening the store first replays and checkpoints the suffix,
+/// which is exactly the state a follower must end up holding.
+fn read_claimed_rows(path: &Path) -> ClaimedRows {
+    drop(RedbStore::open(path).expect("materialize the durable journal suffix"));
+    let database = Database::open(path).expect("open raw database");
+    let read = database.begin_read().expect("begin raw read");
+    let mut rows = ClaimedRows::new();
+    for (name, _) in CHANGELOG_CLAIMED_TABLES {
+        let table = read
+            .open_table(TableDefinition::<&[u8], &[u8]>::new(name))
+            .expect("open claimed table");
+        for row in table.iter().expect("iterate claimed table") {
+            let (key, value) = row.expect("claimed row");
+            rows.insert((name, key.value().to_vec()), value.value().to_vec());
+        }
+    }
+    rows
+}
+
+fn table_name_for(class: ChangelogEntryClassV1) -> &'static str {
+    CHANGELOG_CLAIMED_TABLES
+        .into_iter()
+        .find(|(_, candidate)| *candidate == class)
+        .map(|(name, _)| name)
+        .expect("every closed entry class claims a table")
+}
+
+/// Applies every frame's entries onto a starting map, exactly as a follower
+/// would: one frame at a time, in order, all entries or none.
+fn apply_frames(mut state: ClaimedRows, frames: &[ChangelogFrameV1]) -> ClaimedRows {
+    for frame in frames {
+        for entry in frame.entries() {
+            state.insert(
+                (table_name_for(entry.class()), entry.key().to_vec()),
+                entry.value().to_vec(),
+            );
+        }
+    }
+    state
+}
+
+fn start_recording_emitter(
+    capacity: usize,
+) -> (
+    std::sync::Arc<RecordingChangelogConsumer>,
+    riffdb_storage_redb::RedbChangelogEmitterHandle,
+) {
+    let consumer = std::sync::Arc::new(RecordingChangelogConsumer::default());
+    let handle = riffdb_storage_redb::start_changelog_emitter(
+        std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumer>,
+        capacity,
+    )
+    .expect("start changelog emitter");
+    (consumer, handle)
+}
+
+fn open_with_emitter(
+    path: &Path,
+    port: std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+) -> RedbOperationalPorts {
+    open_operational(
+        RedbStore::open_with_changelog_publication_port(path, RedbCommitProfile::Standard, port)
+            .expect("open observed database"),
+    )
+}
+
+fn fence_deferred_epoch(ports: &RedbOperationalPorts, fixtures: &[CommandFixture]) {
+    let mut epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin observed durability epoch");
+    for fixture in fixtures {
+        epoch = apply_unpublished_command_fixture(epoch, fixture);
+    }
+    DeferredCommandEpoch::fence(epoch).expect("fence observed durability epoch");
+}
+
+fn standalone_audit_intent(seed: u8, seconds: i64) -> ServiceAuditAppendIntentV1 {
+    ServiceAuditAppendIntentV1::new(
+        RequestId::from_bytes(uuid_bytes(seed)).expect("audit request ID"),
+        Timestamp::new(seconds, 0).expect("audit timestamp"),
+        ServiceOperationV1::GetHealth,
+        ServiceAuditPhaseV1::Denied,
+        catalog_principal(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("standalone audit intent")
+}
+
+fn append_standalone_audit_group(ports: &mut RedbOperationalPorts, seeds: [u8; 2]) {
+    let intents = [
+        standalone_audit_intent(seeds[0], 1_700_000_010),
+        standalone_audit_intent(seeds[1], 1_700_000_011),
+    ];
+    let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence) = ports
+        .submit_service_audit_group(&intents)
+        .expect("submit standalone audit group")
+    else {
+        panic!("the standard profile must submit a journal fence");
+    };
+    let results = fence.wait().expect("fence standalone audit group");
+    assert_eq!(results.len(), intents.len());
+}
+
+#[test]
+fn changelog_frames_reconstruct_the_published_snapshot_exactly() {
+    let path = TestDatabasePath::new("changelog-exactness");
+    prepare_command_database(&path.0);
+    // The anchor is the state a follower would hold after bootstrap. Read it
+    // while no handle owns the database, then tail the emitted frames onto it.
+    let anchor = read_claimed_rows(&path.0);
+
+    let (consumer, emitter) = start_recording_emitter(64);
+    {
+        let mut ports = open_with_emitter(&path.0, emitter.port());
+        fence_deferred_epoch(&ports, &[command_fixture_at(1), command_fixture_at(2)]);
+        append_standalone_audit_group(&mut ports, [0x81, 0x82]);
+        fence_deferred_epoch(&ports, &[command_fixture_at(3)]);
+        append_standalone_audit_group(&mut ports, [0x83, 0x84]);
+        assert_eq!(
+            emitter.emitter().wait_for_emitted(4),
+            ChangelogEmissionStateV1::Streaming
+        );
+    }
+    let final_rows = read_claimed_rows(&path.0);
+    let frames = consumer.frames();
+    assert_eq!(frames.len(), 4, "one frame per published advancement");
+
+    let reconstructed = apply_frames(anchor.clone(), &frames);
+    assert_eq!(
+        reconstructed, final_rows,
+        "frames applied to the anchor must be byte-equal to the final published snapshot"
+    );
+    assert_ne!(
+        reconstructed, anchor,
+        "the workload must have changed state"
+    );
+
+    // Command frames advance the application component; standalone service-audit
+    // frames advance only the administration component.
+    let application: Vec<_> = frames
+        .iter()
+        .map(|frame| {
+            (
+                frame.header().covered().application(),
+                frame.header().covered().administration(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        application[0].0,
+        CommitSequence::new(2),
+        "the first frame covers both grouped commands"
+    );
+    assert_eq!(
+        application[1].0, application[0].0,
+        "a standalone audit frame leaves the application frontier unchanged"
+    );
+    assert!(
+        application[1].1 > application[0].1,
+        "a standalone audit frame advances the administration frontier"
+    );
+    assert_eq!(application[2].0, CommitSequence::new(3));
+
+    for frame in &frames {
+        assert!(
+            frame.header().journaled(),
+            "every standard-profile publication is covered by a journal flush"
+        );
+        assert_ne!(
+            frame.header().journal_frame_hash(),
+            [0; 32],
+            "each frame is bound to the journal fence that released it"
+        );
+        assert!(
+            frame
+                .header()
+                .covered()
+                .advances_from(frame.header().predecessor()),
+            "a frame always advances its dual frontier"
+        );
+    }
+}
+
+#[test]
+fn emitted_frames_form_one_gap_free_checksummed_chain() {
+    let path = TestDatabasePath::new("changelog-chain");
+    prepare_command_database(&path.0);
+    let (consumer, emitter) = start_recording_emitter(64);
+    {
+        let ports = open_with_emitter(&path.0, emitter.port());
+        fence_deferred_epoch(&ports, &[command_fixture_at(1)]);
+        fence_deferred_epoch(&ports, &[command_fixture_at(2)]);
+        fence_deferred_epoch(&ports, &[command_fixture_at(3)]);
+        assert_eq!(
+            emitter.emitter().wait_for_emitted(3),
+            ChangelogEmissionStateV1::Streaming
+        );
+    }
+    let encoded = consumer.encoded();
+    assert_eq!(encoded.len(), 3);
+    let frames = consumer.frames();
+    let header = frames[0].header();
+
+    let mut validator = ChangelogStreamValidatorV1::anchored_at(
+        header.database_id(),
+        header.history_incarnation(),
+        header.predecessor(),
+        [0; 32],
+    );
+    for bytes in &encoded {
+        validator
+            .accept(bytes)
+            .expect("the chain validates exactly");
+    }
+    assert_eq!(
+        validator.expected_predecessor(),
+        frames[2].header().covered()
+    );
+
+    // The bound journal frame hash is covered by the chain: editing it in the
+    // first frame breaks the second, even after re-checksumming.
+    let mut tampered = encoded[0].clone();
+    let offset = 76 + 4 * riffdb_storage_api::CHANGELOG_ENTRY_CLASS_COUNT + 4 + 32;
+    tampered[offset] ^= 0xff;
+    let mut fresh = ChangelogStreamValidatorV1::anchored_at(
+        header.database_id(),
+        header.history_incarnation(),
+        header.predecessor(),
+        [0; 32],
+    );
+    assert!(
+        matches!(
+            fresh.accept(&tampered),
+            Err(riffdb_storage_api::ChangelogFrameError::ChecksumMismatch)
+        ),
+        "a corrupted authoritative-chain binding fails its own checksum"
+    );
+}
+
+#[test]
+fn the_emitter_never_observes_an_applied_but_unflushed_subgroup() {
+    let path = TestDatabasePath::new("changelog-unflushed-gate");
+    prepare_command_database(&path.0);
+    let (consumer, emitter) = start_recording_emitter(64);
+    let ports = open_with_emitter(&path.0, emitter.port());
+
+    // Two subgroups are applied through `Durability::None`. The first is
+    // sealed and its flush is in flight; the second is sealed behind it and is
+    // therefore APPLIED BUT UNFLUSHED, sitting in the writer-private composite
+    // frontier, when the first publication happens. A third is left open and
+    // unsealed. None of the later state may appear in the first frame.
+    let first = ports
+        .begin_deferred_command_epoch()
+        .expect("begin first durability epoch");
+    let first_fence = DeferredCommandEpoch::seal(apply_unpublished_command_fixture(
+        first,
+        &command_fixture_at(1),
+    ))
+    .expect("seal first epoch");
+
+    let sealed_sibling = ports
+        .begin_deferred_command_epoch()
+        .expect("begin the applied-but-unflushed sibling");
+    let sibling_fence = DeferredCommandEpoch::seal(apply_unpublished_command_fixture(
+        sealed_sibling,
+        &command_fixture_at(2),
+    ))
+    .expect("seal the applied-but-unflushed sibling");
+
+    // Publication of the first epoch happens while the sibling is private.
+    let committed = first_fence.wait().expect("publish the first epoch");
+    assert_eq!(committed.len(), 1);
+    assert_eq!(
+        emitter.emitter().wait_for_emitted(1),
+        ChangelogEmissionStateV1::Streaming,
+        "the gate must not fire for a correctly published snapshot"
+    );
+
+    let frames = consumer.frames();
+    assert_eq!(frames.len(), 1);
+    let frame = &frames[0];
+    assert_eq!(
+        frame.header().covered().application(),
+        CommitSequence::new(1)
+    );
+    let held_commit_key = 2_u64.to_be_bytes();
+    assert!(
+        frame.entries().iter().all(|entry| {
+            entry.class() != ChangelogEntryClassV1::Commit
+                || entry.key() != held_commit_key.as_slice()
+        }),
+        "the held applied-but-unflushed subgroup must be invisible to the framing pass"
+    );
+    assert!(
+        frame.entries().iter().any(|entry| {
+            entry.class() == ChangelogEntryClassV1::Commit
+                && entry.key() == 1_u64.to_be_bytes().as_slice()
+        }),
+        "the published subgroup must be present"
+    );
+    assert!(consumer.resyncs().is_empty());
+
+    // Releasing the sibling publishes it as its own frame, in order.
+    sibling_fence.wait().expect("publish the sibling epoch");
+    assert_eq!(
+        emitter.emitter().wait_for_emitted(2),
+        ChangelogEmissionStateV1::Streaming
+    );
+    let frames = consumer.frames();
+    assert_eq!(
+        frames[1].header().predecessor(),
+        frames[0].header().covered()
+    );
+    assert_eq!(
+        frames[1].header().covered().application(),
+        CommitSequence::new(2)
+    );
+    assert!(frames[1].entries().iter().any(|entry| {
+        entry.class() == ChangelogEntryClassV1::Commit && entry.key() == held_commit_key.as_slice()
+    }));
+}
+
+#[test]
+fn a_dropped_advancement_stops_the_emitter_with_a_typed_gap() {
+    let path = TestDatabasePath::new("changelog-gap");
+    prepare_command_database(&path.0);
+    let (consumer, emitter) = start_recording_emitter(64);
+    let dropping = std::sync::Arc::new(DroppingChangelogPort {
+        inner: emitter.port(),
+        drop_ordinal: 1,
+        seen: AtomicU64::new(0),
+    });
+    {
+        let ports = open_with_emitter(
+            &path.0,
+            dropping as std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        );
+        fence_deferred_epoch(&ports, &[command_fixture_at(1)]);
+        assert_eq!(
+            emitter.emitter().wait_for_emitted(1),
+            ChangelogEmissionStateV1::Streaming
+        );
+        fence_deferred_epoch(&ports, &[command_fixture_at(2)]);
+        fence_deferred_epoch(&ports, &[command_fixture_at(3)]);
+        assert_eq!(
+            emitter.emitter().wait_for_resync(),
+            ChangelogResyncReasonV1::FrontierGap
+        );
+    }
+    assert_eq!(
+        consumer.frames().len(),
+        1,
+        "the emitter stops rather than emitting across a gap"
+    );
+    assert_eq!(
+        consumer.resyncs(),
+        vec![ChangelogResyncReasonV1::FrontierGap]
+    );
+    assert_eq!(
+        emitter.emitter().state(),
+        ChangelogEmissionStateV1::Resync(ChangelogResyncReasonV1::FrontierGap)
+    );
+}
+
+#[test]
+fn a_stalled_consumer_never_delays_publication_and_overflow_is_typed_lagging() {
+    let path = TestDatabasePath::new("changelog-nonblocking");
+    prepare_command_database(&path.0);
+    let consumer = std::sync::Arc::new(RecordingChangelogConsumer::stalled());
+    let emitter = riffdb_storage_redb::start_changelog_emitter(
+        std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumer>,
+        1,
+    )
+    .expect("start changelog emitter");
+    {
+        let ports = open_with_emitter(&path.0, emitter.port());
+        // The consumer is parked inside `accept_frame` for the whole workload.
+        // Every publication below must still complete: if the port applied any
+        // backpressure this test would never finish.
+        for ordinal in 1..=6 {
+            fence_deferred_epoch(&ports, &[command_fixture_at(ordinal)]);
+        }
+        assert_eq!(
+            emitter.emitter().observed_advancements(),
+            6,
+            "the publication edge offered every advancement without blocking"
+        );
+        assert_eq!(
+            emitter.emitter().wait_for_resync(),
+            ChangelogResyncReasonV1::BufferOverflow
+        );
+        // The writer is entirely unaffected: every command is committed.
+        for ordinal in 1..=6 {
+            let fixture = command_fixture_at(ordinal);
+            assert_eq!(
+                ports
+                    .read_entity(&fixture.target)
+                    .expect("read committed entity"),
+                Some(fixture.records.entities()[0].post_image().clone())
+            );
+        }
+        consumer.release();
+    }
+    assert_eq!(
+        emitter.emitter().state(),
+        ChangelogEmissionStateV1::Resync(ChangelogResyncReasonV1::BufferOverflow),
+        "overflow is typed lagging, never backpressure"
+    );
+}
+
+#[test]
+fn the_default_publication_port_observes_nothing_and_changes_no_behavior() {
+    let path = TestDatabasePath::new("changelog-default-port");
+    prepare_command_database(&path.0);
+    let expected = {
+        let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
+        fence_deferred_epoch(&ports, &[command_fixture_at(1)]);
+        drop(ports);
+        read_claimed_rows(&path.0)
+    };
+
+    let observed_path = TestDatabasePath::new("changelog-default-port-observed");
+    prepare_command_database(&observed_path.0);
+    let (_consumer, emitter) = start_recording_emitter(64);
+    let ports = open_with_emitter(&observed_path.0, emitter.port());
+    fence_deferred_epoch(&ports, &[command_fixture_at(1)]);
+    assert_eq!(
+        emitter.emitter().wait_for_emitted(1),
+        ChangelogEmissionStateV1::Streaming
+    );
+    drop(ports);
+    assert_eq!(
+        read_claimed_rows(&observed_path.0),
+        expected,
+        "installing an observer changes no durable byte"
+    );
+}
+
+/// Returns the exact stored bytes of a fixture's entity post-image.
+fn expected_entity_row(fixture: &CommandFixture) -> (Vec<u8>, Vec<u8>) {
+    let post_image = fixture.records.entities()[0].post_image();
+    let key = post_image.target().key().as_bytes().to_vec();
+    let value = riffdb_storage_api::encode_entity_record_v1(post_image)
+        .expect("encode entity post-image")
+        .into_bytes();
+    (key, value)
+}
+
+fn entity_entry_value(frame: &ChangelogFrameV1, key: &[u8]) -> Option<Vec<u8>> {
+    frame
+        .entries()
+        .iter()
+        .find(|entry| entry.class() == ChangelogEntryClassV1::Entity && entry.key() == key)
+        .map(|entry| entry.value().to_vec())
+}
+
+#[test]
+fn a_frame_carries_the_post_image_of_its_own_frontier_not_a_later_one() {
+    // Prefix exactness at an INTERMEDIATE frame boundary. Two commits write the
+    // same physical entity key (the ADR-0083 supersession chain), so the two
+    // post-images differ in bytes at one key. A frame derived from a snapshot
+    // later than its own covered frontier would carry the wrong one and still
+    // converge to the right final state — which is exactly the failure mode a
+    // final-state-only differential cannot see.
+    let path = TestDatabasePath::new("changelog-supersession");
+    prepare_command_database(&path.0);
+    let anchor = read_claimed_rows(&path.0);
+
+    let first = command_fixture_at(1);
+    let second = superseding_command_fixture_at(2, 1, &first);
+    let (entity_key, first_value) = expected_entity_row(&first);
+    let (superseding_key, second_value) = expected_entity_row(&second);
+    assert_eq!(
+        entity_key, superseding_key,
+        "the fixtures must occupy one physical entity key"
+    );
+    assert_ne!(
+        first_value, second_value,
+        "the two post-images must differ in bytes or nothing is observable"
+    );
+
+    let (consumer, emitter) = start_recording_emitter(64);
+    {
+        let ports = open_with_emitter(&path.0, emitter.port());
+        fence_deferred_epoch(&ports, std::slice::from_ref(&first));
+        fence_deferred_epoch(&ports, std::slice::from_ref(&second));
+        assert_eq!(
+            emitter.emitter().wait_for_emitted(2),
+            ChangelogEmissionStateV1::Streaming
+        );
+    }
+    let frames = consumer.frames();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(
+        frames[0].header().covered().application(),
+        CommitSequence::new(1)
+    );
+    assert_eq!(
+        frames[1].header().covered().application(),
+        CommitSequence::new(2)
+    );
+
+    // The whole point: frame 1 carries the EARLIER post-image.
+    assert_eq!(
+        entity_entry_value(&frames[0], &entity_key).as_ref(),
+        Some(&first_value),
+        "frame 1 must carry the post-image as of its own covered frontier"
+    );
+    assert_eq!(
+        entity_entry_value(&frames[1], &entity_key).as_ref(),
+        Some(&second_value),
+        "frame 2 must carry the superseding post-image"
+    );
+
+    // And the chain still reconstructs the final snapshot exactly, so the
+    // intermediate assertion above is an addition to final-state exactness,
+    // never a substitute for it.
+    let final_rows = read_claimed_rows(&path.0);
+    assert_eq!(apply_frames(anchor, &frames), final_rows);
+    assert_eq!(
+        final_rows
+            .get(&("entities", entity_key))
+            .expect("the superseded key survives in the final snapshot"),
+        &second_value
+    );
 }
