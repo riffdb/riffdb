@@ -1079,6 +1079,40 @@ work_packages:
     PostgreSQL safe-app, no point falls below 0.90 parity, every correctness/recovery/latency gate
     passes, and the complete standard-profile mechanism is documented and operationally bounded.
   human_review_triggers: *id001
+- id: WP-493
+  name: Contract-migration preflight reads the published overlay
+  depends_on: [WP-487, WP-488, WP-490]
+  objective: Restore fail-closed contract-migration preflight after ADR-0104 routed every
+    standard-profile command, including the idle singleton, through the journal suffix, by reading
+    predecessor rows from the published checkpoint-plus-overlay view instead of the redb checkpoint
+    alone, without reintroducing the retired direct singleton path.
+  requirements: [STO-001, STO-002, REC-001, TXN-041, VAL-003]
+  required_adrs: [ADR-0076, ADR-0088, ADR-0101, ADR-0103, ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**]
+  deliverables:
+  - Live migration preflight row scan, target probe, and unresolved-admission probe capture one
+    published composite read view and resolve every ADR-0104 overlay table through the explicit
+    point and range accessors rather than the checkpoint-only deref
+  - The open-ended overlay range accessor merges the published overlay when the upper bound is
+    absent, so an unbounded preflight page cannot silently fall back to the checkpoint
+  - A predecessor row that is durable in the journal suffix but not yet checkpointed is inspected
+    by preflight, so an invalid predecessor still fails closed as InvalidPredecessor
+  - The private staged database and the offline post-recovery driver keep their existing
+    checkpoint reads, which are exact because a staged store publishes no overlay
+  - An architecture check freezes the structure and reds if any preflight read returns to the
+    checkpoint-only deref of an overlay table
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test contract_migration_gate_a --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Contract-migration preflight refuses an invalid predecessor whose rows are only
+    journal-suffix durable, the retired direct singleton path is not reintroduced, ADR-0101/0103/0104
+    semantics are unchanged, and an architecture check reds if a preflight read returns to the
+    checkpoint alone.
+  human_review_triggers: *id001
 - id: WP-020
   name: Protobuf and durable envelope
   depends_on:
