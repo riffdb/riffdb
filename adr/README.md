@@ -129,6 +129,9 @@ direction, merged draft, or implementation choice.
 | [0108](0108-bounded-operational-riffql.md) | Bounded Operational RiffQL and Safe Catalog Introspection | Proposed |
 | [0109](0109-compiled-workflow-concurrency.md) | Compiled Workflow Concurrency and Fenced Leases | Proposed |
 | [0110](0110-application-installation-and-adapter-conformance.md) | Exact Application Installation and Adapter Conformance | Proposed |
+| [0111](0111-compiled-principal-row-policies.md) | Compiled Principal-Aware Row Policies | Accepted |
+| [0112](0112-alpha-format-compatibility-and-application-portability.md) | Alpha Format Compatibility and Application Portability | Accepted |
+| [0113](0113-deterministic-simulation-testing.md) | Deterministic Simulation Testing for the Durable Engine | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
