@@ -17,6 +17,7 @@ members = [
     "crates/riffdb-contract-ir",
     "crates/riffdb-contract-syntax",
     "crates/riffdb-diagnostics",
+    "crates/riffdb-driver-host",
     "crates/riffdb-errors",
     "crates/riffdb-idempotency",
     "crates/riffdb-invariant",

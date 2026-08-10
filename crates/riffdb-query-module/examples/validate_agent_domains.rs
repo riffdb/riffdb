@@ -518,12 +518,13 @@ fn mcp_json(
             "input_schema": serde_json::from_str::<serde_json::Value>(&command.input_schema)
                 .expect("command input schema"),
             "name": command.name,
+            "operation_name": command.operation_name,
             "plan_hash": hex(&command.plan_hash),
             "result_schema": serde_json::from_str::<serde_json::Value>(&command.result_schema)
                 .expect("command result schema"),
             "title": command.title,
         })).collect::<Vec<_>>(),
-        "schema": "riffdb-generated-mcp-tools-v1",
+        "schema": "riffdb-generated-application-operations/v2",
         "tools": tools.iter().map(|tool| json!({
             "annotations": {
                 "destructiveHint": false,
@@ -536,6 +537,7 @@ fn mcp_json(
                 .expect("query input schema"),
             "module_hash": hex(&tool.module_hash),
             "name": tool.name,
+            "operation_name": tool.operation_name,
             "result_schema": serde_json::from_str::<serde_json::Value>(&tool.result_schema)
                 .expect("query result schema"),
             "title": tool.title,

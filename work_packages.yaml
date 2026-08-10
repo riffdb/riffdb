@@ -10095,7 +10095,8 @@ work_packages:
     ADR-0105, ADR-0106]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
     fixtures/driver/**, crates/riffdb-types/**, crates/riffdb-errors/**,
-    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-client-rust/**, crates/riffdb-config/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-query-module/**, crates/riffdb-testkit/**, fuzz/**,
     clients/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Versioned bounded driver-host protocol and exact handshake binding application lock, operation
@@ -10111,7 +10112,7 @@ work_packages:
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-client-rust -p riffdb-driver-host --all-features
   - cargo +1.97.0 test -p riffdb-testkit --test driver_host --all-features
-  - cargo +1.97.0 fuzz run driver_host_protocol -- -max_total_time=60
+  - cargo +nightly-2026-07-12 fuzz run driver_host_protocol -- -max_total_time=60
   - ./scripts/check-application-bindings
   - ./scripts/check-workspace-policy
   - ./scripts/check-generated

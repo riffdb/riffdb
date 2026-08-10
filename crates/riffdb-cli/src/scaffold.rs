@@ -2099,6 +2099,7 @@ fn render_mcp_manifest(
         .map(|tool| {
             Ok(json!({
                 "name": tool.name,
+                "operation_name": tool.operation_name,
                 "title": tool.title,
                 "description": tool.description,
                 "module_hash": hex(&tool.module_hash),
@@ -2120,6 +2121,7 @@ fn render_mcp_manifest(
         .map(|command| {
             Ok(json!({
                 "name": command.name,
+                "operation_name": command.operation_name,
                 "title": command.title,
                 "description": command.description,
                 "contract_bundle_hash": hex(&command.contract_bundle_hash),
@@ -2142,6 +2144,12 @@ fn render_mcp_manifest(
         .map(|tool| {
             Ok(json!({
                 "name": tool.name,
+                "operation_name": tool.operation_name,
+                "action": tool.action,
+                "operation_kind": tool.operation_kind,
+                "reaction_name": tool.reaction_name,
+                "reaction_command_name": tool.reaction_command_name,
+                "reaction_command_id": tool.reaction_command_id,
                 "title": tool.title,
                 "description": tool.description,
                 "reactive_module_hash": hex(&tool.reactive_module_hash),
@@ -2161,7 +2169,7 @@ fn render_mcp_manifest(
         })
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
     let value = json!({
-        "schema": "riffdb-generated-mcp-tools-v1",
+        "schema": "riffdb-generated-application-operations/v2",
         "application_manifest_hash": hex(manifest.identity().as_bytes()),
         "tools": tools,
         "commands": commands,

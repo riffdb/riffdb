@@ -21,6 +21,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   trust-all, cipher-suite, protocol-version, or provider knobs. OAuth,
   automatic certificate issuance, and untrusted internet-facing operation are
   unsupported.
+- The Linux-only `riffdb-driverd` application host and its protected Unix
+  protocol are available. Generated Go and long-lived server-side TypeScript
+  bindings for that protocol are separate alpha work; browser code must still
+  use an application-owned backend and never receive a RiffDB credential.
 - `riffdbd` exposes only the documented POC configuration fields. There is no
   network metrics listener, storage-engine selector, general tuning surface,
   or secret value in TOML.

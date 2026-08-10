@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = { version = "0.4.13" }
 riffdb-contract-syntax = { version = "0.1.0", path = "../crates/riffdb-contract-syntax" }
+riffdb-driver-host = { version = "0.1.0", path = "../crates/riffdb-driver-host" }
 riffdb-proto = { version = "0.1.0", path = "../crates/riffdb-proto" }
 riffdb-storage-api = { version = "0.1.0", path = "../crates/riffdb-storage-api" }
 riffdb-storage-redb = { version = "0.1.0", path = "../crates/riffdb-storage-redb", features = ["test-fixtures"] }
@@ -39,6 +40,13 @@ bench = false
 [[bin]]
 name = "proto_public"
 path = "fuzz_targets/proto_public.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "driver_host_protocol"
+path = "fuzz_targets/driver_host_protocol.rs"
 test = false
 doc = false
 bench = false

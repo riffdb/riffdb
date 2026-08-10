@@ -24,6 +24,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-contract-ir
   riffdb-contract-syntax
   riffdb-diagnostics
+  riffdb-driver-host
   riffdb-errors
   riffdb-idempotency
   riffdb-invariant
@@ -53,6 +54,7 @@ EXPECTED_PACKAGES = %w[
 EXPECTED_BINS = {
   "benchmark" => "riffdb-ticketdesk",
   "riffdb" => "riffdb-cli",
+  "riffdb-driverd" => "riffdb-driver-host",
   "riffdb-mcp" => "riffdb-mcp-stdio",
   "riffdbd" => "riffdb-server",
   "seed" => "riffdb-ticketdesk"

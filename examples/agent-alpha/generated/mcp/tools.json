@@ -32,6 +32,7 @@
         "type": "object"
       },
       "name": "agent_alpha_create_item",
+      "operation_name": "CreateItem",
       "plan_hash": "1c556595b9c28cdd10c24500e2b5c448ab4aa80a1b5f8c6afc64c5570d65c8ba",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -93,7 +94,7 @@
     }
   ],
   "reactive_tools": [],
-  "schema": "riffdb-generated-mcp-tools-v1",
+  "schema": "riffdb-generated-application-operations/v2",
   "tools": [
     {
       "annotations": {
@@ -118,6 +119,7 @@
       },
       "module_hash": "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb",
       "name": "agent_alpha_item_page",
+      "operation_name": "ItemPage",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [

@@ -73,7 +73,7 @@ jq -e --arg module_hash "$module_hash" '
 ' "$application_role" "$agent_role" >/dev/null
 
 jq -e '
-  .schema == "riffdb-generated-mcp-tools-v1"
+  .schema == "riffdb-generated-application-operations/v2"
   and (.tools | length) == 8
   and all(.tools[];
       (.name | startswith("ticketdesk."))

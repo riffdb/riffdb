@@ -17,6 +17,7 @@ use crate::{
     RiffDbClient, generate_request_id,
     generated::{GeneratedCommand, GeneratedQuery},
 };
+use riffdb_config::TlsClientConfig;
 
 const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
 /// Maximum independently in-flight items in one generated command batch.
@@ -54,6 +55,14 @@ pub struct StableApplicationClient {
 }
 
 impl StableApplicationClient {
+    /// Connects the application-only facade through mandatory explicit TLS
+    /// trust and exact peer-name verification.
+    pub async fn connect_verified_tls(config: &TlsClientConfig) -> Result<Self, ClientError> {
+        Ok(Self {
+            inner: RiffDbClient::connect_verified_tls(config).await?,
+        })
+    }
+
     /// Connects the application facade from one bounded URI without exposing
     /// the transport package to application code.
     pub async fn connect_uri(endpoint: String) -> Result<Self, ClientError> {
@@ -80,6 +89,42 @@ impl StableApplicationClient {
         Self {
             inner: RiffDbClient::from_channel(channel),
         }
+    }
+
+    /// Proves that the authenticated remote database currently exposes the
+    /// exact contract identity compiled into the application lock.
+    pub async fn verify_active_contract(
+        &mut self,
+        database: &str,
+        lineage: &str,
+        version: u64,
+        bundle_hash: [u8; 32],
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        if database.is_empty() || lineage.is_empty() || version == 0 {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let request_id = Vec::from(
+            generate_request_id()
+                .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
+                .into_bytes(),
+        );
+        let response = self
+            .inner
+            .get_active_contract(v1::GetActiveContractRequest { request_id }, metadata)
+            .await?;
+        let Some(v1::get_active_contract_response::Result::Present(contract)) = response.result
+        else {
+            return Err(ApplicationClientError::InvalidResponse);
+        };
+        if response.database_alias != database
+            || contract.contract_lineage != lineage
+            || contract.contract_version != version
+            || contract.bundle_hash.as_slice() != bundle_hash
+        {
+            return Err(ApplicationClientError::InvalidResponse);
+        }
+        Ok(())
     }
 
     /// Executes one exact named module query.

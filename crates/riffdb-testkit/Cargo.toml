@@ -25,6 +25,7 @@ riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = fal
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-config = { path = "../riffdb-config", version = "0.1.0", default-features = false }
+riffdb-driver-host = { path = "../riffdb-driver-host", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
@@ -34,6 +35,10 @@ riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", 
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "tls-ring"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+
+[[test]]
+name = "driver_host"
+path = "../../tests/driver_host.rs"
 
 [[test]]
 name = "full_recovery_matrix"
