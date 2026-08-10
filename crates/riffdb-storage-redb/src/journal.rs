@@ -20,6 +20,10 @@ use sha2::{Digest, Sha256};
 
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
 
+use riffdb_storage_api::{
+    DURABILITY_JOURNAL_EXTENT_VERSION as EXTENT_FORMAT_VERSION,
+    DURABILITY_JOURNAL_FRAME_VERSION as FORMAT_VERSION,
+};
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId};
 
 use crate::keys::{decode_application_sequence_key, decode_audit_key};
@@ -31,11 +35,9 @@ use crate::layout::{
 const FILE_MAGIC: [u8; 8] = *b"RDBJRN01";
 const FRAME_MAGIC: [u8; 8] = *b"RDBFRM01";
 const FOOTER_MAGIC: [u8; 8] = *b"RDBEND01";
-const FORMAT_VERSION: u16 = 2;
 const EXTENT_MAGIC: [u8; 8] = *b"RDBJEX03";
 const EXTENT_FRAME_MAGIC: [u8; 8] = *b"RDBJPF03";
 const EXTENT_FRAME_FOOTER_MAGIC: [u8; 8] = *b"RDBJPE03";
-const EXTENT_FORMAT_VERSION: u16 = 3;
 const EXTENT_HEADER_SLOT_BYTES: usize = 4 * 1024;
 const EXTENT_HEADER_SLOT_COUNT: usize = 2;
 const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_COUNT;

@@ -648,10 +648,15 @@ impl RedbMaintenanceStorage {
         let source = self
             .named_backup_directory(backup_name)
             .join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+        let source_format_marker = self
+            .named_backup_directory(backup_name)
+            .join(crate::backup::FORMAT_MARKER_ARTIFACT_FILE_NAME);
         let stage = self.contract_migration_stage_path(operation_id)?;
+        let stage_format_marker = crate::durable_format_marker_path(&stage);
         let materialized_now = match fs::symlink_metadata(&stage) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 copy_new_synced(&source, &stage)?;
+                copy_new_synced(&source_format_marker, &stage_format_marker)?;
                 self.database_parent_guard.sync()?;
                 true
             }
@@ -663,6 +668,15 @@ impl RedbMaintenanceStorage {
             }
             Ok(_) => return Err(corrupt()),
         };
+        if !materialized_now && !stage_format_marker.try_exists().map_err(io_unavailable)? {
+            copy_new_synced(&source_format_marker, &stage_format_marker)?;
+            self.database_parent_guard.sync()?;
+        }
+        if crate::preflight_durable_format_path(&stage)
+            != Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
+        {
+            return Err(corrupt());
+        }
         let stage_identity = migration_stage_identity(operation_id, expected_manifest)?;
         if receipt
             .stage_identity()
@@ -698,8 +712,18 @@ impl RedbMaintenanceStorage {
         if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
             return Err(corrupt());
         }
+        let stage_format_marker = crate::durable_format_marker_path(&stage);
+        if crate::preflight_durable_format_path(&stage)
+            != Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
+        {
+            return Err(corrupt());
+        }
+        let target_format_marker = crate::durable_format_marker_path(&self.database_file);
         self.hit(RedbMaintenanceFailpoint::BeforeTargetPublication, false)?;
+        remove_regular_file_if_present(&target_format_marker)?;
+        self.database_parent_guard.sync()?;
         fs::rename(&stage, &self.database_file).map_err(io_unavailable)?;
+        fs::rename(&stage_format_marker, &target_format_marker).map_err(io_unavailable)?;
         self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
         self.database_parent_guard.sync()?;
         self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
@@ -735,11 +759,21 @@ impl RedbMaintenanceStorage {
         let source = self
             .named_backup_directory(backup_name)
             .join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+        let source_format_marker = self
+            .named_backup_directory(backup_name)
+            .join(crate::backup::FORMAT_MARKER_ARTIFACT_FILE_NAME);
         let rollback = self.contract_migration_rollback_path(operation_id)?;
+        let rollback_format_marker = crate::durable_format_marker_path(&rollback);
         remove_regular_file_if_present(&rollback)?;
+        remove_regular_file_if_present(&rollback_format_marker)?;
         copy_new_synced(&source, &rollback)?;
+        copy_new_synced(&source_format_marker, &rollback_format_marker)?;
         crate::backup::stamp_history_incarnation(&rollback, new_history_incarnation)?;
+        let target_format_marker = crate::durable_format_marker_path(&self.database_file);
+        remove_regular_file_if_present(&target_format_marker)?;
+        self.database_parent_guard.sync()?;
         fs::rename(&rollback, &self.database_file).map_err(io_unavailable)?;
+        fs::rename(&rollback_format_marker, &target_format_marker).map_err(io_unavailable)?;
         self.database_parent_guard.sync()?;
         self.verify_path_ownership()
     }
@@ -1038,7 +1072,11 @@ impl RedbMaintenanceStorage {
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                             Err(error) => return Err(io_unavailable(error)),
                         };
-                        if target_checksum.as_ref() != Some(staged_checksum) {
+                        let target_candidate_is_current = target_checksum.as_ref()
+                            == Some(staged_checksum)
+                            && crate::preflight_durable_format_path(&self.database_file)
+                                == Ok(crate::RedbDurableFormatPreflight::OpenCurrent);
+                        if !target_candidate_is_current {
                             if target_must_match {
                                 return Err(corrupt());
                             }
@@ -1624,6 +1662,11 @@ fn checked_staged_inventory(
 }
 
 fn validate_stage_inventory(stage_directory: &Path) -> Result<(), StorageError> {
+    let format_marker_name =
+        crate::durable_format_marker_path(Path::new(crate::backup::DATABASE_ARTIFACT_FILE_NAME))
+            .file_name()
+            .ok_or_else(invariant)?
+            .to_os_string();
     let journal_name =
         crate::journal::journal_path(Path::new(crate::backup::DATABASE_ARTIFACT_FILE_NAME))
             .file_name()
@@ -1631,6 +1674,7 @@ fn validate_stage_inventory(stage_directory: &Path) -> Result<(), StorageError> 
             .to_os_string();
     let mut expected = BTreeSet::from([
         OsString::from(crate::backup::DATABASE_ARTIFACT_FILE_NAME),
+        format_marker_name,
         journal_name,
     ]);
     let mut seen = BTreeSet::new();
@@ -1643,7 +1687,7 @@ fn validate_stage_inventory(stage_directory: &Path) -> Result<(), StorageError> 
             return Err(corrupt());
         }
     }
-    if !expected.is_empty() || seen.len() != 2 {
+    if !expected.is_empty() || seen.len() != 3 {
         return Err(corrupt());
     }
     Ok(())

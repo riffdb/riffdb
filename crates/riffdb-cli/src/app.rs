@@ -44,7 +44,7 @@ use crate::cli::{
     CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
     EntityCommand, EventCommand, EventConsumerArgs, MigrationCommand, OutputMode,
     ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand, RevocationReason,
-    RoleActorKind, RoleCommand, ServerCommand, TopLevel,
+    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -698,6 +698,7 @@ async fn dispatch(
         }
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
+        TopLevel::Storage { command } => storage_command(command),
         TopLevel::Retention { command } => retention_command(command),
         TopLevel::Demo { command } => demo_command(command, config, environment),
     }
@@ -7362,6 +7363,12 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Backup {
             command: BackupCommand::Operation { .. },
         } => CommandIdentity::BackupOperation,
+        TopLevel::Storage {
+            command: StorageCommand::Preflight { .. },
+        } => CommandIdentity::StoragePreflight,
+        TopLevel::Storage {
+            command: StorageCommand::Upgrade { .. },
+        } => CommandIdentity::StorageUpgrade,
         TopLevel::Retention {
             command: RetentionCommand::Status { .. },
         } => CommandIdentity::RetentionStatus,
@@ -7388,6 +7395,260 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         } => CommandIdentity::RetentionPrune,
         TopLevel::Demo { .. } => CommandIdentity::DemoBudget,
     }
+}
+
+fn storage_command(command: StorageCommand) -> Terminal {
+    match command {
+        StorageCommand::Preflight { database_path } => {
+            let identity = CommandIdentity::StoragePreflight;
+            if validate_path(&database_path).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            match riffdb_storage_redb::preflight_durable_format_path(Path::new(&database_path)) {
+                Ok(preflight) => success(
+                    identity,
+                    "checked",
+                    &StorageFormatPreflightView::from_preflight(preflight),
+                ),
+                Err(error) => local_error_with(
+                    identity,
+                    &StorageFormatPreflightFailureView {
+                        reason: error.to_string(),
+                        current: error.current_identity().map(Into::into),
+                        binary: error.binary_identity().into(),
+                        next_command: error.next_command().render(),
+                    },
+                    "durable_format_preflight_failed",
+                    "durable-format preflight failed before database open; no data was changed",
+                    2,
+                ),
+            }
+        }
+        StorageCommand::Upgrade {
+            database_path,
+            backup,
+        } => {
+            let identity = CommandIdentity::StorageUpgrade;
+            if validate_path(&database_path).is_err() || validate_path(&backup).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            match riffdb_storage_redb::RedbDurableFormatUpgrade::bind(
+                Path::new(&database_path),
+                Path::new(&backup),
+            )
+            .run()
+            {
+                Ok(result) => success(
+                    identity,
+                    "complete",
+                    &StorageFormatUpgradeView::from(result),
+                ),
+                Err(error) => {
+                    let recovery_action = match &error {
+                        riffdb_storage_redb::RedbDurableFormatUpgradeError::BackupInvalid(_)
+                        | riffdb_storage_redb::RedbDurableFormatUpgradeError::BackupDoesNotMatchSource(_) => {
+                            "create a verified offline backup with the source release, keep the database closed, and retry"
+                        }
+                        riffdb_storage_redb::RedbDurableFormatUpgradeError::ReceiptInvalid => {
+                            "preserve the database, backup, and receipt and run the matching source binary"
+                        }
+                        riffdb_storage_redb::RedbDurableFormatUpgradeError::Preflight(_)
+                        | riffdb_storage_redb::RedbDurableFormatUpgradeError::UnsupportedAction => {
+                            "run riffdb storage preflight and follow its exact safe action"
+                        }
+                        riffdb_storage_redb::RedbDurableFormatUpgradeError::Storage(_)
+                        | riffdb_storage_redb::RedbDurableFormatUpgradeError::Unavailable => {
+                            "leave the database closed and retry the same command with the same verified backup"
+                        }
+                    };
+                    local_error_with(
+                        identity,
+                        &StorageFormatFailureView {
+                            reason: error.to_string(),
+                            recovery_action,
+                        },
+                        "durable_format_upgrade_failed",
+                        "durable-format upgrade failed closed",
+                        2,
+                    )
+                }
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StorageFormatIdentityView {
+    alpha_epoch: u32,
+    writer: u32,
+}
+
+impl From<riffdb_storage_redb::DurableFormatIdentity> for StorageFormatIdentityView {
+    fn from(identity: riffdb_storage_redb::DurableFormatIdentity) -> Self {
+        Self {
+            alpha_epoch: identity.epoch().get(),
+            writer: identity.writer().get(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StorageFormatPreflightView {
+    status: &'static str,
+    current: Option<StorageFormatIdentityView>,
+    binary: StorageFormatIdentityView,
+    action: &'static str,
+    backup_required: bool,
+    free_space_source_multiples: u8,
+    downtime_required: bool,
+    one_way: bool,
+    next_command: &'static str,
+}
+
+impl StorageFormatPreflightView {
+    fn from_preflight(preflight: riffdb_storage_redb::RedbDurableFormatPreflight) -> Self {
+        let manifest = riffdb_storage_redb::current_durable_format_manifest();
+        match preflight {
+            riffdb_storage_redb::RedbDurableFormatPreflight::InitializeCurrent => Self {
+                status: "initialize_current",
+                current: None,
+                binary: manifest.identity().into(),
+                action: "initialize_current",
+                backup_required: false,
+                free_space_source_multiples: 0,
+                downtime_required: false,
+                one_way: false,
+                next_command: "start riffdbd",
+            },
+            riffdb_storage_redb::RedbDurableFormatPreflight::OpenCurrent => Self {
+                status: "current",
+                current: Some(manifest.identity().into()),
+                binary: manifest.identity().into(),
+                action: "open_current",
+                backup_required: false,
+                free_space_source_multiples: 0,
+                downtime_required: false,
+                one_way: false,
+                next_command: "start riffdbd",
+            },
+            riffdb_storage_redb::RedbDurableFormatPreflight::OfflineUpgradeRequired {
+                current,
+                binary,
+                action,
+            } => match action {
+                riffdb_storage_redb::DurableFormatAction::OfflineInPlace {
+                    backup_required,
+                    free_space_source_multiples,
+                    downtime_required,
+                    one_way,
+                    next_command,
+                } => Self {
+                    status: "upgrade_required",
+                    current: Some(current.into()),
+                    binary: binary.into(),
+                    action: "offline_in_place",
+                    backup_required,
+                    free_space_source_multiples,
+                    downtime_required,
+                    one_way,
+                    next_command: next_command.render(),
+                },
+                riffdb_storage_redb::DurableFormatAction::ExportReimportOnly {
+                    backup_required,
+                    downtime_required,
+                    next_command,
+                } => Self {
+                    status: "export_reimport_required",
+                    current: Some(current.into()),
+                    binary: binary.into(),
+                    action: "export_reimport_only",
+                    backup_required,
+                    free_space_source_multiples: 0,
+                    downtime_required,
+                    one_way: true,
+                    next_command: next_command.render(),
+                },
+                riffdb_storage_redb::DurableFormatAction::OpenCurrent => Self {
+                    status: "invalid",
+                    current: Some(current.into()),
+                    binary: binary.into(),
+                    action: "invalid",
+                    backup_required: false,
+                    free_space_source_multiples: 0,
+                    downtime_required: false,
+                    one_way: false,
+                    next_command: "run the matching RiffDB binary",
+                },
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StorageFormatUpgradeView {
+    disposition: &'static str,
+    phase: Option<&'static str>,
+    source: Option<StorageFormatIdentityView>,
+    target: Option<StorageFormatIdentityView>,
+    database_id: Option<String>,
+    backup_manifest_checksum: Option<String>,
+    compatibility_fixture_digest: Option<String>,
+    downgrade_supported: bool,
+}
+
+impl From<riffdb_storage_redb::RedbDurableFormatUpgradeResult> for StorageFormatUpgradeView {
+    fn from(result: riffdb_storage_redb::RedbDurableFormatUpgradeResult) -> Self {
+        let disposition = match result.disposition() {
+            riffdb_storage_redb::RedbDurableFormatUpgradeDisposition::AlreadyCurrent => {
+                "already_current"
+            }
+            riffdb_storage_redb::RedbDurableFormatUpgradeDisposition::Upgraded => "upgraded",
+            riffdb_storage_redb::RedbDurableFormatUpgradeDisposition::Reconciled => "reconciled",
+        };
+        let Some(receipt) = result.receipt() else {
+            return Self {
+                disposition,
+                phase: None,
+                source: None,
+                target: None,
+                database_id: None,
+                backup_manifest_checksum: None,
+                compatibility_fixture_digest: None,
+                downgrade_supported: false,
+            };
+        };
+        let phase = match receipt.phase() {
+            riffdb_storage_redb::RedbDurableFormatUpgradePhase::Accepted => "accepted",
+            riffdb_storage_redb::RedbDurableFormatUpgradePhase::Migrated => "migrated",
+            riffdb_storage_redb::RedbDurableFormatUpgradePhase::Complete => "complete",
+        };
+        Self {
+            disposition,
+            phase: Some(phase),
+            source: Some(receipt.source().into()),
+            target: Some(receipt.target().into()),
+            database_id: Some(receipt.database_id().to_string()),
+            backup_manifest_checksum: Some(hex(receipt.backup_manifest_checksum().as_bytes())),
+            compatibility_fixture_digest: Some(hex(receipt
+                .compatibility_fixture_digest()
+                .as_bytes())),
+            downgrade_supported: false,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StorageFormatFailureView {
+    reason: String,
+    recovery_action: &'static str,
+}
+
+#[derive(Serialize)]
+struct StorageFormatPreflightFailureView {
+    reason: String,
+    current: Option<StorageFormatIdentityView>,
+    binary: StorageFormatIdentityView,
+    next_command: &'static str,
 }
 
 fn retention_command(command: RetentionCommand) -> Terminal {
@@ -7658,6 +7919,71 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn storage_preflight_machine_output_names_the_exact_non_mutating_action() {
+        let path = std::env::temp_dir().join(format!(
+            "riffdb-cli-format-preflight-{}.redb",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+        let terminal = storage_command(StorageCommand::Preflight {
+            database_path: path.as_os_str().to_owned(),
+        });
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        assert!(stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&stdout).expect("CLI JSON");
+        assert_eq!(value["command"], "storage.preflight");
+        assert_eq!(value["result"]["status"], "initialize_current");
+        assert_eq!(value["result"]["binary"]["alpha_epoch"], 1);
+        assert_eq!(value["result"]["binary"]["writer"], 1);
+        assert_eq!(value["result"]["action"], "initialize_current");
+        assert_eq!(value["result"]["next_command"], "start riffdbd");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn storage_preflight_failure_keeps_unknown_current_and_exact_binary_typed() {
+        let path = std::env::temp_dir().join(format!(
+            "riffdb-cli-format-preflight-corrupt-{}.redb",
+            std::process::id()
+        ));
+        let marker = riffdb_storage_redb::durable_format_marker_path(&path);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&marker);
+        fs::write(&path, b"retained-database").expect("write retained database placeholder");
+        fs::write(&marker, b"corrupt-marker").expect("write corrupt marker");
+
+        let terminal = storage_command(StorageCommand::Preflight {
+            database_path: path.as_os_str().to_owned(),
+        });
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::from(2)
+        );
+        assert!(stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&stdout).expect("CLI JSON");
+        assert_eq!(value["command"], "storage.preflight");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["current"], serde_json::Value::Null);
+        assert_eq!(value["error"]["binary"]["alpha_epoch"], 1);
+        assert_eq!(value["error"]["binary"]["writer"], 1);
+        assert_eq!(
+            value["error"]["next_command"],
+            "run the RiffDB binary matching the database format manifest"
+        );
+        assert_eq!(fs::read(&path).expect("re-read database"), b"retained-database");
+        assert_eq!(fs::read(&marker).expect("re-read marker"), b"corrupt-marker");
+        fs::remove_file(marker).expect("remove marker fixture");
+        fs::remove_file(path).expect("remove database fixture");
+    }
 
     #[test]
     fn application_check_names_the_exact_seeded_or_seedless_next_command() {

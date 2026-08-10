@@ -420,6 +420,13 @@ pub fn riffdbd_main() -> ExitCode {
             eprintln!("RDB-CONFIG-0001: {error}");
             ExitCode::FAILURE
         }
+        Err(DaemonError::Startup(error @ RedbStartupError::Format(_))) => {
+            // This source contains only manifest identities, bounded action
+            // metadata, and static guidance. Paths and stored values remain
+            // redacted by construction.
+            eprintln!("RDB-FORMAT-0101: {error}");
+            ExitCode::FAILURE
+        }
         Err(error) => {
             // Stable, non-secret lifecycle kind only — never dump raw sources.
             // App-baseline and operators need the discriminant to diagnose mid-run
@@ -2318,6 +2325,7 @@ fn maintenance_driver_dependencies<'a>(
 
 fn startup_failure_allows_recovery(error: &RedbStartupError) -> bool {
     match error {
+        RedbStartupError::Format(_) => false,
         RedbStartupError::Storage(error) => matches!(
             error.kind(),
             StorageErrorKind::CorruptData | StorageErrorKind::IncompatibleFormat

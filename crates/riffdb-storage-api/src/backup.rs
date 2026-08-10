@@ -13,7 +13,10 @@ use riffdb_types::{
     OfflineMaintenanceReplacementConfirmation, offline_maintenance_input_hash,
 };
 
-use crate::{ActiveCatalogPointerV1, StorageError, StorageFormatVersion, StorageValueError};
+use crate::{
+    ActiveCatalogPointerV1, CompatibilityFixtureDigest, DurableFormatIdentity, StorageError,
+    StorageFormatVersion, StorageValueError, current_durable_format_manifest,
+};
 
 /// Maximum bytes in one build-metadata scalar.
 pub const MAX_BACKUP_BUILD_VALUE_BYTES: usize = 256;
@@ -730,6 +733,69 @@ impl BackupManifestVersion {
     }
 }
 
+/// Exact inclusive binary range allowed to restore one physical backup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackupFormatCompatibilityV1 {
+    minimum: DurableFormatIdentity,
+    maximum: DurableFormatIdentity,
+    compatibility_fixture_digest: CompatibilityFixtureDigest,
+}
+
+impl BackupFormatCompatibilityV1 {
+    /// Constructs a same-epoch inclusive range bound to one compatibility corpus.
+    pub fn new(
+        minimum: DurableFormatIdentity,
+        maximum: DurableFormatIdentity,
+        compatibility_fixture_digest: CompatibilityFixtureDigest,
+    ) -> Result<Self, StorageValueError> {
+        if minimum.epoch() != maximum.epoch() || minimum.writer() > maximum.writer() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self {
+            minimum,
+            maximum,
+            compatibility_fixture_digest,
+        })
+    }
+
+    /// Returns the exact singleton range written by this binary.
+    #[must_use]
+    pub fn current() -> Self {
+        let manifest = current_durable_format_manifest();
+        Self {
+            minimum: manifest.identity(),
+            maximum: manifest.identity(),
+            compatibility_fixture_digest: manifest.compatibility_fixture_digest(),
+        }
+    }
+
+    /// Returns the oldest compatible binary identity.
+    #[must_use]
+    pub const fn minimum(self) -> DurableFormatIdentity {
+        self.minimum
+    }
+
+    /// Returns the newest compatible binary identity.
+    #[must_use]
+    pub const fn maximum(self) -> DurableFormatIdentity {
+        self.maximum
+    }
+
+    /// Returns the fixture corpus that proved this range.
+    #[must_use]
+    pub const fn compatibility_fixture_digest(self) -> CompatibilityFixtureDigest {
+        self.compatibility_fixture_digest
+    }
+
+    /// Checks an exact binary identity without inferring compatibility from decoding.
+    #[must_use]
+    pub const fn contains(self, identity: DurableFormatIdentity) -> bool {
+        identity.epoch().get() == self.minimum.epoch().get()
+            && identity.writer().get() >= self.minimum.writer().get()
+            && identity.writer().get() <= self.maximum.writer().get()
+    }
+}
+
 /// One immutable contract bundle identity included by an offline backup.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BackupCatalogBundleV1 {
@@ -960,6 +1026,10 @@ pub struct OfflineBackupManifestV1 {
     /// Newest encodings always include the tag (`true`). Pre-RT-B dual-path
     /// reconstructs (history-only or pre-fence) omit the field (`false`).
     retention_watermark_wire_tagged: bool,
+    /// Exact physical-restore range on current backups; absent historically.
+    format_compatibility: Option<BackupFormatCompatibilityV1>,
+    /// Whether the wire form carries the compatibility-range presence tag.
+    format_compatibility_wire_tagged: bool,
     checksums: Vec<BackupArtifactChecksumV1>,
     build: BackupBuildMetadataV1,
     semantic_bytes: usize,
@@ -972,11 +1042,47 @@ impl OfflineBackupManifestV1 {
         storage_format_version: StorageFormatVersion,
         database_id: DatabaseId,
         snapshot_kind: BackupSnapshotKindV1,
+        catalog_bundles: Vec<BackupCatalogBundleV1>,
+        active_catalog: Option<ActiveCatalogPointerV1>,
+        last_commit_sequence: Option<CommitSequence>,
+        history_incarnation: Option<u64>,
+        retention_watermark_sequence: Option<u64>,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+    ) -> Result<Self, StorageValueError> {
+        Self::new_with_format_compatibility(
+            storage_format_version,
+            database_id,
+            snapshot_kind,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            retention_watermark_sequence,
+            BackupFormatCompatibilityV1::current(),
+            checksums,
+            build,
+        )
+    }
+
+    /// Reconstructs the newest manifest wire shape with an exact declared
+    /// physical-restore range.
+    ///
+    /// Durable codecs use this constructor so decoding preserves the range
+    /// written by the producing binary instead of silently replacing it with
+    /// the current binary's singleton range. Restore still authorizes that
+    /// range independently before touching a target.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_format_compatibility(
+        storage_format_version: StorageFormatVersion,
+        database_id: DatabaseId,
+        snapshot_kind: BackupSnapshotKindV1,
         mut catalog_bundles: Vec<BackupCatalogBundleV1>,
         active_catalog: Option<ActiveCatalogPointerV1>,
         last_commit_sequence: Option<CommitSequence>,
         history_incarnation: Option<u64>,
         retention_watermark_sequence: Option<u64>,
+        format_compatibility: BackupFormatCompatibilityV1,
         mut checksums: Vec<BackupArtifactChecksumV1>,
         build: BackupBuildMetadataV1,
     ) -> Result<Self, StorageValueError> {
@@ -1020,6 +1126,8 @@ impl OfflineBackupManifestV1 {
         // `new` always builds the newest wire form (history + watermark tags).
         let history_wire_tagged = true;
         let retention_watermark_wire_tagged = true;
+        let format_compatibility = Some(format_compatibility);
+        let format_compatibility_wire_tagged = true;
         let semantic_bytes = backup_manifest_semantic_bytes(
             &catalog_bundles,
             active_catalog.as_ref(),
@@ -1028,6 +1136,8 @@ impl OfflineBackupManifestV1 {
             history_wire_tagged,
             retention_watermark_sequence,
             retention_watermark_wire_tagged,
+            format_compatibility,
+            format_compatibility_wire_tagged,
             &checksums,
             &build,
         )?;
@@ -1044,6 +1154,8 @@ impl OfflineBackupManifestV1 {
             history_wire_tagged,
             retention_watermark_sequence,
             retention_watermark_wire_tagged,
+            format_compatibility,
+            format_compatibility_wire_tagged,
             checksums,
             build,
             semantic_bytes,
@@ -1079,10 +1191,14 @@ impl OfflineBackupManifestV1 {
         )?;
         candidate.history_wire_tagged = false;
         candidate.retention_watermark_wire_tagged = false;
+        candidate.format_compatibility = None;
+        candidate.format_compatibility_wire_tagged = false;
         candidate.semantic_bytes = backup_manifest_semantic_bytes(
             &candidate.catalog_bundles,
             candidate.active_catalog.as_ref(),
             candidate.last_commit_sequence,
+            None,
+            false,
             None,
             false,
             None,
@@ -1122,12 +1238,64 @@ impl OfflineBackupManifestV1 {
             build,
         )?;
         candidate.retention_watermark_wire_tagged = false;
+        candidate.format_compatibility = None;
+        candidate.format_compatibility_wire_tagged = false;
         candidate.semantic_bytes = backup_manifest_semantic_bytes(
             &candidate.catalog_bundles,
             candidate.active_catalog.as_ref(),
             candidate.last_commit_sequence,
             candidate.history_incarnation,
             candidate.history_wire_tagged,
+            None,
+            false,
+            None,
+            false,
+            &candidate.checksums,
+            &candidate.build,
+        )?;
+        Ok(candidate)
+    }
+
+    /// Reconstructs a post-retention manifest written before physical restore
+    /// ranges were added to the durable wire form.
+    ///
+    /// This historical shape remains decodable for inspection and explicit
+    /// migration, but it is not eligible for current direct physical restore.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_pre_format_compatibility(
+        storage_format_version: StorageFormatVersion,
+        database_id: DatabaseId,
+        snapshot_kind: BackupSnapshotKindV1,
+        catalog_bundles: Vec<BackupCatalogBundleV1>,
+        active_catalog: Option<ActiveCatalogPointerV1>,
+        last_commit_sequence: Option<CommitSequence>,
+        history_incarnation: Option<u64>,
+        retention_watermark_sequence: Option<u64>,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+    ) -> Result<Self, StorageValueError> {
+        let mut candidate = Self::new(
+            storage_format_version,
+            database_id,
+            snapshot_kind,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            retention_watermark_sequence,
+            checksums,
+            build,
+        )?;
+        candidate.format_compatibility = None;
+        candidate.format_compatibility_wire_tagged = false;
+        candidate.semantic_bytes = backup_manifest_semantic_bytes(
+            &candidate.catalog_bundles,
+            candidate.active_catalog.as_ref(),
+            candidate.last_commit_sequence,
+            candidate.history_incarnation,
+            candidate.history_wire_tagged,
+            candidate.retention_watermark_sequence,
+            candidate.retention_watermark_wire_tagged,
             None,
             false,
             &candidate.checksums,
@@ -1146,6 +1314,12 @@ impl OfflineBackupManifestV1 {
     #[must_use]
     pub const fn retention_watermark_wire_tagged(&self) -> bool {
         self.retention_watermark_wire_tagged
+    }
+
+    /// Returns whether the wire form carries a physical-restore range.
+    #[must_use]
+    pub const fn format_compatibility_wire_tagged(&self) -> bool {
+        self.format_compatibility_wire_tagged
     }
 
     /// Returns the semantic backup-manifest version.
@@ -1212,6 +1386,26 @@ impl OfflineBackupManifestV1 {
             Some(sequence) => sequence,
             None => 0,
         }
+    }
+
+    /// Returns the declared compatible physical-restore range, if present.
+    #[must_use]
+    pub const fn format_compatibility(&self) -> Option<BackupFormatCompatibilityV1> {
+        self.format_compatibility
+    }
+
+    /// Checks whether this binary may physically restore the backup.
+    ///
+    /// Historical manifests without a range are deliberately not inferred
+    /// compatible by this method; their explicit legacy ceremony remains
+    /// separate from current alpha restore.
+    #[must_use]
+    pub fn is_physically_restorable_by_current_binary(&self) -> bool {
+        let manifest = current_durable_format_manifest();
+        self.format_compatibility.is_some_and(|range| {
+            range.contains(manifest.identity())
+                && range.compatibility_fixture_digest() == manifest.compatibility_fixture_digest()
+        })
     }
 
     /// Returns checksums in canonical artifact-name order.
@@ -1456,6 +1650,8 @@ fn backup_manifest_semantic_bytes(
     history_wire_tagged: bool,
     retention_watermark_sequence: Option<u64>,
     retention_watermark_wire_tagged: bool,
+    format_compatibility: Option<BackupFormatCompatibilityV1>,
+    format_compatibility_wire_tagged: bool,
     checksums: &[BackupArtifactChecksumV1],
     build: &BackupBuildMetadataV1,
 ) -> Result<usize, StorageValueError> {
@@ -1512,6 +1708,12 @@ fn backup_manifest_semantic_bytes(
         // Retention watermark wire cases (same presence pattern; 0 is valid Some).
         if retention_watermark_wire_tagged {
             1 + retention_watermark_sequence.map_or(0, |_| 8)
+        } else {
+            0
+        },
+        // Current format range: presence + min/max epoch/writer + fixture digest.
+        if format_compatibility_wire_tagged {
+            1 + format_compatibility.map_or(0, |_| 4 + 4 + 4 + 4 + 32)
         } else {
             0
         },

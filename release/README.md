@@ -21,6 +21,18 @@ SBOM; Fjall is not linked into any product binary.
 Checked-in files under this directory are inputs and candidate evidence. They
 are not a binary release and do not attest that POC exit passed.
 
+Every assembled release carries `release/durable-format-manifest-v1.json` and
+its exact `release/compatibility/` fixture inventory and upgrade table. The
+release verifier rejects a missing or stale format statement. This remains a
+pre-alpha compatibility contract: downgrade is unsupported, and a breaking
+epoch requires the declared application export/reimport ceremony rather than a
+physical backup restore or destructive reset.
+
+For a same-epoch mismatch, stop the service and run `riffdb storage preflight`.
+Only a release-table edge may proceed through the backup-bound, checksummed,
+restartable `riffdb storage upgrade` command. Release tooling exposes no force,
+ignore, reset, best-effort decoder, or downgrade path.
+
 The matching full source checkout also provides
 `cargo riffdb install --user|--system` and the separate authoritative
 `cargo riffdb bootstrap --user|--system [--register-codex]` convenience flow.

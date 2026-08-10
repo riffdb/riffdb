@@ -207,6 +207,7 @@ done < <(
 
 benchmarks/test-evidence-validation
 ./scripts/release-evidence --verify
+./scripts/check-durable-format-manifest
 ./scripts/ci-all
 
 release_target="$repo_root/target"
@@ -258,6 +259,7 @@ mkdir -p \
     "$stage/docs" \
     "$stage/examples" \
     "$stage/release/benchmarks" \
+    "$stage/release/compatibility" \
     "$stage/release/demo-artifacts" \
     "$stage/release" \
     "$stage/systemd" \
@@ -276,6 +278,14 @@ cp -R release/config "$stage/release/config"
 cp -R release/evidence "$stage/release/evidence"
 install -m 0644 release/README.md "$stage/release/README.md"
 install -m 0644 release/RELEASE_NOTES.md "$stage/release/RELEASE_NOTES.md"
+install -m 0644 release/durable-format-manifest-v1.json \
+    "$stage/release/durable-format-manifest-v1.json"
+install -m 0644 fixtures/compatibility/release-pairs-v1.json \
+    "$stage/release/compatibility/release-pairs-v1.json"
+install -m 0644 fixtures/compatibility/physical-formats-v1.json \
+    "$stage/release/compatibility/physical-formats-v1.json"
+install -m 0644 fixtures/compatibility/durable-fixture-inventory-v1.txt \
+    "$stage/release/compatibility/durable-fixture-inventory-v1.txt"
 install -m 0755 release/demo "$stage/demo"
 install -m 0644 release/systemd/* "$stage/systemd/"
 install -m 0644 release/sysusers.d/* "$stage/sysusers.d/"

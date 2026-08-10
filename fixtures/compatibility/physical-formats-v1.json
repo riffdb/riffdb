@@ -1,0 +1,20 @@
+{
+  "schema": "riffdb.physical-format-inventory/v1",
+  "readable_storage_versions": [1, 2],
+  "writable_storage_versions": [2],
+  "readable_redb_layout_versions": [1],
+  "writable_redb_layout_versions": [1],
+  "journal_frame_versions": [2],
+  "journal_extent_versions": [3],
+  "backup_manifest_versions": [1],
+  "maintenance_receipt_versions": [1, 2],
+  "offline_maintenance_receipt_versions": [1],
+  "contract_migration_check_receipt_versions": [2],
+  "format_upgrade_receipt_versions": [1],
+  "format_marker_versions": [1],
+  "history_incarnation_record": "riffdb.storage.v1.StoredHistoryIncarnationV1",
+  "validated_prefix_record": "riffdb.storage.v1.StoredValidatedPrefixCheckpointV1",
+  "retention_records": ["riffdb.storage.v1.StoredRetentionWatermarkV1", "riffdb.storage.v1.StoredHistoryTombstoneV1"],
+  "authority": "redb checkpoint plus exact journal suffix",
+  "recovery_validation": "tests/storage_recovery/storage_recovery_matrix.rs"
+}

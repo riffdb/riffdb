@@ -2,6 +2,10 @@
 
 //! Durable redb implementation of RiffDB's semantic storage ports.
 
+pub use riffdb_storage_api::{
+    DurableFormatAction, DurableFormatIdentity, current_durable_format_manifest,
+};
+
 mod administration;
 mod application;
 mod backup;
@@ -19,6 +23,8 @@ mod durable_fixtures;
 mod error;
 #[cfg(feature = "test-fixtures")]
 mod fixtures;
+mod format_preflight;
+mod format_upgrade;
 mod gate;
 mod hooks;
 mod journal;
@@ -50,6 +56,15 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 pub use fixtures::{
     downgrade_all_index_rows_to_v1_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
+};
+pub use format_preflight::{
+    RedbDurableFormatPreflight, RedbDurableFormatPreflightError, durable_format_marker_path,
+    preflight_durable_format_path,
+};
+pub use format_upgrade::{
+    RedbDurableFormatUpgrade, RedbDurableFormatUpgradeDisposition, RedbDurableFormatUpgradeError,
+    RedbDurableFormatUpgradePhase, RedbDurableFormatUpgradeReceipt, RedbDurableFormatUpgradeResult,
+    durable_format_upgrade_receipt_path,
 };
 #[doc(hidden)]
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};

@@ -43,6 +43,10 @@ use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
 };
+use crate::format_preflight::{
+    RedbDurableFormatPreflight, RedbDurableFormatPreflightError, preflight_durable_format_path,
+    publish_initialized_current_marker,
+};
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{
@@ -831,6 +835,23 @@ fn default_changelog_port() -> Arc<dyn riffdb_storage_api::ChangelogPublicationP
     Arc::new(riffdb_storage_api::NoChangelogPublicationPort)
 }
 
+fn format_preflight_storage_error(error: RedbDurableFormatPreflightError) -> StorageError {
+    let kind = match error {
+        RedbDurableFormatPreflightError::Marker(
+            riffdb_storage_api::DurableFormatMarkerError::Malformed
+            | riffdb_storage_api::DurableFormatMarkerError::ChecksumMismatch,
+        ) => StorageErrorKind::CorruptData,
+        RedbDurableFormatPreflightError::Marker(
+            riffdb_storage_api::DurableFormatMarkerError::UnknownVersion
+            | riffdb_storage_api::DurableFormatMarkerError::ManifestMismatch,
+        )
+        | RedbDurableFormatPreflightError::Unsupported(_) => StorageErrorKind::IncompatibleFormat,
+        RedbDurableFormatPreflightError::Unavailable
+        | RedbDurableFormatPreflightError::AmbiguousInventory => StorageErrorKind::Unavailable,
+    };
+    storage_error(kind)
+}
+
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
     ///
@@ -913,6 +934,56 @@ impl RedbStore {
         changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
     ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
+        let format_preflight =
+            preflight_durable_format_path(&path).map_err(format_preflight_storage_error)?;
+        if matches!(
+            format_preflight,
+            RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
+        ) {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        Self::open_after_format_preflight(
+            &path,
+            application_commit_profile,
+            test_controller,
+            changelog_port,
+            (format_preflight == RedbDurableFormatPreflight::InitializeCurrent)
+                .then_some(format_preflight),
+        )
+    }
+
+    pub(crate) fn open_for_durable_format_upgrade(
+        path: &Path,
+        format_preflight: RedbDurableFormatPreflight,
+    ) -> Result<Self, StorageError> {
+        if !matches!(
+            format_preflight,
+            RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
+        ) || preflight_durable_format_path(path).map_err(format_preflight_storage_error)?
+            != format_preflight
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        Self::open_after_format_preflight(
+            path,
+            RedbCommitProfile::Hardened,
+            None,
+            default_changelog_port(),
+            None,
+        )
+    }
+
+    fn open_after_format_preflight(
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+    ) -> Result<Self, StorageError> {
+        if let Some(witness) = initialize_marker_witness {
+            publish_initialized_current_marker(path, witness)
+                .map_err(format_preflight_storage_error)?;
+        }
         let database = Builder::new()
             .set_repair_callback(|session| {
                 // Bounded progress telemetry only; do not enable quick_repair
@@ -921,12 +992,12 @@ impl RedbStore {
                 let basis_points = ((progress * 10_000.0) as u64).min(10_000);
                 LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
             })
-            .create(&path)
+            .create(path)
             .map_err(database_error)?;
         let store = Self {
             shared: Arc::new(SharedRedb {
                 database,
-                path,
+                path: path.to_path_buf(),
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
@@ -6104,6 +6175,7 @@ mod tests {
     impl Drop for TestDatabasePath {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(crate::durable_format_marker_path(&self.0));
             let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
             let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
             let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
@@ -6113,6 +6185,30 @@ mod tests {
     fn database_id(seed: u8) -> DatabaseId {
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [seed; 10])
             .expect("valid deterministic UUIDv7")
+    }
+
+    #[test]
+    fn open_publishes_current_marker_and_refuses_unmarked_existing_bytes() {
+        let current_path = TestDatabasePath::new("format-marker-current");
+        drop(RedbStore::open(&current_path.0).expect("open new current database"));
+        assert_eq!(
+            crate::preflight_durable_format_path(&current_path.0),
+            Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
+        );
+
+        let predecessor_path = TestDatabasePath::new("format-marker-predecessor");
+        let predecessor_bytes = b"predecessor bytes remain unchanged";
+        std::fs::write(&predecessor_path.0, predecessor_bytes).expect("write predecessor bytes");
+        let error = match RedbStore::open(&predecessor_path.0) {
+            Ok(_) => panic!("predecessor needs upgrade"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), StorageErrorKind::IncompatibleFormat);
+        assert_eq!(
+            std::fs::read(&predecessor_path.0).expect("read predecessor"),
+            predecessor_bytes
+        );
+        assert!(!crate::durable_format_marker_path(&predecessor_path.0).exists());
     }
 
     fn fixture_envelope_from(file: &str, record_type: &str) -> Vec<u8> {

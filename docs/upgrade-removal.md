@@ -2,8 +2,10 @@
 
 ## Upgrade
 
-The POC has no general in-place upgrade or downgrade guarantee. Treat every
-binary change as a compatibility review.
+The POC has no general in-place upgrade or downgrade guarantee. Every release
+publishes an exact alpha epoch/writer manifest and closed release-edge table.
+Treat every binary change as a compatibility review; only a manifest-declared
+edge may run in place.
 
 1. Read `release/RELEASE_NOTES.md`, `docs/compatibility.md`, and the accepted
    ADRs for storage, durable envelope, public protocol, contract IR, and MCP.
@@ -18,9 +20,28 @@ binary change as a compatibility review.
 6. Preserve the old binaries, key documents, release bundle, SBOM, and
    checksums outside the database and backup roots.
 7. Install all three binaries from one verified bundle.
-8. Start `riffdbd` and require the complete startup validation and authenticated
+8. With `riffdbd` still stopped, inspect the new binary's source-free decision:
+
+   ```bash
+   riffdb storage preflight --database-path /absolute/path/to/riffdb.redb
+   ```
+
+   If it reports `upgrade_required`, run only the printed action with the exact
+   verified backup from step 4:
+
+   ```bash
+   riffdb storage upgrade \
+     --database-path /absolute/path/to/riffdb.redb \
+     --backup /absolute/path/to/verified-backup
+   ```
+
+   Keep the database closed throughout. A backup mismatch refuses before an
+   upgrade receipt or format marker is created. Interrupted admitted upgrades
+   are retried with the same database and backup; do not delete or edit the
+   sibling `.riffdb-format-upgrade-v1` receipt.
+9. Start `riffdbd` and require the complete startup validation and authenticated
    health result before admitting application traffic.
-9. Re-run the budget smoke, inspect projection/outbox derived health, and only
+10. Re-run the budget smoke, inspect projection/outbox derived health, and only
    then restart MCP bridges and application clients.
 
 For the optional system bridge, stop activation before draining instances:
