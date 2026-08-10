@@ -11297,10 +11297,11 @@ work_packages:
     simulated recovery) belongs to WP-582, the ADR-0113 oracle-wiring package; this package
     delivers the engine-level shadow-map form only
   - SIM-004 evidence (simulator-found failures retained as seed-replayable regression fixtures
-    replayed per merge, nightly exploration budget) belongs to the ADR-0113 corpus package
+    replayed per merge, nightly exploration budget) delivered by WP-583 (found-seed corpus with
+    per-merge replay and the env-gated deep-exploration budget)
   - SIM-006 evidence (every storage-layer storage_recovery_matrix / RECOVERY_SCENARIOS arm
-    reproduced as a pinned simulation schedule) belongs to the ADR-0113 corpus-subsumption
-    package
+    reproduced as a pinned simulation schedule) delivered by WP-583 (campaign-covered pinned
+    schedules plus the closed typed-exclusion classification)
   exit_gate: The same seed replays a byte-identical versioned trace digest through the full
     crash-recover-continue campaign, every fault arm is provably reachable, torn unsynced state
     never bricks or diverges the reopened engine from the shadow oracle for any swept seed, no
@@ -11412,8 +11413,8 @@ work_packages:
   - ./scripts/check-requirement-coverage
   deferred:
   - The seeded workload generator and the open-ended exploration campaign with its regression
-    corpus (SIM-004) belong to the following ADR-0113 packages; this oracle runs fixed
-    fixtures over the existing crash-window sweep
+    corpus (SIM-004) delivered by WP-583; this oracle runs fixed fixtures over the existing
+    crash-window sweep
   - Administration audit records and projection state remain outside the model's coverage;
     the comparison names the nine authoritative families it proves and the audit stream stays
     matrix-covered evidence
@@ -11440,4 +11441,99 @@ work_packages:
     scale: Inspection requests stay bounded by the existing 256-target and 10k-record limits,
       the oracle workload is four commands, and the sweep budget is fixed by the window range
       and seed count rather than database size.
+  human_review_triggers: *id001
+- id: WP-583
+  name: DST seeded campaign — workload generator, crash-schedule exploration, found-seed corpus, matrix subsumption
+  depends_on: [WP-582]
+  objective: Complete ADR-0113 Phase 1 (items 5-7) with a seeded workload generator over the
+    compiled fixture contract family, an exploration campaign that drives the simulated store
+    through generated plans with AuthoritativeCommandModel in lockstep under a crash schedule
+    armed across bring-up, steady state, and recovery windows, a seed-replayable found-bug
+    regression corpus replayed per merge, and the closed classification of every
+    RECOVERY_SCENARIOS crash-matrix row as campaign-covered, typed-excluded, or out of the
+    storage layer's scope.
+  requirements: [SIM-004, SIM-006]
+  required_adrs: [ADR-0012, ADR-0113]
+  allowed_paths: [work_packages.yaml, adr/0113-deterministic-simulation-testing.md,
+    crates/riffdb-sim/**]
+  deliverables:
+  - WorkloadPlan::generate(seed, config) in the seeded_campaign test target; a pure-value typed
+    command sequence drawing command mix (creates, expected-version replaces, ADR-0083
+    supersession chains of arbitrary depth), admission-shape mix (fused vacant-terminal and
+    two-phase existing-pending), contention profile (capped fresh-versus-reuse targets),
+    value-size distribution (a bounded note payload over a widened fixture contract), and
+    target-disjoint atomic batch grouping, with identities derived via
+    from_unix_milliseconds_and_random on seed material; determinism pinned by same-seed
+    equality, cross-seed inequality, a golden identity digest under WORKLOAD_GENERATOR_VERSION
+    (the draw-order falsifier), version and config sensitivity, structural invariants over 64
+    seeds, and per-dimension non-vacuity
+  - run_campaign_outcome; the plan driven against the simulated store (SIM-B seams) with the
+    model in lockstep, the crash schedule armed from the end of first store creation through
+    every recovery reopen, a full startup-validation and structural-inspection pass plus the
+    SIM-C1 oracle comparison at the recovered frontier after every recovery with per-family
+    agreement counts asserted against the model's own populations, two-state crash-boundary
+    acceptance for interrupted batches (present or absent IN FULL; a partial batch is a named
+    engine-defect panic), phase-one admissions, database initialization, and catalog
+    activation, absent work re-admitted from the recovered frontier, deterministic termination
+    via a crash budget, and failure output carrying seed, generator version, config, step
+    index, and the named divergence
+  - The campaign's first real engine catch, retained and dispositioned; redb 4.1.0 leaves file
+    growth non-durable until the one-phase commit's single fsync, so a seeded torn crash can
+    durably keep the in-commit god header while dropping the covering extension and every
+    subsequent open panics (page_manager.rs:231) before redb's own repair path runs — fixed
+    upstream in commit fd82ced (unreleased, the =4.1.0 pin predates it); carried as a typed,
+    pin-guarded campaign placement exclusion (CAMPAIGN_PLACEMENT_EXCLUSIONS, keyed on
+    REDB_PIN_CONTAINS_FD82CED with a manifest guard that reds when the pin moves), an
+    ignored-by-default reproducer, and the corpus's inaugural entry whose expectation flips to
+    clean recovery when the pin advances
+  - SIM-004 corpus; typed entries (seed, generator version, config, what it caught, pin date,
+    outcome expectations mapped to report counters and pinned non-vacuously) replayed per
+    merge, seeded with the wedge entry plus three development-found interesting-territory
+    seeds (heaviest torn recovery, the commit-present two-state resolution, deepest
+    crash-during-recovery chain); env-gated deep exploration (RIFFDB_SIM_EXPLORE_SEEDS) as the
+    open-ended budget, invocation documented in the module doc (no CI wiring exists on this
+    machine)
+  - SIM-006 subsumption; every RECOVERY_SCENARIOS row classified exactly once
+    (campaign-covered pinned schedules for the command-commit and startup-initialization
+    engine-commit arms with scouted, stability-rerun seeds; typed storage exclusions with
+    verifiable reasons for the migration-batch arms and the no-crash-point owner typestate
+    rows; out-of-scope classes for daemon-level, other-crate owner-package, and Phase-1
+    real-filesystem-adapter rows), closed in both directions with kind-consistency rules so a
+    new or reclassified row reds the guard until honestly classified; the fork+exec matrix
+    itself untouched
+  - The standing per-merge sweep; 24 scouted seeds under the commit-arms schedule with
+    aggregate non-vacuity asserts (crashes, recoveries, torn decisions, recovery-window
+    crashes, both commit two-state sides, admission resolutions) plus exact
+    oracle-comparison accounting, wedged placements counted openly and bounded so exclusions
+    cannot hollow the sweep
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-sim --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --lib
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-targets
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  deferred:
+  - The migration.batch.* crash-matrix arms remain typed storage exclusions until a generator
+    arm drives the migration control state
+  - The redb file-growth wedge placement exclusion is removed by advancing the engine pin past
+    upstream fd82ced and flipping REDB_PIN_CONTAINS_FD82CED, which also flips the corpus's
+    inaugural entry to asserting clean recovery; the manifest guard makes the flip mandatory
+    at the pin move
+  - Store-level trace-digest determinism remains out of scope (redb's hash-ordered
+    pending_table_updates drain and journal-worker draw interleaving, documented since SIM-B);
+    the generator's command sequence is the pinned deterministic surface
+  exit_gate: Every non-excluded campaign in the standing sweep, the corpus, and the covered
+    pinned schedules completes its plan with the full startup-validation pass and the oracle
+    holding at every recovered frontier; the sweep's aggregate counters prove crashes, torn
+    recoveries, recovery-window crashes, and both commit two-state sides were exercised; the
+    corpus replays per merge including the wedge reproduction under the current pin; a new
+    RECOVERY_SCENARIOS row or a moved redb pin reds the guards until classified; and no
+    production crate changes.
+  standing_design_tests:
+    interface_safety: No application-facing surface changes; the generator, campaign, corpus,
+      and classification live entirely in the dev-only simulator crate's test target and drive
+      the store through existing hidden test seams.
+    scale: Campaign state is bounded by the configured plan (commands, targets, note bytes)
+      and the crash budget; inspection requests stay inside the 256-target and 10k-record
+      limits; the sweep budget is fixed by seed count and finishes in under a minute.
   human_review_triggers: *id001
