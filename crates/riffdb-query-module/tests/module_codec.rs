@@ -3,6 +3,7 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, CompiledNamedQueryPlan, ManifestErrorKind, NamedQuerySource,
+    QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QUERY_MODULE_FORMAT_VERSION_V1, QueryModule,
     QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName, QueryModuleVersion,
     generate_go_client, generate_mcp_commands, generate_mcp_tools, generate_python_client,
@@ -137,6 +138,7 @@ contract Operational version 1 {
     conflict_key (organization_id, ticket_id)
   }
 }
+
 "#;
     const QUERY: &str = r#"
 query SearchTickets(
@@ -212,6 +214,65 @@ query SearchTickets(
         ),
         QUERY_MODULE_FORMAT_VERSION_V1
     );
+}
+
+#[test]
+fn aggregate_module_round_trips_with_additive_v3_identity_and_name_only_explain() {
+    const AGGREGATE_CONTRACT: &str = r#"
+contract OperationalAggregate version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: string<32>
+    field story_points: i64
+    field updated_at: timestamp
+    index all_tickets (organization_id, updated_at, ticket_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+    const AGGREGATE_QUERY: &str = r#"
+query TicketSummary($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by updated_at asc, ticket_id asc
+        take 25
+    aggregate summary from tickets {
+        group by status
+        count() as ticket_count
+        sum(story_points) as total_points
+    }
+    return Found { summary: summary { status ticket_count total_points } }
+    outcomes Found
+}
+"#;
+    let bundle = compile_contract_source(AGGREGATE_CONTRACT).expect("contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("aggregate").expect("name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("TicketSummary", AGGREGATE_QUERY).expect("query")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &bundle).expect("aggregate module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
+    );
+    let query = module.query("TicketSummary").expect("query");
+    let family = query.operational_family().expect("family");
+    assert_eq!(family.aggregates().len(), 1);
+    let explain = query.explain_lines();
+    assert!(explain.contains(&"operational.aggregate.summary.source=tickets".to_owned()));
+    assert!(explain.contains(&"operational.aggregate.summary.maximum_groups=25".to_owned()));
+    assert!(explain.contains(&"operational.aggregate.summary.measure.total_points=sum".to_owned()));
+    assert!(!explain.iter().any(|line| line.contains("field_id")));
+
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &bundle)
+        .expect("strict aggregate decode");
+    assert_eq!(decoded, module);
 }
 
 #[test]

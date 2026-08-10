@@ -36,6 +36,8 @@ pub use schema::{
 pub const QUERY_IR_VERSION_V1: u32 = 1;
 /// Canonical finite operational plan-family IR version.
 pub const QUERY_IR_VERSION_OPERATIONAL_V1: u32 = 2;
+/// Canonical finite operational plan-family IR with exact aggregate descriptors.
+pub const QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

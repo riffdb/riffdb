@@ -2,19 +2,24 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
-    Cardinality, Document, Expression, FieldSelection, Literal, Path, Selection, Span,
-    TypeReference, format_query,
+    AggregateFunction, Cardinality, Document, Expression, FieldSelection, Literal, Path, Selection,
+    Span, TypeReference, format_query,
 };
-use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId};
+use riffdb_types::{
+    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, MAX_DECIMAL_PRECISION,
+};
 
 use crate::{
     EntitySymbol, MAX_QUERY_ARTIFACT_BYTES, MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema,
-    NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema, NamedTypeSchema, PageBound,
+    NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema, NamedTypeSchema,
+    OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1,
+    OperationalAggregateV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage,
     QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
+const OPERATIONAL_AGGREGATES_MAGIC: &[u8] = b"OPERATIONAL-AGGREGATES\0";
 
 /// Exact contract identity repeated by resolved query artifacts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +125,10 @@ pub enum SourceSymbolKind {
     EnumVariant,
     /// Query-local binding.
     Binding,
+    /// Query-local aggregate result.
+    Aggregate,
+    /// Aggregate measure alias.
+    AggregateMeasure,
     /// Returned field alias.
     ResultField,
 }
@@ -170,6 +179,7 @@ pub struct ResolvedQueryV1 {
     identity: ExactContractIdentity,
     name: Option<String>,
     bindings: Vec<BindingSymbol>,
+    aggregates: Vec<OperationalAggregateV1>,
     schemas: NamedQuerySchemas,
     source_map: QuerySourceMap,
     canonical_bytes: Vec<u8>,
@@ -183,6 +193,7 @@ impl std::fmt::Debug for ResolvedQueryV1 {
             .field("contract_version", &self.identity.version())
             .field("name", &self.name)
             .field("bindings", &self.bindings)
+            .field("aggregates", &self.aggregates)
             .field("schemas", &self.schemas)
             .field("source_map_entries", &self.source_map.0.len())
             .field("canonical_length", &self.canonical_bytes.len())
@@ -213,6 +224,12 @@ impl ResolvedQueryV1 {
     #[must_use]
     pub fn bindings(&self) -> &[BindingSymbol] {
         &self.bindings
+    }
+
+    /// Compiler-resolved bounded aggregate declarations.
+    #[must_use]
+    pub fn aggregates(&self) -> &[OperationalAggregateV1] {
+        &self.aggregates
     }
 
     /// Name-addressed parameter/result schemas.
@@ -249,10 +266,18 @@ struct ResolvedBinding<'a> {
     take: Option<PageBound>,
 }
 
+#[derive(Clone)]
+struct ResolvedAggregateSelection {
+    fields: BTreeMap<String, NamedTypeSchema>,
+    grouped: bool,
+    maximum_groups: PageBound,
+}
+
 struct Resolver<'a> {
     catalog: &'a SymbolicCatalog,
     parameters: BTreeMap<String, NamedTypeSchema>,
     bindings: BTreeMap<String, ResolvedBinding<'a>>,
+    aggregates: BTreeMap<String, ResolvedAggregateSelection>,
     source_map: Vec<SourceMapEntry>,
 }
 
@@ -262,6 +287,7 @@ impl<'a> Resolver<'a> {
             catalog,
             parameters: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            aggregates: BTreeMap::new(),
             source_map: Vec::new(),
         }
     }
@@ -381,6 +407,184 @@ impl<'a> Resolver<'a> {
             self.resolve_expression(&binding.predicate.value, binding.predicate.span, entity)?;
         }
 
+        let mut aggregate_symbols = Vec::with_capacity(document.body.aggregates.len());
+        for aggregate in &document.body.aggregates {
+            let name = aggregate.name.value.as_str();
+            if self.parameters.contains_key(name)
+                || self.bindings.contains_key(name)
+                || self.aggregates.contains_key(name)
+            {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::DuplicateName,
+                    aggregate.name.span,
+                    vec![name.to_owned()],
+                    "duplicate query-local aggregate name",
+                ));
+            }
+            let source_name = aggregate.source.value.as_str();
+            let source = self.bindings.get(source_name).cloned().ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::UnknownSymbol,
+                    aggregate.source.span,
+                    vec![source_name.to_owned()],
+                    "unknown aggregate source binding",
+                )
+            })?;
+            if source.symbol.cardinality != Cardinality::Many {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    aggregate.source.span,
+                    vec![source_name.to_owned()],
+                    "aggregate source must be one bounded many binding",
+                ));
+            }
+
+            self.push_map(
+                aggregate.name.span,
+                SourceSymbolKind::Aggregate,
+                vec![name.to_owned()],
+            )?;
+            self.push_map(
+                aggregate.source.span,
+                SourceSymbolKind::Binding,
+                vec![source_name.to_owned()],
+            )?;
+
+            let mut result_names = BTreeSet::new();
+            let mut result_fields = BTreeMap::new();
+            let mut group_keys = Vec::with_capacity(aggregate.group_by.len());
+            for group in &aggregate.group_by {
+                let (field_name, field_type) =
+                    self.resolve_aggregate_field(&source, source_name, &group.value, group.span)?;
+                if !result_names.insert(field_name.clone()) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::DuplicateName,
+                        group.span,
+                        vec![name.to_owned(), field_name],
+                        "duplicate aggregate result field",
+                    ));
+                }
+                let named = self.named_type(&field_type, group.span)?;
+                result_fields.insert(field_name.clone(), named.clone());
+                group_keys.push(
+                    OperationalAggregateGroupKeyV1::checked(field_name, named)
+                        .ok_or_else(|| self.aggregate_invariant(group.span))?,
+                );
+            }
+
+            let mut measures = Vec::with_capacity(aggregate.measures.len());
+            for measure in &aggregate.measures {
+                let alias = measure.alias.value.as_str().to_owned();
+                if !result_names.insert(alias.clone()) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::DuplicateName,
+                        measure.alias.span,
+                        vec![name.to_owned(), alias],
+                        "duplicate aggregate result field",
+                    ));
+                }
+                let (function, input_field, result_type) = match measure.function.value {
+                    AggregateFunction::Count => (
+                        OperationalAggregateFunctionV1::Count,
+                        None,
+                        NamedTypeSchema::Scalar("u64".to_owned()),
+                    ),
+                    AggregateFunction::Sum => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        (
+                            OperationalAggregateFunctionV1::Sum,
+                            Some(field_name),
+                            self.aggregate_sum_type(&field_type, field.span)?,
+                        )
+                    }
+                    AggregateFunction::Min | AggregateFunction::Max => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        if matches!(field_type.tag(), ValueTypeTag::List | ValueTypeTag::Record) {
+                            return Err(self.diagnostic(
+                                QueryDiagnosticCode::InvalidType,
+                                field.span,
+                                vec![source.entity.name().to_owned(), field_name],
+                                "min/max input must be an ordered scalar field",
+                            ));
+                        }
+                        let function = if measure.function.value == AggregateFunction::Min {
+                            OperationalAggregateFunctionV1::Min
+                        } else {
+                            OperationalAggregateFunctionV1::Max
+                        };
+                        let result = NamedTypeSchema::Optional(Box::new(
+                            self.named_type(&field_type, field.span)?,
+                        ));
+                        (function, Some(field_name), result)
+                    }
+                };
+                result_fields.insert(alias.clone(), result_type.clone());
+                self.push_map(
+                    measure.alias.span,
+                    SourceSymbolKind::AggregateMeasure,
+                    vec![name.to_owned(), alias.clone()],
+                )?;
+                measures.push(
+                    OperationalAggregateMeasureV1::checked(
+                        alias,
+                        function,
+                        input_field,
+                        result_type,
+                    )
+                    .ok_or_else(|| self.aggregate_invariant(measure.alias.span))?,
+                );
+            }
+
+            let maximum_groups = if group_keys.is_empty() {
+                PageBound::Literal(1)
+            } else {
+                source.take.clone().ok_or_else(|| {
+                    self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        aggregate.source.span,
+                        vec![source_name.to_owned()],
+                        "grouped aggregate source is missing its checked row bound",
+                    )
+                })?
+            };
+            let resolved = OperationalAggregateV1::checked(
+                name.to_owned(),
+                source_name.to_owned(),
+                source.entity.name().to_owned(),
+                group_keys,
+                measures,
+                maximum_groups.clone(),
+            )
+            .ok_or_else(|| self.aggregate_invariant(aggregate.name.span))?;
+            self.aggregates.insert(
+                name.to_owned(),
+                ResolvedAggregateSelection {
+                    fields: result_fields,
+                    grouped: !resolved.group_keys().is_empty(),
+                    maximum_groups,
+                },
+            );
+            aggregate_symbols.push(resolved);
+        }
+
         let fields = self.resolve_selection(&document.body.selection, None)?;
         let branch_name = document
             .body
@@ -424,6 +628,7 @@ impl<'a> Resolver<'a> {
             document,
             self.catalog.identity(),
             &binding_symbols,
+            &aggregate_symbols,
             &schemas,
         )?;
         self.source_map
@@ -435,10 +640,89 @@ impl<'a> Resolver<'a> {
                 .as_ref()
                 .map(|name| name.value.as_str().to_owned()),
             bindings: binding_symbols,
+            aggregates: aggregate_symbols,
             schemas,
             source_map: QuerySourceMap(self.source_map),
             canonical_bytes,
         })
+    }
+
+    fn resolve_aggregate_field(
+        &mut self,
+        source: &ResolvedBinding<'a>,
+        source_name: &str,
+        path: &Path,
+        span: Span,
+    ) -> Result<(String, ValueType), QueryDiagnostics> {
+        let segments = names(path);
+        let field_name = match segments.as_slice() {
+            [field] => field,
+            [binding, field] if binding == source_name => field,
+            _ => {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    span,
+                    segments,
+                    "aggregate field must belong to its declared source binding",
+                ));
+            }
+        };
+        let field = source.entity.field(field_name).ok_or_else(|| {
+            self.diagnostic(
+                QueryDiagnosticCode::UnknownSymbol,
+                span,
+                vec![source.entity.name().to_owned(), field_name.clone()],
+                "unknown aggregate source field",
+            )
+        })?;
+        self.push_map(
+            span,
+            SourceSymbolKind::Field,
+            vec![source.entity.name().to_owned(), field_name.clone()],
+        )?;
+        Ok((field_name.clone(), field.value_type().clone()))
+    }
+
+    fn aggregate_sum_type(
+        &self,
+        value_type: &ValueType,
+        span: Span,
+    ) -> Result<NamedTypeSchema, QueryDiagnostics> {
+        let widened_precision = u16::from(MAX_DECIMAL_PRECISION) + 1;
+        match value_type.tag() {
+            ValueTypeTag::I64 | ValueTypeTag::U64 => Ok(NamedTypeSchema::Scalar(format!(
+                "decimal<{widened_precision},0>"
+            ))),
+            ValueTypeTag::Decimal => {
+                let Some(spec) = value_type.decimal_spec() else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidType,
+                        span,
+                        Vec::new(),
+                        "decimal sum input is missing its exact scale",
+                    ));
+                };
+                let scale = spec.scale();
+                Ok(NamedTypeSchema::Scalar(format!(
+                    "decimal<{widened_precision},{scale}>"
+                )))
+            }
+            _ => Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidType,
+                span,
+                Vec::new(),
+                "sum input must be i64, u64, or decimal; money sums require an explicit currency rule",
+            )),
+        }
+    }
+
+    fn aggregate_invariant(&self, span: Span) -> QueryDiagnostics {
+        self.diagnostic(
+            QueryDiagnosticCode::InvalidPath,
+            span,
+            Vec::new(),
+            "aggregate declaration failed its closed structural invariant",
+        )
     }
 
     fn resolve_type(
@@ -697,12 +981,30 @@ impl<'a> Resolver<'a> {
                     ));
                 }
             };
+            if let Some(aggregate) = self.aggregates.get(binding_name).cloned() {
+                let nested_fields =
+                    self.resolve_aggregate_selection(nested, binding_name, &aggregate)?;
+                let record = NamedTypeSchema::Record(nested_fields);
+                self.push_map(
+                    field.source.span,
+                    SourceSymbolKind::Aggregate,
+                    vec![binding_name.clone()],
+                )?;
+                return Ok(if aggregate.grouped {
+                    NamedTypeSchema::List {
+                        element: Box::new(record),
+                        maximum: aggregate.maximum_groups,
+                    }
+                } else {
+                    record
+                });
+            }
             let binding = self.bindings.get(binding_name).cloned().ok_or_else(|| {
                 self.diagnostic(
                     QueryDiagnosticCode::UnknownSymbol,
                     field.source.span,
                     vec![binding_name.clone()],
-                    "unknown nested selection binding",
+                    "unknown nested selection binding or aggregate",
                 )
             })?;
             let nested_fields = self.resolve_selection(nested, Some(&binding))?;
@@ -778,6 +1080,57 @@ impl<'a> Resolver<'a> {
         })?;
         self.push_map(field.source.span, SourceSymbolKind::Field, symbolic_path)?;
         self.named_type(symbol.value_type(), field.source.span)
+    }
+
+    fn resolve_aggregate_selection(
+        &mut self,
+        selection: &Selection,
+        aggregate_name: &str,
+        aggregate: &ResolvedAggregateSelection,
+    ) -> Result<Vec<NamedFieldSchema>, QueryDiagnostics> {
+        let mut names_seen = BTreeSet::new();
+        let mut fields = Vec::with_capacity(selection.fields.len());
+        for field in &selection.fields {
+            if field.nested.is_some() || field.source.value.0.len() != 1 {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    field.source.span,
+                    vec![aggregate_name.to_owned()],
+                    "aggregate result selection must contain scalar result fields",
+                ));
+            }
+            let source_name = field.source.value.0[0].value.as_str();
+            let output_name = field
+                .alias
+                .as_ref()
+                .map_or(source_name, |alias| alias.value.as_str());
+            if !names_seen.insert(output_name.to_owned()) {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::DuplicateName,
+                    field
+                        .alias
+                        .as_ref()
+                        .map_or(field.source.span, |alias| alias.span),
+                    vec![aggregate_name.to_owned(), output_name.to_owned()],
+                    "duplicate aggregate result selection field",
+                ));
+            }
+            let value_type = aggregate.fields.get(source_name).cloned().ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::UnknownSymbol,
+                    field.source.span,
+                    vec![aggregate_name.to_owned(), source_name.to_owned()],
+                    "unknown aggregate result field",
+                )
+            })?;
+            self.push_map(
+                field.source.span,
+                SourceSymbolKind::ResultField,
+                vec![aggregate_name.to_owned(), source_name.to_owned()],
+            )?;
+            fields.push(NamedFieldSchema::new(output_name.to_owned(), value_type));
+        }
+        Ok(fields)
     }
 
     fn resolve_value_path(
@@ -959,6 +1312,7 @@ fn canonical_surface(
     document: &Document,
     identity: &ExactContractIdentity,
     bindings: &[BindingSymbol],
+    aggregates: &[OperationalAggregateV1],
     schemas: &NamedQuerySchemas,
 ) -> Result<Vec<u8>, QueryDiagnostics> {
     let source = format_query(document);
@@ -966,7 +1320,14 @@ fn canonical_surface(
         IR_MAGIC.len() + 4 + 32 + 4 + identity.lineage().as_str().len() + 8 + 4 + source.len(),
     );
     bytes.extend_from_slice(IR_MAGIC);
-    bytes.extend_from_slice(&QUERY_IR_VERSION_V1.to_be_bytes());
+    bytes.extend_from_slice(
+        &if aggregates.is_empty() {
+            QUERY_IR_VERSION_V1
+        } else {
+            QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
+        }
+        .to_be_bytes(),
+    );
     bytes.extend_from_slice(identity.bundle_hash().as_bytes());
     push_bytes(&mut bytes, identity.lineage().as_str().as_bytes())?;
     bytes.extend_from_slice(&identity.version().get().to_be_bytes());
@@ -981,6 +1342,39 @@ fn canonical_surface(
             Cardinality::Maybe => 2,
             Cardinality::Many => 3,
         });
+    }
+    if !aggregates.is_empty() {
+        bytes.extend_from_slice(OPERATIONAL_AGGREGATES_MAGIC);
+        push_count(&mut bytes, aggregates.len())?;
+        for aggregate in aggregates {
+            push_bytes(&mut bytes, aggregate.name().as_bytes())?;
+            push_bytes(&mut bytes, aggregate.source_binding().as_bytes())?;
+            push_bytes(&mut bytes, aggregate.source_entity().as_bytes())?;
+            push_count(&mut bytes, aggregate.group_keys().len())?;
+            for group in aggregate.group_keys() {
+                push_bytes(&mut bytes, group.field().as_bytes())?;
+                encode_named_type(&mut bytes, group.value_type())?;
+            }
+            push_count(&mut bytes, aggregate.measures().len())?;
+            for measure in aggregate.measures() {
+                push_bytes(&mut bytes, measure.alias().as_bytes())?;
+                bytes.push(match measure.function() {
+                    OperationalAggregateFunctionV1::Count => 1,
+                    OperationalAggregateFunctionV1::Sum => 2,
+                    OperationalAggregateFunctionV1::Min => 3,
+                    OperationalAggregateFunctionV1::Max => 4,
+                });
+                match measure.input_field() {
+                    Some(field) => {
+                        bytes.push(1);
+                        push_bytes(&mut bytes, field.as_bytes())?;
+                    }
+                    None => bytes.push(0),
+                }
+                encode_named_type(&mut bytes, measure.result_type())?;
+            }
+            encode_page_bound(&mut bytes, aggregate.maximum_groups())?;
+        }
     }
     push_count(&mut bytes, schemas.parameters().len())?;
     for parameter in schemas.parameters() {
@@ -1004,6 +1398,20 @@ fn canonical_surface(
         )));
     }
     Ok(bytes)
+}
+
+fn encode_page_bound(output: &mut Vec<u8>, bound: &PageBound) -> Result<(), QueryDiagnostics> {
+    match bound {
+        PageBound::Literal(value) => {
+            output.push(1);
+            output.extend_from_slice(&value.to_be_bytes());
+        }
+        PageBound::Parameter(name) => {
+            output.push(2);
+            push_bytes(output, name.as_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 fn encode_fields(

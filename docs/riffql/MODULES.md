@@ -25,6 +25,14 @@ that family identity; the service selects one exact member only from parameter
 presence and returns the family identity on the response. Strict decoding
 recompiles source against the exact contract and compares canonical bytes.
 
+A module containing bounded exact aggregates uses additive version 3. Its
+aggregate descriptors, result schemas, authorization fields, group ceiling,
+cost, source map, explanation, and family identity are all compiler-owned and
+strictly recompiled on decode. Version-3 aggregate modules are not yet accepted
+for deployment: WP-564 must provide the one-snapshot evaluator before the
+service can expose results. This deployment gate prevents an aggregate module
+from falling back to the ordinary source-row program.
+
 Operational families currently execute through the named-query application
 surface. Version-1 reactive/live-query modules do not substitute a representative
 member: compilation excludes an operational family until a versioned reactive
@@ -32,7 +40,7 @@ presence-selection surface exists.
 
 The additive identity transition is frozen in
 `fixtures/riffql/operational-identity-rotation-v1.json`. That generated receipt
-records the before/after language, IR, plan/family, module, manifest, role,
+records the v1/v2/v3 language, IR, plan/family, module, manifest, role,
 application-lock, and Rust/Go/TypeScript/Python/MCP artifact hashes. It also
 binds the unchanged ordinary-v1 TicketDesk and agent-alpha closures. The normal
 generated-client check regenerates the receipt, so a partial rotation or stale

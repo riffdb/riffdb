@@ -246,13 +246,19 @@ functions are `count()`, `sum(field)`, `min(field)`, and `max(field)`. Function
 names, input fields, aliases, grouping keys, and the source binding are source
 declarations; callers cannot submit any of them at runtime.
 
-This syntax is frozen ahead of WP-564 execution work. Today, both ordinary and
-finite-family compilation reject an aggregate declaration at its symbolic
-source span with `RDB-QP008`; it is never ignored or executed using a fallback.
-WP-564 must lower it through the existing exact aggregate descriptors and
-Decimal, empty-set, group-order, inference, and requested-row-limit clamps
-before a module containing it can deploy. Documentation therefore does not yet
-present aggregates as an executable application feature.
+This syntax and its version-3 query-module representation are frozen ahead of
+WP-564 execution work. Finite-family compilation resolves every grouping and
+measure field, derives result types, includes all source fields in the
+authorization union, clamps grouped output to the source row limit, and seals
+the descriptors and cost ceiling into module identity. The ordinary version-1
+compiler still rejects aggregate declarations with `RDB-QP008`.
+
+Aggregate modules remain intentionally undeployable until WP-564 provides the
+one-snapshot evaluator and exact result carriage. The service also rejects any
+such module encountered through an older administrative path, so it can never
+silently return the underlying rows as if they were aggregate results. Thus
+this section freezes the compiler contract; it does not yet advertise an
+executable application feature.
 
 ## Symbolic catalog schema
 

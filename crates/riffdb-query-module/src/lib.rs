@@ -54,8 +54,8 @@ use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::{compile_operational_query_family, compile_query};
 use riffdb_query_ir::{
     AuthorizationEntityAccess, NamedQuerySchemas, OperationalQueryFamilyV1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
-    SourceSymbolKind, SymbolicCatalog,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
+    QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
@@ -78,6 +78,8 @@ const MODULE_MAGIC: &[u8] = b"RIFFDB-QUERY-MODULE\0";
 pub const QUERY_MODULE_FORMAT_VERSION_V1: u32 = 1;
 /// Additive module codec for finite operational plan families.
 pub const QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1: u32 = 2;
+/// Additive module codec for exact operational aggregate descriptors.
+pub const QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -517,7 +519,13 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self
+        if self.queries.iter().any(|query| {
+            query
+                .operational_family()
+                .is_some_and(|family| !family.aggregates().is_empty())
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
+        } else if self
             .queries
             .iter()
             .any(|query| query.operational_family().is_some())
@@ -682,6 +690,34 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
                 ),
                 format!("operational.members={}", family.members().len()),
             ];
+            for aggregate in family.aggregates() {
+                lines.push(format!(
+                    "operational.aggregate.{}.source={}",
+                    aggregate.name(),
+                    aggregate.source_binding()
+                ));
+                lines.push(format!(
+                    "operational.aggregate.{}.maximum_groups={}",
+                    aggregate.name(),
+                    match aggregate.maximum_groups() {
+                        riffdb_query_ir::PageBound::Literal(value) => value.to_string(),
+                        riffdb_query_ir::PageBound::Parameter(name) => format!("${name}"),
+                    }
+                ));
+                for measure in aggregate.measures() {
+                    lines.push(format!(
+                        "operational.aggregate.{}.measure.{}={}",
+                        aggregate.name(),
+                        measure.alias(),
+                        match measure.function() {
+                            riffdb_query_ir::OperationalAggregateFunctionV1::Count => "count",
+                            riffdb_query_ir::OperationalAggregateFunctionV1::Sum => "sum",
+                            riffdb_query_ir::OperationalAggregateFunctionV1::Min => "min",
+                            riffdb_query_ir::OperationalAggregateFunctionV1::Max => "max",
+                        }
+                    ));
+                }
+            }
             for member in family.members() {
                 for line in member.program().explain().lines() {
                     lines.push(format!(
@@ -705,16 +741,21 @@ fn encode_module(
     let operational = queries
         .iter()
         .any(|query| matches!(query.plan(), CompiledNamedQueryPlan::OperationalV1(_)));
+    let operational_aggregate = queries.iter().any(|query| {
+        query
+            .operational_family()
+            .is_some_and(|family| !family.aggregates().is_empty())
+    });
+    let format_version = if operational_aggregate {
+        QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
+    } else if operational {
+        QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+    } else {
+        QUERY_MODULE_FORMAT_VERSION_V1
+    };
     let mut output = Vec::new();
     output.extend_from_slice(MODULE_MAGIC);
-    output.extend_from_slice(
-        &if operational {
-            QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
-        } else {
-            QUERY_MODULE_FORMAT_VERSION_V1
-        }
-        .to_be_bytes(),
-    );
+    output.extend_from_slice(&format_version.to_be_bytes());
     write_text(&mut output, name.as_str())?;
     output.extend_from_slice(&version.get().to_be_bytes());
     write_text(&mut output, contract.lineage().as_str())?;
@@ -729,7 +770,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if operational {
+        &if operational_aggregate {
+            QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
+        } else if operational {
             QUERY_IR_VERSION_OPERATIONAL_V1
         } else {
             QUERY_IR_VERSION_V1
@@ -787,7 +830,9 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
     let format_version = input.u32()?;
     if !matches!(
         format_version,
-        QUERY_MODULE_FORMAT_VERSION_V1 | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+        QUERY_MODULE_FORMAT_VERSION_V1
+            | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+            | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -812,6 +857,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
                 && ir_version == QUERY_IR_VERSION_OPERATIONAL_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+                && ir_version == QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -829,9 +878,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         let query_name = input.text(MAX_IDENTIFIER_BYTES)?;
         let source = input.text(MAX_SOURCE_BYTES)?;
         input.skip(32)?;
-        if format_version == QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
-            && !matches!(input.u8()?, 1 | 2)
-        {
+        if format_version != QUERY_MODULE_FORMAT_VERSION_V1 && !matches!(input.u8()?, 1 | 2) {
             return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
         }
         input.bytes(riffdb_query_ir::MAX_QUERY_ARTIFACT_BYTES)?;
@@ -843,7 +890,13 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             input.u32()?;
             input.u32()?;
             let tag = input.u8()?;
-            if !(1..=7).contains(&tag) {
+            let maximum_tag =
+                if format_version == QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 {
+                    9
+                } else {
+                    7
+                };
+            if !(1..=maximum_tag).contains(&tag) {
                 return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
             }
             for _ in 0..input.count(128)? {
@@ -872,6 +925,8 @@ fn source_kind_tag(kind: SourceSymbolKind) -> u8 {
         SourceSymbolKind::EnumVariant => 5,
         SourceSymbolKind::Binding => 6,
         SourceSymbolKind::ResultField => 7,
+        SourceSymbolKind::Aggregate => 8,
+        SourceSymbolKind::AggregateMeasure => 9,
     }
 }
 

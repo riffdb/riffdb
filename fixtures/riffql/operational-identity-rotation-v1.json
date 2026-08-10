@@ -48,6 +48,55 @@
     "query_source_hash": "874e9c580ed2642586842ba7076917b9d667214c8f6c72ef2b2185e0a095d4d7",
     "role_hash": "973d0ee25c9b004d67752f4f5fa29a0581af04cedb539783d4099d3638dc5831"
   },
+  "aggregate_after": {
+    "application_source_hash": "d91c75b14fc5b73d1b29ad2d6f2671fe2d2819e33e2d495de127cb8a9b156a2b",
+    "artifacts": [
+      {
+        "content_hash": "cc7c6b5ae837fca8f71b80f446ae283736d79bdc89d99f2b02c30d84b9a2a356",
+        "kind": "manifest",
+        "path": "generated/riffdb.application.exact.json"
+      },
+      {
+        "content_hash": "4c7e87cf210e5f7f553fee4e4382ec72d30aae23c27192e0d2ff4850a7b91cf8",
+        "kind": "contract_bundle",
+        "path": "generated/riffdb.contract.bundle"
+      },
+      {
+        "content_hash": "4d467e10e653d544b0a19f8d4c3bb1ffde2a45be91643c58b6a1796df5147366",
+        "kind": "rust",
+        "path": "generated/rust/client.rs"
+      },
+      {
+        "content_hash": "242ae90cf7f56b3c91c1528a6db5d8740ce8d38cd92541ea8e5b907cc39f3864",
+        "kind": "typescript",
+        "path": "generated/typescript/client.ts"
+      },
+      {
+        "content_hash": "b577814564debc12eb64ee82fbe2d51e1cbd1419912b15c6329b5aa688c7b004",
+        "kind": "python",
+        "path": "generated/python/client.py"
+      },
+      {
+        "content_hash": "bbe17c643eaef7d958cca687efd34a63086650f0d00a0029d57e4976df17872e",
+        "kind": "go",
+        "path": "generated/go/client.go"
+      },
+      {
+        "content_hash": "48831e1dda996e5dce797afab4ffdd671b32629259a8b5d68d0c22954e04bdc6",
+        "kind": "mcp",
+        "path": "generated/mcp/tools.json"
+      }
+    ],
+    "language_version": 2,
+    "lock_hash": "922770d6f822670cb4946d497ca65e0902971b6ebc373a60def9b5781b7ecdf9",
+    "manifest_hash": "8b253be83f997b08c24c6b824940666c8c9b9fb485478df61439728ad28cfd8b",
+    "module_hash": "43d4a0c523b923068a513e4be001bae315cc1c9bbd97ea00bdcab70fca164358",
+    "plan_or_family_hash": "ccbdeae5d9c65a6ea89c4d38fc7f85c4df3aaebb35d5a0fc6860824314a4668d",
+    "query_ir_version": 3,
+    "query_module_format_version": 3,
+    "query_source_hash": "979e0ba6f25e4d1fea8b59432a672b93a0cab1547a08e9765e77fb09f663afbc",
+    "role_hash": "126a2ce3c668410071d709b333fb06ed5f649828319bcb550dcc70498e2fdf3c"
+  },
   "before": {
     "application_source_hash": "7522d678b45ccbefc1a9691fcca9f17f88ed005e18fa5fd0ca919be19787b495",
     "artifacts": [
@@ -98,6 +147,7 @@
     "role_hash": "35ba5a48f9b18b530c08193bfb2ef33797d81c0b8a1888599400683a43bd42b5"
   },
   "classification": {
+    "operational_aggregate_v3_additive": true,
     "operational_v2_additive": true,
     "ordinary_v1_bytes_preserved": true,
     "partial_rotation_is_success": false
@@ -108,6 +158,31 @@
     "version": 1
   },
   "decision": "ADR-0108",
+  "operational_aggregates": [
+    {
+      "entity": "Ticket",
+      "group_keys": [
+        "status"
+      ],
+      "maximum_groups": "Literal(25)",
+      "measures": [
+        {
+          "alias": "ticket_count",
+          "function": "Count",
+          "input_field": null,
+          "result_type": "Scalar(\"u64\")"
+        },
+        {
+          "alias": "earliest",
+          "function": "Min",
+          "input_field": "updated_at",
+          "result_type": "Optional(Scalar(\"timestamp\"))"
+        }
+      ],
+      "name": "summary",
+      "source": "tickets"
+    }
+  ],
   "operational_family": {
     "authorization_entities": 1,
     "maximum_cost": {
