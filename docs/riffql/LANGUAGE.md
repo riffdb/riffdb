@@ -283,5 +283,25 @@ numeric compiler ID, capability record, raw IR, storage key, source text, or
 filesystem path. Unauthorized and nonexistent symbols therefore have the same
 representation: absence from the authorized page. The exact registry and its
 forbidden-field ledger are frozen in
-`fixtures/riffql/application-catalog-schema-v1.json`. This defines the schema
-for WP-564; it does not claim the catalog service/protocol is available yet.
+`fixtures/riffql/application-catalog-schema-v1.json`.
+
+The catalog is available through the public
+`ApplicationQueryService.GetApplicationCatalog` RPC, the Rust client's
+`get_application_catalog` method, and the `riffdb_application_catalog` MCP
+tool. Each request selects an active or exact contract, requests between 1 and
+100 visible symbols, and may carry the preceding opaque cursor. MCP uses the
+same canonical 32-character lowercase cursor spelling as its other bounded
+discovery tools.
+
+Catalog access requires contract-read authority. Command and named-query
+symbols are then filtered by the caller's exact operation grants before the
+page is formed. A continuation is bound to the principal, exact contract,
+active query-module identity, requested limit, and prior visibility. A later
+authorization change may only narrow subsequent pages. Invalid, expired,
+cross-principal, or identity-stale cursors fail as invalid input; RiffDB never
+falls back to a first page or discloses which hidden symbol changed.
+
+The feature list is a closed preflight view of the selected application
+surface. `available` means the exact compiler/runtime path implements the
+feature; `unavailable` is an explicit result and must not be interpreted as
+permission to emulate the feature with kernel reads or client-side scans.

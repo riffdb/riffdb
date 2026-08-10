@@ -378,6 +378,48 @@ impl fmt::Debug for NamedQueryToolCandidate {
     }
 }
 
+/// One deployed named query and its complete compiler-derived catalog obligations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ApplicationCatalogQueryCandidate {
+    operation: NamedQueryToolCandidate,
+    accesses: Vec<ApplicationQueryAccessRequirement>,
+}
+
+impl ApplicationCatalogQueryCandidate {
+    /// Binds one exact operation to every field/row obligation that may be
+    /// disclosed through its catalog symbols.
+    pub fn new(
+        operation: NamedQueryToolCandidate,
+        accesses: Vec<ApplicationQueryAccessRequirement>,
+    ) -> Result<Self, OperationRequestError> {
+        if accesses.is_empty() || accesses.len() > 64 {
+            return Err(OperationRequestError::TooManyQueryAccesses);
+        }
+        Ok(Self {
+            operation,
+            accesses,
+        })
+    }
+
+    /// Exact named operation candidate.
+    #[must_use]
+    pub const fn operation(&self) -> &NamedQueryToolCandidate {
+        &self.operation
+    }
+
+    /// Complete compiler-derived field and row obligations.
+    #[must_use]
+    pub fn accesses(&self) -> &[ApplicationQueryAccessRequirement] {
+        &self.accesses
+    }
+}
+
+impl fmt::Debug for ApplicationCatalogQueryCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplicationCatalogQueryCandidate([REDACTED])")
+    }
+}
+
 /// Safe failure to construct checked field-selection facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationRequestError {

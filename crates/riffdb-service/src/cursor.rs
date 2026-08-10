@@ -24,6 +24,9 @@ use crate::dto::{
     MAX_PROJECTION_WAIT, ProjectionContinuation, ProjectionPageFence, ResourceDiscoveryKind,
 };
 
+const MAX_APPLICATION_CATALOG_AUTHORITIES: usize =
+    riffdb_catalog::MAX_APPLICATION_CATALOG_CANDIDATES;
+
 /// Maximum number of items in one service page.
 pub const MAX_PAGE_ITEMS: u16 = 500;
 /// Default page size for protocols whose schema permits omission.
@@ -1272,6 +1275,98 @@ pub(crate) struct ResourceDiscoveryCursorState {
     effective_limit: PageLimit,
 }
 
+/// Caller-reconstructible identity for one symbolic application-catalog page.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct ApplicationCatalogCursorLookup {
+    requested_limit: NonZeroU16,
+}
+
+impl ApplicationCatalogCursorLookup {
+    #[must_use]
+    pub(crate) const fn new(requested_limit: NonZeroU16) -> Self {
+        Self { requested_limit }
+    }
+
+    #[must_use]
+    pub(crate) const fn requested_limit(self) -> NonZeroU16 {
+        self.requested_limit
+    }
+}
+
+/// Registry-only application-catalog continuation and narrowing state.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct ApplicationCatalogCursorState {
+    after_candidate: usize,
+    contract_lineage: ContractLineage,
+    contract_version: ContractVersion,
+    contract_hash: ContractBundleHash,
+    module_hash: Option<riffdb_types::QueryModuleHash>,
+    authority_visibility: Vec<bool>,
+    effective_limit: NonZeroU16,
+}
+
+impl ApplicationCatalogCursorState {
+    pub(crate) fn new(
+        after_candidate: usize,
+        contract_lineage: ContractLineage,
+        contract_version: ContractVersion,
+        contract_hash: ContractBundleHash,
+        module_hash: Option<riffdb_types::QueryModuleHash>,
+        authority_visibility: Vec<bool>,
+        effective_limit: NonZeroU16,
+    ) -> Result<Self, CursorBindingError> {
+        if authority_visibility.is_empty()
+            || authority_visibility.len() > MAX_APPLICATION_CATALOG_AUTHORITIES
+        {
+            return Err(CursorBindingError);
+        }
+        Ok(Self {
+            after_candidate,
+            contract_lineage,
+            contract_version,
+            contract_hash,
+            module_hash,
+            authority_visibility,
+            effective_limit,
+        })
+    }
+
+    #[must_use]
+    pub(crate) const fn after_candidate(&self) -> usize {
+        self.after_candidate
+    }
+
+    #[must_use]
+    pub(crate) const fn contract_lineage(&self) -> &ContractLineage {
+        &self.contract_lineage
+    }
+
+    #[must_use]
+    pub(crate) const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    #[must_use]
+    pub(crate) const fn contract_hash(&self) -> ContractBundleHash {
+        self.contract_hash
+    }
+
+    #[must_use]
+    pub(crate) const fn module_hash(&self) -> Option<riffdb_types::QueryModuleHash> {
+        self.module_hash
+    }
+
+    #[must_use]
+    pub(crate) fn authority_visibility(&self) -> &[bool] {
+        &self.authority_visibility
+    }
+
+    #[must_use]
+    pub(crate) const fn effective_limit(&self) -> NonZeroU16 {
+        self.effective_limit
+    }
+}
+
 impl ResourceDiscoveryCursorState {
     pub(crate) fn new(
         after_candidate: usize,
@@ -1385,6 +1480,7 @@ pub(crate) enum ServiceCursorLookup {
     Outbox(OutboxCursorLookup),
     CommandDiscovery(CommandDiscoveryCursorLookup),
     ResourceDiscovery(ResourceDiscoveryCursorLookup),
+    ApplicationCatalog(ApplicationCatalogCursorLookup),
     Query(QueryCursorLookup),
 }
 
@@ -1397,6 +1493,7 @@ pub(crate) enum ServiceCursorState {
     Outbox(Arc<OutboxCursorState>),
     CommandDiscovery(Arc<CommandDiscoveryCursorState>),
     ResourceDiscovery(Arc<ResourceDiscoveryCursorState>),
+    ApplicationCatalog(Arc<ApplicationCatalogCursorState>),
     Query(Arc<QueryCursorState>),
 }
 
@@ -1774,6 +1871,44 @@ impl ServiceCursorRegistries {
         )?;
         match state.as_ref() {
             ServiceCursorState::ResourceDiscovery(state) => Ok(Arc::clone(state)),
+            _ => Err(CursorAccessError::Unavailable),
+        }
+    }
+
+    pub(crate) fn register_application_catalog_unpublished(
+        &self,
+        principal: &ActorId,
+        lookup: ApplicationCatalogCursorLookup,
+        state: ApplicationCatalogCursorState,
+    ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
+        if state.effective_limit() > lookup.requested_limit() {
+            return Err(CursorUnavailable);
+        }
+        let registration = self.registry.register_replacing(
+            CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::ApplicationCatalog(lookup),
+            ),
+            ServiceCursorState::ApplicationCatalog(Arc::new(state)),
+        )?;
+        Ok(self.publication_guard_exclusive(registration))
+    }
+
+    pub(crate) fn resolve_application_catalog(
+        &self,
+        token: CursorToken,
+        principal: &ActorId,
+        lookup: &ApplicationCatalogCursorLookup,
+    ) -> Result<Arc<ApplicationCatalogCursorState>, CursorAccessError> {
+        let state = self.registry.resolve(
+            token,
+            &CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::ApplicationCatalog(*lookup),
+            ),
+        )?;
+        match state.as_ref() {
+            ServiceCursorState::ApplicationCatalog(state) => Ok(Arc::clone(state)),
             _ => Err(CursorAccessError::Unavailable),
         }
     }

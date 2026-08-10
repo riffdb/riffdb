@@ -11,12 +11,12 @@ use riffdb_types::{
 };
 
 use crate::{
-    AvailableContextualReaction, BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery,
-    CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent,
-    CommitView, CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem,
-    CompactNamedQueryToolDescriptor, CompactResourceDescriptor, CompactResourceDescriptorRef,
-    ConsumeContextualSubscriptionResult, ConsumeEventStreamResult, ConsumedEvent,
-    ContextualHydration, ContextualWorkItem, ContractDescriptor,
+    ApplicationCatalogResult, AvailableContextualReaction, BuildInfo, CheckSymbolicQueryResult,
+    CheckedSymbolicQuery, CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence,
+    CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
+    CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor, CompactResourceDescriptor,
+    CompactResourceDescriptorRef, ConsumeContextualSubscriptionResult, ConsumeEventStreamResult,
+    ConsumedEvent, ContextualHydration, ContextualWorkItem, ContractDescriptor,
     ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
     CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
     DeployQueryModuleResult, DeployReactiveModuleResult, DescribeEventResult,
@@ -255,6 +255,45 @@ impl ServiceResponseCharge for DescribeSymbolicContractResult {
         charge.fields(1)?;
         charge.bytes(self.bundle_hash().as_bytes().len())?;
         charge.bytes(self.catalog().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ApplicationCatalogResult {}
+
+impl ServiceResponseCharge for ApplicationCatalogResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let page = self.page();
+        let mut charge = ChargeAccumulator::message();
+        charge_lineage(&mut charge, page.identity().lineage())?;
+        charge.fields(2)?;
+        charge.bytes(page.identity().contract_hash().as_bytes().len())?;
+        for module_hash in page.identity().module_hashes() {
+            charge.bytes(module_hash.as_bytes().len())?;
+        }
+        for symbol in page.symbols() {
+            charge.fields(1)?;
+            for component in symbol.path() {
+                charge.bytes(component.len())?;
+            }
+            if let Some(public_type) = symbol.public_type() {
+                charge.bytes(public_type.len())?;
+            }
+            if symbol.source_span().is_some() {
+                charge.fields(2)?;
+            }
+        }
+        charge.fields(
+            page.features()
+                .len()
+                .checked_mul(2)
+                .ok_or(ServiceResponseChargeOverflow)?,
+        )?;
+        if self.next_cursor().is_some() {
+            charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        }
         Ok(charge.finish())
     }
 }

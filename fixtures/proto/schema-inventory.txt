@@ -111,6 +111,17 @@ files
   riffdb/v1/value.proto
 
 messages
+  riffdb.app.v1.ApplicationCatalogFeatureView fields=2
+    1 feature optional .riffdb.app.v1.ApplicationCatalogFeature
+    2 state optional .riffdb.app.v1.ApplicationCatalogFeatureState
+  riffdb.app.v1.ApplicationCatalogSourceSpan fields=2
+    1 start optional uint32
+    2 end optional uint32
+  riffdb.app.v1.ApplicationCatalogSymbol fields=4
+    1 kind optional .riffdb.app.v1.ApplicationCatalogSymbolKind
+    2 path repeated string
+    3 public_type optional string proto3-optional oneof=_public_type
+    4 source_span optional .riffdb.app.v1.ApplicationCatalogSourceSpan proto3-optional oneof=_source_span
   riffdb.app.v1.ApplicationError fields=13
     1 envelope_version optional uint32
     2 code optional .riffdb.app.v1.ApplicationErrorCode
@@ -225,6 +236,21 @@ messages
     1 causal optional .riffdb.app.v1.FreshnessCausal oneof=policy
     2 bounded optional .riffdb.app.v1.FreshnessBounded oneof=policy
     3 available optional .riffdb.app.v1.FreshnessAvailable oneof=policy
+  riffdb.app.v1.GetApplicationCatalogRequest fields=4
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 limit optional uint32
+    3 cursor optional string proto3-optional oneof=_cursor
+    100 request_id optional bytes
+  riffdb.app.v1.GetApplicationCatalogResponse fields=9
+    1 schema optional string
+    2 contract_lineage optional string
+    3 contract_version optional uint64
+    4 contract_bundle_hash optional bytes
+    5 query_module_hashes repeated bytes
+    6 symbols repeated .riffdb.app.v1.ApplicationCatalogSymbol
+    7 features repeated .riffdb.app.v1.ApplicationCatalogFeatureView
+    8 has_more optional bool
+    9 next_cursor optional string proto3-optional oneof=_next_cursor
   riffdb.app.v1.GetQueryModuleRequest fields=3
     1 contract optional .riffdb.app.v1.ContractSelector
     2 module_hash optional bytes proto3-optional oneof=_module_hash
@@ -2141,6 +2167,33 @@ messages
     5 cursor optional bytes proto3-optional oneof=_cursor
 
 enums
+  riffdb.app.v1.ApplicationCatalogFeature values=7
+    0 APPLICATION_CATALOG_FEATURE_UNSPECIFIED
+    1 APPLICATION_CATALOG_FEATURE_OPERATIONAL_OPTIONAL_PREDICATES
+    2 APPLICATION_CATALOG_FEATURE_STABLE_CURSOR_PAGES
+    3 APPLICATION_CATALOG_FEATURE_NULL_EXISTENCE_PREDICATES
+    4 APPLICATION_CATALOG_FEATURE_BINARY_TEXT_PREFIX
+    5 APPLICATION_CATALOG_FEATURE_UNICODE_FOLD_TEXT_PREFIX_V1
+    6 APPLICATION_CATALOG_FEATURE_EXACT_AGGREGATES
+  riffdb.app.v1.ApplicationCatalogFeatureState values=3
+    0 APPLICATION_CATALOG_FEATURE_STATE_UNSPECIFIED
+    1 APPLICATION_CATALOG_FEATURE_STATE_AVAILABLE
+    2 APPLICATION_CATALOG_FEATURE_STATE_UNAVAILABLE
+  riffdb.app.v1.ApplicationCatalogSymbolKind values=14
+    0 APPLICATION_CATALOG_SYMBOL_KIND_UNSPECIFIED
+    1 APPLICATION_CATALOG_SYMBOL_KIND_CONTRACT
+    2 APPLICATION_CATALOG_SYMBOL_KIND_ENUM
+    3 APPLICATION_CATALOG_SYMBOL_KIND_ENTITY
+    4 APPLICATION_CATALOG_SYMBOL_KIND_FIELD
+    5 APPLICATION_CATALOG_SYMBOL_KIND_RELATIONSHIP
+    6 APPLICATION_CATALOG_SYMBOL_KIND_INDEX
+    7 APPLICATION_CATALOG_SYMBOL_KIND_COMMAND
+    8 APPLICATION_CATALOG_SYMBOL_KIND_COMMAND_OUTCOME
+    9 APPLICATION_CATALOG_SYMBOL_KIND_EVENT
+    10 APPLICATION_CATALOG_SYMBOL_KIND_QUERY_MODULE
+    11 APPLICATION_CATALOG_SYMBOL_KIND_QUERY
+    12 APPLICATION_CATALOG_SYMBOL_KIND_ROLE
+    13 APPLICATION_CATALOG_SYMBOL_KIND_OPERATION
   riffdb.app.v1.ApplicationErrorCategory values=16
     0 APPLICATION_ERROR_CATEGORY_UNSPECIFIED
     1 APPLICATION_ERROR_CATEGORY_INPUT
@@ -2716,6 +2769,7 @@ enums
 services
   riffdb.app.v1.ApplicationQueryService
     DescribeContract .riffdb.app.v1.DescribeContractRequest -> .riffdb.app.v1.DescribeContractResponse (unary)
+    GetApplicationCatalog .riffdb.app.v1.GetApplicationCatalogRequest -> .riffdb.app.v1.GetApplicationCatalogResponse (unary)
     CheckQuery .riffdb.app.v1.CheckQueryRequest -> .riffdb.app.v1.CheckQueryResponse (unary)
     ExplainQuery .riffdb.app.v1.ExplainQueryRequest -> .riffdb.app.v1.ExplainQueryResponse (unary)
     ExecuteQuery .riffdb.app.v1.ExecuteQueryRequest -> .riffdb.app.v1.ExecuteQueryResponse (unary)

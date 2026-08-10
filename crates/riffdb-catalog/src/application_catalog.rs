@@ -3,12 +3,21 @@
 use std::error::Error;
 use std::fmt;
 
-use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash};
+use std::collections::{BTreeMap, BTreeSet};
+
+use riffdb_contract_ir::{ContractBundle, Instruction, ValueType, ValueTypeTag};
+use riffdb_query_module::QueryModule;
+use riffdb_types::{
+    CommandId, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
+    QueryOperationName,
+};
 
 /// Versioned public schema name for symbolic application-catalog pages.
 pub const APPLICATION_CATALOG_SCHEMA_V1: &str = "riffdb.application-catalog/v1";
 /// Hard maximum visible symbols in one catalog page.
 pub const MAX_APPLICATION_CATALOG_PAGE_ITEMS: usize = 100;
+/// Hard maximum compiler-owned symbols retained for one exact application catalog.
+pub const MAX_APPLICATION_CATALOG_CANDIDATES: usize = 8_192;
 /// Maximum components in one public symbolic path.
 pub const MAX_APPLICATION_CATALOG_PATH_COMPONENTS: usize = 8;
 /// Maximum UTF-8 bytes in one public path component or rendered type.
@@ -379,6 +388,523 @@ impl fmt::Display for ApplicationCatalogError {
 
 impl Error for ApplicationCatalogError {}
 
+/// Compiler-owned authority candidate used to filter one symbolic catalog.
+///
+/// This type is deliberately absent from the public page schema. Numeric command
+/// identities exist only on this trusted side of the policy boundary and are
+/// discarded before a page can be serialized.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ApplicationCatalogAuthorityV1 {
+    /// Baseline contract visibility.
+    Contract,
+    /// Exact invocable compiled command.
+    Command {
+        /// Contract lineage.
+        lineage: ContractLineage,
+        /// Compiler-private command identity.
+        command_id: CommandId,
+    },
+    /// Exact deployed named query.
+    Query {
+        /// Contract lineage.
+        lineage: ContractLineage,
+        /// Immutable module identity.
+        module_hash: QueryModuleHash,
+        /// Exact symbolic query name.
+        query_name: QueryOperationName,
+    },
+}
+
+/// One compiler-owned catalog candidate and the least operation authorities
+/// that can make it visible.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationCatalogCandidateV1 {
+    symbol: ApplicationCatalogSymbolV1,
+    authorities: Vec<ApplicationCatalogAuthorityV1>,
+}
+
+impl ApplicationCatalogCandidateV1 {
+    /// Name-only public symbol.
+    #[must_use]
+    pub const fn symbol(&self) -> &ApplicationCatalogSymbolV1 {
+        &self.symbol
+    }
+
+    /// Canonical disjunction of exact authorities that may reveal this symbol.
+    #[must_use]
+    pub fn authorities(&self) -> &[ApplicationCatalogAuthorityV1] {
+        &self.authorities
+    }
+}
+
+/// Immutable compiler-owned candidate catalog for one exact contract/module pair.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationCatalogCandidatesV1 {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    contract_hash: ContractBundleHash,
+    module_hash: Option<QueryModuleHash>,
+    candidates: Vec<ApplicationCatalogCandidateV1>,
+    features: Vec<ApplicationCatalogFeatureViewV1>,
+}
+
+impl ApplicationCatalogCandidatesV1 {
+    /// Builds the complete bounded symbolic candidate set before policy filtering.
+    pub fn from_exact_application(
+        contract: &ContractBundle,
+        module: Option<&QueryModule>,
+    ) -> Result<Self, ApplicationCatalogError> {
+        if module.is_some_and(|module| {
+            module.contract_lineage() != contract.lineage()
+                || module.contract_version() != contract.contract_version()
+                || module.contract_hash() != contract.bundle_hash()
+        }) {
+            return Err(ApplicationCatalogError);
+        }
+
+        let contract_authority = ApplicationCatalogAuthorityV1::Contract;
+        let mut symbols =
+            BTreeMap::<ApplicationCatalogSymbolV1, BTreeSet<ApplicationCatalogAuthorityV1>>::new();
+        insert_candidate(
+            &mut symbols,
+            ApplicationCatalogSymbolV1::checked(
+                ApplicationCatalogSymbolKindV1::Contract,
+                vec![contract.lineage().as_str().to_owned()],
+                None,
+                None,
+            )?,
+            contract_authority,
+        );
+
+        for command in contract.commands() {
+            let authority = ApplicationCatalogAuthorityV1::Command {
+                lineage: contract.lineage().clone(),
+                command_id: command.command_id(),
+            };
+            insert_candidate(
+                &mut symbols,
+                ApplicationCatalogSymbolV1::checked(
+                    ApplicationCatalogSymbolKindV1::Command,
+                    vec![command.name().to_owned()],
+                    None,
+                    None,
+                )?,
+                authority.clone(),
+            );
+            insert_candidate(
+                &mut symbols,
+                ApplicationCatalogSymbolV1::checked(
+                    ApplicationCatalogSymbolKindV1::Operation,
+                    vec![command.name().to_owned()],
+                    Some("command".to_owned()),
+                    None,
+                )?,
+                authority.clone(),
+            );
+            for outcome in command.outcomes() {
+                insert_candidate(
+                    &mut symbols,
+                    ApplicationCatalogSymbolV1::checked(
+                        ApplicationCatalogSymbolKindV1::CommandOutcome,
+                        vec![command.name().to_owned(), outcome.name().to_owned()],
+                        render_record_type(outcome.payload(), contract)?,
+                        None,
+                    )?,
+                    authority.clone(),
+                );
+                collect_record_enums(&mut symbols, outcome.payload(), contract, authority.clone())?;
+            }
+            collect_record_enums(
+                &mut symbols,
+                command.input().record(),
+                contract,
+                authority.clone(),
+            )?;
+            for instruction in command.instructions() {
+                if let Instruction::EmitEvent(event) = instruction {
+                    let schema = contract
+                        .schema()
+                        .event(event.event_type())
+                        .ok_or(ApplicationCatalogError)?;
+                    insert_candidate(
+                        &mut symbols,
+                        ApplicationCatalogSymbolV1::checked(
+                            ApplicationCatalogSymbolKindV1::Event,
+                            vec![schema.name().to_owned()],
+                            render_record_type(schema.payload(), contract)?,
+                            None,
+                        )?,
+                        authority.clone(),
+                    );
+                    collect_record_enums(
+                        &mut symbols,
+                        schema.payload(),
+                        contract,
+                        authority.clone(),
+                    )?;
+                }
+            }
+        }
+
+        if let Some(module) = module {
+            for query in module.queries() {
+                let query_name = QueryOperationName::new(query.name().to_owned())
+                    .map_err(|_| ApplicationCatalogError)?;
+                let authority = ApplicationCatalogAuthorityV1::Query {
+                    lineage: contract.lineage().clone(),
+                    module_hash: module.identity(),
+                    query_name,
+                };
+                insert_candidate(
+                    &mut symbols,
+                    ApplicationCatalogSymbolV1::checked(
+                        ApplicationCatalogSymbolKindV1::QueryModule,
+                        vec![module.name().as_str().to_owned()],
+                        None,
+                        None,
+                    )?,
+                    authority.clone(),
+                );
+                insert_candidate(
+                    &mut symbols,
+                    ApplicationCatalogSymbolV1::checked(
+                        ApplicationCatalogSymbolKindV1::Query,
+                        vec![module.name().as_str().to_owned(), query.name().to_owned()],
+                        None,
+                        None,
+                    )?,
+                    authority.clone(),
+                );
+                insert_candidate(
+                    &mut symbols,
+                    ApplicationCatalogSymbolV1::checked(
+                        ApplicationCatalogSymbolKindV1::Operation,
+                        vec![query.name().to_owned()],
+                        Some("query".to_owned()),
+                        None,
+                    )?,
+                    authority.clone(),
+                );
+                for access in query.plan().authorization() {
+                    let entity = contract
+                        .schema()
+                        .entities()
+                        .iter()
+                        .find(|entity| entity.name() == access.entity())
+                        .ok_or(ApplicationCatalogError)?;
+                    insert_candidate(
+                        &mut symbols,
+                        ApplicationCatalogSymbolV1::checked(
+                            ApplicationCatalogSymbolKindV1::Entity,
+                            vec![entity.name().to_owned()],
+                            None,
+                            None,
+                        )?,
+                        authority.clone(),
+                    );
+                    for field_name in access.fields() {
+                        let field = entity
+                            .record()
+                            .fields()
+                            .iter()
+                            .find(|field| field.name() == field_name)
+                            .ok_or(ApplicationCatalogError)?;
+                        insert_candidate(
+                            &mut symbols,
+                            ApplicationCatalogSymbolV1::checked(
+                                ApplicationCatalogSymbolKindV1::Field,
+                                vec![entity.name().to_owned(), field.name().to_owned()],
+                                Some(render_value_type(field.value_type(), contract)?),
+                                None,
+                            )?,
+                            authority.clone(),
+                        );
+                        collect_value_enum(
+                            &mut symbols,
+                            field.value_type(),
+                            contract,
+                            authority.clone(),
+                        )?;
+                    }
+                    for index_name in access.indexes() {
+                        if !entity
+                            .indexes()
+                            .iter()
+                            .any(|index| index.name() == index_name)
+                        {
+                            return Err(ApplicationCatalogError);
+                        }
+                        insert_candidate(
+                            &mut symbols,
+                            ApplicationCatalogSymbolV1::checked(
+                                ApplicationCatalogSymbolKindV1::Index,
+                                vec![entity.name().to_owned(), index_name.clone()],
+                                None,
+                                None,
+                            )?,
+                            authority.clone(),
+                        );
+                    }
+                }
+            }
+        }
+
+        let candidates: Vec<ApplicationCatalogCandidateV1> = symbols
+            .into_iter()
+            .map(|(symbol, authorities)| ApplicationCatalogCandidateV1 {
+                symbol,
+                authorities: authorities.into_iter().collect(),
+            })
+            .collect();
+        if candidates.len() > MAX_APPLICATION_CATALOG_CANDIDATES {
+            return Err(ApplicationCatalogError);
+        }
+        let features = ApplicationCatalogFeatureV1::ALL
+            .into_iter()
+            .map(|feature| {
+                let state = match feature {
+                    ApplicationCatalogFeatureV1::OperationalOptionalPredicates
+                    | ApplicationCatalogFeatureV1::StableCursorPages
+                    | ApplicationCatalogFeatureV1::ExactAggregates => {
+                        ApplicationCatalogFeatureStateV1::Available
+                    }
+                    ApplicationCatalogFeatureV1::NullExistencePredicates
+                    | ApplicationCatalogFeatureV1::BinaryTextPrefix
+                    | ApplicationCatalogFeatureV1::UnicodeFoldTextPrefixV1 => {
+                        ApplicationCatalogFeatureStateV1::Unavailable
+                    }
+                };
+                ApplicationCatalogFeatureViewV1::new(feature, state)
+            })
+            .collect();
+        Ok(Self {
+            lineage: contract.lineage().clone(),
+            version: contract.contract_version(),
+            contract_hash: contract.bundle_hash(),
+            module_hash: module.map(QueryModule::identity),
+            candidates,
+            features,
+        })
+    }
+
+    /// Canonical compiler-owned candidates.
+    #[must_use]
+    pub fn candidates(&self) -> &[ApplicationCatalogCandidateV1] {
+        &self.candidates
+    }
+
+    /// Exact distinct authority candidates in canonical order.
+    #[must_use]
+    pub fn authorities(&self) -> Vec<ApplicationCatalogAuthorityV1> {
+        self.candidates
+            .iter()
+            .flat_map(|candidate| candidate.authorities.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Filters first, then pages visible symbols without exposing hidden totals.
+    pub fn authorized_page(
+        &self,
+        visible: &BTreeSet<ApplicationCatalogAuthorityV1>,
+        after_candidate: Option<usize>,
+        limit: usize,
+    ) -> Result<(ApplicationCatalogPageV1, Option<usize>), ApplicationCatalogError> {
+        if limit == 0 || limit > MAX_APPLICATION_CATALOG_PAGE_ITEMS {
+            return Err(ApplicationCatalogError);
+        }
+        if after_candidate.is_some_and(|candidate| candidate >= self.candidates.len()) {
+            return Err(ApplicationCatalogError);
+        }
+        let start = after_candidate.map_or(0, |candidate| candidate + 1);
+        let visible_symbols = self
+            .candidates
+            .iter()
+            .enumerate()
+            .skip(start)
+            .filter(|candidate| {
+                candidate
+                    .1
+                    .authorities
+                    .iter()
+                    .any(|authority| visible.contains(authority))
+            })
+            .map(|(candidate, entry)| (candidate, entry.symbol.clone()))
+            .take(limit + 1)
+            .collect::<Vec<_>>();
+        let has_more = visible_symbols.len() > limit;
+        let symbols = visible_symbols
+            .iter()
+            .take(limit)
+            .map(|(_, symbol)| symbol.clone())
+            .collect::<Vec<_>>();
+        let continuation_after_candidate = has_more
+            .then(|| {
+                visible_symbols
+                    .get(limit - 1)
+                    .map(|(candidate, _)| *candidate)
+            })
+            .flatten();
+        let module_hashes = self
+            .module_hash
+            .filter(|module_hash| {
+                visible.iter().any(|authority| {
+                    matches!(
+                        authority,
+                        ApplicationCatalogAuthorityV1::Query {
+                            module_hash: candidate,
+                            ..
+                        } if candidate == module_hash
+                    )
+                })
+            })
+            .into_iter()
+            .collect();
+        let identity = ApplicationCatalogIdentityV1::checked(
+            self.lineage.clone(),
+            self.version,
+            self.contract_hash,
+            module_hashes,
+        )?;
+        let page =
+            ApplicationCatalogPageV1::checked(identity, symbols, self.features.clone(), has_more)?;
+        Ok((page, continuation_after_candidate))
+    }
+}
+
+fn insert_candidate(
+    symbols: &mut BTreeMap<ApplicationCatalogSymbolV1, BTreeSet<ApplicationCatalogAuthorityV1>>,
+    symbol: ApplicationCatalogSymbolV1,
+    authority: ApplicationCatalogAuthorityV1,
+) {
+    symbols.entry(symbol).or_default().insert(authority);
+}
+
+fn collect_record_enums(
+    symbols: &mut BTreeMap<ApplicationCatalogSymbolV1, BTreeSet<ApplicationCatalogAuthorityV1>>,
+    record: &riffdb_contract_ir::RecordSchema,
+    contract: &ContractBundle,
+    authority: ApplicationCatalogAuthorityV1,
+) -> Result<(), ApplicationCatalogError> {
+    for field in record.fields() {
+        collect_value_enum(symbols, field.value_type(), contract, authority.clone())?;
+    }
+    Ok(())
+}
+
+fn collect_value_enum(
+    symbols: &mut BTreeMap<ApplicationCatalogSymbolV1, BTreeSet<ApplicationCatalogAuthorityV1>>,
+    value_type: &ValueType,
+    contract: &ContractBundle,
+    authority: ApplicationCatalogAuthorityV1,
+) -> Result<(), ApplicationCatalogError> {
+    let value_type = match value_type.tag() {
+        ValueTypeTag::Optional => value_type.optional_inner().ok_or(ApplicationCatalogError)?,
+        ValueTypeTag::List => value_type.list_parts().ok_or(ApplicationCatalogError)?.0,
+        _ => value_type,
+    };
+    if value_type.tag() != ValueTypeTag::Enum {
+        return Ok(());
+    }
+    let enum_id = value_type.enum_type_id().ok_or(ApplicationCatalogError)?;
+    let enumeration = contract
+        .schema()
+        .enums()
+        .iter()
+        .find(|enumeration| enumeration.id() == enum_id)
+        .ok_or(ApplicationCatalogError)?;
+    insert_candidate(
+        symbols,
+        ApplicationCatalogSymbolV1::checked(
+            ApplicationCatalogSymbolKindV1::Enum,
+            vec![enumeration.name().to_owned()],
+            None,
+            None,
+        )?,
+        authority,
+    );
+    Ok(())
+}
+
+fn render_record_type(
+    record: &riffdb_contract_ir::RecordSchema,
+    contract: &ContractBundle,
+) -> Result<Option<String>, ApplicationCatalogError> {
+    let fields = record
+        .fields()
+        .iter()
+        .map(|field| {
+            Ok(format!(
+                "{}: {}",
+                field.name(),
+                render_value_type(field.value_type(), contract)?
+            ))
+        })
+        .collect::<Result<Vec<_>, ApplicationCatalogError>>()?;
+    let rendered = format!("{{ {} }}", fields.join(", "));
+    if rendered.len() > MAX_APPLICATION_CATALOG_TEXT_BYTES {
+        return Ok(Some("record".to_owned()));
+    }
+    Ok(Some(rendered))
+}
+
+fn render_value_type(
+    value_type: &ValueType,
+    contract: &ContractBundle,
+) -> Result<String, ApplicationCatalogError> {
+    let rendered = match value_type.tag() {
+        ValueTypeTag::Bool => "bool".to_owned(),
+        ValueTypeTag::I64 => "i64".to_owned(),
+        ValueTypeTag::U64 => "u64".to_owned(),
+        ValueTypeTag::Decimal => {
+            let spec = value_type.decimal_spec().ok_or(ApplicationCatalogError)?;
+            format!("decimal<{},{}>", spec.precision(), spec.scale())
+        }
+        ValueTypeTag::Money => format!(
+            "money<{}>",
+            value_type.currency().ok_or(ApplicationCatalogError)?
+        ),
+        ValueTypeTag::String => format!(
+            "string<{}>",
+            value_type.byte_bound().ok_or(ApplicationCatalogError)?
+        ),
+        ValueTypeTag::Bytes => format!(
+            "bytes<{}>",
+            value_type.byte_bound().ok_or(ApplicationCatalogError)?
+        ),
+        ValueTypeTag::Timestamp => "timestamp".to_owned(),
+        ValueTypeTag::Date => "date".to_owned(),
+        ValueTypeTag::Uuid => "uuid".to_owned(),
+        ValueTypeTag::Enum => contract
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| Some(enumeration.id()) == value_type.enum_type_id())
+            .map(|enumeration| enumeration.name().to_owned())
+            .ok_or(ApplicationCatalogError)?,
+        ValueTypeTag::Optional => format!(
+            "{}?",
+            render_value_type(
+                value_type.optional_inner().ok_or(ApplicationCatalogError)?,
+                contract
+            )?
+        ),
+        ValueTypeTag::List => {
+            let (element, maximum) = value_type.list_parts().ok_or(ApplicationCatalogError)?;
+            format!("[{}; {maximum}]", render_value_type(element, contract)?)
+        }
+        ValueTypeTag::Record => "record".to_owned(),
+    };
+    if rendered.is_empty() || rendered.len() > MAX_APPLICATION_CATALOG_TEXT_BYTES {
+        return Err(ApplicationCatalogError);
+    }
+    Ok(rendered)
+}
+
 fn valid_symbol(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_APPLICATION_CATALOG_TEXT_BYTES
@@ -394,6 +920,10 @@ fn valid_symbol(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
 
     fn identity() -> ApplicationCatalogIdentityV1 {
         ApplicationCatalogIdentityV1::checked(
@@ -503,5 +1033,89 @@ mod tests {
                 "the frozen schema must retain its explicit forbidden-field ledger"
             );
         }
+    }
+
+    #[test]
+    fn hidden_named_operation_removes_every_symbol_reachable_only_through_it() {
+        let contract = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("ticketdesk contract");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("ticketdesk").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![
+                    NamedQuerySource::new(
+                        "ListTickets",
+                        include_str!("../../../queries/ticketdesk/list_tickets.riffq"),
+                    )
+                    .expect("list query"),
+                    NamedQuerySource::new(
+                        "TicketPage",
+                        include_str!("../../../queries/ticketdesk/ticket_page.riffq"),
+                    )
+                    .expect("page query"),
+                ],
+            )
+            .expect("module candidate"),
+            &contract,
+        )
+        .expect("compiled module");
+        let candidates =
+            ApplicationCatalogCandidatesV1::from_exact_application(&contract, Some(&module))
+                .expect("catalog candidates");
+        let mut visible = BTreeSet::from([ApplicationCatalogAuthorityV1::Contract]);
+        visible.insert(ApplicationCatalogAuthorityV1::Query {
+            lineage: contract.lineage().clone(),
+            module_hash: module.identity(),
+            query_name: QueryOperationName::new("ListTickets").expect("query name"),
+        });
+        let (page, continuation) = candidates
+            .authorized_page(&visible, None, MAX_APPLICATION_CATALOG_PAGE_ITEMS)
+            .expect("authorized page");
+        let paths = page
+            .symbols()
+            .iter()
+            .map(|symbol| symbol.path().join("."))
+            .collect::<BTreeSet<_>>();
+
+        assert!(paths.contains("ticketdesk.ListTickets"));
+        assert!(!paths.contains("ticketdesk.TicketPage"));
+        assert!(paths.contains("Ticket.title"));
+        assert!(!paths.contains("Ticket.description"));
+        assert!(!paths.contains("Comment.body"));
+        assert_eq!(page.identity().module_hashes(), &[module.identity()]);
+        assert!(!page.has_more());
+        assert_eq!(continuation, None);
+
+        let all_visible = BTreeSet::from([
+            ApplicationCatalogAuthorityV1::Contract,
+            ApplicationCatalogAuthorityV1::Query {
+                lineage: contract.lineage().clone(),
+                module_hash: module.identity(),
+                query_name: QueryOperationName::new("ListTickets").expect("query name"),
+            },
+            ApplicationCatalogAuthorityV1::Query {
+                lineage: contract.lineage().clone(),
+                module_hash: module.identity(),
+                query_name: QueryOperationName::new("TicketPage").expect("query name"),
+            },
+        ]);
+        let (first, continuation) = candidates
+            .authorized_page(&all_visible, None, 3)
+            .expect("first authorized page");
+        assert!(first.has_more());
+        let continuation = continuation.expect("raw candidate continuation");
+        let (narrowed, continuation) = candidates
+            .authorized_page(
+                &BTreeSet::from([ApplicationCatalogAuthorityV1::Contract]),
+                Some(continuation),
+                3,
+            )
+            .expect("authorization narrowing remains a valid final page");
+        assert!(narrowed.symbols().is_empty());
+        assert!(!narrowed.has_more());
+        assert_eq!(continuation, None);
     }
 }

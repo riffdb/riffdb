@@ -1464,6 +1464,32 @@ impl ApplicationQueryService for GrpcApplication {
         )))
     }
 
+    async fn get_application_catalog(
+        &self,
+        request: Request<app_v1::GetApplicationCatalogRequest>,
+    ) -> Result<Response<app_v1::GetApplicationCatalogResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::DescribeContract);
+        let original = message.clone();
+        let (request_id, request) = application_catalog_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::DescribeContract,
+            request_id,
+            original.contract.as_ref(),
+            None,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::DescribeContract, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.get_application_catalog(context, request).await,
+            &application,
+        )?;
+        Ok(Response::new(application_catalog_result_to_proto(&result)))
+    }
+
     async fn check_query(
         &self,
         request: Request<app_v1::CheckQueryRequest>,

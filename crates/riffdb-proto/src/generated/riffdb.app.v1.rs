@@ -212,6 +212,63 @@ pub struct DescribeContractResponse {
     #[prost(string, tag = "4")]
     pub symbolic_catalog: ::prost::alloc::string::String,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationCatalogSourceSpan {
+    #[prost(uint32, tag = "1")]
+    pub start: u32,
+    #[prost(uint32, tag = "2")]
+    pub end: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationCatalogSymbol {
+    #[prost(enumeration = "ApplicationCatalogSymbolKind", tag = "1")]
+    pub kind: i32,
+    #[prost(string, repeated, tag = "2")]
+    pub path: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub public_type: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "4")]
+    pub source_span: ::core::option::Option<ApplicationCatalogSourceSpan>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationCatalogFeatureView {
+    #[prost(enumeration = "ApplicationCatalogFeature", tag = "1")]
+    pub feature: i32,
+    #[prost(enumeration = "ApplicationCatalogFeatureState", tag = "2")]
+    pub state: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationCatalogRequest {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<ContractSelector>,
+    #[prost(uint32, tag = "2")]
+    pub limit: u32,
+    #[prost(string, optional, tag = "3")]
+    pub cursor: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bytes = "vec", tag = "100")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetApplicationCatalogResponse {
+    #[prost(string, tag = "1")]
+    pub schema: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "6")]
+    pub symbols: ::prost::alloc::vec::Vec<ApplicationCatalogSymbol>,
+    #[prost(message, repeated, tag = "7")]
+    pub features: ::prost::alloc::vec::Vec<ApplicationCatalogFeatureView>,
+    #[prost(bool, tag = "8")]
+    pub has_more: bool,
+    #[prost(string, optional, tag = "9")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedQuerySource {
     #[prost(string, tag = "1")]
@@ -964,6 +1021,156 @@ impl ResultCardinality {
             "RESULT_CARDINALITY_ONE" => Some(Self::One),
             "RESULT_CARDINALITY_MAYBE" => Some(Self::Maybe),
             "RESULT_CARDINALITY_MANY" => Some(Self::Many),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationCatalogSymbolKind {
+    Unspecified = 0,
+    Contract = 1,
+    Enum = 2,
+    Entity = 3,
+    Field = 4,
+    Relationship = 5,
+    Index = 6,
+    Command = 7,
+    CommandOutcome = 8,
+    Event = 9,
+    QueryModule = 10,
+    Query = 11,
+    Role = 12,
+    Operation = 13,
+}
+impl ApplicationCatalogSymbolKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_CATALOG_SYMBOL_KIND_UNSPECIFIED",
+            Self::Contract => "APPLICATION_CATALOG_SYMBOL_KIND_CONTRACT",
+            Self::Enum => "APPLICATION_CATALOG_SYMBOL_KIND_ENUM",
+            Self::Entity => "APPLICATION_CATALOG_SYMBOL_KIND_ENTITY",
+            Self::Field => "APPLICATION_CATALOG_SYMBOL_KIND_FIELD",
+            Self::Relationship => "APPLICATION_CATALOG_SYMBOL_KIND_RELATIONSHIP",
+            Self::Index => "APPLICATION_CATALOG_SYMBOL_KIND_INDEX",
+            Self::Command => "APPLICATION_CATALOG_SYMBOL_KIND_COMMAND",
+            Self::CommandOutcome => "APPLICATION_CATALOG_SYMBOL_KIND_COMMAND_OUTCOME",
+            Self::Event => "APPLICATION_CATALOG_SYMBOL_KIND_EVENT",
+            Self::QueryModule => "APPLICATION_CATALOG_SYMBOL_KIND_QUERY_MODULE",
+            Self::Query => "APPLICATION_CATALOG_SYMBOL_KIND_QUERY",
+            Self::Role => "APPLICATION_CATALOG_SYMBOL_KIND_ROLE",
+            Self::Operation => "APPLICATION_CATALOG_SYMBOL_KIND_OPERATION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_CATALOG_SYMBOL_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_CATALOG_SYMBOL_KIND_CONTRACT" => Some(Self::Contract),
+            "APPLICATION_CATALOG_SYMBOL_KIND_ENUM" => Some(Self::Enum),
+            "APPLICATION_CATALOG_SYMBOL_KIND_ENTITY" => Some(Self::Entity),
+            "APPLICATION_CATALOG_SYMBOL_KIND_FIELD" => Some(Self::Field),
+            "APPLICATION_CATALOG_SYMBOL_KIND_RELATIONSHIP" => Some(Self::Relationship),
+            "APPLICATION_CATALOG_SYMBOL_KIND_INDEX" => Some(Self::Index),
+            "APPLICATION_CATALOG_SYMBOL_KIND_COMMAND" => Some(Self::Command),
+            "APPLICATION_CATALOG_SYMBOL_KIND_COMMAND_OUTCOME" => {
+                Some(Self::CommandOutcome)
+            }
+            "APPLICATION_CATALOG_SYMBOL_KIND_EVENT" => Some(Self::Event),
+            "APPLICATION_CATALOG_SYMBOL_KIND_QUERY_MODULE" => Some(Self::QueryModule),
+            "APPLICATION_CATALOG_SYMBOL_KIND_QUERY" => Some(Self::Query),
+            "APPLICATION_CATALOG_SYMBOL_KIND_ROLE" => Some(Self::Role),
+            "APPLICATION_CATALOG_SYMBOL_KIND_OPERATION" => Some(Self::Operation),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationCatalogFeature {
+    Unspecified = 0,
+    OperationalOptionalPredicates = 1,
+    StableCursorPages = 2,
+    NullExistencePredicates = 3,
+    BinaryTextPrefix = 4,
+    UnicodeFoldTextPrefixV1 = 5,
+    ExactAggregates = 6,
+}
+impl ApplicationCatalogFeature {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_CATALOG_FEATURE_UNSPECIFIED",
+            Self::OperationalOptionalPredicates => {
+                "APPLICATION_CATALOG_FEATURE_OPERATIONAL_OPTIONAL_PREDICATES"
+            }
+            Self::StableCursorPages => "APPLICATION_CATALOG_FEATURE_STABLE_CURSOR_PAGES",
+            Self::NullExistencePredicates => {
+                "APPLICATION_CATALOG_FEATURE_NULL_EXISTENCE_PREDICATES"
+            }
+            Self::BinaryTextPrefix => "APPLICATION_CATALOG_FEATURE_BINARY_TEXT_PREFIX",
+            Self::UnicodeFoldTextPrefixV1 => {
+                "APPLICATION_CATALOG_FEATURE_UNICODE_FOLD_TEXT_PREFIX_V1"
+            }
+            Self::ExactAggregates => "APPLICATION_CATALOG_FEATURE_EXACT_AGGREGATES",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_CATALOG_FEATURE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_CATALOG_FEATURE_OPERATIONAL_OPTIONAL_PREDICATES" => {
+                Some(Self::OperationalOptionalPredicates)
+            }
+            "APPLICATION_CATALOG_FEATURE_STABLE_CURSOR_PAGES" => {
+                Some(Self::StableCursorPages)
+            }
+            "APPLICATION_CATALOG_FEATURE_NULL_EXISTENCE_PREDICATES" => {
+                Some(Self::NullExistencePredicates)
+            }
+            "APPLICATION_CATALOG_FEATURE_BINARY_TEXT_PREFIX" => {
+                Some(Self::BinaryTextPrefix)
+            }
+            "APPLICATION_CATALOG_FEATURE_UNICODE_FOLD_TEXT_PREFIX_V1" => {
+                Some(Self::UnicodeFoldTextPrefixV1)
+            }
+            "APPLICATION_CATALOG_FEATURE_EXACT_AGGREGATES" => Some(Self::ExactAggregates),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationCatalogFeatureState {
+    Unspecified = 0,
+    Available = 1,
+    Unavailable = 2,
+}
+impl ApplicationCatalogFeatureState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_CATALOG_FEATURE_STATE_UNSPECIFIED",
+            Self::Available => "APPLICATION_CATALOG_FEATURE_STATE_AVAILABLE",
+            Self::Unavailable => "APPLICATION_CATALOG_FEATURE_STATE_UNAVAILABLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_CATALOG_FEATURE_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_CATALOG_FEATURE_STATE_AVAILABLE" => Some(Self::Available),
+            "APPLICATION_CATALOG_FEATURE_STATE_UNAVAILABLE" => Some(Self::Unavailable),
             _ => None,
         }
     }

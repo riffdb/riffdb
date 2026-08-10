@@ -3033,7 +3033,7 @@ mod tests {
             }
         );
 
-        let fixed_items: Vec<_> = (1..=30).map(McpToolDiscoveryItem::Fixed).collect();
+        let fixed_items: Vec<_> = (1..=31).map(McpToolDiscoveryItem::Fixed).collect();
         let fixed = tool_page_schema_components(&fixed_items, registry).expect("fixed page ledger");
         let emitted_fixed_bytes = registry
             .tools()

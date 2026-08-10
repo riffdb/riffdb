@@ -291,6 +291,12 @@ impl RiffDbClient {
         app_v1::DescribeContractResponse
     );
     unary_application!(
+        get_application_catalog,
+        get_application_catalog,
+        app_v1::GetApplicationCatalogRequest,
+        app_v1::GetApplicationCatalogResponse
+    );
+    unary_application!(
         check_query,
         check_query,
         app_v1::CheckQueryRequest,

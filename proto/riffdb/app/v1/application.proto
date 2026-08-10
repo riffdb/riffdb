@@ -230,6 +230,75 @@ message DescribeContractResponse {
   string symbolic_catalog = 4;
 }
 
+enum ApplicationCatalogSymbolKind {
+  APPLICATION_CATALOG_SYMBOL_KIND_UNSPECIFIED = 0;
+  APPLICATION_CATALOG_SYMBOL_KIND_CONTRACT = 1;
+  APPLICATION_CATALOG_SYMBOL_KIND_ENUM = 2;
+  APPLICATION_CATALOG_SYMBOL_KIND_ENTITY = 3;
+  APPLICATION_CATALOG_SYMBOL_KIND_FIELD = 4;
+  APPLICATION_CATALOG_SYMBOL_KIND_RELATIONSHIP = 5;
+  APPLICATION_CATALOG_SYMBOL_KIND_INDEX = 6;
+  APPLICATION_CATALOG_SYMBOL_KIND_COMMAND = 7;
+  APPLICATION_CATALOG_SYMBOL_KIND_COMMAND_OUTCOME = 8;
+  APPLICATION_CATALOG_SYMBOL_KIND_EVENT = 9;
+  APPLICATION_CATALOG_SYMBOL_KIND_QUERY_MODULE = 10;
+  APPLICATION_CATALOG_SYMBOL_KIND_QUERY = 11;
+  APPLICATION_CATALOG_SYMBOL_KIND_ROLE = 12;
+  APPLICATION_CATALOG_SYMBOL_KIND_OPERATION = 13;
+}
+
+enum ApplicationCatalogFeature {
+  APPLICATION_CATALOG_FEATURE_UNSPECIFIED = 0;
+  APPLICATION_CATALOG_FEATURE_OPERATIONAL_OPTIONAL_PREDICATES = 1;
+  APPLICATION_CATALOG_FEATURE_STABLE_CURSOR_PAGES = 2;
+  APPLICATION_CATALOG_FEATURE_NULL_EXISTENCE_PREDICATES = 3;
+  APPLICATION_CATALOG_FEATURE_BINARY_TEXT_PREFIX = 4;
+  APPLICATION_CATALOG_FEATURE_UNICODE_FOLD_TEXT_PREFIX_V1 = 5;
+  APPLICATION_CATALOG_FEATURE_EXACT_AGGREGATES = 6;
+}
+
+enum ApplicationCatalogFeatureState {
+  APPLICATION_CATALOG_FEATURE_STATE_UNSPECIFIED = 0;
+  APPLICATION_CATALOG_FEATURE_STATE_AVAILABLE = 1;
+  APPLICATION_CATALOG_FEATURE_STATE_UNAVAILABLE = 2;
+}
+
+message ApplicationCatalogSourceSpan {
+  uint32 start = 1;
+  uint32 end = 2;
+}
+
+message ApplicationCatalogSymbol {
+  ApplicationCatalogSymbolKind kind = 1;
+  repeated string path = 2;
+  optional string public_type = 3;
+  optional ApplicationCatalogSourceSpan source_span = 4;
+}
+
+message ApplicationCatalogFeatureView {
+  ApplicationCatalogFeature feature = 1;
+  ApplicationCatalogFeatureState state = 2;
+}
+
+message GetApplicationCatalogRequest {
+  optional ContractSelector contract = 1;
+  uint32 limit = 2;
+  optional string cursor = 3;
+  bytes request_id = 100;
+}
+
+message GetApplicationCatalogResponse {
+  string schema = 1;
+  string contract_lineage = 2;
+  uint64 contract_version = 3;
+  bytes contract_bundle_hash = 4;
+  repeated bytes query_module_hashes = 5;
+  repeated ApplicationCatalogSymbol symbols = 6;
+  repeated ApplicationCatalogFeatureView features = 7;
+  bool has_more = 8;
+  optional string next_cursor = 9;
+}
+
 message NamedQuerySource {
   string name = 1;
   string source = 2;
@@ -606,6 +675,7 @@ message ExecuteProjectedQueryResponse {
 
 service ApplicationQueryService {
   rpc DescribeContract(DescribeContractRequest) returns (DescribeContractResponse);
+  rpc GetApplicationCatalog(GetApplicationCatalogRequest) returns (GetApplicationCatalogResponse);
   rpc CheckQuery(CheckQueryRequest) returns (CheckQueryResponse);
   rpc ExplainQuery(ExplainQueryRequest) returns (ExplainQueryResponse);
   rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);

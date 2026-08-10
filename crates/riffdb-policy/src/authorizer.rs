@@ -252,7 +252,9 @@ where
                     // exact same time clause without reloading the record.
                     current_validity(&current_facts),
                 );
-                let proof = if request.permission_requirement().is_none() {
+                let proof = if request.permission_requirement().is_none()
+                    || request.operation() == ServiceOperationV1::DescribeContract
+                {
                     AuthorizedOperation::new_discovery(
                         self.expected_database_id,
                         self.expected_environment.clone(),
@@ -595,22 +597,7 @@ fn application_query_accesses_visible(
     grant: &CapabilityGrantV1,
     target: &crate::ApplicationQueryTarget,
 ) -> bool {
-    target.accesses().iter().all(|access| {
-        if access.maximum_rows() > grant.max_scan_rows() {
-            return false;
-        }
-        if access.non_key_fields().is_empty() {
-            return true;
-        }
-        grant.field_visibility().iter().any(|visibility| {
-            visibility.lineage() == target.lineage()
-                && visibility.entity_type() == access.entity_type_id()
-                && access
-                    .non_key_fields()
-                    .iter()
-                    .all(|field| visibility.fields().binary_search(field).is_ok())
-        })
-    })
+    crate::decision::application_query_accesses_visible(grant, target.lineage(), target.accesses())
 }
 
 /// Projects the exact validity window carried by reloaded current facts.
