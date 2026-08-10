@@ -188,6 +188,23 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
     ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
         QueryExecutionPort::execute_query_group(&self.shared, requests)
     }
+
+    fn execute_operational_query_page(
+        &self,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+        parameters: &riffdb_query_executor::QueryParameters,
+        prior: Option<&riffdb_query_executor::QueryContinuation>,
+    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
+    {
+        QueryExecutionPort::execute_operational_query_page(
+            &self.shared,
+            program,
+            aggregates,
+            parameters,
+            prior,
+        )
+    }
 }
 
 impl fmt::Debug for SharedRedbOperationalPorts {

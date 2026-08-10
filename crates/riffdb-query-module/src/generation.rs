@@ -1334,12 +1334,9 @@ fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTy
             )
             .expect("string");
             for field in fields {
-                let expression = rust_decode_application_expr(
+                let expression = rust_decode_record_field_expr(
                     field.value_type(),
-                    &format!(
-                        "take_application_value(&mut record.fields, \"{}\")?",
-                        field.name()
-                    ),
+                    field.name(),
                     &format!("{name}{}", pascal(field.name())),
                 );
                 writeln!(
@@ -1358,6 +1355,26 @@ fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTy
         }
         NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => {}
     }
+}
+
+fn rust_decode_record_field_expr(
+    value_type: &NamedTypeSchema,
+    field_name: &str,
+    nested_name: &str,
+) -> String {
+    if let NamedTypeSchema::Optional(inner) = value_type
+        && matches!(inner.as_ref(), NamedTypeSchema::Optional(_))
+    {
+        return format!(
+            "match record.fields.remove(\"{field_name}\") {{ None => None, Some(value) => Some({}) }}",
+            rust_decode_application_expr(inner, "value", nested_name)
+        );
+    }
+    rust_decode_application_expr(
+        value_type,
+        &format!("take_application_value(&mut record.fields, \"{field_name}\")?"),
+        nested_name,
+    )
 }
 
 fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> String {
@@ -3245,6 +3262,19 @@ mod tests {
             expression,
             "decode_wire_optional(take_wire_field(&mut fields, 12)?, |value| Ok(decode_wire_i64(value)?))?"
         );
+    }
+
+    #[test]
+    fn nested_optional_query_result_uses_record_field_presence_for_outer_absence() {
+        let value_type = NamedTypeSchema::Optional(Box::new(NamedTypeSchema::Optional(Box::new(
+            NamedTypeSchema::Scalar("i64".to_owned()),
+        ))));
+        let expression = rust_decode_record_field_expr(&value_type, "minimum", "Minimum");
+
+        assert_eq!(expression.matches("record.fields.remove").count(), 1);
+        assert!(expression.contains("None => None"));
+        assert!(expression.contains("Some(value) => Some(match value"));
+        assert!(expression.contains("ApplicationValue::Null => None"));
     }
 
     #[test]

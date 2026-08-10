@@ -28,10 +28,11 @@ recompiles source against the exact contract and compares canonical bytes.
 A module containing bounded exact aggregates uses additive version 3. Its
 aggregate descriptors, result schemas, authorization fields, group ceiling,
 cost, source map, explanation, and family identity are all compiler-owned and
-strictly recompiled on decode. Version-3 aggregate modules are not yet accepted
-for deployment: WP-564 must provide the one-snapshot evaluator before the
-service can expose results. This deployment gate prevents an aggregate module
-from falling back to the ordinary source-row program.
+strictly recompiled on decode. Version-3 aggregate modules are deployable and
+execute only through the one-snapshot operational evaluator. The service passes
+the sealed descriptors alongside the selected family member; an adapter that
+does not implement this exact boundary fails closed with `InvalidProgram`
+instead of falling back to the ordinary source-row result.
 
 Operational families currently execute through the named-query application
 surface. Version-1 reactive/live-query modules do not substitute a representative

@@ -8,10 +8,12 @@ use std::sync::Arc;
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
     QueryExecutionRequest, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow,
-    QueryScanPage, execute_in_snapshot, execute_page_in_snapshot, validate_query_execution_group,
+    QueryScanPage, execute_in_snapshot, execute_operational_page_in_snapshot,
+    execute_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
-    AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
+    AccessDirection, OperationalAggregateV1, QueryAccessKind, QueryAccessProgramV1,
+    QueryAccessStep, QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
 use riffdb_types::{CanonicalValue, FieldId, IndexEntryKey};
@@ -56,6 +58,26 @@ impl QueryExecutionPort for MemoryOperationalPorts {
                     execute_in_snapshot(request.program(), request.parameters(), &mut view)
                 })
                 .collect::<Result<Vec<_>, _>>())
+        })
+        .map_err(map_storage_query_error)?
+    }
+
+    fn execute_operational_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        aggregates: &[OperationalAggregateV1],
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        self.read(|state| {
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
+            Ok(execute_operational_page_in_snapshot(
+                program, aggregates, parameters, prior, &mut view,
+            ))
         })
         .map_err(map_storage_query_error)?
     }

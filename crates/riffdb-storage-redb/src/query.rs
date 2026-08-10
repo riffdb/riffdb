@@ -147,6 +147,35 @@ impl QueryExecutionPort for RedbOperationalPorts {
             })
             .collect()
     }
+
+    fn execute_operational_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        let mut view = RedbQueryView {
+            transaction: &transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head,
+            program,
+            parameters,
+        };
+        riffdb_query_executor::execute_operational_page_in_snapshot(
+            program, aggregates, parameters, prior, &mut view,
+        )
+    }
 }
 
 fn map_storage_query_error(error: StorageError) -> QueryExecutionError {

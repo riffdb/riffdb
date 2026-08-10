@@ -442,8 +442,8 @@ fn symbolic_record_into_proto(
     enum_names: &riffdb_service::SharedEnumVariantNames,
     record: SymbolicResultRecord,
 ) -> Result<app_v1::ResultRecord, Status> {
-    let (entity, fields) = record.into_parts();
-    let fields = fields
+    let (entity, fields, exact_decimals) = record.into_parts();
+    let mut fields = fields
         .into_iter()
         .map(|(name, value)| {
             let mut value = canonical_value_into_public(value)?;
@@ -454,6 +454,22 @@ fn symbolic_record_into_proto(
             })
         })
         .collect::<Result<Vec<_>, Status>>()?;
+    fields.extend(
+        exact_decimals
+            .into_iter()
+            .map(|(name, value)| app_v1::Parameter {
+                name: name.to_string(),
+                value: Some(v1::Value {
+                    kind: Some(v1::value::Kind::DecimalValue(
+                        riffdb_proto::aggregate_decimal_sum_to_proto(
+                            value.coefficient(),
+                            value.scale(),
+                        ),
+                    )),
+                }),
+            }),
+    );
+    fields.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(app_v1::ResultRecord {
         fields,
         entity: entity.to_string(),
@@ -619,7 +635,7 @@ fn live_record_to_proto(
     record: &SymbolicResultRecord,
     resolve: &impl Fn(u32, u32) -> Option<String>,
 ) -> Result<v1::LiveQueryResultRecord, Status> {
-    let fields = record
+    let mut fields = record
         .fields()
         .iter()
         .map(|(name, value)| {
@@ -633,6 +649,24 @@ fn live_record_to_proto(
             })
         })
         .collect::<Result<Vec<_>, Status>>()?;
+    fields.extend(
+        record
+            .exact_decimals()
+            .iter()
+            .map(|(name, value)| v1::ValueField {
+                field_id: None,
+                name: name.to_string(),
+                value: Some(v1::Value {
+                    kind: Some(v1::value::Kind::DecimalValue(
+                        riffdb_proto::aggregate_decimal_sum_to_proto(
+                            value.coefficient(),
+                            value.scale(),
+                        ),
+                    )),
+                }),
+            }),
+    );
+    fields.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(v1::LiveQueryResultRecord {
         entity: record.entity().to_owned(),
         fields: Some(v1::ValueRecord { fields }),
@@ -2103,6 +2137,9 @@ fn contextual_hydration_to_proto(
                 }
                 QueryResultValue::Many(rows) => {
                     (v1::ContextualQueryCardinality::Many, rows.iter().collect())
+                }
+                QueryResultValue::AggregateOne(_) | QueryResultValue::AggregateMany(_) => {
+                    return Err(invalid_service_response());
                 }
             };
             Ok(v1::ContextualQueryField {
@@ -5789,6 +5826,38 @@ mod tests {
             encoded.len(),
             golden.len()
         );
+    }
+
+    #[test]
+    fn symbolic_aggregate_sum_crosses_the_public_value_carrier_exactly() {
+        let record = SymbolicResultRecord::from_aggregate_for_test(
+            Arc::<str>::from("summary"),
+            BTreeMap::from([(
+                Arc::<str>::from("count"),
+                riffdb_types::CanonicalValue::U64(2),
+            )]),
+            BTreeMap::from([(Arc::<str>::from("total"), (i128::MAX, 2_u8))]),
+        );
+        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new()), record)
+            .expect("aggregate record conversion");
+        assert_eq!(
+            wire.fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["count", "total"]
+        );
+        let total = wire.fields[1]
+            .value
+            .as_ref()
+            .and_then(|value| value.kind.as_ref());
+        let Some(v1::value::Kind::DecimalValue(total)) = total else {
+            panic!("exact sum was not a public decimal")
+        };
+        assert_eq!(total.scale, 2);
+        assert_eq!(total.precision, None);
+        let submitted = submitted_decimal(total).expect("full i128 coefficient");
+        assert_eq!(submitted.coefficient(), i128::MAX);
     }
 
     fn hex_decode(hex: &str) -> Vec<u8> {

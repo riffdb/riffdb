@@ -246,19 +246,28 @@ functions are `count()`, `sum(field)`, `min(field)`, and `max(field)`. Function
 names, input fields, aliases, grouping keys, and the source binding are source
 declarations; callers cannot submit any of them at runtime.
 
-This syntax and its version-3 query-module representation are frozen ahead of
-WP-564 execution work. Finite-family compilation resolves every grouping and
+This syntax and its version-3 query-module representation are executable for
+named queries. Finite-family compilation resolves every grouping and
 measure field, derives result types, includes all source fields in the
 authorization union, clamps grouped output to the source row limit, and seals
 the descriptors and cost ceiling into module identity. The ordinary version-1
 compiler still rejects aggregate declarations with `RDB-QP008`.
 
-Aggregate modules remain intentionally undeployable until WP-564 provides the
-one-snapshot evaluator and exact result carriage. The service also rejects any
-such module encountered through an older administrative path, so it can never
-silently return the underlying rows as if they were aggregate results. Thus
-this section freezes the compiler contract; it does not yet advertise an
-executable application feature.
+The selected source access and every aggregate fold run inside the same
+authoritative read snapshot. `count` and `sum` return zero for an empty whole
+set; `min` and `max` return absence. Integer sums and fixed-decimal sums use a
+checked signed 128-bit accumulator and cross the public boundary as a decimal
+with the source scale and no false precision assertion. Overflow, group-bound
+exhaustion, fuel exhaustion, or a malformed backend row withholds the complete
+query result—there is no partial aggregate response.
+
+Grouped rows are ordered by the canonical encoded group key and their count is
+clamped by the source `take` value, including a submitted `Limit`. Version 1
+requires aggregate result names and selected aggregate field names to remain
+the declaration names; renaming either is rejected at compile time rather than
+accepted without a sealed projection mapping. Aggregate live watches remain a
+separate future surface: current reactive compilation accepts only an ordinary
+single access program and cannot substitute one operational-family member.
 
 ## Symbolic catalog schema
 

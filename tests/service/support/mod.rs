@@ -4702,6 +4702,64 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
             })
             .collect()
     }
+
+    fn execute_operational_query_page(
+        &self,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+        parameters: &riffdb_query_executor::QueryParameters,
+        prior: Option<&riffdb_query_executor::QueryContinuation>,
+    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
+    {
+        struct EmptyAggregateView;
+        impl riffdb_query_executor::QueryReadView for EmptyAggregateView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+                riffdb_query_executor::QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                0
+            }
+
+            fn point(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+            ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+            ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
+                Ok(vec![None; predicates.len()])
+            }
+
+            fn scan(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+            ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryScanPage::exact_end(
+                    Vec::new(),
+                    0,
+                ))
+            }
+        }
+        riffdb_query_executor::execute_operational_page_in_snapshot(
+            program,
+            aggregates,
+            parameters,
+            prior,
+            &mut EmptyAggregateView,
+        )
+    }
 }
 
 #[derive(Default)]

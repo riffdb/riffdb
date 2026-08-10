@@ -10490,11 +10490,13 @@ work_packages:
     ADR-0086, ADR-0087, ADR-0092, ADR-0104, ADR-0108]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
     fixtures/proto/**, fixtures/riffql/**, crates/riffdb-types/**,
-    crates/riffdb-query-ir/**, crates/riffdb-query-executor/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-query-executor/**,
     crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**,
-    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**,
     crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Canonical versioned text-key transform and declared index maintenance with Unicode/profile

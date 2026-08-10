@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_contract_ir::{CommandExplain, GeneratedSchemaArtifact};
-use riffdb_query_executor::{QueryResultValue, QueryRow};
+use riffdb_query_executor::{QueryAggregateCell, QueryAggregateRow, QueryResultValue, QueryRow};
 use riffdb_types::{
     AdmittedActorContext, CanonicalRecord, CanonicalValue, ContractLineage, ProjectionIdentity,
     ServiceAuditTargetV1, TenantScope,
@@ -310,6 +310,10 @@ fn charge_symbolic_record(
     for (name, value) in record.fields() {
         charge.bytes(name.len())?;
         charge.nested(value)?;
+    }
+    for name in record.exact_decimals().keys() {
+        charge.bytes(name.len())?;
+        charge.add(18)?;
     }
     Ok(())
 }
@@ -1353,7 +1357,29 @@ fn charge_contextual_query_value(
             }
             Ok(())
         }
+        QueryResultValue::AggregateOne(row) => charge_aggregate_query_row(charge, row),
+        QueryResultValue::AggregateMany(rows) => {
+            for row in rows {
+                charge_aggregate_query_row(charge, row)?;
+            }
+            Ok(())
+        }
     }
+}
+
+fn charge_aggregate_query_row(
+    charge: &mut ChargeAccumulator,
+    row: &QueryAggregateRow,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(row.entity().len())?;
+    for (name, value) in row.fields() {
+        charge.bytes(name.len())?;
+        match value {
+            QueryAggregateCell::Canonical(value) => charge.nested(value)?,
+            QueryAggregateCell::ExactDecimal { .. } => charge.add(18)?,
+        }
+    }
+    Ok(())
 }
 
 impl sealed::Sealed for ContextualHydration {}

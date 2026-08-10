@@ -1858,14 +1858,47 @@ query GetBudget(
 }
 "#;
 
+    const BUDGET_SUMMARY: &str = r#"
+query BudgetSummary(
+    $organization_id: Budget.organization_id,
+    $fiscal_year: Budget.fiscal_year,
+) {
+    many budgets from Budget
+        where organization_id == $organization_id
+          && fiscal_year == $fiscal_year
+        order by fiscal_year asc
+        take 5
+
+    aggregate summary from budgets {
+        count() as budget_count
+        sum(approved_amount) as approved_total
+    }
+
+    return Found { summary: summary { budget_count approved_total } }
+    outcomes Found
+}
+"#;
+
     run_async(async move {
         // Seed harness supplies the exact active catalog the named query will bind to.
         let seed = ServiceHarness::operations();
         let validated = seed.active_validated_bundle();
+        let aggregate_document =
+            riffdb_riffql_syntax::parse_query(BUDGET_SUMMARY).expect("aggregate query syntax");
+        let aggregate_catalog = riffdb_query_ir::SymbolicCatalog::from_bundle(validated.bundle())
+            .expect("aggregate catalog");
+        riffdb_query_compiler::compile_operational_query_family(
+            &aggregate_document,
+            &aggregate_catalog,
+        )
+        .expect("aggregate query plan");
         let candidate = QueryModuleCandidate::new(
             QueryModuleName::new("budget_reads").expect("module name"),
             QueryModuleVersion::new(1).expect("module version"),
-            vec![NamedQuerySource::new("GetBudget", GET_BUDGET).expect("query source")],
+            vec![
+                NamedQuerySource::new("BudgetSummary", BUDGET_SUMMARY).expect("aggregate source"),
+                NamedQuerySource::new("GetBudget", GET_BUDGET).expect("query source"),
+            ],
         )
         .expect("module candidate");
         let module =
@@ -1882,6 +1915,11 @@ query GetBudget(
             validated.lineage().clone(),
             module_hash,
             query_name,
+        );
+        let summary_permission = CapabilityPermissionV1::ExecuteNamedQuery(
+            validated.lineage().clone(),
+            module_hash,
+            QueryOperationName::new("BudgetSummary").expect("summary name"),
         );
 
         struct FixedIncidents;
@@ -1903,7 +1941,7 @@ query GetBudget(
             Arc::clone(&observability) as Arc<dyn ServiceTelemetry>,
             executor,
             modules,
-            vec![named_permission],
+            vec![named_permission, summary_permission],
         );
 
         let (context, _cancellation) = harness.context(0x91);
@@ -1952,7 +1990,46 @@ query GetBudget(
         assert_eq!(result.outcome(), "NotFound");
         assert_eq!(result.identity().plan_hash(), family_hash);
 
-        let queries = 2_u64;
+        let summary_request = NamedSymbolicQueryRequest::new(
+            SymbolicContractSelector::active(),
+            "BudgetSummary".to_owned(),
+            Some(module_hash),
+            SymbolicQueryParameters::new(std::collections::BTreeMap::from([
+                (
+                    "organization_id".to_owned(),
+                    riffdb_service::SubmittedValue::Uuid([0x31; 16]),
+                ),
+                (
+                    "fiscal_year".to_owned(),
+                    riffdb_service::SubmittedValue::I64(2026),
+                ),
+            ]))
+            .expect("summary parameters"),
+        )
+        .expect("summary request");
+        let (summary_context, _summary_cancellation) = harness.context(0x93);
+        let summary = harness
+            .service
+            .execute_named_symbolic_query(summary_context, summary_request)
+            .await
+            .expect("deployed aggregate executes through the application service");
+        let Some(riffdb_service::SymbolicResultField::One(record)) =
+            summary.fields().get("summary")
+        else {
+            panic!("whole-set aggregate record missing: {:?}", summary.fields());
+        };
+        assert_eq!(
+            record.fields().get("budget_count"),
+            Some(&riffdb_types::CanonicalValue::U64(0))
+        );
+        let approved_total = record
+            .exact_decimals()
+            .get("approved_total")
+            .expect("full-width sum carriage");
+        assert_eq!(approved_total.coefficient(), 0);
+        assert_eq!(approved_total.scale(), 2);
+
+        let queries = 3_u64;
         for stage in [
             ReadPipelineStage::SpawnDispatch,
             ReadPipelineStage::PlanLookup,

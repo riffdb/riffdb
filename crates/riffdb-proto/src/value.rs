@@ -437,9 +437,19 @@ pub fn money_to_proto(value: CanonicalMoney) -> v1::Money {
 /// sole decoder.
 #[must_use]
 pub fn aggregate_sum_to_proto(value: i128) -> v1::Decimal {
+    aggregate_decimal_sum_to_proto(value, 0)
+}
+
+/// Encodes one full-width exact aggregate coefficient at a declared scale.
+///
+/// Precision remains absent because the result-only accumulator admits the
+/// complete signed `i128` domain (up to 39 digits), wider than contract decimal
+/// precision. The compiler, rather than this transport carrier, fixes `scale`.
+#[must_use]
+pub fn aggregate_decimal_sum_to_proto(value: i128, scale: u8) -> v1::Decimal {
     v1::Decimal {
         coefficient_twos_complement: encode_minimal_i128(value),
-        scale: 0,
+        scale: u32::from(scale),
         precision: None,
     }
 }
