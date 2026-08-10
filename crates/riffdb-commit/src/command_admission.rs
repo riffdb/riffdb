@@ -18,12 +18,13 @@ use riffdb_storage_api::{
     StoredOutcomeV1, StoredPendingAdmissionV1,
 };
 use riffdb_types::{
-    CanonicalRecord, ConflictKey, ConflictKeyHash, EntityKey, EntityTypeId, LogicalTime,
-    MAX_COMMAND_CONFLICT_KEYS_V1, RequestId, hash_conflict_key, hash_partition_key,
+    CanonicalRecord, CanonicalValue, ConflictKey, ConflictKeyHash, EntityKey, EntityTypeId,
+    LogicalTime, MAX_COMMAND_CONFLICT_KEYS_V1, RequestId, hash_conflict_key, hash_partition_key,
 };
 
 use crate::{
-    AdmissionClock, AdmissionClockError, CommandExecutionPreparation,
+    AdmissionClock, AdmissionClockError, CommandExecutionPreparation, ServiceUuidV7Source,
+    ServiceUuidV7SourceError,
     command_preparation::{AuditedCommandLifecycle, PostEvaluationCommandAuthorizer},
 };
 
@@ -150,6 +151,8 @@ pub(crate) enum CommandAdmissionError {
     Recheck(IdempotencyRecheckError),
     /// The one permitted clock sample for a new admission failed.
     Clock(AdmissionClockError),
+    /// A compiler-required service UUID could not be observed or was malformed.
+    ServiceUuid(ServiceUuidV7SourceError),
     /// Independently checked state could not be lowered consistently.
     Integrity,
     /// The one mutating pending-admission transition failed.
@@ -176,6 +179,7 @@ impl Error for CommandAdmissionError {
         match self {
             Self::Recheck(error) => Some(error),
             Self::Clock(error) => Some(error),
+            Self::ServiceUuid(error) => Some(error),
             Self::AdmissionWrite(error) => Some(error),
             Self::AdmissionStatusUnknown(uncertain) => Some(uncertain.cause()),
             Self::Integrity => None,
@@ -350,9 +354,16 @@ struct AdmissionPreparationParts {
 pub(crate) fn reduce_command_admission(
     repository: &dyn AdmissionRepository,
     clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     preparation: CommandExecutionPreparation,
 ) -> Result<CommandAdmissionResult, CommandAdmissionError> {
-    reduce_command_admission_with_hash(repository, clock, preparation, &hash_conflict_key)
+    reduce_command_admission_with_hash(
+        repository,
+        clock,
+        service_uuids,
+        preparation,
+        &hash_conflict_key,
+    )
 }
 
 /// Reduces a bounded FIFO group while retaining each audited vacant start for
@@ -360,6 +371,7 @@ pub(crate) fn reduce_command_admission(
 pub(crate) fn reduce_audited_command_admission_group<P>(
     repository: &P,
     admission_clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     _administration_clock: &dyn crate::AdministrationClock,
     preparations: Vec<CommandExecutionPreparation>,
 ) -> Vec<Result<CommandAdmissionResult, CommandAdmissionError>>
@@ -386,6 +398,7 @@ where
             preparation,
             repository,
             admission_clock,
+            service_uuids,
             &hash_conflict_key,
         ) {
             Ok(PreparedCommandAdmission::Complete(prepared)) => {
@@ -469,10 +482,17 @@ pub(crate) fn resolve_uncertain_command_admission(
 fn reduce_command_admission_with_hash(
     repository: &dyn AdmissionRepository,
     clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     preparation: CommandExecutionPreparation,
     conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
 ) -> Result<CommandAdmissionResult, CommandAdmissionError> {
-    match prepare_command_admission_with_hash(preparation, repository, clock, conflict_hasher)? {
+    match prepare_command_admission_with_hash(
+        preparation,
+        repository,
+        clock,
+        service_uuids,
+        conflict_hasher,
+    )? {
         PreparedCommandAdmission::Complete(prepared) => Ok(prepared.result),
         PreparedCommandAdmission::Vacant(prepared) => Ok(CommandAdmissionResult::Execute(
             prepared.execution_candidate,
@@ -505,6 +525,7 @@ fn prepare_command_admission_with_hash(
     preparation: CommandExecutionPreparation,
     repository: &dyn AdmissionRepository,
     clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
 ) -> Result<PreparedCommandAdmission, CommandAdmissionError> {
     let crate::command_preparation::CommandExecutionPreparationParts {
@@ -538,7 +559,7 @@ fn prepare_command_admission_with_hash(
 
     match rechecked {
         IdempotencyRecheckResultV1::Vacant(vacant) => {
-            prepare_vacant(clock, parts, vacant, conflict_hasher)
+            prepare_vacant(clock, service_uuids, parts, vacant, conflict_hasher)
                 .map(Box::new)
                 .map(PreparedCommandAdmission::Vacant)
         }
@@ -602,6 +623,7 @@ fn prepare_command_admission_with_hash(
 
 fn prepare_vacant(
     clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     parts: AdmissionPreparationParts,
     vacant: VacantIdempotencyAdmissionV1,
     conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
@@ -622,6 +644,8 @@ fn prepare_vacant(
     let identity = prepared_idempotency.current_identity().clone();
 
     let logical_time = LogicalTime::new(clock.now().map_err(CommandAdmissionError::Clock)?);
+    let service_values =
+        observe_service_values(lowered.resolved_plan.plan(), logical_time, service_uuids)?;
     let pending = StoredPendingAdmissionV1::new_with_causation(
         identity,
         canonical_input_hash,
@@ -633,6 +657,7 @@ fn prepare_vacant(
         provenance_claims,
         lowered.causation,
     )
+    .and_then(|pending| pending.with_service_values(service_values))
     .map_err(|_| CommandAdmissionError::Integrity)?;
     let context = PreEvaluationCommitContext::new(
         pending.clone(),
@@ -652,6 +677,30 @@ fn prepare_vacant(
     })
 }
 
+fn observe_service_values(
+    plan: &riffdb_contract_ir::CommandPlan,
+    logical_time: LogicalTime,
+    source: &dyn ServiceUuidV7Source,
+) -> Result<CanonicalRecord, CommandAdmissionError> {
+    let mut values = Vec::with_capacity(plan.service_values().len());
+    for schema in plan.service_values() {
+        let value = match schema.kind() {
+            riffdb_contract_ir::ServiceValueKind::TransactionTime => {
+                CanonicalValue::Timestamp(logical_time.timestamp())
+            }
+            riffdb_contract_ir::ServiceValueKind::UuidV7 => {
+                let bytes = source
+                    .next_uuid_v7()
+                    .map_err(CommandAdmissionError::ServiceUuid)?;
+                RequestId::from_bytes(bytes).map_err(|_| CommandAdmissionError::Integrity)?;
+                CanonicalValue::Uuid(bytes)
+            }
+        };
+        values.push((schema.field().id(), value));
+    }
+    CanonicalRecord::new(values).map_err(|_| CommandAdmissionError::Integrity)
+}
+
 fn admission_request_from_outcome(
     outcome: &StoredOutcomeV1,
 ) -> Result<AdmissionRequestV1, CommandAdmissionError> {
@@ -666,6 +715,7 @@ fn admission_request_from_outcome(
         outcome.admitted_claims().clone(),
         outcome.causation(),
     )
+    .and_then(|pending| pending.with_service_values(outcome.service_values().clone()))
     .map_err(|_| CommandAdmissionError::Integrity)?;
     let context = PreEvaluationCommitContext::new(
         pending,
@@ -827,6 +877,7 @@ fn outcome_matches_context(
         && outcome.conflict_hashes() == context.conflict_hashes()
         && outcome.admitted_claims() == pending.provenance_claims()
         && outcome.causation() == pending.causation()
+        && outcome.service_values() == pending.service_values()
 }
 
 fn lower_provenance_claims(
@@ -954,11 +1005,11 @@ mod tests {
         AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AggregateTypeId, Audience, CanonicalInputHash, CanonicalValue,
-        CapabilityGrantV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence,
-        DatabaseId, Decimal, DecimalSpec, DigestKeyId, Environment, ExecutionFailureCode,
-        IdempotencyKey, OutcomeId, PartitionScopeV1, ProvenanceId, RequestId, SourceCommit,
-        SourceRepository, TenantScope, Timestamp,
+        ActorId, ActorKind, AggregateTypeId, Audience, CanonicalInputHash, CanonicalRecord,
+        CanonicalValue, CapabilityGrantV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+        CommitSequence, DatabaseId, Decimal, DecimalSpec, DigestKeyId, Environment,
+        ExecutionFailureCode, IdempotencyKey, OutcomeId, PartitionScopeV1, ProvenanceId, RequestId,
+        SourceCommit, SourceRepository, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -1123,6 +1174,82 @@ mod tests {
         fn now(&self) -> Result<Timestamp, AdmissionClockError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.result
+        }
+    }
+
+    struct FixedServiceUuids;
+
+    struct CountingServiceUuids {
+        calls: AtomicUsize,
+    }
+
+    impl crate::ServiceUuidV7Source for FixedServiceUuids {
+        fn next_uuid_v7(&self) -> Result<[u8; 16], crate::ServiceUuidV7SourceError> {
+            Ok(request_id(0x7a).into_bytes())
+        }
+    }
+
+    impl crate::ServiceUuidV7Source for CountingServiceUuids {
+        fn next_uuid_v7(&self) -> Result<[u8; 16], crate::ServiceUuidV7SourceError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(request_id(0x7a).into_bytes())
+        }
+    }
+
+    #[test]
+    fn service_values_are_observed_once_in_compiler_field_order_before_runtime() {
+        let bundle = riffdb_contract_compiler::compile_contract_source(
+            r#"
+contract ServiceValues version 1 {
+  entity Item { key (tenant: uuid, item_id: uuid) field touched_at: timestamp }
+  aggregate Items { root Item partition_by tenant conflict_key (tenant, item_id) }
+  command Touch {
+    input request_key: string<64>
+    input tenant: uuid
+    input item_id: uuid
+    service observed_at: transaction_time
+    service execution_id: uuid_v7
+    idempotency_key request_key
+    mutate Item(tenant, item_id) as item else Missing {}
+    set item.touched_at = observed_at
+    return Touched { execution_id: execution_id }
+  }
+}
+"#,
+        )
+        .expect("service-value contract compiles");
+        let plan = bundle
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "Touch")
+            .expect("Touch command");
+        let logical_time = LogicalTime::new(timestamp(77));
+        let source = CountingServiceUuids {
+            calls: AtomicUsize::new(0),
+        };
+
+        let values = observe_service_values(plan, logical_time, &source)
+            .expect("service values are observed");
+
+        assert_eq!(values.len(), 2);
+        assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        for schema in plan.service_values() {
+            let value = values
+                .fields()
+                .iter()
+                .find_map(|(field, value)| (field == &schema.field().id()).then_some(value))
+                .expect("declared service value");
+            match schema.kind() {
+                riffdb_contract_ir::ServiceValueKind::TransactionTime => {
+                    assert_eq!(value, &CanonicalValue::Timestamp(logical_time.timestamp()))
+                }
+                riffdb_contract_ir::ServiceValueKind::UuidV7 => {
+                    let CanonicalValue::Uuid(bytes) = value else {
+                        panic!("UUID service value has the wrong canonical type")
+                    };
+                    assert!(RequestId::from_bytes(*bytes).is_ok());
+                }
+            }
         }
     }
 
@@ -1379,6 +1506,7 @@ mod tests {
         let error = reduce_command_admission(
             &repository,
             &clock,
+            &FixedServiceUuids,
             preparation(command, AdmissionLookupResultV1::NotFound, invocation),
         )
         .expect_err("unknown admission status must retain recovery evidence");
@@ -1528,6 +1656,7 @@ mod tests {
         let result = reduce_command_admission(
             &repository,
             &clock,
+            &FixedServiceUuids,
             preparation(&command, AdmissionLookupResultV1::NotFound, invocation),
         )
         .expect("new admission");
@@ -1595,7 +1724,15 @@ mod tests {
             LogicalTime::new(timestamp(888)),
             actor(ActorKind::Service),
             claims,
-        );
+        )
+        .with_service_values(
+            CanonicalRecord::new(vec![(
+                riffdb_types::FieldId::new(99).expect("service field"),
+                CanonicalValue::Uuid(request_id(0x70).into_bytes()),
+            )])
+            .expect("service values"),
+        )
+        .expect("service values attach");
         let state = StoredAdmissionStateV1::Pending(stored.clone());
         let repository = ScriptedRepository::new(
             AdmissionLookupResultV1::Found(Box::new(state.clone())),
@@ -1604,9 +1741,13 @@ mod tests {
         let clock = ScriptedClock::fixed(timestamp(999));
         let current_invocation = request_id(9);
 
+        let service_uuids = CountingServiceUuids {
+            calls: AtomicUsize::new(0),
+        };
         let result = reduce_command_admission(
             &repository,
             &clock,
+            &service_uuids,
             preparation(
                 &command,
                 AdmissionLookupResultV1::Found(Box::new(state)),
@@ -1621,6 +1762,7 @@ mod tests {
         assert_eq!(repository.lookup_calls.get(), 1);
         assert_eq!(repository.admission_calls.get(), 0);
         assert_eq!(clock.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(service_uuids.calls.load(Ordering::SeqCst), 0);
         assert_eq!(candidate.commit_context().pending(), &stored);
         assert_eq!(
             candidate.commit_context().pending().admission_request_id(),
@@ -1677,6 +1819,7 @@ mod tests {
             let result = reduce_command_admission(
                 &repository,
                 &clock,
+                &FixedServiceUuids,
                 preparation(
                     &command,
                     AdmissionLookupResultV1::NotFound,
@@ -1730,6 +1873,7 @@ mod tests {
             let result = reduce_command_admission(
                 &repository,
                 &clock,
+                &FixedServiceUuids,
                 preparation(&command, AdmissionLookupResultV1::NotFound, request_id(40)),
             )
             .expect("closed retry disposition");
@@ -1780,6 +1924,7 @@ mod tests {
             let error = reduce_command_admission(
                 &repository,
                 &clock,
+                &FixedServiceUuids,
                 preparation(
                     &command,
                     AdmissionLookupResultV1::NotFound,
@@ -1805,6 +1950,7 @@ mod tests {
         let read_error = reduce_command_admission(
             &read_repository,
             &read_clock,
+            &FixedServiceUuids,
             preparation(&command, AdmissionLookupResultV1::NotFound, request_id(50)),
         )
         .expect_err("recheck read must fail");
@@ -1820,6 +1966,7 @@ mod tests {
         let clock_error = reduce_command_admission(
             &clock_repository,
             &failed_clock,
+            &FixedServiceUuids,
             preparation(&command, AdmissionLookupResultV1::NotFound, request_id(51)),
         )
         .expect_err("clock failure must prevent admission");
@@ -1835,6 +1982,7 @@ mod tests {
         let write_result = reduce_command_admission(
             &write_repository,
             &write_clock,
+            &FixedServiceUuids,
             preparation(&command, AdmissionLookupResultV1::NotFound, request_id(52)),
         )
         .expect("fresh commands do not perform a pending-admission write");
@@ -2025,6 +2173,7 @@ mod tests {
             let result = reduce_command_admission(
                 &repository,
                 &clock,
+                &FixedServiceUuids,
                 preparation(
                     &command,
                     AdmissionLookupResultV1::NotFound,
@@ -2163,6 +2312,7 @@ mod tests {
         let result = reduce_command_admission(
             &repository,
             &ScriptedClock::fixed(timestamp(70)),
+            &FixedServiceUuids,
             preparation(&command, AdmissionLookupResultV1::NotFound, request_id(70)),
         )
         .expect("candidate");

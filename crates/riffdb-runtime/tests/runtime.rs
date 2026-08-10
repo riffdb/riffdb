@@ -325,6 +325,7 @@ contract ServiceTransactionTime version 1 {
   entity WorkItem {
     key (organization_id: uuid, work_id: uuid)
     field updated_at: timestamp
+    field execution_id: uuid
   }
 
   aggregate WorkItems {
@@ -338,10 +339,12 @@ contract ServiceTransactionTime version 1 {
     input organization_id: uuid
     input work_id: uuid
     service observed_at: transaction_time
+    service execution_id: uuid_v7
     idempotency_key request_key
     mutate WorkItem(organization_id, work_id) as work else Missing {}
     set work.updated_at = observed_at
-    return Touched { observed_at: observed_at }
+    set work.execution_id = execution_id
+    return Touched { observed_at: observed_at, execution_id: execution_id }
   }
 }
 "#;
@@ -386,6 +389,7 @@ fn service_transaction_time_is_the_sealed_admitted_logical_time() {
                     "updated_at",
                     CanonicalValue::Timestamp(Timestamp::new(1, 0).expect("old timestamp")),
                 ),
+                ("execution_id", CanonicalValue::Uuid([0; 16])),
             ],
         ),
     );
@@ -404,6 +408,11 @@ fn service_transaction_time_is_the_sealed_admitted_logical_time() {
     };
 
     let expected = CanonicalValue::Timestamp(admitted_time);
+    let expected_uuid = CanonicalValue::Uuid(
+        RequestId::from_unix_milliseconds_and_random(7, [0x77; 10])
+            .expect("service UUID")
+            .into_bytes(),
+    );
     assert_eq!(
         field(
             evaluated.mutations()[0].post_image().fields(),
@@ -413,10 +422,24 @@ fn service_transaction_time_is_the_sealed_admitted_logical_time() {
     );
     assert_eq!(
         field(
+            evaluated.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "execution_id")
+        ),
+        &expected_uuid
+    );
+    assert_eq!(
+        field(
             evaluated.outcome().value(),
             outcome_field(plan, "Touched", "observed_at")
         ),
         &expected
+    );
+    assert_eq!(
+        field(
+            evaluated.outcome().value(),
+            outcome_field(plan, "Touched", "execution_id")
+        ),
+        &expected_uuid
     );
 }
 
@@ -1493,7 +1516,27 @@ fn context(
         .partition_schema()
         .encode_partition(&[value])
         .expect("partition key");
-    TransactionContext::new(
+    let service_uuid = RequestId::from_unix_milliseconds_and_random(7, [0x77; 10])
+        .expect("service UUID")
+        .into_bytes();
+    let service_values = CanonicalRecord::new(
+        plan.service_values()
+            .iter()
+            .map(|schema| {
+                let value = match schema.kind() {
+                    riffdb_contract_ir::ServiceValueKind::TransactionTime => {
+                        CanonicalValue::Timestamp(logical_time.timestamp())
+                    }
+                    riffdb_contract_ir::ServiceValueKind::UuidV7 => {
+                        CanonicalValue::Uuid(service_uuid)
+                    }
+                };
+                (schema.field().id(), value)
+            })
+            .collect(),
+    )
+    .expect("canonical service values");
+    TransactionContext::new_with_service_values(
         RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
         AdmittedActorContext::new(
             ActorId::new("runtime-test").expect("actor"),
@@ -1504,6 +1547,7 @@ fn context(
         plan_ref(bundle, plan),
         logical_time,
         partition,
+        service_values,
     )
 }
 

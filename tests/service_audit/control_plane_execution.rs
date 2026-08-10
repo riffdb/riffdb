@@ -189,6 +189,12 @@ impl AdmissionClock for UnusedAdmissionClock {
 
 struct UnusedProvenanceSource;
 
+impl riffdb_commit::ServiceUuidV7Source for UnusedProvenanceSource {
+    fn next_uuid_v7(&self) -> Result<[u8; 16], riffdb_commit::ServiceUuidV7SourceError> {
+        Err(riffdb_commit::ServiceUuidV7SourceError)
+    }
+}
+
 impl ProvenanceIdSource for UnusedProvenanceSource {
     fn next_provenance_id(&self) -> Result<ProvenanceId, ProvenanceIdSourceError> {
         Err(ProvenanceIdSourceError)
@@ -210,6 +216,7 @@ fn start_coordinator(
         ports,
         conflicts,
         Arc::new(UnusedAdmissionClock),
+        Arc::new(UnusedProvenanceSource),
         administration_clock,
         authorization_clock,
         Arc::new(UnusedProvenanceSource),

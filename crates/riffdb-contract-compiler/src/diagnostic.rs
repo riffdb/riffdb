@@ -255,7 +255,7 @@ impl CompilerDiagnosticCode {
                 "the workflow lease fields or duration bounds are invalid"
             }
             Self::InvalidServiceValue => {
-                "a service-owned value cannot be supplied or used as caller-owned input"
+                "a service-owned value requires durable idempotent command admission"
             }
             Self::MissingWorkflowRevision => {
                 "a workflow transition requires one direct exact observed-revision input"
@@ -360,7 +360,7 @@ impl CompilerDiagnosticCode {
                 "use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds",
             ),
             Self::InvalidServiceValue => Some(
-                "declare service uuid_v7 or service transaction_time and omit it from caller input",
+                "declare an idempotency key and use service uuid_v7 or service transaction_time only as a service-owned value",
             ),
             Self::MissingWorkflowRevision => Some(
                 "pass one required u64 command input containing the revision returned by the prior read",

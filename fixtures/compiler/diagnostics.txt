@@ -108,8 +108,8 @@ code.34.id=RDB-C035
 code.34.message=the workflow lease fields or duration bounds are invalid
 code.34.help=use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds
 code.35.id=RDB-C036
-code.35.message=a service-owned value cannot be supplied or used as caller-owned input
-code.35.help=declare service uuid_v7 or service transaction_time and omit it from caller input
+code.35.message=a service-owned value requires durable idempotent command admission
+code.35.help=declare an idempotency key and use service uuid_v7 or service transaction_time only as a service-owned value
 code.36.id=RDB-C037
 code.36.message=a workflow transition requires one direct exact observed-revision input
 code.36.help=pass one required u64 command input containing the revision returned by the prior read
@@ -483,10 +483,10 @@ expected=RDB-C036
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C036
-diagnostic.0.message=a service-owned value cannot be supplied or used as caller-owned input
+diagnostic.0.message=a service-owned value requires durable idempotent command admission
 diagnostic.0.primary=999..1009
 diagnostic.0.related=965..975
-diagnostic.0.help=declare service uuid_v7 or service transaction_time and omit it from caller input
+diagnostic.0.help=declare an idempotency key and use service uuid_v7 or service transaction_time only as a service-owned value
 
 [RDB-C037-missing-workflow-revision]
 expected=RDB-C037

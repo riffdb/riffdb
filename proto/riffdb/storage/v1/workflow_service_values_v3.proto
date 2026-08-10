@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/command_segment_v1.proto";
+import "riffdb/storage/v1/contextual_causation_v2.proto";
+
+// V3 durable admission evidence adds the compiler-keyed canonical service
+// values observed before deterministic execution. The bytes encode one
+// CanonicalRecord in strict FieldId order.
+message StoredPendingAdmissionV3 {
+  StoredPendingAdmissionV2 base = 1;
+  bytes canonical_service_values = 2;
+}
+
+message StoredExecutionFailedV3 {
+  StoredPendingAdmissionV3 pending = 1;
+  ExecutionFailureCodeV1 code = 2;
+}
+
+// Terminal replay evidence retains the exact same service-value bytes after
+// the pending row is atomically removed.
+message StoredOutcomeV3 {
+  StoredOutcomeV2 base = 1;
+  bytes canonical_service_values = 2;
+}
+
+// Successor authoritative capsule and segment records retain the same sealed
+// service values after standalone outcome rows become derived locators.
+message StoredCommandCapsuleV3 {
+  StoredCommandCapsuleV2 base = 1;
+  bytes canonical_service_values = 2;
+}
+
+message StoredCommandSegmentBodyV2 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes predecessor_segment_hash = 3;
+  uint64 first_commit_sequence = 4;
+  uint64 last_commit_sequence = 5;
+  uint64 first_administration_sequence = 6;
+  uint64 last_administration_sequence = 7;
+  repeated StoredCommandCapsuleV3 commands = 8;
+  CommandSegmentManifestV1 manifest = 9;
+}
+
+message StoredCommandSegmentV2 {
+  StoredCommandSegmentBodyV2 body = 1;
+  bytes segment_digest = 2;
+}

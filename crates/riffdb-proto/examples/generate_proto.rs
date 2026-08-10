@@ -64,6 +64,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
+    "riffdb/storage/v1/workflow_service_values_v3.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/app/v1/application.proto",
@@ -94,6 +95,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
+    "riffdb/storage/v1/workflow_service_values_v3.proto",
     "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/commit.proto",
@@ -473,6 +475,31 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
     durable(
         "command_segment_v1.proto",
         "StoredCommandDerivedIndexCheckpointV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "workflow_service_values_v3.proto",
+        "StoredPendingAdmissionV3",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "workflow_service_values_v3.proto",
+        "StoredExecutionFailedV3",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "workflow_service_values_v3.proto",
+        "StoredOutcomeV3",
+        PayloadBound::Document,
+    ),
+    durable(
+        "workflow_service_values_v3.proto",
+        "StoredCommandCapsuleV3",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "workflow_service_values_v3.proto",
+        "StoredCommandSegmentV2",
         PayloadBound::EnvelopeMaximum,
     ),
 ];
@@ -866,6 +893,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let command_segment_v1_records = durable_registry
         .get(current_v1_record_count + 31..current_v1_record_count + 34)
         .ok_or_else(|| io::Error::other("durable command-segment-v1 registry is incomplete"))?;
+    let workflow_service_values_v3_records = durable_registry
+        .get(current_v1_record_count + 34..current_v1_record_count + 39)
+        .ok_or_else(|| {
+            io::Error::other("durable workflow-service-values-v3 registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1090,6 +1122,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-command-segment-v1-record-bounds.bin",
         &durable_record_bounds(command_segment_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-workflow-service-values-v3-schema-hashes.bin",
+        &durable_schema_hashes(workflow_service_values_v3_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-workflow-service-values-v3-record-bounds.bin",
+        &durable_record_bounds(workflow_service_values_v3_records),
     )?;
     write_artifact(
         &output_root,
@@ -1358,9 +1400,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 63 {
+    if DURABLE_RECORDS.len() != 68 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 63 records").into(),
+            io::Error::other("readable durable registry must contain exactly 68 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1384,9 +1426,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 131 || enum_count != 18 {
+    if message_count != 137 || enum_count != 18 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 130 semantic messages plus StoredEnvelope and 18 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 133 semantic messages plus StoredEnvelope and 18 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1650,11 +1692,16 @@ fn durable_writable_registry_fixture(
         .ok_or_else(|| {
             io::Error::other("durable registry is missing command segment V1 records")
         })?;
+    let workflow_service_values_v3 = records
+        .get(current_v1_record_count + 34..current_v1_record_count + 39)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing workflow service-value V3 records")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
         .chain(std::iter::once(generation_v2))
-        .chain(contextual_causation_v2[..3].iter())
+        .chain(workflow_service_values_v3[..3].iter())
         .chain(legacy[13..14].iter())
         .chain(std::iter::once(outbox_v2))
         .chain(contextual_causation_v2[3..].iter())
@@ -1675,7 +1722,8 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(retention_administration))
         .chain(reactive_consumer_v1.iter())
         .chain(command_capsule_v1.iter())
-        .chain(command_segment_v1.iter())
+        .chain(workflow_service_values_v3[3..].iter())
+        .chain(command_segment_v1[2..].iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");

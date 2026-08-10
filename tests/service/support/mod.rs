@@ -26,7 +26,8 @@ use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
     ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
     CommandExecutionCapacityPermit, CoordinatorDurability, CoordinatorWorkloadCapacity,
-    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator,
+    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator, ServiceUuidV7Source,
+    ServiceUuidV7SourceError,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
@@ -2170,6 +2171,7 @@ fn start_coordinator_with_capacity(
         ports,
         conflicts,
         Arc::new(FixedAdmissionClock),
+        Arc::new(SequentialServiceUuids::default()),
         Arc::new(IncrementingAdministrationClock::new()),
         Arc::new(FixedAuthorizationClock),
         Arc::new(SequentialProvenanceIds::default()),
@@ -2221,6 +2223,16 @@ impl AdministrationClock for IncrementingAdministrationClock {
 
 #[derive(Default)]
 struct SequentialProvenanceIds(AtomicU64);
+
+#[derive(Default)]
+struct SequentialServiceUuids(AtomicU64);
+
+impl ServiceUuidV7Source for SequentialServiceUuids {
+    fn next_uuid_v7(&self) -> Result<[u8; 16], ServiceUuidV7SourceError> {
+        let seed = self.0.fetch_add(1, Ordering::Relaxed) as u8;
+        Ok(uuid_bytes(seed.wrapping_add(0x50)))
+    }
+}
 
 impl ProvenanceIdSource for SequentialProvenanceIds {
     fn next_provenance_id(&self) -> Result<ProvenanceId, ProvenanceIdSourceError> {

@@ -63,13 +63,16 @@ fn required_fields_uuidv7_and_timestamp_fail_closed() {
         &invalid_uuid,
     )));
 
-    const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV2";
+    const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV3";
     let canonical = encode_pending_admission_v1(&sample::pending()).expect("pending encodes");
-    let mut pending = payload_message::<wire::StoredPendingAdmissionV2>(canonical.as_bytes());
+    let mut pending = payload_message::<wire::StoredPendingAdmissionV3>(canonical.as_bytes());
     pending
         .base
         .as_mut()
         .expect("sample pending base")
+        .base
+        .as_mut()
+        .expect("sample causal pending base")
         .logical_time
         .as_mut()
         .expect("sample logical time")
@@ -81,13 +84,13 @@ fn required_fields_uuidv7_and_timestamp_fail_closed() {
 
 #[test]
 fn unknown_enum_and_multiple_oneof_members_fail_closed() {
-    const FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV2";
+    const FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV3";
     let failed = crate::StoredExecutionFailedV1::new(
         sample::pending(),
         ExecutionFailureCode::ArithmeticFault,
     );
     let canonical = encode_execution_failed_v1(&failed).expect("execution failure encodes");
-    let mut message = payload_message::<wire::StoredExecutionFailedV2>(canonical.as_bytes());
+    let mut message = payload_message::<wire::StoredExecutionFailedV3>(canonical.as_bytes());
     message.code = 99;
     assert_corrupt(decode_execution_failed_v1(&checked_envelope(
         FAILED, &message,
@@ -303,15 +306,18 @@ fn audit_target_shape_order_and_cardinality_fail_closed() {
 fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
     let records = sample::atomic_record_set();
 
-    const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV2";
+    const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV3";
     let outcome = encode_stored_outcome_v1(records.stored_outcome()).expect("outcome encodes");
-    let outcome = payload_message::<wire::StoredOutcomeV2>(outcome.as_bytes());
+    let outcome = payload_message::<wire::StoredOutcomeV3>(outcome.as_bytes());
 
     let mut missing_partition_key = outcome.clone();
     missing_partition_key
         .base
         .as_mut()
         .expect("sample outcome base")
+        .base
+        .as_mut()
+        .expect("sample causal outcome base")
         .partition_key
         .clear();
     assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
@@ -324,6 +330,9 @@ fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
         .base
         .as_mut()
         .expect("sample outcome base")
+        .base
+        .as_mut()
+        .expect("sample causal outcome base")
         .partition_key
         .last_mut()
         .expect("sample partition key") ^= 1;
@@ -337,6 +346,9 @@ fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
         .base
         .as_mut()
         .expect("sample outcome base")
+        .base
+        .as_mut()
+        .expect("sample causal outcome base")
         .conflict_hashes = vec![[0x82; 32].to_vec(), [0x81; 32].to_vec()];
     assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
         OUTCOME,

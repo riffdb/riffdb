@@ -554,6 +554,7 @@ pub struct StoredOutcomeV1 {
     provenance_id: ProvenanceId,
     durability_mode: DurabilityMode,
     causation: Option<crate::StoredCommandCausationV1>,
+    service_values: CanonicalRecord,
 }
 
 impl StoredOutcomeV1 {
@@ -640,6 +641,8 @@ impl StoredOutcomeV1 {
             provenance_id,
             durability_mode,
             causation,
+            service_values: CanonicalRecord::new(Vec::new())
+                .map_err(|_| StorageValueError::InvalidShape)?,
         })
     }
 
@@ -735,6 +738,12 @@ impl StoredOutcomeV1 {
         self.causation
     }
 
+    /// Borrows the exact service values sealed at command admission.
+    #[must_use]
+    pub const fn service_values(&self) -> &CanonicalRecord {
+        &self.service_values
+    }
+
     /// Upgrades one decoded V1 base into its V2 causal successor.
     pub fn with_causation(
         mut self,
@@ -747,8 +756,21 @@ impl StoredOutcomeV1 {
         Ok(self)
     }
 
+    /// Upgrades terminal replay evidence with sealed service values.
+    pub fn with_service_values(
+        mut self,
+        service_values: CanonicalRecord,
+    ) -> Result<Self, StorageValueError> {
+        if !self.service_values.is_empty() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.service_values = service_values;
+        self.semantic_bytes()?;
+        Ok(self)
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        stored_outcome_semantic_bytes(
+        let base = stored_outcome_semantic_bytes(
             &self.identity,
             &self.plan,
             &self.actor,
@@ -756,7 +778,16 @@ impl StoredOutcomeV1 {
             &self.conflict_hashes,
             &self.declared_outcome,
             &self.admitted_claims,
-        )
+        )?;
+        if self.service_values.is_empty() {
+            return Ok(base);
+        }
+        base.checked_add(framed_bytes(
+            encode_canonical_record(&self.service_values)
+                .map_err(|error| canonical_codec_storage_error(&error))?
+                .len(),
+        )?)
+        .ok_or(StorageValueError::SizeOverflow)
     }
 }
 
@@ -2154,6 +2185,7 @@ impl AtomicCommandRecordSet {
             || expected_pending.logical_time() != stored_outcome.logical_time()
             || expected_pending.provenance_claims() != stored_outcome.admitted_claims()
             || expected_pending.causation() != stored_outcome.causation()
+            || expected_pending.service_values() != stored_outcome.service_values()
             || expected_pending.partition_key() != stored_outcome.partition_key()
             || hash_partition_key(expected_pending.partition_key().as_bytes())
                 != stored_outcome.partition_hash()
@@ -2829,7 +2861,7 @@ fn projected_atomic_semantic_breakdown(
                 .ok_or(StorageValueError::SizeOverflow)
         })?;
     let stored_dependencies = StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?;
-    let outcome_bytes = stored_outcome_semantic_bytes(
+    let mut outcome_bytes = stored_outcome_semantic_bytes(
         pending.identity(),
         evaluated.plan(),
         pending.actor(),
@@ -2838,6 +2870,15 @@ fn projected_atomic_semantic_breakdown(
         evaluated.outcome(),
         pending.provenance_claims(),
     )?;
+    if !pending.service_values().is_empty() {
+        outcome_bytes = outcome_bytes
+            .checked_add(framed_bytes(
+                encode_canonical_record(pending.service_values())
+                    .map_err(|error| canonical_codec_storage_error(&error))?
+                    .len(),
+            )?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+    }
     let provenance_bytes = stored_provenance_semantic_bytes(
         pending.identity(),
         evaluated.plan(),

@@ -571,6 +571,17 @@ fn command_segment_write_path_is_byte_identical_for_large_bounded_manifest() {
 #[test]
 fn command_segment_round_trip_proves_hash_manifest_and_semantic_views() {
     let (base, atomic) = sample_command_capsule_v1();
+    let service_values = riffdb_types::CanonicalRecord::new(vec![(
+        riffdb_types::FieldId::new(9).expect("service field"),
+        riffdb_types::CanonicalValue::Uuid(sample::uuid_v7(0x77)),
+    )])
+    .expect("service values");
+    let (outcome, provenance, commit, started, terminal) = base.into_parts();
+    let outcome = outcome
+        .with_service_values(service_values.clone())
+        .expect("service values attach");
+    let base = crate::StoredCommandCapsuleV1::new(outcome, provenance, commit, started, terminal)
+        .expect("service-value capsule");
     let capsule = crate::StoredCommandCapsuleV2::new(
         base,
         atomic.events().to_vec(),
@@ -624,6 +635,10 @@ fn command_segment_round_trip_proves_hash_manifest_and_semantic_views() {
         decode_command_segment_v1,
     );
     assert_eq!(sealed_encoded, encoded);
+    assert_eq!(
+        sealed.commands()[0].base().outcome().service_values(),
+        &service_values
+    );
 
     let mut corrupt = encoded.into_bytes();
     let last = corrupt.len() - 1;

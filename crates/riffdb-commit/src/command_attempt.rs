@@ -1300,12 +1300,13 @@ async fn acquire_transaction_local_fifo_authority(
 
 fn transaction_context(context: &PreEvaluationCommitContext) -> TransactionContext {
     let pending = context.pending();
-    TransactionContext::new(
+    TransactionContext::new_with_service_values(
         pending.admission_request_id(),
         pending.actor().clone(),
         pending.plan().clone(),
         pending.logical_time(),
         pending.partition_key().clone(),
+        pending.service_values().clone(),
     )
 }
 

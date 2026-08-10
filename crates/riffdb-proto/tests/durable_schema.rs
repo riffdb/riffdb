@@ -287,6 +287,14 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto".to_owned(),
                 vec![],
             ),
+            (
+                "riffdb/storage/v1/workflow_service_values_v3.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/application.proto",
+                    "riffdb/storage/v1/command_segment_v1.proto",
+                    "riffdb/storage/v1/contextual_causation_v2.proto",
+                ],
+            ),
         ])
     );
     assert!(descriptors.file.iter().all(|file| {
@@ -302,8 +310,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        131,
-        "130 semantic messages plus the unchanged StoredEnvelope"
+        137,
+        "136 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -333,7 +341,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 53);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 68);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 73);
     assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 53);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
@@ -391,6 +399,11 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredPendingAdmissionV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredExecutionFailedV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredOutcomeV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandSegmentV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -399,9 +412,9 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
     writable_names[9] = "riffdb.storage.v1.StoredIndexGenerationV2".to_owned();
-    writable_names[10] = "riffdb.storage.v1.StoredPendingAdmissionV2".to_owned();
-    writable_names[11] = "riffdb.storage.v1.StoredExecutionFailedV2".to_owned();
-    writable_names[12] = "riffdb.storage.v1.StoredOutcomeV2".to_owned();
+    writable_names[10] = "riffdb.storage.v1.StoredPendingAdmissionV3".to_owned();
+    writable_names[11] = "riffdb.storage.v1.StoredExecutionFailedV3".to_owned();
+    writable_names[12] = "riffdb.storage.v1.StoredOutcomeV3".to_owned();
     writable_names[14] = "riffdb.storage.v1.StoredOutboxIntentV2".to_owned();
     writable_names[15] = "riffdb.storage.v1.StoredProvenanceRecordV2".to_owned();
     writable_names[16] = "riffdb.storage.v1.StoredCommitRecordV3".to_owned();
@@ -432,8 +445,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandLocatorV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandAuditLocatorV1".to_owned());
-    writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV2".to_owned());
-    writable_names.push("riffdb.storage.v1.StoredCommandSegmentV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV3".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandSegmentV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
@@ -563,7 +576,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 68);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 73);
     let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 53);
 
     assert_eq!(legacy, readable[..legacy.len()]);
@@ -589,8 +602,6 @@ fn canonical_command_capsule_records_are_closed_current_schemas() {
         ("riffdb.storage.v1.StoredCommandCapsuleV1", 51),
         ("riffdb.storage.v1.StoredCommandLocatorV1", 52),
         ("riffdb.storage.v1.StoredCommandAuditLocatorV1", 53),
-        ("riffdb.storage.v1.StoredCommandCapsuleV2", 54),
-        ("riffdb.storage.v1.StoredCommandSegmentV1", 55),
         (
             "riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1",
             56,
@@ -612,6 +623,74 @@ fn canonical_command_capsule_records_are_closed_current_schemas() {
         );
         assert_eq!(readable.compact_tag(), compact_tag, "{record_type}");
         assert_eq!(readable.schema_revision(), 1, "{record_type}");
+    }
+    for (legacy, current, compact_tag) in [
+        (
+            "riffdb.storage.v1.StoredCommandCapsuleV2",
+            "riffdb.storage.v1.StoredCommandCapsuleV3",
+            54,
+        ),
+        (
+            "riffdb.storage.v1.StoredCommandSegmentV1",
+            "riffdb.storage.v1.StoredCommandSegmentV2",
+            55,
+        ),
+    ] {
+        assert!(readable_record_schema(legacy).is_some(), "{legacy}");
+        assert!(writable_record_schema(legacy).is_none(), "{legacy}");
+        let schema = writable_record_schema(current)
+            .unwrap_or_else(|| panic!("{current} must be current writable"));
+        assert_eq!(schema.compact_tag(), compact_tag, "{current}");
+        assert_eq!(schema.schema_revision(), 2, "{current}");
+    }
+}
+
+#[test]
+fn service_value_successors_preserve_compact_record_roles() {
+    for (legacy, current, compact_tag, current_revision) in [
+        (
+            "riffdb.storage.v1.StoredPendingAdmissionV2",
+            "riffdb.storage.v1.StoredPendingAdmissionV3",
+            11,
+            3,
+        ),
+        (
+            "riffdb.storage.v1.StoredExecutionFailedV2",
+            "riffdb.storage.v1.StoredExecutionFailedV3",
+            12,
+            3,
+        ),
+        (
+            "riffdb.storage.v1.StoredOutcomeV2",
+            "riffdb.storage.v1.StoredOutcomeV3",
+            13,
+            3,
+        ),
+        (
+            "riffdb.storage.v1.StoredCommandCapsuleV2",
+            "riffdb.storage.v1.StoredCommandCapsuleV3",
+            54,
+            2,
+        ),
+        (
+            "riffdb.storage.v1.StoredCommandSegmentV1",
+            "riffdb.storage.v1.StoredCommandSegmentV2",
+            55,
+            2,
+        ),
+    ] {
+        let legacy_schema = readable_record_schema(legacy)
+            .unwrap_or_else(|| panic!("{legacy} must remain readable"));
+        let current_schema = writable_record_schema(current)
+            .unwrap_or_else(|| panic!("{current} must be current writable"));
+        assert_eq!(legacy_schema.compact_tag(), compact_tag, "{legacy}");
+        assert_eq!(current_schema.compact_tag(), compact_tag, "{current}");
+        assert_eq!(
+            current_schema.schema_revision(),
+            current_revision,
+            "{current}"
+        );
+        assert!(writable_record_schema(legacy).is_none(), "{legacy}");
     }
 }
 
