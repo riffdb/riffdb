@@ -5,8 +5,11 @@
 //! `SimBackend` (engine) plus `SimJournalMedia` (journal/marker side files),
 //! commits a small fixed workload through the storage API in the
 //! `storage_recovery_matrix` fixture style (fixed timestamps, fixed
-//! entropy), and must recover it across a clean shutdown and across a
-//! simulated crash with seeded torn-write resolution.
+//! entropy), and must recover it across three distinct reopen paths: a
+//! clean shutdown, a crash with an all-synced disk (redb's dirty-shutdown
+//! repair path — empty torn-decision set, asserted as a precondition), and
+//! a mid-commit crash whose torn-decision set is asserted NON-empty so
+//! recovery provably resolves seeded keep/drop/prefix-truncate decisions.
 //!
 //! STORE-LEVEL DETERMINISM BLOCKER (deliberate scope limit): these tests
 //! assert semantic outcomes only and MUST NOT assert trace-digest equality
@@ -181,6 +184,10 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
     let ordinal_u8 = u8::try_from(ordinal % 256).expect("bounded fixture ordinal");
+    // Distinct payload per fixture: a store that cross-swapped two entities'
+    // payloads (or events, outcomes, or index rows) must fail the read-back
+    // asserts.
+    let payload = 100 + ordinal;
     let entity_type_id = EntityTypeId::new(1).expect("entity type ID");
     let mut entity_key = EntityKeyBuilder::new(entity_type_id);
     entity_key
@@ -226,7 +233,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let partition = partition.finish().expect("partition key");
     let pending = StoredPendingAdmissionV1::new(
         identity.clone(),
-        CanonicalInputHash::from_bytes([0x42; 32]),
+        CanonicalInputHash::from_bytes([0x42_u8.wrapping_add(ordinal_u8); 32]),
         request_id,
         plan.clone(),
         logical_time,
@@ -247,12 +254,13 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         Vec::new(),
     )
     .expect("read snapshot");
-    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(1))
+    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(payload))
         .expect("entity post-image");
-    let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(1))
+    let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(payload))
         .expect("event intent");
-    let declared_outcome = DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(1))
-        .expect("declared outcome");
+    let declared_outcome =
+        DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(payload))
+            .expect("declared outcome");
     let evaluated = riffdb_storage_api::EvaluatedCommand::new(
         &snapshot,
         vec![EntityMutation::Create(post_image)],
@@ -279,7 +287,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         EntityVersion::first(),
         plan.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(1),
+        record(payload),
     )
     .expect("stored entity");
     let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
@@ -290,7 +298,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let index_record = StoredIndexEntryV2::new(
         index_key,
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(1),
+        record(payload),
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
@@ -337,7 +345,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let assignment = AssignedCommandSequence::from_assigned(sequence);
     let event_id = EventId::new(sequence, 0);
     let event_type_id = EventTypeId::new(1).expect("event type");
-    let event_payload = record(1);
+    let event_payload = record(payload);
     let event = StoredDurableEventV1::new(
         event_id,
         event_type_id,
@@ -458,49 +466,72 @@ fn command_audit_transition(
         .expect("fused command audit lifecycle")
 }
 
-fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
-    let candidate = ports
-        .begin_empty_batch()
-        .expect("begin command batch")
-        .begin_candidate(Box::new(fixture.intent.clone()))
-        .expect("begin command candidate");
-    let CandidateAdmissionResult::Proceed(candidate) = candidate
-        .recheck_admission()
-        .expect("recheck pending admission")
-    else {
-        panic!("the fixture's expected admission state must proceed");
+/// Outcome of one commit attempt under a possibly armed fault schedule.
+enum CommitAttempt {
+    Committed,
+    Refused,
+}
+
+/// Fallible commit: any step failing (as it will when a scheduled crash
+/// lands mid-attempt) yields `Refused` instead of panicking. Value
+/// assertions still panic — under injected faults the store fails closed
+/// with errors; a WRONG value would be a genuine defect worth a loud stop.
+fn try_commit_command_fixture(
+    ports: &RedbOperationalPorts,
+    fixture: &CommandFixture,
+) -> CommitAttempt {
+    let Ok(batch) = ports.begin_empty_batch() else {
+        return CommitAttempt::Refused;
     };
-    let (candidate, current) = candidate
-        .read_transaction_current()
-        .expect("read transaction-current state");
+    let Ok(candidate) = batch.begin_candidate(Box::new(fixture.intent.clone())) else {
+        return CommitAttempt::Refused;
+    };
+    let Ok(CandidateAdmissionResult::Proceed(candidate)) = candidate.recheck_admission() else {
+        return CommitAttempt::Refused;
+    };
+    let Ok((candidate, current)) = candidate.read_transaction_current() else {
+        return CommitAttempt::Refused;
+    };
     assert_eq!(
         current.bindings()[0].expected_state(),
         fixture.records.entities()[0].expected(),
         "transaction-current state must match the fixture's committed expectation"
     );
-    let candidate = candidate
+    let Ok(candidate) = candidate
         .plan_validated(fixture.affected_targets.clone())
         .read_affected_epoch_current()
-        .expect("read affected epoch state");
-    let CandidateCapacityResult::Reserved(candidate) = candidate
-        .reserve_capacity(fixture.write_plan.clone())
-        .expect("reserve complete command graph")
     else {
-        panic!("small smoke fixture must reserve");
+        return CommitAttempt::Refused;
     };
-    let candidate = candidate.assign_sequence().expect("assign sequence");
+    let Ok(CandidateCapacityResult::Reserved(candidate)) =
+        candidate.reserve_capacity(fixture.write_plan.clone())
+    else {
+        return CommitAttempt::Refused;
+    };
+    let Ok(candidate) = candidate.assign_sequence() else {
+        return CommitAttempt::Refused;
+    };
     assert_eq!(
         candidate.assignment().assigned(),
         fixture.records.commit().commit_sequence()
     );
-    candidate
-        .stage(fixture.records.clone())
-        .expect("stage complete command graph")
-        .commit_with_service_audit_transitions(
-            DurabilityMode::Sync,
-            vec![command_audit_transition(fixture)],
-        )
-        .expect("commit complete command graph and audit lifecycle");
+    let Ok(staged) = candidate.stage(fixture.records.clone()) else {
+        return CommitAttempt::Refused;
+    };
+    match staged.commit_with_service_audit_transitions(
+        DurabilityMode::Sync,
+        vec![command_audit_transition(fixture)],
+    ) {
+        Ok(_) => CommitAttempt::Committed,
+        Err(_) => CommitAttempt::Refused,
+    }
+}
+
+fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
+    match try_commit_command_fixture(ports, fixture) {
+        CommitAttempt::Committed => {}
+        CommitAttempt::Refused => panic!("a quiet-schedule commit must succeed"),
+    }
 }
 
 fn open_operational(store: RedbStore) -> RedbOperationalPorts {
@@ -519,12 +550,14 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let open_session_id = session.open_session_id();
     let limit = EvidencePageLimit::new(64).expect("page limit");
     let mut cursor = StructuralEvidenceCursor::start(session_database_id, open_session_id);
+    let mut pages = 0_u32;
     let structural_end = loop {
         match session
             .read_structural_evidence(cursor, limit)
             .expect("read structural evidence")
         {
             StructuralEvidencePage::Page { findings, next, .. } => {
+                pages += 1;
                 assert!(
                     findings.is_empty(),
                     "a recovered simulated store has no findings: {findings:?}"
@@ -534,10 +567,17 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
             StructuralEvidencePage::ExactEnd(end) => break end,
         }
     };
+    // The zero-findings assertion must stand on its own reach: at least one
+    // evidence page must actually have been produced and inspected.
+    assert!(pages > 0, "structural evidence produced no pages");
     let (catalog_outcome, historical_end) = validate_catalog_history(&mut session)
         .expect("catalog validates the complete historical stream")
         .into_parts();
     assert!(matches!(catalog_outcome, CatalogHistoryOutcome::Ready(_)));
+    // NOTE: `finish` also writes a validated-prefix checkpoint at the end
+    // of every successful pass, so each open in these tests leaves a fresh
+    // checkpoint for the next reopen. Keep that in mind before reordering
+    // fixture opens.
     let outcome = session
         .finish(structural_end, historical_end)
         .expect("finish structural evidence");
@@ -576,6 +616,11 @@ fn activate_catalog(ports: &mut RedbOperationalPorts) {
     );
 }
 
+/// Field-exact read-back (derived `Eq` on the decoded records — NOT an
+/// encoded-byte comparison; an encode/decode normalization that round-trips
+/// to the same struct is invisible here): entity, terminal outcome, commit
+/// record, durable event, and provenance record against the values the
+/// fixture constructed before writing.
 fn assert_committed_row(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
     assert_eq!(
         ports.read_entity(&fixture.target).expect("read entity"),
@@ -591,6 +636,19 @@ fn assert_committed_row(ports: &RedbOperationalPorts, fixture: &CommandFixture) 
             .read_commit(fixture.records.commit().commit_sequence())
             .expect("read commit"),
         Some(fixture.records.commit().clone())
+    );
+    let event = &fixture.records.events()[0];
+    assert_eq!(
+        ports
+            .read_durable_event(event.event_id())
+            .expect("read durable event"),
+        Some(event.clone())
+    );
+    assert_eq!(
+        ports
+            .read_provenance(fixture.records.provenance().provenance_id())
+            .expect("read provenance"),
+        Some(fixture.records.provenance().clone())
     );
 }
 
@@ -618,7 +676,8 @@ fn simulated_store_survives_a_clean_shutdown_and_simulated_reopen() {
     drop(ports);
 
     // Reopen simulated: startup validation runs inside `open_operational`
-    // (zero structural findings) and both rows read back exactly.
+    // (zero structural findings over at least one inspected page) and both
+    // rows read back field-exactly.
     let reopened = open_operational(open_simulated(&disk));
     assert_committed_row(&reopened, &one);
     assert_committed_row(&reopened, &two);
@@ -626,27 +685,143 @@ fn simulated_store_survives_a_clean_shutdown_and_simulated_reopen() {
 }
 
 #[test]
-fn simulated_store_recovers_acknowledged_commits_across_a_crash() {
+fn simulated_store_reopens_through_dirty_shutdown_repair_after_a_crash() {
     let disk = SimDisk::new(FaultConfig::quiet(0x51B_0002));
     let ports = prepare_simulated(&disk);
     let one = command_fixture_at(1);
     let two = command_fixture_at(2);
     commit_command_fixture(&ports, &one);
     commit_command_fixture(&ports, &two);
+    // The rows are durably present BEFORE the crash, so "both acknowledged"
+    // does not rest solely on commit() having returned Ok.
+    assert_committed_row(&ports, &one);
+    assert_committed_row(&ports, &two);
 
-    // Crash between commits (both acknowledged, none in flight): every
-    // unsynced engine write faces its seeded keep/drop/prefix-truncate
-    // decision at recovery, while the acknowledged journal frames are
-    // durable. Outstanding handles fail closed; dropping the store is the
-    // in-process stand-in for process death.
+    // Crash after the acknowledged commits, before the store drops. Under
+    // the quiet schedule every acknowledged mutation is already folded into
+    // the durable image, so the torn-decision set at recovery is EMPTY —
+    // asserted below as this test's stated precondition (review M1), not
+    // implied coverage. What this test covers is the unclean-shutdown path:
+    // dropping the crashed store makes redb's close() fail, leaving
+    // recovery_required set in the durable header, so the reopen goes
+    // through redb's dirty-shutdown repair rather than the clean path of
+    // the test above. Torn-write resolution over a NON-empty decision set
+    // is covered by
+    // `simulated_store_resolves_torn_unsynced_state_from_a_mid_commit_crash`.
+    assert_eq!(
+        disk.unsynced_mutation_count(),
+        0,
+        "quiet-schedule Sync commits leave nothing unsynced; if this reds, \
+         the dirty-shutdown claim of this test no longer holds"
+    );
     disk.crash();
     drop(ports);
     disk.recover_after_crash();
+    let counters = disk.counters();
+    assert_eq!(
+        counters.torn_kept + counters.torn_dropped + counters.torn_truncated,
+        0,
+        "this recovery must take zero torn decisions (all-synced crash)"
+    );
 
-    // The reopened store must pass startup validation and land exactly on
-    // the acknowledged state: both committed rows, read back byte-exactly.
+    // The reopened store must pass the full startup validation after redb's
+    // dirty-shutdown repair and land exactly on the acknowledged state.
     let recovered = open_operational(open_simulated(&disk));
     assert_committed_row(&recovered, &one);
     assert_committed_row(&recovered, &two);
     drop(recovered);
+}
+
+/// M1: torn-write resolution with a provably NON-empty decision set. A
+/// scheduled crash is swept across countdown windows until it catches the
+/// store with unsynced state mid-commit (the engine's page writes and the
+/// journal worker's frame writes both burst between syncs). For the window
+/// that connects: unsynced torn-candidates existed at the crash, recovery
+/// took exactly one seeded keep/drop/prefix-truncate decision per candidate,
+/// and the reopened store passes startup validation on a consistent
+/// acknowledged state — rows 1 and 2 exactly, the interrupted command 3
+/// either fully present (its durability fence completed before the crash)
+/// or fully absent, never partial.
+///
+/// A sweep is required because crash placement relative to the store's
+/// internal operation stream is not seed-stable at store level (the journal
+/// worker interleaves; see the module comment's determinism blocker), so no
+/// single window can be pinned. If NO swept window can catch the store with
+/// unsynced state, the final panic fires — per review M1 that outcome is a
+/// reportable finding, never silence.
+#[test]
+fn simulated_store_resolves_torn_unsynced_state_from_a_mid_commit_crash() {
+    let mut torn_window = None;
+    for window in (1..=240_u64).step_by(3) {
+        let disk = SimDisk::new(FaultConfig::quiet(0x51B_0003));
+        let ports = prepare_simulated(&disk);
+        let one = command_fixture_at(1);
+        let two = command_fixture_at(2);
+        commit_command_fixture(&ports, &one);
+        commit_command_fixture(&ports, &two);
+        assert_committed_row(&ports, &one);
+        assert_committed_row(&ports, &two);
+
+        // Arm the schedule and attempt a third command: the crash lands
+        // `window` countable disk operations into the attempt (or later,
+        // during the drop's shutdown writes, for large windows).
+        disk.set_crash_after_operations(Some((window, window + 1)));
+        let three = command_fixture_at(3);
+        let attempt = try_commit_command_fixture(&ports, &three);
+        drop(ports);
+        if !disk.is_crashed() {
+            // The window exceeded the whole attempt's operation count.
+            continue;
+        }
+        let unsynced = disk.unsynced_mutation_count();
+        disk.recover_after_crash();
+        // Disarm before reopening: recovery redraws the countdown, and an
+        // armed schedule would crash the reopen's own recovery reads.
+        disk.set_crash_after_operations(None);
+        let counters = disk.counters();
+        let torn = counters.torn_kept + counters.torn_dropped + counters.torn_truncated;
+        assert_eq!(
+            torn, unsynced,
+            "every unsynced mutation at the crash faces exactly one seeded \
+             decision (window {window})"
+        );
+
+        let recovered = open_operational(open_simulated(&disk));
+        assert_committed_row(&recovered, &one);
+        assert_committed_row(&recovered, &two);
+        match recovered
+            .read_entity(&three.target)
+            .expect("read the interrupted command's entity")
+        {
+            // The interrupted command became durable before the crash: its
+            // complete graph must be present.
+            Some(_) => assert_committed_row(&recovered, &three),
+            None => assert!(
+                recovered
+                    .read_stored_outcome(three.pending.identity())
+                    .expect("read the interrupted command's outcome")
+                    .is_none(),
+                "an unrecovered third command must be absent in full \
+                 (window {window})"
+            ),
+        }
+        drop(recovered);
+
+        if torn > 0 {
+            torn_window = Some((window, torn, matches!(attempt, CommitAttempt::Committed)));
+            break;
+        }
+    }
+    let Some((_window, torn, _acknowledged)) = torn_window else {
+        panic!(
+            "no crash window in the swept range caught the store with \
+             unsynced state mid-commit; if the store truly cannot be caught \
+             unsynced, that is a reportable finding (review M1) — do not \
+             widen the sweep without understanding why"
+        );
+    };
+    assert!(
+        torn > 0,
+        "the connecting window must have taken torn decisions"
+    );
 }

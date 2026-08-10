@@ -139,13 +139,19 @@ fn simulator_manifest_carries_no_entropy_async_or_clock_dependencies() {
         );
     }
     let dependencies = production_dependency_names(SIM_MANIFEST);
+    // ADMISSION CRITERION for this allowlist: a `[dependencies]` entry is
+    // admissible ONLY if riffdb-sim implements a simulation port that the
+    // crate defines (redb: `StorageBackend`; riffdb-storage-redb:
+    // `JournalMedia`). Convenience code, fixtures, and workload helpers
+    // belong in `[dev-dependencies]`. A new entry must argue against this
+    // stated rule, not merely extend the vector.
     assert_eq!(
         dependencies,
         vec!["redb", "riffdb-storage-redb"],
-        "the simulator depends on exactly the engine under simulation and \
-         the production storage crate whose media port it implements \
-         (SIM-B; the correct-direction dev-crate-on-production-crate edge \
-         ADR-0113 composes — SIM-007 constrains the reverse direction only)"
+        "the simulator depends on exactly the crates whose simulation ports \
+         it implements (SIM-B; the correct-direction \
+         dev-crate-on-production-crate edge ADR-0113 composes — SIM-007 \
+         constrains the reverse direction only)"
     );
 }
 
