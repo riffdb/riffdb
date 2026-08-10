@@ -34,6 +34,7 @@ members = [
     "crates/riffdb-riffql-syntax",
     "crates/riffdb-server",
     "crates/riffdb-service",
+    "crates/riffdb-sim",
     "crates/riffdb-storage-api",
     "crates/riffdb-storage-memory",
     "crates/riffdb-storage-redb",

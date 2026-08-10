@@ -1976,3 +1976,52 @@ fn response_wrapper_does_not_introduce_a_persisted_replay_record() {
         );
     }
 }
+
+#[test]
+fn conflict_path_collections_iterate_in_deterministic_order() {
+    // ADR-0113 hygiene: the conflict-detection and grouping path must never
+    // observe hash-randomized iteration order. The whole file is pinned —
+    // including its unit tests — so a HashSet/HashMap can never creep back
+    // into grouping, footprint, or exact-access compatibility logic.
+    for forbidden in ["HashSet", "HashMap"] {
+        assert!(
+            !COMMAND_EXECUTION_SOURCE.contains(forbidden),
+            "command_execution.rs reintroduced hash-randomized collection {forbidden}"
+        );
+    }
+    for required in [
+        "keys: std::collections::BTreeSet<riffdb_types::ConflictKey>",
+        "reads: std::collections::BTreeSet<EntityTarget>",
+        "writes: std::collections::BTreeSet<EntityTarget>",
+    ] {
+        assert!(
+            COMMAND_EXECUTION_SOURCE.contains(required),
+            "conflict grouping lost its ordered collection shape: {required}"
+        );
+    }
+}
+
+#[test]
+fn evaluation_worker_count_is_an_explicit_input_with_one_ambient_default() {
+    let production = production_source(COMMAND_EXECUTION_SOURCE);
+    // Exactly one ambient parallelism read survives, inside the named
+    // production default; the pool constructor takes the count explicitly.
+    assert_eq!(
+        production.matches("available_parallelism").count(),
+        1,
+        "ambient parallelism may be read only by production_worker_count"
+    );
+    let default_body = function_body(production, "pub(super) fn production_worker_count()");
+    assert!(default_body.contains("available_parallelism"));
+    assert!(production.contains(
+        "pub(super) fn new<Repository>(repository: Repository, worker_count: usize) -> Result<Self, ()>"
+    ));
+    assert!(
+        !AUDIT_EXECUTOR_SOURCE.contains("available_parallelism"),
+        "coordinator start must take the production default through the pool seam"
+    );
+    assert!(
+        AUDIT_EXECUTOR_SOURCE.contains("CommandEvaluationPool::production_worker_count()"),
+        "coordinator start lost the explicit production worker-count default"
+    );
+}
