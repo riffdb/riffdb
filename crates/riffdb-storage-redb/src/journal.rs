@@ -5,10 +5,10 @@
 )]
 
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io;
 #[cfg(not(unix))]
-use std::io::{Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,8 @@ use riffdb_storage_api::{
     DURABILITY_JOURNAL_FRAME_VERSION as FORMAT_VERSION,
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId};
+
+use crate::media::{JournalMedia, MediaFile, RealJournalMedia};
 
 use crate::keys::{decode_application_sequence_key, decode_audit_key};
 use crate::layout::{
@@ -1522,11 +1524,17 @@ pub(crate) struct JournalLane {
 
 impl JournalLane {
     pub(crate) fn open(path: &Path, header: &JournalFileHeader) -> Result<Self, JournalIoError> {
-        let state = initialize_or_validate_file(path, header)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
+        Self::open_with_media(&RealJournalMedia, path, header)
+    }
+
+    pub(crate) fn open_with_media(
+        media: &dyn JournalMedia,
+        path: &Path,
+        header: &JournalFileHeader,
+    ) -> Result<Self, JournalIoError> {
+        let state = initialize_or_validate_file_with_media(media, path, header)?;
+        let file = media
+            .open_read_write(path)
             .map_err(|_| JournalIoError::Io)?;
         let (sender, receiver) = mpsc::sync_channel(MAX_JOURNAL_COMMANDS);
         let durable_flushes = Arc::new(AtomicU64::new(0));
@@ -1576,28 +1584,41 @@ fn initialize_or_validate_file(
     path: &Path,
     expected: &JournalFileHeader,
 ) -> Result<ExtentState, JournalIoError> {
-    match File::open(path) {
+    initialize_or_validate_file_with_media(&RealJournalMedia, path, expected)
+}
+
+fn initialize_or_validate_file_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    expected: &JournalFileHeader,
+) -> Result<ExtentState, JournalIoError> {
+    match media.open_read(path) {
         Ok(mut file) => {
             let mut magic = [0_u8; 8];
             file.read_exact(&mut magic)
                 .map_err(|_| JournalIoError::Corrupt)?;
             if magic == FILE_MAGIC {
-                let (_, tail) = scan_legacy_journal(path, expected.database_id(), |_| Ok(()))?
-                    .ok_or(JournalIoError::Corrupt)?;
+                let (_, tail) = scan_legacy_journal_with_media(
+                    media,
+                    path,
+                    expected.database_id(),
+                    |_| Ok(()),
+                )?
+                .ok_or(JournalIoError::Corrupt)?;
                 if tail.transition_count != 0 || tail.incomplete_tail {
                     return Err(JournalIoError::LegacyNonEmpty(path.to_path_buf()));
                 }
-                migrate_empty_legacy_journal(path, expected)?;
+                migrate_empty_legacy_journal_with_media(media, path, expected)?;
             } else if magic != EXTENT_MAGIC {
                 return Err(JournalIoError::Corrupt);
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_extent_file(path, &ExtentHeader::initial(expected.clone()))?;
+            create_extent_file_with_media(media, path, &ExtentHeader::initial(expected.clone()))?;
         }
         Err(_) => return Err(JournalIoError::Io),
     }
-    let state = inspect_extent(path)?;
+    let state = inspect_extent_with_media(media, path)?;
     if state.header.logical != *expected {
         return Err(JournalIoError::Corrupt);
     }
@@ -1605,7 +1626,7 @@ fn initialize_or_validate_file(
 }
 
 fn journal_worker(
-    mut file: File,
+    mut file: MediaFile,
     receiver: mpsc::Receiver<JournalSubmission>,
     durable_flushes: &AtomicU64,
     state: ExtentState,
@@ -1667,7 +1688,7 @@ fn journal_worker(
             physical
                 .iter()
                 .try_for_each(|frame| {
-                    write_all_at(&mut file, &frame.bytes, frame.position)
+                    file.write_all_at(&frame.bytes, frame.position)
                         .map_err(|_| JournalIoError::Io)
                 })
                 .and_then(|()| file.sync_data().map_err(|_| JournalIoError::Io))
@@ -1741,10 +1762,14 @@ pub(crate) fn spare_journal_path(database_path: &Path) -> PathBuf {
 }
 
 pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), JournalIoError> {
-    let parent = path.parent().ok_or(JournalIoError::Io)?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| JournalIoError::Io)
+    sync_parent_directory_with_media(&RealJournalMedia, path)
+}
+
+pub(crate) fn sync_parent_directory_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+) -> Result<(), JournalIoError> {
+    media.sync_parent_all(path).map_err(|_| JournalIoError::Io)
 }
 
 fn align_up(value: usize, alignment: usize) -> Option<usize> {
@@ -1761,12 +1786,13 @@ fn extent_frame_checksum(bytes: &[u8]) -> [u8; HASH_BYTES] {
     hasher.finalize().into()
 }
 
-fn create_extent_file(path: &Path, header: &ExtentHeader) -> Result<(), JournalIoError> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(path)
+fn create_extent_file_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &ExtentHeader,
+) -> Result<(), JournalIoError> {
+    let mut file = media
+        .create_new_read_write(path)
         .map_err(|_| JournalIoError::Io)?;
     let zeroes = vec![0_u8; 1024 * 1024];
     let mut remaining = EXTENT_FILE_BYTES;
@@ -1774,18 +1800,20 @@ fn create_extent_file(path: &Path, header: &ExtentHeader) -> Result<(), JournalI
         let count = remaining.min(zeroes.len());
         if let Err(error) = file.write_all(&zeroes[..count]) {
             drop(file);
-            let _ = std::fs::remove_file(path);
+            let _ = media.remove_file(path);
             return Err(classify_extent_creation_error(&error));
         }
         remaining -= count;
     }
-    if let Err(error) = write_all_at(&mut file, &header.encode(), 0).and_then(|()| file.sync_data())
+    if let Err(error) = file
+        .write_all_at(&header.encode(), 0)
+        .and_then(|()| file.sync_data())
     {
         drop(file);
-        let _ = std::fs::remove_file(path);
+        let _ = media.remove_file(path);
         return Err(classify_extent_creation_error(&error));
     }
-    sync_parent(path)
+    sync_parent_with_media(media, path)
 }
 
 fn classify_extent_creation_error(error: &io::Error) -> JournalIoError {
@@ -1796,7 +1824,8 @@ fn classify_extent_creation_error(error: &io::Error) -> JournalIoError {
     }
 }
 
-fn migrate_empty_legacy_journal(
+fn migrate_empty_legacy_journal_with_media(
+    media: &dyn JournalMedia,
     path: &Path,
     expected: &JournalFileHeader,
 ) -> Result<(), JournalIoError> {
@@ -1805,25 +1834,28 @@ fn migrate_empty_legacy_journal(
     let mut replacement_name = file_name.to_os_string();
     replacement_name.push(".extent-v3");
     let replacement = parent.join(replacement_name);
-    match std::fs::remove_file(&replacement) {
+    match media.remove_file(&replacement) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(JournalIoError::Io),
     }
-    create_extent_file(&replacement, &ExtentHeader::initial(expected.clone()))?;
-    std::fs::rename(&replacement, path).map_err(|_| JournalIoError::Io)?;
-    sync_parent(path)
+    create_extent_file_with_media(
+        media,
+        &replacement,
+        &ExtentHeader::initial(expected.clone()),
+    )?;
+    media
+        .rename(&replacement, path)
+        .map_err(|_| JournalIoError::Io)?;
+    sync_parent_with_media(media, path)
 }
 
-fn sync_parent(path: &Path) -> Result<(), JournalIoError> {
-    let parent = path.parent().ok_or(JournalIoError::Io)?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_data())
-        .map_err(|_| JournalIoError::Io)
+fn sync_parent_with_media(media: &dyn JournalMedia, path: &Path) -> Result<(), JournalIoError> {
+    media.sync_parent_data(path).map_err(|_| JournalIoError::Io)
 }
 
-fn read_selected_extent_header(file: &mut File) -> Result<ExtentHeader, JournalIoError> {
-    let actual_len = usize::try_from(file.metadata().map_err(|_| JournalIoError::Io)?.len())
+fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, JournalIoError> {
+    let actual_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
     if actual_len != EXTENT_FILE_BYTES {
         return Err(JournalIoError::Corrupt);
@@ -1831,7 +1863,7 @@ fn read_selected_extent_header(file: &mut File) -> Result<ExtentHeader, JournalI
     let mut valid = Vec::with_capacity(EXTENT_HEADER_SLOT_COUNT);
     for slot in 0..EXTENT_HEADER_SLOT_COUNT {
         let mut bytes = [0_u8; EXTENT_HEADER_SLOT_BYTES];
-        read_exact_at(file, &mut bytes, slot * EXTENT_HEADER_SLOT_BYTES)
+        file.read_exact_at(&mut bytes, slot * EXTENT_HEADER_SLOT_BYTES)
             .map_err(|_| JournalIoError::Io)?;
         if bytes.iter().all(|byte| *byte == 0) {
             continue;
@@ -1855,28 +1887,34 @@ fn read_selected_extent_header(file: &mut File) -> Result<ExtentHeader, JournalI
 }
 
 fn inspect_extent(path: &Path) -> Result<ExtentState, JournalIoError> {
-    let (_, _, state) = scan_extent(path, None, |_| Ok(()))?;
+    inspect_extent_with_media(&RealJournalMedia, path)
+}
+
+fn inspect_extent_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+) -> Result<ExtentState, JournalIoError> {
+    let (_, _, state) = scan_extent_with_media(media, path, None, |_| Ok(()))?;
     Ok(state)
 }
 
-fn scan_extent_journal(
+fn scan_extent_journal_with_media(
+    media: &dyn JournalMedia,
     path: &Path,
     expected_database: DatabaseId,
     visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
 ) -> Result<(JournalFileHeader, JournalScanTail), JournalIoError> {
-    let (header, tail, _) = scan_extent(path, Some(expected_database), visit)?;
+    let (header, tail, _) = scan_extent_with_media(media, path, Some(expected_database), visit)?;
     Ok((header, tail))
 }
 
-fn scan_extent(
+fn scan_extent_with_media(
+    media: &dyn JournalMedia,
     path: &Path,
     expected_database: Option<DatabaseId>,
     mut visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
 ) -> Result<(JournalFileHeader, JournalScanTail, ExtentState), JournalIoError> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(|_| JournalIoError::Io)?;
+    let mut file = media.open_read(path).map_err(|_| JournalIoError::Io)?;
     let extent = read_selected_extent_header(&mut file)?;
     if expected_database.is_some_and(|expected| extent.logical.database_id() != expected) {
         return Err(JournalIoError::Corrupt);
@@ -1892,7 +1930,8 @@ fn scan_extent(
     let mut incomplete_tail = false;
     while position < EXTENT_FILE_BYTES {
         let mut physical_header = [0_u8; EXTENT_FRAME_HEADER_BYTES];
-        read_exact_at(&mut file, &mut physical_header, position).map_err(|_| JournalIoError::Io)?;
+        file.read_exact_at(&mut physical_header, position)
+            .map_err(|_| JournalIoError::Io)?;
         if physical_header.iter().all(|byte| *byte == 0) {
             break;
         }
@@ -1937,7 +1976,8 @@ fn scan_extent(
             return Err(JournalIoError::Corrupt);
         }
         let mut physical = vec![0_u8; padded_len];
-        read_exact_at(&mut file, &mut physical, position).map_err(|_| JournalIoError::Io)?;
+        file.read_exact_at(&mut physical, position)
+            .map_err(|_| JournalIoError::Io)?;
         let footer = padded_len - EXTENT_FRAME_FOOTER_BYTES;
         let footer_is_current = physical[footer..footer + 8] == EXTENT_FRAME_FOOTER_MAGIC
             && read_u64(&physical, footer + 8).ok() == Some(extent.generation)
@@ -2023,7 +2063,16 @@ pub(crate) fn scan_journal(
     expected_database: DatabaseId,
     visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
 ) -> Result<Option<(JournalFileHeader, JournalScanTail)>, JournalIoError> {
-    let mut file = match File::open(path) {
+    scan_journal_with_media(&RealJournalMedia, path, expected_database, visit)
+}
+
+pub(crate) fn scan_journal_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    expected_database: DatabaseId,
+    visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
+) -> Result<Option<(JournalFileHeader, JournalScanTail)>, JournalIoError> {
+    let mut file = match media.open_read(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(JournalIoError::Io),
@@ -2032,25 +2081,26 @@ pub(crate) fn scan_journal(
     file.read_exact(&mut magic)
         .map_err(|_| JournalIoError::Corrupt)?;
     if magic == EXTENT_MAGIC {
-        return scan_extent_journal(path, expected_database, visit).map(Some);
+        return scan_extent_journal_with_media(media, path, expected_database, visit).map(Some);
     }
     if magic != FILE_MAGIC {
         return Err(JournalIoError::Corrupt);
     }
-    let result =
-        scan_legacy_journal(path, expected_database, visit)?.ok_or(JournalIoError::Corrupt)?;
+    let result = scan_legacy_journal_with_media(media, path, expected_database, visit)?
+        .ok_or(JournalIoError::Corrupt)?;
     if result.1.transition_count != 0 || result.1.incomplete_tail {
         return Err(JournalIoError::LegacyNonEmpty(path.to_path_buf()));
     }
     Ok(Some(result))
 }
 
-fn scan_legacy_journal(
+fn scan_legacy_journal_with_media(
+    media: &dyn JournalMedia,
     path: &Path,
     expected_database: DatabaseId,
     mut visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
 ) -> Result<Option<(JournalFileHeader, JournalScanTail)>, JournalIoError> {
-    let mut file = match File::open(path) {
+    let mut file = match media.open_read(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(JournalIoError::Io),
@@ -2179,13 +2229,31 @@ pub(crate) fn recover_journal(
     recover_journal_path(database, &journal_path(database_path), database_id)
 }
 
+pub(crate) fn recover_journal_with_media(
+    media: &dyn JournalMedia,
+    database: &Database,
+    database_path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    recover_journal_path_with_media(media, database, &journal_path(database_path), database_id)
+}
+
 pub(crate) fn recover_journal_path(
     database: &Database,
     path: &Path,
     database_id: DatabaseId,
 ) -> Result<(), JournalIoError> {
+    recover_journal_path_with_media(&RealJournalMedia, database, path, database_id)
+}
+
+pub(crate) fn recover_journal_path_with_media(
+    media: &dyn JournalMedia,
+    database: &Database,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
     let mut frames = Vec::new();
-    let Some((header, tail)) = scan_journal(path, database_id, |frame| {
+    let Some((header, tail)) = scan_journal_with_media(media, path, database_id, |frame| {
         frames.push(frame.clone());
         Ok(())
     })?
@@ -2205,7 +2273,8 @@ pub(crate) fn recover_journal_path(
         && checkpoint_frontier.1 <= redb_frontier.1
         && checkpoint_frontier != redb_frontier
     {
-        return reset_journal(
+        return reset_journal_with_media(
+            media,
             path,
             &JournalFileHeader::with_frontiers(
                 database_id,
@@ -2224,7 +2293,8 @@ pub(crate) fn recover_journal_path(
     } else {
         return Err(JournalIoError::Corrupt);
     }
-    reset_journal(
+    reset_journal_with_media(
+        media,
         path,
         &JournalFileHeader::with_frontiers(
             database_id,
@@ -2521,10 +2591,22 @@ pub(crate) const fn byte_table_definition(
 }
 
 pub(crate) fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(), JournalIoError> {
-    let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+    reset_journal_with_media(&RealJournalMedia, path, header)
+}
+
+pub(crate) fn reset_journal_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+) -> Result<(), JournalIoError> {
+    let mut file = match media.open_read_write(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return create_extent_file(path, &ExtentHeader::initial(header.clone()));
+            return create_extent_file_with_media(
+                media,
+                path,
+                &ExtentHeader::initial(header.clone()),
+            );
         }
         Err(_) => return Err(JournalIoError::Io),
     };
@@ -2532,13 +2614,14 @@ pub(crate) fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(
     file.read_exact(&mut magic)
         .map_err(|_| JournalIoError::Corrupt)?;
     if magic == FILE_MAGIC {
-        let (_, tail) = scan_legacy_journal(path, header.database_id(), |_| Ok(()))?
-            .ok_or(JournalIoError::Corrupt)?;
+        let (_, tail) =
+            scan_legacy_journal_with_media(media, path, header.database_id(), |_| Ok(()))?
+                .ok_or(JournalIoError::Corrupt)?;
         if tail.transition_count != 0 || tail.incomplete_tail {
             return Err(JournalIoError::LegacyNonEmpty(path.to_path_buf()));
         }
         drop(file);
-        return migrate_empty_legacy_journal(path, header);
+        return migrate_empty_legacy_journal_with_media(media, path, header);
     }
     if magic != EXTENT_MAGIC {
         return Err(JournalIoError::Corrupt);
@@ -2548,8 +2631,7 @@ pub(crate) fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(
         return Err(JournalIoError::Corrupt);
     }
     let successor = current.successor(header.clone())?;
-    write_all_at(
-        &mut file,
+    file.write_all_at(
         &successor.encode(),
         usize::from(successor.slot) * EXTENT_HEADER_SLOT_BYTES,
     )
@@ -2558,7 +2640,11 @@ pub(crate) fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(
 }
 
 #[cfg(unix)]
-fn write_all_at(file: &mut File, mut bytes: &[u8], mut offset: usize) -> std::io::Result<()> {
+pub(crate) fn write_all_at(
+    file: &mut File,
+    mut bytes: &[u8],
+    mut offset: usize,
+) -> std::io::Result<()> {
     while !bytes.is_empty() {
         let written = file.write_at(
             bytes,
@@ -2579,7 +2665,7 @@ fn write_all_at(file: &mut File, mut bytes: &[u8], mut offset: usize) -> std::io
 }
 
 #[cfg(not(unix))]
-fn write_all_at(file: &mut File, bytes: &[u8], offset: usize) -> std::io::Result<()> {
+pub(crate) fn write_all_at(file: &mut File, bytes: &[u8], offset: usize) -> std::io::Result<()> {
     file.seek(SeekFrom::Start(
         u64::try_from(offset).map_err(|_| std::io::Error::other("journal offset overflow"))?,
     ))?;
@@ -2587,7 +2673,11 @@ fn write_all_at(file: &mut File, bytes: &[u8], offset: usize) -> std::io::Result
 }
 
 #[cfg(unix)]
-fn read_exact_at(file: &mut File, mut bytes: &mut [u8], mut offset: usize) -> std::io::Result<()> {
+pub(crate) fn read_exact_at(
+    file: &mut File,
+    mut bytes: &mut [u8],
+    mut offset: usize,
+) -> std::io::Result<()> {
     while !bytes.is_empty() {
         let read = file.read_at(
             bytes,
@@ -2608,14 +2698,18 @@ fn read_exact_at(file: &mut File, mut bytes: &mut [u8], mut offset: usize) -> st
 }
 
 #[cfg(not(unix))]
-fn read_exact_at(file: &mut File, bytes: &mut [u8], offset: usize) -> std::io::Result<()> {
+pub(crate) fn read_exact_at(
+    file: &mut File,
+    bytes: &mut [u8],
+    offset: usize,
+) -> std::io::Result<()> {
     file.seek(SeekFrom::Start(
         u64::try_from(offset).map_err(|_| std::io::Error::other("journal offset overflow"))?,
     ))?;
     file.read_exact(bytes)
 }
 
-fn read_until_full_or_eof(file: &mut File, bytes: &mut [u8]) -> Result<usize, JournalIoError> {
+fn read_until_full_or_eof(file: &mut MediaFile, bytes: &mut [u8]) -> Result<usize, JournalIoError> {
     let mut read = 0;
     while read < bytes.len() {
         match file.read(&mut bytes[read..]) {
@@ -2661,6 +2755,9 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, JournalCodecError> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
     use super::*;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(1);

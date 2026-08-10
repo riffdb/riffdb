@@ -31,6 +31,7 @@ mod journal;
 mod keys;
 mod layout;
 mod maintenance;
+mod media;
 mod migration_stage;
 mod query;
 mod reads;
@@ -81,6 +82,11 @@ pub use maintenance::{
 pub use maintenance::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
     RedbMigrationDiskReservation, RedbSealedStagedRestore, RedbStagedRestore,
+};
+#[doc(hidden)]
+pub use media::{
+    JournalMedia, JournalMediaFile, MediaFile, MediaFileMetadata, RealJournalMedia,
+    RedbStorageMedia,
 };
 pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
