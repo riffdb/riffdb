@@ -11543,3 +11543,173 @@ work_packages:
       and the crash budget; inspection requests stay inside the 256-target and 10k-record
       limits; the sweep budget is fixed by seed count and finishes in under a minute.
   human_review_triggers: *id001
+- id: WP-590
+  name: Vectors pillar — recon, VEC requirement registration, and design confirmation
+  depends_on: []
+  objective: Open the ADR-0091 implementation arc. Register the VEC-* requirement family in
+    SPEC.md from the accepted decision text (embeddings as authoritative data with a
+    database-owned loop, deploy-checked exposure bounds, typed staleness SLOs, the
+    approximate-result contract with declared recall targets, filtered nearest-neighbor
+    grammar with mandatory K and organization scope, policy-before-ranking, per-organization
+    index statistics). Recon the current projection plane against every ADR-0086 obligation
+    ADR-0091 inherits, produce the interface-first type plan for the ladder, and surface the
+    two human-review decisions early with a written recommendation for each; neither may be
+    resolved by implementation choice.
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0087, ADR-0091]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/architecture/**]
+  deliverables:
+  - VEC-001..VEC-00N registered in SPEC.md with MUSTs traceable line-by-line to ADR-0091's
+    decision and acceptance-criteria sections, each assigned or deferred-with-claimant across
+    WP-591..WP-595 under check-requirement-coverage
+  - A recon map (file:line) of the projection plane surfaces the ladder builds on, including
+    the 0086 freshness/frontier/authorization transfer points and the outbox machinery the
+    embedding loop reuses
+  - Human-review item one, the ANN structure decision — critical dependency versus first-party
+    implementation versus exact-only-first — presented with candidates, license and
+    supply-chain posture, and a recommendation (AGENTS.md stop-rule; a critical dependency
+    requires explicit human acceptance)
+  - Human-review item two, the embedding endpoint boundary — where the model endpoint
+    configuration and credential live, their redaction posture, and how the deploy-time
+    exposure-bound check binds to field classifications — presented as a short design note
+    with a recommendation
+  - Confirmation or revision of the WP-591..WP-595 decomposition with any renumbering
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  human_review_triggers: *id001
+- id: WP-591
+  name: Vectors contract surface — declared vector fields through grammar, IR, and compiler
+  depends_on: [WP-590]
+  objective: A contract declares a vector field on an entity (dimension, distance metric,
+    source-field list, named embedding model with explicit version, staleness SLO), and the
+    compiler enforces the deploy-time exposure bound (the source-field list checked against
+    field classifications, because a model endpoint is a governed egress surface) with
+    span-carrying diagnostics. Bindings and fixtures regenerate; no runtime behavior yet.
+  requirements: []
+  required_adrs: [ADR-0002, ADR-0086, ADR-0091]
+  allowed_paths: [work_packages.yaml, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**, crates/riffdb-types/**,
+    docs/contracts/**, fixtures/**]
+  deliverables:
+  - Grammar and AST for vector-field declaration with the ADR's exact vocabulary; language
+    reference regenerated
+  - Typed IR carrying dimension, metric, source fields, model identity+version, exposure
+    bound, and staleness SLO, with versioned encoding and compatibility fixtures
+  - Deploy-time exposure-bound rejection with source-span snapshot plus semantic assertion per
+    compiler-diagnostic house rule; negative examples added
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
+  - ./scripts/handbook check
+  human_review_triggers: *id001
+- id: WP-592
+  name: Vectors embedding loop — outbox intents, worker, authoritative write-back, typed staleness
+  depends_on: [WP-591]
+  objective: A write touching declared source fields enqueues an embedding intent through the
+    existing outbox machinery; an embedding worker (never projection apply — apply-time
+    external calls are prohibited by the ADR) computes the vector against the configured
+    endpoint and writes it back as an authoritative system command carrying model version and
+    model-input hash; entities whose source fields outrun their embeddings are countable,
+    queryable, typed staleness state with SLO-breach surfacing through health, never silent.
+    Crash and retry never lose or duplicate an embedding, on outbox semantics.
+  requirements: []
+  required_adrs: [ADR-0080, ADR-0086, ADR-0091]
+  allowed_paths: [work_packages.yaml, crates/riffdb-outbox/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, docs/**, fixtures/**]
+  deliverables:
+  - Embedding intent enqueue on source-field mutation, delivered through existing outbox
+    delivery/recovery semantics with its existing failpoints
+  - The embedding worker with the endpoint boundary exactly as ruled in WP-590 review;
+    endpoint failure is typed, bounded, retried, and never blocks commit or projection apply
+  - Authoritative write-back command (model version + input hash), replay-safe and
+    provenance-carrying like every mutation
+  - Typed staleness surface (count and enumerate stale entities per vector field) plus
+    SLO-breach health signal
+  - Crash/retry exactly-once evidence via the outbox failpoint harness, and a model-version
+    migration walk (declared migration, backfill through the same loop, typed progress,
+    versions never silently mixed)
+  acceptance_commands:
+  - cargo test -p riffdb-outbox -p riffdb-service --all-features
+  - cargo test -p riffdb-storage-redb --all-targets
+  human_review_triggers: *id001
+- id: WP-593
+  name: Vectors exact tier — vector projection, exact KNN, nearest() with policy before ranking
+  depends_on: [WP-592]
+  objective: The vector projection consumes embeddings under every unamended ADR-0086
+    obligation (derived, org-partitioned, frontier-reporting, freshness-served,
+    snapshot-rebuildable, replay-budgeted), and the nearest(field, $vector, k) operator lands
+    with mandatory K and organization scope, composable with existing predicates where the
+    filter and row-level policy both apply BEFORE distance ranking, served by exact KNN under
+    ADR-0087 budgets as the reference path and small-partition default. No approximate
+    structure in this package.
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0087, ADR-0091]
+  allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**, crates/riffdb-projection/**,
+    crates/riffdb-query-*/**, crates/riffdb-service/**, crates/riffdb-server/**, docs/**,
+    fixtures/**]
+  deliverables:
+  - Vector projection registered through the 0086 plane; frontier semantics unchanged and
+    proven by the existing frontier/crash invariants extended to the new projection kind
+  - nearest() through grammar, plan, budgets, and wire, with mandatory K and org scope
+    unrepresentable to omit; filtered-ANN semantics (filter before ranking) exact in the
+    reference path
+  - Adversarial policy-before-ranking evidence; unauthorized rows influence nothing
+    (presence, scores, or timing beyond stated policy)
+  - Exact-scan reference evaluator retained as the recall harness's ground truth for WP-594
+  acceptance_commands:
+  - cargo test -p riffdb-projection -p riffdb-columnar --all-features
+  - cargo test --test projection_semantics
+  human_review_triggers: *id001
+- id: WP-594
+  name: Vectors approximate tier — ANN structure under the declared-recall contract
+  depends_on: [WP-593]
+  objective: The approximate structure (per the WP-590 human-review ruling) engages above a
+    declared row threshold, per organization, meeting each projection's declared recall
+    target measured against exact scan at the same frontier; maintenance and compaction are
+    bounded by recall regression at a frozen frontier, not byte equality; all
+    result-shaping statistics (entry points, centroids, codebooks) are computed per
+    organization so no tenant's data influences another's rankings or timings.
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0091]
+  allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**, crates/riffdb-projection/**,
+    docs/**, fixtures/**, Cargo.toml, Cargo.lock, deny.toml]
+  deliverables:
+  - The ANN structure as ruled, with exact-pin dependency governance if a dependency was
+    approved (checksum pin, cargo deny, license record)
+  - Declared recall target enforcement in the acceptance harness (recall@K against exact scan
+    at matched frontiers across randomized histories)
+  - Maintenance bounded by recall regression at a frozen frontier, harness-proven
+  - Per-organization statistics isolation evidence
+  - Small-partition default routing (exact below the declared threshold) with the threshold a
+    declared, observable property
+  acceptance_commands:
+  - cargo test -p riffdb-columnar -p riffdb-projection --all-features
+  - cargo deny check
+  human_review_triggers: *id001
+- id: WP-595
+  name: Vectors pillar acceptance — end-to-end evidence and handbook graduation
+  depends_on: [WP-594]
+  objective: Discharge ADR-0091's acceptance-criteria list end to end and graduate the pillar
+    into the handbook as a user-visible surface. Every criterion lands as a named, replayable
+    evidence artifact; the pillar's public surfaces satisfy the interface-safety standing test
+    (no expressible unsafety — no unscoped nearest, no silent staleness, no policy bypass, no
+    opt-out of the recall declaration).
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0091, ADR-0113]
+  allowed_paths: [work_packages.yaml, crates/riffdb-sim/**, crates/riffdb-testkit/**,
+    docs/**, examples/**, fixtures/**]
+  deliverables:
+  - Recall-at-matched-frontier evidence across randomized histories; embedding-loop
+    crash/retry evidence (consider driving the loop's durable steps through the riffdb-sim
+    campaign where the surfaces allow); model-version migration backfill with typed progress;
+    adversarial policy and statistics-isolation reruns; replay-budget detach proof
+  - Handbook pages (concepts + reference + quickstart addition) through ./scripts/handbook
+    check, examples using current public interfaces only
+  - An agent-legibility pass on every new public error and diagnostic (error text works as a
+    prompt)
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  human_review_triggers: *id001
