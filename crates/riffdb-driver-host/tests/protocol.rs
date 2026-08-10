@@ -109,6 +109,27 @@ fn structured_application_error_context_is_frozen() {
 }
 
 #[test]
+fn maximum_u64_result_is_frozen_as_an_exact_json_number() {
+    let response = DriverResponse::Result {
+        request_id: "max-u64".to_owned(),
+        value: DriverValue::U64(u64::MAX.to_string()),
+        application_head: Some(u64::MAX),
+        cursor: None,
+        replayed: false,
+    };
+    let encoded = FrameCodec::encode_response(&response).expect("encode");
+    assert_eq!(
+        FrameCodec::decode_response(&encoded).expect("decode"),
+        response
+    );
+    let expected = include_bytes!("../../../fixtures/driver/v1/max-u64-result.json");
+    assert_eq!(
+        &encoded[4..],
+        expected.strip_suffix(b"\n").unwrap_or(expected)
+    );
+}
+
+#[test]
 fn hostile_lengths_and_unknown_fields_fail_closed() {
     let mut oversized = Vec::from(u32::MAX.to_be_bytes());
     oversized.extend_from_slice(b"{}");

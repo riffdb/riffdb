@@ -10138,8 +10138,11 @@ work_packages:
   requirements: [SYS-002, AAA-001, AAA-002, AAA-004, AAA-005, AAA-009, AAA-010,
     LIVE-004, LIVE-005, LIVE-006, LIVE-007, DRV-007, DRV-008, DRV-009]
   required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0080, ADR-0106]
-  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
-    crates/riffdb-driver-host/**, clients/go/**, clients/typescript/**, templates/**,
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml,
+    crates/riffdb-application/**, crates/riffdb-driver-host/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**,
+    crates/riffdb-commit/tests/architecture.rs,
+    clients/go/**, clients/typescript/**, templates/**,
     fixtures/application-parity/**, fixtures/driver/**, examples/**, tests/**, scripts/**,
     docs/**, release/**, .github/**]
   deliverables:

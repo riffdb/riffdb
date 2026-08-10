@@ -745,6 +745,11 @@ impl DriverHost {
                     (Some(ReactiveKind::Stream), "next") => {
                         let consumer =
                             consumer(operation, take_string(&mut input, "consumer_name")?)?;
+                        let batch_limit = take_bounded_u64(&mut input, "batch_limit", 1, 1, 64)?;
+                        let in_flight_limit =
+                            take_bounded_u64(&mut input, "in_flight_limit", 16, 1, 64)?;
+                        let lease_seconds =
+                            take_bounded_u64(&mut input, "lease_seconds", 60, 5, 900)?;
                         let wait = options
                             .deadline_millis
                             .saturating_mul(1_000_000)
@@ -753,8 +758,12 @@ impl DriverHost {
                             .consume_event_stream(
                                 &consumer,
                                 EventConsumerOptions {
+                                    batch_limit: u32::try_from(batch_limit)
+                                        .map_err(|_| ApplicationClientError::InvalidInput)?,
+                                    in_flight_limit: u32::try_from(in_flight_limit)
+                                        .map_err(|_| ApplicationClientError::InvalidInput)?,
+                                    lease_seconds,
                                     maximum_wait_nanos: wait,
-                                    ..EventConsumerOptions::default()
                                 },
                                 &self.inner.metadata,
                             )
@@ -770,11 +779,18 @@ impl DriverHost {
                                 .acknowledge_event_lease(&consumer, &evidence, &self.inner.metadata)
                                 .await?
                         } else {
+                            let retry_delay_nanos = take_bounded_u64(
+                                &mut input,
+                                "retry_delay_nanos",
+                                0,
+                                0,
+                                300_000_000_000,
+                            )?;
                             client
                                 .negative_acknowledge_event_lease(
                                     &consumer,
                                     &evidence,
-                                    0,
+                                    retry_delay_nanos,
                                     &self.inner.metadata,
                                 )
                                 .await?
@@ -830,11 +846,18 @@ impl DriverHost {
                                 )
                                 .await?
                         } else {
+                            let retry_delay_nanos = take_bounded_u64(
+                                &mut input,
+                                "retry_delay_nanos",
+                                0,
+                                0,
+                                300_000_000_000,
+                            )?;
                             client
                                 .negative_acknowledge_contextual_lease(
                                     &consumer,
                                     &evidence,
-                                    0,
+                                    retry_delay_nanos,
                                     &self.inner.metadata,
                                 )
                                 .await?
@@ -1309,6 +1332,29 @@ fn take_record(
         Some(ApplicationValue::Record(value)) => Ok(value),
         _ => Err(ApplicationClientError::InvalidInput),
     }
+}
+fn take_bounded_u64(
+    input: &mut BTreeMap<String, ApplicationValue>,
+    name: &str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, ApplicationClientError> {
+    let value = match input.remove(name) {
+        None => default,
+        Some(ApplicationValue::U64(value)) => value,
+        Some(ApplicationValue::I64(value)) => {
+            u64::try_from(value).map_err(|_| ApplicationClientError::InvalidInput)?
+        }
+        Some(ApplicationValue::String(value)) => value
+            .parse()
+            .map_err(|_| ApplicationClientError::InvalidInput)?,
+        _ => return Err(ApplicationClientError::InvalidInput),
+    };
+    if !(minimum..=maximum).contains(&value) {
+        return Err(ApplicationClientError::InvalidInput);
+    }
+    Ok(value)
 }
 fn consumer(
     operation: ApplicationReactiveOperation,

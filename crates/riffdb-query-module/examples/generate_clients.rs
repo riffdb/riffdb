@@ -13,8 +13,8 @@ use riffdb_query_module::{
     ApplicationLock, ApplicationMigrationLockInput, ApplicationSourceManifest,
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
-    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
-    generate_typescript_client,
+    generate_go_client, generate_mcp_commands, generate_mcp_tools, generate_python_client,
+    generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -136,6 +136,7 @@ fn main() {
     fs::create_dir_all(output.join("fixtures/application-locks")).expect("lock fixture directory");
     fs::create_dir_all(output.join("clients/typescript/ticketdesk")).expect("client directory");
     fs::create_dir_all(output.join("clients/python/ticketdesk")).expect("client directory");
+    fs::create_dir_all(output.join("clients/go/ticketdesk")).expect("client directory");
     fs::write(
         output.join("fixtures/application-manifests/ticketdesk-v1.json"),
         application.canonical_bytes(),
@@ -156,6 +157,11 @@ fn main() {
         generate_python_client(&module, &contract).expect("generate Python client"),
     )
     .expect("Python fixture");
+    fs::write(
+        output.join("clients/go/ticketdesk/client.go"),
+        generate_go_client(&module, &contract),
+    )
+    .expect("Go fixture");
     let tools = generate_mcp_tools(&module).expect("generate MCP tools");
     let commands = generate_mcp_commands(&module, &contract).expect("generate MCP commands");
     let manifest = serde_json::json!({

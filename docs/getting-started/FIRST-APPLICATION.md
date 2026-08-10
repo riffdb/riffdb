@@ -81,6 +81,7 @@ database behind a running server.
 
 - [Rust](../sdks/RUST.md) uses the stable Rust application facade and generated
   operation module.
+- [Go](../sdks/GO.md) uses generated facades over the retained Rust driver host.
 - [TypeScript](TYPESCRIPT-APPLICATIONS.md) uses the checked generated package.
 - [Python](../python-driver.md) uses the Rust-backed sync or async driver.
 - [MCP](../mcp/agent-cookbook.md) exposes only tools authorized for the bound

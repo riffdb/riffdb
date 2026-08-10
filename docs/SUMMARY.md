@@ -40,6 +40,7 @@
 - [Resumable Command Batches](getting-started/COMMAND-BATCHES.md)
 - [Rust Applications](sdks/RUST.md)
 - [Driver Host](sdks/DRIVER-HOST.md)
+- [Go Applications](sdks/GO.md)
 - [TypeScript Applications](getting-started/TYPESCRIPT-APPLICATIONS.md)
 - [Python Applications](python-driver.md)
 - [MCP for Agents](mcp/agent-cookbook.md)

@@ -352,6 +352,7 @@ pub async fn run() -> ExitCode {
         );
         let language = match language {
             ApplicationLanguage::Rust => ScaffoldLanguage::Rust,
+            ApplicationLanguage::Go => ScaffoldLanguage::Go,
             ApplicationLanguage::Typescript => ScaffoldLanguage::Typescript,
             ApplicationLanguage::Python => ScaffoldLanguage::Python,
         };
@@ -5798,6 +5799,7 @@ fn compile_role_from_workspace(
                 | "riffdb.application-source/v2"
                 | "riffdb.application-source/v3"
                 | "riffdb.application-source/v4"
+                | "riffdb.application-source/v5"
         )
     );
     let source_locked = requested_is_source

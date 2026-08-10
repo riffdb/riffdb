@@ -12,6 +12,7 @@ if [[ "${1:-}" == "--check" ]]; then
     trap 'rm -rf "$generated"' EXIT
     cargo run --quiet -p riffdb-query-module --example generate_clients -- "$generated"
     cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$generated"
+    gofmt -w "$generated/clients/go/ticketdesk/client.go"
     diff -u fixtures/query-modules/ticketdesk.rs "$generated/fixtures/query-modules/ticketdesk.rs"
     diff -u fixtures/query-modules/ticketdesk.mcp.json "$generated/fixtures/query-modules/ticketdesk.mcp.json"
     diff -u fixtures/application-manifests/ticketdesk-v1.json \
@@ -27,6 +28,7 @@ if [[ "${1:-}" == "--check" ]]; then
     diff -u fixtures/application-locks/ticketdesk-migration-v4.json \
         "$generated/fixtures/application-locks/ticketdesk-migration-v4.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
+    diff -u clients/go/ticketdesk/client.go "$generated/clients/go/ticketdesk/client.go"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
     # agent-alpha clients (non-workspace packages; previously invisible to battery)
     diff -u examples/agent-alpha/generated/rust/client.rs \
@@ -151,3 +153,15 @@ fi
 
 cargo run --quiet -p riffdb-query-module --example generate_clients -- "$repo_root"
 cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$repo_root"
+gofmt -w "$repo_root/clients/go/ticketdesk/client.go"
+
+# Generated application clients are part of the exact application closure.
+# Refresh the owning locks in the same operation so the normal generation path
+# cannot leave `application check` red until an operator discovers and repairs
+# the artifact hash drift manually.
+cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
+    examples/ticketdesk/riffdb.application.json \
+    --lock riffdb.application.lock.json >/dev/null
+cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
+    examples/agent-alpha/riffdb.application.json \
+    --lock riffdb.application.lock.json >/dev/null

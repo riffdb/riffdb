@@ -9,18 +9,22 @@ generated named operations
 @riffdb/application
         |
         v
-public RiffDB application surface
+private driver socket
+        |
+        v
+riffdb-driverd -> verified public RiffDB application surface
 ```
 
-Application code constructs `CliApplicationTransport` once and passes it to
-the generated contract client. It then calls only generated methods:
+Server-side application code opens one retained `DriverApplicationTransport`,
+wraps it in `DriverGeneratedApplicationTransport`, and passes that transport
+to the generated contract client. It then calls only generated methods:
 
 ```ts
-const transport = new CliApplicationTransport({
-  riffdbPath,
-  endpoint,
-  credentialFile,
+const driver = await DriverApplicationTransport.connect({
+  socketPath,
+  identity: publicDriverIdentity,
 });
+const transport = new DriverGeneratedApplicationTransport(driver);
 const db = new AgentAlphaClient(transport, 3);
 
 const created = await db.createItem({
@@ -34,6 +38,8 @@ const page = await db.itemPage(
     ? {}
     : { readAfterCommit: created.commitSequence },
 );
+
+await driver.shutdown();
 ```
 
 The generated request carries the exact contract/module/plan identities and
@@ -62,16 +68,18 @@ most 4,096 inputs. They use a bounded worker pool over ordinary generated
 commands; every item keeps its own identity and result, and the collection is
 not atomic.
 
-The credential must be the protected application-role credential produced by
-`riffdb dev`. Do not pass the bootstrap or administrative credential to a web
-application. Do not expose the credential to browser JavaScript; the generated
-client is intended for the server side of a TypeScript web application.
+The protected application-role credential belongs only to `riffdb-driverd`.
+The TypeScript process receives a private socket path and public exact-handshake
+identity, never the credential, remote endpoint, TLS configuration, or a gRPC
+client. Do not expose the driver socket or generated server client to browser
+JavaScript. `CliApplicationTransport` remains a compatibility/debug adapter;
+new generated repositories use the retained host path.
 
-The POC runtime executes the public CLI as a bounded child process. This keeps
-the TypeScript package free of a second independently implemented protocol
-stack while the generated safety contract stabilizes. It is not the final
-low-latency transport; production TypeScript should use a first-party
-long-lived channel implementing the same `ApplicationTransport` contract.
+`AbortSignal` cancels query, command, batch, stream, contextual, and live-query
+waits through the local protocol. Stream batch, in-flight, lease, wait, and
+negative-acknowledgement delay bounds are transmitted exactly rather than
+being advisory client values. Async iterators retain cursors and stop on typed
+terminal results. Call `shutdown()` during server drain.
 
 ## Generated offline web repository
 
@@ -95,7 +103,8 @@ or manual package edit is required:
 ```text
 npm_config_offline=true npm run check
 npm_config_offline=true npm run build
-npm start -- <endpoint> <credential-file> <riffdb-path>
+npm start -- <socket> <manifest-hash> <catalog-hash> <database> <role> \
+  <role-hash> <remote-identity-hash> <lineage> <version> <bundle-hash>
 ```
 
 The starter serves `/item`, executes one generated idempotent command, performs

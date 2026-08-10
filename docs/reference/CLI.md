@@ -55,8 +55,8 @@ Arguments:
 Options:
       --config <PATH>
 
-      --language <rust|typescript|python>
-          [default: rust] [possible values: rust, typescript, python]
+      --language <rust|go|typescript|python>
+          [default: rust] [possible values: rust, go, typescript, python]
       --directory <DIRECTORY>
 
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>

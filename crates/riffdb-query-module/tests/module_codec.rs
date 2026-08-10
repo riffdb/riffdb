@@ -3,8 +3,9 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, ManifestErrorKind, NamedQuerySource, QueryModule, QueryModuleCandidate,
-    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_mcp_commands,
-    generate_mcp_tools, generate_python_client, generate_rust_client, generate_typescript_client,
+    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_go_client,
+    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
 use std::sync::Arc;
 
@@ -165,6 +166,7 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
     let rust = generate_rust_client(&module, &bundle);
     let typescript = generate_typescript_client(&module, &bundle);
     let python = generate_python_client(&module, &bundle).expect("Python");
+    let go = generate_go_client(&module, &bundle);
 
     assert_eq!(rust, generate_rust_client(&module, &bundle));
     assert_eq!(typescript, generate_typescript_client(&module, &bundle));
@@ -172,6 +174,7 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
         python,
         generate_python_client(&module, &bundle).expect("Python")
     );
+    assert_eq!(go, generate_go_client(&module, &bundle));
     assert!(rust.contains("pub struct ListTicketsParams"));
     assert!(rust.contains("\"TicketPage\",\n            Some(QUERY_MODULE_HASH)"));
     assert!(rust.contains("pub struct CreateTicketInput"));
@@ -189,10 +192,24 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
     assert!(typescript.contains("export class TicketDeskClient"));
     assert!(typescript.contains("executeNamedQuery"));
     assert!(typescript.contains("executeCommand"));
+    assert!(
+        typescript
+            .contains("driverOperation: { name: \"ticketdesk_list_tickets\", inputSchemaHash: \"")
+    );
+    assert!(
+        typescript
+            .contains("driverOperation: { name: \"ticketdesk_create_ticket\", inputSchemaHash: \"")
+    );
+    assert!(typescript.contains("executeCommandBatch?<I, R>"));
+    assert!(typescript.contains("this.transport.executeCommandBatch"));
     assert!(typescript.contains("export class RiffDbApplicationError"));
     assert!(typescript.contains("export function decodeApplicationError"));
     assert!(typescript.contains("\"RDB-AUTH-0214\""));
     assert!(typescript.contains("RiffDB application identity mismatch"));
+    assert!(go.contains("package ticketdesk"));
+    assert!(go.contains("func (client *Client) TicketPage("));
+    assert!(go.contains("func (client *Client) CreateTicketBatch("));
+    assert!(go.contains("ticketdesk_create_ticket"));
     assert!(python.contains("class TicketDeskClient:"));
     assert!(python.contains("class AsyncTicketDeskClient:"));
     assert!(python.contains("class CreateTicketInput:"));

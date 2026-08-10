@@ -123,5 +123,9 @@ identity, incident identity, and command uncertainty flag. Local parsing never
 classifies failures from prose.
 
 The POC driver host is Linux-only. Generated Go and long-lived TypeScript
-bindings that speak this protocol are delivered by their separate work
-package; application authors should not hand-write protocol frames.
+bindings speak this protocol through one retained local session. Their public
+runtimes expose only the protected socket and public exact-handshake identity;
+they have no endpoint, TLS, bearer-credential, gRPC, remote retry classifier,
+kernel, or administration surface. Application authors must not hand-write
+protocol frames. See [Go Applications](GO.md) and
+[TypeScript Applications](../getting-started/TYPESCRIPT-APPLICATIONS.md).

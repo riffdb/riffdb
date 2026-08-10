@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+export GOCACHE="${RIFFDB_GO_CACHE:-$task_tmp_root/riffdb-go-cache}"
+export GOPATH="${RIFFDB_GO_PATH:-$task_tmp_root/riffdb-go-path}"
+export GOPROXY=off
+unset GOEXPERIMENT
+
+for tool in cargo go mktemp; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required Go acceptance tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+work_root="$(mktemp -d "$task_tmp_root/riffdb-go-acceptance.XXXXXX")"
+cleanup() { rm -rf "$work_root"; }
+trap cleanup EXIT INT TERM
+
+# The dependency-free Go runtime corpus proves retained-session handshake,
+# exact frontier transport, typed uncertainty, cancellation, and the absence
+# of remote trust/credential code.
+go -C "$repo_root/clients/go/runtime" test ./...
+go -C "$repo_root/clients/go/ticketdesk" test ./...
+
+cargo +1.97.0 build --quiet -p riffdb-cli --bin riffdb
+generated_app="$work_root/generated-app"
+mkdir -p "$generated_app"
+"$repo_root/target/debug/riffdb" new go-alpha --language go --directory "$generated_app"
+go -C "$generated_app" test ./...
+
+rg -q 'riffdb\.Connect' "$generated_app/main.go"
+rg -q 'generated/go/client\.go' "$generated_app/riffdb.application.lock.json"
+! rg -q 'google\.golang\.org/grpc|credential_file|authorization: bearer|GetEntityRequest|ScanIndexRequest' \
+    "$generated_app/main.go" "$generated_app/generated/go/client.go"
+"$repo_root/scripts/check-application-boundary" "$generated_app"
+
+cargo +1.97.0 test -p riffdb-query-module --test reactive_application --all-features
+cargo +1.97.0 test -p riffdb-testkit --test driver_host --all-features
+
+echo "Go retained-driver runtime and offline generated scaffold acceptance passed"
