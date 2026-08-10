@@ -81,6 +81,7 @@
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Deployable Application Alpha Plan](architecture/DEPLOYABLE-APPLICATION-ALPHA.md)
   - [Alpha Architecture Freeze](architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md)
+- [Vectors Pillar Recon Map](architecture/vectors-recon-map.md)
 
 # Performance
 
