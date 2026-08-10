@@ -141,8 +141,11 @@ fn simulator_manifest_carries_no_entropy_async_or_clock_dependencies() {
     let dependencies = production_dependency_names(SIM_MANIFEST);
     assert_eq!(
         dependencies,
-        vec!["redb"],
-        "the simulator depends on exactly the engine under simulation"
+        vec!["redb", "riffdb-storage-redb"],
+        "the simulator depends on exactly the engine under simulation and \
+         the production storage crate whose media port it implements \
+         (SIM-B; the correct-direction dev-crate-on-production-crate edge \
+         ADR-0113 composes — SIM-007 constrains the reverse direction only)"
     );
 }
 
