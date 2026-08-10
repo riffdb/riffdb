@@ -301,12 +301,119 @@ pub fn execute_command(
                 };
                 builder.push_event(event).map_err(map_storage_value_error)?;
             }
-            // Workflow transition IR was frozen ahead of WP-566 runtime and
-            // commit semantics. Until that package supplies the checked
-            // revision/fence evaluator, encountering the instruction must
-            // fail closed rather than falling through or treating it as an
-            // ordinary field write.
-            Instruction::WorkflowTransition { .. } => return Err(ExecutionFault::Integrity),
+            Instruction::WorkflowTransition {
+                binding,
+                state_field,
+                source_states,
+                destination,
+                expected_revision,
+                stale,
+                illegal,
+            } => {
+                let binding_index = binding.get() as usize;
+                let transition_binding = plan
+                    .bindings()
+                    .get(binding_index)
+                    .filter(|candidate| {
+                        candidate.id() == *binding && candidate.mode() == BindingMode::Mutate
+                    })
+                    .ok_or(ExecutionFault::Integrity)?;
+                let state_enum = bundle
+                    .schema()
+                    .entity(transition_binding.entity_type())
+                    .and_then(|entity| entity.record().field(*state_field))
+                    .and_then(|field| field.value_type().enum_type_id())
+                    .ok_or(ExecutionFault::Integrity)?;
+                if bundle
+                    .schema()
+                    .enumeration(state_enum)
+                    .is_none_or(|enumeration| !enumeration.contains_variant(*destination))
+                {
+                    return Err(ExecutionFault::Integrity);
+                }
+                let expected_revision = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records: &records,
+                        roots: &roots,
+                        tx_time: context.tx_time(),
+                    };
+                    evaluator.batch(&values).evaluate(*expected_revision)?
+                };
+                let CanonicalValue::U64(expected_revision) = expected_revision else {
+                    return Err(ExecutionFault::Integrity);
+                };
+                let observation = snapshot
+                    .bindings()
+                    .get(binding_index)
+                    .filter(|observation| {
+                        observation.target().entity_type_id() == transition_binding.entity_type()
+                    })
+                    .ok_or(ExecutionFault::Integrity)?;
+                let EntityObservation::Present(stored) = observation else {
+                    return Err(ExecutionFault::Integrity);
+                };
+                if stored.entity_version().get() != expected_revision {
+                    let outcome = {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records: &records,
+                            roots: &roots,
+                            tx_time: context.tx_time(),
+                        };
+                        let mut evaluation = evaluator.batch(&values);
+                        construct_outcome(stale, &mut evaluation)?
+                    };
+                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                }
+
+                let state = records
+                    .get(binding_index)
+                    .and_then(Option::as_ref)
+                    .and_then(|record| record_field(record, *state_field))
+                    .ok_or(ExecutionFault::Integrity)?;
+                let CanonicalValue::Enum {
+                    type_id,
+                    variant_id,
+                } = state
+                else {
+                    return Err(ExecutionFault::Integrity);
+                };
+                if *type_id != state_enum {
+                    return Err(ExecutionFault::Integrity);
+                }
+                if source_states.binary_search(variant_id).is_err() {
+                    let outcome = {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records: &records,
+                            roots: &roots,
+                            tx_time: context.tx_time(),
+                        };
+                        let mut evaluation = evaluator.batch(&values);
+                        construct_outcome(illegal, &mut evaluation)?
+                    };
+                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                }
+                let destination = CanonicalValue::Enum {
+                    type_id: *type_id,
+                    variant_id: *destination,
+                };
+                set_working_field(
+                    bundle.schema(),
+                    plan,
+                    &mut records,
+                    *binding,
+                    *state_field,
+                    destination,
+                )?;
+            }
             Instruction::Return(outcome) => {
                 let outcome = {
                     let values = RuntimeValues {
