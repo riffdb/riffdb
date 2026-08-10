@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+artifact_directory="${1:-}"
+[[ -d "$artifact_directory" ]] || {
+    echo "usage: scripts/write-python-artifact-receipt ARTIFACT_DIRECTORY" >&2
+    exit 2
+}
+artifact_directory="$(cd "$artifact_directory" && pwd)"
+
+python3 - "$repo_root" "$artifact_directory" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+repo = pathlib.Path(sys.argv[1])
+artifacts = pathlib.Path(sys.argv[2])
+matrix = repo / "release/python/platform-matrix-v1.json"
+
+def digest(path: pathlib.Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+files = sorted(
+    path
+    for path in artifacts.iterdir()
+    if path.is_file() and (path.suffix == ".whl" or path.name.endswith(".tar.gz"))
+)
+if not files:
+    raise SystemExit("Python artifact directory contains no wheel or source distribution")
+
+receipt = {
+    "schema": "riffdb.python-artifact-receipt/v1",
+    "distribution": "riffdb-application",
+    "version": "0.1.0",
+    "platform_matrix_sha256": digest(matrix),
+    "rust_source_toolchain": "1.97.0",
+    "source_date_epoch": 1735689600,
+    "artifacts": [
+        {"name": path.name, "sha256": digest(path), "size_bytes": path.stat().st_size}
+        for path in files
+    ],
+}
+(artifacts / "riffdb-python-artifacts-v1.json").write_text(
+    json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY

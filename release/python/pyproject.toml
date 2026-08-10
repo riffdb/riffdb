@@ -24,6 +24,9 @@ bindings = "pyo3"
 compatibility = "manylinux_2_28"
 strip = true
 include = [
-  { path = "fixtures/proto/**/*", format = "sdist" },
+  { path = "fixtures/proto/*.bin", format = "sdist" },
+  { path = "fixtures/proto/descriptors/*.bin", format = "sdist" },
+  { path = "LICENSE-APACHE", format = "sdist" },
+  { path = "LICENSE-MIT", format = "sdist" },
   { path = "rust-toolchain.toml", format = "sdist" },
 ]

@@ -22,7 +22,7 @@ from riffdb_application import (
     SyncApplicationTransport,
     Timestamp,
 )
-from riffdb_application import _validate_batch
+from riffdb_application import _translate_native, _validate_batch
 from riffdb_application import _native
 from riffdb_application._binding import (
     decode_record,
@@ -162,6 +162,21 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(_native.NativeError) as raised:
             _native.validate_bridge_value('{"kind":"unknown","value":"do-not-echo"}')
         self.assertNotIn("do-not-echo", str(raised.exception))
+
+    def test_native_panic_text_is_closed_without_swallowing_cancellation(self) -> None:
+        panic_type = type(
+            "PanicException",
+            (BaseException,),
+            {"__module__": "pyo3_runtime"},
+        )
+        translated = _translate_native(panic_type("native-secret"))
+        self.assertIsInstance(translated, ProtocolError)
+        self.assertNotIn("native-secret", str(translated))
+
+        cancellation = KeyboardInterrupt("cancelled")
+        with self.assertRaises(KeyboardInterrupt) as raised:
+            _translate_native(cancellation)
+        self.assertIs(raised.exception, cancellation)
 
     def test_generated_batch_concurrency_accepts_384_and_rejects_385(self) -> None:
         _validate_batch([object()], CommandBatchOptions(384))

@@ -1,0 +1,55 @@
+{
+  "schema": "riffdb.python-platform-matrix/v1",
+  "distribution": "riffdb-application",
+  "import": "riffdb_application",
+  "python_implementations": ["CPython"],
+  "python_versions": ["3.13", "3.14"],
+  "abi": "cp313-abi3",
+  "rust_source_toolchain": "1.97.0",
+  "supported_wheels": [
+    {
+      "os": "linux",
+      "libc": "glibc",
+      "platform_tag": "manylinux_2_28_x86_64",
+      "architecture": "x86_64",
+      "tier": "alpha"
+    },
+    {
+      "os": "linux",
+      "libc": "glibc",
+      "platform_tag": "manylinux_2_28_aarch64",
+      "architecture": "aarch64",
+      "tier": "alpha"
+    }
+  ],
+  "unsupported": [
+    {
+      "platform": "musllinux_1_2_x86_64",
+      "reason": "no accepted clean-host linkage and install receipt"
+    },
+    {
+      "platform": "musllinux_1_2_aarch64",
+      "reason": "no accepted clean-host linkage and install receipt"
+    },
+    {
+      "platform": "macos_x86_64",
+      "reason": "the protected credential-file loader is Linux-only"
+    },
+    {
+      "platform": "macos_arm64",
+      "reason": "the protected credential-file loader is Linux-only"
+    },
+    {
+      "platform": "windows_x86_64",
+      "reason": "the protected credential-file loader and package receipt are unavailable"
+    },
+    {
+      "platform": "windows_arm64",
+      "reason": "the protected credential-file loader and package receipt are unavailable"
+    },
+    {
+      "platform": "pypy",
+      "reason": "the accepted driver ABI is CPython abi3"
+    }
+  ]
+}

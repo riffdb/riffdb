@@ -70,6 +70,10 @@ jobs:
         run: |
           "${{ steps.py313.outputs.python-path }}" -m pip install maturin==1.14.1
           ./scripts/build-python-sdist dist
+      - name: Validate exact platform claims
+        run: ./scripts/test-python-platform-matrix
+      - name: Write artifact receipt
+        run: ./scripts/write-python-artifact-receipt dist
       - name: Upload checked artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

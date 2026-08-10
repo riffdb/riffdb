@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+python3 - \
+    release/python/platform-matrix-v1.json \
+    clients/python/runtime/pyproject.toml \
+    crates/riffdb-client-python-native/Cargo.toml \
+    release/python/Cargo.sdist.toml \
+    .github/workflows/python-package.yml <<'PY'
+import json
+import pathlib
+import sys
+
+matrix_path, pyproject_path, cargo_path, sdist_cargo_path, workflow_path = map(
+    pathlib.Path, sys.argv[1:]
+)
+matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+assert matrix["schema"] == "riffdb.python-platform-matrix/v1"
+assert matrix["distribution"] == "riffdb-application"
+assert matrix["import"] == "riffdb_application"
+assert matrix["python_implementations"] == ["CPython"]
+assert matrix["python_versions"] == ["3.13", "3.14"]
+assert matrix["abi"] == "cp313-abi3"
+assert matrix["rust_source_toolchain"] == "1.97.0"
+
+supported = matrix["supported_wheels"]
+expected_supported = {
+    ("linux", "glibc", "manylinux_2_28_x86_64", "x86_64", "alpha"),
+    ("linux", "glibc", "manylinux_2_28_aarch64", "aarch64", "alpha"),
+}
+actual_supported = {
+    (item["os"], item["libc"], item["platform_tag"], item["architecture"], item["tier"])
+    for item in supported
+}
+assert actual_supported == expected_supported
+
+unsupported = {item["platform"]: item["reason"] for item in matrix["unsupported"]}
+assert set(unsupported) == {
+    "musllinux_1_2_x86_64",
+    "musllinux_1_2_aarch64",
+    "macos_x86_64",
+    "macos_arm64",
+    "windows_x86_64",
+    "windows_arm64",
+    "pypy",
+}
+assert all(reason and len(reason) <= 96 for reason in unsupported.values())
+
+pyproject = pyproject_path.read_text(encoding="utf-8")
+cargo = cargo_path.read_text(encoding="utf-8")
+sdist_cargo = sdist_cargo_path.read_text(encoding="utf-8")
+workflow = workflow_path.read_text(encoding="utf-8")
+assert 'requires-python = ">=3.13"' in pyproject
+assert 'compatibility = "manylinux_2_28"' in pyproject
+assert 'module-name = "riffdb_application._native"' in pyproject
+assert 'pyo3.workspace = true' in cargo
+assert 'name = "_native"' in cargo
+assert 'test = false' in cargo
+assert "abi3-py313" in sdist_cargo
+for value in [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    'python-version: "3.13"',
+    'python-version: "3.14"',
+    "manylinux: 2_28",
+]:
+    assert value in workflow, value
+for forbidden in ["musllinux", "windows-latest", "macos-"]:
+    assert forbidden not in workflow, forbidden
+
+cells = {
+    (version, item["platform_tag"])
+    for version in matrix["python_versions"]
+    for item in supported
+}
+assert len(cells) == 4
+print(
+    "Python platform matrix is exact: 4 supported CPython cells, "
+    f"{len(unsupported)} explicit unsupported families."
+)
+PY
+
+artifact_dir="${RIFFDB_PYTHON_ARTIFACT_DIR:-}"
+if [[ -n "$artifact_dir" ]]; then
+    python3 - "$artifact_dir" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+root = pathlib.Path(sys.argv[1])
+wheels = sorted(root.glob("riffdb_application-0.1.0-cp313-abi3-*.whl"))
+assert wheels, "no Python wheel artifacts were supplied"
+for wheel in wheels:
+    name = wheel.name
+    assert "manylinux_2_28_x86_64" in name or "manylinux_2_28_aarch64" in name
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        assert any(item.startswith("riffdb_application/_native.abi3") for item in names)
+        assert not any("fallback" in item.lower() for item in names)
+print(f"Validated {len(wheels)} supplied Python release wheel(s).")
+PY
+fi

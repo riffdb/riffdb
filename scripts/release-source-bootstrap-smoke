@@ -99,7 +99,9 @@ done
 source_home="${HOME:?HOME must be set}"
 source_cargo_home="${CARGO_HOME:-$source_home/.cargo}"
 source_rustup_home="${RUSTUP_HOME:-$source_home/.rustup}"
-work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-source-bootstrap-smoke.XXXXXX")"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$source_home/tmp}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-source-bootstrap-smoke.XXXXXX")"
 server_pid=
 cleanup() {
     if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
@@ -1125,6 +1127,12 @@ fi
 new_application_lock_hash="$(jq -er '.lock_hash' "$application_deployment_state")"
 new_application_role_identity="$(jq -er '.role.role_identity' "$application_deployment_state")"
 new_application_capability_id="$(jq -er '.role.capability_id' "$application_deployment_state")"
+new_application_credential_file="$(jq -er '.role.credential_file' "$application_deployment_state")"
+if [[ ! "$new_application_credential_file" =~ ^application-[0-9a-f-]{36}\.credential$ ]]; then
+    fail "successor deployment retained an invalid credential file name"
+fi
+application_credential="$application_state_root/$new_application_credential_file"
+require_regular_mode "$application_credential" 0600
 if [[ "$new_application_lock_hash" == "$old_application_lock_hash" \
    || "$new_application_role_identity" == "$old_application_role_identity" \
    || "$new_application_capability_id" == "$old_application_capability_id" \

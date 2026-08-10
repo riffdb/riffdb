@@ -16,5 +16,6 @@ cd "$repo_root/clients/python/runtime"
 python3 -m maturin build --quiet --release --locked \
     --compatibility "$compatibility" --out "$destination"
 "$repo_root/scripts/build-python-sdist" "$destination"
+"$repo_root/scripts/write-python-artifact-receipt" "$destination"
 
 printf 'Python distribution artifacts written to %s\n' "$destination"
