@@ -31,6 +31,19 @@ const TRACE_FAULTS_TOGGLED: u64 = 15;
 const TRACE_CAPACITY_CHANGED: u64 = 16;
 const TRACE_SCHEDULE_CHANGED: u64 = 17;
 const TRACE_CLOSED_REFUSAL: u64 = 18;
+// Media (journal side-file) events, trace format version 3. Media reads and
+// writes reuse TRACE_READ / TRACE_WRITE / TRACE_SET_LEN with the same
+// parameter shape as the backend operations; the tags below cover the
+// namespace surface the engine backend never touches.
+pub(crate) const TRACE_MEDIA_PROBE: u64 = 19;
+pub(crate) const TRACE_MEDIA_OPEN: u64 = 20;
+pub(crate) const TRACE_MEDIA_CREATE: u64 = 21;
+pub(crate) const TRACE_MEDIA_REMOVE: u64 = 22;
+pub(crate) const TRACE_MEDIA_RENAME: u64 = 23;
+pub(crate) const TRACE_MEDIA_PARENT_SYNC: u64 = 24;
+pub(crate) const TRACE_MEDIA_SYNC: u64 = 25;
+const TRACE_MEDIA_NOT_FOUND: u64 = 26;
+const TRACE_MEDIA_ALREADY_EXISTS: u64 = 27;
 
 // Recovery decisions for one unsynced mutation.
 const DECISION_KEEP: u64 = 0;
@@ -155,6 +168,13 @@ impl DiskInner {
         self.trace.fold_u64(length);
     }
 
+    /// Folds a self-sufficient missing-file refusal for a media operation.
+    fn fold_media_not_found(&mut self, file: &str, operation: u64) {
+        self.trace.fold_u64(TRACE_MEDIA_NOT_FOUND);
+        self.fold_name(file);
+        self.trace.fold_u64(operation);
+    }
+
     fn draw_crash_countdown(&mut self) -> Option<u64> {
         let (low, high) = self.config.crash_after_operations?;
         assert!(
@@ -205,6 +225,24 @@ impl DiskInner {
 
 fn crashed_error() -> io::Error {
     io::Error::other("simulated disk crashed; outstanding handles fail closed")
+}
+
+fn media_not_found_error() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "simulated media file not found")
+}
+
+fn media_already_exists_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "simulated media file already exists",
+    )
+}
+
+fn media_eof_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "simulated media read beyond end of file",
+    )
 }
 
 fn stale_error() -> io::Error {
@@ -583,6 +621,296 @@ impl SimDisk {
         check_epoch(&mut inner, epoch, file, TRACE_CLOSE)?;
         inner.trace.fold_u64(TRACE_CLOSE);
         inner.fold_name(file);
+        Ok(())
+    }
+
+    // --- Journal media surface (trace format version 3) -------------------
+    //
+    // The operations below model the side-file namespace the journal media
+    // port needs: existence probes, open/create/remove/rename, parent
+    // directory syncs, and cursor-free positional plus caller-cursored
+    // sequential data access. Data mutations share the durable/volatile/
+    // unsynced machinery (and therefore the crash torn-write decisions) with
+    // the backend surface. Namespace mutations (create/remove/rename) are
+    // modeled as immediately durable: a crash can still land AT any namespace
+    // operation through the fault gate (refusing it with all earlier
+    // operations applied), but an acknowledged namespace change is never
+    // reverted by recovery. Exploring lost-but-acknowledged renames needs a
+    // directory journal with its own durable image — future SimDisk work,
+    // out of SIM-B scope.
+
+    /// Existence-and-length probe (`stat`). Returns the volatile length when
+    /// the file exists. Traced; consumes no fault randomness.
+    pub(crate) fn media_probe(&self, epoch: u64, file: &str) -> Result<Option<u64>, io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_MEDIA_PROBE)?;
+        let length = inner
+            .files
+            .get(file)
+            .map(|state| state.volatile.len() as u64);
+        inner.trace.fold_u64(TRACE_MEDIA_PROBE);
+        inner.fold_name(file);
+        inner
+            .trace
+            .fold_u64(length.map_or(0, |length| length.saturating_add(1)));
+        Ok(length)
+    }
+
+    /// Opens an existing file; fails closed with `NotFound` when absent.
+    pub(crate) fn media_open(&self, epoch: u64, file: &str, write: bool) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_MEDIA_OPEN)?;
+        if !inner.files.contains_key(file) {
+            inner.fold_media_not_found(file, TRACE_MEDIA_OPEN);
+            return Err(media_not_found_error());
+        }
+        inner.fault_gate(false)?;
+        inner.trace.fold_u64(TRACE_MEDIA_OPEN);
+        inner.fold_name(file);
+        inner.trace.fold_u64(u64::from(write));
+        Ok(())
+    }
+
+    /// Creates a new empty file; `create_new` exclusivity fails closed with
+    /// `AlreadyExists`.
+    pub(crate) fn media_create_new(&self, epoch: u64, file: &str) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_MEDIA_CREATE)?;
+        if inner.files.contains_key(file) {
+            inner.trace.fold_u64(TRACE_MEDIA_ALREADY_EXISTS);
+            inner.fold_name(file);
+            return Err(media_already_exists_error());
+        }
+        inner.fault_gate(false)?;
+        inner.files.insert(file.to_owned(), SimFile::default());
+        inner.trace.fold_u64(TRACE_MEDIA_CREATE);
+        inner.fold_name(file);
+        Ok(())
+    }
+
+    /// Removes a file; `NotFound` when absent.
+    pub(crate) fn media_remove(&self, epoch: u64, file: &str) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_MEDIA_REMOVE)?;
+        if !inner.files.contains_key(file) {
+            inner.fold_media_not_found(file, TRACE_MEDIA_REMOVE);
+            return Err(media_not_found_error());
+        }
+        inner.fault_gate(false)?;
+        inner.files.remove(file);
+        inner.trace.fold_u64(TRACE_MEDIA_REMOVE);
+        inner.fold_name(file);
+        Ok(())
+    }
+
+    /// Atomically renames `from` over `to`, replacing any existing `to`.
+    pub(crate) fn media_rename(&self, epoch: u64, from: &str, to: &str) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, from, TRACE_MEDIA_RENAME)?;
+        let Some(file) = inner.files.remove(from) else {
+            inner.fold_media_not_found(from, TRACE_MEDIA_RENAME);
+            return Err(media_not_found_error());
+        };
+        if let Err(error) = inner.fault_gate(false) {
+            // A refused rename leaves the source in place, exactly as a
+            // crashed real rename that never reached the directory.
+            inner.files.insert(from.to_owned(), file);
+            return Err(error);
+        }
+        inner.files.insert(to.to_owned(), file);
+        inner.trace.fold_u64(TRACE_MEDIA_RENAME);
+        inner.fold_name(from);
+        inner.fold_name(to);
+        Ok(())
+    }
+
+    /// Parent-directory sync (`fdatasync`/`fsync` on the directory handle).
+    /// Namespace changes are already durable in this model, so the operation
+    /// is a traced, fault-eligible synchronization point only.
+    pub(crate) fn media_parent_sync(
+        &self,
+        epoch: u64,
+        directory: &str,
+        all: bool,
+    ) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, directory, TRACE_MEDIA_PARENT_SYNC)?;
+        inner.fault_gate(true)?;
+        inner.trace.fold_u64(TRACE_MEDIA_PARENT_SYNC);
+        inner.fold_name(directory);
+        inner.trace.fold_u64(u64::from(all));
+        Ok(())
+    }
+
+    /// Handle length (`fstat`); `NotFound` once the name is gone.
+    pub(crate) fn media_len(&self, epoch: u64, file: &str) -> Result<u64, io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_LEN)?;
+        let Some(length) = inner
+            .files
+            .get(file)
+            .map(|state| state.volatile.len() as u64)
+        else {
+            inner.fold_media_not_found(file, TRACE_LEN);
+            return Err(media_not_found_error());
+        };
+        inner.trace.fold_u64(TRACE_LEN);
+        inner.fold_name(file);
+        inner.trace.fold_u64(length);
+        Ok(length)
+    }
+
+    /// Positional exact read; short reads fail with `UnexpectedEof`.
+    pub(crate) fn media_read_exact_at(
+        &self,
+        epoch: u64,
+        file: &str,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_READ)?;
+        inner.fault_gate(false)?;
+        if !inner.files.contains_key(file) {
+            inner.fold_media_not_found(file, TRACE_READ);
+            return Err(media_not_found_error());
+        }
+        let volatile_len = inner
+            .files
+            .get(file)
+            .map_or(0, |state| state.volatile.len() as u64);
+        let out_of_range = offset
+            .checked_add(out.len() as u64)
+            .is_none_or(|end| end > volatile_len);
+        if out_of_range {
+            inner.fold_out_of_range(file, TRACE_READ, offset, out.len() as u64);
+            return Err(media_eof_error());
+        }
+        let start = usize::try_from(offset).expect("bounded by volatile length");
+        let state = inner.files.get(file).expect("presence checked above");
+        out.copy_from_slice(&state.volatile[start..start + out.len()]);
+        let digest = fnv1a64(out);
+        inner.counters.reads += 1;
+        inner.trace.fold_u64(TRACE_READ);
+        inner.fold_name(file);
+        inner.trace.fold_u64(offset);
+        inner.trace.fold_u64(out.len() as u64);
+        inner.trace.fold_u64(digest);
+        Ok(())
+    }
+
+    /// Sequential read at a caller-held cursor; returns the bytes read,
+    /// `Ok(0)` at end of file, matching `std::io::Read::read`.
+    pub(crate) fn media_read_sequential(
+        &self,
+        epoch: u64,
+        file: &str,
+        cursor: u64,
+        out: &mut [u8],
+    ) -> Result<usize, io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_READ)?;
+        inner.fault_gate(false)?;
+        if !inner.files.contains_key(file) {
+            inner.fold_media_not_found(file, TRACE_READ);
+            return Err(media_not_found_error());
+        }
+        let state = inner.files.get(file).expect("presence checked above");
+        let volatile_len = state.volatile.len() as u64;
+        let available = volatile_len.saturating_sub(cursor);
+        let count = usize::try_from(available.min(out.len() as u64))
+            .expect("bounded by the caller's buffer");
+        let start = usize::try_from(cursor.min(volatile_len)).expect("bounded by volatile length");
+        out[..count].copy_from_slice(&state.volatile[start..start + count]);
+        let digest = fnv1a64(&out[..count]);
+        inner.counters.reads += 1;
+        inner.trace.fold_u64(TRACE_READ);
+        inner.fold_name(file);
+        inner.trace.fold_u64(cursor);
+        inner.trace.fold_u64(count as u64);
+        inner.trace.fold_u64(digest);
+        Ok(count)
+    }
+
+    /// Positional complete write. Writes beyond the current length extend the
+    /// file (recorded as a length change plus a write, so crash recovery
+    /// resolves the extension and the payload independently, as on a real
+    /// medium where the covering length change may not survive).
+    pub(crate) fn media_write_at(
+        &self,
+        epoch: u64,
+        file: &str,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_WRITE)?;
+        if !inner.files.contains_key(file) {
+            inner.fold_media_not_found(file, TRACE_WRITE);
+            return Err(media_not_found_error());
+        }
+        let end = offset
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "media write overflow"))?;
+        let volatile_len = inner
+            .files
+            .get(file)
+            .map_or(0, |state| state.volatile.len() as u64);
+        if let Some(capacity) = inner.config.capacity_bytes
+            && end > volatile_len
+            && inner.total_volatile_bytes() + (end - volatile_len) > capacity
+        {
+            inner.counters.capacity_rejections += 1;
+            inner.trace.fold_u64(TRACE_CAPACITY_EXHAUSTED);
+            inner.fold_name(file);
+            inner.trace.fold_u64(TRACE_WRITE);
+            inner.trace.fold_u64(end);
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "simulated disk capacity exhausted",
+            ));
+        }
+        inner.fault_gate(true)?;
+        if end > volatile_len {
+            let target = usize::try_from(end).expect("media write accepted within capacity");
+            let state = inner.files.get_mut(file).expect("presence checked above");
+            state.volatile.resize(target, 0);
+            state.unsynced.push(Mutation::SetLen { len: end });
+            inner.trace.fold_u64(TRACE_SET_LEN);
+            inner.fold_name(file);
+            inner.trace.fold_u64(end);
+        }
+        let start = usize::try_from(offset).expect("bounded by extended length");
+        let state = inner.files.get_mut(file).expect("presence checked above");
+        state.volatile[start..start + data.len()].copy_from_slice(data);
+        state.unsynced.push(Mutation::Write {
+            offset,
+            data: data.to_vec(),
+        });
+        let digest = fnv1a64(data);
+        inner.counters.writes += 1;
+        inner.trace.fold_u64(TRACE_WRITE);
+        inner.fold_name(file);
+        inner.trace.fold_u64(offset);
+        inner.trace.fold_u64(data.len() as u64);
+        inner.trace.fold_u64(digest);
+        Ok(())
+    }
+
+    /// File sync (`fdatasync`/`fsync`): folds the volatile image into the
+    /// durable image, exactly like a backend sync.
+    pub(crate) fn media_sync(&self, epoch: u64, file: &str, all: bool) -> Result<(), io::Error> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, file, TRACE_MEDIA_SYNC)?;
+        inner.fault_gate(true)?;
+        if let Some(state) = inner.files.get_mut(file) {
+            state.durable = state.volatile.clone();
+            state.unsynced.clear();
+        }
+        inner.counters.syncs += 1;
+        inner.trace.fold_u64(TRACE_MEDIA_SYNC);
+        inner.fold_name(file);
+        inner.trace.fold_u64(u64::from(all));
         Ok(())
     }
 }
