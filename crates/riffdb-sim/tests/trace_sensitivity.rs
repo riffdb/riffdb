@@ -327,6 +327,34 @@ fn media_namespace_refusals_feed_the_digest() {
         "namespace refusals must feed the digest"
     );
 
+    // Refusal CLASS, not just refusal presence: a third disk performs the
+    // same operation count on the same name — one acknowledged create and
+    // one refusal each — but its refusal is NotFound (open before create)
+    // where `refused`'s is AlreadyExists (create after create). The digests
+    // must diverge on the classification. The byte-level falsifier for the
+    // class discriminator itself is the encoding pin
+    // `disk::tests::media_refusal_events_fold_their_class_name_and_operation`,
+    // which reds if any single fold (including the discriminator alone) is
+    // removed — digest inequality over real histories cannot pin a lone
+    // missing fold, because no two reachable histories align byte-for-byte
+    // around it.
+    let class_peer = SimDisk::new(FaultConfig::quiet(15));
+    let class_peer_media = SimJournalMedia::new(&class_peer);
+    let error = class_peer_media
+        .open_read(side_file)
+        .expect_err("open before create refuses with NotFound");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    drop(
+        class_peer_media
+            .create_new_read_write(side_file)
+            .expect("create"),
+    );
+    assert_ne!(
+        refused.trace_digest(),
+        class_peer.trace_digest(),
+        "equal-length histories differing in refusal class must diverge"
+    );
+
     // Missing-file refusals fold self-sufficiently too.
     let probed = SimDisk::new(FaultConfig::quiet(16));
     let opened = SimDisk::new(FaultConfig::quiet(16));

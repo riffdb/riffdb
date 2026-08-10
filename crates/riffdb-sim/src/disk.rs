@@ -361,6 +361,18 @@ impl SimDisk {
         inner.trace.fold_u64(high);
     }
 
+    /// Total unsynced mutations across all files: the exact torn-decision
+    /// candidate set a crash at this moment would hand to recovery (test
+    /// oracle surface; untraced, like the image accessors).
+    #[must_use]
+    pub fn unsynced_mutation_count(&self) -> u64 {
+        self.lock()
+            .files
+            .values()
+            .map(|file| file.unsynced.len() as u64)
+            .sum()
+    }
+
     /// Copy of a file's durable image (test oracle surface).
     #[must_use]
     pub fn durable_bytes(&self, file: &str) -> Vec<u8> {
@@ -677,8 +689,11 @@ impl SimDisk {
         let mut inner = self.lock();
         check_epoch(&mut inner, epoch, file, TRACE_MEDIA_CREATE)?;
         if inner.files.contains_key(file) {
+            // Self-sufficient refusal: class discriminator, name, and the
+            // refused operation kind, mirroring `fold_media_not_found`.
             inner.trace.fold_u64(TRACE_MEDIA_ALREADY_EXISTS);
             inner.fold_name(file);
+            inner.trace.fold_u64(TRACE_MEDIA_CREATE);
             return Err(media_already_exists_error());
         }
         inner.fault_gate(false)?;
@@ -961,4 +976,87 @@ fn check_epoch(
         return Err(stale_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trace::TraceHash;
+
+    /// Mirrors `DiskInner::fold_name` for expected-stream construction.
+    fn fold_name(chain: &mut TraceHash, name: &str) {
+        chain.fold_u64(name.len() as u64);
+        chain.fold_bytes(name.as_bytes());
+    }
+
+    /// Encoding pin for the media refusal events: the exact fold streams of
+    /// an `AlreadyExists` refusal and a `NotFound` refusal, rebuilt manually
+    /// from the tag constants. Deleting or reordering ANY fold in either
+    /// refusal branch — including the class discriminator alone — reds this
+    /// test, which digest-inequality tests over real histories cannot
+    /// guarantee (no two reachable operation histories align byte-for-byte
+    /// around a single missing fold). This is the falsifier behind the
+    /// class-divergence case in `tests/trace_sensitivity.rs`.
+    #[test]
+    fn media_refusal_events_fold_their_class_name_and_operation() {
+        let name = "/journal/side-file";
+
+        // AlreadyExists: one acknowledged create, then a refused create.
+        let disk = SimDisk::new(FaultConfig::quiet(41));
+        let epoch = disk.epoch();
+        disk.media_create_new(epoch, name).expect("first create");
+        assert_eq!(
+            disk.media_create_new(epoch, name)
+                .expect_err("exclusive create refuses")
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let mut expected = TraceHash::new();
+        expected.fold_u64(TRACE_MEDIA_CREATE);
+        fold_name(&mut expected, name);
+        expected.fold_u64(TRACE_MEDIA_ALREADY_EXISTS);
+        fold_name(&mut expected, name);
+        expected.fold_u64(TRACE_MEDIA_CREATE);
+        assert_eq!(
+            disk.trace_digest(),
+            expected.digest(),
+            "the AlreadyExists refusal must fold class, name, and operation"
+        );
+
+        // NotFound: a refused open of an absent file.
+        let disk = SimDisk::new(FaultConfig::quiet(42));
+        let epoch = disk.epoch();
+        assert_eq!(
+            disk.media_open(epoch, name, false)
+                .expect_err("open of a missing file refuses")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        let mut expected = TraceHash::new();
+        expected.fold_u64(TRACE_MEDIA_NOT_FOUND);
+        fold_name(&mut expected, name);
+        expected.fold_u64(TRACE_MEDIA_OPEN);
+        assert_eq!(
+            disk.trace_digest(),
+            expected.digest(),
+            "the NotFound refusal must fold class, name, and operation"
+        );
+    }
+
+    /// The two refusal classes must be distinguishable in the chain even for
+    /// the same name: their expected streams differ exactly in the class
+    /// discriminator and operation kind.
+    #[test]
+    fn refusal_classes_are_distinct_chain_encodings() {
+        let name = "/journal/side-file";
+        let mut already_exists = TraceHash::new();
+        already_exists.fold_u64(TRACE_MEDIA_ALREADY_EXISTS);
+        fold_name(&mut already_exists, name);
+        already_exists.fold_u64(TRACE_MEDIA_CREATE);
+        let mut not_found = TraceHash::new();
+        not_found.fold_u64(TRACE_MEDIA_NOT_FOUND);
+        fold_name(&mut not_found, name);
+        not_found.fold_u64(TRACE_MEDIA_CREATE);
+        assert_ne!(already_exists.digest(), not_found.digest());
+    }
 }

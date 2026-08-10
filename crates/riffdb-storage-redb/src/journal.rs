@@ -1523,6 +1523,9 @@ pub(crate) struct JournalLane {
 }
 
 impl JournalLane {
+    /// Real-filesystem wrapper retained for this module's unit tests; every
+    /// production caller routes through the media-parameterized form.
+    #[cfg(test)]
     pub(crate) fn open(path: &Path, header: &JournalFileHeader) -> Result<Self, JournalIoError> {
         Self::open_with_media(&RealJournalMedia, path, header)
     }
@@ -1580,6 +1583,9 @@ impl Drop for JournalLane {
     }
 }
 
+/// Real-filesystem wrapper retained for this module's unit tests; every
+/// production caller routes through the media-parameterized form.
+#[cfg(test)]
 fn initialize_or_validate_file(
     path: &Path,
     expected: &JournalFileHeader,
@@ -1761,10 +1767,6 @@ pub(crate) fn spare_journal_path(database_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), JournalIoError> {
-    sync_parent_directory_with_media(&RealJournalMedia, path)
-}
-
 pub(crate) fn sync_parent_directory_with_media(
     media: &dyn JournalMedia,
     path: &Path,
@@ -1886,6 +1888,9 @@ fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, Jou
     Ok(selected)
 }
 
+/// Real-filesystem wrapper retained for this module's unit tests; every
+/// production caller routes through the media-parameterized form.
+#[cfg(test)]
 fn inspect_extent(path: &Path) -> Result<ExtentState, JournalIoError> {
     inspect_extent_with_media(&RealJournalMedia, path)
 }
@@ -2221,6 +2226,9 @@ fn scan_legacy_journal_with_media(
 /// collected. The only accepted redb positions are the exact checkpoint in the
 /// file header or the complete journal tail left by a crash after checkpoint
 /// and before reclamation.
+/// Real-filesystem wrapper retained for this module's unit tests; every
+/// production caller routes through the media-parameterized form.
+#[cfg(test)]
 pub(crate) fn recover_journal(
     database: &Database,
     database_path: &Path,
@@ -2238,6 +2246,9 @@ pub(crate) fn recover_journal_with_media(
     recover_journal_path_with_media(media, database, &journal_path(database_path), database_id)
 }
 
+/// Real-filesystem wrapper retained for this module's unit tests; every
+/// production caller routes through the media-parameterized form.
+#[cfg(test)]
 pub(crate) fn recover_journal_path(
     database: &Database,
     path: &Path,
