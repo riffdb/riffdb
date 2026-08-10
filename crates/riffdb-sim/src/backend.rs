@@ -3,7 +3,7 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::disk::SimDisk;
+use crate::disk::{self, SimDisk};
 
 /// One simulated engine file exposed to redb through its public storage seam
 /// (`Builder::create_with_backend`).
@@ -38,8 +38,13 @@ impl SimBackend {
         }
     }
 
-    fn check_open(&self) -> Result<(), io::Error> {
+    /// Refuses an operation on a closed handle. The refusal folds a
+    /// self-sufficient trace event (discriminator plus refused operation
+    /// kind), so closed-handle behavior feeds the digest directly instead of
+    /// being inferred from the traced `close`.
+    fn refuse_if_closed(&self, operation: u64) -> Result<(), io::Error> {
         if self.closed.load(Ordering::SeqCst) {
+            self.disk.trace_closed_refusal(&self.file, operation);
             return Err(io::Error::other("simulated backend already closed"));
         }
         Ok(())
@@ -48,33 +53,33 @@ impl SimBackend {
 
 impl redb::StorageBackend for SimBackend {
     fn len(&self) -> Result<u64, io::Error> {
-        self.check_open()?;
+        self.refuse_if_closed(disk::TRACE_LEN)?;
         self.disk.guarded_len(self.epoch, &self.file)
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
-        self.check_open()?;
+        self.refuse_if_closed(disk::TRACE_READ)?;
         self.disk.guarded_read(self.epoch, &self.file, offset, out)
     }
 
     fn set_len(&self, len: u64) -> Result<(), io::Error> {
-        self.check_open()?;
+        self.refuse_if_closed(disk::TRACE_SET_LEN)?;
         self.disk.guarded_set_len(self.epoch, &self.file, len)
     }
 
     fn sync_data(&self) -> Result<(), io::Error> {
-        self.check_open()?;
+        self.refuse_if_closed(disk::TRACE_SYNC)?;
         self.disk.guarded_sync(self.epoch, &self.file)
     }
 
     fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
-        self.check_open()?;
+        self.refuse_if_closed(disk::TRACE_WRITE)?;
         self.disk
             .guarded_write(self.epoch, &self.file, offset, data)
     }
 
     fn close(&self) -> Result<(), io::Error> {
-        self.check_open()?;
+        self.refuse_if_closed(disk::TRACE_CLOSE)?;
         self.closed.store(true, Ordering::SeqCst);
         self.disk.trace_close(self.epoch, &self.file)
     }

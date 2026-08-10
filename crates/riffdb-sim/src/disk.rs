@@ -9,13 +9,16 @@ use std::sync::{Arc, Mutex};
 use crate::rng::SplitMix64;
 use crate::trace::{TraceHash, fnv1a64};
 
-// Trace event tags. Stable within one `TRACE_FORMAT_VERSION`.
-const TRACE_LEN: u64 = 1;
-const TRACE_READ: u64 = 2;
-const TRACE_WRITE: u64 = 3;
-const TRACE_SET_LEN: u64 = 4;
-const TRACE_SYNC: u64 = 5;
-const TRACE_CLOSE: u64 = 6;
+// Trace event tags. Stable within one `TRACE_FORMAT_VERSION`. The operation
+// tags double as operation-kind discriminators inside refusal events (stale
+// handle, closed handle, out of range, capacity), so refusals are
+// self-sufficient trace entries.
+pub(crate) const TRACE_LEN: u64 = 1;
+pub(crate) const TRACE_READ: u64 = 2;
+pub(crate) const TRACE_WRITE: u64 = 3;
+pub(crate) const TRACE_SET_LEN: u64 = 4;
+pub(crate) const TRACE_SYNC: u64 = 5;
+pub(crate) const TRACE_CLOSE: u64 = 6;
 const TRACE_CRASH: u64 = 7;
 const TRACE_RECOVER_BEGIN: u64 = 8;
 const TRACE_RECOVER_DECISION: u64 = 9;
@@ -27,6 +30,7 @@ const TRACE_OUT_OF_RANGE: u64 = 14;
 const TRACE_FAULTS_TOGGLED: u64 = 15;
 const TRACE_CAPACITY_CHANGED: u64 = 16;
 const TRACE_SCHEDULE_CHANGED: u64 = 17;
+const TRACE_CLOSED_REFUSAL: u64 = 18;
 
 // Recovery decisions for one unsynced mutation.
 const DECISION_KEEP: u64 = 0;
@@ -138,6 +142,17 @@ impl DiskInner {
     fn fold_name(&mut self, file: &str) {
         self.trace.fold_u64(file.len() as u64);
         self.trace.fold_bytes(file.as_bytes());
+    }
+
+    /// Folds a self-sufficient out-of-range refusal: operation kind, offset,
+    /// and length, so the chain does not depend on refusals being derivable
+    /// from prior events.
+    fn fold_out_of_range(&mut self, file: &str, operation: u64, offset: u64, length: u64) {
+        self.trace.fold_u64(TRACE_OUT_OF_RANGE);
+        self.fold_name(file);
+        self.trace.fold_u64(operation);
+        self.trace.fold_u64(offset);
+        self.trace.fold_u64(length);
     }
 
     fn draw_crash_countdown(&mut self) -> Option<u64> {
@@ -415,7 +430,7 @@ impl SimDisk {
 
     pub(crate) fn guarded_len(&self, epoch: u64, file: &str) -> Result<u64, io::Error> {
         let mut inner = self.lock();
-        check_epoch(&mut inner, epoch, file)?;
+        check_epoch(&mut inner, epoch, file, TRACE_LEN)?;
         let length = inner
             .files
             .get(file)
@@ -434,17 +449,17 @@ impl SimDisk {
         out: &mut [u8],
     ) -> Result<(), io::Error> {
         let mut inner = self.lock();
-        check_epoch(&mut inner, epoch, file)?;
+        check_epoch(&mut inner, epoch, file, TRACE_READ)?;
         // Reads count toward the crash schedule so crashes can land inside a
         // recovery/reopen window, not only between workload writes.
         inner.fault_gate(false)?;
         let state = inner.files.entry(file.to_owned()).or_default();
-        let Some(end) = offset.checked_add(out.len() as u64) else {
-            inner.trace.fold_u64(TRACE_OUT_OF_RANGE);
-            return Err(out_of_range_error());
-        };
-        if end > state.volatile.len() as u64 {
-            inner.trace.fold_u64(TRACE_OUT_OF_RANGE);
+        let volatile_len = state.volatile.len() as u64;
+        let out_of_range = offset
+            .checked_add(out.len() as u64)
+            .is_none_or(|end| end > volatile_len);
+        if out_of_range {
+            inner.fold_out_of_range(file, TRACE_READ, offset, out.len() as u64);
             return Err(out_of_range_error());
         }
         let offset = usize::try_from(offset).expect("bounded by volatile length");
@@ -467,17 +482,17 @@ impl SimDisk {
         data: &[u8],
     ) -> Result<(), io::Error> {
         let mut inner = self.lock();
-        check_epoch(&mut inner, epoch, file)?;
+        check_epoch(&mut inner, epoch, file, TRACE_WRITE)?;
         inner.fault_gate(true)?;
         let state = inner.files.entry(file.to_owned()).or_default();
-        let Some(end) = offset.checked_add(data.len() as u64) else {
-            inner.trace.fold_u64(TRACE_OUT_OF_RANGE);
-            return Err(out_of_range_error());
-        };
-        if end > state.volatile.len() as u64 {
-            // Mirrors redb's in-memory backend contract: the engine always
-            // grows the file through `set_len` before writing into it.
-            inner.trace.fold_u64(TRACE_OUT_OF_RANGE);
+        let volatile_len = state.volatile.len() as u64;
+        // Beyond-length writes mirror redb's in-memory backend contract: the
+        // engine always grows the file through `set_len` before writing.
+        let out_of_range = offset
+            .checked_add(data.len() as u64)
+            .is_none_or(|end| end > volatile_len);
+        if out_of_range {
+            inner.fold_out_of_range(file, TRACE_WRITE, offset, data.len() as u64);
             return Err(out_of_range_error());
         }
         let start = usize::try_from(offset).expect("bounded by volatile length");
@@ -503,7 +518,7 @@ impl SimDisk {
         len: u64,
     ) -> Result<(), io::Error> {
         let mut inner = self.lock();
-        check_epoch(&mut inner, epoch, file)?;
+        check_epoch(&mut inner, epoch, file, TRACE_SET_LEN)?;
         let current = inner
             .files
             .get(file)
@@ -515,6 +530,7 @@ impl SimDisk {
             inner.counters.capacity_rejections += 1;
             inner.trace.fold_u64(TRACE_CAPACITY_EXHAUSTED);
             inner.fold_name(file);
+            inner.trace.fold_u64(TRACE_SET_LEN);
             inner.trace.fold_u64(len);
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
@@ -523,7 +539,10 @@ impl SimDisk {
         }
         inner.fault_gate(false)?;
         let state = inner.files.entry(file.to_owned()).or_default();
-        let target = usize::try_from(len).map_err(|_| out_of_range_error())?;
+        let Ok(target) = usize::try_from(len) else {
+            inner.fold_out_of_range(file, TRACE_SET_LEN, 0, len);
+            return Err(out_of_range_error());
+        };
         // Growth zero-initializes, per the redb StorageBackend contract.
         state.volatile.resize(target, 0);
         state.unsynced.push(Mutation::SetLen { len });
@@ -535,7 +554,7 @@ impl SimDisk {
 
     pub(crate) fn guarded_sync(&self, epoch: u64, file: &str) -> Result<(), io::Error> {
         let mut inner = self.lock();
-        check_epoch(&mut inner, epoch, file)?;
+        check_epoch(&mut inner, epoch, file, TRACE_SYNC)?;
         // A crash at the sync boundary strikes before the fold: the sync is
         // not acknowledged and its mutations stay torn-write candidates.
         inner.fault_gate(true)?;
@@ -548,9 +567,20 @@ impl SimDisk {
         Ok(())
     }
 
+    /// Folds a refusal issued by an already-closed backend handle. The
+    /// refusal never reaches the guarded operations, so it carries its own
+    /// discriminator and the refused operation kind; it consumes no fault
+    /// randomness and is legal in any disk state.
+    pub(crate) fn trace_closed_refusal(&self, file: &str, operation: u64) {
+        let mut inner = self.lock();
+        inner.trace.fold_u64(TRACE_CLOSED_REFUSAL);
+        inner.fold_name(file);
+        inner.trace.fold_u64(operation);
+    }
+
     pub(crate) fn trace_close(&self, epoch: u64, file: &str) -> Result<(), io::Error> {
         let mut inner = self.lock();
-        check_epoch(&mut inner, epoch, file)?;
+        check_epoch(&mut inner, epoch, file, TRACE_CLOSE)?;
         inner.trace.fold_u64(TRACE_CLOSE);
         inner.fold_name(file);
         Ok(())
@@ -584,15 +614,22 @@ fn apply_kept_mutation(file: &mut SimFile, mutation: &Mutation, kept_limit: u64)
     }
 }
 
-fn check_epoch(inner: &mut DiskInner, epoch: u64, file: &str) -> Result<(), io::Error> {
+fn check_epoch(
+    inner: &mut DiskInner,
+    epoch: u64,
+    file: &str,
+    operation: u64,
+) -> Result<(), io::Error> {
     if inner.crashed {
         inner.trace.fold_u64(TRACE_STALE_HANDLE);
         inner.fold_name(file);
+        inner.trace.fold_u64(operation);
         return Err(crashed_error());
     }
     if epoch != inner.epoch {
         inner.trace.fold_u64(TRACE_STALE_HANDLE);
         inner.fold_name(file);
+        inner.trace.fold_u64(operation);
         return Err(stale_error());
     }
     Ok(())

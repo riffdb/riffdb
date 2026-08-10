@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.89
+**Version:** 0.90
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.90 | 2026-08-09 | Strengthened the deterministic-simulation family after independent review: SIM-001 gained the digest-sensitivity obligation (identical operations under differently resolved fault schedules must diverge), SIM-003 now names AuthoritativeCommandModel with the model-extension and startup-validation/structural-inspection obligations and states the one-phase-commit precondition on the commit-to-sync correspondence, and SIM-005 (media-adapter conformance suites), SIM-006 (crash-matrix corpus subsumption, deferred), and SIM-007 (metadata-driven production-graph absence of riffdb-sim) were registered. |
 | 0.89 | 2026-08-09 | Registered the ADR-0113 deterministic-simulation requirement family through WP-580: seeded fault-schedule coverage and a versioned trace-digest determinism proof land with the `riffdb-sim` foundation, reference-model equality and the seed-replayable regression corpus are registered now and evidenced by later simulation packages, and the conflict-path ordered-collection and explicit worker-count hygiene freeze ambient nondeterminism out of `riffdb-commit`. |
 | 0.88 | 2026-08-09 | Accepted ADR-0105 through ADR-0112 and froze the Deployable Application Alpha requirements: authenticated remote ingress, Rust-owned Go/TypeScript/Python drivers, compiler-bounded collection commands, operational RiffQL, fenced workflows, exact installation/adapters, principal-aware row policy, durable-format compatibility, symbolic export/reimport, exercised disaster recovery, 72-hour endurance evidence, and the distinct PERF-018 comparator gate. |
 | 0.87 | 2026-08-09 | Defined the repository-wide RiffDB ownership notice through WP-571: original project source, documentation, website content, graphics, and release artifacts name Kevin O'Shea and O'Shea & Sons, LLC while retaining the existing MIT or Apache-2.0 open-source choice and preserving separate third-party and contributor notices. |
@@ -5444,16 +5445,18 @@ A machine-readable test report MUST map each assertion to `POC-001` through `POC
 ADR-0113 commits Phase-1 deterministic simulation testing: the real engine
 runs against a simulated storage medium under a seeded fault schedule in a
 dev-only crate (`riffdb-sim`) that no production crate may depend on
-(ADR-0012). Requirements registered here; `SIM-003` and `SIM-004` are
-registered with this family but their evidence is delivered by later
-simulation packages (reference-model wiring and the regression corpus), the
+(ADR-0012). Requirements registered here; the full `SIM-003` oracle, the
+`SIM-004` corpus, and the `SIM-006` matrix subsumption are registered with
+this family but their evidence is delivered by later simulation packages, the
 same way deferred behavior elsewhere in this specification is named before its
 implementing package exists.
 
 - `SIM-001`: The same seed and trace-format version MUST reproduce a
   byte-identical versioned execution trace digest across repeated runs of an
   identical simulation campaign. Every simulated operation and every fault
-  decision MUST feed the digest, the trace format MUST be versioned by an
+  decision MUST feed the digest — pinned by digest-sensitivity tests in which
+  identical operation sequences under differently resolved fault schedules
+  MUST produce different digests — the trace format MUST be versioned by an
   explicit constant folded into the digest, and the determinism proof MUST
   also show that a different seed produces a different digest.
 - `SIM-002`: The seeded fault schedule MUST be able to place a crash at any
@@ -5463,15 +5466,37 @@ implementing package exists.
   that fail the operation while leaving state unchanged, and exhaust a
   configured capacity with a typed refusal. All decisions MUST derive from the
   seed, and standing tests MUST prove every fault arm remains reachable.
-- `SIM-003`: After every simulated recovery, the recovered engine state MUST
-  open without corruption and equal the reference model at the recovered
-  durable frontier. (Registered now; reference-model wiring is delivered by a
-  later simulation package. The phase-0 foundation discharges an engine-level
-  form: a shadow map snapshotted at each acknowledged sync.)
+- `SIM-003`: After every simulated recovery, the reopened engine MUST pass
+  the existing startup validation and structural inspection passes and its
+  state MUST equal `AuthoritativeCommandModel` (the testkit reference model)
+  at the recovered durable frontier, extending the model wherever its
+  coverage is narrower than the engine's. (The oracle wiring is delivered by
+  a later simulation package. The phase-0 foundation discharges an
+  engine-level form: open without corruption plus equality against a shadow
+  map snapshotted at each acknowledged durable commit, with the
+  commit-to-sync correspondence asserted from backend observation — one
+  acknowledged sync per acknowledged commit under redb's default one-phase
+  configuration; two-phase commit doubles it.)
 - `SIM-004`: Every simulator-found failure MUST be retained as a
   seed-replayable regression fixture and replayed per merge, with open-ended
   exploration on a separate budget. (Registered now; delivered by a later
   simulation package.)
+- `SIM-005`: Every simulated storage adapter MUST pass a conformance suite
+  for its production contract; for the engine backend adapter that covers
+  length tracking, zero-initialized growth, read-back, out-of-range refusal,
+  sync fold semantics, and fail-closed behavior after close and across crash
+  epochs. A media adapter without a conformance suite MUST NOT drive a
+  campaign.
+- `SIM-006`: Every storage-layer arm of the process-level crash matrix
+  (`storage_recovery_matrix` and the testkit `RECOVERY_SCENARIOS` inventory)
+  MUST be expressible and reproduced as a pinned simulation schedule; the
+  process-level matrix remains as evidence and the simulator owns
+  exploration. (Registered now; delivered by a later simulation package.)
+- `SIM-007`: `riffdb-sim` MUST be absent from every production dependency
+  graph — normal and build dependencies across all compile targets, over the
+  complete cargo-resolved workspace member set — enforced by an architecture
+  test that drives from cargo's own metadata; dev-dependencies are the only
+  sanctioned consumption.
 
 ---
 
