@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.88
+**Version:** 0.89
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.89 | 2026-08-09 | Registered the ADR-0113 deterministic-simulation requirement family through WP-580: seeded fault-schedule coverage and a versioned trace-digest determinism proof land with the `riffdb-sim` foundation, reference-model equality and the seed-replayable regression corpus are registered now and evidenced by later simulation packages, and the conflict-path ordered-collection and explicit worker-count hygiene freeze ambient nondeterminism out of `riffdb-commit`. |
 | 0.88 | 2026-08-09 | Accepted ADR-0105 through ADR-0112 and froze the Deployable Application Alpha requirements: authenticated remote ingress, Rust-owned Go/TypeScript/Python drivers, compiler-bounded collection commands, operational RiffQL, fenced workflows, exact installation/adapters, principal-aware row policy, durable-format compatibility, symbolic export/reimport, exercised disaster recovery, 72-hour endurance evidence, and the distinct PERF-018 comparator gate. |
 | 0.87 | 2026-08-09 | Defined the repository-wide RiffDB ownership notice through WP-571: original project source, documentation, website content, graphics, and release artifacts name Kevin O'Shea and O'Shea & Sons, LLC while retaining the existing MIT or Apache-2.0 open-source choice and preserving separate third-party and contributor notices. |
 | 0.86 | 2026-08-09 | Defined the public RiffDB marketing website and early-access boundary through WP-495: an honest vision-led static site at `riffdb.com`, canonical GitHub and handbook links, a bounded double-opt-in waitlist protected by server-side bot verification, reproducible accessibility and browser checks, and least-privilege Cloudflare Pages deployment. |
@@ -5438,6 +5439,40 @@ The final acceptance test is a scripted, self-verifying scenario:
 
 A machine-readable test report MUST map each assertion to `POC-001` through `POC-010`.
 
+## 17.10 Deterministic simulation of the durable engine
+
+ADR-0113 commits Phase-1 deterministic simulation testing: the real engine
+runs against a simulated storage medium under a seeded fault schedule in a
+dev-only crate (`riffdb-sim`) that no production crate may depend on
+(ADR-0012). Requirements registered here; `SIM-003` and `SIM-004` are
+registered with this family but their evidence is delivered by later
+simulation packages (reference-model wiring and the regression corpus), the
+same way deferred behavior elsewhere in this specification is named before its
+implementing package exists.
+
+- `SIM-001`: The same seed and trace-format version MUST reproduce a
+  byte-identical versioned execution trace digest across repeated runs of an
+  identical simulation campaign. Every simulated operation and every fault
+  decision MUST feed the digest, the trace format MUST be versioned by an
+  explicit constant folded into the digest, and the determinism proof MUST
+  also show that a different seed produces a different digest.
+- `SIM-002`: The seeded fault schedule MUST be able to place a crash at any
+  write or sync boundary — including inside a recovery's reopen window — tear
+  unsynced writes on crash with independent keep, drop, or prefix-truncate
+  decisions at configurable granularity, inject transient write/sync errors
+  that fail the operation while leaving state unchanged, and exhaust a
+  configured capacity with a typed refusal. All decisions MUST derive from the
+  seed, and standing tests MUST prove every fault arm remains reachable.
+- `SIM-003`: After every simulated recovery, the recovered engine state MUST
+  open without corruption and equal the reference model at the recovered
+  durable frontier. (Registered now; reference-model wiring is delivered by a
+  later simulation package. The phase-0 foundation discharges an engine-level
+  form: a shadow map snapshotted at each acknowledged sync.)
+- `SIM-004`: Every simulator-found failure MUST be retained as a
+  seed-replayable regression fixture and replayed per merge, with open-ended
+  exploration on a separate budget. (Registered now; delivered by a later
+  simulation package.)
+
 ---
 
 # 18. Build, CI, security, and release engineering
@@ -7687,5 +7722,6 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `AFC-*` | Alpha durable-format compatibility, upgrade refusal, and epoch ceremony |
 | `EXP-*` | Snapshot-consistent symbolic application export and compiled reimport |
 | `END-*` | Exercised disaster recovery, sustained lifecycle load, and bounded-growth evidence |
+| `SIM-*` | Deterministic simulation of the durable engine under seeded fault schedules |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

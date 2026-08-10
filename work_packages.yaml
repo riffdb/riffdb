@@ -1,4 +1,4 @@
-spec_version: '0.88'
+spec_version: '0.89'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -23,6 +23,14 @@ requirement_coverage:
   excluded_ids:
   - id: TXN-004
     reason: Illustrative identifier in the normative-language explanation, not a defined requirement.
+  - id: SIM-003
+    reason: Registered with the SIM family in SPEC 17.10 but explicitly deferred there; the
+      reference-model-equality evidence belongs to a later ADR-0113 simulation package, which
+      must claim this ID when minted.
+  - id: SIM-004
+    reason: Registered with the SIM family in SPEC 17.10 but explicitly deferred there; the
+      seed-replayable regression corpus belongs to a later ADR-0113 simulation package, which
+      must claim this ID when minted.
 gates:
 - id: P0
   name: Executable semantics
@@ -11228,4 +11236,59 @@ work_packages:
     reversibility: Notice placement and release propagation are independent of database protocols,
       durable formats, and application compatibility. A future ownership change requires explicit
       maintainer and legal review rather than an implementation shortcut.
+  human_review_triggers: *id001
+- id: WP-580
+  name: DST foundation — simulator crate, simulated disk, redb backend adapter, determinism pin
+  depends_on: [WP-478]
+  objective: Begin ADR-0113 Phase 1 with a dev-only riffdb-sim crate whose seeded SimDisk
+    (durable/volatile images, crash-torn unsynced writes, transient errors, capacity exhaustion)
+    drives the pinned redb engine through redb's public StorageBackend seam, prove determinism
+    with a versioned trace digest, and land the two commit-path hygiene items that freeze ambient
+    nondeterminism out of conflict grouping and evaluation-pool sizing.
+  requirements: [SIM-001, SIM-002]
+  required_adrs: [ADR-0012, ADR-0113]
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml,
+    crates/riffdb-sim/**, crates/riffdb-commit/src/command_execution.rs,
+    crates/riffdb-commit/src/audit_executor.rs, crates/riffdb-commit/tests/architecture.rs,
+    scripts/check-workspace-policy]
+  deliverables:
+  - Dev-only riffdb-sim crate (redb pinned at 4.1.0 as its only dependency, hand-rolled
+    splitmix64, no clocks, no entropy crates, no hash-randomized collections) with SimDisk
+    durable/volatile images, first-class crash and recovery, seeded keep/drop/prefix-truncate
+    torn-write decisions at configurable granularity, transient errors, capacity exhaustion,
+    and a versioned FNV trace chain over every operation and fault decision
+  - SimBackend implementing redb's StorageBackend contract (zero-initialized growth,
+    out-of-range refusal, fail-closed after close and across crash epochs) with a conformance
+    suite
+  - Phase-0 campaign; seeded single-table-per-transaction workloads under Durability::Immediate,
+    crash-recover-continue loops with crashes placed inside the reopen window, a shadow BTreeMap
+    oracle snapshotted at acknowledged commits with an explicit two-state acceptance while a
+    commit is in flight, and the observed one-sync-per-Immediate-commit correspondence asserted
+    from backend counters
+  - Determinism pin (same seed twice, byte-identical trace and summary digests; different seed
+    diverges) plus a 32-seed sweep as the standing regression battery with live-fault-arm
+    aggregate assertions
+  - Architecture tests preventing riffdb-sim from entering any production dependency graph and
+    banning ambient time, entropy, and hash-randomized iteration from the simulator itself
+  - Conflict-path HashSet-to-BTreeSet hygiene in riffdb-commit with an architecture pin, and the
+    evaluation-pool worker count as an explicit constructor input with the
+    available_parallelism-derived value as the production default at the existing call site
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-sim --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-runtime --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: The same seed replays a byte-identical versioned trace digest through the full
+    crash-recover-continue campaign, every fault arm is provably reachable, torn unsynced state
+    never bricks or diverges the reopened engine from the shadow oracle for any swept seed, no
+    production crate can link the simulator, and the commit conflict path carries no
+    hash-randomized collection.
+  standing_design_tests:
+    interface_safety: No application-facing surface changes; the simulator is a dev-only crate
+      unreachable from client, CLI, MCP, or SDK paths, and its absence from production dependency
+      graphs is pinned by an architecture test.
+    scale: Simulated disk state is bounded by the configured workload and capacity, campaigns run
+      in seconds on one core, and the sweep budget is fixed by seed count rather than database
+      size.
   human_review_triggers: *id001

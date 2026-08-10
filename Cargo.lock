@@ -2089,6 +2089,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-sim"
+version = "0.1.0"
+dependencies = [
+ "redb",
+]
+
+[[package]]
 name = "riffdb-storage-api"
 version = "0.1.0"
 dependencies = [
