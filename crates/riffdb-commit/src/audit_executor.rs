@@ -1613,8 +1613,11 @@ impl RunningCommandCoordinator {
             + Sync
             + 'static,
     {
-        let evaluation_pool = CommandEvaluationPool::new(repository.clone())
-            .map_err(|()| CoordinatorStartError::PreparationWorkerUnavailable)?;
+        let evaluation_pool = CommandEvaluationPool::new(
+            repository.clone(),
+            CommandEvaluationPool::production_worker_count(),
+        )
+        .map_err(|()| CoordinatorStartError::PreparationWorkerUnavailable)?;
         Self::start_with_evaluation_pool(
             workload_capacity,
             durability,
