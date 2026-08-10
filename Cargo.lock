@@ -2131,6 +2131,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-storage-api",
  "riffdb-storage-redb",
+ "riffdb-testkit",
  "riffdb-types",
  "serde_json",
 ]

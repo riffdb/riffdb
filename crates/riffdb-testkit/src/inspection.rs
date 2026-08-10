@@ -3,21 +3,27 @@
 use std::error::Error;
 use std::fmt;
 use std::fs;
+use std::num::NonZeroU16;
 use std::path::Path;
 
 use riffdb_catalog::{CatalogError, CatalogHistoryOutcome, validate_catalog_history};
 use riffdb_storage_api::{
     AdministrationAuditReader, AdministrationAuditScan, AdministrationAuditScanRequest,
-    AuthoritativePointReader, AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest,
-    EntityTarget, EvidencePageLimit, OutboxRepository, OutboxStatusReadResultV1,
-    ProjectionQueryReader, ProjectionStatus, RetainedMetadataV1, StartupValidationInputs,
-    StorageError, StorageScanLimit, StoredAdministrationAuditRecordV1, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredProvenanceRecordV1, StructuralEvidenceCursor,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralOpenOutcome, derive_event_hash_v1,
+    AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
+    AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EntityTarget, EvidencePageLimit,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IdempotencyLookupCandidatesV1, IndexEpochPosition, IndexPartitionFilter,
+    IndexPartitionFilterScope, IndexRangeTarget, OutboxPageLimit, OutboxRepository,
+    OutboxStatusReadResultV1, PendingOutboxScanV1, ProjectionQueryReader, ProjectionStatus,
+    RetainedMetadataV1, StartupValidationInputs, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredCommitRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV2, StoredOutboxIntentV1,
+    StoredOutcomeV1, StoredProvenanceRecordV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralOpenOutcome,
+    derive_event_hash_v1,
 };
 use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
-use riffdb_types::{FrontierPosition, ProjectionIdentity};
+use riffdb_types::{ContractLineage, FrontierPosition, ProjectionIdentity};
 
 /// Maximum explicitly requested entities or projections in one inspection.
 pub const MAX_INSPECTION_TARGETS: usize = 256;
@@ -26,11 +32,54 @@ pub const MAX_INSPECTED_ORDERED_RECORDS: usize = 10_000;
 
 const PAGE_LIMIT: u16 = 500;
 
+/// One declared index range and the exact contract lineage its rows carry.
+///
+/// The lineage feeds the filtered scan's [`IndexPartitionFilter`], so a
+/// stored row under a DIFFERENT lineage than declared is filtered out by the
+/// store's own reader and surfaces as missing — never silently compared.
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub struct IndexRangeSelection {
+    target: IndexRangeTarget,
+    lineage: ContractLineage,
+}
+
+impl IndexRangeSelection {
+    /// Binds one range target to the exact lineage its rows must carry.
+    #[must_use]
+    pub const fn new(target: IndexRangeTarget, lineage: ContractLineage) -> Self {
+        Self { target, lineage }
+    }
+
+    /// Borrows the exact range target.
+    #[must_use]
+    pub const fn target(&self) -> &IndexRangeTarget {
+        &self.target
+    }
+
+    /// Borrows the exact declared contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+}
+
+impl fmt::Debug for IndexRangeSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IndexRangeSelection")
+            .field("target", &"[REDACTED]")
+            .field("lineage", &self.lineage)
+            .finish()
+    }
+}
+
 /// Canonically ordered targets selected for one offline inspection.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct DurableInspectionRequest {
     entities: Vec<EntityTarget>,
     projections: Vec<ProjectionIdentity>,
+    index_ranges: Vec<IndexRangeSelection>,
+    admissions: Vec<IdempotencyIdentity>,
 }
 
 impl DurableInspectionRequest {
@@ -50,7 +99,61 @@ impl DurableInspectionRequest {
         Ok(Self {
             entities,
             projections,
+            index_ranges: Vec::new(),
+            admissions: Vec::new(),
         })
+    }
+
+    /// Adds bounded, strictly ordered secondary-index range selections.
+    ///
+    /// Each selection is scanned to its exact end through the store's own
+    /// `FilteredAuthoritativeScanReader::scan_index_filtered` surface, whose
+    /// rows retain their exact stored schema binding and partition key and
+    /// are filtered to the declared lineage and the target's exact partition,
+    /// with the range's index epoch observed in the same read view. A stored
+    /// row under a different lineage than declared is filtered out by the
+    /// reader and therefore surfaces as missing rather than comparing loosely.
+    pub fn with_index_ranges(
+        mut self,
+        index_ranges: Vec<IndexRangeSelection>,
+    ) -> Result<Self, DurableInspectionError> {
+        if index_ranges.len() > MAX_INSPECTION_TARGETS {
+            return Err(DurableInspectionError::TargetLimit);
+        }
+        if index_ranges.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(DurableInspectionError::NonCanonicalTargets);
+        }
+        self.index_ranges = index_ranges;
+        Ok(self)
+    }
+
+    /// Adds bounded admission identities, strictly ordered by storage key.
+    ///
+    /// Each identity is looked up through the store's own
+    /// `AdmissionRepository::lookup_admission` (which decodes locator-backed
+    /// idempotency records through the reader's own path) and through
+    /// `AuthoritativePointReader::read_stored_outcome` for the terminal
+    /// outcome view.
+    pub fn with_admissions(
+        mut self,
+        admissions: Vec<IdempotencyIdentity>,
+    ) -> Result<Self, DurableInspectionError> {
+        if admissions.len() > MAX_INSPECTION_TARGETS {
+            return Err(DurableInspectionError::TargetLimit);
+        }
+        let keys = admissions
+            .iter()
+            .map(|identity| {
+                identity
+                    .storage_key()
+                    .map_err(|_| DurableInspectionError::NonCanonicalTargets)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(DurableInspectionError::NonCanonicalTargets);
+        }
+        self.admissions = admissions;
+        Ok(self)
     }
 
     /// Borrows entity point-read targets.
@@ -63,6 +166,32 @@ impl DurableInspectionRequest {
     #[must_use]
     pub fn projections(&self) -> &[ProjectionIdentity] {
         &self.projections
+    }
+
+    /// Borrows exact secondary-index range selections.
+    #[must_use]
+    pub fn index_ranges(&self) -> &[IndexRangeSelection] {
+        &self.index_ranges
+    }
+
+    /// Borrows exact admission lookup identities.
+    #[must_use]
+    pub fn admissions(&self) -> &[IdempotencyIdentity] {
+        &self.admissions
+    }
+}
+
+impl fmt::Debug for DurableInspectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Manual impl: `IndexRangeTarget` carries no `Debug` and identities
+        // redact; counts identify the request without exposing key material.
+        formatter
+            .debug_struct("DurableInspectionRequest")
+            .field("entity_count", &self.entities.len())
+            .field("projection_count", &self.projections.len())
+            .field("index_range_count", &self.index_ranges.len())
+            .field("admission_count", &self.admissions.len())
+            .finish()
     }
 }
 
@@ -97,6 +226,87 @@ impl fmt::Debug for InspectedEntity {
     }
 }
 
+/// One complete index range: its rows and epoch from the reader's own scan.
+#[derive(Clone, Eq, PartialEq)]
+pub struct InspectedIndexRange {
+    selection: IndexRangeSelection,
+    epoch: IndexEpochPosition,
+    entries: Vec<StoredIndexEntryV2>,
+}
+
+impl InspectedIndexRange {
+    /// Borrows the canonical requested range selection.
+    #[must_use]
+    pub const fn selection(&self) -> &IndexRangeSelection {
+        &self.selection
+    }
+
+    /// Returns the range epoch observed with the rows.
+    #[must_use]
+    pub const fn epoch(&self) -> IndexEpochPosition {
+        self.epoch
+    }
+
+    /// Borrows the COMPLETE stored rows in canonical key order.
+    ///
+    /// The filtered scan returns rows that retain their exact stored schema
+    /// binding and partition key, so every field of the durable row is
+    /// available to a comparison — nothing is projected away.
+    #[must_use]
+    pub fn entries(&self) -> &[StoredIndexEntryV2] {
+        &self.entries
+    }
+}
+
+impl fmt::Debug for InspectedIndexRange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InspectedIndexRange")
+            .field("selection", &self.selection)
+            .field("epoch", &self.epoch)
+            .field("entry_count", &self.entries.len())
+            .finish()
+    }
+}
+
+/// One admission identity and its ordinary present-or-absent durable state.
+#[derive(Clone, Eq, PartialEq)]
+pub struct InspectedAdmission {
+    identity: IdempotencyIdentity,
+    state: Option<StoredAdmissionStateV1>,
+}
+
+impl InspectedAdmission {
+    /// Borrows the exact requested identity.
+    #[must_use]
+    pub const fn identity(&self) -> &IdempotencyIdentity {
+        &self.identity
+    }
+
+    /// Borrows the complete stored admission state when present.
+    #[must_use]
+    pub const fn state(&self) -> Option<&StoredAdmissionStateV1> {
+        self.state.as_ref()
+    }
+}
+
+impl fmt::Debug for InspectedAdmission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InspectedAdmission")
+            .field("identity", &"[REDACTED]")
+            .field(
+                "state",
+                &self.state.as_ref().map(|state| match state {
+                    StoredAdmissionStateV1::Pending(_) => "Pending",
+                    StoredAdmissionStateV1::StoredOutcome(_) => "StoredOutcome",
+                    StoredAdmissionStateV1::ExecutionFailed(_) => "ExecutionFailed",
+                }),
+            )
+            .finish()
+    }
+}
+
 /// One durable event and its reciprocal outbox status observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InspectedEvent {
@@ -118,17 +328,101 @@ impl InspectedEvent {
     }
 }
 
+// Test-only synthetic constructors: the model↔store comparison unit tests
+// build faithful and deliberately one-field-divergent inspections without a
+// store, so every comparison family's failure arm has a demonstrated red.
+// These bypass the readers' validation ON PURPOSE (that is what makes an
+// adversarial inspection constructible) and compile only under test.
+#[cfg(test)]
+impl InspectedEntity {
+    pub(crate) fn synthetic(target: EntityTarget, record: Option<StoredEntityRecordV1>) -> Self {
+        Self { target, record }
+    }
+}
+
+#[cfg(test)]
+impl InspectedAdmission {
+    pub(crate) fn synthetic(
+        identity: IdempotencyIdentity,
+        state: Option<StoredAdmissionStateV1>,
+    ) -> Self {
+        Self { identity, state }
+    }
+}
+
+#[cfg(test)]
+impl InspectedIndexRange {
+    pub(crate) fn synthetic(
+        selection: IndexRangeSelection,
+        epoch: IndexEpochPosition,
+        entries: Vec<StoredIndexEntryV2>,
+    ) -> Self {
+        Self {
+            selection,
+            epoch,
+            entries,
+        }
+    }
+}
+
+#[cfg(test)]
+impl InspectedEvent {
+    pub(crate) fn synthetic(event: StoredDurableEventV1, outbox: OutboxStatusReadResultV1) -> Self {
+        Self { event, outbox }
+    }
+}
+
 /// Complete read-only result after structural and catalog exact-end validation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DurableInspection {
     metadata: RetainedMetadataV1,
     structural_findings: Vec<StructuralFinding>,
+    structural_pages: u32,
+    application_frontier: FrontierPosition,
     commits: Vec<StoredCommitRecordV1>,
     entities: Vec<InspectedEntity>,
     provenance: Vec<StoredProvenanceRecordV1>,
     events: Vec<InspectedEvent>,
     projections: Vec<ProjectionStatus>,
     administration: Vec<StoredAdministrationAuditRecordV1>,
+    index_ranges: Vec<InspectedIndexRange>,
+    admissions: Vec<InspectedAdmission>,
+    outcomes: Vec<StoredOutcomeV1>,
+    outbox_intents: Vec<StoredOutboxIntentV1>,
+}
+
+#[cfg(test)]
+impl DurableInspection {
+    #[allow(clippy::too_many_arguments)] // One flat synthetic constructor mirrors the struct exactly.
+    pub(crate) fn synthetic(
+        metadata: RetainedMetadataV1,
+        application_frontier: FrontierPosition,
+        commits: Vec<StoredCommitRecordV1>,
+        entities: Vec<InspectedEntity>,
+        provenance: Vec<StoredProvenanceRecordV1>,
+        events: Vec<InspectedEvent>,
+        index_ranges: Vec<InspectedIndexRange>,
+        admissions: Vec<InspectedAdmission>,
+        outcomes: Vec<StoredOutcomeV1>,
+        outbox_intents: Vec<StoredOutboxIntentV1>,
+    ) -> Self {
+        Self {
+            metadata,
+            structural_findings: Vec::new(),
+            structural_pages: 1,
+            application_frontier,
+            commits,
+            entities,
+            provenance,
+            events,
+            projections: Vec::new(),
+            administration: Vec::new(),
+            index_ranges,
+            admissions,
+            outcomes,
+            outbox_intents,
+        }
+    }
 }
 
 impl DurableInspection {
@@ -142,6 +436,29 @@ impl DurableInspection {
     #[must_use]
     pub fn structural_findings(&self) -> &[StructuralFinding] {
         &self.structural_findings
+    }
+
+    /// Returns how many structural evidence pages the pass actually read.
+    ///
+    /// An empty [`Self::structural_findings`] claim stands on its own reach
+    /// only when at least one page was produced and inspected.
+    #[must_use]
+    pub const fn structural_pages(&self) -> u32 {
+        self.structural_pages
+    }
+
+    /// Returns the RECOVERED application frontier: the last contiguous
+    /// applied commit, frozen by the exclusive commit scan.
+    ///
+    /// The name carries the precondition: the whole inspection runs on a
+    /// stopped, freshly (re)opened store, where the composite frontier the
+    /// scan freezes IS the recovered durable frontier. On a live store the
+    /// same underlying quantity would instead mean "currently published
+    /// frontier" — a different value, and exactly the divergence a recovery
+    /// oracle exists to detect — so no accessor of that name is offered.
+    #[must_use]
+    pub const fn recovered_application_frontier(&self) -> FrontierPosition {
+        self.application_frontier
     }
 
     /// Borrows the complete contiguous commit log.
@@ -179,6 +496,43 @@ impl DurableInspection {
     pub fn administration(&self) -> &[StoredAdministrationAuditRecordV1] {
         &self.administration
     }
+
+    /// Borrows index-range observations in request order.
+    #[must_use]
+    pub fn index_ranges(&self) -> &[InspectedIndexRange] {
+        &self.index_ranges
+    }
+
+    /// Borrows admission observations in request order.
+    #[must_use]
+    pub fn admissions(&self) -> &[InspectedAdmission] {
+        &self.admissions
+    }
+
+    /// Borrows terminal outcomes ascending by their own stored sequence.
+    ///
+    /// Assembled from the requested admission identities through
+    /// `read_stored_outcome` — the store's only public outcome read surface —
+    /// and keyed by each record's own commit sequence. Identities whose
+    /// admission state is pending, failed, or absent contribute no record.
+    #[must_use]
+    pub fn outcomes(&self) -> &[StoredOutcomeV1] {
+        &self.outcomes
+    }
+
+    /// Borrows authoritative outbox intent records in event order.
+    ///
+    /// The population is every reciprocal intent whose effective delivery
+    /// state is still pending (`scan_pending_outbox` is the store's only
+    /// public read surface exposing the stored intent record, distinct from
+    /// the status-read view). On a store where no delivery transition ever
+    /// ran this is the complete intent population; the per-event
+    /// intent-existence proof for every committed event is separately
+    /// enforced by the reciprocal-record validation in the events pass.
+    #[must_use]
+    pub fn outbox_intents(&self) -> &[StoredOutboxIntentV1] {
+        &self.outbox_intents
+    }
 }
 
 impl fmt::Debug for DurableInspection {
@@ -187,12 +541,18 @@ impl fmt::Debug for DurableInspection {
             .debug_struct("DurableInspection")
             .field("metadata", &self.metadata)
             .field("structural_findings", &self.structural_findings)
+            .field("structural_pages", &self.structural_pages)
+            .field("recovered_application_frontier", &self.application_frontier)
             .field("commit_count", &self.commits.len())
             .field("entity_count", &self.entities.len())
             .field("provenance_count", &self.provenance.len())
             .field("event_count", &self.events.len())
             .field("projection_count", &self.projections.len())
             .field("administration_count", &self.administration.len())
+            .field("index_range_count", &self.index_ranges.len())
+            .field("admission_count", &self.admissions.len())
+            .field("outcome_count", &self.outcomes.len())
+            .field("outbox_intent_count", &self.outbox_intents.len())
             .finish()
     }
 }
@@ -217,8 +577,25 @@ pub fn inspect_redb(
         return Err(DurableInspectionError::MissingDatabase);
     }
     let store = RedbStore::open(database_path).map_err(DurableInspectionError::Storage)?;
-    let (retained, structural_findings, ports) = open_validated(store, startup_inputs)?;
-    let commits = scan_all_commits(&ports)?;
+    inspect_opened_redb(store, startup_inputs, request)
+}
+
+/// Performs the same complete read-only pass over an already-opened store.
+///
+/// This is the entry point for stores whose media cannot be reached through a
+/// filesystem path — the deterministic-simulation harness opens through
+/// `RedbStore::open_with_storage_media` and hands the store here. The pass is
+/// identical to [`inspect_redb`] from the structural evidence session onward;
+/// only the filesystem existence preflight is skipped, because no real file
+/// exists.
+pub fn inspect_opened_redb(
+    store: RedbStore,
+    startup_inputs: StartupValidationInputs,
+    request: &DurableInspectionRequest,
+) -> Result<DurableInspection, DurableInspectionError> {
+    let (retained, structural_findings, structural_pages, ports) =
+        open_validated(store, startup_inputs)?;
+    let (commits, application_frontier) = scan_all_commits(&ports)?;
     let administration = scan_all_administration(&ports)?;
 
     let entities = request
@@ -276,17 +653,31 @@ pub fn inspect_redb(
         .map(|identity| ports.read_projection_status(identity))
         .collect::<Result<Vec<_>, _>>()
         .map_err(DurableInspectionError::Storage)?;
+
+    let index_ranges = request
+        .index_ranges()
+        .iter()
+        .map(|target| scan_full_index_range(&ports, target))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (admissions, outcomes) = read_admissions_and_outcomes(&ports, request.admissions())?;
+    let outbox_intents = scan_all_pending_outbox_intents(&ports)?;
     drop(ports);
 
     Ok(DurableInspection {
         metadata: retained,
         structural_findings,
+        structural_pages,
+        application_frontier,
         commits,
         entities,
         provenance,
         events,
         projections,
         administration,
+        index_ranges,
+        admissions,
+        outcomes,
+        outbox_intents,
     })
 }
 
@@ -297,6 +688,7 @@ fn open_validated(
     (
         RetainedMetadataV1,
         Vec<StructuralFinding>,
+        u32,
         RedbOperationalPorts,
     ),
     DurableInspectionError,
@@ -310,6 +702,7 @@ fn open_validated(
         EvidencePageLimit::new(u32::from(PAGE_LIMIT)).ok_or(DurableInspectionError::RecordLimit)?;
     let mut cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
     let mut findings = Vec::new();
+    let mut pages = 0_u32;
     let structural_end = loop {
         match session
             .read_structural_evidence(cursor, limit)
@@ -326,6 +719,9 @@ fn open_validated(
                     .filter(|count| *count <= MAX_INSPECTED_ORDERED_RECORDS)
                     .ok_or(DurableInspectionError::RecordLimit)?;
                 findings.extend(page);
+                pages = pages
+                    .checked_add(1)
+                    .ok_or(DurableInspectionError::RecordLimit)?;
                 cursor = next;
             }
             StructuralEvidencePage::ExactEnd(end) => break end,
@@ -360,25 +756,37 @@ fn open_validated(
     let ports = dormant
         .into_operational_after_catalog_validation()
         .map_err(DurableInspectionError::Storage)?;
-    Ok((retained, findings, ports))
+    Ok((retained, findings, pages, ports))
 }
 
 fn scan_all_commits(
     ports: &RedbOperationalPorts,
-) -> Result<Vec<StoredCommitRecordV1>, DurableInspectionError> {
+) -> Result<(Vec<StoredCommitRecordV1>, FrontierPosition), DurableInspectionError> {
     let limit = StorageScanLimit::new(PAGE_LIMIT).ok_or(DurableInspectionError::RecordLimit)?;
     let mut request = CommitScanRequest::initial(limit);
     let mut records = Vec::new();
+    let mut frontier = None;
     loop {
         let page = ports
             .scan_commits(request)
             .map_err(DurableInspectionError::Storage)?;
+        // The first page freezes the applied frontier as its inclusive upper
+        // fence; continuation pages must reuse it exactly.
+        let fence = page.inclusive_upper();
+        match frontier {
+            None => frontier = Some(fence),
+            Some(frozen) if frozen == fence => {}
+            Some(_) => return Err(DurableInspectionError::NonCanonicalPage),
+        }
         append_bounded(
             &mut records,
             page.records().iter().map(|item| item.value().clone()),
         )?;
         match page {
-            CommitScanPageV1::ExactEnd { .. } => return Ok(records),
+            CommitScanPageV1::ExactEnd { .. } => {
+                let frontier = frontier.ok_or(DurableInspectionError::NonCanonicalPage)?;
+                return Ok((records, frontier));
+            }
             CommitScanPageV1::Page {
                 next_after,
                 inclusive_upper: FrontierPosition::AppliedThrough(inclusive_upper),
@@ -391,6 +799,155 @@ fn scan_all_commits(
                 inclusive_upper: FrontierPosition::BeforeFirst,
                 ..
             } => return Err(DurableInspectionError::NonCanonicalPage),
+        }
+    }
+}
+
+/// Scans one declared index range to its exact end through the store's
+/// filtered reader — whose rows retain their exact stored schema binding and
+/// partition key — requiring one stable epoch observation across every page.
+fn scan_full_index_range(
+    ports: &RedbOperationalPorts,
+    selection: &IndexRangeSelection,
+) -> Result<InspectedIndexRange, DurableInspectionError> {
+    let limit = StorageScanLimit::new(PAGE_LIMIT).ok_or(DurableInspectionError::RecordLimit)?;
+    let filter = IndexPartitionFilter::new(
+        selection.lineage().clone(),
+        IndexPartitionFilterScope::Explicit(vec![
+            selection
+                .target()
+                .generation_target()
+                .partition_key()
+                .clone(),
+        ]),
+    )
+    .map_err(|_| DurableInspectionError::NonCanonicalTargets)?;
+    let mut after = None;
+    let mut entries = Vec::new();
+    let mut epoch = None;
+    loop {
+        let request = FilteredAuthoritativeIndexScanRequest::new(
+            selection.target().clone(),
+            filter.clone(),
+            after,
+            limit,
+        )
+        .map_err(|_| DurableInspectionError::NonCanonicalPage)?;
+        let page = ports
+            .scan_index_filtered(request)
+            .map_err(DurableInspectionError::Storage)?;
+        // The database is stopped, so the epoch cannot legitimately move
+        // between pages of one range.
+        match epoch {
+            None => epoch = Some(page.epoch()),
+            Some(observed) if observed == page.epoch() => {}
+            Some(_) => return Err(DurableInspectionError::NonCanonicalPage),
+        }
+        append_bounded(
+            &mut entries,
+            page.entries().iter().map(|item| item.value().clone()),
+        )?;
+        match page.scanned_through() {
+            Some(scanned_through) => after = Some(scanned_through.clone()),
+            None => {
+                let epoch = epoch.ok_or(DurableInspectionError::NonCanonicalPage)?;
+                return Ok(InspectedIndexRange {
+                    selection: selection.clone(),
+                    epoch,
+                    entries,
+                });
+            }
+        }
+    }
+}
+
+/// Looks up each declared identity's admission state and terminal outcome.
+///
+/// Both reads go through the store's own decode paths (`lookup_admission`
+/// resolves locator-backed idempotency records; `read_stored_outcome` resolves
+/// the capsule path), never raw rows. Outcomes are returned ascending by their
+/// own stored commit sequence — the store's only public outcome read surface
+/// is identity-keyed, so the sequence-keyed view is assembled here.
+fn read_admissions_and_outcomes(
+    ports: &RedbOperationalPorts,
+    identities: &[IdempotencyIdentity],
+) -> Result<(Vec<InspectedAdmission>, Vec<StoredOutcomeV1>), DurableInspectionError> {
+    let mut admissions = Vec::with_capacity(identities.len());
+    let mut outcomes: Vec<StoredOutcomeV1> = Vec::new();
+    for identity in identities {
+        let candidates = IdempotencyLookupCandidatesV1::new(vec![identity.clone()])
+            .map_err(|_| DurableInspectionError::NonCanonicalTargets)?;
+        let state = match ports
+            .lookup_admission(candidates)
+            .map_err(DurableInspectionError::Storage)?
+        {
+            AdmissionLookupResultV1::NotFound => None,
+            AdmissionLookupResultV1::Found(state) => {
+                if state.identity() != identity {
+                    return Err(DurableInspectionError::Storage(StorageError::new(
+                        StorageErrorKind::InvariantViolation,
+                        None,
+                    )));
+                }
+                Some(*state)
+            }
+            // A single-candidate lookup can never resolve multiple matches.
+            AdmissionLookupResultV1::MultipleMatches => {
+                return Err(DurableInspectionError::Storage(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                )));
+            }
+        };
+        if let Some(outcome) = ports
+            .read_stored_outcome(identity)
+            .map_err(DurableInspectionError::Storage)?
+        {
+            if outcome.identity() != identity {
+                return Err(DurableInspectionError::Storage(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                )));
+            }
+            outcomes.push(outcome);
+        }
+        admissions.push(InspectedAdmission {
+            identity: identity.clone(),
+            state,
+        });
+    }
+    outcomes.sort_by_key(StoredOutcomeV1::commit_sequence);
+    Ok((admissions, outcomes))
+}
+
+/// Scans every effectively-pending authoritative outbox intent to exact end.
+fn scan_all_pending_outbox_intents(
+    ports: &RedbOperationalPorts,
+) -> Result<Vec<StoredOutboxIntentV1>, DurableInspectionError> {
+    let limit = NonZeroU16::new(PAGE_LIMIT)
+        .and_then(|value| OutboxPageLimit::new(value).ok())
+        .ok_or(DurableInspectionError::RecordLimit)?;
+    let mut after = None;
+    let mut intents = Vec::new();
+    loop {
+        let page = ports
+            .scan_pending_outbox(after, limit)
+            .map_err(DurableInspectionError::Storage)?;
+        match page {
+            PendingOutboxScanV1::Page { items, next_after } => {
+                append_bounded(
+                    &mut intents,
+                    items.iter().map(|item| item.value().intent().clone()),
+                )?;
+                after = Some(next_after);
+            }
+            PendingOutboxScanV1::ExactEnd { items } => {
+                append_bounded(
+                    &mut intents,
+                    items.iter().map(|item| item.value().intent().clone()),
+                )?;
+                return Ok(intents);
+            }
         }
     }
 }
@@ -494,8 +1051,14 @@ impl Error for DurableInspectionError {
 
 #[cfg(test)]
 mod tests {
-    use riffdb_storage_api::{EntityTarget, ReadableDigestKey, StorageValueError};
-    use riffdb_types::{DigestKeyId, EntityKeyBuilder, EntityTypeId};
+    use riffdb_storage_api::{
+        EntityTarget, IdempotencyKeyDigest, IndexRangePrefixBuilder, ReadableDigestKey,
+        StorageValueError,
+    };
+    use riffdb_types::{
+        ActorId, AggregateTypeId, ContractLineage, DatabaseId, DigestKeyId, EntityKeyBuilder,
+        EntityTypeId, Environment, IndexId, PartitionKeyBuilder, TenantId, TenantScope,
+    };
 
     use super::*;
 
@@ -506,6 +1069,36 @@ mod tests {
         EntityTarget::new(entity_type, key.finish().expect("entity key"))
     }
 
+    fn index_range(partition: u64) -> IndexRangeSelection {
+        let mut prefix = IndexRangePrefixBuilder::new(IndexId::new(1).expect("index"));
+        prefix.push_u64(10).expect("prefix component");
+        let mut partition_key = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("agg"));
+        partition_key.push_u64(partition).expect("partition");
+        IndexRangeSelection::new(
+            IndexRangeTarget::new(
+                partition_key.finish().expect("partition key"),
+                prefix.finish(),
+            ),
+            ContractLineage::new("inspection-test").expect("lineage"),
+        )
+    }
+
+    fn admission_identity(digest: u8) -> IdempotencyIdentity {
+        IdempotencyIdentity::new(
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x71; 10])
+                .expect("database ID"),
+            Environment::new("test").expect("environment"),
+            TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant")),
+            ActorId::new("principal-a").expect("principal"),
+            ContractLineage::new("inspection-test").expect("lineage"),
+            riffdb_types::CommandId::new(1).expect("command"),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key"),
+                [digest; 32],
+            ),
+        )
+    }
+
     #[test]
     fn inspection_targets_are_strictly_ordered_and_unique() {
         let first = entity_target(1).expect("first");
@@ -514,6 +1107,63 @@ mod tests {
         assert!(matches!(
             DurableInspectionRequest::new(vec![first.clone(), first], Vec::new()),
             Err(DurableInspectionError::NonCanonicalTargets)
+        ));
+    }
+
+    #[test]
+    fn index_range_targets_are_strictly_ordered_and_bounded() {
+        let base = DurableInspectionRequest::new(Vec::new(), Vec::new()).expect("request");
+        let ordered = if index_range(1) < index_range(2) {
+            vec![index_range(1), index_range(2)]
+        } else {
+            vec![index_range(2), index_range(1)]
+        };
+        assert!(base.clone().with_index_ranges(ordered.clone()).is_ok());
+        assert!(matches!(
+            base.clone()
+                .with_index_ranges(ordered.into_iter().rev().collect()),
+            Err(DurableInspectionError::NonCanonicalTargets)
+        ));
+        assert!(matches!(
+            base.clone()
+                .with_index_ranges(vec![index_range(1), index_range(1)]),
+            Err(DurableInspectionError::NonCanonicalTargets)
+        ));
+        let too_many = (0..=u64::try_from(MAX_INSPECTION_TARGETS).expect("bound"))
+            .map(index_range)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            base.with_index_ranges(too_many),
+            Err(DurableInspectionError::TargetLimit)
+        ));
+    }
+
+    #[test]
+    fn admission_identities_are_strictly_ordered_by_storage_key_and_bounded() {
+        let base = DurableInspectionRequest::new(Vec::new(), Vec::new()).expect("request");
+        let first = admission_identity(0x01);
+        let second = admission_identity(0x02);
+        let ordered = if first.storage_key().expect("key") < second.storage_key().expect("key") {
+            vec![first.clone(), second.clone()]
+        } else {
+            vec![second.clone(), first.clone()]
+        };
+        assert!(base.clone().with_admissions(ordered.clone()).is_ok());
+        assert!(matches!(
+            base.clone()
+                .with_admissions(ordered.into_iter().rev().collect()),
+            Err(DurableInspectionError::NonCanonicalTargets)
+        ));
+        assert!(matches!(
+            base.clone().with_admissions(vec![first.clone(), first]),
+            Err(DurableInspectionError::NonCanonicalTargets)
+        ));
+        let too_many = (0..=MAX_INSPECTION_TARGETS)
+            .map(|ordinal| admission_identity(u8::try_from(ordinal % 251).expect("bounded")))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            base.with_admissions(too_many),
+            Err(DurableInspectionError::TargetLimit)
         ));
     }
 

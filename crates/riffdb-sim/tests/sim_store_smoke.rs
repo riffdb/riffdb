@@ -733,10 +733,11 @@ fn simulated_store_reopens_through_dirty_shutdown_repair_after_a_crash() {
 }
 
 /// M1: torn-write resolution with a provably NON-empty decision set. A
-/// scheduled crash is swept across countdown windows until it catches the
-/// store with unsynced state mid-commit (the engine's page writes and the
-/// journal worker's frame writes both burst between syncs). For the window
-/// that connects: unsynced torn-candidates existed at the crash, recovery
+/// scheduled crash is swept across EVERY countdown window (SIM-C1 removed
+/// the first-tearing-window break; the full sweep is ~1.2s) so that each
+/// window that crashes the store is recovered and checked — the engine's
+/// page writes and the journal worker's frame writes both burst between
+/// syncs. For every window that connects: unsynced torn-candidates existed at the crash, recovery
 /// took exactly one seeded keep/drop/prefix-truncate decision per candidate,
 /// and the reopened store passes startup validation on a consistent
 /// acknowledged state — rows 1 and 2 exactly, the interrupted command 3
@@ -807,9 +808,8 @@ fn simulated_store_resolves_torn_unsynced_state_from_a_mid_commit_crash() {
         }
         drop(recovered);
 
-        if torn > 0 {
+        if torn > 0 && torn_window.is_none() {
             torn_window = Some((window, torn, matches!(attempt, CommitAttempt::Committed)));
-            break;
         }
     }
     let Some((_window, torn, _acknowledged)) = torn_window else {
