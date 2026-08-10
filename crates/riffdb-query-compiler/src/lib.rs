@@ -143,7 +143,6 @@ pub fn compile_operational_query_family(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
-    reject_unlowered_aggregates(document)?;
     let surface = resolve_query_surface(document, catalog).map_err(|_| {
         one(
             PlannerDiagnosticCode::InternalInvariant,
@@ -210,7 +209,6 @@ fn compile_query_member(
     catalog: &SymbolicCatalog,
     unwrapped_optional_parameters: BTreeSet<String>,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
-    reject_unlowered_aggregates(document)?;
     if let Some(span) = document
         .body
         .bindings
@@ -647,6 +645,7 @@ impl<'a> Planner<'a> {
             .into_values()
             .map(AuthAccumulator::finish)
             .collect::<Result<Vec<_>, _>>()?;
+        cost.add_aggregates(surface.aggregates(), self.catalog)?;
         let cost = cost.finish(steps.len())?;
         QueryAccessProgramV1::checked(
             self.catalog.identity().clone(),
@@ -991,6 +990,63 @@ impl QueryCostAccumulator {
         Ok(())
     }
 
+    fn add_aggregates(
+        &mut self,
+        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+        catalog: &SymbolicCatalog,
+    ) -> Result<(), PlannerDiagnostics> {
+        for aggregate in aggregates {
+            let entity = catalog
+                .entity(aggregate.source_entity())
+                .ok_or_else(internal)?;
+            let groups = match aggregate.maximum_groups() {
+                riffdb_query_ir::PageBound::Literal(value) => *value,
+                riffdb_query_ir::PageBound::Parameter(_) => riffdb_query_ir::max_query_page_take(),
+            };
+            let cells = u64::try_from(aggregate.group_keys().len() + aggregate.measures().len())
+                .map_err(|_| internal())?;
+            self.projected_values = checked_cost_add(
+                self.projected_values,
+                checked_cost_product(groups, cells, self.primary_span)?,
+                self.primary_span,
+            )?;
+
+            let mut group_bytes = 192_u64;
+            for key in aggregate.group_keys() {
+                group_bytes = checked_cost_add(
+                    group_bytes,
+                    aggregate_field_bytes(entity, key.field())?,
+                    self.primary_span,
+                )?;
+            }
+            for measure in aggregate.measures() {
+                let value_bytes = match measure.function() {
+                    riffdb_query_ir::OperationalAggregateFunctionV1::Count => 10,
+                    riffdb_query_ir::OperationalAggregateFunctionV1::Sum => 48,
+                    riffdb_query_ir::OperationalAggregateFunctionV1::Min
+                    | riffdb_query_ir::OperationalAggregateFunctionV1::Max => {
+                        aggregate_field_bytes(entity, measure.input_field().ok_or_else(internal)?)?
+                    }
+                };
+                group_bytes = checked_cost_add(
+                    group_bytes,
+                    u64::try_from(measure.alias().len())
+                        .ok()
+                        .and_then(|name| name.checked_add(value_bytes))
+                        .and_then(|value| value.checked_add(160))
+                        .ok_or_else(internal)?,
+                    self.primary_span,
+                )?;
+            }
+            self.encoded_result_bytes = checked_cost_add(
+                self.encoded_result_bytes,
+                checked_cost_product(groups, group_bytes, self.primary_span)?,
+                self.primary_span,
+            )?;
+        }
+        Ok(())
+    }
+
     fn finish(self, steps: usize) -> Result<QueryCostVectorV1, PlannerDiagnostics> {
         QueryCostVectorV1::new(
             u64::try_from(steps).map_err(|_| internal())?,
@@ -1035,6 +1091,23 @@ fn checked_cost_product(left: u64, right: u64, span: Span) -> Result<u64, Planne
             None,
         )
     })
+}
+
+fn aggregate_field_bytes(
+    entity: &EntitySymbol,
+    field_name: &str,
+) -> Result<u64, PlannerDiagnostics> {
+    let field = entity.field(field_name).ok_or_else(internal)?;
+    let maximum = field
+        .value_type()
+        .maximum_canonical_bytes()
+        .map_err(|_| internal())?
+        .ok_or_else(internal)?;
+    u64::try_from(field_name.len())
+        .ok()
+        .and_then(|name| name.checked_add(maximum as u64))
+        .and_then(|value| value.checked_add(160))
+        .ok_or_else(internal)
 }
 
 fn predicate_operator(
@@ -1478,6 +1551,26 @@ fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
     let mut output = BTreeMap::new();
     for selection in &document.body.selection.fields {
         collect_selected(selection, &mut output);
+    }
+    for aggregate in &document.body.aggregates {
+        let fields = output
+            .entry(aggregate.source.value.as_str().to_owned())
+            .or_default();
+        fields.extend(
+            aggregate
+                .group_by
+                .iter()
+                .filter_map(|field| path_field(&field.value))
+                .map(str::to_owned),
+        );
+        fields.extend(
+            aggregate
+                .measures
+                .iter()
+                .filter_map(|measure| measure.field.as_ref())
+                .filter_map(|field| path_field(&field.value))
+                .map(str::to_owned),
+        );
     }
     output
 }

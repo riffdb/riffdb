@@ -4,7 +4,10 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::{
     PlannerDiagnosticCode, compile_operational_query_family, compile_query,
 };
-use riffdb_query_ir::{MAX_OPERATIONAL_PRESENCE_PARAMETERS, SymbolicCatalog};
+use riffdb_query_ir::{
+    MAX_OPERATIONAL_PRESENCE_PARAMETERS, NamedTypeSchema, OperationalAggregateFunctionV1,
+    PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, SourceSymbolKind, SymbolicCatalog,
+};
 use riffdb_riffql_syntax::parse_query;
 
 const CONTRACT: &str = r#"
@@ -13,6 +16,8 @@ contract Operational version 1 {
     key (organization_id: uuid, ticket_id: uuid)
     field status: string<32>
     field priority: string<32>
+    field story_points: i64
+    field created_at: timestamp
     field updated_at: timestamp
     index a_status_priority (organization_id, status, priority, updated_at, ticket_id)
     index b_status (organization_id, status, updated_at, ticket_id)
@@ -198,30 +203,168 @@ fn presence_dimension_count_is_hard_bounded_before_enumeration() {
 }
 
 #[test]
-fn aggregate_syntax_fails_closed_at_its_symbol_until_exact_lowering_exists() {
+fn aggregate_syntax_lowers_to_a_bounded_authorized_family() {
     let catalog = catalog(CONTRACT);
     let source = QUERY.replace(
-        "    return Found",
-        "    aggregate summary from tickets { count() as ticket_count }\n    return Found",
+        "    return Found { tickets: tickets { ticket_id status priority updated_at } }",
+        r#"    aggregate summary from tickets {
+        group by status, priority
+        count() as ticket_count
+        sum(story_points) as total_points
+        min(created_at) as earliest
+        max(updated_at) as latest
+    }
+    return Found {
+        tickets: tickets { ticket_id status priority updated_at }
+        summary: summary { status priority ticket_count total_points earliest latest }
+    }"#,
     );
     let document = parse_query(&source).expect("aggregate syntax");
     let expected_start = source.find("summary from").expect("aggregate symbol") as u32;
 
-    for diagnostics in [
-        compile_query(&document, &catalog).expect_err("ordinary compiler must reject"),
-        compile_operational_query_family(&document, &catalog)
-            .expect_err("family compiler must reject"),
+    let diagnostics = compile_query(&document, &catalog).expect_err("ordinary compiler rejects");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(
+        diagnostic.code(),
+        PlannerDiagnosticCode::OperationalFamilyRequired
+    );
+    assert_eq!(diagnostic.primary().start, expected_start);
+    assert_eq!(diagnostic.symbol_path(), &["summary"]);
+
+    let family = compile_operational_query_family(&document, &catalog).expect("aggregate family");
+    for (bytes, magic) in [
+        (
+            family.canonical_bytes(),
+            b"RIFFDB-OPERATIONAL-QUERY-FAMILY\0".as_slice(),
+        ),
+        (
+            family.surface().canonical_bytes(),
+            b"RIFFDB-QUERY-SURFACE\0".as_slice(),
+        ),
     ] {
-        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(&bytes[..magic.len()], magic);
         assert_eq!(
-            diagnostic.code(),
-            PlannerDiagnosticCode::OperationalFamilyRequired
-        );
-        assert_eq!(diagnostic.primary().start, expected_start);
-        assert_eq!(diagnostic.symbol_path(), &["summary"]);
-        assert_eq!(
-            diagnostic.summary(),
-            "operational aggregates require exact aggregate lowering"
+            u32::from_be_bytes(
+                bytes[magic.len()..magic.len() + 4]
+                    .try_into()
+                    .expect("version bytes")
+            ),
+            QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
         );
     }
+    let [aggregate] = family.aggregates() else {
+        panic!("one aggregate descriptor expected")
+    };
+    assert_eq!(aggregate.name(), "summary");
+    assert_eq!(aggregate.source_binding(), "tickets");
+    assert_eq!(aggregate.source_entity(), "Ticket");
+    assert_eq!(aggregate.maximum_groups(), &PageBound::Literal(25));
+    assert_eq!(
+        aggregate
+            .group_keys()
+            .iter()
+            .map(|key| key.field())
+            .collect::<Vec<_>>(),
+        ["status", "priority"]
+    );
+    assert_eq!(
+        aggregate
+            .measures()
+            .iter()
+            .map(|measure| (measure.alias(), measure.function(), measure.input_field()))
+            .collect::<Vec<_>>(),
+        [
+            ("ticket_count", OperationalAggregateFunctionV1::Count, None),
+            (
+                "total_points",
+                OperationalAggregateFunctionV1::Sum,
+                Some("story_points")
+            ),
+            (
+                "earliest",
+                OperationalAggregateFunctionV1::Min,
+                Some("created_at")
+            ),
+            (
+                "latest",
+                OperationalAggregateFunctionV1::Max,
+                Some("updated_at")
+            ),
+        ]
+    );
+    assert_eq!(
+        aggregate.measures()[1].result_type(),
+        &NamedTypeSchema::Scalar("decimal<39,0>".to_owned())
+    );
+    assert_eq!(
+        aggregate.measures()[2].result_type(),
+        &NamedTypeSchema::Optional(Box::new(NamedTypeSchema::Scalar("timestamp".to_owned())))
+    );
+
+    for member in family.members() {
+        let fields = member.program().steps()[0].selected_fields();
+        for expected in [
+            "created_at",
+            "priority",
+            "status",
+            "story_points",
+            "ticket_id",
+            "updated_at",
+        ] {
+            assert!(fields.iter().any(|field| field == expected), "{fields:?}");
+            assert!(
+                member.program().authorization()[0]
+                    .fields()
+                    .iter()
+                    .any(|field| field == expected),
+                "{:?}",
+                member.program().authorization()[0].fields()
+            );
+        }
+        assert!(member.program().cost().projected_values() > 100);
+    }
+    assert!(
+        family
+            .surface()
+            .source_map()
+            .entries()
+            .iter()
+            .any(|entry| entry.kind() == SourceSymbolKind::Aggregate
+                && entry.symbolic_path() == ["summary"])
+    );
+    assert!(
+        family
+            .surface()
+            .source_map()
+            .entries()
+            .iter()
+            .any(|entry| entry.kind() == SourceSymbolKind::AggregateMeasure
+                && entry.symbolic_path() == ["summary", "total_points"])
+    );
+}
+
+#[test]
+fn whole_set_aggregate_has_one_result_and_changes_family_identity() {
+    let catalog = catalog(CONTRACT);
+    let count_source = QUERY.replace(
+        "    return Found",
+        "    aggregate summary from tickets { count() as ticket_count }\n    return Found",
+    );
+    let sum_source = count_source.replace(
+        "count() as ticket_count",
+        "sum(story_points) as total_points",
+    );
+    let count = compile_operational_query_family(
+        &parse_query(&count_source).expect("count syntax"),
+        &catalog,
+    )
+    .expect("count family");
+    let sum =
+        compile_operational_query_family(&parse_query(&sum_source).expect("sum syntax"), &catalog)
+            .expect("sum family");
+    assert_eq!(
+        count.aggregates()[0].maximum_groups(),
+        &PageBound::Literal(1)
+    );
+    assert_ne!(count.identity(), sum.identity());
 }

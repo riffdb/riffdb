@@ -1,13 +1,15 @@
 #![forbid(unsafe_code)]
 
-//! Generates the receipted RiffQL v1-to-operational-v2 identity rotation.
+//! Generates the receipted RiffQL v1-to-operational-v2-to-aggregate-v3 identity rotation.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_query_ir::{QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_V1};
+use riffdb_query_ir::{
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_V1,
+};
 use riffdb_query_module::{
     ApplicationLock, ApplicationSourceManifest, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule, QueryModuleCandidate,
@@ -60,6 +62,26 @@ query SearchTickets(
 }
 "#;
 
+const QUERY_OPERATIONAL_AGGREGATE_V1: &str = r#"
+query SearchTickets(
+    $organization_id: Ticket.organization_id,
+    $status: Ticket.status?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+        order by updated_at asc, ticket_id asc
+        take 25
+    aggregate summary from tickets {
+        group by status
+        count() as ticket_count
+        min(updated_at) as earliest
+    }
+    return Found { summary: summary { status ticket_count earliest } }
+    outcomes Found
+}
+"#;
+
 struct Closure {
     source: ApplicationSourceManifest,
     module: QueryModule,
@@ -76,15 +98,24 @@ fn main() {
     let contract = compile_contract_source(CONTRACT).expect("operational rotation contract");
     let before = compile_closure(1, QUERY_V1, &contract);
     let after = compile_closure(2, QUERY_OPERATIONAL_V1, &contract);
+    let aggregate = compile_closure(3, QUERY_OPERATIONAL_AGGREGATE_V1, &contract);
 
     let before_query = before.module.query("SearchTickets").expect("before query");
     let after_query = after.module.query("SearchTickets").expect("after query");
     let after_family = after_query
         .operational_family()
         .expect("operational query family");
+    let aggregate_query = aggregate
+        .module
+        .query("SearchTickets")
+        .expect("aggregate query");
+    let aggregate_family = aggregate_query
+        .operational_family()
+        .expect("aggregate query family");
 
     assert_eq!(before.module.format_version(), 1);
     assert_eq!(after.module.format_version(), 2);
+    assert_eq!(aggregate.module.format_version(), 3);
     assert_eq!(
         before_query.document().language_version,
         RIFFQL_LANGUAGE_VERSION
@@ -115,6 +146,12 @@ fn main() {
             RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
             QUERY_IR_VERSION_OPERATIONAL_V1,
         ),
+        "aggregate_after": closure_receipt(
+            &aggregate,
+            aggregate_query,
+            RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
+            QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
+        ),
         "operational_family": {
             "presence_parameters": after_family.presence_parameters(),
             "member_count": after_family.members().len(),
@@ -135,6 +172,19 @@ fn main() {
                 "result_bytes": after_family.maximum_cost().encoded_result_bytes(),
             },
         },
+        "operational_aggregates": aggregate_family.aggregates().iter().map(|aggregate| json!({
+            "name": aggregate.name(),
+            "source": aggregate.source_binding(),
+            "entity": aggregate.source_entity(),
+            "maximum_groups": format!("{:?}", aggregate.maximum_groups()),
+            "group_keys": aggregate.group_keys().iter().map(|key| key.field()).collect::<Vec<_>>(),
+            "measures": aggregate.measures().iter().map(|measure| json!({
+                "alias": measure.alias(),
+                "function": format!("{:?}", measure.function()),
+                "input_field": measure.input_field(),
+                "result_type": format!("{:?}", measure.result_type()),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
         "repository_closure": [
             retained_application("examples/agent-alpha/riffdb.application.lock.json"),
             retained_application("examples/ticketdesk/riffdb.application.lock.json"),
@@ -147,6 +197,7 @@ fn main() {
         "classification": {
             "ordinary_v1_bytes_preserved": true,
             "operational_v2_additive": true,
+            "operational_aggregate_v3_additive": true,
             "partial_rotation_is_success": false,
         },
     });

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use riffdb_types::{QueryCostVectorV1, QueryPlanHash, hash_query_plan};
 
 use crate::{
-    AuthorizationEntityAccess, MAX_QUERY_ARTIFACT_BYTES, QUERY_IR_VERSION_OPERATIONAL_V1,
+    AuthorizationEntityAccess, MAX_QUERY_ARTIFACT_BYTES, NamedTypeSchema, PageBound,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
     QueryAccessProgramV1, ResolvedQueryV1,
 };
 
@@ -15,6 +16,195 @@ const FAMILY_MAGIC: &[u8] = b"RIFFDB-OPERATIONAL-QUERY-FAMILY\0";
 pub const MAX_OPERATIONAL_PRESENCE_PARAMETERS: usize = 8;
 /// Maximum compiler-enumerated access plans in one operational family.
 pub const MAX_OPERATIONAL_PLAN_MEMBERS: usize = 1 << MAX_OPERATIONAL_PRESENCE_PARAMETERS;
+
+/// Closed aggregate functions shared with the projected exact evaluator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationalAggregateFunctionV1 {
+    /// Exact matching-row count.
+    Count,
+    /// Checked exact numeric sum.
+    Sum,
+    /// Minimum contributed value, absent for an empty input.
+    Min,
+    /// Maximum contributed value, absent for an empty input.
+    Max,
+}
+
+/// One resolved grouping field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationalAggregateGroupKeyV1 {
+    field: String,
+    value_type: NamedTypeSchema,
+}
+
+impl OperationalAggregateGroupKeyV1 {
+    /// Exact source field name.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Name-addressed result type.
+    #[must_use]
+    pub const fn value_type(&self) -> &NamedTypeSchema {
+        &self.value_type
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked(field: String, value_type: NamedTypeSchema) -> Option<Self> {
+        (!field.is_empty()).then_some(Self { field, value_type })
+    }
+}
+
+/// One resolved exact aggregate measure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationalAggregateMeasureV1 {
+    alias: String,
+    function: OperationalAggregateFunctionV1,
+    input_field: Option<String>,
+    result_type: NamedTypeSchema,
+}
+
+impl OperationalAggregateMeasureV1 {
+    /// Declared result field name.
+    #[must_use]
+    pub fn alias(&self) -> &str {
+        &self.alias
+    }
+
+    /// Closed aggregate function.
+    #[must_use]
+    pub const fn function(&self) -> OperationalAggregateFunctionV1 {
+        self.function
+    }
+
+    /// Exact source field for non-count measures.
+    #[must_use]
+    pub fn input_field(&self) -> Option<&str> {
+        self.input_field.as_deref()
+    }
+
+    /// Name-addressed result type.
+    #[must_use]
+    pub const fn result_type(&self) -> &NamedTypeSchema {
+        &self.result_type
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked(
+        alias: String,
+        function: OperationalAggregateFunctionV1,
+        input_field: Option<String>,
+        result_type: NamedTypeSchema,
+    ) -> Option<Self> {
+        let input_is_valid = match function {
+            OperationalAggregateFunctionV1::Count => input_field.is_none(),
+            OperationalAggregateFunctionV1::Sum
+            | OperationalAggregateFunctionV1::Min
+            | OperationalAggregateFunctionV1::Max => {
+                input_field.as_ref().is_some_and(|field| !field.is_empty())
+            }
+        };
+        (!alias.is_empty() && input_is_valid).then_some(Self {
+            alias,
+            function,
+            input_field,
+            result_type,
+        })
+    }
+}
+
+/// One compiler-resolved bounded aggregate over an earlier collection binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationalAggregateV1 {
+    name: String,
+    source_binding: String,
+    source_entity: String,
+    group_keys: Vec<OperationalAggregateGroupKeyV1>,
+    measures: Vec<OperationalAggregateMeasureV1>,
+    maximum_groups: PageBound,
+}
+
+impl OperationalAggregateV1 {
+    /// Query-local aggregate result name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Earlier bounded collection binding being folded.
+    #[must_use]
+    pub fn source_binding(&self) -> &str {
+        &self.source_binding
+    }
+
+    /// Exact contract entity supplying rows.
+    #[must_use]
+    pub fn source_entity(&self) -> &str {
+        &self.source_entity
+    }
+
+    /// Grouping keys in declaration/result order.
+    #[must_use]
+    pub fn group_keys(&self) -> &[OperationalAggregateGroupKeyV1] {
+        &self.group_keys
+    }
+
+    /// Measures in declaration/result order.
+    #[must_use]
+    pub fn measures(&self) -> &[OperationalAggregateMeasureV1] {
+        &self.measures
+    }
+
+    /// Compiler-proven maximum returned group count.
+    #[must_use]
+    pub const fn maximum_groups(&self) -> &PageBound {
+        &self.maximum_groups
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked(
+        name: String,
+        source_binding: String,
+        source_entity: String,
+        group_keys: Vec<OperationalAggregateGroupKeyV1>,
+        measures: Vec<OperationalAggregateMeasureV1>,
+        maximum_groups: PageBound,
+    ) -> Option<Self> {
+        let group_names = group_keys
+            .iter()
+            .map(|key| key.field.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let measure_names = measures
+            .iter()
+            .map(|measure| measure.alias.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if name.is_empty()
+            || source_binding.is_empty()
+            || source_entity.is_empty()
+            || measures.is_empty()
+            || group_keys.len() > riffdb_riffql_syntax::MAX_AGGREGATE_GROUP_KEYS
+            || measures.len() > riffdb_riffql_syntax::MAX_AGGREGATE_MEASURES
+            || group_names.len() != group_keys.len()
+            || measure_names.len() != measures.len()
+            || group_names.iter().any(|name| measure_names.contains(name))
+            || (group_keys.is_empty() && !matches!(maximum_groups, PageBound::Literal(1)))
+        {
+            return None;
+        }
+        Some(Self {
+            name,
+            source_binding,
+            source_entity,
+            group_keys,
+            measures,
+            maximum_groups,
+        })
+    }
+}
 
 /// Stable identity of one complete finite operational plan family.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -112,6 +302,7 @@ impl OperationalQueryFamilyV1 {
         let maximum_cost = maximum_cost(&members)?;
         let canonical_bytes = encode_family(
             surface.canonical_bytes(),
+            !surface.aggregates().is_empty(),
             &presence_parameters,
             &members,
             &authorization_union,
@@ -145,6 +336,12 @@ impl OperationalQueryFamilyV1 {
     #[must_use]
     pub fn presence_parameters(&self) -> &[String] {
         &self.presence_parameters
+    }
+
+    /// Exact aggregate descriptors shared by every family member.
+    #[must_use]
+    pub fn aggregates(&self) -> &[OperationalAggregateV1] {
+        self.surface.aggregates()
     }
 
     /// Every selectable member in ascending mask order.
@@ -235,6 +432,7 @@ fn maximum_cost(members: &[OperationalPlanMemberV1]) -> Option<QueryCostVectorV1
 
 fn encode_family(
     surface: &[u8],
+    has_aggregates: bool,
     parameters: &[String],
     members: &[OperationalPlanMemberV1],
     authorization: &[AuthorizationEntityAccess],
@@ -242,7 +440,14 @@ fn encode_family(
 ) -> Option<Vec<u8>> {
     let mut output = Vec::new();
     output.extend_from_slice(FAMILY_MAGIC);
-    output.extend_from_slice(&QUERY_IR_VERSION_OPERATIONAL_V1.to_be_bytes());
+    output.extend_from_slice(
+        &if has_aggregates {
+            QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
+        } else {
+            QUERY_IR_VERSION_OPERATIONAL_V1
+        }
+        .to_be_bytes(),
+    );
     write_bytes(&mut output, surface)?;
     write_strings(&mut output, parameters)?;
     write_count(&mut output, members.len())?;

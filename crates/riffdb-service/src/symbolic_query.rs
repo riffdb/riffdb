@@ -1602,6 +1602,20 @@ async fn deploy_module(
             ApplicationErrorCode::QueryInvalid,
         )
     })?;
+    if module.module().queries().iter().any(|query| {
+        query
+            .operational_family()
+            .is_some_and(|family| !family.aggregates().is_empty())
+    }) {
+        // WP-563 seals aggregate syntax, types, authorization, cost, and module
+        // identity. WP-564 owns snapshot execution and exact result carriage.
+        // Refuse deployment until that executor exists so a checked aggregate
+        // can never be mistaken for its source row query.
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryInvalid,
+        ));
+    }
     let descriptor = QueryModuleDescriptor::from_module(&module);
     let operation = OperationRequest::deploy_query_module(
         bundle.lineage().clone(),
@@ -2019,6 +2033,17 @@ async fn execute_named_query(
             ApplicationErrorCode::QueryUnavailable,
         )
     })?;
+    if query
+        .operational_family()
+        .is_some_and(|family| !family.aggregates().is_empty())
+    {
+        // Defense in depth for modules restored or injected through an
+        // administrative path predating the WP-564 execution contract.
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryInvalid,
+        ));
+    }
     service
         .providers
         .telemetry

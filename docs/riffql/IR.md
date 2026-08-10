@@ -1,4 +1,4 @@
-# Symbolic catalog and query surface IR v1
+# Symbolic catalog and query surface IR
 
 WP-220 resolves RiffQL against one exact validated contract bundle. The
 symbolic catalog indexes entities, fields, enums, variants, and indexes by
@@ -11,6 +11,15 @@ RiffQL source, resolved binding identities, and complete name-addressed
 parameter/result schemas. Lengths and counts are big-endian `u32`; the complete
 artifact is bounded to 4 MiB. Source maps are kept separately so whitespace and
 source offsets do not change canonical semantic bytes.
+
+Finite operational plan families use additive query-IR version 2. They seal
+every compiler-enumerated presence member, the whole-family authorization
+union, maximum cost, and stable cursor identity. A family containing bounded
+exact aggregate descriptors uses additive query-IR version 3 for both its
+resolved surface and enclosing family. Version 3 adds
+the symbolic source binding/entity, ordered group keys and result types,
+ordered measures and result types, and the compiler-proven maximum group
+count. Ordinary version-1 and non-aggregate version-2 bytes do not rotate.
 
 Parameter types are contract enums, `Entity.field` references, optional
 wrappers, bounded query sets, `Cursor`, or `Limit`. Result schemas contain only
