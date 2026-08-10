@@ -27,6 +27,7 @@ pub struct RedbStagedRestore {
     backup_directory: PathBuf,
     staged_database_file: PathBuf,
     staged_journal_file: PathBuf,
+    staged_format_marker_file: PathBuf,
     configured_database_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
@@ -92,12 +93,15 @@ impl RedbStagedRestore {
             Ok(manifest) => {
                 let staged_database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
                 let staged_journal_file = crate::journal::journal_path(&staged_database_file);
+                let staged_format_marker_file =
+                    crate::durable_format_marker_path(&staged_database_file);
                 Ok(Self {
                     operation_id,
                     backup_name,
                     backup_directory,
                     staged_database_file,
                     staged_journal_file,
+                    staged_format_marker_file,
                     configured_database_file,
                     manifest,
                     manifest_identity,
@@ -169,6 +173,12 @@ impl RedbStagedRestore {
             self.manifest.last_commit_sequence(),
         )?;
         let sealed_journal_checksum = sha256_file(&self.staged_journal_file)?;
+        if crate::preflight_durable_format_path(&self.staged_database_file)
+            != Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
+        {
+            return Err(corrupt());
+        }
+        let sealed_format_marker_checksum = sha256_file(&self.staged_format_marker_file)?;
         self.verify_paths()?;
         Ok(RedbSealedStagedRestore {
             operation_id: self.operation_id,
@@ -177,11 +187,13 @@ impl RedbStagedRestore {
             configured_database_file: self.configured_database_file,
             staged_database_file: self.staged_database_file,
             staged_journal_file: self.staged_journal_file,
+            staged_format_marker_file: self.staged_format_marker_file,
             manifest: self.manifest,
             manifest_identity: self.manifest_identity,
             staged_history_incarnation,
             sealed_artifact_checksum,
             sealed_journal_checksum,
+            sealed_format_marker_checksum,
             backup_directory_guard: self.backup_directory_guard,
             configured_parent_guard: self.configured_parent_guard,
             stage_cleanup: self.stage_cleanup,
@@ -215,11 +227,13 @@ pub struct RedbSealedStagedRestore {
     configured_database_file: PathBuf,
     staged_database_file: PathBuf,
     staged_journal_file: PathBuf,
+    staged_format_marker_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
     staged_history_incarnation: u64,
     sealed_artifact_checksum: BackupIntegrityChecksumV1,
     sealed_journal_checksum: BackupIntegrityChecksumV1,
+    sealed_format_marker_checksum: BackupIntegrityChecksumV1,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
     stage_cleanup: StagedDirectoryCleanup,
@@ -311,6 +325,14 @@ impl RedbSealedStagedRestore {
         if sha256_reader(staged_journal)? != self.sealed_journal_checksum {
             return Err(corrupt());
         }
+        let staged_format_marker_name = self
+            .staged_format_marker_file
+            .file_name()
+            .ok_or_else(invariant)?;
+        let staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
+        if sha256_reader(staged_format_marker)? != self.sealed_format_marker_checksum {
+            return Err(corrupt());
+        }
         self.stage_cleanup.verify()?;
 
         let target_lock = lock_existing_target(&self.configured_parent_guard, target_name)?;
@@ -318,6 +340,12 @@ impl RedbSealedStagedRestore {
         let target_journal_name = configured_journal.file_name().ok_or_else(invariant)?;
         let target_journal_lock =
             lock_existing_target(&self.configured_parent_guard, target_journal_name)?;
+        let configured_format_marker =
+            crate::durable_format_marker_path(&self.configured_database_file);
+        let target_format_marker_name =
+            configured_format_marker.file_name().ok_or_else(invariant)?;
+        let target_format_marker_lock =
+            lock_existing_target(&self.configured_parent_guard, target_format_marker_name)?;
         let (mut temporary, mut temporary_file) = TargetTemporaryFile::create(
             &self.configured_parent_guard,
             target_name,
@@ -328,6 +356,12 @@ impl RedbSealedStagedRestore {
             target_journal_name,
             self.operation_id,
         )?;
+        let (mut format_marker_temporary, mut format_marker_temporary_file) =
+            TargetTemporaryFile::create(
+                &self.configured_parent_guard,
+                target_format_marker_name,
+                self.operation_id,
+            )?;
         let mut staged_file = self
             .stage_cleanup
             .open_file(std::ffi::OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?;
@@ -340,6 +374,12 @@ impl RedbSealedStagedRestore {
         copy_and_sync(&mut staged_journal, &mut journal_temporary_file)?;
         drop(journal_temporary_file);
         if sha256_reader(journal_temporary.reopen()?)? != self.sealed_journal_checksum {
+            return Err(corrupt());
+        }
+        let mut staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
+        copy_and_sync(&mut staged_format_marker, &mut format_marker_temporary_file)?;
+        drop(format_marker_temporary_file);
+        if sha256_reader(format_marker_temporary.reopen()?)? != self.sealed_format_marker_checksum {
             return Err(corrupt());
         }
         if target_file_state(&self.configured_parent_guard, target_name)?
@@ -361,14 +401,31 @@ impl RedbSealedStagedRestore {
         )? {
             return Err(corrupt());
         }
+        if !target_lock_matches(
+            &self.configured_parent_guard,
+            target_format_marker_name,
+            target_format_marker_lock.as_ref(),
+        )? {
+            return Err(corrupt());
+        }
         if target_file_state(&self.configured_parent_guard, target_name)?
             == TargetFileState::NonEmpty
             && overwrite_policy == OfflineRestoreOverwritePolicyV1::RefuseNonEmpty
         {
             return Ok(OfflineRestoreResultV1::TargetNotEmpty);
         }
+        // Remove and durably publish absence of the old marker before any new
+        // database bytes. A crash from here until the final marker rename is a
+        // typed startup refusal, never a stale-marker acceptance.
+        self.configured_parent_guard
+            .remove_file_if_present(target_format_marker_name)?;
+        self.configured_parent_guard.sync()?;
         temporary.publish(target_name)?;
         journal_temporary.publish(target_journal_name)?;
+        // Publish the marker last. A crash before this rename leaves no new
+        // marker for new bytes and therefore forces startup to refuse rather
+        // than trusting a partially published restore.
+        format_marker_temporary.publish(target_format_marker_name)?;
         self.stage_cleanup.disarm();
         self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
         if self.configured_parent_guard.sync().is_err()
@@ -378,6 +435,7 @@ impl RedbSealedStagedRestore {
         }
         drop(target_lock);
         drop(target_journal_lock);
+        drop(target_format_marker_lock);
         self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(self.manifest),

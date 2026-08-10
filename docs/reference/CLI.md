@@ -28,6 +28,7 @@ Commands:
   capability
   server
   backup
+  storage      Inspects or upgrades one closed database's durable format
   retention    Offline exclusive retention maintenance on a closed database file
   demo
 
@@ -400,6 +401,27 @@ Commands:
   create
   restore
   operation
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb storage`
+
+```text
+Inspects or upgrades one closed database's durable format
+
+Usage: riffdb storage [OPTIONS] <COMMAND>
+
+Commands:
+  preflight  Compares the retained format identity without opening the database
+  upgrade    Runs the sole manifest-authorized offline transition from a verified backup
 
 Options:
       --config <PATH>
@@ -1693,6 +1715,43 @@ Arguments:
 
 Options:
       --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb storage preflight`
+
+```text
+Compares the retained format identity without opening the database
+
+Usage: riffdb storage preflight [OPTIONS] --database-path <PATH>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb storage upgrade`
+
+```text
+Runs the sole manifest-authorized offline transition from a verified backup
+
+Usage: riffdb storage upgrade [OPTIONS] --database-path <PATH> --backup <BACKUP_DIRECTORY>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --backup <BACKUP_DIRECTORY>
       --endpoint <LOOPBACK_HTTP_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]

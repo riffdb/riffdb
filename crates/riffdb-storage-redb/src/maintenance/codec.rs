@@ -1,14 +1,16 @@
 use riffdb_storage_api::{
-    BackupIntegrityChecksumV1, ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1,
-    ContractMigrationArtifactsV1, ContractMigrationOperationArtifactsV1,
-    ContractMigrationOperationKindV1, ContractMigrationReceiptFailureV1,
-    ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
-    ContractMigrationReceiptV1, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
-    MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1, MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1,
-    OfflineBackupManifestIdentityV1, OfflineMaintenanceAdmissionV1,
-    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPhaseV1,
-    OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1, StorageError,
-    StorageErrorKind, StorageValueError,
+    BackupIntegrityChecksumV1,
+    CONTRACT_MIGRATION_CHECK_RECEIPT_VERSION as MIGRATION_RECEIPT_CHECK_FORMAT_VERSION,
+    ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1, ContractMigrationArtifactsV1,
+    ContractMigrationOperationArtifactsV1, ContractMigrationOperationKindV1,
+    ContractMigrationReceiptFailureV1, ContractMigrationReceiptPhaseV1,
+    ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
+    MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1,
+    MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1,
+    OFFLINE_MAINTENANCE_RECEIPT_VERSION as RECEIPT_FORMAT_VERSION, OfflineBackupManifestIdentityV1,
+    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptFailureV1,
+    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
+    OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind, StorageValueError,
 };
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, ContractBundleHash,
@@ -26,10 +28,8 @@ pub(super) const RECEIPT_TEMP_SUFFIX: &str = ".receipt-v1.tmp";
 pub(super) const MAX_RECEIPT_BYTES: usize = 4 * 1024;
 
 const RECEIPT_MAGIC: &[u8] = b"RIFFDB-MAINT-RECEIPT\0";
-const RECEIPT_FORMAT_VERSION: u32 = 1;
 const SHA256_BYTES: usize = 32;
 const MIGRATION_RECEIPT_MAGIC: &[u8] = b"RIFFDB-MIGRATION-RECEIPT\0";
-const MIGRATION_RECEIPT_CHECK_FORMAT_VERSION: u32 = 2;
 pub(super) const MAX_MIGRATION_RECEIPT_BYTES: usize = 8 * 1024;
 
 pub(super) fn encode_receipt(

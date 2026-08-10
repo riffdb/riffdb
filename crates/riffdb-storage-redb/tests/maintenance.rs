@@ -822,6 +822,8 @@ fn zero_byte_target_needs_no_confirmation_but_every_nonempty_target_does() {
         PathBuf::from(path)
     };
     fs::remove_file(journal).expect("remove paired journal");
+    fs::remove_file(riffdb_storage_redb::durable_format_marker_path(&database))
+        .expect("remove paired format marker");
     initialize(&database);
     assert_eq!(
         storage
@@ -1037,7 +1039,7 @@ fn named_backup_publication_retry_resolves_only_the_reserved_operation_artifact(
         fs::read_dir(&backup_directory)
             .expect("published backup")
             .count(),
-        3
+        4
     );
 
     let (manifest, identity) = storage

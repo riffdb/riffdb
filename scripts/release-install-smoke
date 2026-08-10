@@ -21,7 +21,7 @@ if [[ -n "$(find "$bundle_root" -type l -print -quit)" ]]; then
     exit 1
 fi
 
-for tool in cmp find install mktemp rm sort stat; do
+for tool in awk cmp find install jq mktemp rm sha256sum sort stat; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         printf 'required release install smoke tool is missing: %s\n' "$tool" >&2
         exit 1
@@ -59,6 +59,50 @@ actual_configs="$(
 )"
 if [[ "$actual_configs" != "$expected_configs" ]]; then
     printf '%s\n' 'release bundle contains an unexpected configuration set' >&2
+    exit 1
+fi
+expected_compatibility=$'durable-fixture-inventory-v1.txt\nphysical-formats-v1.json\nrelease-pairs-v1.json'
+actual_compatibility="$(
+    find "$bundle_root/release/compatibility" \
+        -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_compatibility" != "$expected_compatibility" ]]; then
+    printf '%s\n' 'release bundle contains an unexpected compatibility artifact set' >&2
+    exit 1
+fi
+format_manifest="$bundle_root/release/durable-format-manifest-v1.json"
+if [[ ! -f "$format_manifest" || -L "$format_manifest" ]]; then
+    printf '%s\n' 'release bundle omits its durable-format manifest' >&2
+    exit 1
+fi
+fixture_digest="$(
+    sha256sum "$bundle_root/release/compatibility/durable-fixture-inventory-v1.txt" \
+        | awk '{print $1}'
+)"
+if ! jq -e --arg fixture_digest "$fixture_digest" '
+    .schema == "riffdb.durable-format-manifest/v1"
+    and .alpha_epoch == 1
+    and .writer >= 1
+    and (.minimum_supported_source_release | type == "string" and length > 0)
+    and (.maximum_supported_source_release | type == "string" and length > 0)
+    and .compatibility_fixture_digest == $fixture_digest
+    and .upgrade_table == "compatibility/release-pairs-v1.json"
+    and .physical_format_inventory == "compatibility/physical-formats-v1.json"
+    and .readable_format_upgrade_receipt_versions == [1]
+    and .writable_format_upgrade_receipt_versions == [1]
+    and .readable_redb_layout_versions == [1]
+    and .writable_redb_layout_versions == [1]
+    and .readable_offline_maintenance_receipt_versions == [1]
+    and .writable_offline_maintenance_receipt_versions == [1]
+    and .readable_contract_migration_check_receipt_versions == [2]
+    and .writable_contract_migration_check_receipt_versions == [2]
+    and .downgrade == "unsupported"
+    and .breaking_epoch_posture == "export_reimport_only"
+    and (.readable_records | length > 0)
+    and (.writable_records | length > 0)
+    and (.known_limitations | length > 0)
+' "$format_manifest" >/dev/null; then
+    printf '%s\n' 'release durable-format manifest is incomplete or stale' >&2
     exit 1
 fi
 if [[ "$(
@@ -135,6 +179,17 @@ install_one 0644 \
 install_one 0644 \
     "$bundle_root/release/RELEASE_NOTES.md" \
     "$doc_root/release/RELEASE_NOTES.md"
+install_one 0644 \
+    "$bundle_root/release/durable-format-manifest-v1.json" \
+    "$doc_root/release/durable-format-manifest-v1.json"
+while IFS= read -r compatibility_artifact; do
+    install_one 0644 \
+        "$compatibility_artifact" \
+        "$doc_root/release/compatibility/${compatibility_artifact##*/}"
+done < <(
+    find "$bundle_root/release/compatibility" \
+        -mindepth 1 -maxdepth 1 -type f | sort
+)
 install_one 0644 \
     "$bundle_root/examples/contracts/budget.riff" \
     "$doc_root/examples/contracts/budget.riff"

@@ -18,7 +18,23 @@ Comparison, fixture, conformance, and safety runners are not shipped products.
 
 Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
-Downgrade is unsupported. See `docs/compatibility.md`.
+This artifact carries `release/durable-format-manifest-v1.json` plus the exact
+compatibility fixture inventory and release-pair table used to generate it.
+The current identity is alpha epoch 1, writer 1. Downgrade is unsupported. See
+`docs/compatibility.md`.
+
+The manifest distinguishes the redb layout and each maintenance, migration,
+and format-upgrade receipt family rather than treating coincident numeric
+versions as interchangeable. Every supported edge names both source and target
+release labels.
+
+Daemon startup now compares the retained format marker before redb open and
+prints `RDB-FORMAT-0101` with the sole safe action on mismatch. Operators can
+run the same source-free check with `riffdb storage preflight`. The declared
+alpha-1 writer-0 to writer-1 transition is available only through the offline,
+verified-backup-bound, restartable `riffdb storage upgrade` command. New
+physical backups carry the exact format marker and compatible restore range;
+legacy range-less backups require their source release.
 
 ## Offline Contract Migration
 
@@ -50,12 +66,13 @@ Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
 
 ## Destructive Restore Warning
 
-Restore preserves `DatabaseId` and rewinds both authoritative sequence spaces.
-The POC has no incarnation/history epoch. A destroyed sequence suffix may be
-reused for different records, and idempotency keys that existed only in that
-suffix may be accepted again. Discard every post-frontier locator, cursor,
-session, sequence expectation, authorization observation, and idempotency
-assumption.
+Restore preserves `DatabaseId`, advances the durable `history_incarnation`, and
+may rewind both authoritative sequence spaces to the backup frontier. Clients
+that send their observed incarnation receive a typed mismatch instead of
+silently binding a destroyed-suffix observation to new history. Clients that
+do not participate remain unvalidated; discard every post-frontier locator,
+cursor, session, sequence expectation, authorization observation, and
+idempotency assumption after destructive restore.
 
 ## Evidence Qualification
 

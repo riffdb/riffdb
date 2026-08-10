@@ -80,7 +80,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
         if path.file_name().is_some_and(|name| {
             matches!(
                 name.to_str(),
-                Some("backup.rs" | "journal.rs" | "migration_stage.rs")
+                Some("backup.rs" | "format_upgrade.rs" | "journal.rs" | "migration_stage.rs")
             )
         }) || path.extension().is_none_or(|extension| extension != "rs")
         {
@@ -101,6 +101,10 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
     assert!(
         read(crate_root().join("src/journal.rs")).contains("sha2"),
         "durability journal integrity must retain SHA-256"
+    );
+    assert!(
+        read(crate_root().join("src/format_upgrade.rs")).contains("sha2"),
+        "durable-format upgrade receipts must retain SHA-256"
     );
 }
 

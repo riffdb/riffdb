@@ -90,21 +90,31 @@ then performs a fresh validation of the published target before readiness.
 
 ### Closed backup inventory
 
-New backups contain exactly three regular files:
+New backups contain exactly four regular files:
 
 ```text
 database.redb
 journal.riffextent
+format.riffdb
 manifest.riffdb
 ```
 
-The manifest authenticates the redb checkpoint and the complete fixed-size
-durability-journal extent as one unit. Restore checks both artifact checksums,
-the journal database identity, its selected generation, and an empty suffix at
-the manifest checkpoint before replacing the target. Unknown files, a missing
-extent, stale or mixed identities, and checksum damage fail closed. Historical
-pre-extent backups with the former two-file inventory remain readable; restore
-creates a fully zero-filled empty extent before publishing them.
+The manifest authenticates the redb checkpoint, the complete fixed-size
+durability-journal extent, and the exact pre-open format marker as one unit. It
+also declares the inclusive binary format range allowed to restore the
+physical artifacts. Restore checks that range before discovering, creating,
+locking, staging, or replacing the target. It then checks every artifact
+checksum, the journal database identity and selected generation, an empty
+suffix at the manifest checkpoint, and the marker identity/fixture binding.
+The marker is published last, so startup cannot mistake a partially published
+restore for current data.
+
+Unknown files, an absent current artifact, a legacy manifest without a physical
+range, stale or mixed identities, and checksum damage fail closed. Historical
+two- and three-file backups remain decodable for inspection and recovery with
+their source release; the current binary does not infer physical compatibility
+from successful decoding. Restore a legacy artifact with its source release
+before following `docs/compatibility.md`'s declared upgrade edge.
 
 Extent creation reserves and physically zero-fills its fixed capacity before
 the database becomes ready. Insufficient space therefore fails during startup,

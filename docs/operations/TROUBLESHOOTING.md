@@ -17,6 +17,19 @@ user, or startup integrity validation rejecting incomplete durable evidence.
 Correct configuration or restore from a verified backup; do not delete records
 inside the database.
 
+If stderr reports `RDB-FORMAT-0101`, keep the service stopped and inspect the
+same immutable decision explicitly:
+
+```bash
+riffdb storage preflight --database-path /absolute/path/to/riffdb.redb
+```
+
+Follow only the returned action. A declared same-epoch transition uses
+`riffdb storage upgrade` with the exact verified source backup; an unsupported
+epoch requires the retained source binary and the documented symbolic
+export/reimport ceremony. Never remove the marker or upgrade receipt, copy a
+marker from another database, or look for a force/reset flag.
+
 ## CLI connects to the wrong database
 
 Inspect the client configuration and its `database` alias. Authenticated health

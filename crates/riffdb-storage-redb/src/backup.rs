@@ -8,14 +8,15 @@ use std::path::{Path, PathBuf};
 
 use redb::{Database, Durability, ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
-    ActiveCatalogPointerV1, ApplicationSequenceAllocator, BackupArtifactChecksumV1,
-    BackupBuildMetadataV1, BackupCatalogBundleV1, BackupIntegrityChecksumV1, BackupManifestVersion,
-    BackupSnapshotKindV1, HISTORY_INCARNATION_INITIAL, MAX_BACKUP_BUILD_FEATURE_BYTES,
-    MAX_BACKUP_BUILD_FEATURES, MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES,
-    MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
-    OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort,
-    OfflineRestoreResultV1, StorageError, StorageErrorKind, StorageFormatVersion,
-    StorageValueError,
+    ActiveCatalogPointerV1, AlphaFormatEpoch, ApplicationSequenceAllocator,
+    BackupArtifactChecksumV1, BackupBuildMetadataV1, BackupCatalogBundleV1,
+    BackupFormatCompatibilityV1, BackupIntegrityChecksumV1, BackupManifestVersion,
+    BackupSnapshotKindV1, CompatibilityFixtureDigest, DurableFormatIdentity, DurableFormatWriter,
+    HISTORY_INCARNATION_INITIAL, MAX_BACKUP_BUILD_FEATURE_BYTES, MAX_BACKUP_BUILD_FEATURES,
+    MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
+    OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, OfflineBackupPersistencePort,
+    OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
+    StorageError, StorageErrorKind, StorageFormatVersion, StorageValueError,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -40,6 +41,7 @@ use crate::layout::{
 pub(crate) const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
 pub(crate) const DATABASE_ARTIFACT_FILE_NAME: &str = "database.redb";
 pub(crate) const JOURNAL_ARTIFACT_FILE_NAME: &str = "journal.riffextent";
+pub(crate) const FORMAT_MARKER_ARTIFACT_FILE_NAME: &str = "format.riffdb";
 const MANIFEST_MAGIC: &[u8; 16] = b"RIFFDB-BACKUP\0\0\0";
 const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
@@ -399,6 +401,49 @@ impl DatabaseFacts {
         )
         .map_err(value_error)
     }
+
+    fn into_manifest_with_format_compatibility(
+        self,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+        format_compatibility: BackupFormatCompatibilityV1,
+    ) -> Result<OfflineBackupManifestV1, StorageError> {
+        OfflineBackupManifestV1::new_with_format_compatibility(
+            self.storage_format_version,
+            self.database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            self.catalog_bundles,
+            self.active_catalog,
+            self.last_commit_sequence,
+            self.history_incarnation,
+            Some(self.retention_watermark_sequence.unwrap_or(0)),
+            format_compatibility,
+            checksums,
+            build,
+        )
+        .map_err(value_error)
+    }
+
+    #[cfg(test)]
+    fn into_pre_format_compatibility_manifest(
+        self,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+    ) -> Result<OfflineBackupManifestV1, StorageError> {
+        OfflineBackupManifestV1::new_pre_format_compatibility(
+            self.storage_format_version,
+            self.database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            self.catalog_bundles,
+            self.active_catalog,
+            self.last_commit_sequence,
+            self.history_incarnation,
+            Some(self.retention_watermark_sequence.unwrap_or(0)),
+            checksums,
+            build,
+        )
+        .map_err(value_error)
+    }
 }
 
 impl OfflineBackupPersistencePort for RedbOfflineBackup {
@@ -410,6 +455,13 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
         let mut staging = StagingDirectory::create_sibling(&self.backup_directory, "backup")?;
         let artifact_path = staging.path().join(DATABASE_ARTIFACT_FILE_NAME);
         let journal_artifact_path = staging.path().join(JOURNAL_ARTIFACT_FILE_NAME);
+        let format_marker_artifact_path = staging.path().join(FORMAT_MARKER_ARTIFACT_FILE_NAME);
+
+        if crate::preflight_durable_format_path(&self.source_database)
+            != Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
+        {
+            return Err(incompatible());
+        }
 
         let (source_database, source_facts) = open_database_with_facts(&self.source_database)?;
         copy_and_sync(&self.source_database, &artifact_path)?;
@@ -424,11 +476,20 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
             source_facts.database_id,
             source_facts.last_commit_sequence,
         )?;
+        copy_and_sync(
+            &crate::durable_format_marker_path(&self.source_database),
+            &format_marker_artifact_path,
+        )?;
+        validate_current_format_marker_artifact(&format_marker_artifact_path)?;
         let checksums = vec![
             BackupArtifactChecksumV1::new(NonZeroU32::MIN, sha256_file(&artifact_path)?),
             BackupArtifactChecksumV1::new(
                 NonZeroU32::new(2).expect("journal artifact ordinal is nonzero"),
                 sha256_file(&journal_artifact_path)?,
+            ),
+            BackupArtifactChecksumV1::new(
+                NonZeroU32::new(3).expect("format marker artifact ordinal is nonzero"),
+                sha256_file(&format_marker_artifact_path)?,
             ),
         ];
         let manifest = source_facts.into_manifest(checksums, build.clone())?;
@@ -466,6 +527,13 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         )?;
         let manifest = decode_manifest(&manifest_bytes)?;
         validate_manifest_inventory(&self.backup_directory, &manifest)?;
+        // Physical compatibility is decided from the retained exact range,
+        // never inferred from a successful parse. This check intentionally
+        // precedes target discovery, directory creation, locking, staging, or
+        // replacement so an incompatible restore is non-mutating.
+        if !manifest.is_physically_restorable_by_current_binary() {
+            return Err(incompatible());
+        }
 
         let target_state = target_directory_state(&self.target_directory)?;
         if target_state == TargetDirectoryState::NonEmpty
@@ -479,11 +547,16 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
 
         let target_artifact = self.target_directory.join(DATABASE_ARTIFACT_FILE_NAME);
         let target_journal = crate::journal::journal_path(&target_artifact);
+        let target_format_marker = crate::durable_format_marker_path(&target_artifact);
         let target_lock = lock_existing_target(&target_artifact)?;
         let mut staged_artifact = StagedArtifact::create(&self.target_directory)?;
         let mut staged_journal = StagedArtifact::create_named(
             &self.target_directory,
             OsStr::new(JOURNAL_ARTIFACT_FILE_NAME),
+        )?;
+        let mut staged_format_marker = StagedArtifact::create_named(
+            &self.target_directory,
+            OsStr::new(FORMAT_MARKER_ARTIFACT_FILE_NAME),
         )?;
         copy_and_sync(
             &self.backup_directory.join(DATABASE_ARTIFACT_FILE_NAME),
@@ -519,14 +592,31 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
             manifest.database_id(),
             manifest.last_commit_sequence(),
         )?;
+        let expected_format_marker =
+            manifest_format_marker_checksum(&manifest)?.ok_or_else(corrupt)?;
+        copy_and_sync(
+            &self.backup_directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME),
+            staged_format_marker.path(),
+        )?;
+        if sha256_file(staged_format_marker.path())? != expected_format_marker {
+            return Err(corrupt());
+        }
+        validate_manifest_format_marker(staged_format_marker.path(), &manifest)?;
 
         if let Some(controller) = &self.test_controller {
             controller.before_commit(RedbTestOperation::Restore)?;
+        }
+        match fs::remove_file(&target_format_marker) {
+            Ok(()) => sync_directory(&self.target_directory)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_unavailable(error)),
         }
         fs::rename(staged_artifact.path(), &target_artifact).map_err(io_unavailable)?;
         staged_artifact.mark_published();
         fs::rename(staged_journal.path(), &target_journal).map_err(io_unavailable)?;
         staged_journal.mark_published();
+        fs::rename(staged_format_marker.path(), &target_format_marker).map_err(io_unavailable)?;
+        staged_format_marker.mark_published();
         if sync_directory(&self.target_directory).is_err() {
             return Err(unknown());
         }
@@ -549,6 +639,11 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
 
 fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), StorageError> {
     let database = Database::open(path).map_err(database_error)?;
+    let facts = read_database_facts(&database)?;
+    Ok((database, facts))
+}
+
+fn read_database_facts(database: &impl ReadableDatabase) -> Result<DatabaseFacts, StorageError> {
     let transaction = database.begin_read().map_err(transaction_error)?;
 
     let meta = transaction.open_table(META).map_err(table_error)?;
@@ -663,18 +758,15 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
     drop(commits);
     drop(transaction);
 
-    Ok((
-        database,
-        DatabaseFacts {
-            storage_format_version,
-            database_id,
-            catalog_bundles,
-            active_catalog,
-            last_commit_sequence,
-            history_incarnation,
-            retention_watermark_sequence,
-        },
-    ))
+    Ok(DatabaseFacts {
+        storage_format_version,
+        database_id,
+        catalog_bundles,
+        active_catalog,
+        last_commit_sequence,
+        history_incarnation,
+        retention_watermark_sequence,
+    })
 }
 
 fn validate_artifact(
@@ -689,8 +781,11 @@ fn validate_artifact(
     // Opening a redb artifact may update engine-owned clean-open metadata. The
     // checksum authenticates the exact immutable backup bytes before that open;
     // semantic metadata is then validated from redb's recovered view.
-    let reconstructed =
-        facts.into_manifest(manifest.checksums().to_vec(), manifest.build().clone())?;
+    let reconstructed = facts.into_manifest_with_format_compatibility(
+        manifest.checksums().to_vec(),
+        manifest.build().clone(),
+        manifest.format_compatibility().ok_or_else(incompatible)?,
+    )?;
     if &reconstructed != manifest {
         return Err(corrupt());
     }
@@ -753,6 +848,52 @@ fn backup_journal_error(error: crate::journal::JournalIoError) -> StorageError {
     }
 }
 
+fn validate_current_format_marker_artifact(path: &Path) -> Result<(), StorageError> {
+    let bytes = read_bounded_file(path, riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES)?;
+    if bytes.len() != riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES {
+        return Err(corrupt());
+    }
+    let marker =
+        riffdb_storage_api::decode_durable_format_marker(&bytes).map_err(|error| match error {
+            riffdb_storage_api::DurableFormatMarkerError::Malformed
+            | riffdb_storage_api::DurableFormatMarkerError::ChecksumMismatch => corrupt(),
+            riffdb_storage_api::DurableFormatMarkerError::UnknownVersion
+            | riffdb_storage_api::DurableFormatMarkerError::ManifestMismatch => incompatible(),
+        })?;
+    let current = riffdb_storage_api::current_durable_format_manifest();
+    if marker.identity() != current.identity()
+        || marker.registry_digest() != current.registry_digest()
+        || marker.compatibility_fixture_digest() != current.compatibility_fixture_digest()
+    {
+        return Err(incompatible());
+    }
+    Ok(())
+}
+
+fn validate_manifest_format_marker(
+    path: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<(), StorageError> {
+    let bytes = read_bounded_file(path, riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES)?;
+    if bytes.len() != riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES {
+        return Err(corrupt());
+    }
+    let marker = riffdb_storage_api::decode_durable_format_marker(&bytes).map_err(|_| corrupt())?;
+    let range = manifest.format_compatibility().ok_or_else(incompatible)?;
+    if !range.contains(marker.identity())
+        || marker.compatibility_fixture_digest() != range.compatibility_fixture_digest()
+    {
+        return Err(incompatible());
+    }
+    let current = riffdb_storage_api::current_durable_format_manifest();
+    if marker.identity() == current.identity()
+        && marker.registry_digest() != current.registry_digest()
+    {
+        return Err(incompatible());
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_immutable_backup(
     directory: &Path,
 ) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
@@ -776,6 +917,13 @@ pub(crate) fn validate_immutable_backup(
             manifest.last_commit_sequence(),
         )?;
     }
+    if let Some(expected) = manifest_format_marker_checksum(&manifest)? {
+        let marker = directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME);
+        if sha256_file(&marker)? != expected {
+            return Err(corrupt());
+        }
+        validate_manifest_format_marker(&marker, &manifest)?;
+    }
     let manifest_checksum =
         BackupIntegrityChecksumV1::new(Sha256::digest(&manifest_bytes).to_vec())
             .map_err(value_error)?;
@@ -785,6 +933,84 @@ pub(crate) fn validate_immutable_backup(
         manifest.last_commit_sequence(),
     );
     Ok((manifest, identity))
+}
+
+/// Proves that a closed predecessor database and journal are exactly the
+/// immutable artifacts authenticated by a verified backup. This check performs
+/// bounded-memory streaming hashes and never opens or mutates the source.
+pub(crate) fn validate_exact_source_matches_backup(
+    source_database: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<(), StorageError> {
+    if sha256_file(source_database)? != manifest_checksum(manifest)? {
+        return Err(corrupt());
+    }
+    let source_journal = crate::journal::journal_path(source_database);
+    match manifest_journal_checksum(manifest)? {
+        Some(expected) => {
+            match source_journal.try_exists() {
+                Ok(true) => {
+                    if sha256_file(&source_journal)? != expected {
+                        return Err(corrupt());
+                    }
+                    validate_backup_journal(
+                        &source_journal,
+                        manifest.database_id(),
+                        manifest.last_commit_sequence(),
+                    )?;
+                }
+                // The predecessor backup adapter canonicalizes an absent,
+                // empty suffix into a checked journal artifact. Absence on the
+                // closed source is therefore semantically exact, not missing
+                // durability, because the authenticated artifact was already
+                // validated as an empty suffix at the same frontier.
+                Ok(false) => {}
+                Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+            }
+        }
+        None => match source_journal.try_exists() {
+            Ok(false) => {}
+            Ok(true) => return Err(corrupt()),
+            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+        },
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn create_pre_format_compatibility_backup_fixture(
+    source_database: &Path,
+    backup_directory: &Path,
+    build: &BackupBuildMetadataV1,
+) -> Result<OfflineBackupManifestV1, StorageError> {
+    require_absent(backup_directory)?;
+    fs::create_dir(backup_directory).map_err(io_unavailable)?;
+    let artifact = backup_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+    let journal = backup_directory.join(JOURNAL_ARTIFACT_FILE_NAME);
+    let source = redb::ReadOnlyDatabase::open(source_database).map_err(database_error)?;
+    let facts = read_database_facts(&source)?;
+    drop(source);
+    copy_and_sync(source_database, &artifact)?;
+    stage_backup_journal(
+        source_database,
+        &journal,
+        facts.database_id,
+        facts.last_commit_sequence,
+    )?;
+    let checksums = vec![
+        BackupArtifactChecksumV1::new(NonZeroU32::MIN, sha256_file(&artifact)?),
+        BackupArtifactChecksumV1::new(
+            NonZeroU32::new(2).expect("journal artifact ordinal is nonzero"),
+            sha256_file(&journal)?,
+        ),
+    ];
+    let manifest = facts.into_pre_format_compatibility_manifest(checksums, build.clone())?;
+    write_new_and_sync(
+        &backup_directory.join(MANIFEST_FILE_NAME),
+        &encode_manifest_pre_format_compatibility(&manifest)?,
+    )?;
+    sync_directory(backup_directory)?;
+    Ok(manifest)
 }
 
 pub(crate) fn validate_database_semantics(
@@ -866,11 +1092,24 @@ pub(crate) fn manifest_journal_checksum(
     manifest_artifact_checksum(manifest, ordinal).map(Some)
 }
 
+fn manifest_format_marker_checksum(
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Option<BackupIntegrityChecksumV1>, StorageError> {
+    if manifest.checksums().len() < 3 {
+        return Ok(None);
+    }
+    manifest_artifact_checksum(
+        manifest,
+        NonZeroU32::new(3).expect("format marker artifact ordinal is nonzero"),
+    )
+    .map(Some)
+}
+
 fn manifest_artifact_checksum(
     manifest: &OfflineBackupManifestV1,
     ordinal: NonZeroU32,
 ) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    if !matches!(manifest.checksums().len(), 1 | 2) {
+    if !matches!(manifest.checksums().len(), 1..=3) {
         return Err(corrupt());
     }
     let checksum = manifest
@@ -886,7 +1125,9 @@ fn manifest_artifact_checksum(
 
 #[derive(Clone, Copy)]
 enum ManifestWireEra {
-    /// History + retention watermark presence tags (newest).
+    /// History, retention watermark, and physical-restore range (newest).
+    Current,
+    /// History + retention watermark presence tags, before format ranges.
     PostRetention,
     /// History presence tag only (post ADR-0072, pre ADR-0085 A2).
     PreRetention,
@@ -895,6 +1136,16 @@ enum ManifestWireEra {
 }
 
 fn encode_manifest(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
+    encode_manifest_for_era(manifest, ManifestWireEra::Current)
+}
+
+/// Post-retention encoding from before physical restore ranges were retained.
+fn encode_manifest_pre_format_compatibility(
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Vec<u8>, StorageError> {
+    if manifest.format_compatibility().is_some() {
+        return Err(corrupt());
+    }
     encode_manifest_for_era(manifest, ManifestWireEra::PostRetention)
 }
 
@@ -926,7 +1177,7 @@ fn encode_manifest_for_era(
     {
         return Err(incompatible());
     }
-    if !matches!(manifest.checksums().len(), 1 | 2) {
+    if !matches!(manifest.checksums().len(), 1..=3) {
         return Err(corrupt());
     }
     for (index, checksum) in manifest.checksums().iter().enumerate() {
@@ -972,18 +1223,21 @@ fn encode_manifest_for_era(
         }
     }
     match era {
-        ManifestWireEra::PostRetention | ManifestWireEra::PreRetention => {
-            match manifest.history_incarnation() {
-                None => output.u8(0)?,
-                Some(incarnation) => {
-                    output.u8(1)?;
-                    output.u64(incarnation)?;
-                }
+        ManifestWireEra::Current
+        | ManifestWireEra::PostRetention
+        | ManifestWireEra::PreRetention => match manifest.history_incarnation() {
+            None => output.u8(0)?,
+            Some(incarnation) => {
+                output.u8(1)?;
+                output.u64(incarnation)?;
             }
-        }
+        },
         ManifestWireEra::PreFence => {}
     }
-    if matches!(era, ManifestWireEra::PostRetention) {
+    if matches!(
+        era,
+        ManifestWireEra::Current | ManifestWireEra::PostRetention
+    ) {
         match manifest.retention_watermark_sequence() {
             None => output.u8(0)?,
             Some(sequence) => {
@@ -991,6 +1245,15 @@ fn encode_manifest_for_era(
                 output.u64(sequence)?;
             }
         }
+    }
+    if matches!(era, ManifestWireEra::Current) {
+        let compatibility = manifest.format_compatibility().ok_or_else(corrupt)?;
+        output.u8(1)?;
+        output.u32(compatibility.minimum().epoch().get())?;
+        output.u32(compatibility.minimum().writer().get())?;
+        output.u32(compatibility.maximum().epoch().get())?;
+        output.u32(compatibility.maximum().writer().get())?;
+        output.bytes(compatibility.compatibility_fixture_digest().as_bytes())?;
     }
     output.count(manifest.checksums().len())?;
     for checksum in manifest.checksums() {
@@ -1012,11 +1275,18 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
     if encoded.len() > MANIFEST_MAX_BYTES {
         return Err(limit_exceeded());
     }
-    // Triple-path: newest (history+watermark) → history-only → pre-fence.
+    // Four-path: range-bearing newest → history+watermark → history-only →
+    // pre-fence. Prefer round-trip equality so an older era that partially
+    // parses as a newer one falls through to its exact decoder.
     // Prefer round-trip equality so older eras that partially parse as newer
     // fall through to the correct decoder.
-    if let Ok(manifest) = decode_manifest_body(encoded, ManifestWireEra::PostRetention)
+    if let Ok(manifest) = decode_manifest_body(encoded, ManifestWireEra::Current)
         && encode_manifest(&manifest)? == encoded
+    {
+        return Ok(manifest);
+    }
+    if let Ok(manifest) = decode_manifest_body(encoded, ManifestWireEra::PostRetention)
+        && encode_manifest_pre_format_compatibility(&manifest)? == encoded
     {
         return Ok(manifest);
     }
@@ -1080,7 +1350,9 @@ fn decode_manifest_body(
         _ => return Err(corrupt()),
     };
     let history_incarnation = match era {
-        ManifestWireEra::PostRetention | ManifestWireEra::PreRetention => match input.u8()? {
+        ManifestWireEra::Current
+        | ManifestWireEra::PostRetention
+        | ManifestWireEra::PreRetention => match input.u8()? {
             0 => None,
             1 => {
                 let incarnation = input.u64()?;
@@ -1094,16 +1366,39 @@ fn decode_manifest_body(
         ManifestWireEra::PreFence => None,
     };
     let retention_watermark_sequence = match era {
-        ManifestWireEra::PostRetention => match input.u8()? {
+        ManifestWireEra::Current | ManifestWireEra::PostRetention => match input.u8()? {
             0 => None,
             1 => Some(input.u64()?),
             _ => return Err(corrupt()),
         },
         ManifestWireEra::PreRetention | ManifestWireEra::PreFence => None,
     };
+    let format_compatibility = match era {
+        ManifestWireEra::Current => {
+            if input.u8()? != 1 {
+                return Err(corrupt());
+            }
+            let minimum_epoch = AlphaFormatEpoch::new(input.u32()?).ok_or_else(corrupt)?;
+            let minimum_writer = DurableFormatWriter::new(input.u32()?);
+            let maximum_epoch = AlphaFormatEpoch::new(input.u32()?).ok_or_else(corrupt)?;
+            let maximum_writer = DurableFormatWriter::new(input.u32()?);
+            let fixture_digest = CompatibilityFixtureDigest::from_bytes(input.array()?);
+            Some(
+                BackupFormatCompatibilityV1::new(
+                    DurableFormatIdentity::new(minimum_epoch, minimum_writer),
+                    DurableFormatIdentity::new(maximum_epoch, maximum_writer),
+                    fixture_digest,
+                )
+                .map_err(value_error)?,
+            )
+        }
+        ManifestWireEra::PostRetention
+        | ManifestWireEra::PreRetention
+        | ManifestWireEra::PreFence => None,
+    };
 
     let checksum_count = usize::try_from(input.u32()?).map_err(|_| corrupt())?;
-    if !matches!(checksum_count, 1 | 2) {
+    if !matches!(checksum_count, 1..=3) {
         return Err(corrupt());
     }
     let mut checksums = Vec::with_capacity(checksum_count);
@@ -1143,7 +1438,21 @@ fn decode_manifest_body(
     )
     .map_err(value_error)?;
     match era {
-        ManifestWireEra::PostRetention => OfflineBackupManifestV1::new(
+        ManifestWireEra::Current => OfflineBackupManifestV1::new_with_format_compatibility(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            retention_watermark_sequence,
+            format_compatibility.ok_or_else(corrupt)?,
+            checksums,
+            build,
+        )
+        .map_err(value_error),
+        ManifestWireEra::PostRetention => OfflineBackupManifestV1::new_pre_format_compatibility(
             storage_format_version,
             database_id,
             BackupSnapshotKindV1::StorageEngineData,
@@ -1376,10 +1685,10 @@ fn validate_backup_inventory(directory: &Path) -> Result<(), StorageError> {
     if !metadata.file_type().is_dir() {
         return Err(corrupt());
     }
-    let mut names = Vec::with_capacity(3);
+    let mut names = Vec::with_capacity(4);
     for entry in fs::read_dir(directory).map_err(io_unavailable)? {
         let entry = entry.map_err(io_unavailable)?;
-        if names.len() == 3 {
+        if names.len() == 4 {
             return Err(corrupt());
         }
         let metadata = fs::symlink_metadata(entry.path()).map_err(io_unavailable)?;
@@ -1394,13 +1703,20 @@ fn validate_backup_inventory(directory: &Path) -> Result<(), StorageError> {
         OsString::from(MANIFEST_FILE_NAME),
     ];
     legacy.sort_unstable();
-    let mut current = [
+    let mut post_journal = [
         OsString::from(DATABASE_ARTIFACT_FILE_NAME),
         OsString::from(JOURNAL_ARTIFACT_FILE_NAME),
         OsString::from(MANIFEST_FILE_NAME),
     ];
+    post_journal.sort_unstable();
+    let mut current = [
+        OsString::from(DATABASE_ARTIFACT_FILE_NAME),
+        OsString::from(FORMAT_MARKER_ARTIFACT_FILE_NAME),
+        OsString::from(JOURNAL_ARTIFACT_FILE_NAME),
+        OsString::from(MANIFEST_FILE_NAME),
+    ];
     current.sort_unstable();
-    if names != legacy && names != current {
+    if names != legacy && names != post_journal && names != current {
         return Err(corrupt());
     }
     Ok(())
@@ -1416,6 +1732,19 @@ fn validate_manifest_inventory(
         .map_err(io_unavailable)?;
     if journal_exists != manifest_journal_checksum(manifest)?.is_some() {
         return Err(corrupt());
+    }
+    let marker_exists = directory
+        .join(FORMAT_MARKER_ARTIFACT_FILE_NAME)
+        .try_exists()
+        .map_err(io_unavailable)?;
+    if marker_exists != manifest_format_marker_checksum(manifest)?.is_some() {
+        return Err(corrupt());
+    }
+    if marker_exists {
+        validate_manifest_format_marker(
+            &directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME),
+            manifest,
+        )?;
     }
     Ok(())
 }
@@ -1759,7 +2088,7 @@ mod tests {
         let root = TestRoot::new("round-trip");
         let (_source, backup, manifest) = create_backup(&root);
         assert_eq!(manifest.database_id(), database_id());
-        assert_eq!(manifest.checksums().len(), 2);
+        assert_eq!(manifest.checksums().len(), 3);
 
         let mut names = fs::read_dir(&backup)
             .expect("read backup")
@@ -1770,6 +2099,7 @@ mod tests {
             names,
             [
                 OsString::from(DATABASE_ARTIFACT_FILE_NAME),
+                OsString::from(FORMAT_MARKER_ARTIFACT_FILE_NAME),
                 OsString::from(JOURNAL_ARTIFACT_FILE_NAME),
                 OsString::from(MANIFEST_FILE_NAME),
             ]
@@ -1824,6 +2154,73 @@ mod tests {
             .expect("explicit destructive restore");
         assert!(matches!(restored, OfflineRestoreResultV1::Restored { .. }));
         assert!(target.join(DATABASE_ARTIFACT_FILE_NAME).is_file());
+    }
+
+    #[test]
+    fn incompatible_backup_range_refuses_before_creating_or_replacing_target() {
+        let root = TestRoot::new("incompatible-format-restore");
+        let (_source, backup, manifest) = create_backup(&root);
+        let current = riffdb_storage_api::current_durable_format_manifest();
+        let incompatible_writer = DurableFormatWriter::new(
+            current
+                .identity()
+                .writer()
+                .get()
+                .checked_add(1)
+                .expect("test writer increment"),
+        );
+        let incompatible_identity =
+            DurableFormatIdentity::new(current.identity().epoch(), incompatible_writer);
+        let incompatible_range = BackupFormatCompatibilityV1::new(
+            incompatible_identity,
+            incompatible_identity,
+            current.compatibility_fixture_digest(),
+        )
+        .expect("valid disjoint range");
+        let incompatible_manifest = OfflineBackupManifestV1::new_with_format_compatibility(
+            manifest.storage_format_version(),
+            manifest.database_id(),
+            manifest.snapshot_kind(),
+            manifest.catalog_bundles().to_vec(),
+            manifest.active_catalog().cloned(),
+            manifest.last_commit_sequence(),
+            manifest.history_incarnation(),
+            manifest.retention_watermark_sequence(),
+            incompatible_range,
+            manifest.checksums().to_vec(),
+            manifest.build().clone(),
+        )
+        .expect("incompatible manifest remains structurally valid");
+        fs::write(
+            backup.join(MANIFEST_FILE_NAME),
+            encode_manifest(&incompatible_manifest).expect("encode incompatible range"),
+        )
+        .expect("replace test manifest");
+
+        let absent_target = root.join("absent-target");
+        let error = RedbOfflineRestore::bind(&backup, &absent_target)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+            .expect_err("incompatible range must refuse");
+        assert_eq!(error.kind(), StorageErrorKind::IncompatibleFormat);
+        assert!(
+            !absent_target.exists(),
+            "restore must not create the target"
+        );
+
+        let existing_target = root.join("existing-target");
+        fs::create_dir(&existing_target).expect("create existing target");
+        let sentinel = existing_target.join("sentinel");
+        fs::write(&sentinel, b"unchanged").expect("write sentinel");
+        let error = RedbOfflineRestore::bind(&backup, &existing_target)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive)
+            .expect_err("destructive policy cannot bypass compatibility");
+        assert_eq!(error.kind(), StorageErrorKind::IncompatibleFormat);
+        assert_eq!(fs::read(&sentinel).expect("read sentinel"), b"unchanged");
+        assert_eq!(
+            fs::read_dir(&existing_target).expect("read target").count(),
+            1,
+            "restore must not stage files in an incompatible target"
+        );
     }
 
     #[test]
@@ -1994,14 +2391,16 @@ mod tests {
             manifest
         );
         let golden_digest: [u8; SHA256_BYTES] = Sha256::digest(&encoded).into();
-        // Encoding includes presence-tagged history + retention watermark fields;
+        // Encoding includes presence-tagged history, retention watermark, and
+        // exact physical-restore-range fields and this release's compatibility
+        // fixture digest;
         // recompute whenever the durable layout of this fixture changes intentionally.
         // Printed on failure so the new golden can be pasted deliberately.
         assert_eq!(
             golden_digest,
             [
-                18, 11, 58, 227, 42, 195, 101, 222, 240, 162, 254, 83, 202, 105, 64, 139, 72, 29,
-                26, 43, 124, 27, 87, 57, 5, 168, 198, 17, 233, 47, 197, 99,
+                79, 120, 65, 164, 215, 36, 159, 185, 82, 3, 247, 93, 114, 105, 236, 107, 5, 238,
+                105, 153, 84, 224, 7, 141, 252, 46, 223, 250, 140, 136, 42, 20,
             ],
             "manifest v1 encoding is a durable compatibility boundary"
         );
@@ -2027,7 +2426,7 @@ mod tests {
 
     #[test]
     fn semantic_bytes_wire_eras_match_real_encoder_lengths() {
-        // pre-fence / pre-retention / post-retention (None watermark) / post-retention Some
+        // pre-fence / pre-retention / post-retention / current range-bearing
         let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
         let build = build_metadata();
         let pre = OfflineBackupManifestV1::new_pre_fence(
@@ -2059,7 +2458,7 @@ mod tests {
             build.clone(),
         )
         .expect("pre-retention");
-        let post_wm_none = OfflineBackupManifestV1::new(
+        let post_wm_none = OfflineBackupManifestV1::new_pre_format_compatibility(
             StorageFormatVersion::V1,
             database_id(),
             BackupSnapshotKindV1::StorageEngineData,
@@ -2075,7 +2474,7 @@ mod tests {
             build.clone(),
         )
         .expect("post-retention wm None");
-        let post_wm_some = OfflineBackupManifestV1::new(
+        let post_wm_some = OfflineBackupManifestV1::new_pre_format_compatibility(
             StorageFormatVersion::V1,
             database_id(),
             BackupSnapshotKindV1::StorageEngineData,
@@ -2088,6 +2487,19 @@ mod tests {
             build,
         )
         .expect("post-retention wm Some(0)");
+        let current = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            Some(1),
+            Some(0),
+            post_wm_some.checksums().to_vec(),
+            post_wm_some.build().clone(),
+        )
+        .expect("current range-bearing manifest");
 
         assert!(!pre.history_wire_tagged());
         assert!(!pre.retention_watermark_wire_tagged());
@@ -2095,12 +2507,17 @@ mod tests {
         assert!(!history_only.retention_watermark_wire_tagged());
         assert!(post_wm_none.retention_watermark_wire_tagged());
         assert!(post_wm_some.retention_watermark_wire_tagged());
+        assert!(!post_wm_some.format_compatibility_wire_tagged());
+        assert!(current.format_compatibility_wire_tagged());
 
         let encoded_pre = encode_manifest_pre_fence(&pre).expect("encode pre");
         let encoded_history =
             encode_manifest_pre_retention(&history_only).expect("encode history-only");
-        let encoded_wm_none = encode_manifest(&post_wm_none).expect("encode wm none");
-        let encoded_wm_some = encode_manifest(&post_wm_some).expect("encode wm some");
+        let encoded_wm_none =
+            encode_manifest_pre_format_compatibility(&post_wm_none).expect("encode wm none");
+        let encoded_wm_some =
+            encode_manifest_pre_format_compatibility(&post_wm_some).expect("encode wm some");
+        let encoded_current = encode_manifest(&current).expect("encode current");
 
         // History presence(1)+u64(8) over pre-fence.
         assert_eq!(encoded_history.len() - encoded_pre.len(), 9);
@@ -2108,6 +2525,8 @@ mod tests {
         assert_eq!(encoded_wm_none.len() - encoded_history.len(), 1);
         // Watermark Some adds 8 over presence-0.
         assert_eq!(encoded_wm_some.len() - encoded_wm_none.len(), 8);
+        // Range presence + four u32 identity components + SHA-256 fixture digest.
+        assert_eq!(encoded_current.len() - encoded_wm_some.len(), 49);
         assert_eq!(
             history_only.semantic_bytes() - pre.semantic_bytes(),
             encoded_history.len() - encoded_pre.len()
@@ -2119,6 +2538,18 @@ mod tests {
         assert_eq!(
             post_wm_some.semantic_bytes() - post_wm_none.semantic_bytes(),
             encoded_wm_some.len() - encoded_wm_none.len()
+        );
+        assert_eq!(
+            current.semantic_bytes() - post_wm_some.semantic_bytes(),
+            encoded_current.len() - encoded_wm_some.len()
+        );
+        assert_eq!(
+            decode_manifest(&encoded_wm_some).expect("decode historical post-retention"),
+            post_wm_some
+        );
+        assert_eq!(
+            decode_manifest(&encoded_current).expect("decode current range"),
+            current
         );
     }
 

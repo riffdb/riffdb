@@ -116,6 +116,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: BackupCommand,
     },
+    /// Inspects or upgrades one closed database's durable format.
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     /// Offline exclusive retention maintenance on a closed database file.
     Retention {
         #[command(subcommand)]
@@ -842,6 +847,22 @@ pub(crate) enum BackupCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum StorageCommand {
+    /// Compares the retained format identity without opening the database.
+    Preflight {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+    },
+    /// Runs the sole manifest-authorized offline transition from a verified backup.
+    Upgrade {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "BACKUP_DIRECTORY")]
+        backup: OsString,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum RetentionCommand {
     /// Prints the retention watermark and fencing breakdown for a closed database.
     Status {
@@ -1213,6 +1234,41 @@ mod tests {
             reattach.command,
             TopLevel::Retention {
                 command: RetentionCommand::ProjectionReattach { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn durable_format_commands_require_explicit_closed_database_paths() {
+        let preflight = Cli::try_parse_from([
+            "riffdb",
+            "storage",
+            "preflight",
+            "--database-path",
+            "/home/operator/data/application.redb",
+        ])
+        .expect("storage preflight");
+        assert!(matches!(
+            preflight.command,
+            TopLevel::Storage {
+                command: StorageCommand::Preflight { .. }
+            }
+        ));
+
+        let upgrade = Cli::try_parse_from([
+            "riffdb",
+            "storage",
+            "upgrade",
+            "--database-path",
+            "/home/operator/data/application.redb",
+            "--backup",
+            "/home/operator/backups/pre-upgrade",
+        ])
+        .expect("storage upgrade");
+        assert!(matches!(
+            upgrade.command,
+            TopLevel::Storage {
+                command: StorageCommand::Upgrade { .. }
             }
         ));
     }

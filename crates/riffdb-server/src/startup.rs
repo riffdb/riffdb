@@ -16,14 +16,15 @@ use riffdb_commit::{
     DatabaseInitializationDecision, DatabaseInitializationExecutor, InitializedDatabase,
 };
 use riffdb_storage_api::{
-    AdministrationSequenceAllocator, ApplicationSequenceAllocator, EvidencePageLimit,
-    RetainedMetadataV1, StartupIndexMigrationPort, StartupValidationInputs, StorageError,
-    StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidencePage,
-    StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
+    AdministrationSequenceAllocator, ApplicationSequenceAllocator, DurableFormatAction,
+    DurableFormatIdentity, EvidencePageLimit, RetainedMetadataV1, StartupIndexMigrationPort,
+    StartupValidationInputs, StorageError, StructuralEvidenceCursor, StructuralEvidenceEnd,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
 };
 use riffdb_storage_redb::{
-    RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort,
-    RedbStore,
+    RedbCommitProfile, RedbDormantPorts, RedbDurableFormatPreflight,
+    RedbDurableFormatPreflightError, RedbOperationalPorts, RedbStartupIndexMigrationPort,
+    RedbStore, preflight_durable_format_path,
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
@@ -160,9 +161,78 @@ enum StorageStartupOutcomeKind {
     MigrationRequired,
 }
 
+/// Closed source-free durable-format reason discovered before redb can open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StartupFormatFailure {
+    /// The marker or filesystem inventory could not prove a safe action.
+    Preflight(RedbDurableFormatPreflightError),
+    /// The manifest selected one exact offline transition.
+    OfflineUpgradeRequired {
+        current: DurableFormatIdentity,
+        binary: DurableFormatIdentity,
+        action: DurableFormatAction,
+    },
+}
+
+impl fmt::Display for StartupFormatFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Preflight(error) => write!(
+                formatter,
+                "durable-format preflight failed before database open: {error}; no data was changed"
+            ),
+            Self::OfflineUpgradeRequired {
+                current,
+                binary,
+                action:
+                    DurableFormatAction::OfflineInPlace {
+                        backup_required,
+                        free_space_source_multiples,
+                        downtime_required,
+                        one_way,
+                        next_command,
+                    },
+            } => write!(
+                formatter,
+                "durable-format upgrade required before database open: current=alpha-{}.{} binary=alpha-{}.{} action=offline_in_place backup_required={backup_required} free_space_source_multiples={free_space_source_multiples} downtime_required={downtime_required} one_way={one_way}; next: {} --database-path PATH --backup PATH; no data was changed",
+                current.epoch().get(),
+                current.writer().get(),
+                binary.epoch().get(),
+                binary.writer().get(),
+                next_command.render(),
+            ),
+            Self::OfflineUpgradeRequired {
+                current,
+                binary,
+                action:
+                    DurableFormatAction::ExportReimportOnly {
+                        backup_required,
+                        downtime_required,
+                        next_command,
+                    },
+            } => write!(
+                formatter,
+                "durable-format epoch is incompatible with this binary: current=alpha-{}.{} binary=alpha-{}.{} action=export_reimport_only backup_required={backup_required} downtime_required={downtime_required}; next: {}; no data was changed",
+                current.epoch().get(),
+                current.writer().get(),
+                binary.epoch().get(),
+                binary.writer().get(),
+                next_command.render(),
+            ),
+            Self::OfflineUpgradeRequired {
+                action: DurableFormatAction::OpenCurrent,
+                ..
+            } => formatter.write_str(
+                "durable-format preflight returned an inconsistent action; no data was changed",
+            ),
+        }
+    }
+}
+
 /// Private startup failure retaining only already-safe lower classifications.
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) enum RedbStartupError {
+    Format(StartupFormatFailure),
     Storage(StorageError),
     Catalog(CatalogError),
     Identifier(ServerIdentifierSourceError),
@@ -172,6 +242,7 @@ pub(crate) enum RedbStartupError {
 impl fmt::Debug for RedbStartupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Format(error) => formatter.debug_tuple("Format").field(error).finish(),
             Self::Storage(error) => formatter.debug_tuple("Storage").field(error).finish(),
             Self::Catalog(error) => formatter.debug_tuple("Catalog").field(error).finish(),
             Self::Identifier(_) => formatter.write_str("Identifier([REDACTED])"),
@@ -182,7 +253,12 @@ impl fmt::Debug for RedbStartupError {
 
 impl fmt::Display for RedbStartupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("database startup validation failed")
+        match self {
+            Self::Format(error) => error.fmt(formatter),
+            Self::Storage(_) | Self::Catalog(_) | Self::Identifier(_) | Self::Integrity(_) => {
+                formatter.write_str("database startup validation failed")
+            }
+        }
     }
 }
 
@@ -222,8 +298,31 @@ pub(crate) fn open_redb_startup_with_commit_profile(
     database_ids: &DatabaseIdCandidateSource,
     application_commit_profile: RedbCommitProfile,
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
+    preflight_redb_startup_format(path)?;
     let store = RedbStore::open_with_commit_profile(path, application_commit_profile)?;
     complete_redb_startup(store, inputs, || database_ids.next_database_id())
+}
+
+fn preflight_redb_startup_format(path: &Path) -> Result<(), RedbStartupError> {
+    match preflight_durable_format_path(path) {
+        Ok(
+            RedbDurableFormatPreflight::InitializeCurrent | RedbDurableFormatPreflight::OpenCurrent,
+        ) => Ok(()),
+        Ok(RedbDurableFormatPreflight::OfflineUpgradeRequired {
+            current,
+            binary,
+            action,
+        }) => Err(RedbStartupError::Format(
+            StartupFormatFailure::OfflineUpgradeRequired {
+                current,
+                binary,
+                action,
+            },
+        )),
+        Err(error) => Err(RedbStartupError::Format(StartupFormatFailure::Preflight(
+            error,
+        ))),
+    }
 }
 
 fn complete_redb_startup<Candidate>(
@@ -628,7 +727,54 @@ mod tests {
         assert_eq!(reopened.database_id(), installed);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         drop(reopened);
+        std::fs::remove_file(riffdb_storage_redb::durable_format_marker_path(&path))
+            .expect("remove test format marker");
         std::fs::remove_file(path).expect("remove test database");
+    }
+
+    #[test]
+    fn predecessor_format_refuses_before_open_with_one_exact_action() {
+        let path = temporary_database_path();
+        let original = b"pre-manifest database bytes remain untouched";
+        std::fs::write(&path, original).expect("write predecessor placeholder");
+
+        let error = preflight_redb_startup_format(&path).expect_err("upgrade must be required");
+        let RedbStartupError::Format(StartupFormatFailure::OfflineUpgradeRequired {
+            current,
+            binary,
+            action,
+        }) = error
+        else {
+            panic!("unexpected startup failure classification");
+        };
+        assert_eq!(current.epoch().get(), binary.epoch().get());
+        assert_eq!(current.writer().get(), 0);
+        assert_eq!(binary.writer().get(), 1);
+        assert!(matches!(
+            action,
+            DurableFormatAction::OfflineInPlace {
+                backup_required: true,
+                free_space_source_multiples: 2,
+                downtime_required: true,
+                one_way: true,
+                next_command: riffdb_storage_api::SafeFormatCommand::Upgrade,
+            }
+        ));
+        assert_eq!(std::fs::read(&path).expect("read predecessor"), original);
+        assert!(!riffdb_storage_redb::durable_format_marker_path(&path).exists());
+
+        let rendered = RedbStartupError::Format(StartupFormatFailure::OfflineUpgradeRequired {
+            current,
+            binary,
+            action,
+        })
+        .to_string();
+        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.1"));
+        assert!(rendered.contains("backup_required=true"));
+        assert!(rendered.contains("next: riffdb storage upgrade"));
+        assert!(rendered.ends_with("no data was changed"));
+
+        std::fs::remove_file(path).expect("remove predecessor placeholder");
     }
 
     struct FakeDormantPorts;
