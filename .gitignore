@@ -11,3 +11,6 @@
 
 # Nested crate unit-test target (CARGO_MANIFEST_DIR/target fallback)
 /crates/riffdb-bench-root/target/
+
+# AI coding tools
+.serena
