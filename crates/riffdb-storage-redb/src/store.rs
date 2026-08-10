@@ -45,7 +45,7 @@ use crate::error::{
 };
 use crate::format_preflight::{
     RedbDurableFormatPreflight, RedbDurableFormatPreflightError, preflight_durable_format_path,
-    publish_initialized_current_marker,
+    preflight_durable_format_path_with_media, publish_initialized_current_marker_with_media,
 };
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
@@ -62,6 +62,7 @@ use crate::layout::{
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES,
     TABLE_NAMES, create_all_tables,
 };
+use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
     TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
 };
@@ -70,6 +71,10 @@ pub(crate) struct SharedRedb {
     pub(crate) database: Database,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
+    /// The journal media port serving every side-file operation of this
+    /// handle (ADR-0113). Production opens install [`RealJournalMedia`];
+    /// only the hidden simulation constructor installs anything else.
+    journal_media: Arc<dyn JournalMedia>,
     application_commit_profile: RedbCommitProfile,
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
@@ -864,6 +869,30 @@ impl RedbStore {
             RedbCommitProfile::Standard,
             None,
             default_changelog_port(),
+            None,
+        )
+    }
+
+    /// Opens a database over simulated storage media: a redb engine backend
+    /// plus the journal media instance that must serve the format preflight,
+    /// marker publication, and every journal side-file operation of this
+    /// handle — so a simulated open is fully simulated from the first
+    /// filesystem touch (ADR-0113 Phase 1).
+    ///
+    /// Hidden test surface following the `open_with_test_controller`
+    /// convention; production opens never construct media and remain
+    /// byte-identical to the pre-seam behavior.
+    #[doc(hidden)]
+    pub fn open_with_storage_media(
+        path: impl AsRef<Path>,
+        media: RedbStorageMedia,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner(
+            path.as_ref(),
+            RedbCommitProfile::Standard,
+            None,
+            default_changelog_port(),
+            Some(media),
         )
     }
 
@@ -877,6 +906,7 @@ impl RedbStore {
             application_commit_profile,
             None,
             default_changelog_port(),
+            None,
         )
     }
 
@@ -895,6 +925,7 @@ impl RedbStore {
             application_commit_profile,
             None,
             changelog_port,
+            None,
         )
     }
 
@@ -909,6 +940,7 @@ impl RedbStore {
             RedbCommitProfile::Standard,
             Some(controller),
             default_changelog_port(),
+            None,
         )
     }
 
@@ -924,6 +956,7 @@ impl RedbStore {
             application_commit_profile,
             Some(controller),
             default_changelog_port(),
+            None,
         )
     }
 
@@ -932,10 +965,16 @@ impl RedbStore {
         application_commit_profile: RedbCommitProfile,
         test_controller: Option<RedbTestController>,
         changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        media: Option<RedbStorageMedia>,
     ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
+        let (engine_backend, journal_media) = match media {
+            Some(media) => (Some(media.engine), media.journal),
+            None => (None, Arc::new(RealJournalMedia) as Arc<dyn JournalMedia>),
+        };
         let format_preflight =
-            preflight_durable_format_path(&path).map_err(format_preflight_storage_error)?;
+            preflight_durable_format_path_with_media(journal_media.as_ref(), &path)
+                .map_err(format_preflight_storage_error)?;
         if matches!(
             format_preflight,
             RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
@@ -949,6 +988,8 @@ impl RedbStore {
             changelog_port,
             (format_preflight == RedbDurableFormatPreflight::InitializeCurrent)
                 .then_some(format_preflight),
+            engine_backend,
+            journal_media,
         )
     }
 
@@ -970,34 +1011,45 @@ impl RedbStore {
             None,
             default_changelog_port(),
             None,
+            None,
+            Arc::new(RealJournalMedia),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_after_format_preflight(
         path: &Path,
         application_commit_profile: RedbCommitProfile,
         test_controller: Option<RedbTestController>,
         changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
         initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+        engine_backend: Option<Box<dyn redb::StorageBackend>>,
+        journal_media: Arc<dyn JournalMedia>,
     ) -> Result<Self, StorageError> {
         if let Some(witness) = initialize_marker_witness {
-            publish_initialized_current_marker(path, witness)
+            publish_initialized_current_marker_with_media(journal_media.as_ref(), path, witness)
                 .map_err(format_preflight_storage_error)?;
         }
-        let database = Builder::new()
-            .set_repair_callback(|session| {
-                // Bounded progress telemetry only; do not enable quick_repair
-                // (quick_repair forces two-phase commit, conflicting with Standard).
-                let progress = session.progress();
-                let basis_points = ((progress * 10_000.0) as u64).min(10_000);
-                LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
-            })
-            .create(path)
-            .map_err(database_error)?;
+        let mut builder = Builder::new();
+        builder.set_repair_callback(|session| {
+            // Bounded progress telemetry only; do not enable quick_repair
+            // (quick_repair forces two-phase commit, conflicting with Standard).
+            let progress = session.progress();
+            let basis_points = ((progress * 10_000.0) as u64).min(10_000);
+            LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
+        });
+        // The builder configuration above is shared by both arms; only the
+        // storage medium differs (ADR-0113 backend-parameterized open).
+        let database = match engine_backend {
+            Some(backend) => builder.create_with_backend(DynStorageBackend(backend)),
+            None => builder.create(path),
+        }
+        .map_err(database_error)?;
         let store = Self {
             shared: Arc::new(SharedRedb {
                 database,
                 path: path.to_path_buf(),
+                journal_media,
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
@@ -1039,7 +1091,7 @@ impl RedbStore {
                 crate::journal::checkpoint_journal_path(&self.shared.path),
                 crate::journal::spare_journal_path(&self.shared.path),
             ] {
-                match journal.try_exists() {
+                match self.shared.journal_media.try_exists(&journal) {
                     Ok(false) => {}
                     Ok(true) => return Err(storage_error(StorageErrorKind::CorruptData)),
                     Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
@@ -1049,27 +1101,41 @@ impl RedbStore {
         }
         let database_id = read_identity_from_read_transaction(&transaction)?;
         drop(transaction);
+        let media = self.shared.journal_media.as_ref();
         let checkpoint = crate::journal::checkpoint_journal_path(&self.shared.path);
-        if checkpoint
-            .try_exists()
+        if media
+            .try_exists(&checkpoint)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
         {
-            crate::journal::recover_journal_path(&self.shared.database, &checkpoint, database_id)
-                .map_err(recovery_journal_error)?;
-            std::fs::remove_file(&checkpoint)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            crate::journal::sync_parent_directory(&checkpoint).map_err(journal_io_error)?;
-        }
-        crate::journal::recover_journal(&self.shared.database, &self.shared.path, database_id)
+            crate::journal::recover_journal_path_with_media(
+                media,
+                &self.shared.database,
+                &checkpoint,
+                database_id,
+            )
             .map_err(recovery_journal_error)?;
+            media
+                .remove_file(&checkpoint)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            crate::journal::sync_parent_directory_with_media(media, &checkpoint)
+                .map_err(journal_io_error)?;
+        }
+        crate::journal::recover_journal_with_media(
+            media,
+            &self.shared.database,
+            &self.shared.path,
+            database_id,
+        )
+        .map_err(recovery_journal_error)?;
 
         // The spare extent is never authoritative: it is only a preallocated
         // destination for the next active generation. Recovery first proves
         // the redb checkpoint plus checkpoint/active suffix chain, then may
         // discard any scratch name left by a crash between rotation renames.
         let spare = crate::journal::spare_journal_path(&self.shared.path);
-        match std::fs::remove_file(&spare) {
-            Ok(()) => crate::journal::sync_parent_directory(&spare).map_err(journal_io_error),
+        match media.remove_file(&spare) {
+            Ok(()) => crate::journal::sync_parent_directory_with_media(media, &spare)
+                .map_err(journal_io_error),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
         }
@@ -4287,30 +4353,34 @@ impl SharedRedb {
             let checkpoint_administration_sequence = read_administration_tail(predecessor)?;
             drop(frontier);
             let path = crate::journal::journal_path(&self.path);
-            let (mut header, mut tail) =
-                match crate::journal::scan_journal(&path, database_id, |_| Ok(()))
-                    .map_err(journal_io_error)?
-                {
-                    Some((header, tail)) => (header, tail),
-                    None => (
-                        crate::journal::JournalFileHeader::with_frontiers(
-                            database_id,
-                            checkpoint_sequence,
-                            checkpoint_administration_sequence,
-                            [0; 32],
-                        ),
-                        crate::journal::JournalScanTail {
-                            last_sequence: checkpoint_sequence,
-                            last_administration_sequence: checkpoint_administration_sequence,
-                            last_hash: [0; 32],
-                            incomplete_tail: false,
-                            complete_bytes: 0,
-                            transition_count: 0,
-                            command_count: 0,
-                            audit_count: 0,
-                        },
+            let (mut header, mut tail) = match crate::journal::scan_journal_with_media(
+                self.journal_media.as_ref(),
+                &path,
+                database_id,
+                |_| Ok(()),
+            )
+            .map_err(journal_io_error)?
+            {
+                Some((header, tail)) => (header, tail),
+                None => (
+                    crate::journal::JournalFileHeader::with_frontiers(
+                        database_id,
+                        checkpoint_sequence,
+                        checkpoint_administration_sequence,
+                        [0; 32],
                     ),
-                };
+                    crate::journal::JournalScanTail {
+                        last_sequence: checkpoint_sequence,
+                        last_administration_sequence: checkpoint_administration_sequence,
+                        last_hash: [0; 32],
+                        incomplete_tail: false,
+                        complete_bytes: 0,
+                        transition_count: 0,
+                        command_count: 0,
+                        audit_count: 0,
+                    },
+                ),
+            };
             let empty_tail_matches_header = header.database_id() == database_id
                 && tail.last_sequence == header.checkpoint_sequence()
                 && tail.last_administration_sequence == header.checkpoint_administration_sequence()
@@ -4332,7 +4402,12 @@ impl SharedRedb {
                     checkpoint_administration_sequence,
                     checkpoint_hash,
                 );
-                crate::journal::reset_journal(&path, &header).map_err(journal_io_error)?;
+                crate::journal::reset_journal_with_media(
+                    self.journal_media.as_ref(),
+                    &path,
+                    &header,
+                )
+                .map_err(journal_io_error)?;
                 tail = crate::journal::JournalScanTail {
                     last_sequence: checkpoint_sequence,
                     last_administration_sequence: checkpoint_administration_sequence,
@@ -4360,13 +4435,19 @@ impl SharedRedb {
                 tail.last_administration_sequence,
                 tail.last_hash,
             );
-            crate::journal::reset_journal(
+            crate::journal::reset_journal_with_media(
+                self.journal_media.as_ref(),
                 &crate::journal::spare_journal_path(&self.path),
                 &spare_header,
             )
             .map_err(journal_io_error)?;
             let lane = Arc::new(
-                crate::journal::JournalLane::open(&path, &header).map_err(journal_io_error)?,
+                crate::journal::JournalLane::open_with_media(
+                    self.journal_media.as_ref(),
+                    &path,
+                    &header,
+                )
+                .map_err(journal_io_error)?,
             );
             *runtime = Some(JournalRuntime {
                 lane,
@@ -4449,8 +4530,9 @@ impl SharedRedb {
         let active_path = crate::journal::journal_path(&self.path);
         let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
         let spare_path = crate::journal::spare_journal_path(&self.path);
-        if checkpoint_path
-            .try_exists()
+        if self
+            .journal_media
+            .try_exists(&checkpoint_path)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
         {
             self.fence_writes();
@@ -4485,18 +4567,24 @@ impl SharedRedb {
             runtime.last_administration_sequence,
             runtime.last_hash,
         );
-        crate::journal::reset_journal(&spare_path, &next_header).map_err(journal_io_error)?;
-        std::fs::rename(&active_path, &checkpoint_path)
+        let media = self.journal_media.as_ref();
+        crate::journal::reset_journal_with_media(media, &spare_path, &next_header)
+            .map_err(journal_io_error)?;
+        media
+            .rename(&active_path, &checkpoint_path)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         // Persist removal of the old active name before the prepared spare is
         // allowed to replace it. A crash between these two syncs leaves the
         // complete checkpoint extent authoritative and no active suffix.
-        crate::journal::sync_parent_directory(&active_path).map_err(journal_io_error)?;
-        std::fs::rename(&spare_path, &active_path)
+        crate::journal::sync_parent_directory_with_media(media, &active_path)
+            .map_err(journal_io_error)?;
+        media
+            .rename(&spare_path, &active_path)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        crate::journal::sync_parent_directory(&active_path).map_err(journal_io_error)?;
+        crate::journal::sync_parent_directory_with_media(media, &active_path)
+            .map_err(journal_io_error)?;
         let lane = Arc::new(
-            crate::journal::JournalLane::open(&active_path, &next_header)
+            crate::journal::JournalLane::open_with_media(media, &active_path, &next_header)
                 .map_err(journal_io_error)?,
         );
         *self
@@ -4823,23 +4911,28 @@ impl SharedRedb {
             Some(successor.checkpoint_root_shared());
         let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
         let spare_path = crate::journal::spare_journal_path(&self.path);
-        if spare_path
-            .try_exists()
+        let media = self.journal_media.as_ref();
+        if media
+            .try_exists(&spare_path)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
         {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        std::fs::rename(&checkpoint_path, &spare_path)
+        media
+            .rename(&checkpoint_path, &spare_path)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        crate::journal::sync_parent_directory(&spare_path).map_err(journal_io_error)?;
+        crate::journal::sync_parent_directory_with_media(media, &spare_path)
+            .map_err(journal_io_error)?;
         let spare_header = crate::journal::JournalFileHeader::with_frontiers(
             runtime.database_id,
             runtime.last_sequence,
             runtime.last_administration_sequence,
             runtime.last_hash,
         );
-        if let Err(error) = crate::journal::reset_journal(&spare_path, &spare_header) {
+        if let Err(error) =
+            crate::journal::reset_journal_with_media(media, &spare_path, &spare_header)
+        {
             self.fence_writes();
             return Err(journal_io_error(error));
         }
@@ -4852,7 +4945,8 @@ impl SharedRedb {
         transaction: &WriteTransaction,
         runtime: &JournalRuntime,
     ) -> Result<(), StorageError> {
-        let scanned = crate::journal::scan_journal(
+        let scanned = crate::journal::scan_journal_with_media(
+            self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             runtime.database_id,
             |frame| {
@@ -4923,7 +5017,8 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if let Err(error) = crate::journal::reset_journal(
+        if let Err(error) = crate::journal::reset_journal_with_media(
+            self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             &crate::journal::JournalFileHeader::with_frontiers(
                 runtime.database_id,
