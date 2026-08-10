@@ -839,7 +839,15 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     );
     assert!(
         total.in_flight_commit_present > 0,
-        "no swept recovery resolved an interrupted commit as present"
+        "no swept recovery resolved an interrupted commit as present. This \
+         is the sweep's rarest arm (prevalence ~0.4% of scouted seeds; today \
+         one seed, 0x51C2_C0E1, carries it) and the most sensitive to \
+         operation-stream shifts from a generator or engine-pin change: a \
+         red HERE after such a change means the arm needs freshly scouted \
+         seeds (run the ignored scout over the sweep range and widen until \
+         a commit-present seed appears), NOT that the oracle broke — an \
+         oracle divergence panics with a named divergence long before this \
+         aggregate"
     );
     assert!(
         total.in_flight_commit_absent > 0,
