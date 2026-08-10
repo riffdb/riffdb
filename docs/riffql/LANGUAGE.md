@@ -204,3 +204,20 @@ predicates, but they remain unavailable until declared discriminator/text-key
 indexes and their compatibility rules ship. A parsed spelling is not an
 executable feature: module compilation continues to fail closed unless every
 required storage and planning proof exists.
+
+## Symbolic catalog schema
+
+The versioned application-catalog response model is frozen as
+`riffdb.application-catalog/v1` with at most 100 authorized symbols per page.
+It can represent contracts, enums, entities, fields, relationships, indexes,
+commands and outcomes, events, query modules and queries, roles, generated
+operations, and a closed feature-preflight registry. Paths contain names only;
+types and source-relative spans are bounded.
+
+The type deliberately has no hidden or total count, per-symbol visibility bit,
+numeric compiler ID, capability record, raw IR, storage key, source text, or
+filesystem path. Unauthorized and nonexistent symbols therefore have the same
+representation: absence from the authorized page. The exact registry and its
+forbidden-field ledger are frozen in
+`fixtures/riffql/application-catalog-schema-v1.json`. This defines the schema
+for WP-564; it does not claim the catalog service/protocol is available yet.
