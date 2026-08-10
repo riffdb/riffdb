@@ -11312,3 +11312,58 @@ work_packages:
       in seconds on one core, and the sweep budget is fixed by seed count rather than database
       size.
   human_review_triggers: *id001
+- id: WP-581
+  name: DST storage seams — journal media port, backend-parameterized open, first simulated store open
+  depends_on: [WP-580]
+  objective: Continue ADR-0113 Phase 1 by cutting the two production seams the simulator needs —
+    an object-safe journal media port over the journal/checkpoint/spare/marker side-file family
+    with a byte-identical real-filesystem default, and a hidden backend-parameterized RedbStore
+    open that routes the format preflight, marker publication, and every journal side-file
+    operation through one simulated media instance — then prove the seams with a shared media
+    conformance suite and the first fully simulated store open.
+  requirements: [SIM-005]
+  required_adrs: [ADR-0012, ADR-0113]
+  allowed_paths: [Cargo.lock, work_packages.yaml, crates/riffdb-sim/**,
+    crates/riffdb-storage-redb/**]
+  deliverables:
+  - JournalMedia port in riffdb-storage-redb (doc-hidden, object-safe, with a MediaFile handle
+    enum whose production arm is a plain std::fs::File so the journal worker's write/sync hot
+    loop carries no dyn dispatch) threaded through the journal lane, extent lifecycle, scan and
+    recovery paths, format-preflight probes, create-only marker publication, and every
+    journal-adjacent store site, with RealJournalMedia preserving the exact prior syscalls and
+    ordering — the existing journal, store, and format-preflight unit tests pass unmodified as
+    the byte-identity proof
+  - Hidden RedbStore::open_with_storage_media constructor (open_with_test_controller
+    convention) accepting a redb StorageBackend engine backend plus a JournalMedia instance,
+    selecting Builder::create_with_backend with the identical builder configuration, so a
+    simulated open is fully simulated from the first filesystem touch; all five production open
+    funnels keep the real-filesystem default
+  - SimJournalMedia over SimDisk (namespace operations, sequential and positional data access,
+    trace format version 3 with self-sufficient media refusal events and media fault-arm
+    digest-sensitivity pins) plus a shared SIM-005 conformance suite run against BOTH the
+    production filesystem implementation and the simulated one
+  - First simulated RedbStore open smoke; a matrix-style fixed workload committed through the
+    storage API over SimBackend plus SimJournalMedia, with clean-shutdown reopen and crash
+    recovery under seeded torn-write resolution landing on the exact acknowledged state
+    (semantic assertions only — store-level byte-exact replay is blocked on redb's hash-ordered
+    pending_table_updates drain, documented in the smoke test; the seeded campaign and the
+    reference-model oracle wiring are the following package)
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-targets
+  - cargo +1.97.0 test -p riffdb-sim --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: Every pre-seam journal, store, format-preflight, and crash-matrix test passes
+    unmodified against the threaded port; the shared media conformance suite passes against
+    both implementations; the fully simulated store open commits, cleanly reopens, and
+    crash-recovers onto the exact acknowledged state; and riffdb-sim stays absent from every
+    production dependency graph.
+  standing_design_tests:
+    interface_safety: The port, handle types, and constructor are doc-hidden test surfaces
+      unreachable from client, CLI, MCP, or SDK paths; production opens construct only the
+      real-filesystem default, and the SIM-007 metadata-driven boundary test keeps the
+      simulator out of every production dependency graph.
+    scale: The media port adds one enum-dispatch branch on the journal hot loop's production
+      arm and no allocation; simulated side-file state is bounded by the configured extent
+      sizes and the smoke workload.
+  human_review_triggers: *id001

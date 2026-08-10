@@ -2127,6 +2127,11 @@ name = "riffdb-sim"
 version = "0.1.0"
 dependencies = [
  "redb",
+ "riffdb-catalog",
+ "riffdb-contract-compiler",
+ "riffdb-storage-api",
+ "riffdb-storage-redb",
+ "riffdb-types",
  "serde_json",
 ]
 

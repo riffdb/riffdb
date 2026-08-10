@@ -9,8 +9,11 @@
 //! digest divergence comes from the fold under test, and removing that fold
 //! turns the `assert_ne` red.
 
+use std::path::Path;
+
 use redb::StorageBackend;
-use riffdb_sim::{FaultConfig, SimBackend, SimDisk};
+use riffdb_sim::{FaultConfig, SimBackend, SimDisk, SimJournalMedia};
+use riffdb_storage_redb::JournalMedia;
 
 const FILE: &str = "engine.redb";
 
@@ -245,5 +248,128 @@ fn refusal_events_are_self_sufficient_trace_entries() {
         probed.trace_digest(),
         probed_far.trace_digest(),
         "refused offsets must feed the digest"
+    );
+}
+
+#[test]
+fn media_transient_error_decisions_feed_the_digest() {
+    // The journal-media fault arm (trace format version 3): identical
+    // acknowledged media operation streams; only the injected transient
+    // refusal on the media write path differs. Seed 6 with denominator 2
+    // fires the first transient-eligible draw and spares the second, exactly
+    // as in the backend arm above — media creates and opens are not
+    // transient-eligible, so the first draw lands on the first write.
+    let side_file = Path::new("/journal/side-file");
+    let quiet = SimDisk::new(FaultConfig::quiet(6));
+    let faulty = SimDisk::new(FaultConfig {
+        transient_error_denominator: 2,
+        ..FaultConfig::quiet(6)
+    });
+    let quiet_media = SimJournalMedia::new(&quiet);
+    let faulty_media = SimJournalMedia::new(&faulty);
+    let mut quiet_file = quiet_media
+        .create_new_read_write(side_file)
+        .expect("create is not transient-eligible");
+    let mut faulty_file = faulty_media
+        .create_new_read_write(side_file)
+        .expect("create is not transient-eligible");
+
+    quiet_file.write_all(b"frame").expect("quiet media write");
+    let error = faulty_file
+        .write_all(b"frame")
+        .expect_err("seed 6 fires the first transient draw");
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    faulty_file
+        .write_all(b"frame")
+        .expect("seed 6 spares the second draw");
+
+    assert_eq!(quiet.counters().transient_errors, 0);
+    assert_eq!(faulty.counters().transient_errors, 1);
+    assert_eq!(
+        quiet.volatile_bytes("/journal/side-file"),
+        faulty.volatile_bytes("/journal/side-file"),
+        "both disks acknowledge identical media state"
+    );
+    assert_ne!(
+        quiet.trace_digest(),
+        faulty.trace_digest(),
+        "the injected media transient decision must feed the digest"
+    );
+}
+
+#[test]
+fn media_namespace_refusals_feed_the_digest() {
+    // create_new exclusivity is a namespace fault surface of its own: two
+    // histories whose acknowledged operations are identical, one of which
+    // additionally had an exclusive create refused, must diverge.
+    let side_file = Path::new("/journal/side-file");
+    let plain = SimDisk::new(FaultConfig::quiet(15));
+    let refused = SimDisk::new(FaultConfig::quiet(15));
+    let plain_media = SimJournalMedia::new(&plain);
+    let refused_media = SimJournalMedia::new(&refused);
+    drop(
+        plain_media
+            .create_new_read_write(side_file)
+            .expect("create"),
+    );
+    drop(
+        refused_media
+            .create_new_read_write(side_file)
+            .expect("create"),
+    );
+    let error = refused_media
+        .create_new_read_write(side_file)
+        .expect_err("exclusive create over an existing file refuses");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_ne!(
+        plain.trace_digest(),
+        refused.trace_digest(),
+        "namespace refusals must feed the digest"
+    );
+
+    // Refusal CLASS, not just refusal presence: a third disk performs the
+    // same operation count on the same name — one acknowledged create and
+    // one refusal each — but its refusal is NotFound (open before create)
+    // where `refused`'s is AlreadyExists (create after create). The digests
+    // must diverge on the classification. The byte-level falsifier for the
+    // class discriminator itself is the encoding pin
+    // `disk::tests::media_refusal_events_fold_their_class_name_and_operation`,
+    // which reds if any single fold (including the discriminator alone) is
+    // removed — digest inequality over real histories cannot pin a lone
+    // missing fold, because no two reachable histories align byte-for-byte
+    // around it.
+    let class_peer = SimDisk::new(FaultConfig::quiet(15));
+    let class_peer_media = SimJournalMedia::new(&class_peer);
+    let error = class_peer_media
+        .open_read(side_file)
+        .expect_err("open before create refuses with NotFound");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    drop(
+        class_peer_media
+            .create_new_read_write(side_file)
+            .expect("create"),
+    );
+    assert_ne!(
+        refused.trace_digest(),
+        class_peer.trace_digest(),
+        "equal-length histories differing in refusal class must diverge"
+    );
+
+    // Missing-file refusals fold self-sufficiently too.
+    let probed = SimDisk::new(FaultConfig::quiet(16));
+    let opened = SimDisk::new(FaultConfig::quiet(16));
+    assert!(
+        !SimJournalMedia::new(&probed)
+            .try_exists(side_file)
+            .expect("absence probe")
+    );
+    let error = SimJournalMedia::new(&opened)
+        .open_read(side_file)
+        .expect_err("open of a missing media file refuses");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_ne!(
+        probed.trace_digest(),
+        opened.trace_digest(),
+        "probe and not-found refusal are distinct traced events"
     );
 }

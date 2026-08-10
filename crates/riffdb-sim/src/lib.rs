@@ -15,10 +15,12 @@
 
 mod backend;
 mod disk;
+mod media;
 mod rng;
 mod trace;
 
 pub use backend::SimBackend;
 pub use disk::{FaultConfig, FaultCounters, SimDisk};
+pub use media::SimJournalMedia;
 pub use rng::SplitMix64;
 pub use trace::{TRACE_FORMAT_VERSION, TraceHash, fnv1a64};
