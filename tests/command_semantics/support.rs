@@ -15,7 +15,8 @@ use riffdb_commit::{
     AdmissionClockError, ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
     CommandExecutionPreparation, CommandRequestControl, CommitTelemetry, CoordinatorDurability,
     CoordinatorWorkloadCapacity, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
-    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator,
+    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator, ServiceUuidV7Source,
+    ServiceUuidV7SourceError,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::compile_contract_source;
@@ -888,6 +889,14 @@ impl AdmissionClock for FixedAdmissionClock {
 
 pub(crate) struct FixedAdministrationClock(Timestamp);
 
+pub(crate) struct FixedServiceUuidV7Source;
+
+impl ServiceUuidV7Source for FixedServiceUuidV7Source {
+    fn next_uuid_v7(&self) -> Result<[u8; 16], ServiceUuidV7SourceError> {
+        Ok(uuid_bytes(0x7a))
+    }
+}
+
 impl AdministrationClock for FixedAdministrationClock {
     fn now(&self) -> Result<Timestamp, AdministrationClockError> {
         Ok(self.0)
@@ -1017,6 +1026,7 @@ where
         ports,
         conflicts,
         admission_clock,
+        Arc::new(FixedServiceUuidV7Source),
         administration_clock,
         authorization_clock,
         provenance_source,
@@ -1045,6 +1055,7 @@ where
         ports,
         conflicts,
         admission_clock,
+        Arc::new(FixedServiceUuidV7Source),
         Arc::new(FixedAdministrationClock(timestamp(1_700_000_002))),
         Arc::new(FixedAuthorizationClock(timestamp(1_700_000_002))),
         provenance_source,

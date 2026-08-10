@@ -100,6 +100,14 @@ pub(crate) fn resolve_declared_types(
             }
             Declaration::Command(command) => {
                 let command_id = symbols.commands.get(&command.name.value).copied();
+                if command.idempotency.is_none() {
+                    diagnostics.extend(command.service_values.iter().map(|value| {
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidServiceValue,
+                            value.span,
+                        )
+                    }));
+                }
                 for input in &command.inputs {
                     if let (Some(command_id), Some(value_type), Some(field_id)) = (
                         command_id,

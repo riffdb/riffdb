@@ -396,6 +396,7 @@ impl ProductionGraphBuilder {
             storage.clone(),
             conflicts,
             Arc::new(admission_clock),
+            Arc::new(identifiers.service_uuids()),
             Arc::new(administration_clock),
             Arc::new(authorization_clock),
             Arc::new(identifiers.provenance_ids()),

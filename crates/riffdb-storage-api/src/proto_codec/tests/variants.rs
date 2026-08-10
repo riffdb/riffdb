@@ -3,9 +3,10 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
-    AdministrationSequence, ApprovalId, CommitSequence, ExecutionFailureCode, FrontierPosition,
-    ProjectionGeneration, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+    AdministrationSequence, ApprovalId, CanonicalRecord, CanonicalValue, CommitSequence,
+    ExecutionFailureCode, FieldId, FrontierPosition, ProjectionGeneration, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantScope, Timestamp,
 };
 
 use crate::{
@@ -21,6 +22,41 @@ use crate::{
 
 use super::super::*;
 use super::{assert_round_trip, sample};
+
+#[test]
+fn workflow_service_values_survive_pending_and_outcome_round_trips() {
+    let service_values = CanonicalRecord::new(vec![
+        (
+            FieldId::new(9).expect("field"),
+            CanonicalValue::Uuid([0x51; 16]),
+        ),
+        (
+            FieldId::new(10).expect("field"),
+            CanonicalValue::Timestamp(Timestamp::new(42, 7).expect("service time")),
+        ),
+    ])
+    .expect("service values");
+    let pending = sample::pending()
+        .with_service_values(service_values.clone())
+        .expect("service values attach");
+    let encoded = encode_pending_admission_v1(&pending).expect("pending encodes");
+    let decoded = decode_pending_admission_v1(encoded.as_bytes()).expect("pending decodes");
+    assert_eq!(decoded.value().service_values(), pending.service_values());
+    assert_eq!(decoded.value().causation(), pending.causation());
+    assert_eq!(decoded.value().logical_time(), pending.logical_time());
+    assert_eq!(decoded.value(), &pending);
+
+    let records = sample::atomic_record_set();
+    let outcome = records
+        .stored_outcome()
+        .clone()
+        .with_service_values(service_values)
+        .expect("service values attach");
+    let encoded = encode_stored_outcome_v1(&outcome).expect("outcome encodes");
+    let decoded = decode_stored_outcome_v1(encoded.as_bytes()).expect("outcome decodes");
+    assert_eq!(decoded.value().service_values(), outcome.service_values());
+    assert_eq!(decoded.value(), &outcome);
+}
 
 fn payload<M: Message + Default>(envelope: &CanonicalStoredEnvelopeV1) -> M {
     let decoded = riffdb_proto::durable::readable_record_registry()

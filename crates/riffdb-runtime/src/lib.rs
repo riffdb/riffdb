@@ -35,12 +35,13 @@ pub struct TransactionContext {
     plan: ExecutablePlanRef,
     tx_time: LogicalTime,
     partition_key: PartitionKey,
+    service_values: CanonicalRecord,
 }
 
 impl TransactionContext {
     /// Constructs a context from coordinator- and policy-checked values.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         request_id: RequestId,
         actor: AdmittedActorContext,
         plan: ExecutablePlanRef,
@@ -53,6 +54,28 @@ impl TransactionContext {
             plan,
             tx_time,
             partition_key,
+            service_values: CanonicalRecord::new(Vec::new())
+                .expect("the empty canonical service-value record is valid"),
+        }
+    }
+
+    /// Constructs a context containing service-observed values sealed before evaluation.
+    #[must_use]
+    pub fn new_with_service_values(
+        request_id: RequestId,
+        actor: AdmittedActorContext,
+        plan: ExecutablePlanRef,
+        tx_time: LogicalTime,
+        partition_key: PartitionKey,
+        service_values: CanonicalRecord,
+    ) -> Self {
+        Self {
+            request_id,
+            actor,
+            plan,
+            tx_time,
+            partition_key,
+            service_values,
         }
     }
 
@@ -84,6 +107,12 @@ impl TransactionContext {
     #[must_use]
     pub const fn partition_key(&self) -> &PartitionKey {
         &self.partition_key
+    }
+
+    /// Borrows compiler-keyed service values without exposing an observation source.
+    #[must_use]
+    pub const fn service_values(&self) -> &CanonicalRecord {
+        &self.service_values
     }
 }
 
@@ -173,6 +202,7 @@ pub fn execute_command(
                     records: &records,
                     roots: &[],
                     tx_time: context.tx_time(),
+                    service_values: context.service_values(),
                 };
                 let mut evaluation = evaluator.batch(&values);
                 let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
@@ -244,6 +274,7 @@ pub fn execute_command(
                         records: &records,
                         roots: &roots,
                         tx_time: context.tx_time(),
+                        service_values: context.service_values(),
                     };
                     let mut evaluation = evaluator.batch(&values);
                     if evaluation.evaluate_predicate(*predicate)? {
@@ -269,6 +300,7 @@ pub fn execute_command(
                         records: &records,
                         roots: &roots,
                         tx_time: context.tx_time(),
+                        service_values: context.service_values(),
                     };
                     evaluator.batch(&values).evaluate(*value)?
                 };
@@ -283,6 +315,7 @@ pub fn execute_command(
                         records: &records,
                         roots: &roots,
                         tx_time: context.tx_time(),
+                        service_values: context.service_values(),
                     };
                     let mut evaluation = evaluator.batch(&values);
                     construct_record(event.payload(), &mut evaluation)?
@@ -339,6 +372,7 @@ pub fn execute_command(
                         records: &records,
                         roots: &roots,
                         tx_time: context.tx_time(),
+                        service_values: context.service_values(),
                     };
                     evaluator.batch(&values).evaluate(*expected_revision)?
                 };
@@ -364,6 +398,7 @@ pub fn execute_command(
                             records: &records,
                             roots: &roots,
                             tx_time: context.tx_time(),
+                            service_values: context.service_values(),
                         };
                         let mut evaluation = evaluator.batch(&values);
                         construct_outcome(stale, &mut evaluation)?
@@ -395,6 +430,7 @@ pub fn execute_command(
                             records: &records,
                             roots: &roots,
                             tx_time: context.tx_time(),
+                            service_values: context.service_values(),
                         };
                         let mut evaluation = evaluator.batch(&values);
                         construct_outcome(illegal, &mut evaluation)?
@@ -423,6 +459,7 @@ pub fn execute_command(
                         records: &records,
                         roots: &roots,
                         tx_time: context.tx_time(),
+                        service_values: context.service_values(),
                     };
                     let mut evaluation = evaluator.batch(&values);
                     construct_outcome(outcome, &mut evaluation)?
@@ -944,6 +981,7 @@ struct RuntimeValues<'a> {
     records: &'a [Option<CanonicalRecord>],
     roots: &'a [CanonicalRecord],
     tx_time: LogicalTime,
+    service_values: &'a CanonicalRecord,
 }
 
 impl ExpressionValueSource for RuntimeValues<'_> {
@@ -958,11 +996,16 @@ impl ExpressionValueSource for RuntimeValues<'_> {
             .binary_search_by_key(&field, |value| value.field().id())
             .ok()
             .map(|index| &self.plan.service_values()[index])?;
-        match value.kind() {
-            riffdb_contract_ir::ServiceValueKind::TransactionTime => {
-                Some(CanonicalValue::Timestamp(self.tx_time.timestamp()))
+        let sealed = record_field(self.service_values, field)?.clone();
+        match (value.kind(), &sealed) {
+            (
+                riffdb_contract_ir::ServiceValueKind::TransactionTime,
+                CanonicalValue::Timestamp(_),
+            )
+            | (riffdb_contract_ir::ServiceValueKind::UuidV7, CanonicalValue::Uuid(_)) => {
+                Some(sealed)
             }
-            riffdb_contract_ir::ServiceValueKind::UuidV7 => None,
+            _ => None,
         }
     }
 

@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
-    EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V2, PROVENANCE_V2, binding_to_proto,
+    EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V3, PROVENANCE_V2, binding_to_proto,
     causation_to_proto, claims_to_proto, dependencies_to_proto, durability_to_proto,
     encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
     encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
@@ -318,6 +318,13 @@ pub fn command_write_set_upper_bound_v1(
         .causation()
         .map(|value| causation_to_proto(value).encoded_len());
     let outcome_len = sizing_successor_len(outcome_len, causation_len)?;
+    let service_values_len = riffdb_types::encode_canonical_record(pending.service_values())
+        .map_err(|_| DurableCodecError::invariant())?
+        .len();
+    let outcome_len = sum_proto_fields([
+        message_field_len(1, outcome_len),
+        bytes_field_len(2, service_values_len),
+    ])?;
     let provenance_len = sizing_provenance_len(
         identity_len,
         plan_len,
@@ -422,7 +429,7 @@ pub fn command_write_set_upper_bound_v1(
             sizing_index_epoch_len(value.post_image())
                 .and_then(|len| sizing_charge_len(INDEX_EPOCH, len))
         }))?,
-        outcome: sizing_charge_len(OUTCOME_V2, outcome_len)?,
+        outcome: sizing_charge_len(OUTCOME_V3, outcome_len)?,
         events: event_charge
             .checked_add(event_route_charge)
             .ok_or_else(DurableCodecError::invariant)?,

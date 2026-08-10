@@ -220,6 +220,19 @@ pub(super) fn decode_record_variant(
     }
 }
 
+pub(super) fn decode_record_variant_chain(
+    encoded: &[u8],
+    accepted_record_types: &[&'static str],
+) -> Result<usize, DurableCodecError> {
+    let decoded = readable_record_registry()
+        .decode(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    accepted_record_types
+        .iter()
+        .position(|record_type| *record_type == decoded.record_type())
+        .ok_or_else(|| DurableCodecError::new(DurableCodecErrorKind::UnexpectedRecordType))
+}
+
 pub(super) fn require<T>(value: Option<T>) -> Result<T, DurableCodecError> {
     value.ok_or_else(DurableCodecError::corrupt)
 }

@@ -198,6 +198,7 @@ pub struct StoredPendingAdmissionV1 {
     partition_key: PartitionKey,
     provenance_claims: StoredAdmittedProvenanceClaimsV1,
     causation: Option<StoredCommandCausationV1>,
+    service_values: CanonicalRecord,
 }
 
 impl StoredPendingAdmissionV1 {
@@ -256,6 +257,8 @@ impl StoredPendingAdmissionV1 {
             partition_key,
             provenance_claims,
             causation,
+            service_values: CanonicalRecord::new(Vec::new())
+                .map_err(|_| StorageValueError::InvalidShape)?,
         };
         if value
             .semantic_bytes()?
@@ -322,6 +325,12 @@ impl StoredPendingAdmissionV1 {
         self.causation
     }
 
+    /// Borrows compiler-keyed service values observed before evaluation.
+    #[must_use]
+    pub const fn service_values(&self) -> &CanonicalRecord {
+        &self.service_values
+    }
+
     /// Upgrades one decoded V1 base into its V2 causal successor.
     pub fn with_causation(
         mut self,
@@ -331,6 +340,26 @@ impl StoredPendingAdmissionV1 {
             return Err(StorageValueError::InvalidShape);
         }
         self.causation = Some(causation);
+        if self
+            .semantic_bytes()?
+            .checked_add(COMMIT_INTENT_FIXED_NON_RUNTIME_SEMANTIC_BYTES)
+            .ok_or(StorageValueError::SizeOverflow)?
+            > riffdb_types::COMMIT_INTENT_NON_RUNTIME_RESERVE_BYTES
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(self)
+    }
+
+    /// Upgrades admission evidence with one bounded canonical service-value set.
+    pub fn with_service_values(
+        mut self,
+        service_values: CanonicalRecord,
+    ) -> Result<Self, StorageValueError> {
+        if !self.service_values.is_empty() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.service_values = service_values;
         if self
             .semantic_bytes()?
             .checked_add(COMMIT_INTENT_FIXED_NON_RUNTIME_SEMANTIC_BYTES)
@@ -369,6 +398,15 @@ impl StoredPendingAdmissionV1 {
                 0
             })
             .ok_or(StorageValueError::SizeOverflow)?;
+        if !self.service_values.is_empty() {
+            total = total
+                .checked_add(framed_bytes(
+                    encode_canonical_record(&self.service_values)
+                        .map_err(|error| canonical_codec_storage_error(&error))?
+                        .len(),
+                )?)
+                .ok_or(StorageValueError::SizeOverflow)?;
+        }
         Ok(total)
     }
 }

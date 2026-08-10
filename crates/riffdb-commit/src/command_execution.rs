@@ -25,7 +25,8 @@ use crate::{
     AdmissionClock, AdmissionClockError, CommandExecutionPreparation, CommandPipelineStage,
     CommitCallTerminal, CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage, CommittedOutcome,
-    CommittedOutcomeDisposition, ProvenanceIdSource, ProvenanceIdSourceError,
+    CommittedOutcomeDisposition, ProvenanceIdSource, ProvenanceIdSourceError, ServiceUuidV7Source,
+    ServiceUuidV7SourceError,
     command_admission::{
         CommandAdmissionError, CommandAdmissionResult, UncertainCommandAdmissionResolution,
         reduce_audited_command_admission_group, reduce_command_admission,
@@ -468,6 +469,7 @@ pub(super) trait RepeatableCommandBatchPort:
         &'a self,
         conflicts: &'a dyn ConflictManager,
         admission_clock: &'a dyn AdmissionClock,
+        service_uuids: &'a dyn ServiceUuidV7Source,
         administration_clock: &'a dyn crate::AdministrationClock,
         provenance: &'a dyn ProvenanceIdSource,
         durability: CoordinatorDurability,
@@ -511,6 +513,7 @@ where
         &'a self,
         conflicts: &'a dyn ConflictManager,
         admission_clock: &'a dyn AdmissionClock,
+        service_uuids: &'a dyn ServiceUuidV7Source,
         administration_clock: &'a dyn crate::AdministrationClock,
         provenance: &'a dyn ProvenanceIdSource,
         durability: CoordinatorDurability,
@@ -524,6 +527,7 @@ where
             self,
             conflicts,
             admission_clock,
+            service_uuids,
             administration_clock,
             provenance,
             durability,
@@ -672,6 +676,7 @@ enum CommandExecutionErrorDetail {
     },
     Conflict(ConflictError),
     AdmissionClock(AdmissionClockError),
+    ServiceUuid(ServiceUuidV7SourceError),
     ProvenanceSource(ProvenanceIdSourceError),
     ReadOnly(ReadOnlyExecutionCoreError),
 }
@@ -771,6 +776,7 @@ pub(super) async fn drive_command_execution<P>(
     port: &P,
     conflicts: &dyn ConflictManager,
     admission_clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     provenance: &dyn ProvenanceIdSource,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
@@ -783,7 +789,8 @@ where
         + ApplicationCommandTransactionPort
         + ExecutionFailureTransitionPort,
 {
-    let candidate = match reduce_command_admission(port, admission_clock, preparation) {
+    let admission = reduce_command_admission(port, admission_clock, service_uuids, preparation);
+    let candidate = match admission {
         Ok(CommandAdmissionResult::Execute(candidate)) => candidate,
         Ok(CommandAdmissionResult::Outcome(outcome)) => {
             telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
@@ -849,6 +856,9 @@ where
         Err(CommandAdmissionError::Clock(error)) => {
             return Err(admission_clock_failure(error));
         }
+        Err(CommandAdmissionError::ServiceUuid(error)) => {
+            return Err(service_uuid_failure(error));
+        }
         Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Integrity(_)))
         | Err(CommandAdmissionError::Integrity) => {
             return terminal_continuation(internal_defect(lifecycle), lifecycle);
@@ -869,6 +879,7 @@ pub(super) async fn drive_command_execution_group<P>(
     port: &P,
     conflicts: &dyn ConflictManager,
     admission_clock: &dyn AdmissionClock,
+    service_uuids: &dyn ServiceUuidV7Source,
     administration_clock: &dyn crate::AdministrationClock,
     provenance: &dyn ProvenanceIdSource,
     durability: CoordinatorDurability,
@@ -909,6 +920,7 @@ where
     let admissions = reduce_audited_command_admission_group(
         port,
         admission_clock,
+        service_uuids,
         administration_clock,
         preparations,
     );
@@ -1197,6 +1209,9 @@ where
         }
         Err(CommandAdmissionError::Clock(error)) => {
             return Err(Err(admission_clock_failure(error)));
+        }
+        Err(CommandAdmissionError::ServiceUuid(error)) => {
+            return Err(Err(service_uuid_failure(error)));
         }
         Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Integrity(_)))
         | Err(CommandAdmissionError::Integrity) => {
@@ -4003,6 +4018,13 @@ fn admission_clock_failure(error: AdmissionClockError) -> CommandExecutionError 
     CommandExecutionError {
         kind: CommandExecutionErrorKind::InternalDefect,
         detail: CommandExecutionErrorDetail::AdmissionClock(error),
+    }
+}
+
+fn service_uuid_failure(error: ServiceUuidV7SourceError) -> CommandExecutionError {
+    CommandExecutionError {
+        kind: CommandExecutionErrorKind::InternalDefect,
+        detail: CommandExecutionErrorDetail::ServiceUuid(error),
     }
 }
 

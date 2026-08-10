@@ -970,7 +970,8 @@ fn build_atomic_command_record_set(
         intent.provenance_id(),
         durability_mode,
         pending.causation(),
-    )?;
+    )?
+    .with_service_values(pending.service_values().clone())?;
     let affected_entities = entities
         .iter()
         .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))

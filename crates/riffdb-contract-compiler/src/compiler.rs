@@ -347,6 +347,27 @@ mod tests {
         assert_eq!(v1.ir_version(), 1);
     }
 
+    #[test]
+    fn service_values_require_durable_idempotent_admission() {
+        let source = r#"
+contract ReadServiceValue version 1 {
+  entity Row { key (id: uuid) }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Find {
+    input id: uuid
+    service execution_id: uuid_v7
+    read Row(id) as row else Missing { id: id }
+    return Found { execution_id: execution_id }
+  }
+}
+"#;
+        assert_semantic_diagnostic_at(
+            source,
+            CompilerDiagnosticCode::InvalidServiceValue,
+            "service execution_id: uuid_v7",
+        );
+    }
+
     fn amplified_outcome_source(entity_fields: usize, outcome_fields: usize) -> String {
         let entity_fields = (0..entity_fields)
             .map(|index| format!("    field value_{index:04}: string<128>\n"))

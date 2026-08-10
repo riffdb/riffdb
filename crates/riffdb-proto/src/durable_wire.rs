@@ -298,6 +298,15 @@ shape!(PROVENANCE_V2 [
     message(1, &PROVENANCE),
     message(2, &COMMAND_CAUSATION),
 ]);
+shape!(PENDING_ADMISSION_V3 [
+    message(1, &PENDING_ADMISSION_V2),
+    bytes(2, MAX_DOCUMENT_BYTES),
+]);
+shape!(EXECUTION_FAILED_V3[message(1, &PENDING_ADMISSION_V3)]);
+shape!(OUTCOME_V3 [
+    message(1, &OUTCOME_V2),
+    bytes(2, MAX_DOCUMENT_BYTES),
+]);
 shape!(COMMAND_AUDIT_INVOCATION_V1 [
     fixed_bytes(1, 16),
     message(3, &AUDIT_PRINCIPAL),
@@ -361,6 +370,20 @@ shape!(COMMAND_DERIVED_INDEX_CHECKPOINT_V1 [
         &COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1,
     ),
     fixed_bytes(7, 32),
+]);
+shape!(COMMAND_CAPSULE_V3 [
+    message(1, &COMMAND_CAPSULE_V2),
+    bytes(2, MAX_DOCUMENT_BYTES),
+]);
+shape!(COMMAND_SEGMENT_BODY_V2 [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V3),
+    message(9, &COMMAND_SEGMENT_MANIFEST_V1),
+]);
+shape!(COMMAND_SEGMENT_V2 [
+    message(1, &COMMAND_SEGMENT_BODY_V2),
+    fixed_bytes(2, 32),
 ]);
 shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
@@ -741,7 +764,7 @@ shape!(ROOT_RETENTION_ADMINISTRATION [
     message(5, &TIMESTAMP),
 ]);
 
-const ROOTS: [&Shape; 63] = [
+const ROOTS: [&Shape; 68] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -816,6 +839,11 @@ const ROOTS: [&Shape; 63] = [
     &COMMAND_CAPSULE_V2,
     &COMMAND_SEGMENT_V1,
     &COMMAND_DERIVED_INDEX_CHECKPOINT_V1,
+    &PENDING_ADMISSION_V3,
+    &EXECUTION_FAILED_V3,
+    &OUTCOME_V3,
+    &COMMAND_CAPSULE_V3,
+    &COMMAND_SEGMENT_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

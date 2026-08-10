@@ -7,7 +7,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use riffdb_commit::{ProvenanceIdSource, ProvenanceIdSourceError};
+use riffdb_commit::{
+    ProvenanceIdSource, ProvenanceIdSourceError, ServiceUuidV7Source, ServiceUuidV7SourceError,
+};
 use riffdb_errors::{IncidentIdSource, IncidentIdSourceError};
 use riffdb_types::{DatabaseId, IncidentId, ProvenanceId, RequestId, UuidV7ConstructionError};
 
@@ -119,6 +121,10 @@ impl ProductionIdentifierSources {
     pub(crate) fn incident_ids(&self) -> ServerIncidentIdSource {
         ServerIncidentIdSource(Arc::clone(&self.source))
     }
+
+    pub(crate) fn service_uuids(&self) -> ServerServiceUuidV7Source {
+        ServerServiceUuidV7Source(Arc::clone(&self.source))
+    }
 }
 
 impl Default for ProductionIdentifierSources {
@@ -194,6 +200,25 @@ impl ProvenanceIdSource for ServerProvenanceIdSource {
 impl fmt::Debug for ServerProvenanceIdSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerProvenanceIdSource([REDACTED])")
+    }
+}
+
+/// Production adapter for compiler-declared service UUID observations.
+#[derive(Clone)]
+pub(crate) struct ServerServiceUuidV7Source(Arc<SystemUuidV7Source>);
+
+impl ServiceUuidV7Source for ServerServiceUuidV7Source {
+    fn next_uuid_v7(&self) -> Result<[u8; 16], ServiceUuidV7SourceError> {
+        self.0
+            .next(RequestId::from_unix_milliseconds_and_random)
+            .map(RequestId::into_bytes)
+            .map_err(|_| ServiceUuidV7SourceError)
+    }
+}
+
+impl fmt::Debug for ServerServiceUuidV7Source {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerServiceUuidV7Source([REDACTED])")
     }
 }
 

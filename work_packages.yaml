@@ -10579,14 +10579,16 @@ work_packages:
     WF-005, WF-006, WF-007, WF-008, WF-009, WF-010]
   required_adrs: [ADR-0003, ADR-0005, ADR-0012, ADR-0018, ADR-0055, ADR-0059,
     ADR-0080, ADR-0095, ADR-0109]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+  allowed_paths: [.gitattributes, Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
     fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-runtime/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
-    crates/riffdb-client-rust/**, fixtures/workflows/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-client-rust/**, crates/riffdb-server/**,
+    fixtures/compatibility/**, fixtures/compiler/**, fixtures/workflows/**,
+    release/durable-format-manifest-v1.json, tests/**, scripts/**, docs/**]
   deliverables:
   - Versioned workflow/transition/lease/service-value grammar, IR, plans, diagnostics, old/current
     fixtures, generated schemas, and compatibility/migration classifications

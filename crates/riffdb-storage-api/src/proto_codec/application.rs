@@ -22,11 +22,11 @@ use super::{
     CanonicalStoredEnvelopeV1, DurableCodecError, actor_from_proto, actor_to_proto,
     binding_from_proto, binding_to_proto, canonical_record_from_bytes, claims_from_proto,
     claims_to_proto, declared_outcome_from_proto, declared_outcome_to_proto, decode_message,
-    decode_record_variant, encode_message, entity_target_from_proto, entity_target_to_proto,
-    epoch_from_proto, epoch_to_proto, event_id_from_proto, event_id_to_proto, expected_from_proto,
-    expected_to_proto, fixed, identity_from_proto, identity_to_proto, logical_time_from_proto,
-    plan_from_proto, plan_to_proto, require, storage_result, structural_prefix_from_bytes,
-    timestamp_to_proto,
+    decode_record_variant, decode_record_variant_chain, encode_message, entity_target_from_proto,
+    entity_target_to_proto, epoch_from_proto, epoch_to_proto, event_id_from_proto,
+    event_id_to_proto, expected_from_proto, expected_to_proto, fixed, identity_from_proto,
+    identity_to_proto, logical_time_from_proto, plan_from_proto, plan_to_proto, require,
+    storage_result, structural_prefix_from_bytes, timestamp_to_proto,
 };
 
 pub(super) const ENTITY: &str = "riffdb.storage.v1.StoredEntityRecordV1";
@@ -36,10 +36,13 @@ pub(super) const INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexGenerationV2"
 const LEGACY_INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexEpochV1";
 const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV1";
 const PENDING_V2: &str = "riffdb.storage.v1.StoredPendingAdmissionV2";
+const PENDING_V3: &str = "riffdb.storage.v1.StoredPendingAdmissionV3";
 const EXECUTION_FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
 const EXECUTION_FAILED_V2: &str = "riffdb.storage.v1.StoredExecutionFailedV2";
+const EXECUTION_FAILED_V3: &str = "riffdb.storage.v1.StoredExecutionFailedV3";
 pub(super) const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
 pub(super) const OUTCOME_V2: &str = "riffdb.storage.v1.StoredOutcomeV2";
+pub(super) const OUTCOME_V3: &str = "riffdb.storage.v1.StoredOutcomeV3";
 pub(super) const EVENT: &str = "riffdb.storage.v1.StoredDurableEventV1";
 pub(super) const EVENT_ROUTE: &str = "riffdb.storage.v1.StoredEventRouteV1";
 pub(super) const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
@@ -254,6 +257,23 @@ fn pending_v2_from_proto(
         Some(causation) => storage_result(base.with_causation(causation_from_proto(causation)?)),
         None => Ok(base),
     }
+}
+
+fn pending_v3_to_proto(value: &StoredPendingAdmissionV1) -> wire::StoredPendingAdmissionV3 {
+    wire::StoredPendingAdmissionV3 {
+        base: Some(pending_v2_to_proto(value)),
+        canonical_service_values: encode_canonical_record(value.service_values())
+            .expect("checked canonical service values must encode"),
+    }
+}
+
+fn pending_v3_from_proto(
+    value: wire::StoredPendingAdmissionV3,
+) -> Result<StoredPendingAdmissionV1, DurableCodecError> {
+    let base = pending_v2_from_proto(require(value.base)?)?;
+    storage_result(base.with_service_values(canonical_record_from_bytes(
+        &value.canonical_service_values,
+    )?))
 }
 
 pub(super) fn causation_to_proto(
@@ -560,7 +580,7 @@ pub fn encode_legacy_index_epoch_v1_fixture(
 pub fn encode_pending_admission_v1(
     value: &StoredPendingAdmissionV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    encode_message(PENDING_V2, &pending_v2_to_proto(value))
+    encode_message(PENDING_V3, &pending_v3_to_proto(value))
 }
 
 #[cfg(test)]
@@ -574,14 +594,23 @@ pub(super) fn encode_pending_admission_legacy_v1_fixture(
 pub fn decode_pending_admission_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredPendingAdmissionV1>, DurableCodecError> {
-    if decode_record_variant(encoded, PENDING_V2, PENDING)? {
-        decode_message::<wire::StoredPendingAdmissionV2, _, _>(
+    match decode_record_variant_chain(encoded, &[PENDING_V3, PENDING_V2, PENDING])? {
+        0 => decode_message::<wire::StoredPendingAdmissionV3, _, _>(
+            PENDING_V3,
+            encoded,
+            pending_v3_from_proto,
+        ),
+        1 => decode_message::<wire::StoredPendingAdmissionV2, _, _>(
             PENDING_V2,
             encoded,
             pending_v2_from_proto,
-        )
-    } else {
-        decode_message::<wire::StoredPendingAdmissionV1, _, _>(PENDING, encoded, pending_from_proto)
+        ),
+        2 => decode_message::<wire::StoredPendingAdmissionV1, _, _>(
+            PENDING,
+            encoded,
+            pending_from_proto,
+        ),
+        _ => unreachable!("closed durable record variant index"),
     }
 }
 
@@ -590,9 +619,9 @@ pub fn encode_execution_failed_v1(
     value: &StoredExecutionFailedV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
-        EXECUTION_FAILED_V2,
-        &wire::StoredExecutionFailedV2 {
-            pending: Some(pending_v2_to_proto(value.pending())),
+        EXECUTION_FAILED_V3,
+        &wire::StoredExecutionFailedV3 {
+            pending: Some(pending_v3_to_proto(value.pending())),
             code: execution_code_to_proto(value.code()),
         },
     )
@@ -615,8 +644,21 @@ pub(super) fn encode_execution_failed_legacy_v1_fixture(
 pub fn decode_execution_failed_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredExecutionFailedV1>, DurableCodecError> {
-    if decode_record_variant(encoded, EXECUTION_FAILED_V2, EXECUTION_FAILED)? {
-        decode_message::<wire::StoredExecutionFailedV2, _, _>(
+    match decode_record_variant_chain(
+        encoded,
+        &[EXECUTION_FAILED_V3, EXECUTION_FAILED_V2, EXECUTION_FAILED],
+    )? {
+        0 => decode_message::<wire::StoredExecutionFailedV3, _, _>(
+            EXECUTION_FAILED_V3,
+            encoded,
+            |value| {
+                Ok(StoredExecutionFailedV1::new(
+                    pending_v3_from_proto(require(value.pending)?)?,
+                    execution_code_from_proto(value.code)?,
+                ))
+            },
+        ),
+        1 => decode_message::<wire::StoredExecutionFailedV2, _, _>(
             EXECUTION_FAILED_V2,
             encoded,
             |value| {
@@ -625,14 +667,18 @@ pub fn decode_execution_failed_v1(
                     execution_code_from_proto(value.code)?,
                 ))
             },
-        )
-    } else {
-        decode_message::<wire::StoredExecutionFailedV1, _, _>(EXECUTION_FAILED, encoded, |value| {
-            Ok(StoredExecutionFailedV1::new(
-                pending_from_proto(require(value.pending)?)?,
-                execution_code_from_proto(value.code)?,
-            ))
-        })
+        ),
+        2 => decode_message::<wire::StoredExecutionFailedV1, _, _>(
+            EXECUTION_FAILED,
+            encoded,
+            |value| {
+                Ok(StoredExecutionFailedV1::new(
+                    pending_from_proto(require(value.pending)?)?,
+                    execution_code_from_proto(value.code)?,
+                ))
+            },
+        ),
+        _ => unreachable!("closed durable record variant index"),
     }
 }
 
@@ -641,10 +687,14 @@ pub fn encode_stored_outcome_v1(
     value: &StoredOutcomeV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
-        OUTCOME_V2,
-        &wire::StoredOutcomeV2 {
-            base: Some(outcome_to_proto(value)),
-            causation: value.causation().map(causation_to_proto),
+        OUTCOME_V3,
+        &wire::StoredOutcomeV3 {
+            base: Some(wire::StoredOutcomeV2 {
+                base: Some(outcome_to_proto(value)),
+                causation: value.causation().map(causation_to_proto),
+            }),
+            canonical_service_values: encode_canonical_record(value.service_values())
+                .expect("checked canonical service values must encode"),
         },
     )
 }
@@ -702,8 +752,20 @@ pub(super) fn outcome_from_proto(
 pub fn decode_stored_outcome_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredOutcomeV1>, DurableCodecError> {
-    if decode_record_variant(encoded, OUTCOME_V2, OUTCOME)? {
-        decode_message::<wire::StoredOutcomeV2, _, _>(OUTCOME_V2, encoded, |value| {
+    match decode_record_variant_chain(encoded, &[OUTCOME_V3, OUTCOME_V2, OUTCOME])? {
+        0 => decode_message::<wire::StoredOutcomeV3, _, _>(OUTCOME_V3, encoded, |value| {
+            let service_values = canonical_record_from_bytes(&value.canonical_service_values)?;
+            let contextual = require(value.base)?;
+            let base = outcome_from_proto(require(contextual.base)?)?;
+            let base = match contextual.causation {
+                Some(causation) => {
+                    storage_result(base.with_causation(causation_from_proto(causation)?))?
+                }
+                None => base,
+            };
+            storage_result(base.with_service_values(service_values))
+        }),
+        1 => decode_message::<wire::StoredOutcomeV2, _, _>(OUTCOME_V2, encoded, |value| {
             let base = outcome_from_proto(require(value.base)?)?;
             match value.causation {
                 Some(causation) => {
@@ -711,9 +773,9 @@ pub fn decode_stored_outcome_v1(
                 }
                 None => Ok(base),
             }
-        })
-    } else {
-        decode_message::<wire::StoredOutcomeV1, _, _>(OUTCOME, encoded, outcome_from_proto)
+        }),
+        2 => decode_message::<wire::StoredOutcomeV1, _, _>(OUTCOME, encoded, outcome_from_proto),
+        _ => unreachable!("closed durable record variant index"),
     }
 }
 

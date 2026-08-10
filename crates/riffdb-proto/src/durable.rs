@@ -12,7 +12,7 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 68;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 73;
 /// Number of durable semantic roles accepted for current writes.
 pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 53;
 /// Number of durable semantic roles accepted for current writes.
@@ -186,6 +186,14 @@ const COMMAND_SEGMENT_V1_SCHEMA_HASH_BYTES: &[u8; 96] = include_bytes!(concat!(
 const COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES: &[u8; 24] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-command-segment-v1-record-bounds.bin"
+));
+const WORKFLOW_SERVICE_VALUES_V3_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-workflow-service-values-v3-schema-hashes.bin"
+));
+const WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES: &[u8; 40] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-workflow-service-values-v3-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -961,6 +969,71 @@ const COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA: RecordSchema<'static> =
     56
 );
 
+const fn workflow_service_values_v3_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = WORKFLOW_SERVICE_VALUES_V3_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn workflow_service_values_v3_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES[start],
+        WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES[start + 1],
+        WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES[start + 2],
+        WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! workflow_service_values_v3_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal, $revision:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            workflow_service_values_v3_schema_hash($index),
+            workflow_service_values_v3_record_bound($index, 0),
+            workflow_service_values_v3_record_bound($index, 4),
+            preflight_payload::<{ 63 + $index }>,
+            validate_payload::<{ 63 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, $revision)
+    };
+}
+
+const PENDING_ADMISSION_V3_RECORD_SCHEMA: RecordSchema<'static> = workflow_service_values_v3_schema!(
+    0,
+    "StoredPendingAdmissionV3",
+    v1::StoredPendingAdmissionV3,
+    11,
+    3
+);
+const EXECUTION_FAILED_V3_RECORD_SCHEMA: RecordSchema<'static> = workflow_service_values_v3_schema!(
+    1,
+    "StoredExecutionFailedV3",
+    v1::StoredExecutionFailedV3,
+    12,
+    3
+);
+const OUTCOME_V3_RECORD_SCHEMA: RecordSchema<'static> =
+    workflow_service_values_v3_schema!(2, "StoredOutcomeV3", v1::StoredOutcomeV3, 13, 3);
+const COMMAND_CAPSULE_V3_RECORD_SCHEMA: RecordSchema<'static> = workflow_service_values_v3_schema!(
+    3,
+    "StoredCommandCapsuleV3",
+    v1::StoredCommandCapsuleV3,
+    54,
+    2
+);
+const COMMAND_SEGMENT_V2_RECORD_SCHEMA: RecordSchema<'static> = workflow_service_values_v3_schema!(
+    4,
+    "StoredCommandSegmentV2",
+    v1::StoredCommandSegmentV2,
+    55,
+    2
+);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1134,6 +1207,17 @@ readable_message!(
     v1::StoredCommandDerivedIndexCheckpointV1,
     COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA
 );
+readable_message!(
+    v1::StoredPendingAdmissionV3,
+    PENDING_ADMISSION_V3_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredExecutionFailedV3,
+    EXECUTION_FAILED_V3_RECORD_SCHEMA
+);
+readable_message!(v1::StoredOutcomeV3, OUTCOME_V3_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandCapsuleV3, COMMAND_CAPSULE_V3_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandSegmentV2, COMMAND_SEGMENT_V2_RECORD_SCHEMA);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -1178,16 +1262,16 @@ writable_message!(v1::StoredReactiveModuleAdministrationV1);
 writable_message!(v1::StoredEventConsumerV1);
 writable_message!(v1::StoredEventConsumerDeliveryV1);
 writable_message!(v1::ServiceAuditRecordV2);
-writable_message!(v1::StoredPendingAdmissionV2);
-writable_message!(v1::StoredExecutionFailedV2);
-writable_message!(v1::StoredOutcomeV2);
 writable_message!(v1::StoredProvenanceRecordV2);
 writable_message!(v1::StoredCommandCapsuleV1);
 writable_message!(v1::StoredCommandLocatorV1);
 writable_message!(v1::StoredCommandAuditLocatorV1);
-writable_message!(v1::StoredCommandCapsuleV2);
-writable_message!(v1::StoredCommandSegmentV1);
 writable_message!(v1::StoredCommandDerivedIndexCheckpointV1);
+writable_message!(v1::StoredPendingAdmissionV3);
+writable_message!(v1::StoredExecutionFailedV3);
+writable_message!(v1::StoredOutcomeV3);
+writable_message!(v1::StoredCommandCapsuleV3);
+writable_message!(v1::StoredCommandSegmentV2);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -1348,6 +1432,11 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_CAPSULE_V2_RECORD_SCHEMA,
     COMMAND_SEGMENT_V1_RECORD_SCHEMA,
     COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA,
+    PENDING_ADMISSION_V3_RECORD_SCHEMA,
+    EXECUTION_FAILED_V3_RECORD_SCHEMA,
+    OUTCOME_V3_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V3_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1367,9 +1456,9 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[7],
     INDEX_V2_RECORD_SCHEMA,
     INDEX_GENERATION_V2_RECORD_SCHEMA,
-    PENDING_ADMISSION_V2_RECORD_SCHEMA,
-    EXECUTION_FAILED_V2_RECORD_SCHEMA,
-    OUTCOME_V2_RECORD_SCHEMA,
+    PENDING_ADMISSION_V3_RECORD_SCHEMA,
+    EXECUTION_FAILED_V3_RECORD_SCHEMA,
+    OUTCOME_V3_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[13],
     OUTBOX_INTENT_V2_RECORD_SCHEMA,
     PROVENANCE_V2_RECORD_SCHEMA,
@@ -1406,8 +1495,8 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_CAPSULE_V1_RECORD_SCHEMA,
     COMMAND_LOCATOR_V1_RECORD_SCHEMA,
     COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA,
-    COMMAND_CAPSULE_V2_RECORD_SCHEMA,
-    COMMAND_SEGMENT_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V3_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V2_RECORD_SCHEMA,
     COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
