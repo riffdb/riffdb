@@ -900,9 +900,10 @@ fn validate_evaluated_output(
         .iter()
         .filter_map(|instruction| match instruction {
             Instruction::EmitEvent(event) => Some(event),
-            Instruction::Require { .. } | Instruction::SetField { .. } | Instruction::Return(_) => {
-                None
-            }
+            Instruction::Require { .. }
+            | Instruction::SetField { .. }
+            | Instruction::WorkflowTransition { .. }
+            | Instruction::Return(_) => None,
         });
     let mut actual_events = evaluated.event_intents().iter();
     for expected in expected_events {

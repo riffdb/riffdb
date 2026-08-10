@@ -1039,10 +1039,12 @@ fn lower_workflow_lease(
             ));
         }
     }
-    if source.attempt_field.is_some() && attempts.is_none() {
+    if let Some(attempt_field) = &source.attempt_field
+        && attempts.is_none()
+    {
         diagnostics.push(CompilerDiagnostic::new(
             CompilerDiagnosticCode::UnknownName,
-            source.attempt_field.as_ref().expect("checked present").span,
+            attempt_field.span,
         ));
     }
     let (
