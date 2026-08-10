@@ -14,19 +14,24 @@
 //!   capsules. `lookup_admission` decodes them back to
 //!   [`StoredAdmissionStateV1`] — the model's exact comparand — so no
 //!   comparison-side normalization is needed beyond trusting that decode.
-//! - **Index entries:** the `scan_index` surface exposes `(key,
-//!   covered_values)` per row, re-validated through the reader's decode and
-//!   filtered to the target's exact partition. The model's
-//!   `StoredIndexEntryV2` additionally carries the schema binding and
-//!   partition key; the binding is validated by the reader's decode (not
-//!   re-exposed) and partition membership is enforced by the scan's own
-//!   filter, so the comparison projects the model row to the same
-//!   `(key, covered_values)` pair.
+//! - **Index entries:** compared as COMPLETE [`StoredIndexEntryV2`] records —
+//!   key, schema binding, covered values, and partition key — through
+//!   `scan_index_filtered`, whose rows retain their exact stored binding and
+//!   partition. Nothing is projected away: a row persisted under a
+//!   wrong-but-catalog-valid binding (stale contract version, wrong retained
+//!   bundle) is a `ValueDiffers` divergence, and a row under a DIFFERENT
+//!   lineage than the declared selection is filtered out by the store's own
+//!   reader and surfaces as `MissingInStore`. (The binding is
+//!   catalog-membership-validated at startup, not by the reader's decode —
+//!   the scan codec is a plain bounds/proto codec.)
 //! - **Index epochs:** the scan surface exposes the range's
 //!   [`IndexEpochPosition`] observed atomically with the rows, not the whole
-//!   `StoredIndexEpochV1` record. The model record is normalized to a
-//!   position exactly the way the model's own prior-state checks normalize it
-//!   (`BeforeFirst` when absent, `Value(epoch)` when present).
+//!   `StoredIndexEpochV1` record — no public reader returns that record at
+//!   all, and its dropped schema binding is independently validated at
+//!   startup (`HistoricalPersistedKeyEvidenceV1::from_index_epoch`). The
+//!   model record is normalized to a position exactly the way the model's
+//!   own prior-state checks normalize it (`BeforeFirst` when absent,
+//!   `Value(epoch)` when present).
 //! - **Outcomes:** the store's only public outcome read is identity-keyed
 //!   (`read_stored_outcome`, which resolves the capsule/locator indirection);
 //!   the model's sequence-keyed map is compared against the sequence-keyed
@@ -36,16 +41,21 @@
 //!   because the audited path stores segments with locator indirection.
 //! - **Outbox intents:** the only public read exposing the stored intent
 //!   record is `scan_pending_outbox`, whose population is intents still
-//!   effectively pending. The comparison is exact in both directions, which
-//!   is sound while the workload performs no delivery transitions (the
-//!   oracle harness never does); a delivered intent would surface as
-//!   `MissingInStore` — the comparison fails closed instead of passing
-//!   silently.
+//!   effectively pending. The comparison is exact in both directions, and
+//!   the pending-population premise is ENFORCED rather than assumed: every
+//!   inspected event's reciprocal outbox status must still be pending, or
+//!   the comparison reports [`StoreDivergenceCause::NonPendingOutboxObserved`]
+//!   instead of comparing a population it cannot see completely.
 //!
 //! Every check runs in BOTH directions, and every model entry must be covered
 //! by a declared inspection target ([`StoreDivergenceCause::UncoveredModelEntry`]
 //! otherwise) — an under-declared harness fails loudly instead of comparing a
-//! vacuously small surface.
+//! vacuously small surface. The converse bound is a genuine reader-surface
+//! limit worth stating: `UnexpectedInStore` can fire only WITHIN the declared
+//! target set (there is no scan-all-entities or scan-all-admissions surface),
+//! so an engine-invented record at an undeclared target is structurally
+//! invisible — mitigated by deriving targets from every fixture a harness
+//! touches, including interrupted ones.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -53,11 +63,11 @@ use std::fmt;
 
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, EntityTarget, IdempotencyIdentityKey, IndexEpochPosition,
-    IndexRangeTarget, PartitionIndexTarget, StoredEntityRecordV1, StoredIndexEntryV2,
+    OutboxStatusReadResultV1, PartitionIndexTarget, StoredEntityRecordV1, StoredIndexEntryV2,
 };
 use riffdb_types::{FrontierPosition, IndexEntryKey};
 
-use crate::inspection::DurableInspection;
+use crate::inspection::{DurableInspection, IndexRangeSelection};
 
 use super::authoritative::AuthoritativeCommandModel;
 
@@ -170,6 +180,11 @@ pub enum StoreDivergenceCause {
     FrontierMismatch,
     /// An identity could not produce its canonical storage key.
     InvalidKey,
+    /// An inspected event's reciprocal outbox observation was not canonical
+    /// pending — a delivery transition ran, or the intent is missing — so
+    /// the pending-population intent comparison cannot see the complete
+    /// intent population.
+    NonPendingOutboxObserved,
 }
 
 /// One named model↔store disagreement: family, rendered key, and cause.
@@ -222,6 +237,7 @@ pub struct StoreAgreement {
     entities: usize,
     index_entries: usize,
     index_epochs: usize,
+    index_epochs_absent: usize,
     outcomes: usize,
     admissions: usize,
     commits: usize,
@@ -243,10 +259,20 @@ impl StoreAgreement {
         self.index_entries
     }
 
-    /// Range epoch observations compared equal.
+    /// Range epoch observations compared equal on a PRESENT epoch value.
+    ///
+    /// A `BeforeFirst == BeforeFirst` agreement proves nothing about epoch
+    /// state, so it is tracked separately in [`Self::index_epochs_absent`] —
+    /// this counter cannot be inflated by declared ranges with no epoch.
     #[must_use]
     pub const fn index_epochs(&self) -> usize {
         self.index_epochs
+    }
+
+    /// Range epoch observations that agreed on ABSENCE (`BeforeFirst`).
+    #[must_use]
+    pub const fn index_epochs_absent(&self) -> usize {
+        self.index_epochs_absent
     }
 
     /// Terminal outcomes compared equal.
@@ -392,7 +418,7 @@ pub fn verify_model_against_inspection(
     // allocator exactly — `Next(n)` means "n is the NEXT sequence to assign",
     // so BeforeFirst ⇒ Next(1) and AppliedThrough(n) ⇒ Next(n + 1)
     // (Exhausted at the representable end).
-    let store_allocator = match inspection.application_frontier() {
+    let store_allocator = match inspection.recovered_application_frontier() {
         FrontierPosition::BeforeFirst => ApplicationSequenceAllocator::initial(),
         FrontierPosition::AppliedThrough(sequence) => sequence.checked_next().map_or(
             ApplicationSequenceAllocator::Exhausted,
@@ -402,7 +428,7 @@ pub fn verify_model_against_inspection(
     if model.application_sequence() != store_allocator {
         return Err(StoreDivergence {
             family: ModelFamily::ApplicationSequence,
-            key: render_debug(&inspection.application_frontier()),
+            key: render_debug(&inspection.recovered_application_frontier()),
             cause: StoreDivergenceCause::FrontierMismatch,
         });
     }
@@ -633,14 +659,22 @@ fn verify_entities(
     Ok(())
 }
 
-/// Whether one declared range target covers one modeled index row: same
-/// index, key under the range's byte prefix, and the row's partition equal to
-/// the range's generation partition — the same membership tests the store's
-/// own scan applies.
-fn range_covers(target: &IndexRangeTarget, key: &IndexEntryKey, row: &StoredIndexEntryV2) -> bool {
+/// Whether one declared range selection covers one modeled index row: same
+/// index, key under the range's byte prefix, the row's partition equal to the
+/// range's generation partition, and the row's binding under the declared
+/// lineage — the same membership tests the store's own filtered scan applies,
+/// so a model row this returns `false` for could never be returned by the
+/// scan and must instead fail loudly as uncovered.
+fn range_covers(
+    selection: &IndexRangeSelection,
+    key: &IndexEntryKey,
+    row: &StoredIndexEntryV2,
+) -> bool {
+    let target = selection.target();
     key.index_id() == target.prefix().index_id()
         && key.as_bytes().starts_with(target.prefix().as_bytes())
         && row.partition_key() == target.generation_target().partition_key()
+        && row.schema_binding().lineage() == selection.lineage()
 }
 
 fn verify_index_entries(
@@ -653,7 +687,7 @@ fn verify_index_entries(
         if !inspection
             .index_ranges()
             .iter()
-            .any(|range| range_covers(range.target(), key, row))
+            .any(|range| range_covers(range.selection(), key, row))
         {
             return Err(divergence(
                 ModelFamily::IndexEntries,
@@ -665,10 +699,7 @@ fn verify_index_entries(
     for range in inspection.index_ranges() {
         let mut observed_rows = BTreeMap::new();
         for entry in range.entries() {
-            if observed_rows
-                .insert(entry.key(), entry.covered_values())
-                .is_some()
-            {
+            if observed_rows.insert(entry.key(), entry).is_some() {
                 return Err(divergence(
                     ModelFamily::IndexEntries,
                     render_index_entry_key(entry.key()),
@@ -677,7 +708,7 @@ fn verify_index_entries(
             }
         }
         for (key, row) in model.index_entries() {
-            if !range_covers(range.target(), key, row) {
+            if !range_covers(range.selection(), key, row) {
                 continue;
             }
             match observed_rows.remove(key) {
@@ -688,7 +719,10 @@ fn verify_index_entries(
                         StoreDivergenceCause::MissingInStore,
                     ));
                 }
-                Some(observed) if observed == row.covered_values() => {
+                // The COMPLETE stored row — key, schema binding, covered
+                // values, partition key — must be field-exact; a
+                // wrong-but-catalog-valid binding diverges here.
+                Some(observed) if observed == row => {
                     agreement.index_entries += 1;
                 }
                 Some(_) => {
@@ -720,7 +754,7 @@ fn verify_index_epochs(
         if !inspection
             .index_ranges()
             .iter()
-            .any(|range| range.target().generation_target() == target)
+            .any(|range| range.selection().target().generation_target() == target)
         {
             return Err(divergence(
                 ModelFamily::IndexEpochs,
@@ -730,7 +764,7 @@ fn verify_index_epochs(
         }
     }
     for range in inspection.index_ranges() {
-        let target = range.target().generation_target();
+        let target = range.selection().target().generation_target();
         // The scan exposes the range's epoch POSITION; normalize the model
         // record exactly as the model's own prior-state checks do.
         let modeled = model
@@ -739,7 +773,14 @@ fn verify_index_epochs(
                 IndexEpochPosition::Value(record.epoch())
             });
         if modeled == range.epoch() {
-            agreement.index_epochs += 1;
+            // BeforeFirst == BeforeFirst proves nothing about epoch state;
+            // count it separately so the value-agreement counter cannot be
+            // inflated by declared ranges with no epoch at all.
+            if modeled == IndexEpochPosition::BeforeFirst {
+                agreement.index_epochs_absent += 1;
+            } else {
+                agreement.index_epochs += 1;
+            }
         } else {
             return Err(divergence(
                 ModelFamily::IndexEpochs,
@@ -802,6 +843,20 @@ fn verify_events(
 ) -> Result<(), StoreDivergence> {
     let mut inspected = BTreeMap::new();
     for event in inspection.events() {
+        // Enforce the outbox comparison's premise instead of assuming it:
+        // every event's reciprocal delivery state must still be pending, or
+        // the pending-population intent scan is not the complete population.
+        let pending = match event.outbox() {
+            OutboxStatusReadResultV1::Status(observation) => observation.is_pending(),
+            OutboxStatusReadResultV1::AuthoritativeIntentMissing => false,
+        };
+        if !pending {
+            return Err(divergence(
+                ModelFamily::OutboxIntents,
+                render_debug(&event.event().event_id()),
+                StoreDivergenceCause::NonPendingOutboxObserved,
+            ));
+        }
         if inspected
             .insert(event.event().event_id(), event.event())
             .is_some()
@@ -962,21 +1017,52 @@ fn render_debug<T: fmt::Debug>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use riffdb_storage_api::{
-        ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest,
-        StoredAdmittedProvenanceClaimsV1, StoredPendingAdmissionV1,
+        AffectedEntityV1, AffectedEpochCurrentState, AffectedIndexEpochTargets,
+        AssignedCommandSequence, AtomicCommandRecordSet, CommandWriteSetPlanV1,
+        CurrentIndexGenerationObservation, DeclaredOutcome, DurabilityMode,
+        DurableKeySchemaBindingV1, EncodedWriteSetUpperBoundResultV1, EntityMutation,
+        EntityObservation, EntityPostImage, EvaluationBudget, EventIntent, ExecutablePlanRef,
+        ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
+        IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1,
+        IndexRangePrefixBuilder, IndexRangeTarget, OutboxStatusObservationV1,
+        PreEvaluationCommitContext, ReadSnapshot, RetainedMetadataV1, SnapshotRequest,
+        StoredAdmittedProvenanceClaimsV1, StoredCommitRecordV1, StoredDurableEventV1,
+        StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+        StoredReadDependenciesV1, command_write_set_upper_bound_v1, derive_event_hash_v1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash, CommandId,
-        ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, DigestKeyId, Environment,
-        LogicalTime, PartitionKeyBuilder, PlanHash, RequestId, TenantId, TenantScope, Timestamp,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
+        CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractBundleHash,
+        ContractLineage, ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId,
+        EntityVersion, Environment, EventId, EventTypeId, FieldId, IndexEntryKeyBuilder, IndexId,
+        LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantId,
+        TenantScope, Timestamp, hash_partition_key,
+    };
+
+    use crate::inspection::{
+        InspectedAdmission, InspectedEntity, InspectedEvent, InspectedIndexRange,
     };
 
     use super::*;
 
+    fn database_id() -> DatabaseId {
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x71; 10])
+            .expect("database ID")
+    }
+
+    fn plan() -> ExecutablePlanRef {
+        ExecutablePlanRef::new(
+            ContractLineage::new("comparison-test").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0x21; 32]),
+            CommandId::new(1).expect("command"),
+            PlanHash::from_bytes([0x22; 32]),
+        )
+    }
+
     fn identity(digest: u8) -> IdempotencyIdentity {
         IdempotencyIdentity::new(
-            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x71; 10])
-                .expect("database ID"),
+            database_id(),
             Environment::new("test").expect("environment"),
             TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant")),
             ActorId::new("principal-a").expect("principal"),
@@ -1000,13 +1086,7 @@ mod tests {
             identity.clone(),
             CanonicalInputHash::from_bytes([input_hash; 32]),
             RequestId::from_bytes(request_id).expect("request ID"),
-            ExecutablePlanRef::new(
-                ContractLineage::new("comparison-test").expect("lineage"),
-                ContractVersion::new(1).expect("version"),
-                ContractBundleHash::from_bytes([0x21; 32]),
-                CommandId::new(1).expect("command"),
-                PlanHash::from_bytes([0x22; 32]),
-            ),
+            plan(),
             LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("timestamp")),
             AdmittedActorContext::new(
                 ActorId::new("principal-a").expect("principal"),
@@ -1069,5 +1149,487 @@ mod tests {
             .expect("differing pending admissions diverge");
         assert_eq!(divergence.family(), ModelFamily::Admissions);
         assert_eq!(divergence.cause(), ModelDivergenceCause::ValueDiffers);
+    }
+
+    /// One complete applied command (sequence 1, entity 7, one index row, one
+    /// epoch advance, one event) — the minimal model whose every family is
+    /// non-empty, so each per-family test below diverges exactly one field.
+    fn applied_model() -> (AuthoritativeCommandModel, IndexRangeSelection) {
+        let plan = plan();
+        let sequence = CommitSequence::new(1).expect("sequence");
+        let record = CanonicalRecord::new(vec![(
+            FieldId::new(1).expect("field"),
+            CanonicalValue::U64(101),
+        )])
+        .expect("record");
+        let entity_type = EntityTypeId::new(1).expect("entity type");
+        let mut entity_key = EntityKeyBuilder::new(entity_type);
+        entity_key.push_u64(7).expect("entity component");
+        let entity_key = entity_key.finish().expect("entity key");
+        let target = EntityTarget::new(entity_type, entity_key.clone()).expect("target");
+        let index_id = IndexId::new(1).expect("index");
+        let mut index_key = IndexEntryKeyBuilder::new(index_id);
+        index_key.push_u64(10).expect("index component");
+        let index_key = index_key.finish(entity_key).expect("index key");
+        let mut prefix = IndexRangePrefixBuilder::new(index_id);
+        prefix.push_u64(10).expect("prefix component");
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+        partition.push_u64(7).expect("partition component");
+        let partition = partition.finish().expect("partition key");
+        let selection = IndexRangeSelection::new(
+            IndexRangeTarget::new(partition.clone(), prefix.finish()),
+            plan.contract_lineage().clone(),
+        );
+
+        let pending = pending(0x01, 0x42);
+        let identity = pending.identity().clone();
+        let request_id = pending.admission_request_id();
+        let mut provenance_bytes = [0x51_u8; 16];
+        provenance_bytes[6] = 0x71;
+        provenance_bytes[8] = 0x81;
+        let provenance_id = ProvenanceId::from_bytes(provenance_bytes).expect("provenance ID");
+        let logical_time = LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("timestamp"));
+        let actor = AdmittedActorContext::new(
+            ActorId::new("principal-a").expect("principal"),
+            ActorKind::Human,
+            TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant")),
+            None,
+        );
+
+        let snapshot_request =
+            SnapshotRequest::new(plan.clone(), vec![target.clone()], Vec::new(), Vec::new())
+                .expect("snapshot request");
+        let snapshot = ReadSnapshot::new(
+            &snapshot_request,
+            None,
+            vec![EntityObservation::Absent(target.clone())],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("read snapshot");
+        let post_image =
+            EntityPostImage::new(target.clone(), plan.contract_version(), record.clone())
+                .expect("post-image");
+        let event_intent =
+            EventIntent::new(EventTypeId::new(1).expect("event type"), record.clone())
+                .expect("event intent");
+        let declared_outcome =
+            DeclaredOutcome::new(OutcomeId::new(1).expect("outcome"), record.clone())
+                .expect("declared outcome");
+        let evaluated = riffdb_storage_api::EvaluatedCommand::new(
+            &snapshot,
+            vec![EntityMutation::Create(post_image)],
+            vec![event_intent],
+            declared_outcome.clone(),
+            EvaluationBudget::v1(),
+        )
+        .expect("evaluated");
+        let partition_hash = hash_partition_key(partition.as_bytes());
+        let context = PreEvaluationCommitContext::new(pending.clone(), partition_hash, Vec::new())
+            .expect("context");
+        let candidates =
+            IdempotencyLookupCandidatesV1::new(vec![identity.clone()]).expect("candidates");
+        let intent = riffdb_storage_api::CommitIntent::new_for_vacant_terminal_admission(
+            context,
+            candidates,
+            evaluated,
+            provenance_id,
+        )
+        .expect("intent");
+
+        let stored_entity = StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            plan.contract_version(),
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            record.clone(),
+        )
+        .expect("stored entity");
+        let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
+            ExpectedEntityState::Absent,
+            stored_entity,
+        )
+        .expect("mutation");
+        let index_record = StoredIndexEntryV2::new(
+            index_key,
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            record.clone(),
+            partition.clone(),
+        )
+        .expect("index row");
+        let index_mutation = IndexEntryMutationV1::Put(index_record);
+        let generation = PartitionIndexTarget::new(partition.clone(), index_id);
+        let affected_targets =
+            AffectedIndexEpochTargets::new(vec![generation.clone()]).expect("targets");
+        let affected_current = AffectedEpochCurrentState::new(
+            &affected_targets,
+            vec![CurrentIndexGenerationObservation::new(
+                generation.clone(),
+                IndexEpochPosition::BeforeFirst,
+            )],
+        )
+        .expect("current");
+        let epoch_advance = IndexEpochAdvanceV1::new(
+            generation,
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            IndexEpochPosition::BeforeFirst,
+        )
+        .expect("advance");
+        let upper_bound = match command_write_set_upper_bound_v1(
+            &intent,
+            std::slice::from_ref(&index_mutation),
+            std::slice::from_ref(&epoch_advance),
+        )
+        .expect("upper bound")
+        {
+            EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+            EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+                panic!("comparison fixture write set must fit the accepted cap")
+            }
+        };
+        let write_plan = CommandWriteSetPlanV1::new(
+            &intent,
+            affected_targets,
+            affected_current,
+            vec![index_mutation],
+            vec![epoch_advance],
+            upper_bound,
+        )
+        .expect("write plan");
+
+        let assignment = AssignedCommandSequence::from_assigned(sequence);
+        let event_id = EventId::new(sequence, 0);
+        let event_type = EventTypeId::new(1).expect("event type");
+        let event = StoredDurableEventV1::new(
+            event_id,
+            event_type,
+            record.clone(),
+            derive_event_hash_v1(event_id, event_type, &record).expect("event hash"),
+        )
+        .expect("event");
+        let stored_outcome = StoredOutcomeV1::new(
+            identity.clone(),
+            sequence,
+            request_id,
+            plan.clone(),
+            pending.canonical_input_hash(),
+            actor.clone(),
+            logical_time,
+            partition.clone(),
+            partition_hash,
+            Vec::new(),
+            declared_outcome.clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+            provenance_id,
+            DurabilityMode::Sync,
+        )
+        .expect("outcome");
+        let mutations = vec![mutation];
+        let provenance = StoredProvenanceRecordV1::new(
+            provenance_id,
+            sequence,
+            identity,
+            request_id,
+            plan.clone(),
+            pending.canonical_input_hash(),
+            actor.clone(),
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            declared_outcome.outcome_id(),
+            vec![AffectedEntityV1::from_record(mutations[0].post_image())],
+            vec![event_id],
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )
+        .expect("provenance");
+        let commit = StoredCommitRecordV1::new(
+            sequence,
+            request_id,
+            plan,
+            pending.canonical_input_hash(),
+            actor,
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            StoredReadDependenciesV1::from_live(snapshot.read_dependencies()).expect("deps"),
+            mutations
+                .iter()
+                .map(riffdb_storage_api::CommittedEntityReferenceV2::from_mutation)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("references"),
+            vec![event.clone()],
+            declared_outcome,
+            provenance_id,
+            vec![event_id],
+            DurabilityMode::Sync,
+        )
+        .expect("commit");
+        let records = AtomicCommandRecordSet::new(
+            assignment,
+            mutations,
+            write_plan,
+            stored_outcome,
+            provenance,
+            commit,
+        )
+        .expect("record set");
+
+        let mut model = AuthoritativeCommandModel::new();
+        model.admit_pending(pending).expect("admit");
+        model.apply_command(&records).expect("apply");
+        (model, selection)
+    }
+
+    /// The faithful synthetic mirror of one model: every family reproduced
+    /// exactly, so each test below diverges ONE field and asserts the exact
+    /// named red through `verify_model_against_inspection` itself.
+    struct SyntheticParts {
+        frontier: FrontierPosition,
+        commits: Vec<StoredCommitRecordV1>,
+        entities: Vec<InspectedEntity>,
+        provenance: Vec<StoredProvenanceRecordV1>,
+        events: Vec<InspectedEvent>,
+        index_ranges: Vec<InspectedIndexRange>,
+        admissions: Vec<InspectedAdmission>,
+        outcomes: Vec<StoredOutcomeV1>,
+        outbox_intents: Vec<StoredOutboxIntentV1>,
+    }
+
+    impl SyntheticParts {
+        fn faithful(model: &AuthoritativeCommandModel, selection: &IndexRangeSelection) -> Self {
+            let epoch = model
+                .index_epoch(selection.target().generation_target())
+                .map_or(IndexEpochPosition::BeforeFirst, |record| {
+                    IndexEpochPosition::Value(record.epoch())
+                });
+            let rows = model
+                .index_entries()
+                .filter(|(key, row)| range_covers(selection, key, row))
+                .map(|(_, row)| row.clone())
+                .collect();
+            let admissions = model
+                .admissions()
+                .map(|(key, state)| {
+                    let identity = IdempotencyIdentityKey::decode(key.as_bytes())
+                        .expect("decodable identity key");
+                    InspectedAdmission::synthetic(identity, Some(state.clone()))
+                })
+                .collect();
+            Self {
+                frontier: model
+                    .commits()
+                    .last()
+                    .map_or(FrontierPosition::BeforeFirst, |(sequence, _)| {
+                        FrontierPosition::AppliedThrough(*sequence)
+                    }),
+                commits: model.commits().map(|(_, record)| record.clone()).collect(),
+                entities: model
+                    .entities()
+                    .map(|(target, record)| {
+                        InspectedEntity::synthetic(target.clone(), Some(record.clone()))
+                    })
+                    .collect(),
+                provenance: model
+                    .provenance_records()
+                    .map(|(_, record)| record.clone())
+                    .collect(),
+                events: model
+                    .events()
+                    .map(|(_, event)| {
+                        InspectedEvent::synthetic(
+                            event.clone(),
+                            OutboxStatusReadResultV1::Status(
+                                OutboxStatusObservationV1::AbsentInitialPending,
+                            ),
+                        )
+                    })
+                    .collect(),
+                index_ranges: vec![InspectedIndexRange::synthetic(
+                    selection.clone(),
+                    epoch,
+                    rows,
+                )],
+                admissions,
+                outcomes: model.outcomes().map(|(_, value)| value.clone()).collect(),
+                outbox_intents: model
+                    .outbox_intents()
+                    .map(|(_, value)| value.clone())
+                    .collect(),
+            }
+        }
+
+        fn build(self) -> DurableInspection {
+            DurableInspection::synthetic(
+                RetainedMetadataV1::initial(database_id()),
+                self.frontier,
+                self.commits,
+                self.entities,
+                self.provenance,
+                self.events,
+                self.index_ranges,
+                self.admissions,
+                self.outcomes,
+                self.outbox_intents,
+            )
+        }
+    }
+
+    fn assert_family_cause(
+        divergence: &StoreDivergence,
+        family: ModelFamily,
+        cause: StoreDivergenceCause,
+    ) {
+        assert_eq!(divergence.family(), family, "family: {divergence}");
+        assert_eq!(divergence.cause(), cause, "cause: {divergence}");
+    }
+
+    #[test]
+    fn a_faithful_synthetic_inspection_agrees_on_every_family() {
+        let (model, selection) = applied_model();
+        let inspection = SyntheticParts::faithful(&model, &selection).build();
+        let agreement =
+            verify_model_against_inspection(&model, &inspection).expect("faithful agreement");
+        assert_eq!(agreement.commits(), 1);
+        assert_eq!(agreement.outcomes(), 1);
+        assert_eq!(agreement.events(), 1);
+        assert_eq!(agreement.provenance(), 1);
+        assert_eq!(agreement.outbox_intents(), 1);
+        assert_eq!(agreement.entities(), 1);
+        assert_eq!(agreement.index_entries(), 1);
+        assert_eq!(agreement.index_epochs(), 1);
+        assert_eq!(agreement.index_epochs_absent(), 0);
+        assert_eq!(agreement.admissions(), 1);
+    }
+
+    #[test]
+    fn a_lost_commit_names_the_commits_family() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        parts.commits.clear();
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a lost commit must diverge");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::Commits,
+            StoreDivergenceCause::MissingInStore,
+        );
+    }
+
+    #[test]
+    fn a_lost_provenance_record_names_the_provenance_family() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        parts.provenance.clear();
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a lost provenance record must diverge");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::Provenance,
+            StoreDivergenceCause::MissingInStore,
+        );
+    }
+
+    #[test]
+    fn a_lost_event_names_the_events_family() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        parts.events.clear();
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a lost event must diverge");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::Events,
+            StoreDivergenceCause::MissingInStore,
+        );
+    }
+
+    #[test]
+    fn a_lost_outbox_intent_names_the_outbox_family() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        parts.outbox_intents.clear();
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a lost outbox intent must diverge");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::OutboxIntents,
+            StoreDivergenceCause::MissingInStore,
+        );
+    }
+
+    /// The S5 masked class, now red-capable: a row persisted under a
+    /// wrong-but-catalog-valid binding (same lineage and bundle, stale
+    /// contract version) must diverge on the full-record comparison, naming
+    /// the index-entries family and the exact row key.
+    #[test]
+    fn a_wrong_but_valid_index_binding_names_the_index_entries_family() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        let (key, row) = model.index_entries().next().expect("one index row");
+        let tampered = StoredIndexEntryV2::new(
+            key.clone(),
+            DurableKeySchemaBindingV1::new(
+                row.schema_binding().lineage().clone(),
+                ContractVersion::new(2).expect("version"),
+                plan().contract_bundle_hash(),
+            ),
+            row.covered_values().clone(),
+            row.partition_key().clone(),
+        )
+        .expect("tampered row");
+        parts.index_ranges = vec![InspectedIndexRange::synthetic(
+            selection.clone(),
+            parts.index_ranges[0].epoch(),
+            vec![tampered],
+        )];
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a wrong-but-valid binding must diverge");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::IndexEntries,
+            StoreDivergenceCause::ValueDiffers,
+        );
+        assert_eq!(
+            divergence.key(),
+            render_index_entry_key(key),
+            "the divergence names the exact row key"
+        );
+    }
+
+    #[test]
+    fn a_regressed_store_epoch_names_the_index_epochs_family() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        let rows = parts.index_ranges[0].entries().to_vec();
+        parts.index_ranges = vec![InspectedIndexRange::synthetic(
+            selection.clone(),
+            IndexEpochPosition::BeforeFirst,
+            rows,
+        )];
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a regressed epoch must diverge");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::IndexEpochs,
+            StoreDivergenceCause::ValueDiffers,
+        );
+    }
+
+    #[test]
+    fn a_non_pending_outbox_observation_reports_the_unmet_premise() {
+        let (model, selection) = applied_model();
+        let mut parts = SyntheticParts::faithful(&model, &selection);
+        let event = model.events().next().expect("one event").1.clone();
+        parts.events = vec![InspectedEvent::synthetic(
+            event,
+            OutboxStatusReadResultV1::AuthoritativeIntentMissing,
+        )];
+        let divergence = verify_model_against_inspection(&model, &parts.build())
+            .expect_err("a non-pending observation must refuse the comparison");
+        assert_family_cause(
+            &divergence,
+            ModelFamily::OutboxIntents,
+            StoreDivergenceCause::NonPendingOutboxObserved,
+        );
     }
 }

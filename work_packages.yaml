@@ -11403,7 +11403,7 @@ work_packages:
   - The smoke torn test's first-tearing-window break removed so its sweep also recovers and
     checks every crash window
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --lib
   - cargo +1.97.0 test -p riffdb-sim --all-features
   - cargo +1.97.0 test -p riffdb-storage-redb --all-targets
   - ./scripts/check-workspace-policy
@@ -11415,6 +11415,17 @@ work_packages:
   - Administration audit records and projection state remain outside the model's coverage;
     the comparison names the nine authoritative families it proves and the audit stream stays
     matrix-covered evidence
+  - The index EPOCH record's schema binding is compared only as an epoch position; no public
+    reader returns the stored epoch record, and its binding is independently validated at
+    startup (HistoricalPersistedKeyEvidenceV1::from_index_epoch). Closed by a reader exposing
+    the full stored epoch record or by comparing through that startup evidence surface.
+    (Index ENTRY bindings are fully compared via scan_index_filtered; no residual there.)
+  - The outbox intent comparison population is intents whose effective delivery state is
+    still pending (scan_pending_outbox is the only public read exposing the stored intent
+    record); the pending-population premise is enforced by the comparison, which refuses with
+    NonPendingOutboxObserved rather than comparing a population it cannot see completely.
+    Closed by a full-population intent read surface when a workload performs delivery
+    transitions
   exit_gate: Every simulated recovery in the harness — clean, dirty-repair, and every crashing
     window of every swept seed — passes the complete startup-validation pass with zero
     structural findings over at least one inspected page and lands model-equal at the recovered

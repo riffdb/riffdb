@@ -9,20 +9,21 @@ use std::path::Path;
 use riffdb_catalog::{CatalogError, CatalogHistoryOutcome, validate_catalog_history};
 use riffdb_storage_api::{
     AdministrationAuditReader, AdministrationAuditScan, AdministrationAuditScanRequest,
-    AdmissionLookupResultV1, AdmissionRepository, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CommitScanPageV1, CommitScanRequest, EntityTarget, EvidencePageLimit, IdempotencyIdentity,
-    IdempotencyLookupCandidatesV1, IndexEpochPosition, IndexRangeEntry, IndexRangeTarget,
-    OutboxPageLimit, OutboxRepository, OutboxStatusReadResultV1, PendingOutboxScanV1,
-    ProjectionQueryReader, ProjectionStatus, RetainedMetadataV1, StartupValidationInputs,
-    StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
-    StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredOutboxIntentV1, StoredOutcomeV1, StoredProvenanceRecordV1, StructuralEvidenceCursor,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralOpenOutcome, derive_event_hash_v1,
+    AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
+    AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EntityTarget, EvidencePageLimit,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IdempotencyLookupCandidatesV1, IndexEpochPosition, IndexPartitionFilter,
+    IndexPartitionFilterScope, IndexRangeTarget, OutboxPageLimit, OutboxRepository,
+    OutboxStatusReadResultV1, PendingOutboxScanV1, ProjectionQueryReader, ProjectionStatus,
+    RetainedMetadataV1, StartupValidationInputs, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredCommitRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV2, StoredOutboxIntentV1,
+    StoredOutcomeV1, StoredProvenanceRecordV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralOpenOutcome,
+    derive_event_hash_v1,
 };
 use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
-use riffdb_types::{FrontierPosition, ProjectionIdentity};
+use riffdb_types::{ContractLineage, FrontierPosition, ProjectionIdentity};
 
 /// Maximum explicitly requested entities or projections in one inspection.
 pub const MAX_INSPECTION_TARGETS: usize = 256;
@@ -31,12 +32,53 @@ pub const MAX_INSPECTED_ORDERED_RECORDS: usize = 10_000;
 
 const PAGE_LIMIT: u16 = 500;
 
+/// One declared index range and the exact contract lineage its rows carry.
+///
+/// The lineage feeds the filtered scan's [`IndexPartitionFilter`], so a
+/// stored row under a DIFFERENT lineage than declared is filtered out by the
+/// store's own reader and surfaces as missing — never silently compared.
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub struct IndexRangeSelection {
+    target: IndexRangeTarget,
+    lineage: ContractLineage,
+}
+
+impl IndexRangeSelection {
+    /// Binds one range target to the exact lineage its rows must carry.
+    #[must_use]
+    pub const fn new(target: IndexRangeTarget, lineage: ContractLineage) -> Self {
+        Self { target, lineage }
+    }
+
+    /// Borrows the exact range target.
+    #[must_use]
+    pub const fn target(&self) -> &IndexRangeTarget {
+        &self.target
+    }
+
+    /// Borrows the exact declared contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+}
+
+impl fmt::Debug for IndexRangeSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IndexRangeSelection")
+            .field("target", &"[REDACTED]")
+            .field("lineage", &self.lineage)
+            .finish()
+    }
+}
+
 /// Canonically ordered targets selected for one offline inspection.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DurableInspectionRequest {
     entities: Vec<EntityTarget>,
     projections: Vec<ProjectionIdentity>,
-    index_ranges: Vec<IndexRangeTarget>,
+    index_ranges: Vec<IndexRangeSelection>,
     admissions: Vec<IdempotencyIdentity>,
 }
 
@@ -62,15 +104,18 @@ impl DurableInspectionRequest {
         })
     }
 
-    /// Adds bounded, strictly ordered secondary-index range targets.
+    /// Adds bounded, strictly ordered secondary-index range selections.
     ///
-    /// Each target is scanned to its exact end through the store's own
-    /// `AuthoritativeScanReader::scan_index` surface, which re-validates every
-    /// row through the reader's decode and filters to the target's exact
-    /// partition, and observes the range's index epoch in the same read view.
+    /// Each selection is scanned to its exact end through the store's own
+    /// `FilteredAuthoritativeScanReader::scan_index_filtered` surface, whose
+    /// rows retain their exact stored schema binding and partition key and
+    /// are filtered to the declared lineage and the target's exact partition,
+    /// with the range's index epoch observed in the same read view. A stored
+    /// row under a different lineage than declared is filtered out by the
+    /// reader and therefore surfaces as missing rather than comparing loosely.
     pub fn with_index_ranges(
         mut self,
-        index_ranges: Vec<IndexRangeTarget>,
+        index_ranges: Vec<IndexRangeSelection>,
     ) -> Result<Self, DurableInspectionError> {
         if index_ranges.len() > MAX_INSPECTION_TARGETS {
             return Err(DurableInspectionError::TargetLimit);
@@ -123,9 +168,9 @@ impl DurableInspectionRequest {
         &self.projections
     }
 
-    /// Borrows exact secondary-index range targets.
+    /// Borrows exact secondary-index range selections.
     #[must_use]
-    pub fn index_ranges(&self) -> &[IndexRangeTarget] {
+    pub fn index_ranges(&self) -> &[IndexRangeSelection] {
         &self.index_ranges
     }
 
@@ -184,16 +229,16 @@ impl fmt::Debug for InspectedEntity {
 /// One complete index range: its rows and epoch from the reader's own scan.
 #[derive(Clone, Eq, PartialEq)]
 pub struct InspectedIndexRange {
-    target: IndexRangeTarget,
+    selection: IndexRangeSelection,
     epoch: IndexEpochPosition,
-    entries: Vec<IndexRangeEntry>,
+    entries: Vec<StoredIndexEntryV2>,
 }
 
 impl InspectedIndexRange {
-    /// Borrows the canonical requested range target.
+    /// Borrows the canonical requested range selection.
     #[must_use]
-    pub const fn target(&self) -> &IndexRangeTarget {
-        &self.target
+    pub const fn selection(&self) -> &IndexRangeSelection {
+        &self.selection
     }
 
     /// Returns the range epoch observed with the rows.
@@ -202,13 +247,13 @@ impl InspectedIndexRange {
         self.epoch
     }
 
-    /// Borrows the complete scanned rows in canonical key order.
+    /// Borrows the COMPLETE stored rows in canonical key order.
     ///
-    /// The scan surface exposes `(key, covered_values)`; the row's schema
-    /// binding and partition key are validated by the reader's own decode and
-    /// partition filter rather than re-exposed here.
+    /// The filtered scan returns rows that retain their exact stored schema
+    /// binding and partition key, so every field of the durable row is
+    /// available to a comparison — nothing is projected away.
     #[must_use]
-    pub fn entries(&self) -> &[IndexRangeEntry] {
+    pub fn entries(&self) -> &[StoredIndexEntryV2] {
         &self.entries
     }
 }
@@ -217,7 +262,7 @@ impl fmt::Debug for InspectedIndexRange {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("InspectedIndexRange")
-            .field("target", &"[REDACTED]")
+            .field("selection", &self.selection)
             .field("epoch", &self.epoch)
             .field("entry_count", &self.entries.len())
             .finish()
@@ -283,6 +328,50 @@ impl InspectedEvent {
     }
 }
 
+// Test-only synthetic constructors: the model↔store comparison unit tests
+// build faithful and deliberately one-field-divergent inspections without a
+// store, so every comparison family's failure arm has a demonstrated red.
+// These bypass the readers' validation ON PURPOSE (that is what makes an
+// adversarial inspection constructible) and compile only under test.
+#[cfg(test)]
+impl InspectedEntity {
+    pub(crate) fn synthetic(target: EntityTarget, record: Option<StoredEntityRecordV1>) -> Self {
+        Self { target, record }
+    }
+}
+
+#[cfg(test)]
+impl InspectedAdmission {
+    pub(crate) fn synthetic(
+        identity: IdempotencyIdentity,
+        state: Option<StoredAdmissionStateV1>,
+    ) -> Self {
+        Self { identity, state }
+    }
+}
+
+#[cfg(test)]
+impl InspectedIndexRange {
+    pub(crate) fn synthetic(
+        selection: IndexRangeSelection,
+        epoch: IndexEpochPosition,
+        entries: Vec<StoredIndexEntryV2>,
+    ) -> Self {
+        Self {
+            selection,
+            epoch,
+            entries,
+        }
+    }
+}
+
+#[cfg(test)]
+impl InspectedEvent {
+    pub(crate) fn synthetic(event: StoredDurableEventV1, outbox: OutboxStatusReadResultV1) -> Self {
+        Self { event, outbox }
+    }
+}
+
 /// Complete read-only result after structural and catalog exact-end validation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DurableInspection {
@@ -300,6 +389,40 @@ pub struct DurableInspection {
     admissions: Vec<InspectedAdmission>,
     outcomes: Vec<StoredOutcomeV1>,
     outbox_intents: Vec<StoredOutboxIntentV1>,
+}
+
+#[cfg(test)]
+impl DurableInspection {
+    #[allow(clippy::too_many_arguments)] // One flat synthetic constructor mirrors the struct exactly.
+    pub(crate) fn synthetic(
+        metadata: RetainedMetadataV1,
+        application_frontier: FrontierPosition,
+        commits: Vec<StoredCommitRecordV1>,
+        entities: Vec<InspectedEntity>,
+        provenance: Vec<StoredProvenanceRecordV1>,
+        events: Vec<InspectedEvent>,
+        index_ranges: Vec<InspectedIndexRange>,
+        admissions: Vec<InspectedAdmission>,
+        outcomes: Vec<StoredOutcomeV1>,
+        outbox_intents: Vec<StoredOutboxIntentV1>,
+    ) -> Self {
+        Self {
+            metadata,
+            structural_findings: Vec::new(),
+            structural_pages: 1,
+            application_frontier,
+            commits,
+            entities,
+            provenance,
+            events,
+            projections: Vec::new(),
+            administration: Vec::new(),
+            index_ranges,
+            admissions,
+            outcomes,
+            outbox_intents,
+        }
+    }
 }
 
 impl DurableInspection {
@@ -324,12 +447,17 @@ impl DurableInspection {
         self.structural_pages
     }
 
-    /// Returns the application frontier frozen by the exclusive commit scan.
+    /// Returns the RECOVERED application frontier: the last contiguous
+    /// applied commit, frozen by the exclusive commit scan.
     ///
-    /// The database is stopped for the whole inspection, so this is the
-    /// recovered application frontier: the last contiguous applied commit.
+    /// The name carries the precondition: the whole inspection runs on a
+    /// stopped, freshly (re)opened store, where the composite frontier the
+    /// scan freezes IS the recovered durable frontier. On a live store the
+    /// same underlying quantity would instead mean "currently published
+    /// frontier" — a different value, and exactly the divergence a recovery
+    /// oracle exists to detect — so no accessor of that name is offered.
     #[must_use]
-    pub const fn application_frontier(&self) -> FrontierPosition {
+    pub const fn recovered_application_frontier(&self) -> FrontierPosition {
         self.application_frontier
     }
 
@@ -414,7 +542,7 @@ impl fmt::Debug for DurableInspection {
             .field("metadata", &self.metadata)
             .field("structural_findings", &self.structural_findings)
             .field("structural_pages", &self.structural_pages)
-            .field("application_frontier", &self.application_frontier)
+            .field("recovered_application_frontier", &self.application_frontier)
             .field("commit_count", &self.commits.len())
             .field("entity_count", &self.entities.len())
             .field("provenance_count", &self.provenance.len())
@@ -675,21 +803,38 @@ fn scan_all_commits(
     }
 }
 
-/// Scans one declared index range to its exact end through the reader's own
-/// decode, requiring one stable epoch observation across every page.
+/// Scans one declared index range to its exact end through the store's
+/// filtered reader — whose rows retain their exact stored schema binding and
+/// partition key — requiring one stable epoch observation across every page.
 fn scan_full_index_range(
     ports: &RedbOperationalPorts,
-    target: &IndexRangeTarget,
+    selection: &IndexRangeSelection,
 ) -> Result<InspectedIndexRange, DurableInspectionError> {
     let limit = StorageScanLimit::new(PAGE_LIMIT).ok_or(DurableInspectionError::RecordLimit)?;
+    let filter = IndexPartitionFilter::new(
+        selection.lineage().clone(),
+        IndexPartitionFilterScope::Explicit(vec![
+            selection
+                .target()
+                .generation_target()
+                .partition_key()
+                .clone(),
+        ]),
+    )
+    .map_err(|_| DurableInspectionError::NonCanonicalTargets)?;
     let mut after = None;
     let mut entries = Vec::new();
     let mut epoch = None;
     loop {
-        let request = AuthoritativeIndexScanRequest::new(target.clone(), after, limit)
-            .map_err(|_| DurableInspectionError::NonCanonicalPage)?;
+        let request = FilteredAuthoritativeIndexScanRequest::new(
+            selection.target().clone(),
+            filter.clone(),
+            after,
+            limit,
+        )
+        .map_err(|_| DurableInspectionError::NonCanonicalPage)?;
         let page = ports
-            .scan_index(request)
+            .scan_index_filtered(request)
             .map_err(DurableInspectionError::Storage)?;
         // The database is stopped, so the epoch cannot legitimately move
         // between pages of one range.
@@ -702,16 +847,16 @@ fn scan_full_index_range(
             &mut entries,
             page.entries().iter().map(|item| item.value().clone()),
         )?;
-        match page {
-            AuthoritativeIndexScanPage::ExactEnd { .. } => {
+        match page.scanned_through() {
+            Some(scanned_through) => after = Some(scanned_through.clone()),
+            None => {
                 let epoch = epoch.ok_or(DurableInspectionError::NonCanonicalPage)?;
                 return Ok(InspectedIndexRange {
-                    target: target.clone(),
+                    selection: selection.clone(),
                     epoch,
                     entries,
                 });
             }
-            AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after),
         }
     }
 }
@@ -924,14 +1069,17 @@ mod tests {
         EntityTarget::new(entity_type, key.finish().expect("entity key"))
     }
 
-    fn index_range(partition: u64) -> IndexRangeTarget {
+    fn index_range(partition: u64) -> IndexRangeSelection {
         let mut prefix = IndexRangePrefixBuilder::new(IndexId::new(1).expect("index"));
         prefix.push_u64(10).expect("prefix component");
         let mut partition_key = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("agg"));
         partition_key.push_u64(partition).expect("partition");
-        IndexRangeTarget::new(
-            partition_key.finish().expect("partition key"),
-            prefix.finish(),
+        IndexRangeSelection::new(
+            IndexRangeTarget::new(
+                partition_key.finish().expect("partition key"),
+                prefix.finish(),
+            ),
+            ContractLineage::new("inspection-test").expect("lineage"),
         )
     }
 

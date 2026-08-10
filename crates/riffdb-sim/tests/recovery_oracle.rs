@@ -70,7 +70,7 @@ use riffdb_storage_api::{
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbStorageMedia, RedbStore};
 use riffdb_testkit::inspection::{
-    DurableInspection, DurableInspectionRequest, inspect_opened_redb,
+    DurableInspection, DurableInspectionRequest, IndexRangeSelection, inspect_opened_redb,
 };
 use riffdb_testkit::model::{AuthoritativeCommandModel, verify_model_against_inspection};
 use riffdb_types::{
@@ -831,9 +831,10 @@ fn oracle_request(fixtures: &[&CommandFixture]) -> DurableInspectionRequest {
         .collect();
     entities.sort();
     entities.dedup();
-    let mut ranges: Vec<IndexRangeTarget> = fixtures
+    let lineage = plan().contract_lineage().clone();
+    let mut ranges: Vec<IndexRangeSelection> = fixtures
         .iter()
-        .map(|fixture| fixture.range.clone())
+        .map(|fixture| IndexRangeSelection::new(fixture.range.clone(), lineage.clone()))
         .collect();
     ranges.sort();
     ranges.dedup();
@@ -879,12 +880,14 @@ fn frontier_value(frontier: FrontierPosition) -> u64 {
 /// `commits` applied commands over the oracle workload (two entities before
 /// the interrupted command, three after; one index row per live entity key;
 /// one range epoch observation per declared range).
+#[allow(clippy::too_many_arguments)] // One flat pin per family keeps every count explicit.
 fn assert_agreement_counts(
     agreement: &riffdb_testkit::model::StoreAgreement,
     commits: u64,
     entities: usize,
     index_entries: usize,
-    ranges: usize,
+    epochs_present: usize,
+    epochs_absent: usize,
     admissions: usize,
     context: &str,
 ) {
@@ -908,7 +911,16 @@ fn assert_agreement_counts(
         index_entries,
         "index entries ({context})"
     );
-    assert_eq!(agreement.index_epochs(), ranges, "index epochs ({context})");
+    assert_eq!(
+        agreement.index_epochs(),
+        epochs_present,
+        "present index epochs ({context})"
+    );
+    assert_eq!(
+        agreement.index_epochs_absent(),
+        epochs_absent,
+        "absent index epochs ({context})"
+    );
     assert_eq!(agreement.admissions(), admissions, "admissions ({context})");
 }
 
@@ -925,7 +937,7 @@ fn recovered_clean_shutdown_state_equals_the_model_at_the_frontier() {
 
     let request = oracle_request(&fixtures.iter().collect::<Vec<_>>());
     let inspection = inspect_recovered(&disk, &request);
-    let frontier = inspection.application_frontier();
+    let frontier = inspection.recovered_application_frontier();
     assert_eq!(frontier_value(frontier), 3, "clean shutdown loses nothing");
 
     // Select the snapshot at the recovered frontier — for a clean shutdown
@@ -940,7 +952,7 @@ fn recovered_clean_shutdown_state_equals_the_model_at_the_frontier() {
     );
     let agreement = verify_model_against_inspection(selected, &inspection)
         .unwrap_or_else(|divergence| panic!("clean-shutdown oracle divergence: {divergence}"));
-    assert_agreement_counts(&agreement, 3, 2, 2, 2, 3, "clean shutdown");
+    assert_agreement_counts(&agreement, 3, 2, 2, 2, 0, 3, "clean shutdown");
 }
 
 /// SIM-003 over redb's dirty-shutdown repair: a crash on an all-synced disk
@@ -970,10 +982,13 @@ fn recovered_dirty_shutdown_state_equals_the_model_at_the_frontier() {
 
     let request = oracle_request(&fixtures.iter().collect::<Vec<_>>());
     let inspection = inspect_recovered(&disk, &request);
-    assert_eq!(frontier_value(inspection.application_frontier()), 3);
+    assert_eq!(
+        frontier_value(inspection.recovered_application_frontier()),
+        3
+    );
     let agreement = verify_model_against_inspection(&model, &inspection)
         .unwrap_or_else(|divergence| panic!("dirty-shutdown oracle divergence: {divergence}"));
-    assert_agreement_counts(&agreement, 3, 2, 2, 2, 3, "dirty shutdown");
+    assert_agreement_counts(&agreement, 3, 2, 2, 2, 0, 3, "dirty shutdown");
 }
 
 /// One swept mid-commit crash arm: outcome bookkeeping for the final
@@ -1064,7 +1079,7 @@ fn sweep_crash_windows(seed: u64, armed_shape: AdmissionShape) -> SweepOutcome {
         let all = [&fixtures[0], &fixtures[1], &fixtures[2], &four];
         let request = oracle_request(&all);
         let inspection = inspect_recovered(&disk, &request);
-        let frontier = frontier_value(inspection.application_frontier());
+        let frontier = frontier_value(inspection.recovered_application_frontier());
 
         // Acknowledged durability: everything acknowledged must survive;
         // nothing past the attempt can exist.
@@ -1089,7 +1104,7 @@ fn sweep_crash_windows(seed: u64, armed_shape: AdmissionShape) -> SweepOutcome {
                          (seed {seed:#x}, interrupted command present): {divergence}"
                     )
                 });
-            assert_agreement_counts(&agreement, 4, 3, 3, 3, 4, "interrupted present");
+            assert_agreement_counts(&agreement, 4, 3, 3, 3, 0, 4, "interrupted present");
         } else {
             // The interrupted command must be absent IN FULL — the baseline
             // state, which for the two-phase arm includes the acknowledged
@@ -1107,7 +1122,7 @@ fn sweep_crash_windows(seed: u64, armed_shape: AdmissionShape) -> SweepOutcome {
                 AdmissionShape::VacantTerminal => 3,
                 AdmissionShape::ExistingPending => 4,
             };
-            assert_agreement_counts(&agreement, 3, 2, 2, 3, admissions, "interrupted absent");
+            assert_agreement_counts(&agreement, 3, 2, 2, 2, 1, admissions, "interrupted absent");
         }
     }
     outcome
