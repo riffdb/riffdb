@@ -231,7 +231,12 @@ fixture data, so no redaction surface is added.
   the existing startup validation and structural inspection passes.
 - Corpus: every `RECOVERY_SCENARIOS` row tagged for the storage layer is
   reproduced as a pinned schedule; found-bug seeds accumulate as regression
-  fixtures.
+  fixtures. (As delivered by WP-583: the engine-commit crash arms carry
+  pinned campaign schedules, while the migration-batch arms, the
+  owner-typestate rows without a process crash point, and — until the engine
+  pin advances past upstream `fd82ced` — the redb 4.1.0 file-growth crash
+  placement are TYPED, guard-enumerated exclusions in the classification
+  machinery rather than pinned schedules.)
 - Architecture tests: `riffdb-sim` absent from all production dependency
   graphs; conflict-path BTree-only pin; existing runtime determinism checks
   unchanged.
