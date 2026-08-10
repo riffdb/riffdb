@@ -1,4 +1,4 @@
-//! Bounded lexical analysis for contract grammar version 1.
+//! Bounded lexical analysis for contract grammar version 2.
 
 use logos::{Lexer, Logos};
 
@@ -9,7 +9,7 @@ use crate::limits::{MAX_IDENTIFIER_BYTES, MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, M
 /// A token paired with its half-open UTF-8 byte span.
 pub(crate) type SpannedToken = Spanned<Token>;
 
-/// Reserved syntax which is deliberately absent from grammar version 1.
+/// Reserved syntax which is deliberately absent from grammar version 2.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DeferredKeyword {
     Module,
@@ -17,14 +17,12 @@ pub(crate) enum DeferredKeyword {
     Include,
     Query,
     StateMachine,
-    State,
-    Transition,
     Capability,
     Approval,
     Default,
 }
 
-/// The complete external token set for contract grammar version 1.
+/// The complete external token set for contract grammar version 2.
 #[derive(Clone, Debug, Eq, Hash, Logos, PartialEq)]
 #[logos(error = LexingError)]
 #[logos(skip r"[ \t\r\n\x0C]+")]
@@ -80,6 +78,42 @@ pub(crate) enum Token {
     TransactionallyOrdered,
     #[token("command")]
     Command,
+    #[token("workflow")]
+    Workflow,
+    #[token("state")]
+    State,
+    #[token("transition")]
+    Transition,
+    #[token("from")]
+    From,
+    #[token("to")]
+    To,
+    #[token("lease")]
+    Lease,
+    #[token("owner")]
+    Owner,
+    #[token("expires_at")]
+    ExpiresAt,
+    #[token("fencing_token")]
+    FencingToken,
+    #[token("attempts")]
+    Attempts,
+    #[token("duration_seconds")]
+    DurationSeconds,
+    #[token("service")]
+    Service,
+    #[token("uuid_v7")]
+    UuidV7,
+    #[token("transaction_time")]
+    TransactionTime,
+    #[token("on")]
+    On,
+    #[token("revision")]
+    Revision,
+    #[token("stale")]
+    Stale,
+    #[token("illegal")]
+    Illegal,
     #[token("input")]
     Input,
     #[token("idempotency_key")]
@@ -194,8 +228,6 @@ pub(crate) enum Token {
     #[token("include", |_| DeferredKeyword::Include)]
     #[token("query", |_| DeferredKeyword::Query)]
     #[token("state_machine", |_| DeferredKeyword::StateMachine)]
-    #[token("state", |_| DeferredKeyword::State)]
-    #[token("transition", |_| DeferredKeyword::Transition)]
     #[token("capability", |_| DeferredKeyword::Capability)]
     #[token("approval", |_| DeferredKeyword::Approval)]
     #[token("default", |_| DeferredKeyword::Default)]

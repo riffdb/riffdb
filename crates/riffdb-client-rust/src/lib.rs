@@ -17,6 +17,7 @@ mod metadata;
 mod projected;
 mod reactive;
 mod status;
+mod tls;
 
 /// Boundaries implemented by contract-generated ergonomic modules.
 pub mod generated;
@@ -82,6 +83,7 @@ pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
 pub use status::{
     ClientError, DetailsFreeStatus, OutcomeUnknown, ProtocolFailure, ProtocolFailureKind,
 };
+pub use tls::TlsClientFailure;
 
 pub use riffdb_errors::{
     ApplicationError, ApplicationErrorCategory, ApplicationErrorCode, ApplicationErrorContext,

@@ -75,6 +75,16 @@ pub enum CompilerDiagnosticCode {
     UnsupportedMigrationStep,
     /// `RDB-C032`: a migration conversion or expression is not exact and deterministic.
     InvalidMigrationExpression,
+    /// `RDB-C033`: a workflow does not name one aggregate-local entity and enum state field.
+    InvalidWorkflow,
+    /// `RDB-C034`: a workflow transition is duplicated, mistyped, or not legal for its state graph.
+    InvalidWorkflowTransition,
+    /// `RDB-C035`: a workflow lease field or duration bound is invalid.
+    InvalidWorkflowLease,
+    /// `RDB-C036`: a service-owned value is duplicated or used in a caller-owned context.
+    InvalidServiceValue,
+    /// `RDB-C037`: a workflow transition lacks one direct exact observed-revision input.
+    MissingWorkflowRevision,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -85,7 +95,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 40] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -118,6 +128,11 @@ impl CompilerDiagnosticCode {
         Self::UnnecessaryMigrationProof,
         Self::UnsupportedMigrationStep,
         Self::InvalidMigrationExpression,
+        Self::InvalidWorkflow,
+        Self::InvalidWorkflowTransition,
+        Self::InvalidWorkflowLease,
+        Self::InvalidServiceValue,
+        Self::MissingWorkflowRevision,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -159,6 +174,11 @@ impl CompilerDiagnosticCode {
             Self::UnnecessaryMigrationProof => "RDB-C030",
             Self::UnsupportedMigrationStep => "RDB-C031",
             Self::InvalidMigrationExpression => "RDB-C032",
+            Self::InvalidWorkflow => "RDB-C033",
+            Self::InvalidWorkflowTransition => "RDB-C034",
+            Self::InvalidWorkflowLease => "RDB-C035",
+            Self::InvalidServiceValue => "RDB-C036",
+            Self::MissingWorkflowRevision => "RDB-C037",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -224,6 +244,21 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidMigrationExpression => {
                 "the migration expression or conversion is not exact and deterministic"
+            }
+            Self::InvalidWorkflow => {
+                "the workflow entity, state field, or aggregate ownership is invalid"
+            }
+            Self::InvalidWorkflowTransition => {
+                "the workflow transition is unknown, duplicated, or illegal for its state graph"
+            }
+            Self::InvalidWorkflowLease => {
+                "the workflow lease fields or duration bounds are invalid"
+            }
+            Self::InvalidServiceValue => {
+                "a service-owned value cannot be supplied or used as caller-owned input"
+            }
+            Self::MissingWorkflowRevision => {
+                "a workflow transition requires one direct exact observed-revision input"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -314,6 +349,21 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidMigrationExpression => Some(
                 "use only the old row, canonical literals, checked operators, and closed conversions",
+            ),
+            Self::InvalidWorkflow => {
+                Some("name one aggregate-owned entity and one required enum state field")
+            }
+            Self::InvalidWorkflowTransition => {
+                Some("declare unique source states and invoke one legal named transition")
+            }
+            Self::InvalidWorkflowLease => Some(
+                "use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds",
+            ),
+            Self::InvalidServiceValue => Some(
+                "declare service uuid_v7 or service transaction_time and omit it from caller input",
+            ),
+            Self::MissingWorkflowRevision => Some(
+                "pass one required u64 command input containing the revision returned by the prior read",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
@@ -489,7 +539,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 35);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 40);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

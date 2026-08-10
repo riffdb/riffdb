@@ -91,6 +91,7 @@ tag_registry!(expression, "Expression", {
     UNARY = 0x09 => "unary",
     BINARY = 0x0a => "binary",
     ROOT_VALIDATION_FIELD = 0x0b => "root-validation field",
+    SERVICE_VALUE = 0x0c => "service-owned command value",
 });
 tag_registry!(unary_operator, "Unary operator", {
     NOT = 0x01 => "not",
@@ -126,6 +127,11 @@ tag_registry!(instruction, "Instruction", {
     SET_FIELD = 0x02 => "set field",
     EMIT_EVENT = 0x03 => "emit event",
     RETURN = 0x04 => "return",
+    WORKFLOW_TRANSITION = 0x05 => "workflow transition",
+});
+tag_registry!(service_value_kind, "Service-owned command value", {
+    UUID_V7 = 0x01 => "uuid v7",
+    TRANSACTION_TIME = 0x02 => "transaction time",
 });
 tag_registry!(execution_class, "Execution class", {
     READ_ONLY = 0x01 => "read-only",
@@ -192,6 +198,7 @@ tag_registry!(record_owner, "Record allocation owner", {
     COMMAND_INPUT = 0x03 => "command input",
     COMMAND_OUTCOME = 0x04 => "command outcome",
     PROJECTION_RESULT = 0x05 => "projection result",
+    COMMAND_SERVICE_VALUE = 0x06 => "command service value",
 });
 tag_registry!(invariant_owner, "Invariant identity owner", {
     ENTITY = 0x01 => "entity",
@@ -219,6 +226,7 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     key_purpose::REGISTRY,
     binding_mode::REGISTRY,
     instruction::REGISTRY,
+    service_value_kind::REGISTRY,
     execution_class::REGISTRY,
     retry_policy::REGISTRY,
     capability_requirement::REGISTRY,
@@ -418,6 +426,10 @@ pub(crate) const EXPRESSION_VARIANTS: &[TaggedVariantLayout] = &[
         "read" => "RootValidationReadId as u32",
         "field" => "FieldId as u32",
     }),
+    tagged_variant!(expression::SERVICE_VALUE, "service-owned command value", {
+        "result_type" => "ValueType tag plus exact selected payload",
+        "field" => "FieldId as u32",
+    }),
 ];
 
 /// Exact `Instruction` payloads after the instruction tag.
@@ -437,6 +449,15 @@ pub(crate) const INSTRUCTION_VARIANTS: &[TaggedVariantLayout] = &[
     }),
     tagged_variant!(instruction::RETURN, "return", {
         "outcome" => "OutcomeConstruction",
+    }),
+    tagged_variant!(instruction::WORKFLOW_TRANSITION, "workflow transition", {
+        "binding" => "BindingId as u32",
+        "state_field" => "FieldId as u32",
+        "source_states" => "u32 count + EnumVariantId[]",
+        "destination" => "EnumVariantId as u32",
+        "expected_revision" => "ExprId as u32",
+        "stale" => "OutcomeConstruction",
+        "illegal" => "OutcomeConstruction",
     }),
 ];
 
@@ -656,6 +677,15 @@ pub(crate) const LINEAGE_OWNER_RULES: &[LineageOwnerRule] = &[
     LineageOwnerRule {
         namespace_tag: stable_id_namespace::FIELD,
         namespace: "field",
+        allocation_owner_kind: record_owner::COMMAND_SERVICE_VALUE,
+        allocation_owner_count: 1,
+        identity_owner_kind: record_owner::COMMAND_SERVICE_VALUE,
+        identity_owner_count: 1,
+        identity_owner: "command service value",
+    },
+    LineageOwnerRule {
+        namespace_tag: stable_id_namespace::FIELD,
+        namespace: "field",
         allocation_owner_kind: record_owner::COMMAND_OUTCOME,
         allocation_owner_count: 2,
         identity_owner_kind: record_owner::COMMAND_OUTCOME,
@@ -863,9 +893,9 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
 
 layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "magic" => "ASCII `RIFFDB-BUNDLE\\0`",
-    "bundle_format_version" => "u32 = 1",
-    "grammar_version" => "u32 = 1",
-    "executable_ir_version" => "u32 = 1",
+    "bundle_format_version" => "u32 = 1 or 2",
+    "grammar_version" => "u32 = 1 or 2; must equal the bundle version",
+    "executable_ir_version" => "u32 = 1 or 2; must equal the bundle version",
     "compiler_version" => "nonempty ASCII compiler semantic-version identity string, <=64 bytes",
     "contract_lineage" => "string",
     "contract_version" => "u64",
@@ -874,6 +904,7 @@ layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "plan_root_hash" => "32 bytes",
     "ledger" => "LineageLedgerV1",
     "schema" => "StructuralSchema",
+    "workflows" => "IR v2 only: u32 count + WorkflowSchema[]; omitted in v1",
     "commands" => "u32 count + CommandBundleEntry[]",
     "projections" => "u32 count + ProjectionBundleEntry[]",
     "schema_artifacts" => "u32 count + GeneratedSchemaArtifact[]",
@@ -1010,6 +1041,28 @@ layout!(KEY_COMPONENT_LAYOUT, "KeyComponentSchema", {
 layout!(EXPRESSION_ARENA_LAYOUT, "ExpressionArena", {
     "nodes" => "u32 count + TypedExpression[]",
 });
+layout!(WORKFLOW_LAYOUT, "WorkflowSchema", {
+    "name" => "string",
+    "entity" => "EntityTypeId",
+    "state_field" => "FieldId",
+    "state_enum" => "EnumTypeId",
+    "transitions" => "u32 count + WorkflowTransitionSchema[]",
+    "lease" => "optional WorkflowLeaseSchema",
+});
+layout!(WORKFLOW_TRANSITION_LAYOUT, "WorkflowTransitionSchema", {
+    "name" => "string",
+    "source_states" => "nonempty u32 count + canonical EnumVariantId[]",
+    "destination" => "EnumVariantId",
+});
+layout!(WORKFLOW_LEASE_LAYOUT, "WorkflowLeaseSchema", {
+    "name" => "string",
+    "owner_field" => "FieldId of optional UUID",
+    "expiry_field" => "FieldId of optional timestamp",
+    "fencing_token_field" => "FieldId of u64",
+    "attempt_field" => "optional FieldId of u64",
+    "minimum_duration_seconds" => "nonzero u64",
+    "maximum_duration_seconds" => "u64 <= 86400 and >= minimum",
+});
 layout!(COMMAND_ENTRY_LAYOUT, "CommandBundleEntry", {
     "command_id" => "CommandId",
     "name" => "string",
@@ -1019,6 +1072,7 @@ layout!(COMMAND_ENTRY_LAYOUT, "CommandBundleEntry", {
 });
 layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "input" => "RecordSchema",
+    "service_values" => "IR v2 only: u32 count + (FieldId, optional display name, ValueType, ServiceValueKind tag)[]; omitted in v1",
     "outcomes" => "u32 count + OutcomeSchema[]",
     "success_outcome" => "OutcomeId",
     "idempotency_input" => "optional FieldId",
@@ -1185,6 +1239,9 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     KEY_SCHEMA_LAYOUT,
     KEY_COMPONENT_LAYOUT,
     EXPRESSION_ARENA_LAYOUT,
+    WORKFLOW_LAYOUT,
+    WORKFLOW_TRANSITION_LAYOUT,
+    WORKFLOW_LEASE_LAYOUT,
     COMMAND_ENTRY_LAYOUT,
     COMMAND_SEMANTICS_LAYOUT,
     OUTCOME_SCHEMA_LAYOUT,
@@ -1677,7 +1734,7 @@ pub(crate) fn json_schema_shape_template(
 #[must_use]
 pub fn render_format_markdown() -> String {
     let mut output = String::new();
-    output.push_str("# RiffDB Contract IR Format v1\n\nStatus: **Accepted**\n\n");
+    output.push_str("# RiffDB Contract IR Formats v1 and v2\n\nStatus: **Accepted**\n\n");
     output.push_str("This generated review artifact is derived from the production tag and ordered-layout registries. It does not accept or freeze the durable format.\n\n");
     output.push_str("## Scalar Framing\n\n- Unsigned integers are big-endian `u8`, `u32`, or `u64`; signed integers are two's-complement big-endian.\n- Boolean is `0x00` or `0x01`.\n- Bytes and UTF-8 strings are `u32 byte_length || exact_bytes`.\n- Optional values are `Boolean present || payload when present`.\n- Collections are `u32 count || elements`; checked decoders validate bounds before allocation.\n- Stable semantic IDs are nonzero. `ExprId`, `BindingId`, and `RootValidationReadId` are dense zero-based plan-local `u32` values.\n- Full input consumption and canonical re-encoding are mandatory.\n\n### Canonical Value Reference\n\nExpression constants use exactly `u32 canonical_document_byte_length || canonical_document_bytes`. `canonical_document_bytes` is one complete [ADR-0011 canonical value encoding v1](../../adr/0011-canonical-values-keys-and-hashing.md#canonical-value-encoding-v1), owned by `riffdb-types::encode_canonical_value`: its first byte is `riffdb_types::CANONICAL_VALUE_VERSION` (`0x01`), its second byte is the ADR-0011 value tag, and recursive list/record children are complete version-and-tag-prefixed documents. The outer IR length is not part of the inner canonical document. Empty, truncated, trailing, unsupported-version, and unknown-tag documents reject.\n\n");
     output.push_str("## Closed Tags\n\n");
@@ -2021,6 +2078,7 @@ mod tests {
                     right: crate::ExprId::new(0),
                 },
                 ExpressionKind::RootValidationField { read, field },
+                ExpressionKind::ServiceValue(field),
             ]
             .map(|value| value.tag()),
             registry_values(expression::REGISTRY).as_slice()
@@ -2030,7 +2088,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 45);
+        assert_eq!(FORMAT_LAYOUTS.len(), 48);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

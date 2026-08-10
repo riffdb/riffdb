@@ -1535,6 +1535,9 @@ fn render_expression_arena(
                 format!("constant:{}", hex(&encode_canonical_value(value)?))
             }
             ExpressionKind::InputField(field) => format!("input_field:{}", field.get()),
+            ExpressionKind::ServiceValue(field) => {
+                format!("service_value:{}", field.get())
+            }
             ExpressionKind::CompleteBinding(binding) => {
                 format!("complete_binding:{}", binding.get())
             }
@@ -1639,6 +1642,28 @@ fn render_instruction(instruction: &Instruction) -> String {
             binding.get(),
             field.get(),
             value.get()
+        ),
+        Instruction::WorkflowTransition {
+            binding,
+            state_field,
+            source_states,
+            destination,
+            expected_revision,
+            stale,
+            illegal,
+        } => format!(
+            "workflow_transition binding:{} state_field:{} sources:[{}] destination:{} revision:{} stale:{} illegal:{}",
+            binding.get(),
+            state_field.get(),
+            source_states
+                .iter()
+                .map(|state| state.get().to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            destination.get(),
+            expected_revision.get(),
+            render_object(stale.payload()),
+            render_object(illegal.payload()),
         ),
         Instruction::EmitEvent(event) => format!(
             "emit event:{} payload:{}",
@@ -2496,6 +2521,59 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
                 code, span,
             ))),
         ));
+    }
+
+    let workflow_surface =
+        include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
+    for (name, code, source) in [
+        (
+            "RDB-C033-invalid-workflow",
+            CompilerDiagnosticCode::InvalidWorkflow,
+            concat!(
+                "contract InvalidWorkflow version 1 { ",
+                "enum State { Open, Closed } ",
+                "entity Row { key (id: uuid) field state: State } ",
+                "workflow RowFlow { entity Row state state ",
+                "transition Close from (Open) to Closed } }",
+            )
+            .to_owned(),
+        ),
+        (
+            "RDB-C034-invalid-workflow-transition",
+            CompilerDiagnosticCode::InvalidWorkflowTransition,
+            workflow_surface.replacen(
+                "transition Start from (Queued) to Running",
+                "transition Start from (Unknown) to Running",
+                1,
+            ),
+        ),
+        (
+            "RDB-C035-invalid-workflow-lease",
+            CompilerDiagnosticCode::InvalidWorkflowLease,
+            workflow_surface.replacen("duration_seconds (5, 900)", "duration_seconds (0, 900)", 1),
+        ),
+        (
+            "RDB-C036-invalid-service-value",
+            CompilerDiagnosticCode::InvalidServiceValue,
+            workflow_surface.replacen(
+                "service started_at: transaction_time",
+                "input started_at: timestamp\n    service started_at: transaction_time",
+                1,
+            ),
+        ),
+        (
+            "RDB-C037-missing-workflow-revision",
+            CompilerDiagnosticCode::MissingWorkflowRevision,
+            workflow_surface.replacen(
+                "revision expected_revision",
+                "revision expected_revision + 0",
+                1,
+            ),
+        ),
+    ] {
+        let error = validate_contract_source(&source).expect_err("invalid workflow fixture");
+        require_semantic_code(name, code, &error)?;
+        cases.push((name, code, error));
     }
 
     for (name, code, source) in [

@@ -21,6 +21,7 @@ mod plan;
 mod projection;
 mod schema;
 mod value_type;
+mod workflow;
 
 pub use bundle::*;
 pub use compatibility::*;
@@ -37,3 +38,4 @@ pub use plan::*;
 pub use projection::*;
 pub use schema::*;
 pub use value_type::*;
+pub use workflow::*;

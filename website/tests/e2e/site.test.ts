@@ -17,6 +17,15 @@ for (const path of ["/", "/privacy/", "/404.html"]) {
   });
 }
 
+test("semantic path remains accessible in dark mode", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+  const results = await new AxeBuilder({ page })
+    .include(".path-card")
+    .analyze();
+  expect(results.violations).toEqual([]);
+});
+
 test("home presents the product thesis and honest POC boundary", async ({
   page,
 }) => {
@@ -31,6 +40,14 @@ test("home presents the product thesis and honest POC boundary", async ({
     "Vibe fast",
   );
   await expect(
+    page.getByRole("heading", {
+      name: "Agents make assembly cheap. They do not make seams correct.",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Beyond the current POC, the product direction brings"),
+  ).toBeVisible();
+  await expect(
     page.getByText("standalone, local-only Rust proof of concept"),
   ).toBeVisible();
   await expect(
@@ -42,6 +59,10 @@ test("home presents the product thesis and honest POC boundary", async ({
     "href",
     "https://docs.riffdb.com/api/rust/riffdb_client_rust/index.html",
   );
+  await expect(
+    page.getByRole("link", { name: "Why RiffDB exists" }),
+  ).toHaveAttribute("href", "https://docs.riffdb.com/VISION.html");
+  await expect(page.locator("main")).not.toContainText("—");
   await expect(
     page.getByText("Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC."),
   ).toBeVisible();

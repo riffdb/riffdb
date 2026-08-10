@@ -18,7 +18,8 @@ use crate::locality::analyze_locality;
 use crate::mcp_name::build_command_tool_registry;
 use crate::projection_lowering::lower_projections;
 use crate::schema_lowering::{
-    lower_schema, validate_relationship_declarations, validate_unique_declarations,
+    lower_schema, lower_workflow_catalog, validate_relationship_declarations,
+    validate_unique_declarations,
 };
 use crate::symbols::{
     allocate_genesis_symbols, allocate_successor_symbols, allocate_successor_symbols_with_renames,
@@ -82,6 +83,7 @@ pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
     let locality = analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let _owned_entity_count = locality.entity_owner.len();
     let schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
+    lower_workflow_catalog(&hir).map_err(CompilationError::Semantic)?;
     lower_commands(&hir, &schema).map_err(CompilationError::Semantic)?;
     lower_projections(&hir, &schema).map_err(CompilationError::Semantic)?;
     build_command_tool_registry(
@@ -158,6 +160,7 @@ fn compile(
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
+    let workflows = lower_workflow_catalog(&hir).map_err(CompilationError::Semantic)?;
     let commands = lower_commands(&hir, &schema).map_err(CompilationError::Semantic)?;
     let projections = lower_projections(&hir, &schema).map_err(CompilationError::Semantic)?;
     let mcp_names = build_command_tool_registry(
@@ -167,6 +170,7 @@ fn compile(
     .map_err(CompilationError::Semantic)?;
     let parts = BundleParts {
         schema,
+        workflows,
         commands,
         projections,
         mcp_names,
@@ -223,7 +227,7 @@ mod tests {
     use crate::diagnostic::CompilerDiagnosticCode;
     use riffdb_contract_ir::{
         CommandExplain, CompatibilityClass, CompatibilityCode, ContractBundle, ExpressionKind,
-        LineageEntryState, UnaryOperator, ValueType, ValueTypeTag,
+        Instruction, LineageEntryState, ServiceValueKind, UnaryOperator, ValueType, ValueTypeTag,
     };
     use riffdb_types::CanonicalValue;
 
@@ -275,6 +279,72 @@ mod tests {
             diagnostic.primary_span().end() as usize,
             start + exact_source.len()
         );
+    }
+
+    #[test]
+    fn workflow_surface_compiles_to_a_versioned_successor_ir() {
+        let source =
+            include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
+        let bundle = compile_contract_source(source).expect("workflow surface compiles");
+
+        assert_eq!(bundle.grammar_version(), 2);
+        assert_eq!(bundle.ir_version(), 2);
+        assert_eq!(bundle.workflows().workflows().len(), 1);
+        let workflow = &bundle.workflows().workflows()[0];
+        assert_eq!(workflow.name(), "WorkLifecycle");
+        assert_eq!(workflow.transitions().len(), 2);
+        let lease = workflow.lease().expect("checked fenced lease");
+        assert_eq!(lease.name(), "execution");
+        assert_eq!(lease.minimum_duration_seconds(), 5);
+        assert_eq!(lease.maximum_duration_seconds(), 900);
+        assert_eq!(bundle.commands().len(), 1);
+        let command = &bundle.commands()[0];
+        assert!(command.requires_ir_v2());
+        assert_eq!(command.input().record().fields().len(), 4);
+        assert_eq!(command.service_values().len(), 2);
+        assert_eq!(command.service_values()[0].field().name(), "started_at");
+        assert_eq!(
+            command.service_values()[0].kind(),
+            ServiceValueKind::TransactionTime
+        );
+        assert_eq!(command.service_values()[1].field().name(), "execution_id");
+        assert_eq!(command.service_values()[1].kind(), ServiceValueKind::UuidV7);
+        let transition = command
+            .instructions()
+            .iter()
+            .find(|instruction| matches!(instruction, Instruction::WorkflowTransition { .. }))
+            .expect("compiled workflow transition");
+        let Instruction::WorkflowTransition {
+            source_states,
+            destination,
+            expected_revision,
+            stale,
+            illegal,
+            ..
+        } = transition
+        else {
+            unreachable!("matched transition")
+        };
+        assert_eq!(source_states.len(), 1);
+        assert_ne!(source_states[0], *destination);
+        assert!(matches!(
+            command
+                .expressions()
+                .get(*expected_revision)
+                .map(|node| node.kind()),
+            Some(ExpressionKind::InputField(_))
+        ));
+        assert_ne!(stale.outcome_id(), illegal.outcome_id());
+        let explain = CommandExplain::from_plan(command);
+        assert_eq!(explain.workflow_transitions().len(), 1);
+        assert!(explain.render_text().contains("transaction-current:true"));
+        let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("v2 round trip");
+        assert_eq!(decoded, bundle);
+
+        let v1 = compile_contract_source(include_str!("../../../contracts/examples/budget.riff"))
+            .expect("legacy contract compiles");
+        assert_eq!(v1.grammar_version(), 1);
+        assert_eq!(v1.ir_version(), 1);
     }
 
     fn amplified_outcome_source(entity_fields: usize, outcome_fields: usize) -> String {

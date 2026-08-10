@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
-    BindingId, BindingMode, ExprId, ExpressionArena, ExpressionKind, ValueType,
+    BindingId, BindingMode, ExprId, ExpressionArena, ExpressionKind, ValueType, ValueTypeTag,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
     AggregateItem, Aggregation, Binding, Declaration, Effect, EntityItem, Expression,
-    ObjectLiteral, OutcomeExpression, Path,
+    ObjectLiteral, OutcomeExpression, Path, ServiceValueKind,
 };
 use riffdb_contract_syntax::{ContractDocument, Spanned};
 use riffdb_types::{
@@ -195,6 +195,49 @@ pub(crate) struct HirInput {
     pub(crate) field: HirField,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HirServiceValueKind {
+    UuidV7,
+    TransactionTime,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirServiceValue {
+    pub(crate) field: HirField,
+    pub(crate) kind: HirServiceValueKind,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirWorkflowTransition {
+    pub(crate) name: String,
+    pub(crate) span: Span,
+    pub(crate) source_states: Vec<EnumVariantId>,
+    pub(crate) destination: EnumVariantId,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirWorkflowLease {
+    pub(crate) name: String,
+    pub(crate) span: Span,
+    pub(crate) owner_field: FieldId,
+    pub(crate) expiry_field: FieldId,
+    pub(crate) fencing_token_field: FieldId,
+    pub(crate) attempt_field: Option<FieldId>,
+    pub(crate) minimum_duration_seconds: u64,
+    pub(crate) maximum_duration_seconds: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirWorkflow {
+    pub(crate) name: String,
+    pub(crate) span: Span,
+    pub(crate) entity_id: EntityTypeId,
+    pub(crate) state_field: FieldId,
+    pub(crate) state_enum: EnumTypeId,
+    pub(crate) transitions: Vec<HirWorkflowTransition>,
+    pub(crate) lease: Option<HirWorkflowLease>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct HirObjectField {
     pub(crate) id: FieldId,
@@ -244,6 +287,16 @@ pub(crate) enum HirEffect {
         event_span: Span,
         fields: Vec<HirObjectField>,
     },
+    WorkflowTransition {
+        transition_span: Span,
+        binding: BindingId,
+        state_field: FieldId,
+        source_states: Vec<EnumVariantId>,
+        destination: EnumVariantId,
+        expected_revision: HirExpressionRoot,
+        stale: HirOutcome,
+        illegal: HirOutcome,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -252,6 +305,7 @@ pub(crate) struct HirCommand {
     pub(crate) name: String,
     pub(crate) span: Span,
     pub(crate) inputs: Vec<HirInput>,
+    pub(crate) service_values: Vec<HirServiceValue>,
     pub(crate) idempotency: Option<HirTypedExpression>,
     pub(crate) bindings: Vec<HirBinding>,
     pub(crate) requirements: Vec<HirRequirement>,
@@ -302,6 +356,7 @@ pub(crate) struct TypedContractHir {
     pub(crate) entities: Vec<HirEntity>,
     pub(crate) events: Vec<HirEvent>,
     pub(crate) aggregates: Vec<HirAggregate>,
+    pub(crate) workflows: Vec<HirWorkflow>,
     pub(crate) commands: Vec<HirCommand>,
     pub(crate) projections: Vec<HirProjection>,
 }
@@ -348,12 +403,14 @@ pub(crate) fn lower_contract_hir(
     let entities = lower_entities(document, symbols, types, &mut diagnostics);
     let events = lower_events(document, symbols, types, &mut diagnostics);
     let aggregates = lower_aggregates(document, symbols, types, &mut diagnostics);
+    let workflows = lower_workflows(document, symbols, &entities, &aggregates, &mut diagnostics);
     let commands = lower_commands(
         document,
         symbols,
         types,
         &entities,
         &events,
+        &workflows,
         &mut diagnostics,
     );
     let projections = lower_projections(document, symbols, &events, &mut diagnostics);
@@ -369,6 +426,7 @@ pub(crate) fn lower_contract_hir(
         entities,
         events,
         aggregates,
+        workflows,
         commands,
         projections,
     })
@@ -787,12 +845,270 @@ fn lower_aggregates(
     result
 }
 
+const MAX_WORKFLOW_LEASE_DURATION_SECONDS: u64 = 86_400;
+
+fn lower_workflows(
+    document: &ContractDocument,
+    symbols: &GenesisSymbols,
+    entities: &[HirEntity],
+    aggregates: &[HirAggregate],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Vec<HirWorkflow> {
+    let mut result = Vec::new();
+    let mut entities_with_workflows = BTreeMap::<EntityTypeId, Span>::new();
+    for declaration in &document.contract.value.declarations {
+        let Declaration::Workflow(source) = &declaration.value else {
+            continue;
+        };
+        let Some(entity_id) = symbols.entities.get(&source.entity.value).copied() else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                source.entity.span,
+            ));
+            continue;
+        };
+        let Some(entity) = entities.iter().find(|entity| entity.id == entity_id) else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidWorkflow,
+                source.entity.span,
+            ));
+            continue;
+        };
+        if !aggregates.iter().any(|aggregate| {
+            aggregate.root == entity_id
+                || aggregate.children.iter().any(|child| child.0 == entity_id)
+        }) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidWorkflow,
+                source.entity.span,
+            ));
+        }
+        if let Some(first_span) = entities_with_workflows.insert(entity_id, source.entity.span) {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidWorkflow,
+                    source.entity.span,
+                )
+                .with_related_span(first_span),
+            );
+        }
+        let Some(state_field) = entity
+            .fields
+            .iter()
+            .find(|field| field.name == source.state_field.value)
+        else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                source.state_field.span,
+            ));
+            continue;
+        };
+        let Some(state_enum) = state_field.value_type.enum_type_id() else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidWorkflow,
+                source.state_field.span,
+            ));
+            continue;
+        };
+        if entity.key_field_set().contains(&state_field.id) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidWorkflow,
+                source.state_field.span,
+            ));
+        }
+
+        let mut transition_names = BTreeMap::<String, Span>::new();
+        let mut transition_edges = BTreeMap::<(EnumVariantId, EnumVariantId), Span>::new();
+        let mut transitions = Vec::new();
+        for transition in &source.transitions {
+            if let Some(first_span) = transition_names.insert(
+                transition.value.name.value.clone(),
+                transition.value.name.span,
+            ) {
+                diagnostics.push(
+                    CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidWorkflowTransition,
+                        transition.value.name.span,
+                    )
+                    .with_related_span(first_span),
+                );
+            }
+            let Some(destination) = symbols
+                .enum_variants
+                .get(&(state_enum, transition.value.destination.value.clone()))
+                .copied()
+            else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidWorkflowTransition,
+                    transition.value.destination.span,
+                ));
+                continue;
+            };
+            let mut seen_sources = BTreeMap::<EnumVariantId, Span>::new();
+            let mut source_states = Vec::new();
+            for source_state in &transition.value.source_states {
+                let Some(source_id) = symbols
+                    .enum_variants
+                    .get(&(state_enum, source_state.value.clone()))
+                    .copied()
+                else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidWorkflowTransition,
+                        source_state.span,
+                    ));
+                    continue;
+                };
+                if let Some(first_span) = seen_sources.insert(source_id, source_state.span) {
+                    diagnostics.push(
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            source_state.span,
+                        )
+                        .with_related_span(first_span),
+                    );
+                    continue;
+                }
+                if let Some(first_span) =
+                    transition_edges.insert((source_id, destination), transition.span)
+                {
+                    diagnostics.push(
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            transition.span,
+                        )
+                        .with_related_span(first_span),
+                    );
+                }
+                source_states.push(source_id);
+            }
+            source_states.sort_unstable();
+            transitions.push(HirWorkflowTransition {
+                name: transition.value.name.value.clone(),
+                span: transition.span,
+                source_states,
+                destination,
+            });
+        }
+
+        let lease = source
+            .lease
+            .as_ref()
+            .and_then(|lease| lower_workflow_lease(entity, &lease.value, lease.span, diagnostics));
+        result.push(HirWorkflow {
+            name: source.name.value.clone(),
+            span: source.name.span,
+            entity_id,
+            state_field: state_field.id,
+            state_enum,
+            transitions,
+            lease,
+        });
+    }
+    result
+}
+
+fn lower_workflow_lease(
+    entity: &HirEntity,
+    source: &riffdb_contract_syntax::ast::WorkflowLeaseDeclaration,
+    span: Span,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Option<HirWorkflowLease> {
+    let field = |name: &Spanned<String>| {
+        entity
+            .fields
+            .iter()
+            .find(|field| field.name == name.value)
+            .map(|field| (field.id, &field.value_type))
+    };
+    let owner = field(&source.owner_field);
+    let expiry = field(&source.expiry_field);
+    let fence = field(&source.fencing_token_field);
+    let attempts = source
+        .attempt_field
+        .as_ref()
+        .and_then(|name| field(name).map(|field| (name, field)));
+    for (name, value) in [
+        (&source.owner_field, owner),
+        (&source.expiry_field, expiry),
+        (&source.fencing_token_field, fence),
+    ] {
+        if value.is_none() {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                name.span,
+            ));
+        }
+    }
+    if source.attempt_field.is_some() && attempts.is_none() {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::UnknownName,
+            source.attempt_field.as_ref().expect("checked present").span,
+        ));
+    }
+    let (
+        Some((owner_id, owner_type)),
+        Some((expiry_id, expiry_type)),
+        Some((fence_id, fence_type)),
+    ) = (owner, expiry, fence)
+    else {
+        return None;
+    };
+    let owner_valid = owner_type
+        .optional_inner()
+        .is_some_and(|inner| inner.tag() == ValueTypeTag::Uuid);
+    let expiry_valid = expiry_type
+        .optional_inner()
+        .is_some_and(|inner| inner.tag() == ValueTypeTag::Timestamp);
+    let fence_valid = fence_type.tag() == ValueTypeTag::U64;
+    let attempts_valid = attempts
+        .as_ref()
+        .is_none_or(|(_, (_, value_type))| value_type.tag() == ValueTypeTag::U64);
+    let mut fields = vec![owner_id, expiry_id, fence_id];
+    if let Some((_, (attempt_id, _))) = attempts {
+        fields.push(attempt_id);
+    }
+    fields.sort_unstable();
+    let distinct = fields.windows(2).all(|pair| pair[0] != pair[1]);
+    let key_fields = entity.key_field_set();
+    let non_key = fields.iter().all(|field| !key_fields.contains(field));
+    let minimum = source.minimum_duration_seconds.value.parse::<u64>().ok();
+    let maximum = source.maximum_duration_seconds.value.parse::<u64>().ok();
+    let duration_valid = minimum.zip(maximum).is_some_and(|(minimum, maximum)| {
+        minimum > 0 && minimum <= maximum && maximum <= MAX_WORKFLOW_LEASE_DURATION_SECONDS
+    });
+    if !owner_valid
+        || !expiry_valid
+        || !fence_valid
+        || !attempts_valid
+        || !distinct
+        || !non_key
+        || !duration_valid
+    {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidWorkflowLease,
+            span,
+        ));
+        return None;
+    }
+    Some(HirWorkflowLease {
+        name: source.name.value.clone(),
+        span,
+        owner_field: owner_id,
+        expiry_field: expiry_id,
+        fencing_token_field: fence_id,
+        attempt_field: attempts.map(|(_, (field, _))| field),
+        minimum_duration_seconds: minimum.expect("validated duration"),
+        maximum_duration_seconds: maximum.expect("validated duration"),
+    })
+}
+
 fn lower_commands(
     document: &ContractDocument,
     symbols: &GenesisSymbols,
     types: &ResolvedTypes,
     entities: &[HirEntity],
     events: &[HirEvent],
+    workflows: &[HirWorkflow],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Vec<HirCommand> {
     let mut result = Vec::new();
@@ -820,12 +1136,46 @@ fn lower_commands(
                 .map(|field| HirInput { field })
             })
             .collect::<Vec<_>>();
+        let service_values = source
+            .service_values
+            .iter()
+            .filter_map(|value| {
+                let field_id = symbols
+                    .command_service_values
+                    .get(&(command_id, value.value.name.value.clone()))
+                    .copied();
+                let value_type = field_id
+                    .and_then(|field_id| types.command_service_values.get(&(command_id, field_id)));
+                lower_field(
+                    &value.value.name,
+                    value.value.kind.span,
+                    field_id,
+                    value_type,
+                )
+                .map(|field| HirServiceValue {
+                    field,
+                    kind: match value.value.kind.value {
+                        ServiceValueKind::UuidV7 => HirServiceValueKind::UuidV7,
+                        ServiceValueKind::TransactionTime => HirServiceValueKind::TransactionTime,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
         let input_scope = inputs
             .iter()
             .map(|input| {
                 (
                     input.field.name.clone(),
                     (input.field.id, input.field.value_type.clone()),
+                )
+            })
+            .collect();
+        let service_value_scope = service_values
+            .iter()
+            .map(|value| {
+                (
+                    value.field.name.clone(),
+                    (value.field.id, value.field.value_type.clone()),
                 )
             })
             .collect();
@@ -875,6 +1225,7 @@ fn lower_commands(
         let scope = ExpressionScope::Command {
             command_id,
             inputs: input_scope,
+            service_values: service_value_scope,
             bindings: binding_scope,
         };
         let idempotency = source.idempotency.as_ref().and_then(|idempotency| {
@@ -972,6 +1323,7 @@ fn lower_commands(
             .map(|binding| (binding.name.as_str(), binding))
             .collect::<BTreeMap<_, _>>();
         let mut effects = Vec::new();
+        let mut transitioned_bindings = BTreeSet::new();
         for effect in &source.effects {
             match &effect.value {
                 Effect::Set(set) => {
@@ -1003,6 +1355,15 @@ fn lower_commands(
                         ));
                         continue;
                     };
+                    if workflows.iter().any(|workflow| {
+                        workflow.entity_id == binding.entity_id && workflow.state_field == field.id
+                    }) {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            set.target.span,
+                        ));
+                        continue;
+                    }
                     let Some(value) = lower_root(
                         &mut resolver,
                         &set.value,
@@ -1043,6 +1404,92 @@ fn lower_commands(
                         fields,
                     });
                 }
+                Effect::WorkflowTransition(transition) => {
+                    let Some(binding) = binding_by_name
+                        .get(transition.binding.value.as_str())
+                        .copied()
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::UnknownName,
+                            transition.binding.span,
+                        ));
+                        continue;
+                    };
+                    if binding.mode != BindingMode::Mutate {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            transition.binding.span,
+                        ));
+                        continue;
+                    }
+                    let Some(workflow) = workflows
+                        .iter()
+                        .find(|workflow| workflow.entity_id == binding.entity_id)
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            transition.transition.span,
+                        ));
+                        continue;
+                    };
+                    let Some(declared) = workflow
+                        .transitions
+                        .iter()
+                        .find(|declared| declared.name == transition.transition.value)
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            transition.transition.span,
+                        ));
+                        continue;
+                    };
+                    if !transitioned_bindings.insert(binding.id) {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            effect.span,
+                        ));
+                        continue;
+                    }
+                    let Some(expected_revision) = lower_root(
+                        &mut resolver,
+                        &transition.expected_revision,
+                        Some(&ValueType::u64()),
+                        false,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    let Some(stale) = lower_outcome(
+                        command_id,
+                        &transition.stale,
+                        symbols,
+                        &mut resolver,
+                        false,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    let Some(illegal) = lower_outcome(
+                        command_id,
+                        &transition.illegal,
+                        symbols,
+                        &mut resolver,
+                        false,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    effects.push(HirEffect::WorkflowTransition {
+                        transition_span: transition.transition.span,
+                        binding: binding.id,
+                        state_field: workflow.state_field,
+                        source_states: declared.source_states.clone(),
+                        destination: declared.destination,
+                        expected_revision,
+                        stale,
+                        illegal,
+                    });
+                }
             }
         }
         let Some(success) = lower_outcome(
@@ -1062,11 +1509,33 @@ fn lower_commands(
                 continue;
             }
         };
+        for effect in &effects {
+            let HirEffect::WorkflowTransition {
+                expected_revision,
+                transition_span,
+                ..
+            } = effect
+            else {
+                continue;
+            };
+            if !matches!(
+                expressions
+                    .node(expected_revision.id)
+                    .map(|node| &node.kind),
+                Some(ExpressionKind::InputField(_))
+            ) {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::MissingWorkflowRevision,
+                    *transition_span,
+                ));
+            }
+        }
         result.push(HirCommand {
             id: command_id,
             name: source.name.value.clone(),
             span: source.name.span,
             inputs,
+            service_values,
             idempotency,
             bindings,
             requirements,

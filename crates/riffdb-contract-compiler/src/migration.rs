@@ -1532,6 +1532,7 @@ fn migration_symbols(candidate: &ContractBundle) -> GenesisSymbols {
         entity_fields: BTreeMap::new(),
         event_fields: BTreeMap::new(),
         command_inputs: BTreeMap::new(),
+        command_service_values: BTreeMap::new(),
         outcomes: BTreeMap::new(),
         outcome_fields: BTreeMap::new(),
         enum_variants,

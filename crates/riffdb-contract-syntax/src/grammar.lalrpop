@@ -27,8 +27,52 @@ Declaration: Spanned<Declaration> = {
         => parser::spanned(Declaration::Aggregate(aggregate), lo, hi),
     <lo:@L> <command:CommandDeclaration> <hi:@R>
         => parser::spanned(Declaration::Command(command), lo, hi),
+    <lo:@L> <workflow:WorkflowDeclaration> <hi:@R>
+        => parser::spanned(Declaration::Workflow(workflow), lo, hi),
     <lo:@L> <projection:ProjectionDeclaration> <hi:@R>
         => parser::spanned(Declaration::Projection(projection), lo, hi),
+};
+
+WorkflowDeclaration: WorkflowDeclaration = {
+    "workflow" <name:Identifier> "{"
+        "entity" <entity:Identifier>
+        "state" <state_field:Identifier>
+        <transitions:WorkflowTransitionDeclaration+>
+        <lease:WorkflowLeaseDeclaration?>
+    "}" => WorkflowDeclaration { name, entity, state_field, transitions, lease },
+};
+
+WorkflowTransitionDeclaration: Spanned<WorkflowTransitionDeclaration> = {
+    <lo:@L> "transition" <name:Identifier> "from" "(" <source_states:IdentifierList> ")"
+        "to" <destination:Identifier> <hi:@R>
+        => parser::spanned(WorkflowTransitionDeclaration {
+            name,
+            source_states,
+            destination,
+        }, lo, hi),
+};
+
+WorkflowLeaseDeclaration: Spanned<WorkflowLeaseDeclaration> = {
+    <lo:@L> "lease" <name:Identifier> "{"
+        "owner" <owner_field:Identifier>
+        "expires_at" <expiry_field:Identifier>
+        "fencing_token" <fencing_token_field:Identifier>
+        <attempt_field:WorkflowLeaseAttempts?>
+        "duration_seconds" "(" <minimum_duration_seconds:UnsignedInteger> ","
+            <maximum_duration_seconds:UnsignedInteger> ")"
+    "}" <hi:@R> => parser::spanned(WorkflowLeaseDeclaration {
+        name,
+        owner_field,
+        expiry_field,
+        fencing_token_field,
+        attempt_field,
+        minimum_duration_seconds,
+        maximum_duration_seconds,
+    }, lo, hi),
+};
+
+WorkflowLeaseAttempts: Spanned<String> = {
+    "attempts" <field:Identifier> => field,
 };
 
 EntityDeclaration: EntityDeclaration = {
@@ -147,6 +191,7 @@ TypeExpression: Spanned<TypeExpression> = {
 CommandDeclaration: CommandDeclaration = {
     "command" <name:Identifier> "{"
         <inputs:InputDeclaration*>
+        <service_values:ServiceValueDeclaration*>
         <idempotency:IdempotencyClause?>
         <bindings:Binding*>
         <requirements:Requirement*>
@@ -155,12 +200,24 @@ CommandDeclaration: CommandDeclaration = {
     "}" => CommandDeclaration {
         name,
         inputs,
+        service_values,
         idempotency,
         bindings,
         requirements,
         effects,
         return_clause,
     },
+};
+
+ServiceValueDeclaration: Spanned<ServiceValueDeclaration> = {
+    <lo:@L> "service" <name:Identifier> ":" <kind:ServiceValueKind> <hi:@R>
+        => parser::spanned(ServiceValueDeclaration { name, kind }, lo, hi),
+};
+
+ServiceValueKind: Spanned<ServiceValueKind> = {
+    <lo:@L> "uuid_v7" <hi:@R> => parser::spanned(ServiceValueKind::UuidV7, lo, hi),
+    <lo:@L> "transaction_time" <hi:@R>
+        => parser::spanned(ServiceValueKind::TransactionTime, lo, hi),
 };
 
 InputDeclaration: Spanned<InputDeclaration> = {
@@ -206,6 +263,17 @@ Effect: Spanned<Effect> = {
         }), lo, hi),
     <lo:@L> "emit" <event:Identifier> <payload:ObjectLiteral> <hi:@R>
         => parser::spanned(Effect::Emit(EmitEffect { event, payload }), lo, hi),
+    <lo:@L> "transition" <transition:Identifier> "on" <binding:Identifier>
+        "revision" <expected_revision:Expression>
+        "stale" <stale:OutcomeExpression>
+        "illegal" <illegal:OutcomeExpression> <hi:@R>
+        => parser::spanned(Effect::WorkflowTransition(WorkflowTransitionEffect {
+            transition,
+            binding,
+            expected_revision: expected_revision.into_syntax(),
+            stale,
+            illegal,
+        }), lo, hi),
 };
 
 ReturnClause: Spanned<ReturnClause> = {
@@ -385,6 +453,26 @@ Identifier: Spanned<String> = {
     <lo:@L> <value:"identifier"> <hi:@R> => parser::spanned(value, lo, hi),
     <lo:@L> "idempotency_key" <hi:@R>
         => parser::spanned("idempotency_key".to_owned(), lo, hi),
+    <lo:@L> "workflow" <hi:@R> => parser::spanned("workflow".to_owned(), lo, hi),
+    <lo:@L> "state" <hi:@R> => parser::spanned("state".to_owned(), lo, hi),
+    <lo:@L> "transition" <hi:@R> => parser::spanned("transition".to_owned(), lo, hi),
+    <lo:@L> "from" <hi:@R> => parser::spanned("from".to_owned(), lo, hi),
+    <lo:@L> "to" <hi:@R> => parser::spanned("to".to_owned(), lo, hi),
+    <lo:@L> "lease" <hi:@R> => parser::spanned("lease".to_owned(), lo, hi),
+    <lo:@L> "owner" <hi:@R> => parser::spanned("owner".to_owned(), lo, hi),
+    <lo:@L> "expires_at" <hi:@R> => parser::spanned("expires_at".to_owned(), lo, hi),
+    <lo:@L> "fencing_token" <hi:@R> => parser::spanned("fencing_token".to_owned(), lo, hi),
+    <lo:@L> "attempts" <hi:@R> => parser::spanned("attempts".to_owned(), lo, hi),
+    <lo:@L> "duration_seconds" <hi:@R>
+        => parser::spanned("duration_seconds".to_owned(), lo, hi),
+    <lo:@L> "service" <hi:@R> => parser::spanned("service".to_owned(), lo, hi),
+    <lo:@L> "uuid_v7" <hi:@R> => parser::spanned("uuid_v7".to_owned(), lo, hi),
+    <lo:@L> "transaction_time" <hi:@R>
+        => parser::spanned("transaction_time".to_owned(), lo, hi),
+    <lo:@L> "on" <hi:@R> => parser::spanned("on".to_owned(), lo, hi),
+    <lo:@L> "revision" <hi:@R> => parser::spanned("revision".to_owned(), lo, hi),
+    <lo:@L> "stale" <hi:@R> => parser::spanned("stale".to_owned(), lo, hi),
+    <lo:@L> "illegal" <hi:@R> => parser::spanned("illegal".to_owned(), lo, hi),
 };
 
 UnsignedInteger: Spanned<String> = {
@@ -424,6 +512,24 @@ extern {
         "frontier" => Token::Frontier,
         "transactionally_ordered" => Token::TransactionallyOrdered,
         "command" => Token::Command,
+        "workflow" => Token::Workflow,
+        "state" => Token::State,
+        "transition" => Token::Transition,
+        "from" => Token::From,
+        "to" => Token::To,
+        "lease" => Token::Lease,
+        "owner" => Token::Owner,
+        "expires_at" => Token::ExpiresAt,
+        "fencing_token" => Token::FencingToken,
+        "attempts" => Token::Attempts,
+        "duration_seconds" => Token::DurationSeconds,
+        "service" => Token::Service,
+        "uuid_v7" => Token::UuidV7,
+        "transaction_time" => Token::TransactionTime,
+        "on" => Token::On,
+        "revision" => Token::Revision,
+        "stale" => Token::Stale,
+        "illegal" => Token::Illegal,
         "input" => Token::Input,
         "idempotency_key" => Token::IdempotencyKey,
         "read" => Token::Read,

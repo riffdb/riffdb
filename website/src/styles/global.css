@@ -567,6 +567,142 @@ input {
   color: var(--red);
 }
 
+.seams-section {
+  background: var(--paper-deep);
+  border-top: 1px solid var(--rule);
+}
+
+.seams-copy {
+  max-width: 1000px;
+}
+
+.seams-copy h2 {
+  font-size: clamp(3.2rem, 6vw, 5.6rem);
+}
+
+.seams-copy h2 em {
+  color: var(--red);
+}
+
+.seams-copy > p:last-child {
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.7;
+  margin: 2.5rem 0 0;
+  max-width: 760px;
+}
+
+.seams-model {
+  align-items: stretch;
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  grid-template-columns: 0.9fr auto 1.1fr;
+  margin-top: 4.5rem;
+  padding-top: 3rem;
+}
+
+.model-label,
+.seam-warning,
+.boundary-label {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.model-label {
+  color: var(--teal-dark);
+  margin: 0 0 1.2rem;
+}
+
+.fragmented-stack {
+  border: 1px solid var(--rule);
+  padding: 1.7rem;
+}
+
+.fragmented-stack ul {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: 1fr 1fr;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fragmented-stack li {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  padding: 1.25rem 1rem;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.seam-warning {
+  color: var(--red);
+  line-height: 1.6;
+  margin: 1.4rem 0 0;
+}
+
+.seam-divider {
+  align-self: center;
+  border: 1px solid var(--red);
+  border-radius: 50%;
+  color: var(--red);
+  display: grid;
+  font-size: 1.3rem;
+  height: 48px;
+  place-items: center;
+  width: 48px;
+}
+
+.unified-stack {
+  background: var(--night);
+  color: var(--white);
+  padding: 1.7rem;
+}
+
+.unified-stack .model-label {
+  color: #75d0ca;
+}
+
+.unified-stack h3 {
+  font-family: var(--serif);
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin: 0 0 1.7rem;
+}
+
+.unified-stack ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.unified-stack li {
+  border-top: 1px solid #41514f;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: 0.65fr 1.35fr;
+  padding-block: 0.9rem;
+}
+
+.unified-stack li strong {
+  font-size: 0.8rem;
+}
+
+.unified-stack li span {
+  color: #b8c6c3;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 .contract-section {
   background: var(--night);
   color: var(--white);
@@ -721,8 +857,16 @@ input {
 }
 
 .path-card {
-  background: var(--teal-dark);
-  color: white;
+  --path-accent: #b72f3e;
+  --path-arrow: #08736e;
+  --path-card-background: #075b59;
+  --path-card-copy: #d7e9e7;
+  --path-diagram-background: #f6f0e4;
+  --path-diagram-ink: #1d2525;
+  --path-diagram-rule: #59615f;
+  --path-output-muted: #b8cbc7;
+  background: var(--path-card-background);
+  color: #fffaf0;
   overflow: hidden;
   padding: clamp(2.5rem, 6vw, 5.5rem);
   position: relative;
@@ -748,17 +892,18 @@ input {
 }
 
 .path-copy .eyebrow {
+  color: #bce7e3;
   grid-column: 1 / -1;
   margin-bottom: -1rem;
 }
 .path-copy > p {
   align-self: end;
-  color: #c5dcda;
+  color: var(--path-card-copy);
 }
 
 .path-diagram {
-  background: #f6f0e4;
-  color: var(--ink);
+  background: var(--path-diagram-background);
+  color: var(--path-diagram-ink);
   display: grid;
   gap: 1.3rem;
   grid-template-columns: 0.75fr 1fr 2.4fr 0.95fr;
@@ -779,7 +924,7 @@ input {
 .path-stages strong,
 .path-output {
   align-items: center;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--path-diagram-rule);
   display: flex;
   font-family: var(--mono);
   font-size: 0.62rem;
@@ -792,14 +937,14 @@ input {
 
 .path-line {
   align-self: center;
-  background: var(--red);
+  background: var(--path-accent);
   height: 1px;
   position: relative;
 }
 
 .path-line::after {
   border-bottom: 4px solid transparent;
-  border-left: 6px solid var(--red);
+  border-left: 6px solid var(--path-accent);
   border-top: 4px solid transparent;
   content: "";
   position: absolute;
@@ -820,26 +965,26 @@ input {
 }
 
 .path-stages strong {
-  background: var(--red);
-  border-color: var(--red);
+  background: var(--path-accent);
+  border-color: var(--path-accent);
   color: white;
 }
 
 .path-stages i {
-  color: var(--teal);
+  color: var(--path-arrow);
   font-style: normal;
 }
 
 .path-output {
-  background: var(--ink);
-  color: white;
+  background: var(--path-diagram-ink);
+  color: #fffaf0;
   flex-direction: column;
   gap: 0.3rem;
   padding: 0.7rem;
 }
 
 .path-output small {
-  color: #9db3af;
+  color: var(--path-output-muted);
   font-size: 0.5rem;
   font-weight: 400;
 }
@@ -857,6 +1002,43 @@ input {
 
 .future-copy p + p {
   margin-top: 1.4rem;
+}
+
+.future-direction {
+  border-left: 3px solid var(--red);
+  padding-left: 1.2rem;
+}
+
+.future-direction strong {
+  color: var(--ink);
+}
+
+.future-boundaries {
+  margin-top: 2.8rem;
+}
+
+.future-boundaries article {
+  border-top: 1px solid var(--rule);
+  padding-block: 1.5rem;
+}
+
+.boundary-label {
+  color: var(--teal-dark);
+  margin: 0 0 0.8rem;
+}
+
+.future-boundaries h3 {
+  font-family: var(--serif);
+  font-size: 1.55rem;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.future-boundaries article > p:last-child {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  margin: 0.8rem 0 0;
 }
 
 .future-links {
@@ -1224,6 +1406,13 @@ input {
   .path-output {
     grid-column: 1 / -1;
   }
+  .seams-model {
+    grid-template-columns: 1fr;
+  }
+  .seam-divider {
+    justify-self: center;
+    transform: rotate(90deg);
+  }
   .future-grid {
     gap: 3rem;
   }
@@ -1268,6 +1457,15 @@ input {
     min-height: 240px;
   }
   .thesis {
+    grid-template-columns: 1fr;
+  }
+  .seams-copy h2 {
+    font-size: clamp(3rem, 14vw, 4.4rem);
+  }
+  .seams-model {
+    margin-top: 3rem;
+  }
+  .unified-stack li {
     grid-template-columns: 1fr;
   }
   .contract-grid {
@@ -1374,10 +1572,6 @@ input {
   }
   .poc-note > span {
     color: #171717;
-  }
-  .path-diagram {
-    background: #e9dfcc;
-    color: #1d2525;
   }
   .form-row input {
     background: #edf0e8;

@@ -44,8 +44,19 @@ fn development_dependencies() -> &'static str {
         .0
 }
 
+fn locked_version(package: &str) -> &'static str {
+    let marker = format!("name = \"{package}\"\nversion = \"");
+    LOCKFILE
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("missing locked package {package}"))
+        .1
+        .split_once('"')
+        .expect("locked version terminator")
+        .0
+}
+
 #[test]
-fn production_transport_features_are_exact_and_default_disabled() {
+fn production_transport_features_are_exact_default_disabled_and_confined() {
     let production = production_dependencies();
     assert!(MANIFEST.contains("[features]\ndefault = []"));
     assert!(production.contains(
@@ -55,7 +66,25 @@ fn production_transport_features_are_exact_and_default_disabled() {
         "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
     ));
     assert!(production.contains(
-        "tonic = { version = \"=0.14.6\", default-features = false, features = [\"router\", \"server\"] }"
+        "tonic = { version = \"=0.14.6\", default-features = false, features = [\"router\", \"server\", \"tls-ring\"] }"
+    ));
+    assert!(production.contains(
+        "tokio-stream = { version = \"=0.1.18\", default-features = false, features = [\"net\"] }"
+    ));
+    assert!(production.contains(
+        "futures-util = { version = \"=0.3.33\", default-features = false, features = [\"async-await\", \"std\"] }"
+    ));
+    assert!(production.contains(
+        "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"
+    ));
+    assert!(production.contains(
+        "rustls-webpki = { version = \"=0.103.13\", default-features = false, features = [\"std\"] }"
+    ));
+    assert!(production.contains(
+        "tokio-rustls = { version = \"=0.26.4\", default-features = false, features = [\"logging\", \"ring\", \"tls12\"] }"
+    ));
+    assert!(production.contains(
+        "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }"
     ));
     assert!(production.contains(
         "axum = { version = \"=0.8.9\", default-features = false, features = [\"http1\", \"tokio\"] }"
@@ -71,16 +100,20 @@ fn production_transport_features_are_exact_and_default_disabled() {
         "base64 =",
         "features = [\"transport\"]",
         "channel",
-        "tls",
         "compression",
         "gzip",
         "zstd",
+        "tls-aws-lc",
+        "ring =",
     ] {
         assert!(
             !production.contains(forbidden),
             "forbidden production dependency capability: {forbidden}"
         );
     }
+    assert!(!production
+        .lines()
+        .any(|line| line.trim_start().starts_with("rustls =")));
 }
 
 #[test]
@@ -91,7 +124,7 @@ fn client_and_public_message_helpers_remain_test_only() {
 }
 
 #[test]
-fn lockfile_has_one_base64_and_no_tls_or_compression_stack() {
+fn lockfile_has_one_exact_ring_tls_stack_and_no_alternative_or_compression_stack() {
     assert_eq!(LOCKFILE.matches("name = \"base64\"").count(), 1);
     let base64 = LOCKFILE
         .split_once("name = \"base64\"")
@@ -99,12 +132,23 @@ fn lockfile_has_one_base64_and_no_tls_or_compression_stack() {
         .1;
     assert!(base64.starts_with("\nversion = \"0.22.1\""));
 
+    for (package, version) in [
+        ("ring", "0.17.14"),
+        ("rustls", "0.23.43"),
+        ("rustls-pki-types", "1.15.1"),
+        ("rustls-webpki", "0.103.13"),
+        ("tokio-rustls", "0.26.4"),
+    ] {
+        assert_eq!(
+            LOCKFILE.matches(&format!("name = \"{package}\"")).count(),
+            1
+        );
+        assert_eq!(locked_version(package), version);
+    }
+
     for forbidden_package in [
-        "rustls",
-        "tokio-rustls",
         "native-tls",
         "openssl",
-        "ring",
         "aws-lc-rs",
         "aws-lc-sys",
         "flate2",
@@ -115,6 +159,49 @@ fn lockfile_has_one_base64_and_no_tls_or_compression_stack() {
             !LOCKFILE.contains(&format!("name = \"{forbidden_package}\"")),
             "forbidden locked transport package: {forbidden_package}"
         );
+    }
+}
+
+#[test]
+fn cryptography_is_nameable_only_by_reviewed_transport_manifests_and_server_source() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    for crate_name in [
+        "riffdb-service",
+        "riffdb-commit",
+        "riffdb-storage-api",
+        "riffdb-storage-redb",
+        "riffdb-runtime",
+        "riffdb-config",
+    ] {
+        let crate_root = workspace.join("crates").join(crate_name);
+        let manifest = std::fs::read_to_string(crate_root.join("Cargo.toml"))
+            .expect("read confined crate manifest");
+        for forbidden in ["rustls =", "tokio-rustls =", "ring =", "tls-ring"] {
+            assert!(
+                !manifest.contains(forbidden),
+                "{crate_name} named confined TLS dependency `{forbidden}`"
+            );
+        }
+        for (path, source) in rust_sources(&crate_root.join("src")) {
+            for forbidden in [
+                "rustls::",
+                "tokio_rustls::",
+                "use ring::",
+                "ring::aead",
+                "ring::digest",
+                "ring::rand",
+                "ring::signature",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "confined source {} named `{forbidden}`",
+                    path.display()
+                );
+            }
+        }
     }
 }
 

@@ -453,10 +453,9 @@ impl Parser {
 
     fn identifier(&mut self) -> Result<Spanned<String>, SyntaxDiagnostics> {
         let token = self.next()?;
-        match token.value {
-            Token::Identifier(value) => Ok(Spanned::new(value, token.span)),
-            _ => Err(failure(SyntaxDiagnosticCode::UnexpectedToken, token.span)),
-        }
+        token_identifier(&token.value)
+            .map(|value| Spanned::new(value.to_owned(), token.span))
+            .ok_or_else(|| failure(SyntaxDiagnosticCode::UnexpectedToken, token.span))
     }
 
     fn unsigned(&mut self) -> Result<Spanned<String>, SyntaxDiagnostics> {
@@ -624,7 +623,7 @@ impl<'a> ExpressionParser<'a> {
                     span,
                 ))
             }
-            Token::Identifier(_) => self.path(),
+            _ if token_identifier(&token.value).is_some() => self.path(),
             Token::True
             | Token::False
             | Token::Null
@@ -659,10 +658,9 @@ impl<'a> ExpressionParser<'a> {
                 .get(self.cursor)
                 .cloned()
                 .ok_or_else(|| failure(SyntaxDiagnosticCode::UnexpectedEnd, start))?;
-            let Token::Identifier(value) = token.value else {
-                return Err(failure(SyntaxDiagnosticCode::UnexpectedToken, token.span));
-            };
-            segments.push(Spanned::new(value, token.span));
+            let value = token_identifier(&token.value)
+                .ok_or_else(|| failure(SyntaxDiagnosticCode::UnexpectedToken, token.span))?;
+            segments.push(Spanned::new(value.to_owned(), token.span));
             self.cursor += 1;
             if !self
                 .tokens
@@ -743,6 +741,31 @@ fn token_word(token: &Token) -> Option<&str> {
         Token::Event => Some("event"),
         Token::Projection => Some("projection"),
         Token::Aggregate => Some("aggregate"),
+        _ => token_identifier(token),
+    }
+}
+
+fn token_identifier(token: &Token) -> Option<&str> {
+    match token {
+        Token::Identifier(value) => Some(value.as_str()),
+        Token::Workflow => Some("workflow"),
+        Token::State => Some("state"),
+        Token::Transition => Some("transition"),
+        Token::From => Some("from"),
+        Token::To => Some("to"),
+        Token::Lease => Some("lease"),
+        Token::Owner => Some("owner"),
+        Token::ExpiresAt => Some("expires_at"),
+        Token::FencingToken => Some("fencing_token"),
+        Token::Attempts => Some("attempts"),
+        Token::DurationSeconds => Some("duration_seconds"),
+        Token::Service => Some("service"),
+        Token::UuidV7 => Some("uuid_v7"),
+        Token::TransactionTime => Some("transaction_time"),
+        Token::On => Some("on"),
+        Token::Revision => Some("revision"),
+        Token::Stale => Some("stale"),
+        Token::Illegal => Some("illegal"),
         _ => None,
     }
 }

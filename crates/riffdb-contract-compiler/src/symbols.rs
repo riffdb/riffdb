@@ -30,6 +30,7 @@ pub(crate) struct GenesisSymbols {
     pub(crate) entity_fields: BTreeMap<(EntityTypeId, String), FieldId>,
     pub(crate) event_fields: BTreeMap<(EventTypeId, String), FieldId>,
     pub(crate) command_inputs: BTreeMap<(CommandId, String), FieldId>,
+    pub(crate) command_service_values: BTreeMap<(CommandId, String), FieldId>,
     pub(crate) outcomes: BTreeMap<(CommandId, String), OutcomeId>,
     pub(crate) outcome_fields: BTreeMap<(CommandId, OutcomeId, String), FieldId>,
     pub(crate) enum_variants: BTreeMap<(EnumTypeId, String), EnumVariantId>,
@@ -100,6 +101,7 @@ fn allocate_symbols(
     let mut aggregate_names = NameCollector::default();
     let mut command_names = NameCollector::default();
     let mut projection_names = NameCollector::default();
+    let mut workflow_names = NameCollector::default();
 
     for declaration in &contract.declarations {
         match &declaration.value {
@@ -112,6 +114,9 @@ fn allocate_symbols(
                 aggregate_names.insert(&aggregate.name, &mut diagnostics)
             }
             Declaration::Command(command) => command_names.insert(&command.name, &mut diagnostics),
+            Declaration::Workflow(workflow) => {
+                workflow_names.insert(&workflow.name, &mut diagnostics)
+            }
             Declaration::Projection(projection) => {
                 projection_names.insert(&projection.name, &mut diagnostics)
             }
@@ -153,6 +158,7 @@ fn allocate_symbols(
     let mut entity_fields = BTreeMap::new();
     let mut event_fields = BTreeMap::new();
     let mut command_inputs = BTreeMap::new();
+    let mut command_service_values = BTreeMap::new();
     let mut outcomes = BTreeMap::new();
     let mut outcome_fields = BTreeMap::new();
     let mut enum_variants = BTreeMap::new();
@@ -320,6 +326,7 @@ fn allocate_symbols(
                     command_id,
                     command,
                     &mut command_inputs,
+                    &mut command_service_values,
                     &mut outcomes,
                     &mut outcome_fields,
                     &mut diagnostics,
@@ -346,6 +353,7 @@ fn allocate_symbols(
                         projection_measures.insert((projection_id, name), id);
                     });
             }
+            Declaration::Workflow(_) => {}
         }
     }
 
@@ -406,6 +414,7 @@ fn allocate_symbols(
         entity_fields,
         event_fields,
         command_inputs,
+        command_service_values,
         outcomes,
         outcome_fields,
         enum_variants,
@@ -422,6 +431,7 @@ fn allocate_command_symbols(
     command_id: CommandId,
     command: &CommandDeclaration,
     command_inputs: &mut BTreeMap<(CommandId, String), FieldId>,
+    command_service_values: &mut BTreeMap<(CommandId, String), FieldId>,
     outcomes: &mut BTreeMap<(CommandId, String), OutcomeId>,
     outcome_fields: &mut BTreeMap<(CommandId, OutcomeId, String), FieldId>,
     diagnostics: &mut Vec<CompilerDiagnostic>,
@@ -443,6 +453,32 @@ fn allocate_command_symbols(
             command_inputs.insert((command_id, name), id);
         });
 
+    let mut service_values = NameCollector::default();
+    for value in &command.service_values {
+        service_values.insert(&value.value.name, diagnostics);
+        if let Some(input_span) = inputs.names.get(&value.value.name.value) {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidServiceValue,
+                    value.value.name.span,
+                )
+                .with_related_span(*input_span),
+            );
+        }
+    }
+    allocator
+        .allocate_scoped::<FieldId>(
+            StableIdNamespaceTag::Field,
+            0x06,
+            vec![command_id.get()],
+            &service_values.names,
+            diagnostics,
+        )
+        .into_iter()
+        .for_each(|(name, id)| {
+            command_service_values.insert((command_id, name), id);
+        });
+
     let mut binding_names = NameCollector::default();
     for binding in &command.bindings {
         let entity_binding = match &binding.value {
@@ -460,12 +496,20 @@ fn allocate_command_symbols(
                 .with_related_span(*input_span),
             );
         }
+        if let Some(value_span) = service_values.names.get(&entity_binding.binding.value) {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::DuplicateName,
+                    entity_binding.binding.span,
+                )
+                .with_related_span(*value_span),
+            );
+        }
     }
     let mut requirement_names = NameCollector::default();
     for requirement in &command.requirements {
         requirement_names.insert(&requirement.value.name, diagnostics);
     }
-
     let mut rejection_names = BTreeMap::<String, Span>::new();
     let mut outcome_occurrences = Vec::new();
     for binding in &command.bindings {
@@ -485,6 +529,18 @@ fn allocate_command_symbols(
             .entry(rejection.value.name.value.clone())
             .or_insert(rejection.value.name.span);
         outcome_occurrences.push(&rejection.value);
+    }
+    for effect in &command.effects {
+        let riffdb_contract_syntax::ast::Effect::WorkflowTransition(transition) = &effect.value
+        else {
+            continue;
+        };
+        for rejection in [&transition.stale, &transition.illegal] {
+            rejection_names
+                .entry(rejection.value.name.value.clone())
+                .or_insert(rejection.value.name.span);
+            outcome_occurrences.push(&rejection.value);
+        }
     }
     let success = &command.return_clause.value.outcome.value;
     if let Some(rejection_span) = rejection_names.get(&success.name.value) {

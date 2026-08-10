@@ -7,7 +7,7 @@ import WaitlistForm from "../components/WaitlistForm.astro";
 
 const title = "RiffDB | OLTP for agent-built applications";
 const description =
-  "RiffDB is a contract-first operational database that makes application writes safe, typed, attributable, and recoverable by construction.";
+  "RiffDB is the contract-first data layer for agent-built SaaS, designed to make application writes safe, typed, attributable, and recoverable by construction.";
 
 const guarantees = [
   {
@@ -42,7 +42,7 @@ const guarantees = [
           <p class="eyebrow"><span></span>Contract-first operational database</p>
           <h1>Vibe fast.<br /><em>Commit safely.</em></h1>
           <p class="hero-lede">
-            RiffDB is OLTP designed for software built by agents: business rules become checked contracts, writes become compiled commands, and unsafe paths disappear from the application interface.
+            RiffDB is the contract-first data layer for multi-tenant SaaS built by agents: business rules become checked contracts, writes become compiled commands, and unsafe paths disappear from the application interface.
           </p>
           <div class="hero-actions">
             <a class="button button--primary" href="#early-access">Join early access</a>
@@ -99,6 +99,40 @@ const guarantees = [
           <blockquote>
             The safest operation is the one an application <em>cannot express incorrectly.</em>
           </blockquote>
+        </div>
+      </div>
+    </section>
+
+    <section class="seams-section section" aria-labelledby="seams-heading">
+      <div class="shell">
+        <div class="seams-copy">
+          <p class="eyebrow">Why one data layer</p>
+          <h2 id="seams-heading">Agents make assembly cheap.<br /><em>They do not make seams correct.</em></h2>
+          <p>
+            Connecting a database, queue, search engine, and vector store does not create one transaction, one freshness contract, or one coherent backup. Fast glue code cannot remove a dual-write problem that exists in the architecture.
+          </p>
+        </div>
+        <div class="seams-model">
+          <div class="fragmented-stack">
+            <p class="model-label">Wired together</p>
+            <ul aria-label="Separate infrastructure services">
+              <li>Database</li>
+              <li>Event bus</li>
+              <li>Search</li>
+              <li>Vectors</li>
+            </ul>
+            <p class="seam-warning">Dual writes · stale indexes · fractured recovery</p>
+          </div>
+          <div class="seam-divider" aria-hidden="true">→</div>
+          <div class="unified-stack">
+            <p class="model-label">RiffDB’s direction</p>
+            <h3>One ordered data layer</h3>
+            <ul>
+              <li><strong>One commit order</strong><span>State, events, and derived work share a sequence.</span></li>
+              <li><strong>One freshness vocabulary</strong><span>Consumers can state exactly which committed fact they need to observe.</span></li>
+              <li><strong>One operational unit</strong><span>Backup and recovery cover the data layer as a coherent whole.</span></li>
+            </ul>
+          </div>
         </div>
       </div>
     </section>
@@ -190,7 +224,23 @@ const guarantees = [
           <p>
             RiffDB begins with a single-node semantic kernel. The long path points toward managed, replicated execution without giving up the contracts that make automated development trustworthy.
           </p>
+          <p class="future-direction">
+            <strong>Beyond the current POC, the product direction brings</strong> transactions, schema migrations, event subscribers, projections, full-text search, vectors, and bounded analytics together as opt-in native parts of one data layer.
+          </p>
+          <div class="future-boundaries">
+            <article>
+              <p class="boundary-label">Boundary 01</p>
+              <h3>Data authority, not identity</h3>
+              <p>RiffDB governs what an application principal may read and write. Identity, sessions, sign-in, and OAuth remain in the application.</p>
+            </article>
+            <article>
+              <p class="boundary-label">Boundary 02</p>
+              <h3>Use what fits. Keep a path out.</h3>
+              <p>Capabilities are à la carte. When a specialist system becomes the right tool, the changelog and supported export path let RiffDB feed it without holding application data hostage.</p>
+            </article>
+          </div>
           <div class="future-links">
+            <a href="https://docs.riffdb.com/VISION.html">Why RiffDB exists <span aria-hidden="true">↗</span></a>
             <a href="https://docs.riffdb.com/">Read the handbook <span aria-hidden="true">↗</span></a>
             <a href="https://docs.riffdb.com/security.html">Review the security posture <span aria-hidden="true">↗</span></a>
             <a href="https://docs.riffdb.com/api/rust/riffdb_client_rust/index.html">Browse the Rust API <span aria-hidden="true">↗</span></a>

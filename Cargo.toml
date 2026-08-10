@@ -12,6 +12,7 @@ members = [
     "crates/riffdb-client-python-native",
     "crates/riffdb-commit",
     "crates/riffdb-conflict",
+    "crates/riffdb-config",
     "crates/riffdb-contract-compiler",
     "crates/riffdb-contract-ir",
     "crates/riffdb-contract-syntax",

@@ -12,6 +12,7 @@ test-fixtures = []
 
 [dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
@@ -20,6 +21,7 @@ riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-featur
 riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
+riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features = false }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
 riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
@@ -33,11 +35,16 @@ riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-featur
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { version = "=0.1.18", default-features = false, features = ["net"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["logging", "ring", "tls12"] }
 toml = { version = "=1.1.3", default-features = false, features = ["parse", "serde", "std"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["router", "server"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["router", "server", "tls-ring"] }
 tower-service = { version = "=0.3.3", default-features = false }
+zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }

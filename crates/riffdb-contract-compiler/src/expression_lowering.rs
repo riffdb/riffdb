@@ -41,6 +41,7 @@ pub(crate) enum ExpressionScope {
     Command {
         command_id: CommandId,
         inputs: BTreeMap<String, (FieldId, ValueType)>,
+        service_values: BTreeMap<String, (FieldId, ValueType)>,
         bindings: BTreeMap<String, BindingExpressionScope>,
     },
     Projection {
@@ -398,12 +399,21 @@ impl<'a> ExpressionLowerer<'a> {
             ExpressionScope::Command {
                 command_id,
                 inputs,
+                service_values,
                 bindings,
             } => {
                 let _ = command_id;
                 if segments.len() == 1 {
                     if let Some((field, value_type)) = inputs.get(&segments[0].value).cloned() {
                         Some((ExpressionKind::InputField(field), value_type))
+                    } else if let Some((field, value_type)) =
+                        service_values.get(&segments[0].value).cloned()
+                    {
+                        if self.input_only {
+                            None
+                        } else {
+                            Some((ExpressionKind::ServiceValue(field), value_type))
+                        }
                     } else if self.input_only {
                         None
                     } else {
@@ -857,6 +867,7 @@ contract Example version 1 {
         let scope = ExpressionScope::Command {
             command_id,
             inputs: BTreeMap::from([("amount".to_owned(), (field_id, ValueType::i64()))]),
+            service_values: BTreeMap::new(),
             bindings: BTreeMap::from([(
                 "row".to_owned(),
                 BindingExpressionScope {
@@ -921,6 +932,7 @@ contract Example version 1 {
             ExpressionScope::Command {
                 command_id,
                 inputs: BTreeMap::new(),
+                service_values: BTreeMap::new(),
                 bindings: BTreeMap::new(),
             },
         );

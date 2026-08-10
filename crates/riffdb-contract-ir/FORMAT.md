@@ -1,4 +1,4 @@
-# RiffDB Contract IR Format v1
+# RiffDB Contract IR Formats v1 and v2
 
 Status: **Accepted**
 
@@ -87,6 +87,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x09` | unary |
 | `0x0a` | binary |
 | `0x0b` | root-validation field |
+| `0x0c` | service-owned command value |
 
 ### Unary operator
 
@@ -137,6 +138,14 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x02` | set field |
 | `0x03` | emit event |
 | `0x04` | return |
+| `0x05` | workflow transition |
+
+### Service-owned command value
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | uuid v7 |
+| `0x02` | transaction time |
 
 ### Execution class
 
@@ -233,6 +242,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x03` | command input |
 | `0x04` | command outcome |
 | `0x05` | projection result |
+| `0x06` | command service value |
 
 ### Invariant identity owner
 
@@ -316,6 +326,7 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x09` | unary | `result_type`: ValueType tag plus exact selected payload; `operator`: Unary operator tag as u8; `operand`: ExprId as u32 |
 | `0x0a` | binary | `result_type`: ValueType tag plus exact selected payload; `operator`: Binary operator tag as u8; `left`: ExprId as u32; `right`: ExprId as u32 |
 | `0x0b` | root-validation field | `result_type`: ValueType tag plus exact selected payload; `read`: RootValidationReadId as u32; `field`: FieldId as u32 |
+| `0x0c` | service-owned command value | `result_type`: ValueType tag plus exact selected payload; `field`: FieldId as u32 |
 
 ### Instruction
 
@@ -325,6 +336,7 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x02` | set field | `binding`: BindingId as u32; `field`: FieldId as u32; `value`: ExprId as u32 |
 | `0x03` | emit event | `event`: EventConstruction |
 | `0x04` | return | `outcome`: OutcomeConstruction |
+| `0x05` | workflow transition | `binding`: BindingId as u32; `state_field`: FieldId as u32; `source_states`: u32 count + EnumVariantId[]; `destination`: EnumVariantId as u32; `expected_revision`: ExprId as u32; `stale`: OutcomeConstruction; `illegal`: OutcomeConstruction |
 
 ### CapabilityRequirement
 
@@ -367,6 +379,7 @@ Owner kind `0x00` and count `0` encode no owner. Index and invariant allocation 
 | `0x09` field | `0x01` / 1 | entity | `0x01` / 1 |
 | `0x09` field | `0x02` / 1 | event | `0x02` / 1 |
 | `0x09` field | `0x03` / 1 | command input | `0x03` / 1 |
+| `0x09` field | `0x06` / 1 | command service value | `0x06` / 1 |
 | `0x09` field | `0x04` / 2 | command outcome | `0x04` / 2 |
 | `0x09` field | `0x05` / 1 | projection result | `0x05` / 1 |
 | `0x0a` outcome | `0x01` / 1 | command | `0x01` / 1 |
@@ -425,9 +438,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `magic` | ASCII `RIFFDB-BUNDLE\0` |
-| 2 | `bundle_format_version` | u32 = 1 |
-| 3 | `grammar_version` | u32 = 1 |
-| 4 | `executable_ir_version` | u32 = 1 |
+| 2 | `bundle_format_version` | u32 = 1 or 2 |
+| 3 | `grammar_version` | u32 = 1 or 2; must equal the bundle version |
+| 4 | `executable_ir_version` | u32 = 1 or 2; must equal the bundle version |
 | 5 | `compiler_version` | nonempty ASCII compiler semantic-version identity string, <=64 bytes |
 | 6 | `contract_lineage` | string |
 | 7 | `contract_version` | u64 |
@@ -436,11 +449,12 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 10 | `plan_root_hash` | 32 bytes |
 | 11 | `ledger` | LineageLedgerV1 |
 | 12 | `schema` | StructuralSchema |
-| 13 | `commands` | u32 count + CommandBundleEntry[] |
-| 14 | `projections` | u32 count + ProjectionBundleEntry[] |
-| 15 | `schema_artifacts` | u32 count + GeneratedSchemaArtifact[] |
-| 16 | `mcp_names` | McpCommandNameRegistryV2 |
-| 17 | `compatibility` | CompatibilityReport |
+| 13 | `workflows` | IR v2 only: u32 count + WorkflowSchema[]; omitted in v1 |
+| 14 | `commands` | u32 count + CommandBundleEntry[] |
+| 15 | `projections` | u32 count + ProjectionBundleEntry[] |
+| 16 | `schema_artifacts` | u32 count + GeneratedSchemaArtifact[] |
+| 17 | `mcp_names` | McpCommandNameRegistryV2 |
+| 18 | `compatibility` | CompatibilityReport |
 
 ### ParentBundleRef
 
@@ -638,6 +652,37 @@ Fields below are listed in exact byte order. A collection field includes its cou
 |---:|---|---|
 | 1 | `nodes` | u32 count + TypedExpression[] |
 
+### WorkflowSchema
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `entity` | EntityTypeId |
+| 3 | `state_field` | FieldId |
+| 4 | `state_enum` | EnumTypeId |
+| 5 | `transitions` | u32 count + WorkflowTransitionSchema[] |
+| 6 | `lease` | optional WorkflowLeaseSchema |
+
+### WorkflowTransitionSchema
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `source_states` | nonempty u32 count + canonical EnumVariantId[] |
+| 3 | `destination` | EnumVariantId |
+
+### WorkflowLeaseSchema
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `owner_field` | FieldId of optional UUID |
+| 3 | `expiry_field` | FieldId of optional timestamp |
+| 4 | `fencing_token_field` | FieldId of u64 |
+| 5 | `attempt_field` | optional FieldId of u64 |
+| 6 | `minimum_duration_seconds` | nonzero u64 |
+| 7 | `maximum_duration_seconds` | u64 <= 86400 and >= minimum |
+
 ### CommandBundleEntry
 
 | # | Field | Encoding |
@@ -653,24 +698,25 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `input` | RecordSchema |
-| 2 | `outcomes` | u32 count + OutcomeSchema[] |
-| 3 | `success_outcome` | OutcomeId |
-| 4 | `idempotency_input` | optional FieldId |
-| 5 | `input_schema_hash` | 32 bytes |
-| 6 | `output_schema_hash` | 32 bytes |
-| 7 | `expressions` | ExpressionArena |
-| 8 | `bindings` | u32 count + BindingPlan[] |
-| 9 | `root_validation_reads` | u32 count + RootValidationReadPlan[] |
-| 10 | `relationship_checks` | u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted |
-| 11 | `locality` | LocalityPlan |
-| 12 | `commit_checks` | u32 count + CommitCheckPlan[] |
-| 13 | `instructions` | u32 count + Instruction[] |
-| 14 | `execution_class` | Execution class tag |
-| 15 | `retry_policy` | Retry policy tag |
-| 16 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 17 | `entity_closure` | u32 count + EntitySchema[] |
-| 18 | `aggregate_closure` | AggregateSchema |
-| 19 | `event_closure` | u32 count + EventSchema[] |
+| 2 | `service_values` | IR v2 only: u32 count + (FieldId, optional display name, ValueType, ServiceValueKind tag)[]; omitted in v1 |
+| 3 | `outcomes` | u32 count + OutcomeSchema[] |
+| 4 | `success_outcome` | OutcomeId |
+| 5 | `idempotency_input` | optional FieldId |
+| 6 | `input_schema_hash` | 32 bytes |
+| 7 | `output_schema_hash` | 32 bytes |
+| 8 | `expressions` | ExpressionArena |
+| 9 | `bindings` | u32 count + BindingPlan[] |
+| 10 | `root_validation_reads` | u32 count + RootValidationReadPlan[] |
+| 11 | `relationship_checks` | u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted |
+| 12 | `locality` | LocalityPlan |
+| 13 | `commit_checks` | u32 count + CommitCheckPlan[] |
+| 14 | `instructions` | u32 count + Instruction[] |
+| 15 | `execution_class` | Execution class tag |
+| 16 | `retry_policy` | Retry policy tag |
+| 17 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 18 | `entity_closure` | u32 count + EntitySchema[] |
+| 19 | `aggregate_closure` | AggregateSchema |
+| 20 | `event_closure` | u32 count + EventSchema[] |
 
 ### OutcomeSchema
 

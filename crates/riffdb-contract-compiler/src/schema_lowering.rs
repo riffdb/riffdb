@@ -4,13 +4,76 @@ use riffdb_contract_ir::{
     AggregateKeyPlan, AggregateSchema, EntitySchema, EnumSchema, EnumVariantSchema,
     EventPartitionSchema, EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema,
     KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr,
-    UniqueKeySchema, ValueType,
+    UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::{HirEffect, HirInvariant, TypedContractHir};
+
+/// Lowers the complete checked workflow catalog into span-free IR.
+pub(crate) fn lower_workflow_catalog(
+    hir: &TypedContractHir,
+) -> Result<Vec<WorkflowSchema>, CompilerDiagnostics> {
+    hir.workflows
+        .iter()
+        .map(|workflow| {
+            let transitions = workflow
+                .transitions
+                .iter()
+                .map(|transition| {
+                    WorkflowTransitionSchema::new(
+                        transition.name.clone(),
+                        transition.source_states.clone(),
+                        transition.destination,
+                    )
+                    .map_err(|_| {
+                        CompilerDiagnostics::single(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            transition.span,
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let lease = workflow
+                .lease
+                .as_ref()
+                .map(|lease| {
+                    WorkflowLeaseSchema::new(
+                        lease.name.clone(),
+                        lease.owner_field,
+                        lease.expiry_field,
+                        lease.fencing_token_field,
+                        lease.attempt_field,
+                        lease.minimum_duration_seconds,
+                        lease.maximum_duration_seconds,
+                    )
+                    .map_err(|_| {
+                        CompilerDiagnostics::single(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowLease,
+                            lease.span,
+                        ))
+                    })
+                })
+                .transpose()?;
+            WorkflowSchema::new(
+                workflow.name.clone(),
+                workflow.entity_id,
+                workflow.state_field,
+                workflow.state_enum,
+                transitions,
+                lease,
+            )
+            .map_err(|_| {
+                CompilerDiagnostics::single(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidWorkflow,
+                    workflow.span,
+                ))
+            })
+        })
+        .collect()
+}
 
 /// Lowers the complete typed HIR schema into checked executable IR.
 pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerDiagnostics> {

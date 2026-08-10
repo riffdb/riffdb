@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{
-    AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EventTypeId,
-    FieldId, IndexId, InvariantId, MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
+    AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EnumVariantId,
+    EventTypeId, FieldId, IndexId, InvariantId, MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
     MAX_COMMAND_CONFLICT_KEYS_V1, MAX_COMMAND_INDEX_DELTAS_V1,
     MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_COMMAND_VALIDATION_TARGETS_V1, MAX_KEY_BYTES,
     OutcomeId, PlanHash,
@@ -20,6 +20,53 @@ use crate::{
 pub const MAX_COMMAND_ITEMS: usize = 4_096;
 /// Maximum fields in one encoded IR tuple or object construction.
 pub const MAX_OBJECT_FIELDS: usize = 1_024;
+
+/// Closed service-owned command-value kinds introduced by executable IR v2.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum ServiceValueKind {
+    /// UUID version 7 observed and sealed by the application service.
+    UuidV7 = crate::format_registry::service_value_kind::UUID_V7,
+    /// Trusted transaction time observed and sealed before deterministic evaluation.
+    TransactionTime = crate::format_registry::service_value_kind::TRANSACTION_TIME,
+}
+
+/// One compiler-declared value that callers cannot supply or override.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceValueSchema {
+    field: FieldSchema,
+    kind: ServiceValueKind,
+}
+
+impl ServiceValueSchema {
+    /// Creates one checked service-value declaration.
+    pub fn new(field: FieldSchema, kind: ServiceValueKind) -> Result<Self, IrValidationError> {
+        let valid_type = match kind {
+            ServiceValueKind::UuidV7 => field.value_type().tag() == ValueTypeTag::Uuid,
+            ServiceValueKind::TransactionTime => {
+                field.value_type().tag() == ValueTypeTag::Timestamp
+            }
+        };
+        if !valid_type {
+            return Err(IrValidationError::TypeMismatch {
+                context: "service-owned command value",
+            });
+        }
+        Ok(Self { field, kind })
+    }
+
+    /// Stable command-scoped field identity.
+    #[must_use]
+    pub const fn field(&self) -> &FieldSchema {
+        &self.field
+    }
+
+    /// Closed observation kind.
+    #[must_use]
+    pub const fn kind(&self) -> ServiceValueKind {
+        self.kind
+    }
+}
 
 /// An entity binding mode and its immutable v1 tag.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -563,6 +610,23 @@ pub enum Instruction {
         /// Typed right-hand expression.
         value: ExprId,
     },
+    /// Check exact revision and legal state, then assign one declared state.
+    WorkflowTransition {
+        /// Mutable workflow entity binding.
+        binding: BindingId,
+        /// Workflow state field.
+        state_field: FieldId,
+        /// Canonically ordered legal source-state variants.
+        source_states: Vec<EnumVariantId>,
+        /// Declared destination-state variant.
+        destination: EnumVariantId,
+        /// Caller-supplied exact observed entity revision.
+        expected_revision: ExprId,
+        /// Declared stale-revision business outcome.
+        stale: OutcomeConstruction,
+        /// Declared illegal-state business outcome.
+        illegal: OutcomeConstruction,
+    },
     /// Capture one durable event occurrence.
     EmitEvent(EventConstruction),
     /// Return the one terminal success outcome.
@@ -574,6 +638,9 @@ impl Instruction {
         match self {
             Self::Require { .. } => crate::format_registry::instruction::REQUIRE,
             Self::SetField { .. } => crate::format_registry::instruction::SET_FIELD,
+            Self::WorkflowTransition { .. } => {
+                crate::format_registry::instruction::WORKFLOW_TRANSITION
+            }
             Self::EmitEvent(_) => crate::format_registry::instruction::EMIT_EVENT,
             Self::Return(_) => crate::format_registry::instruction::RETURN,
         }
@@ -752,6 +819,7 @@ pub struct CommandPlan {
     name: String,
     contract_version: ContractVersion,
     input: CommandInputSchema,
+    service_values: Vec<ServiceValueSchema>,
     outcomes: Vec<OutcomeSchema>,
     success_outcome: OutcomeId,
     idempotency_input: Option<FieldId>,
@@ -778,6 +846,48 @@ impl CommandPlan {
         name: impl Into<String>,
         contract_version: ContractVersion,
         input: CommandInputSchema,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_with_service_values(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            Vec::new(),
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates and validates a command plan with compiler-declared service values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_service_values(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        mut service_values: Vec<ServiceValueSchema>,
         mut outcomes: Vec<OutcomeSchema>,
         success_outcome: OutcomeId,
         idempotency_input: Option<FieldId>,
@@ -799,6 +909,19 @@ impl CommandPlan {
         }
         for field in input.record().fields() {
             crate::schema::validate_declared_field_type(field.value_type(), contract_schema)?;
+        }
+        checked_len(
+            "command service values",
+            service_values.len(),
+            MAX_COMMAND_ITEMS,
+        )?;
+        service_values.sort_unstable_by_key(|value| value.field.id());
+        if service_values.windows(2).any(|pair| {
+            pair[0].field.id() == pair[1].field.id() || pair[0].field.name() == pair[1].field.name()
+        }) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "command service values",
+            });
         }
         checked_len("command outcomes", outcomes.len(), MAX_COMMAND_ITEMS)?;
         checked_len("command bindings", bindings.len(), MAX_COMMAND_ITEMS)?;
@@ -888,6 +1011,7 @@ impl CommandPlan {
         validate_expression_contexts(
             &expressions,
             &input,
+            &service_values,
             &bindings,
             &root_validation_reads,
             contract_schema,
@@ -966,7 +1090,9 @@ impl CommandPlan {
                 || instructions.iter().any(|instruction| {
                     matches!(
                         instruction,
-                        Instruction::SetField { .. } | Instruction::EmitEvent(_)
+                        Instruction::SetField { .. }
+                            | Instruction::WorkflowTransition { .. }
+                            | Instruction::EmitEvent(_)
                     )
                 }))
         {
@@ -1003,6 +1129,7 @@ impl CommandPlan {
             name,
             contract_version,
             input,
+            service_values,
             outcomes,
             success_outcome,
             idempotency_input,
@@ -1045,6 +1172,21 @@ impl CommandPlan {
     #[must_use]
     pub const fn input(&self) -> &CommandInputSchema {
         &self.input
+    }
+    /// Complete compiler-declared service-owned values in stable-ID order.
+    #[must_use]
+    pub fn service_values(&self) -> &[ServiceValueSchema] {
+        &self.service_values
+    }
+
+    /// True when this plan requires executable IR v2 semantics.
+    #[must_use]
+    pub fn requires_ir_v2(&self) -> bool {
+        !self.service_values.is_empty()
+            || self
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::WorkflowTransition { .. }))
     }
     /// Outcomes in stable-ID order.
     #[must_use]
@@ -1198,9 +1340,10 @@ fn derive_relationship_checks(
                 field,
                 value,
             } => Some(((*binding, *field), *value)),
-            Instruction::Require { .. } | Instruction::EmitEvent(_) | Instruction::Return(_) => {
-                None
-            }
+            Instruction::Require { .. }
+            | Instruction::WorkflowTransition { .. }
+            | Instruction::EmitEvent(_)
+            | Instruction::Return(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     let mut checks = Vec::new();
@@ -1306,9 +1449,10 @@ fn derive_unique_conflicts(
                 field,
                 value,
             } => Some(((*binding, *field), *value)),
-            Instruction::Require { .. } | Instruction::EmitEvent(_) | Instruction::Return(_) => {
-                None
-            }
+            Instruction::Require { .. }
+            | Instruction::WorkflowTransition { .. }
+            | Instruction::EmitEvent(_)
+            | Instruction::Return(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     let mut conflicts = Vec::new();
@@ -1691,6 +1835,10 @@ fn validate_declared_constructions(
                 )?;
             }
             Instruction::SetField { .. } => {}
+            Instruction::WorkflowTransition { stale, illegal, .. } => {
+                validate_outcome(stale, false)?;
+                validate_outcome(illegal, false)?;
+            }
         }
     }
     Ok(())
@@ -1699,6 +1847,7 @@ fn validate_declared_constructions(
 fn validate_expression_contexts(
     arena: &ExpressionArena,
     input: &CommandInputSchema,
+    service_values: &[ServiceValueSchema],
     bindings: &[BindingPlan],
     root_validation_reads: &[RootValidationReadPlan],
     schema: &SchemaIr,
@@ -1716,6 +1865,19 @@ fn validate_expression_contexts(
                 if declared.value_type() != node.result_type() {
                     return Err(IrValidationError::TypeMismatch {
                         context: "input field",
+                    });
+                }
+            }
+            ExpressionKind::ServiceValue(field) => {
+                let declared = service_values
+                    .iter()
+                    .find(|value| value.field.id() == *field)
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "service-owned command value",
+                    })?;
+                if declared.field.value_type() != node.result_type() {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "service-owned command value",
                     });
                 }
             }
@@ -2742,6 +2904,95 @@ fn validate_instruction_stream(
                 }
                 initialized[binding.get() as usize].insert(*field);
             }
+            Instruction::WorkflowTransition {
+                binding,
+                state_field,
+                source_states,
+                destination,
+                expected_revision,
+                stale,
+                illegal,
+            } => {
+                effect_seen = true;
+                ensure_initialized_reads(
+                    arena,
+                    *expected_revision,
+                    bindings,
+                    schema,
+                    &initialized,
+                )?;
+                for outcome in [stale, illegal] {
+                    for field in &outcome.payload.fields {
+                        ensure_initialized_reads(
+                            arena,
+                            field.expression,
+                            bindings,
+                            schema,
+                            &initialized,
+                        )?;
+                    }
+                }
+                let binding_plan = bindings.get(binding.get() as usize).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow transition binding",
+                    },
+                )?;
+                let entity = schema.entity(binding_plan.entity_type).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow transition entity",
+                    },
+                )?;
+                let destination_field = entity.record().field(*state_field).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow state field",
+                    },
+                )?;
+                let Some(enum_type) = destination_field.value_type().enum_type_id() else {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "workflow state field",
+                    });
+                };
+                let enumeration =
+                    schema
+                        .enumeration(enum_type)
+                        .ok_or(IrValidationError::InvalidReference {
+                            kind: "workflow state enum",
+                        })?;
+                let variants = enumeration
+                    .variants()
+                    .iter()
+                    .map(crate::EnumVariantSchema::id)
+                    .collect::<BTreeSet<_>>();
+                if binding_plan.mode != BindingMode::Mutate
+                    || entity.primary_key_fields().contains(state_field)
+                    || !assigned.insert((*binding, *state_field))
+                    || source_states.is_empty()
+                    || !source_states.windows(2).all(|pair| pair[0] < pair[1])
+                    || source_states
+                        .iter()
+                        .any(|source| !variants.contains(source))
+                    || !variants.contains(destination)
+                    || source_states.binary_search(destination).is_ok()
+                    || arena.get(*expected_revision).is_none_or(|node| {
+                        node.result_type().tag() != ValueTypeTag::U64
+                            || !matches!(node.kind(), ExpressionKind::InputField(_))
+                    })
+                    || stale.outcome_id == success_outcome
+                    || illegal.outcome_id == success_outcome
+                    || stale.outcome_id == illegal.outcome_id
+                    || !outcomes
+                        .iter()
+                        .any(|outcome| outcome.id == stale.outcome_id)
+                    || !outcomes
+                        .iter()
+                        .any(|outcome| outcome.id == illegal.outcome_id)
+                {
+                    return Err(IrValidationError::InvalidInstructionStream {
+                        reason: "invalid workflow transition",
+                    });
+                }
+                initialized[binding.get() as usize].insert(*state_field);
+            }
             Instruction::EmitEvent(event) => {
                 effect_seen = true;
                 for field in &event.payload.fields {
@@ -2884,6 +3135,19 @@ fn validate_read_dependencies(
                 }
             }
             Instruction::SetField { value, .. } => include(*value)?,
+            Instruction::WorkflowTransition {
+                expected_revision,
+                stale,
+                illegal,
+                ..
+            } => {
+                include(*expected_revision)?;
+                for outcome in [stale, illegal] {
+                    for field in &outcome.payload.fields {
+                        include(field.expression)?;
+                    }
+                }
+            }
             Instruction::EmitEvent(event) => {
                 for field in &event.payload.fields {
                     include(field.expression)?;
@@ -2894,6 +3158,16 @@ fn validate_read_dependencies(
                     include(field.expression)?;
                 }
             }
+        }
+    }
+    for instruction in instructions {
+        if let Instruction::WorkflowTransition {
+            binding,
+            state_field,
+            ..
+        } = instruction
+        {
+            fields[binding.get() as usize].insert(*state_field);
         }
     }
     for (index, binding) in bindings.iter().enumerate() {
@@ -2972,6 +3246,19 @@ fn validate_root_validation_expression_uses(
                 }
             }
             Instruction::SetField { value, .. } => reject(*value)?,
+            Instruction::WorkflowTransition {
+                expected_revision,
+                stale,
+                illegal,
+                ..
+            } => {
+                reject(*expected_revision)?;
+                for outcome in [stale, illegal] {
+                    for field in &outcome.payload.fields {
+                        reject(field.expression)?;
+                    }
+                }
+            }
             Instruction::EmitEvent(event) => {
                 for field in &event.payload.fields {
                     reject(field.expression)?;
@@ -3024,6 +3311,17 @@ fn validate_command_expression_reachability(
                 roots.extend(reject.payload.fields.iter().map(|field| field.expression));
             }
             Instruction::SetField { value, .. } => roots.push(*value),
+            Instruction::WorkflowTransition {
+                expected_revision,
+                stale,
+                illegal,
+                ..
+            } => {
+                roots.push(*expected_revision);
+                for outcome in [stale, illegal] {
+                    roots.extend(outcome.payload.fields.iter().map(|field| field.expression));
+                }
+            }
             Instruction::EmitEvent(event) => {
                 roots.extend(event.payload.fields.iter().map(|field| field.expression))
             }
@@ -3122,6 +3420,19 @@ fn validate_idempotency(
                 }
             }
             Instruction::SetField { value, .. } => collect(*value)?,
+            Instruction::WorkflowTransition {
+                expected_revision,
+                stale,
+                illegal,
+                ..
+            } => {
+                collect(*expected_revision)?;
+                for outcome in [stale, illegal] {
+                    for field in &outcome.payload.fields {
+                        collect(field.expression)?;
+                    }
+                }
+            }
             Instruction::EmitEvent(event) => {
                 for field in &event.payload.fields {
                     collect(field.expression)?;
