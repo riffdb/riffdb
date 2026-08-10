@@ -279,6 +279,166 @@ contract PreparedArithmetic version 1 {
 }
 "#;
 
+const WORKFLOW_TRANSITION_SOURCE: &str = r#"
+contract WorkflowTransitions version 1 {
+  enum WorkState {
+    Queued,
+    Running,
+    Complete,
+  }
+
+  entity WorkItem {
+    key (organization_id: uuid, work_id: uuid)
+    field state: WorkState
+  }
+
+  aggregate WorkItems {
+    root WorkItem
+    partition_by organization_id
+    conflict_key (organization_id, work_id)
+  }
+
+  workflow WorkLifecycle {
+    entity WorkItem
+    state state
+    transition Start from (Queued) to Running
+    transition Finish from (Running) to Complete
+  }
+
+  command StartWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else Missing {}
+    transition Start on work revision expected_revision
+      stale StaleRevision {}
+      illegal IllegalState {}
+    return Started { work: work }
+  }
+}
+"#;
+
+#[test]
+fn workflow_transition_requires_exact_revision_and_assigns_declared_state() {
+    let bundle = compile_contract_source(WORKFLOW_TRANSITION_SOURCE)
+        .expect("workflow transition contract compiles");
+    let plan = command(&bundle, "StartWork");
+    let input = workflow_transition_input(plan, EntityVersion::first().get());
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = workflow_stored_record(&bundle, plan, target, EntityVersion::first(), "Queued");
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(70, 0).expect("timestamp")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("legal exact-revision transition evaluates")
+    else {
+        panic!("workflow transition mutates");
+    };
+
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "Started")
+    );
+    assert_eq!(evaluated.mutations().len(), 1);
+    assert_eq!(
+        evaluated.mutations()[0].expected_version(),
+        Some(EntityVersion::first())
+    );
+    assert_eq!(
+        field(
+            evaluated.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "state")
+        ),
+        &enum_value(&bundle, "WorkState", "Running")
+    );
+    assert!(matches!(
+        evaluated.read_dependencies().as_slice(),
+        [ReadDependency::EntityObservation {
+            expected: riffdb_storage_api::ExpectedEntityState::Present(version),
+            ..
+        }] if *version == EntityVersion::first()
+    ));
+}
+
+#[test]
+fn workflow_transition_returns_declared_stale_outcome_without_effects() {
+    let bundle = compile_contract_source(WORKFLOW_TRANSITION_SOURCE)
+        .expect("workflow transition contract compiles");
+    let plan = command(&bundle, "StartWork");
+    let input = workflow_transition_input(plan, 2);
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = workflow_stored_record(&bundle, plan, target, EntityVersion::first(), "Queued");
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(71, 0).expect("timestamp")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("stale transition is a declared outcome")
+    else {
+        panic!("mutating rejection requires commit");
+    };
+
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "StaleRevision")
+    );
+    assert!(evaluated.mutations().is_empty());
+    assert!(evaluated.event_intents().is_empty());
+}
+
+#[test]
+fn workflow_transition_returns_declared_illegal_outcome_without_effects() {
+    let bundle = compile_contract_source(WORKFLOW_TRANSITION_SOURCE)
+        .expect("workflow transition contract compiles");
+    let plan = command(&bundle, "StartWork");
+    let input = workflow_transition_input(plan, EntityVersion::first().get());
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = workflow_stored_record(&bundle, plan, target, EntityVersion::first(), "Running");
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(72, 0).expect("timestamp")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("illegal transition is a declared outcome")
+    else {
+        panic!("mutating rejection requires commit");
+    };
+
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "IllegalState")
+    );
+    assert!(evaluated.mutations().is_empty());
+    assert!(evaluated.event_intents().is_empty());
+}
+
 #[test]
 fn create_executes_with_fixed_time_and_complete_absence_dependency() {
     let bundle = budget_bundle();
@@ -1311,6 +1471,54 @@ fn root_validation_input_with(
     )
 }
 
+fn workflow_transition_input(plan: &CommandPlan, expected_revision: u64) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("start-work-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xd1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xd2; 16])),
+            ("expected_revision", CanonicalValue::U64(expected_revision)),
+        ],
+    )
+}
+
+fn workflow_stored_record(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+    state: &str,
+) -> StoredEntityRecordV1 {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "WorkItem")
+        .expect("WorkItem entity");
+    let key_values = entity
+        .primary_key()
+        .decode_entity(target.key())
+        .expect("workflow key");
+    stored_record_with_version(
+        bundle,
+        plan,
+        target,
+        version,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", key_values[0].clone()),
+                ("work_id", key_values[1].clone()),
+                ("state", enum_value(bundle, "WorkState", state)),
+            ],
+        ),
+    )
+}
+
 fn create_input(
     plan: &CommandPlan,
     organization: [u8; 16],
@@ -1426,14 +1634,43 @@ fn stored_record(
     target: EntityTarget,
     fields: CanonicalRecord,
 ) -> StoredEntityRecordV1 {
+    stored_record_with_version(bundle, plan, target, EntityVersion::first(), fields)
+}
+
+fn stored_record_with_version(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+    fields: CanonicalRecord,
+) -> StoredEntityRecordV1 {
     StoredEntityRecordV1::new(
         target,
-        EntityVersion::first(),
+        version,
         bundle.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan_ref(bundle, plan)),
         fields,
     )
     .expect("stored record")
+}
+
+fn enum_value(bundle: &ContractBundle, enumeration: &str, variant: &str) -> CanonicalValue {
+    let enumeration = bundle
+        .schema()
+        .enums()
+        .iter()
+        .find(|candidate| candidate.name() == enumeration)
+        .expect("enumeration");
+    let variant_id = enumeration
+        .variants()
+        .iter()
+        .find(|candidate| candidate.name() == variant)
+        .expect("enum variant")
+        .id();
+    CanonicalValue::Enum {
+        type_id: enumeration.id(),
+        variant_id,
+    }
 }
 
 fn outcome_id(plan: &CommandPlan, name: &str) -> OutcomeId {

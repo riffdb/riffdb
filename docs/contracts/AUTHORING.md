@@ -51,6 +51,50 @@ build. Adding or changing either encoding changes durable index identity and
 requires the contract migration/rebuild path; RiffDB never silently changes a
 text profile during a software upgrade.
 
+## Revision-checked workflow transitions
+
+A workflow declaration closes the legal state graph for one aggregate-owned
+entity. A transition effect must name a mutable binding and an exact revision
+supplied by the caller:
+
+```riff
+workflow WorkLifecycle {
+    entity WorkItem
+    state state
+    transition Start from (Queued) to Running
+}
+
+command StartWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input expected_revision: u64
+    idempotency_key request_key
+
+    mutate WorkItem(organization_id, work_id) as work else Missing {}
+    transition Start on work revision expected_revision
+        stale StaleRevision {}
+        illegal IllegalState {}
+    return Started { work: work }
+}
+```
+
+RiffDB compares `expected_revision` with the observed entity revision before it
+checks the source state. A mismatch returns the declared `StaleRevision`
+outcome; a matching revision in any state outside `Start`'s source set returns
+`IllegalState`. Both are ordinary idempotent zero-mutation command outcomes.
+The legal path assigns the declared destination and retains the exact entity
+version as a transaction-current read dependency, so a concurrent replacement
+cannot turn the checked result into a lost update at commit.
+
+There is no unconditional workflow update, automatic substitution of a newer
+revision, generic compare-and-swap, or caller-supplied transition name. The
+current executable surface covers revision-checked declared transitions only.
+Lease declarations and `service uuid_v7` / `service transaction_time` syntax
+are reserved compiler-visible foundations; generated claim/renew/release/
+expire operations and service-owned value execution are not yet public alpha
+features.
+
 ## CLI application JSON
 
 The application CLI accepts inline JSON, `@path`, a legacy bare path, or `-`
