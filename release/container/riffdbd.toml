@@ -1,0 +1,24 @@
+[server]
+database = "/var/lib/riffdb/data/riffdb.redb"
+environment = "container-alpha"
+audience = "riffdb-container-application"
+capability_keys = "/run/secrets/capability.keys"
+idempotency_keys = "/run/secrets/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7443"
+public_endpoint = "https://riffdbd:7443"
+certificate_chain = "/run/secrets/server-chain.pem"
+private_key = "/run/secrets/server-key.pem"
+
+[server.application_listener.bounds]
+max_connections = 256
+max_streams_per_connection = 128
+handshake_timeout_seconds = 5
+idle_timeout_seconds = 60
+keepalive_interval_seconds = 20
+drain_timeout_seconds = 15
+
+[maintenance]
+backup_root = "/var/lib/riffdb/backups"

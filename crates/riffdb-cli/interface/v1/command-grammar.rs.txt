@@ -11,7 +11,7 @@ struct CliV1 {
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<OsString>,
 
-    #[arg(long, global = true, value_name = "LOOPBACK_HTTP_ENDPOINT")]
+    #[arg(long, global = true, value_name = "HTTP_OR_HTTPS_ENDPOINT")]
     endpoint: Option<String>,
 
     #[arg(long, global = true, value_enum, value_name = "human|json")]

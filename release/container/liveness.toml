@@ -1,0 +1,7 @@
+[client]
+endpoint = "https://riffdbd:7443"
+database = "default"
+output = "json"
+max_attempts = 1
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "riffdbd"

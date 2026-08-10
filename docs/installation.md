@@ -259,9 +259,12 @@ riffdb application deploy \
   --seed
 ```
 
-That path deploys the exact successor, revokes the retained old capability,
-binds the role compiled from the successor lock, and atomically publishes the
-new private client and MCP configuration. A module compare-and-swap race fails
+That path deploys the exact successor and starts a resumable least-authority
+credential rotation. RiffDB retains the old capability while it creates and
+proves the exact successor, atomically publishes the new protected client and
+MCP configuration, and then explicitly revokes the predecessor. A retry
+continues from the retained phase; it does not revoke the only proven secret.
+A module compare-and-swap race fails
 with the database alias plus the lock, locked-module, expected-active, and
 actual-active hashes. Never copy a hash from an error into source or bypass the
 lock; rerun deployment after reconciling the competing deployment.
@@ -277,8 +280,9 @@ lock, expected parent, actual active, and compiled candidate hashes.
 Role check, bind, and provisioning consume that pinned parent-aware bundle;
 they do not recompile successor source as a genesis contract. If the symbolic
 role widened, use `--provision-role <role> --replace-role-credential` so the
-retained predecessor capability is explicitly revoked before the wider role is
-bound. The legacy `--replace-expired-credential` spelling remains an alias.
+new role is proven and published before the retained predecessor capability is
+explicitly revoked. The legacy `--replace-expired-credential` spelling remains
+an alias.
 
 Do not use `contract deploy` as a probe. A successful direct deployment changes
 the active pointer and the POC has no rollback RPC. Use `contract validate` or

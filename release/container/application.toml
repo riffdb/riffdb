@@ -1,0 +1,8 @@
+[client]
+endpoint = "https://riffdb-proxy:8443"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "/run/secrets/application.credential"
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "riffdb-proxy"

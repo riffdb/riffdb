@@ -223,17 +223,22 @@ first:
 | Output | `--output` | `RIFFDB_OUTPUT` | `client.output` | `human` |
 | Attempts | `--max-attempts` | `RIFFDB_MAX_ATTEMPTS` | `client.max_attempts` | `3` |
 | Credential file | `--credential-file` | `RIFFDB_CREDENTIAL_FILE` | `client.credential_file` | absent |
+| TLS trust root | none | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | absent |
+| TLS server name | none | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | absent |
 
 The TOML path is selected only by `--config`, then `RIFFDB_CONFIG`, then
 absence. There is no directory discovery. A present invalid higher-precedence
 value rejects instead of falling through.
 
-The CLI's current `[client]` endpoint remains exact lowercase
-`http://<literal-loopback-IP>:<port-1..65535>`; remote verified-TLS application
-connections use the Rust client configuration documented in
-[Remote and Local Application Ingress](operations/REMOTE-INGRESS.md). Unknown,
-duplicate, or wrong-type input rejects. Output is `human` or `json`. Attempts
-is canonical decimal `1..=10`.
+The endpoint is either exact lowercase
+`http://<literal-loopback-IP>:<port-1..65535>` or canonical
+`https://<DNS-or-IP>:<port-1..65535>`. HTTPS requires both an absolute,
+normalized trust-root path and an exact peer DNS name or IP that matches the
+endpoint authority. Supplying either TLS field for cleartext, omitting either
+field for HTTPS, or requesting a trust-all/native-root/downgrade mode rejects.
+Generated application client configuration retains these two non-secret TLS
+selectors. Unknown, duplicate, or wrong-type input rejects. Output is `human`
+or `json`. Attempts is canonical decimal `1..=10`.
 
 Exactly one normal credential source may resolve:
 

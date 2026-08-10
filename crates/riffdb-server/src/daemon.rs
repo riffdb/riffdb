@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -45,8 +46,9 @@ use riffdb_storage_redb::{
 };
 use riffdb_types::{DatabaseAlias, OfflineMaintenanceOperationKind};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject as _};
+use tokio::sync::futures::OwnedNotified;
 use tokio::sync::oneshot;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinError, JoinHandle as TokioJoinHandle};
 use tokio::{io::AsyncRead, io::AsyncWrite, io::ReadBuf};
 use tokio_rustls::TlsAcceptor;
@@ -3603,9 +3605,162 @@ impl<IO: Connected> Connected for AdmittedConnection<IO> {
     }
 }
 
-type TlsConnection = tokio_rustls::server::TlsStream<AdmittedConnection<tokio::net::TcpStream>>;
+type RawTlsConnection = tokio_rustls::server::TlsStream<AdmittedConnection<tokio::net::TcpStream>>;
+type TlsConnection = GenerationDrainedConnection<RawTlsConnection>;
 type TlsHandshake =
     Pin<Box<dyn Future<Output = Option<Result<TlsConnection, io::Error>>> + Send + 'static>>;
+
+struct TlsReloadSignal {
+    generation: AtomicU64,
+    changed: Arc<Notify>,
+}
+
+impl TlsReloadSignal {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            generation: AtomicU64::new(0),
+            changed: Arc::new(Notify::new()),
+        })
+    }
+
+    fn current_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn publish_successor(&self) -> u64 {
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.changed.notify_waiters();
+        generation
+    }
+}
+
+struct TlsHandshakeSnapshot {
+    config: Arc<tokio_rustls::rustls::ServerConfig>,
+    generation: u64,
+    signal: Arc<TlsReloadSignal>,
+}
+
+struct GenerationDrainedConnection<IO> {
+    io: IO,
+    accepted_generation: u64,
+    signal: Arc<TlsReloadSignal>,
+    changed: Pin<Box<OwnedNotified>>,
+    drain_timeout: Duration,
+    drain: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<IO> GenerationDrainedConnection<IO> {
+    fn new(
+        io: IO,
+        accepted_generation: u64,
+        signal: Arc<TlsReloadSignal>,
+        drain_timeout: Duration,
+    ) -> Self {
+        let changed = Box::pin(Arc::clone(&signal.changed).notified_owned());
+        Self {
+            io,
+            accepted_generation,
+            signal,
+            changed,
+            drain_timeout,
+            drain: None,
+        }
+    }
+
+    fn check_rotation(&mut self, context: &mut Context<'_>) -> io::Result<()> {
+        if self.drain.is_none() {
+            // Register the notification before the second generation read. This
+            // closes the race where publication occurs between observing the
+            // generation and parking the connection task.
+            if self.changed.as_mut().poll(context).is_ready() {
+                self.changed = Box::pin(Arc::clone(&self.signal.changed).notified_owned());
+            }
+            if self.signal.current_generation() != self.accepted_generation {
+                self.drain = Some(Box::pin(tokio::time::sleep(self.drain_timeout)));
+            }
+        }
+        if self
+            .drain
+            .as_mut()
+            .is_some_and(|drain| drain.as_mut().poll(context).is_ready())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "TLS identity rotation drain limit elapsed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<IO: AsyncRead + Unpin> AsyncRead for GenerationDrainedConnection<IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if let Err(error) = self.check_rotation(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.io).poll_read(context, buffer)
+    }
+}
+
+impl<IO: AsyncWrite + Unpin> AsyncWrite for GenerationDrainedConnection<IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        if let Err(error) = self.check_rotation(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.io).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        if let Err(error) = self.check_rotation(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.io).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        if let Err(error) = self.check_rotation(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.io).poll_shutdown(context)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        if let Err(error) = self.check_rotation(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.io).poll_write_vectored(context, buffers)
+    }
+}
+
+impl<IO: Connected> Connected for GenerationDrainedConnection<IO> {
+    type ConnectInfo = IO::ConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.io.connect_info()
+    }
+}
 
 struct ReloadingTlsIncoming {
     incoming: BoundedIncoming<TcpIncoming>,
@@ -3643,14 +3798,20 @@ impl Stream for ReloadingTlsIncoming {
                     Poll::Ready(Some(Ok(connection))) => {
                         let snapshot = self.identity.snapshot_for_new_handshake();
                         let timeout = self.handshake_timeout;
+                        let drain_timeout = self.identity.drain_timeout;
                         self.handshakes.push(Box::pin(async move {
                             match tokio::time::timeout(
                                 timeout,
-                                TlsAcceptor::from(snapshot).accept(connection),
+                                TlsAcceptor::from(snapshot.config).accept(connection),
                             )
                             .await
                             {
-                                Ok(Ok(connection)) => Some(Ok(connection)),
+                                Ok(Ok(connection)) => Some(Ok(GenerationDrainedConnection::new(
+                                    connection,
+                                    snapshot.generation,
+                                    snapshot.signal,
+                                    drain_timeout,
+                                ))),
                                 Ok(Err(_)) | Err(_) => None,
                             }
                         }));
@@ -3695,6 +3856,8 @@ struct ReloadableTlsIdentity {
     expected_identity: TlsServerIdentity,
     current_files: TlsFilePairIdentity,
     current: Arc<tokio_rustls::rustls::ServerConfig>,
+    signal: Arc<TlsReloadSignal>,
+    drain_timeout: Duration,
     rejected_files: Option<TlsFilePairIdentity>,
     unavailable_reported: bool,
 }
@@ -3712,12 +3875,14 @@ impl ReloadableTlsIdentity {
             expected_identity,
             current_files,
             current,
+            signal: TlsReloadSignal::new(),
+            drain_timeout: listener.bounds().drain_timeout(),
             rejected_files: None,
             unavailable_reported: false,
         })
     }
 
-    fn snapshot_for_new_handshake(&mut self) -> Arc<tokio_rustls::rustls::ServerConfig> {
+    fn snapshot_for_new_handshake(&mut self) -> TlsHandshakeSnapshot {
         let observed = tls_file_pair_identity(&self.certificate_path, &self.private_key_path);
         let Ok(observed) = observed else {
             if !self.unavailable_reported {
@@ -3726,11 +3891,11 @@ impl ReloadableTlsIdentity {
                 );
                 self.unavailable_reported = true;
             }
-            return Arc::clone(&self.current);
+            return self.current_snapshot();
         };
         self.unavailable_reported = false;
         if observed == self.current_files || self.rejected_files.as_ref() == Some(&observed) {
-            return Arc::clone(&self.current);
+            return self.current_snapshot();
         }
         match load_tls_snapshot(
             &self.certificate_path,
@@ -3741,6 +3906,7 @@ impl ReloadableTlsIdentity {
                 self.current = snapshot;
                 self.current_files = files;
                 self.rejected_files = None;
+                self.signal.publish_successor();
             }
             Err(_) => {
                 eprintln!(
@@ -3749,7 +3915,15 @@ impl ReloadableTlsIdentity {
                 self.rejected_files = Some(observed);
             }
         }
-        Arc::clone(&self.current)
+        self.current_snapshot()
+    }
+
+    fn current_snapshot(&self) -> TlsHandshakeSnapshot {
+        TlsHandshakeSnapshot {
+            config: Arc::clone(&self.current),
+            generation: self.signal.current_generation(),
+            signal: Arc::clone(&self.signal),
+        }
     }
 }
 
@@ -4622,10 +4796,12 @@ mod tests {
         };
         assert_eq!(
             report.lifecycle,
-            v1::PreBootstrapLifecycle::InitializingValidation as i32
+            v1::PreBootstrapLifecycle::Unspecified as i32
         );
         assert!(report.liveness);
         assert!(!report.readiness);
+        assert!(response.database_alias.is_empty());
+        assert!(response.authentication_audience.is_empty());
 
         lifecycle.stop();
         drop(client);
@@ -4906,6 +5082,7 @@ mod tests {
         .expect("listener");
         let mut identity = ReloadableTlsIdentity::load(&listener).expect("initial snapshot");
         let initial = identity.snapshot_for_new_handshake();
+        assert_eq!(initial.generation, 0);
 
         let replacement = root.join("server.next.pem");
         fs::write(
@@ -4917,7 +5094,8 @@ mod tests {
             .expect("protect replacement");
         fs::rename(&replacement, &certificate).expect("publish replacement atomically");
         let reloaded = identity.snapshot_for_new_handshake();
-        assert!(!Arc::ptr_eq(&initial, &reloaded));
+        assert!(!Arc::ptr_eq(&initial.config, &reloaded.config));
+        assert_eq!(reloaded.generation, 1);
 
         let invalid = root.join("server.invalid.pem");
         fs::write(&invalid, b"not a certificate").expect("write invalid replacement");
@@ -4925,10 +5103,40 @@ mod tests {
             .expect("protect invalid replacement");
         fs::rename(&invalid, &certificate).expect("publish invalid replacement atomically");
         let retained = identity.snapshot_for_new_handshake();
-        assert!(Arc::ptr_eq(&reloaded, &retained));
+        assert!(Arc::ptr_eq(&reloaded.config, &retained.config));
+        assert_eq!(retained.generation, 1);
 
         fs::remove_file(certificate).expect("remove invalid certificate");
         fs::remove_file(private_key).expect("remove private key");
         fs::remove_dir(root).expect("remove reload root");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tls_identity_rotation_drains_the_predecessor_on_the_configured_bound() {
+        use tokio::io::AsyncReadExt as _;
+
+        let signal = TlsReloadSignal::new();
+        let (connection, _peer) = tokio::io::duplex(64);
+        let mut connection = GenerationDrainedConnection::new(
+            connection,
+            signal.current_generation(),
+            Arc::clone(&signal),
+            Duration::from_secs(3),
+        );
+
+        signal.publish_successor();
+        let read = tokio::spawn(async move {
+            let mut byte = [0_u8; 1];
+            connection.read_exact(&mut byte).await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(!read.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = read
+            .await
+            .expect("drained read task")
+            .expect_err("predecessor connection must be retired");
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
     }
 }

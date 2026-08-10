@@ -1,0 +1,377 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: riffdb-alpha
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: riffdb-config
+  namespace: riffdb-alpha
+data:
+  riffdbd.toml: |
+    [server]
+    database = "/var/lib/riffdb/data/riffdb.redb"
+    environment = "kubernetes-alpha"
+    audience = "riffdb-container-application"
+    capability_keys = "/run/riffdb-protected/capability.keys"
+    idempotency_keys = "/run/riffdb-protected/idempotency.keys"
+
+    [server.application_listener]
+    mode = "direct_tls"
+    listen = "0.0.0.0:7443"
+    public_endpoint = "https://riffdbd.riffdb-alpha.svc:7443"
+    certificate_chain = "/run/riffdb-protected/server-chain.pem"
+    private_key = "/run/riffdb-protected/server-key.pem"
+
+    [server.application_listener.bounds]
+    max_connections = 256
+    max_streams_per_connection = 128
+    handshake_timeout_seconds = 5
+    idle_timeout_seconds = 60
+    keepalive_interval_seconds = 20
+    drain_timeout_seconds = 15
+
+    [maintenance]
+    backup_root = "/var/lib/riffdb/backups"
+  liveness.toml: |
+    [client]
+    endpoint = "https://riffdbd.riffdb-alpha.svc:7443"
+    database = "default"
+    output = "json"
+    max_attempts = 1
+    tls_trust_root = "/run/riffdb-protected/riffdb-ca.pem"
+    tls_server_name = "riffdbd.riffdb-alpha.svc"
+  readiness.toml: |
+    [client]
+    endpoint = "https://riffdbd.riffdb-alpha.svc:7443"
+    database = "default"
+    output = "json"
+    max_attempts = 1
+    credential_file = "/run/riffdb-protected/readiness.credential"
+    tls_trust_root = "/run/riffdb-protected/riffdb-ca.pem"
+    tls_server_name = "riffdbd.riffdb-alpha.svc"
+  bootstrap.toml: |
+    [client]
+    endpoint = "https://127.0.0.1:7443"
+    database = "default"
+    output = "json"
+    max_attempts = 3
+    tls_trust_root = "/run/riffdb-protected/riffdb-ca.pem"
+    tls_server_name = "127.0.0.1"
+  bootstrap.json: |
+    {
+      "principal_id": "kubernetes-alpha-operator",
+      "actor_kind": "human",
+      "requested_lifetime_seconds": 3600,
+      "audiences": ["riffdb-container-application"],
+      "grant": {
+        "tenant_scope": {"type": "global"},
+        "partition_scope": {"type": "all"},
+        "permissions": [
+          {"type": "validate_contract"},
+          {"type": "read_contract"},
+          {"type": "deploy_contract"},
+          {"type": "read_health"},
+          {"type": "create_capability"},
+          {"type": "revoke_capability"},
+          {"type": "administer_capabilities"}
+        ],
+        "field_visibility": [],
+        "max_scan_rows": 50,
+        "approval_required": []
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: riffdb-proxy-config
+  namespace: riffdb-alpha
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0
+    defaults
+      log global
+      mode tcp
+      timeout connect 5s
+      timeout client 35s
+      timeout server 35s
+    frontend riffdb_ingress
+      bind *:8443
+      default_backend riffdb_application
+    backend riffdb_application
+      server riffdb riffdbd.riffdb-alpha.svc:7443 check
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: riffdbd
+  namespace: riffdb-alpha
+spec:
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: riffdbd
+  ports:
+    - name: grpc-tls
+      port: 7443
+      targetPort: grpc-tls
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: riffdbd
+  namespace: riffdb-alpha
+spec:
+  serviceName: riffdbd
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: riffdbd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: riffdbd
+    spec:
+      terminationGracePeriodSeconds: 25
+      initContainers:
+        - name: protect-server-secrets
+          image: riffdb:remote-alpha
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+          command: ["copy-protected", "/incoming", "/protected"]
+          volumeMounts:
+            - name: server-secrets
+              mountPath: /incoming
+              readOnly: true
+            - name: protected
+              mountPath: /protected
+      containers:
+        - name: riffdbd
+          image: riffdb:remote-alpha
+          imagePullPolicy: IfNotPresent
+          command: ["riffdbd", "--config", "/etc/riffdb/riffdbd.toml"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: grpc-tls
+              containerPort: 7443
+          livenessProbe:
+            exec:
+              command: ["riffdb", "--config", "/etc/riffdb/liveness.toml", "server", "health"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["riffdb", "--config", "/etc/riffdb/readiness.toml", "server", "health"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/riffdb
+              readOnly: true
+            - name: protected
+              mountPath: /run/riffdb-protected
+              readOnly: true
+            - name: bootstrap-handoff
+              mountPath: /run/riffdb-bootstrap
+            - name: data
+              mountPath: /var/lib/riffdb/data
+            - name: backups
+              mountPath: /var/lib/riffdb/backups
+      volumes:
+        - name: config
+          configMap:
+            name: riffdb-config
+        - name: server-secrets
+          secret:
+            secretName: riffdb-server-secrets
+            defaultMode: 256
+        - name: protected
+          emptyDir:
+            medium: Memory
+        - name: bootstrap-handoff
+          emptyDir:
+            medium: Memory
+        - name: backups
+          persistentVolumeClaim:
+            claimName: riffdb-backups
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: riffdb-backups
+  namespace: riffdb-alpha
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: riffdb-proxy
+  namespace: riffdb-alpha
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: riffdb-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: riffdb-proxy
+    spec:
+      containers:
+        - name: haproxy
+          image: haproxy:3.1-alpine@sha256:475863a372c92c3dab3d59eafbbf8019dceebcd0c456594551b160ecdba4bdb9
+          ports:
+            - name: grpc-tls
+              containerPort: 8443
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: riffdb-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: riffdb-proxy
+  namespace: riffdb-alpha
+spec:
+  selector:
+    app.kubernetes.io/name: riffdb-proxy
+  ports:
+    - name: grpc-tls
+      port: 8443
+      targetPort: grpc-tls
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: riffdb-application-proof
+  namespace: riffdb-alpha
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: protect-application-secrets
+          image: riffdb:remote-alpha
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+          command: ["copy-protected", "/incoming", "/protected"]
+          volumeMounts:
+            - name: incoming
+              mountPath: /incoming
+              readOnly: true
+            - name: protected
+              mountPath: /protected
+      containers:
+        - name: application
+          image: riffdb:remote-alpha
+          command: ["riffdb", "--config", "/protected/application.toml", "server", "health"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: protected
+              mountPath: /protected
+              readOnly: true
+      volumes:
+        - name: incoming
+          projected:
+            sources:
+              - secret:
+                  name: riffdb-application-client
+        - name: protected
+          emptyDir:
+            medium: Memory
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: riffdb-operator-proof
+  namespace: riffdb-alpha
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: protect-operator-secrets
+          image: riffdb:remote-alpha
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+          command: ["copy-protected", "/incoming", "/protected"]
+          volumeMounts:
+            - name: incoming
+              mountPath: /incoming
+              readOnly: true
+            - name: protected
+              mountPath: /protected
+      containers:
+        - name: operator
+          image: riffdb:remote-alpha
+          command: ["riffdb", "--config", "/protected/operator.toml", "server", "health"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: protected
+              mountPath: /protected
+              readOnly: true
+      volumes:
+        - name: incoming
+          projected:
+            sources:
+              - secret:
+                  name: riffdb-operator-client
+        - name: protected
+          emptyDir:
+            medium: Memory

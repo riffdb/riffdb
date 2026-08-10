@@ -2146,35 +2146,38 @@ impl AdminService for GrpcApplication {
         &self,
         request: Request<v1::HealthRequest>,
     ) -> Result<Response<v1::HealthResponse>, Status> {
-        let (metadata, peer, message) = split_request(request);
-        let (database_alias, lifecycle) = self.select_database(&metadata)?;
+        let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = health_request_from_proto(message)?;
-        let result = match request_id {
-            Some(request_id) => {
-                let (service, context, _cancellation) = self.normal_invocation_with(
-                    lifecycle.as_ref(),
-                    ServiceOperationV1::GetHealth,
-                    &metadata,
-                    request_id,
-                )?;
-                map_service(
-                    service
-                        .health(HealthContext::authenticated(context), request)
-                        .await,
-                )?
+        let Some(request_id) = request_id else {
+            if has_normal_or_bootstrap_credentials(&metadata)
+                || metadata.contains_key(DATABASE_METADATA_KEY)
+            {
+                return Err(unauthenticated());
             }
-            None => {
-                if !peer.is_some_and(|address| address.ip().is_loopback())
-                    || has_normal_or_bootstrap_credentials(&metadata)
-                {
-                    return Err(unauthenticated());
-                }
-                let health = lifecycle
-                    .restricted_health(request)
-                    .ok_or_else(unauthenticated)?;
-                map_service(health.await)?
-            }
+            return Ok(Response::new(v1::HealthResponse {
+                result: Some(v1::health_response::Result::PreBootstrap(
+                    v1::PreBootstrapHealth {
+                        lifecycle: v1::PreBootstrapLifecycle::Unspecified as i32,
+                        liveness: true,
+                        readiness: false,
+                    },
+                )),
+                database_alias: String::new(),
+                authentication_audience: String::new(),
+            }));
         };
+        let (database_alias, lifecycle) = self.select_database(&metadata)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::GetHealth,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .health(HealthContext::authenticated(context), request)
+                .await,
+        )?;
         let history_incarnation = lifecycle.history_incarnation().unwrap_or(0);
         let mut response = health_result_to_proto(&result, history_incarnation);
         response.database_alias = database_alias.to_string();
@@ -3036,6 +3039,53 @@ mod tests {
         let mut unknown = MetadataMap::new();
         unknown.insert(DATABASE_METADATA_KEY, "unknown".parse().expect("metadata"));
         assert!(singleton.select(&unknown).is_none());
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_health_is_process_only_and_database_blind() {
+        let alpha: Arc<dyn GrpcLifecycleRoute> = Arc::new(InitializingRoute::without_security());
+        let beta: Arc<dyn GrpcLifecycleRoute> = Arc::new(InitializingRoute::without_security());
+        let routes = Arc::new(
+            GrpcDatabaseRoutes::new([
+                (DatabaseAlias::new("alpha").expect("alias"), alpha),
+                (DatabaseAlias::new("beta").expect("alias"), beta),
+            ])
+            .expect("routes"),
+        );
+        let adapter = GrpcApplication::with_database_routes_and_audience(
+            routes,
+            GrpcRequestLimits::new(Duration::from_secs(30)).expect("request limit"),
+            Audience::new("private-audience").expect("audience"),
+        );
+
+        let response = AdminService::health(
+            &adapter,
+            Request::new(v1::HealthRequest { request_id: None }),
+        )
+        .await
+        .expect("process liveness")
+        .into_inner();
+        let Some(v1::health_response::Result::PreBootstrap(report)) = response.result else {
+            panic!("unauthenticated health returned protected readiness");
+        };
+        assert_eq!(
+            report.lifecycle,
+            v1::PreBootstrapLifecycle::Unspecified as i32
+        );
+        assert!(report.liveness);
+        assert!(!report.readiness);
+        assert!(response.database_alias.is_empty());
+        assert!(response.authentication_audience.is_empty());
+
+        let mut selected = Request::new(v1::HealthRequest { request_id: None });
+        selected
+            .metadata_mut()
+            .insert(DATABASE_METADATA_KEY, "alpha".parse().expect("metadata"));
+        let status = AdminService::health(&adapter, selected)
+            .await
+            .expect_err("liveness cannot select a database");
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        assert!(status.details().is_empty());
     }
 
     #[test]

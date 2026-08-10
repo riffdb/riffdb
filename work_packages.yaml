@@ -10047,10 +10047,12 @@ work_packages:
   requirements: [API-001, SEC-001, SEC-002, SEC-003, SEC-004, DX-010, DX-011,
     DX-012, AAA-003, AAA-004, AAA-005, NET-008, NET-009, NET-010]
   required_adrs: [ADR-0041, ADR-0055, ADR-0063, ADR-0065, ADR-0072, ADR-0105]
-  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-config/**, crates/riffdb-auth/**,
-    crates/riffdb-service/**, crates/riffdb-client-rust/**, crates/riffdb-server/**,
-    crates/riffdb-cli/**, crates/riffdb-observability/**, proto/**, fixtures/**, tests/**,
-    scripts/**, templates/**, release/**, docs/**, .github/**]
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml, crates/riffdb-config/**, crates/riffdb-auth/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-proto/**,
+    crates/riffdb-server/**, crates/riffdb-cli/**, crates/riffdb-observability/**,
+    crates/riffdb-testkit/**, proto/**, fixtures/**, tests/**, scripts/**, templates/**,
+    release/**, docs/**, .github/**]
   deliverables:
   - Payload-free unauthenticated liveness and authenticated database-selected readiness across
     gRPC, CLI, and deployment probes

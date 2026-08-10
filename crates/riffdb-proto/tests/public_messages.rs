@@ -1200,6 +1200,25 @@ fn health_and_subscription_closed_bounds_are_checked() {
         Err(PublicWireError::InconsistentFields)
     );
 
+    let process_only = v1::HealthResponse {
+        result: Some(v1::health_response::Result::PreBootstrap(
+            v1::PreBootstrapHealth {
+                lifecycle: v1::PreBootstrapLifecycle::Unspecified as i32,
+                liveness: true,
+                readiness: false,
+            },
+        )),
+        database_alias: String::new(),
+        authentication_audience: String::new(),
+    };
+    validate_public_message(&process_only).expect("payload-free process liveness");
+    let mut disclosed = process_only;
+    disclosed.database_alias = "default".to_owned();
+    assert_eq!(
+        validate_public_message(&disclosed),
+        Err(PublicWireError::InconsistentFields)
+    );
+
     let mut subscribe = v1::SubscribeCommitsRequest {
         request_id: uuid_v7(),
         after_sequence: None,

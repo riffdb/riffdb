@@ -1729,6 +1729,7 @@ dependencies = [
  "clap",
  "riffdb-auth",
  "riffdb-client-rust",
+ "riffdb-config",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-diagnostics",

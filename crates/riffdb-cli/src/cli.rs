@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) config: Option<OsString>,
-    #[arg(long, global = true, value_name = "LOOPBACK_HTTP_ENDPOINT")]
+    #[arg(long, global = true, value_name = "HTTP_OR_HTTPS_ENDPOINT")]
     pub(crate) endpoint: Option<String>,
     #[arg(long, global = true, value_name = "DATABASE")]
     pub(crate) database: Option<String>,

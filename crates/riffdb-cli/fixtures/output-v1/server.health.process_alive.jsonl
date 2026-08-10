@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"pre_bootstrap","database":"","audience":"","lifecycle":"process_alive","liveness":true,"readiness":false}}

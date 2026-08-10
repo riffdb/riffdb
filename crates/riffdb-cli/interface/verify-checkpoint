@@ -41,7 +41,7 @@ declare -A expected_command_counts=(
     [capability.bootstrap]=8
     [capability.create]=6
     [capability.revoke]=5
-    [server.health]=16
+    [server.health]=17
     [backup.create]=2
     [backup.restore]=1
     [backup.operation]=2
@@ -251,9 +251,9 @@ generate_manifest() {
         [[ "$found" == "$expected" ]] ||
             fail "command fixture count is $found, expected $expected: $command"
     done
-    [[ "$total" == 100 ]] || fail "terminal fixture total is $total, expected 100"
-    [[ "$stdout_count" == 98 ]] ||
-        fail "stdout fixture total is $stdout_count, expected 98"
+    [[ "$total" == 101 ]] || fail "terminal fixture total is $total, expected 101"
+    [[ "$stdout_count" == 99 ]] ||
+        fail "stdout fixture total is $stdout_count, expected 99"
     [[ "$stderr_count" == 2 ]] ||
         fail "stderr fixture total is $stderr_count, expected 2"
 }
@@ -279,8 +279,8 @@ generate_checkpoint_inventory() {
         find "$crate_root/fixtures" "$crate_root/interface" -type f \
             ! -path "$inventory" -print0 | sort -z
     )
-    [[ "$count" == 111 ]] ||
-        fail "checkpoint inventory contains $count artifacts, expected 111"
+    [[ "$count" == 112 ]] ||
+        fail "checkpoint inventory contains $count artifacts, expected 112"
 }
 
 while IFS= read -r -d '' path; do
@@ -329,8 +329,8 @@ artifacts="$(
     fail 'manifest and fixture inventories have different sizes'
 
 inventory_entries="$(tail -n +2 "$inventory" | wc -l | tr -d ' ')"
-[[ "$inventory_entries" == 111 ]] ||
-    fail 'checkpoint inventory does not freeze exactly 111 artifacts'
+[[ "$inventory_entries" == 112 ]] ||
+    fail 'checkpoint inventory does not freeze exactly 112 artifacts'
 
 printf 'WP-150 interface checkpoint verified: %s commands, %s fixtures, %s frozen artifacts.\n' \
     "${#commands[@]}" "$entries" "$inventory_entries"
