@@ -77,7 +77,7 @@ async fn run_async() -> TestResult<()> {
             .semantic_error()
             .map(|semantic| semantic.code().as_str())
             .ok_or("Rust revocation error lost semantic details")?;
-        if code != "RDB-AUTH-0214" {
+        if code != "RDB-AUTH-0215" {
             return Err(format!("unexpected Rust revocation code: {code}").into());
         }
         println!(

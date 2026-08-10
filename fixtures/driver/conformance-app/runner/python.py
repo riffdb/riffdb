@@ -50,7 +50,7 @@ def main() -> None:
                 code = error.details.code.value
             else:
                 raise RuntimeError("revoked Python authority remained usable")
-            if code != ApplicationErrorCode.AUTHORIZATION_DENIED.value:
+            if code != ApplicationErrorCode.CAPABILITY_REVOKED.value:
                 raise RuntimeError("Python revocation error lost semantic details")
             print(
                 json.dumps(

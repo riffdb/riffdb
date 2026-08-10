@@ -232,6 +232,11 @@ impl Error for AuthenticationClockError {}
 pub enum AuthenticationFailure {
     /// The credential did not establish an authenticated principal.
     Unauthenticated,
+    /// An exact retained credential match established that the capability was revoked.
+    ///
+    /// This is emitted only after reciprocal digest verification. Unknown,
+    /// malformed, expired, or boundary-mismatched credentials remain generic.
+    CapabilityRevoked,
     /// Authentication could not safely determine a result.
     Internal,
 }
@@ -240,6 +245,7 @@ impl fmt::Display for AuthenticationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Unauthenticated => "credential was not accepted",
+            Self::CapabilityRevoked => "capability was revoked",
             Self::Internal => "authentication is unavailable",
         })
     }
@@ -396,10 +402,11 @@ where
         }
 
         if !matches!(record.lifecycle(), CapabilityLifecycleV1::Active) {
-            return Err(reject(
-                self.telemetry,
-                AuthenticationRejection::InactiveCapability,
-            ));
+            self.telemetry
+                .record(AuthenticationTelemetryEvent::Rejected(
+                    AuthenticationRejection::InactiveCapability,
+                ));
+            return Err(AuthenticationFailure::CapabilityRevoked);
         }
         if record.database_id() != context.database_id
             || record.environment() != &context.environment
@@ -684,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn caller_controlled_failures_share_one_public_class() {
+    fn unmatched_or_boundary_invalid_credentials_share_one_public_class() {
         let keys = key_provider();
         let active = active_record(
             digest_for_key(&keys, 0),
@@ -692,14 +699,6 @@ mod tests {
             environment(),
             vec![audience()],
         );
-        let revoked = active
-            .revoked(
-                NonZeroU64::MIN,
-                timestamp(150),
-                AdministrationSequence::new(2).expect("sequence two"),
-                RevocationReasonCodeV1::Requested,
-            )
-            .expect("revoked record");
         let wrong_database = DatabaseId::from_bytes(uuid_bytes(0x51)).expect("UUIDv7 database ID");
         let wrong_database_context =
             AuthenticationContext::new(wrong_database, environment(), audience());
@@ -721,13 +720,6 @@ mod tests {
                 TOKEN,
                 context(),
                 AuthenticationRejection::NoMatch,
-            ),
-            (
-                Ok(CapabilityLookupResult::Found(Box::new(revoked))),
-                vec![],
-                TOKEN,
-                context(),
-                AuthenticationRejection::InactiveCapability,
             ),
             (
                 Ok(CapabilityLookupResult::Found(Box::new(active.clone()))),
@@ -795,6 +787,38 @@ mod tests {
             telemetry.events(),
             vec![AuthenticationTelemetryEvent::Rejected(
                 AuthenticationRejection::MalformedCredential
+            )]
+        );
+    }
+
+    #[test]
+    fn reciprocally_matched_revoked_credential_has_closed_revoked_class() {
+        let keys = key_provider();
+        let revoked = active_record(
+            digest_for_key(&keys, 0),
+            database_id(),
+            environment(),
+            vec![audience()],
+        )
+        .revoked(
+            NonZeroU64::MIN,
+            timestamp(150),
+            AdministrationSequence::new(2).expect("sequence two"),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("revoked record");
+        let (result, _reader, clock, telemetry) = authenticate_with(
+            Ok(CapabilityLookupResult::Found(Box::new(revoked))),
+            vec![],
+            TOKEN,
+            &context(),
+        );
+        assert_eq!(result, Err(AuthenticationFailure::CapabilityRevoked));
+        assert_eq!(clock.remaining(), 0, "revocation is decided before time");
+        assert_eq!(
+            telemetry.events(),
+            vec![AuthenticationTelemetryEvent::Rejected(
+                AuthenticationRejection::InactiveCapability
             )]
         );
     }

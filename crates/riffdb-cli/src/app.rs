@@ -9506,7 +9506,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_role_compilation_hides_all_kernel_requirements() {
+    fn workspace_role_compilation_exposes_only_named_authority_and_identity_read() {
         use v1::capability_permission::Permission;
 
         let mut workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -9524,11 +9524,24 @@ mod tests {
         assert!(grant.permissions.iter().all(|permission| {
             matches!(
                 permission.permission,
-                Some(Permission::InvokeCommand(_))
+                Some(Permission::ReadContract(_))
+                    | Some(Permission::InvokeCommand(_))
                     | Some(Permission::ExecuteNamedQuery(_))
                     | Some(Permission::ApplicationRoleIdentity(_))
             )
         }));
+        assert_eq!(
+            grant
+                .permissions
+                .iter()
+                .filter(|permission| matches!(
+                    permission.permission,
+                    Some(Permission::ReadContract(_))
+                ))
+                .count(),
+            1,
+            "the symbolic role derives exactly one internal identity-read permission"
+        );
         assert!(grant.permissions.iter().any(|permission| {
             matches!(
                 permission.permission.as_ref(),

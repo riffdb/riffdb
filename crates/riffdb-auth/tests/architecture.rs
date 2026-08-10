@@ -105,6 +105,9 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
                 "riffdb-api-mcp",
                 "riffdb-auth",
                 "riffdb-cli",
+                // ADR-0106's closed driver value model owns canonical byte,
+                // decimal, money, lease, and causation-token presentation.
+                "riffdb-driver-host",
                 "riffdb-mcp-stdio",
                 "riffdb-proto",
                 "riffdb-service",

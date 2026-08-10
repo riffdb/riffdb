@@ -10222,6 +10222,8 @@ work_packages:
     DRV-014]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0080, ADR-0105, ADR-0106]
   allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml,
+    crates/riffdb-auth/**, crates/riffdb-api-grpc/**, crates/riffdb-errors/**,
+    crates/riffdb-service/**,
     crates/riffdb-client-python-native/**, fixtures/driver/**,
     crates/riffdb-query-module/**, crates/riffdb-cli/**, crates/riffdb-types/**,
     fixtures/application-parity/**, crates/riffdb-testkit/**, clients/**, examples/**,
