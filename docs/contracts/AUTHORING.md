@@ -89,11 +89,12 @@ cannot turn the checked result into a lost update at commit.
 
 There is no unconditional workflow update, automatic substitution of a newer
 revision, generic compare-and-swap, or caller-supplied transition name. The
-current executable surface covers revision-checked declared transitions only.
-Lease declarations and `service uuid_v7` / `service transaction_time` syntax
-are reserved compiler-visible foundations; generated claim/renew/release/
-expire operations and service-owned value execution are not yet public alpha
-features.
+current executable surface covers revision-checked declared transitions and
+`service transaction_time`. The latter resolves to the logical time already
+sealed in the durable admission; it is not a caller field or a runtime clock
+read. Lease declarations and `service uuid_v7` remain compiler-visible
+foundations only. Generated claim/renew/release/expire operations and sealed
+service-owned UUID execution are not yet public alpha features.
 
 ## CLI application JSON
 

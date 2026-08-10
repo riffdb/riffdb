@@ -951,6 +951,21 @@ impl ExpressionValueSource for RuntimeValues<'_> {
         record_field(self.input, field).cloned()
     }
 
+    fn service_value(&self, field: FieldId) -> Option<CanonicalValue> {
+        let value = self
+            .plan
+            .service_values()
+            .binary_search_by_key(&field, |value| value.field().id())
+            .ok()
+            .map(|index| &self.plan.service_values()[index])?;
+        match value.kind() {
+            riffdb_contract_ir::ServiceValueKind::TransactionTime => {
+                Some(CanonicalValue::Timestamp(self.tx_time.timestamp()))
+            }
+            riffdb_contract_ir::ServiceValueKind::UuidV7 => None,
+        }
+    }
+
     fn complete_binding(&self, binding: BindingId) -> Option<CanonicalValue> {
         let record = self
             .records
