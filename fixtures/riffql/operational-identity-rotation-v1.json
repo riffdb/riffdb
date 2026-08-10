@@ -1,0 +1,195 @@
+{
+  "after": {
+    "application_source_hash": "4d2d96661a21c84188140774ee9736b8fb08fb90c07b6cb0136f827465d20a00",
+    "artifacts": [
+      {
+        "content_hash": "633f329fe4aaee581715e692040c9456c47d34b5d069242d9c04e9920580c66d",
+        "kind": "manifest",
+        "path": "generated/riffdb.application.exact.json"
+      },
+      {
+        "content_hash": "4c7e87cf210e5f7f553fee4e4382ec72d30aae23c27192e0d2ff4850a7b91cf8",
+        "kind": "contract_bundle",
+        "path": "generated/riffdb.contract.bundle"
+      },
+      {
+        "content_hash": "94a9ea6a07833689aef5e9af141cca4e6c51dda1a75ccf333826e32ef6def2ff",
+        "kind": "rust",
+        "path": "generated/rust/client.rs"
+      },
+      {
+        "content_hash": "00e8a0b2bf210ca5baec3131a13e224fad7bf999f712e87786ada1bf3791dcde",
+        "kind": "typescript",
+        "path": "generated/typescript/client.ts"
+      },
+      {
+        "content_hash": "d959fd3925309b3435b708ff48e7ab691df42b79323a527693669847ed3e4013",
+        "kind": "python",
+        "path": "generated/python/client.py"
+      },
+      {
+        "content_hash": "d6098096f915c9b8a88f502890894c767870e6ffa0af79aa6254667353094a9a",
+        "kind": "go",
+        "path": "generated/go/client.go"
+      },
+      {
+        "content_hash": "2591d1a56502f065d3e8b82836705a800a2a7084414eb90420de8d1a9e52c223",
+        "kind": "mcp",
+        "path": "generated/mcp/tools.json"
+      }
+    ],
+    "language_version": 2,
+    "lock_hash": "3264e759e1ae6a578e81dea40f3bcf008447a43a77884eec8a4f69dfeea0d7ed",
+    "manifest_hash": "056552dcab3671faa51024c1f4c2e5efca0e58abb4c65b3147a428f57e0c6038",
+    "module_hash": "cab493c1344cfc048e031f6e1d9620f1250f8eafca128e7064c0c4bc9eaf4f86",
+    "plan_or_family_hash": "8b9f18dca09bee268a7e1dbfe61b468165d27fcc0447a76e8e879a00f282d740",
+    "query_ir_version": 2,
+    "query_module_format_version": 2,
+    "query_source_hash": "874e9c580ed2642586842ba7076917b9d667214c8f6c72ef2b2185e0a095d4d7",
+    "role_hash": "973d0ee25c9b004d67752f4f5fa29a0581af04cedb539783d4099d3638dc5831"
+  },
+  "before": {
+    "application_source_hash": "7522d678b45ccbefc1a9691fcca9f17f88ed005e18fa5fd0ca919be19787b495",
+    "artifacts": [
+      {
+        "content_hash": "51bc17c02005a91d26fff8ef85d534f75ce212e630cc67239a207089f7db62d6",
+        "kind": "manifest",
+        "path": "generated/riffdb.application.exact.json"
+      },
+      {
+        "content_hash": "4c7e87cf210e5f7f553fee4e4382ec72d30aae23c27192e0d2ff4850a7b91cf8",
+        "kind": "contract_bundle",
+        "path": "generated/riffdb.contract.bundle"
+      },
+      {
+        "content_hash": "2bb64ec977ee1a6671579da25930752c9eb429932d436814b84930e93480308e",
+        "kind": "rust",
+        "path": "generated/rust/client.rs"
+      },
+      {
+        "content_hash": "c5ce3decc05b23171143305886f9c9e508851c32da93a7098d949ac59a275446",
+        "kind": "typescript",
+        "path": "generated/typescript/client.ts"
+      },
+      {
+        "content_hash": "d296de12357bcfb8f0705f4693b1744973f26b650f66a5a24c2f26f6609cfdf0",
+        "kind": "python",
+        "path": "generated/python/client.py"
+      },
+      {
+        "content_hash": "005b2364c22836ef99e49b2c37d256d105bb10ef47fa5b813045a2585196bab8",
+        "kind": "go",
+        "path": "generated/go/client.go"
+      },
+      {
+        "content_hash": "2bc347f8939c80e8d6ffd2f39a5465dc81f43ceafc602a2cbda85af28a92511c",
+        "kind": "mcp",
+        "path": "generated/mcp/tools.json"
+      }
+    ],
+    "language_version": 1,
+    "lock_hash": "f5065fe008b520f85c36daf0de95ed0fbb182363be6c4770758c8d122bf0e178",
+    "manifest_hash": "305102c6bc5579ed66ba46faedf13cee8eb18a1f979f0f39861054766fd22805",
+    "module_hash": "825131a339e1180e68cefaaa46d97f8f06d64211b65f2a14c3a29ebe0441ecae",
+    "plan_or_family_hash": "90296b54d2b9635d2d15336d7a76d226fb3b49f1ac9047377c7338ff30658f7f",
+    "query_ir_version": 1,
+    "query_module_format_version": 1,
+    "query_source_hash": "b6fe483d3b20ebd76a81efec07806967510f413ef793ba050c2633f2a88a57ae",
+    "role_hash": "35ba5a48f9b18b530c08193bfb2ef33797d81c0b8a1888599400683a43bd42b5"
+  },
+  "classification": {
+    "operational_v2_additive": true,
+    "ordinary_v1_bytes_preserved": true,
+    "partial_rotation_is_success": false
+  },
+  "contract": {
+    "bundle_hash": "ef1c7cf264e3b7b7e64a78949f3cdcf53d069d079c23d5d61e8ae4ee59f7c631",
+    "lineage": "OperationalRotation",
+    "version": 1
+  },
+  "decision": "ADR-0108",
+  "operational_family": {
+    "authorization_entities": 1,
+    "maximum_cost": {
+      "dependent_keys": 0,
+      "intermediate_rows": 25,
+      "point_reads": 25,
+      "projected_values": 75,
+      "result_bytes": 17238,
+      "scan_rows": 25,
+      "steps": 1
+    },
+    "member_count": 2,
+    "member_plan_hashes": [
+      {
+        "plan_hash": "273ab737317eb897064084f2123c087ffb0d91acf1140cf83da8565784e2d02f",
+        "presence_mask": 0
+      },
+      {
+        "plan_hash": "2122f50dec2c6220d99e768b0651da0c30ba8d660846093c8f29345ea589b1c3",
+        "presence_mask": 1
+      }
+    ],
+    "presence_parameters": [
+      "status"
+    ]
+  },
+  "repository_closure": [
+    {
+      "artifact_hashes": [
+        "84ccb0a6009a88afa583bf300c6a0df57d7ed931fd0825686e73382d2fff7605",
+        "4d0245689b82f7498d0fc5189cca42dea82c76354b17e6b10fce1eed598c77c5",
+        "ca4a0d3bdef9c76f46c9ef0d2a381767095c128ead5bc89cbeaabea62fcafa76",
+        "eb8a001621d7598d399124fb8b2747015745749e016732c2c8304bea4d3807f2",
+        "9000af026a1724fb48b4c338208b4b7c80460950ca58dc76cf9d005bf42edc08"
+      ],
+      "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
+      "lock_hash": "197a9e3445554d2cae10c7a891cf2c370cf0635fe792d3d6f6ca7fc98440efe9",
+      "manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
+      "module_hashes": [
+        "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb"
+      ],
+      "path": "examples/agent-alpha/riffdb.application.lock.json",
+      "query_module_format": 1,
+      "role_hashes": [
+        "cbdc78a88c176f70332861b8e27d97b38a4069d7341ab542591031ca19a33a6f"
+      ],
+      "rotation": "unchanged_ordinary_v1",
+      "source_hash": "e34a5f4743847f3695112e8c4dbf382b328825903238d4194658ca71cb9cc032"
+    },
+    {
+      "artifact_hashes": [
+        "f0fab883fa4b967f66c415bd21116eeaba6a5b618e3fc134b613df73a4e89eab",
+        "fed741c96d0ec2f50c1554c300d508048c5f2ac24131d19a410fd9577ace0ef9",
+        "0b6e5dbedd909f650285d44fd21586bdf7a8310da5566a7b85b628bada6ac81e",
+        "5a626675981c285294584492c45e567fb8edbca4816744161a362ac207c2e312",
+        "976bc8d284d740ba91eabfa1cd3435d512ed4a8da2efdf3ba4c201eba8fdb51c",
+        "cc65f0f8074bab4f8088c9ad3c701744d95e0a8d3eadc7daf1edaac1bd9d1b34",
+        "81cc9c0b7002ce222d4c2b61670779ac6e263323f8c04a1fe65f4282dcb2c686",
+        "0bfc0055882d427a7fc30c7b722190c1b79c684629ee6f320c109bc5b2bc78a8"
+      ],
+      "contract_bundle_hash": "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de",
+      "lock_hash": "feacff6440298ec6fe9c278a064be3e81020155521238b34daf3d7ed613ec756",
+      "manifest_hash": "53f75ee7aaa5695912588f28d6119cd0ac9f86b9cc1628fac17d4bdf508f1d34",
+      "module_hashes": [
+        "4b7d345da5723cf41bf543b0526d25d454fc85cc4c05a934d28715527fdeeb2f"
+      ],
+      "path": "examples/ticketdesk/riffdb.application.lock.json",
+      "query_module_format": 1,
+      "role_hashes": [
+        "86f1ba321a26ef532bbc083d949bac8f032a53a99fd71130f70dfde1cf91c98a",
+        "d6e3c93e5088bd9b89c3ead048a94b339670a755b8f1fc0081321904e2cda5d2",
+        "88e2f96b8a7b1fdaadaa696a7ab52ded554e3aa35745b23ae46c6c4dd293663d"
+      ],
+      "rotation": "unchanged_ordinary_v1",
+      "source_hash": "8e4393fadc99fe856537ce279f02b25f18e7382fb07122ce52c75f0b79877e16"
+    }
+  ],
+  "schema": "riffdb.operational-riffql-identity-rotation/v1",
+  "verification": [
+    "scripts/generate-query-clients --check",
+    "scripts/check-application-bindings",
+    "scripts/check-generated"
+  ],
+  "work_package": "WP-563"
+}

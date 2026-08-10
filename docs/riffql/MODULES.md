@@ -30,6 +30,14 @@ surface. Version-1 reactive/live-query modules do not substitute a representativ
 member: compilation excludes an operational family until a versioned reactive
 presence-selection surface exists.
 
+The additive identity transition is frozen in
+`fixtures/riffql/operational-identity-rotation-v1.json`. That generated receipt
+records the before/after language, IR, plan/family, module, manifest, role,
+application-lock, and Rust/Go/TypeScript/Python/MCP artifact hashes. It also
+binds the unchanged ordinary-v1 TicketDesk and agent-alpha closures. The normal
+generated-client check regenerates the receipt, so a partial rotation or stale
+example identity fails the repository gate.
+
 ## Generated artifacts
 
 The compiler emits:

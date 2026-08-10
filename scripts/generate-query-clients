@@ -12,6 +12,7 @@ if [[ "${1:-}" == "--check" ]]; then
     trap 'rm -rf "$generated"' EXIT
     cargo run --quiet -p riffdb-query-module --example generate_clients -- "$generated"
     cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$generated"
+    cargo run --quiet -p riffdb-query-module --example generate_operational_rotation -- "$generated"
     gofmt -w "$generated/clients/go/ticketdesk/client.go"
     diff -u fixtures/query-modules/ticketdesk.rs "$generated/fixtures/query-modules/ticketdesk.rs"
     diff -u fixtures/query-modules/ticketdesk.mcp.json "$generated/fixtures/query-modules/ticketdesk.mcp.json"
@@ -30,6 +31,31 @@ if [[ "${1:-}" == "--check" ]]; then
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     diff -u clients/go/ticketdesk/client.go "$generated/clients/go/ticketdesk/client.go"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
+    diff -u fixtures/riffql/operational-identity-rotation-v1.json \
+        "$generated/fixtures/riffql/operational-identity-rotation-v1.json"
+    jq -e '
+      .schema == "riffdb.operational-riffql-identity-rotation/v1"
+      and .work_package == "WP-563"
+      and .decision == "ADR-0108"
+      and .before.language_version == 1
+      and .before.query_ir_version == 1
+      and .before.query_module_format_version == 1
+      and .after.language_version == 2
+      and .after.query_ir_version == 2
+      and .after.query_module_format_version == 2
+      and .operational_family.member_count == 2
+      and .operational_family.presence_parameters == ["status"]
+      and (.before.artifacts | map(.kind) | sort) ==
+        (["contract_bundle", "go", "manifest", "mcp", "python", "rust", "typescript"] | sort)
+      and (.after.artifacts | map(.kind) | sort) ==
+        (["contract_bundle", "go", "manifest", "mcp", "python", "rust", "typescript"] | sort)
+      and (.repository_closure | map(.path) | sort) ==
+        (["examples/agent-alpha/riffdb.application.lock.json", "examples/ticketdesk/riffdb.application.lock.json"] | sort)
+      and all(.repository_closure[]; .query_module_format == 1 and .rotation == "unchanged_ordinary_v1")
+      and .classification.ordinary_v1_bytes_preserved == true
+      and .classification.operational_v2_additive == true
+      and .classification.partial_rotation_is_success == false
+    ' fixtures/riffql/operational-identity-rotation-v1.json >/dev/null
     # agent-alpha clients (non-workspace packages; previously invisible to battery)
     diff -u examples/agent-alpha/generated/rust/client.rs \
         "$generated/examples/agent-alpha/generated/rust/client.rs"
@@ -165,3 +191,4 @@ cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
 cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
     examples/agent-alpha/riffdb.application.json \
     --lock riffdb.application.lock.json >/dev/null
+cargo run --quiet -p riffdb-query-module --example generate_operational_rotation -- "$repo_root"

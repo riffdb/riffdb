@@ -2995,6 +2995,34 @@ fn render_contract_type(
 }
 
 #[cfg(test)]
+mod operational_cursor_identity_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_parameter_hash_changes_when_optional_filter_becomes_present() {
+        let absent = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([0x11; 16]),
+        )]))
+        .expect("bounded absent parameter set");
+        let present = QueryParameters::checked(BTreeMap::from([
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([0x11; 16]),
+            ),
+            ("status".to_owned(), CanonicalValue::I64(1)),
+        ]))
+        .expect("bounded present parameter set");
+
+        assert_ne!(
+            query_parameter_hash(&absent).expect("absent hash"),
+            query_parameter_hash(&present).expect("present hash"),
+            "a cursor from the absent family member must not resume the present member"
+        );
+    }
+}
+
+#[cfg(test)]
 mod event_catalog_tests {
     use super::*;
 
