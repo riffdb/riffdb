@@ -1,0 +1,44 @@
+{
+  "schema": "riffdb.application-catalog-schema/v1",
+  "response_schema": "riffdb.application-catalog/v1",
+  "max_page_items": 100,
+  "max_path_components": 8,
+  "max_text_bytes": 256,
+  "symbol_kinds": [
+    "contract",
+    "enum",
+    "entity",
+    "field",
+    "relationship",
+    "index",
+    "command",
+    "command_outcome",
+    "event",
+    "query_module",
+    "query",
+    "role",
+    "operation"
+  ],
+  "feature_kinds": [
+    "operational_optional_predicates",
+    "stable_cursor_pages",
+    "null_existence_predicates",
+    "binary_text_prefix",
+    "unicode_fold_text_prefix_v1",
+    "exact_aggregates"
+  ],
+  "feature_states": ["available", "unavailable"],
+  "response_fields": ["schema", "identity", "symbols", "features", "has_more"],
+  "forbidden_fields": [
+    "total_count",
+    "hidden_count",
+    "visible",
+    "entity_type_id",
+    "field_id",
+    "index_id",
+    "command_id",
+    "capability",
+    "raw_ir",
+    "storage_key"
+  ]
+}

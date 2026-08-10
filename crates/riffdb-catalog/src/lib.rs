@@ -7,6 +7,7 @@
 //! capability is the move-only, pre-readiness index-migration driver; normal
 //! operation observes only the coordinator's durable result.
 
+mod application_catalog;
 mod bundle;
 mod capability_partition;
 mod deployment;
@@ -22,6 +23,7 @@ mod projection_materialization;
 mod query_module;
 mod reactive_module;
 
+pub use application_catalog::*;
 pub use bundle::*;
 pub use capability_partition::*;
 pub use deployment::*;
