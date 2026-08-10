@@ -767,8 +767,8 @@ mod tests {
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
             let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::current_dir()
-                .expect("current directory")
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
                 .join("target")
                 .join("wp487-composite-view")
                 .join(format!("{label}-{}-{ordinal}.redb", std::process::id()));
@@ -782,6 +782,7 @@ mod tests {
     impl Drop for TestDatabasePath {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(crate::durable_format_marker_path(&self.0));
             let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
             let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
             let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
