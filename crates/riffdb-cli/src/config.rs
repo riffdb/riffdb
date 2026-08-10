@@ -1,8 +1,13 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use riffdb_config::{
+    CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
+};
 use riffdb_types::DatabaseAlias;
 use serde::Deserialize;
 
@@ -19,6 +24,7 @@ pub(crate) struct EffectiveConfig {
     pub(crate) output: OutputMode,
     pub(crate) max_attempts: u32,
     pub(crate) credential_file: Option<PathBuf>,
+    pub(crate) tls: Option<TlsClientConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +69,8 @@ struct ClientDocument {
     output: Option<String>,
     max_attempts: Option<u32>,
     credential_file: Option<String>,
+    tls_trust_root: Option<String>,
+    tls_server_name: Option<String>,
 }
 
 pub(crate) fn resolve(
@@ -136,12 +144,47 @@ pub(crate) fn resolve(
         validate_path(path.as_os_str()).map_err(|_| resolution_error(output))?;
     }
 
+    let tls_trust_root = selected_optional_string(
+        environment.value("RIFFDB_TLS_TRUST_ROOT"),
+        client.tls_trust_root.as_deref(),
+    )
+    .map_err(|_| resolution_error(output))?;
+    let tls_server_name = selected_optional_string(
+        environment.value("RIFFDB_TLS_SERVER_NAME"),
+        client.tls_server_name.as_deref(),
+    )
+    .map_err(|_| resolution_error(output))?;
+    let tls = match (
+        endpoint.starts_with("https://"),
+        tls_trust_root,
+        tls_server_name,
+    ) {
+        (false, None, None) => None,
+        (true, Some(trust_root), Some(server_name)) => Some(
+            TlsClientConfig::new(
+                CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| resolution_error(output))?,
+                ProtectedFilePath::new(PathBuf::from(trust_root))
+                    .map_err(|_| resolution_error(output))?,
+                TlsServerIdentity::parse(&server_name).map_err(|_| resolution_error(output))?,
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+                NonZeroU32::new(4).expect("fixed nonzero pool bound"),
+                NonZeroU32::new(64).expect("fixed nonzero stream bound"),
+            )
+            .map_err(|_| resolution_error(output))?,
+        ),
+        (false, Some(_), _) | (false, _, Some(_)) | (true, _, _) => {
+            return Err(resolution_error(output));
+        }
+    };
+
     Ok(EffectiveConfig {
         endpoint,
         database,
         output,
         max_attempts: attempts,
         credential_file,
+        tls,
     })
 }
 
@@ -195,6 +238,20 @@ fn selected_os(
     Ok(selected)
 }
 
+fn selected_optional_string(
+    environment: Option<OsString>,
+    document: Option<&str>,
+) -> Result<Option<String>, ConfigError> {
+    match environment {
+        Some(value) => value
+            .into_string()
+            .map_err(|_| ConfigError::Invalid)
+            .and_then(|value| nonempty(&value))
+            .map(Some),
+        None => document.map(nonempty).transpose(),
+    }
+}
+
 fn nonempty(value: &str) -> Result<String, ConfigError> {
     if value.is_empty() {
         Err(ConfigError::Invalid)
@@ -237,6 +294,11 @@ pub(crate) fn validate_endpoint(endpoint: &str) -> Result<(), ConfigError> {
         || endpoint.bytes().any(|byte| byte.is_ascii_whitespace())
     {
         return Err(ConfigError::Invalid);
+    }
+    if endpoint.starts_with("https://") {
+        return CanonicalHttpsEndpoint::parse(endpoint)
+            .map(|_| ())
+            .map_err(|_| ConfigError::Invalid);
     }
     let authority = endpoint
         .strip_prefix("http://")
@@ -659,11 +721,15 @@ mod tests {
 
     #[test]
     fn endpoint_requires_literal_loopback_http_and_explicit_canonical_port() {
-        for accepted in ["http://127.0.0.1:1", "http://[::1]:65535"] {
+        for accepted in [
+            "http://127.0.0.1:1",
+            "http://[::1]:65535",
+            "https://riffdb.example.test:7443",
+            "https://127.0.0.1:7443",
+        ] {
             assert!(validate_endpoint(accepted).is_ok(), "{accepted}");
         }
         for rejected in [
-            "https://127.0.0.1:7443",
             "http://localhost:7443",
             "http://192.0.2.1:7443",
             "http://127.0.0.1",
@@ -691,6 +757,63 @@ mod tests {
             validate_endpoint(&format!("http://{}:1", "1".repeat(513))),
             Err(ConfigError::Invalid)
         );
+    }
+
+    #[test]
+    fn verified_tls_configuration_is_complete_or_rejected() {
+        let trust = temporary_file("tls-root", b"test trust root");
+        let trust_text = trust.to_str().expect("UTF-8 test path");
+        let complete = temporary_file(
+            "tls-complete",
+            format!(
+                "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_trust_root = {trust_text:?}\ntls_server_name = \"127.0.0.1\"\n"
+            )
+            .as_bytes(),
+        );
+        let mut environment = TestEnvironment::default();
+        environment
+            .0
+            .insert("RIFFDB_CONFIG".into(), complete.as_os_str().to_owned());
+        let resolved = resolve(&health_cli(&[]), &environment).expect("complete TLS config");
+        let tls = resolved.tls.expect("verified TLS selection");
+        assert_eq!(tls.endpoint().as_str(), "https://127.0.0.1:7443");
+        assert_eq!(tls.trust_root().as_path(), trust.as_path());
+        assert_eq!(tls.expected_server_identity().as_str(), "127.0.0.1");
+
+        for (label, document) in [
+            (
+                "missing-root",
+                "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_server_name = \"127.0.0.1\"\n".to_owned(),
+            ),
+            (
+                "missing-name",
+                format!(
+                    "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_trust_root = {trust_text:?}\n"
+                ),
+            ),
+            (
+                "wrong-name",
+                format!(
+                    "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_trust_root = {trust_text:?}\ntls_server_name = \"other.example\"\n"
+                ),
+            ),
+            (
+                "tls-on-cleartext",
+                format!(
+                    "[client]\nendpoint = \"http://127.0.0.1:7443\"\ntls_trust_root = {trust_text:?}\ntls_server_name = \"127.0.0.1\"\n"
+                ),
+            ),
+        ] {
+            let path = temporary_file(label, document.as_bytes());
+            let mut environment = TestEnvironment::default();
+            environment
+                .0
+                .insert("RIFFDB_CONFIG".into(), path.as_os_str().to_owned());
+            assert!(resolve(&health_cli(&[]), &environment).is_err(), "{label}");
+            fs::remove_file(path).expect("cleanup invalid TLS config");
+        }
+        fs::remove_file(complete).expect("cleanup config");
+        fs::remove_file(trust).expect("cleanup trust root");
     }
 
     #[test]

@@ -456,6 +456,7 @@ mod tests {
             output: OutputMode::Json,
             max_attempts: 3,
             credential_file: file,
+            tls: None,
         }
     }
 

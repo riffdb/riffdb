@@ -1,6 +1,7 @@
 # RiffDB CLI v1 Interface Checkpoint
 
-Status: **Accepted and implemented by WP-150, additively extended by WP-155.**
+Status: **Accepted and implemented by WP-150, additively extended by WP-155
+and WP-554.**
 
 This directory freezes the accepted interface implemented by WP-150. It is
 deliberately outside `src/`: no file here is production Rust and no runtime
@@ -59,3 +60,7 @@ terminal model but is explicitly not a compatibility interface.
 Changing any command name, flag, positional argument, DTO field/order/presence,
 error code/message, exit assignment, or golden byte after acceptance requires
 another compatibility review.
+
+WP-554 adds the `server.health.process_alive` success fixture. It is the
+payload-free, database-blind unauthenticated liveness branch accepted by
+ADR-0105; authenticated readiness fixtures retain their existing meaning.

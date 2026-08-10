@@ -33,8 +33,8 @@ use riffdb_client_rust::generated::legal_spend::{
 };
 use riffdb_client_rust::{
     AttemptBudget, BearerCredential, BootstrapCallMetadata,
-    BootstrapCredential as TransportBootstrapCredential, CallMetadata, ClientError,
-    DetailsFreeStatus, RiffDbClient, generate_capability_id, generate_request_id,
+    BootstrapCredential as TransportBootstrapCredential, CallMetadata, ClientError, RiffDbClient,
+    generate_capability_id, generate_request_id,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_errors::PublicErrorKind;
@@ -147,7 +147,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         ),
     )
     .await?;
-    assert_pre_bootstrap_health(&pre_bootstrap_health)?;
+    assert_process_liveness(&pre_bootstrap_health)?;
 
     let bootstrap_created = bounded_rpc(
         "bootstrap capability creation",
@@ -159,7 +159,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     .await?;
     let bootstrap_transition = created_bootstrap_transition(bootstrap_created)?;
 
-    assert_principal_less_health_closed(&mut first_client).await?;
+    assert_principal_less_liveness(&mut first_client).await?;
 
     let deployment_health = bounded_rpc(
         "deployment-required Health",
@@ -298,7 +298,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     let second_address = second_process.wait_for_ready_address()?;
     let mut second_client = connect(second_address).await?;
 
-    assert_principal_less_health_closed(&mut second_client).await?;
+    assert_principal_less_liveness(&mut second_client).await?;
 
     let reopened_health = bounded_rpc(
         "Health after restart",
@@ -480,7 +480,7 @@ async fn real_riffdbd_migrates_v1_index_before_public_readiness() -> TestResult<
     let migrated_address = migrated_process.wait_for_ready_address()?;
     let mut migrated_client = connect(migrated_address).await?;
 
-    assert_principal_less_health_closed(&mut migrated_client).await?;
+    assert_principal_less_liveness(&mut migrated_client).await?;
     let health = bounded_rpc(
         "Health after V1 index migration",
         migrated_client.health(authenticated_health_request()?, &restricted_metadata),
@@ -1631,21 +1631,14 @@ where
     }
 }
 
-async fn assert_principal_less_health_closed(client: &mut RiffDbClient) -> TestResult<()> {
+async fn assert_principal_less_liveness(client: &mut RiffDbClient) -> TestResult<()> {
     let metadata = CallMetadata::default();
-    let call = client.health(v1::HealthRequest { request_id: None }, &metadata);
-    match timeout(RPC_TIMEOUT, call).await {
-        Ok(Err(ClientError::DetailsFree(DetailsFreeStatus::Unauthenticated))) => Ok(()),
-        Ok(Ok(_)) => Err(test_failure(
-            "principal-less Health remained available after bootstrap",
-        )),
-        Ok(Err(error)) => Err(test_failure(format!(
-            "principal-less Health returned the wrong post-bootstrap failure: {error}"
-        ))),
-        Err(_) => Err(test_failure(
-            "principal-less Health rejection exceeded its deadline",
-        )),
-    }
+    let response = bounded_rpc(
+        "principal-less process liveness",
+        client.health(v1::HealthRequest { request_id: None }, &metadata),
+    )
+    .await?;
+    assert_process_liveness(&response)
 }
 
 async fn connect(address: SocketAddr) -> TestResult<RiffDbClient> {
@@ -1909,22 +1902,24 @@ fn replayed_bootstrap_transition(
     Ok(transition)
 }
 
-fn assert_pre_bootstrap_health(response: &v1::HealthResponse) -> TestResult<()> {
+fn assert_process_liveness(response: &v1::HealthResponse) -> TestResult<()> {
     let Some(v1::health_response::Result::PreBootstrap(report)) = response.result.as_ref() else {
         return Err(test_failure(
-            "initial Health was not restricted pre-bootstrap Health",
+            "principal-less Health was not restricted process liveness",
         ));
     };
     if !report.liveness || report.readiness {
         return Err(test_failure(
-            "pre-bootstrap Health reported an invalid state",
+            "process liveness reported readiness or failed liveness",
         ));
     }
     if v1::PreBootstrapLifecycle::try_from(report.lifecycle)
-        != Ok(v1::PreBootstrapLifecycle::InitializingBootstrap)
+        != Ok(v1::PreBootstrapLifecycle::Unspecified)
+        || !response.database_alias.is_empty()
+        || !response.authentication_audience.is_empty()
     {
         return Err(test_failure(
-            "ready pre-bootstrap Health was not in bootstrap admission",
+            "process liveness disclosed a database lifecycle or identity",
         ));
     }
     Ok(())

@@ -24,9 +24,10 @@ use riffdb_client_rust::{
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
 use riffdb_query_module::{
-    ApplicationManifest, CompiledApplicationRole, ManifestTenantScope, NamedQuerySource,
-    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role, compile_application_role_v2, compile_reactive_source,
+    ApplicationManifest, ApplicationRoleOperationKind, CompiledApplicationRole,
+    ManifestTenantScope, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
+    QueryModuleVersion, compile_application_role, compile_application_role_v2,
+    compile_reactive_source,
 };
 use riffdb_types::{
     CanonicalValue, CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId,
@@ -90,6 +91,8 @@ struct ApplicationDeploymentState {
     #[serde(default)]
     reactive_module_identities: Vec<ApplicationDeploymentReactiveModuleState>,
     role: Option<ApplicationDeploymentRoleState>,
+    #[serde(default)]
+    credential_rotation: Option<ApplicationCredentialRotationState>,
     seeds_completed: Vec<String>,
 }
 
@@ -118,6 +121,30 @@ struct ApplicationDeploymentRoleState {
     capability_id: String,
     bound: bool,
     authentication_audience: Option<String>,
+    #[serde(default)]
+    credential_file: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ApplicationCredentialRotationPhase {
+    IntentRetained,
+    SuccessorBound,
+    SuccessorProven,
+    ConfigsSwitched,
+    PredecessorRevoked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationCredentialRotationState {
+    predecessor_capability_id: String,
+    successor_capability_id: String,
+    successor_credential_file: String,
+    target_role_name: String,
+    target_role_identity: String,
+    authentication_audience: String,
+    phase: ApplicationCredentialRotationPhase,
 }
 
 #[derive(Serialize)]
@@ -1494,7 +1521,6 @@ async fn application_command(
 
     let mut application_credential = None;
     if let Some(role) = provision_role {
-        let credential_path = deployment_root.join("application.credential");
         let Some(compiled_role) = prepared_role else {
             return local_error(
                 identity,
@@ -1535,46 +1561,92 @@ async fn application_command(
                 );
             }
         }
-        if replace_expired_credential {
-            match state.role.as_ref() {
-                Some(retained) => {
-                    let terminal = role_command(
-                        RoleCommand::Revoke {
-                            capability_id: retained.capability_id.clone(),
-                            reason: RevocationReason::Replaced,
-                        },
-                        config,
-                        environment,
-                    )
-                    .await;
-                    if terminal.failed() {
-                        return terminal;
-                    }
-                    if credential_path.exists() && fs::remove_file(&credential_path).is_err() {
-                        return local_error(
-                            identity,
-                            "credential_replacement_cleanup_failed",
-                            "revoked application credential could not be removed",
-                        );
-                    }
-                    state.role = None;
-                    if persist_deployment_state(&state_path, &state).is_err() {
-                        return local_error(
-                            identity,
-                            "deployment_state_write_failed",
-                            "durable deployment progress could not be retained",
-                        );
-                    }
-                }
-                None if !lock_changed => {
-                    return local_error(
-                        identity,
-                        "credential_replacement_identity_absent",
-                        "credential replacement requires the retained old capability identity",
-                    );
-                }
-                None => {}
+        if replace_expired_credential && state.role.is_none() && !lock_changed {
+            return local_error(
+                identity,
+                "credential_replacement_identity_absent",
+                "credential replacement requires the retained old capability identity",
+            );
+        }
+        if state.credential_rotation.is_some() && !replace_expired_credential {
+            return local_error(
+                identity,
+                "credential_rotation_resume_required",
+                "a credential rotation is in progress; rerun with --replace-role-credential to resume it",
+            );
+        }
+        let request_id = match request_id() {
+            Ok(request_id) => request_id,
+            Err(error) => return client_error(identity, &error),
+        };
+        let health = match client
+            .health(
+                v1::HealthRequest {
+                    request_id: Some(request_id),
+                },
+                &metadata,
+            )
+            .await
+        {
+            Ok(health)
+                if matches!(
+                    health.result.as_ref(),
+                    Some(v1::health_response::Result::Authenticated(ready))
+                        if ready.status == v1::HealthStatus::Ready as i32
+                ) && health.database_alias == config.database.as_str()
+                    && !health.authentication_audience.is_empty() =>
+            {
+                health
             }
+            Ok(_) => {
+                return local_error(
+                    identity,
+                    "database_readiness_unavailable",
+                    "authenticated health did not prove the selected database and audience ready",
+                );
+            }
+            Err(error) => return client_error(identity, &error),
+        };
+        let authentication_audience = health.authentication_audience;
+        if state
+            .credential_rotation
+            .as_ref()
+            .is_some_and(|rotation| rotation.authentication_audience != authentication_audience)
+        {
+            return local_error(
+                identity,
+                "credential_rotation_audience_changed",
+                "the server authentication audience changed during credential rotation",
+            );
+        }
+        let mut credential_path = match state.role.as_ref() {
+            Some(retained) => {
+                match retained_application_credential_path(&deployment_root, retained) {
+                    Ok(path) => path,
+                    Err(()) => return invalid_input(identity),
+                }
+            }
+            None => deployment_root.join("application.credential"),
+        };
+        if replace_expired_credential && state.role.is_some() {
+            credential_path = match rotate_application_credential(
+                identity,
+                &state_path,
+                &deployment_root,
+                &mut state,
+                &compiled_role,
+                lifetime_seconds,
+                &authentication_audience,
+                config,
+                environment,
+                &mut client,
+                &metadata,
+            )
+            .await
+            {
+                Ok(path) => path,
+                Err(terminal) => return terminal,
+            };
         }
         if credential_path.exists() && state.role.is_none() {
             return local_error(
@@ -1612,6 +1684,7 @@ async fn application_command(
                         capability_id: capability_id.clone(),
                         bound: false,
                         authentication_audience: None,
+                        credential_file: String::new(),
                     });
                     if persist_deployment_state(&state_path, &state).is_err() {
                         return local_error(
@@ -1623,33 +1696,9 @@ async fn application_command(
                     capability_id
                 }
             };
-            let request_id = match request_id() {
-                Ok(request_id) => request_id,
-                Err(error) => return client_error(identity, &error),
-            };
-            let health = match client
-                .health(
-                    v1::HealthRequest {
-                        request_id: Some(request_id),
-                    },
-                    &metadata,
-                )
-                .await
-            {
-                Ok(health) if !health.authentication_audience.is_empty() => health,
-                Ok(_) => {
-                    return local_error(
-                        identity,
-                        "audience_unavailable",
-                        "server health did not identify its authentication audience",
-                    );
-                }
-                Err(error) => return client_error(identity, &error),
-            };
-            let authentication_audience = health.authentication_audience;
-            let terminal = bind_compiled_role(
+            let disposition = match create_compiled_role_binding(
                 PreparedRoleBinding {
-                    role: compiled_role,
+                    role: compiled_role.clone(),
                     principal: format!("app:{}", locked.manifest().application_name()),
                     actor_kind: RoleActorKind::Service,
                     lifetime_seconds: lifetime_seconds.to_string(),
@@ -1661,16 +1710,25 @@ async fn application_command(
                 config,
                 environment,
             )
-            .await;
-            if terminal.failed() {
-                return terminal;
+            .await
+            {
+                Ok(disposition) => disposition,
+                Err(terminal) => return terminal,
+            };
+            if matches!(disposition, NormalCreateDisposition::Conflict) || !credential_path.exists()
+            {
+                return local_error(
+                    identity,
+                    "application_credential_unavailable",
+                    "the application capability could not be paired with a retained protected credential; use explicit replacement",
+                );
             }
             interrupt_application_deployment_after(environment, "role_bound_remote");
             let Some(retained) = state.role.as_mut() else {
                 return invalid_input(identity);
             };
             retained.bound = true;
-            retained.authentication_audience = Some(authentication_audience);
+            retained.authentication_audience = Some(authentication_audience.clone());
             if persist_deployment_state(&state_path, &state).is_err() {
                 return local_error(
                     identity,
@@ -1679,7 +1737,7 @@ async fn application_command(
                 );
             }
         }
-        let Some(authentication_audience) = state
+        let Some(retained_authentication_audience) = state
             .role
             .as_ref()
             .and_then(|role| role.authentication_audience.as_deref())
@@ -1694,7 +1752,7 @@ async fn application_command(
             &deployment_root,
             config,
             &credential_path,
-            authentication_audience,
+            retained_authentication_audience,
         )
         .is_err()
         {
@@ -1935,6 +1993,7 @@ fn load_deployment_state(
             reactive_modules_deployed: Vec::new(),
             reactive_module_identities: Vec::new(),
             role: None,
+            credential_rotation: None,
             seeds_completed: Vec::new(),
         });
     }
@@ -2029,11 +2088,61 @@ fn load_deployment_state(
                                 || audience.len() > 512
                                 || !audience.bytes().all(|byte| byte.is_ascii_graphic())
                         }))
+                || (!role.credential_file.is_empty()
+                    && !valid_deployment_credential_file_name(&role.credential_file))
         })
+        || state
+            .credential_rotation
+            .as_ref()
+            .is_some_and(|rotation| !valid_credential_rotation(rotation, state.role.as_ref()))
     {
         return Err(());
     }
     Ok(state)
+}
+
+fn valid_deployment_credential_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        && name != "."
+        && name != ".."
+}
+
+fn valid_credential_rotation(
+    rotation: &ApplicationCredentialRotationState,
+    role: Option<&ApplicationDeploymentRoleState>,
+) -> bool {
+    role.is_some_and(|role| {
+        role.bound
+            && role.capability_id == rotation.predecessor_capability_id
+            && parse_uuid_v7(&rotation.predecessor_capability_id).is_some()
+            && parse_uuid_v7(&rotation.successor_capability_id).is_some()
+            && rotation.predecessor_capability_id != rotation.successor_capability_id
+            && valid_deployment_credential_file_name(&rotation.successor_credential_file)
+            && rotation.successor_credential_file
+                == format!(
+                    "application-{}.credential",
+                    rotation.successor_capability_id
+                )
+            && !rotation.target_role_name.is_empty()
+            && rotation.target_role_name.len() <= 256
+            && rotation.target_role_identity.len() == 64
+            && rotation
+                .target_role_identity
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && !rotation.authentication_audience.is_empty()
+            && rotation.authentication_audience.len() <= 512
+            && rotation
+                .authentication_audience
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+            && role.authentication_audience.as_deref()
+                == Some(rotation.authentication_audience.as_str())
+    })
 }
 
 fn persist_deployment_state(path: &Path, state: &ApplicationDeploymentState) -> Result<(), ()> {
@@ -2050,27 +2159,44 @@ fn persist_application_configs(
     credential_path: &Path,
     authentication_audience: &str,
 ) -> Result<(), ()> {
-    let credential_path = if credential_path.is_absolute() {
-        credential_path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|_| ())?
-            .join(credential_path)
-    };
+    let credential_path = std::path::absolute(credential_path).map_err(|_| ())?;
     let credential = credential_path.to_str().ok_or(())?;
     let endpoint = serde_json::to_string(&config.endpoint).map_err(|_| ())?;
     let database = serde_json::to_string(config.database.as_str()).map_err(|_| ())?;
     let credential = serde_json::to_string(credential).map_err(|_| ())?;
     let authentication_audience = serde_json::to_string(authentication_audience).map_err(|_| ())?;
+    let tls_client = config.tls.as_ref().map(|tls| {
+        let trust_root = tls.trust_root().as_path().to_str().ok_or(())?;
+        let trust_root = serde_json::to_string(trust_root).map_err(|_| ())?;
+        let server_name =
+            serde_json::to_string(&tls.expected_server_identity().as_str()).map_err(|_| ())?;
+        Ok::<_, ()>(format!(
+            "tls_trust_root = {trust_root}\ntls_server_name = {server_name}\n"
+        ))
+    });
+    let tls_client = tls_client.transpose()?.unwrap_or_default();
     let client = format!(
-        "[client]\nendpoint = {endpoint}\ndatabase = {database}\noutput = \"json\"\nmax_attempts = {}\ncredential_file = {credential}\n",
-        config.max_attempts
+        "[client]\nendpoint = {endpoint}\ndatabase = {database}\noutput = \"json\"\nmax_attempts = {}\ncredential_file = {credential}\n{tls_client}",
+        config.max_attempts,
     );
     let mcp = format!(
         "[mcp]\nendpoint = {endpoint}\ndatabase = {database}\ncredential_file = {credential}\nexpected_audience = {authentication_audience}\n"
     );
     persist_private_file(&root.join("client.toml"), client.as_bytes())?;
     persist_private_file(&root.join("mcp.toml"), mcp.as_bytes())
+}
+
+fn retained_application_credential_path(
+    root: &Path,
+    role: &ApplicationDeploymentRoleState,
+) -> Result<PathBuf, ()> {
+    if role.credential_file.is_empty() {
+        return Ok(root.join("application.credential"));
+    }
+    if !valid_deployment_credential_file_name(&role.credential_file) {
+        return Err(());
+    }
+    Ok(root.join(&role.credential_file))
 }
 
 fn persist_private_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
@@ -4925,12 +5051,438 @@ fn consumer_status_json(status: &v1::EventConsumerStatus) -> serde_json::Value {
     })
 }
 
+async fn prove_application_successor(
+    identity: CommandIdentity,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+    credential_path: &Path,
+    role: &CompiledApplicationRole,
+) -> Result<(), Terminal> {
+    let mut successor_config = config.clone();
+    successor_config.credential_file = Some(credential_path.to_path_buf());
+    let metadata = required_metadata(identity, &successor_config, environment)?;
+    let mut client = connect(&successor_config)
+        .await
+        .map_err(|error| client_error(identity, &error))?;
+    let expected = role
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation.kind() {
+            ApplicationRoleOperationKind::Command => Some((0_u8, operation.name().to_owned())),
+            ApplicationRoleOperationKind::Query => Some((1_u8, operation.name().to_owned())),
+            ApplicationRoleOperationKind::EventStream
+            | ApplicationRoleOperationKind::QueryWatch
+            | ApplicationRoleOperationKind::AgentSubscription => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::new();
+    let mut cursor = None;
+    let mut complete = false;
+    for _ in 0..16 {
+        let request_id = request_id().map_err(|error| client_error(identity, &error))?;
+        let response = client
+            .discover_command_tools(
+                v1::DiscoverCommandToolsRequest {
+                    request_id,
+                    page: Some(v1::PageRequest {
+                        limit: Some(500),
+                        cursor,
+                    }),
+                    prior_fence: None,
+                    representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+                },
+                &metadata,
+            )
+            .await
+            .map_err(|error| client_error(identity, &error))?;
+        let Some(v1::discover_command_tools_response::Result::CompactPage(page)) = response.result
+        else {
+            return Err(local_error(
+                identity,
+                "rotation_successor_handshake_invalid",
+                "the successor application identity handshake returned an invalid result",
+            ));
+        };
+        if !application_discovery_fence_matches(page.observed_fence.as_ref(), role) {
+            return Err(local_error(
+                identity,
+                "rotation_successor_identity_mismatch",
+                "the successor authenticated a different active application identity",
+            ));
+        }
+        for item in page.items {
+            use v1::compact_command_tool_discovery_item::Item;
+            match item.item {
+                Some(Item::CommandTool(tool)) => {
+                    observed.insert((0, tool.source_command));
+                }
+                Some(Item::NamedQueryTool(tool)) => {
+                    observed.insert((1, tool.source_query));
+                }
+                Some(Item::FixedTool(_)) => {}
+                None => {
+                    return Err(local_error(
+                        identity,
+                        "rotation_successor_handshake_invalid",
+                        "the successor application identity handshake returned an invalid item",
+                    ));
+                }
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            complete = true;
+            break;
+        }
+    }
+    if !complete || observed != expected {
+        return Err(local_error(
+            identity,
+            "rotation_successor_authority_mismatch",
+            "the successor application operation set does not match the exact locked role",
+        ));
+    }
+    Ok(())
+}
+
+fn application_discovery_fence_matches(
+    fence: Option<&v1::DiscoveryCatalogFence>,
+    role: &CompiledApplicationRole,
+) -> bool {
+    let Some(v1::discovery_catalog_fence::State::ActiveContract(active)) =
+        fence.and_then(|fence| fence.state.as_ref())
+    else {
+        return false;
+    };
+    active.contract_lineage == role.contract_lineage().as_str()
+        && active.contract_version == role.contract_version().get()
+        && active.bundle_hash.as_slice() == role.contract_hash().as_bytes()
+}
+
+async fn revoke_deployment_capability(
+    identity: CommandIdentity,
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+    capability_id: &str,
+) -> Result<(), Terminal> {
+    let capability_id = parse_uuid_v7(capability_id).ok_or_else(|| invalid_input(identity))?;
+    let request_id = request_id().map_err(|error| client_error(identity, &error))?;
+    let response = client
+        .revoke_capability(
+            v1::RevokeCapabilityRequest {
+                request_id,
+                capability_id: capability_id.to_vec(),
+                reason: v1::RevocationReason::Replaced as i32,
+            },
+            metadata,
+        )
+        .await
+        .map_err(|error| client_error(identity, &error))?;
+    if response.result.is_none() {
+        return Err(local_error(
+            identity,
+            "rotation_revocation_result_invalid",
+            "credential revocation returned no terminal result",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the rotation campaign keeps every exact identity and authority input explicit"
+)]
+async fn rotate_application_credential(
+    identity: CommandIdentity,
+    state_path: &Path,
+    deployment_root: &Path,
+    state: &mut ApplicationDeploymentState,
+    role: &CompiledApplicationRole,
+    lifetime_seconds: u32,
+    authentication_audience: &str,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+    operator_client: &mut RiffDbClient,
+    operator_metadata: &CallMetadata,
+) -> Result<PathBuf, Terminal> {
+    let expected_role_identity = hex(role.identity().as_bytes());
+    if state.credential_rotation.is_none() {
+        let predecessor = state.role.as_ref().ok_or_else(|| {
+            local_error(
+                identity,
+                "credential_replacement_identity_absent",
+                "credential replacement requires the retained predecessor identity",
+            )
+        })?;
+        let successor = generate_capability_id()
+            .map_err(|error| client_error(identity, &ClientError::IdentifierGeneration(error)))?;
+        let successor =
+            format_uuid(&successor.into_bytes()).ok_or_else(|| invalid_input(identity))?;
+        state.credential_rotation = Some(ApplicationCredentialRotationState {
+            predecessor_capability_id: predecessor.capability_id.clone(),
+            successor_credential_file: format!("application-{successor}.credential"),
+            successor_capability_id: successor,
+            target_role_name: role.role_name().to_owned(),
+            target_role_identity: expected_role_identity.clone(),
+            authentication_audience: authentication_audience.to_owned(),
+            phase: ApplicationCredentialRotationPhase::IntentRetained,
+        });
+        persist_deployment_state(state_path, state).map_err(|_| {
+            local_error(
+                identity,
+                "deployment_state_write_failed",
+                "durable credential-rotation intent could not be retained",
+            )
+        })?;
+        interrupt_application_deployment_after(environment, "rotation_intent_retained");
+    }
+
+    let rotation = state.credential_rotation.as_ref().ok_or_else(|| {
+        local_error(
+            identity,
+            "credential_rotation_state_absent",
+            "credential rotation lost its retained campaign state",
+        )
+    })?;
+    if rotation.target_role_name != role.role_name()
+        || rotation.target_role_identity != expected_role_identity
+        || rotation.authentication_audience != authentication_audience
+    {
+        return Err(local_error(
+            identity,
+            "credential_rotation_target_changed",
+            "the requested role or audience changed during an active credential rotation",
+        ));
+    }
+    let successor_path = deployment_root.join(&rotation.successor_credential_file);
+
+    if rotation.phase == ApplicationCredentialRotationPhase::IntentRetained {
+        let successor_id = rotation.successor_capability_id.clone();
+        let disposition = create_compiled_role_binding(
+            PreparedRoleBinding {
+                role: role.clone(),
+                principal: format!("app:{}", role.application_name()),
+                actor_kind: RoleActorKind::Service,
+                lifetime_seconds: lifetime_seconds.to_string(),
+                audiences: vec![authentication_audience.to_owned()],
+                capability_id: Some(successor_id.clone()),
+                credential_output: successor_path.as_os_str().to_owned(),
+            },
+            identity,
+            config,
+            environment,
+        )
+        .await?;
+        match disposition {
+            NormalCreateDisposition::Created(_) => {}
+            NormalCreateDisposition::AlreadyCreated(_) if successor_path.exists() => {}
+            NormalCreateDisposition::AlreadyCreated(_) => {
+                revoke_deployment_capability(
+                    identity,
+                    operator_client,
+                    operator_metadata,
+                    &successor_id,
+                )
+                .await?;
+                state.credential_rotation = None;
+                persist_deployment_state(state_path, state).map_err(|_| {
+                    local_error(
+                        identity,
+                        "deployment_state_write_failed",
+                        "the unusable successor cleanup could not be retained",
+                    )
+                })?;
+                return Err(local_error(
+                    identity,
+                    "rotation_successor_secret_unavailable",
+                    "the successor was created but its protected credential was not retained; it was revoked without affecting the predecessor, so retry replacement",
+                ));
+            }
+            NormalCreateDisposition::Conflict => {
+                state.credential_rotation = None;
+                persist_deployment_state(state_path, state).map_err(|_| {
+                    local_error(
+                        identity,
+                        "deployment_state_write_failed",
+                        "the successor collision cleanup could not be retained",
+                    )
+                })?;
+                return Err(local_error(
+                    identity,
+                    "rotation_successor_identity_conflict",
+                    "the generated successor capability identity collided; the predecessor remains active, so retry replacement",
+                ));
+            }
+        }
+        if !successor_path.exists() {
+            return Err(local_error(
+                identity,
+                "rotation_successor_credential_missing",
+                "the successor credential was not retained; the predecessor remains active",
+            ));
+        }
+        state
+            .credential_rotation
+            .as_mut()
+            .ok_or_else(|| invalid_input(identity))?
+            .phase = ApplicationCredentialRotationPhase::SuccessorBound;
+        persist_deployment_state(state_path, state).map_err(|_| {
+            local_error(
+                identity,
+                "deployment_state_write_failed",
+                "the successor binding could not be retained",
+            )
+        })?;
+        interrupt_application_deployment_after(environment, "rotation_successor_bound");
+    }
+
+    if state.credential_rotation.as_ref().is_some_and(|rotation| {
+        rotation.phase == ApplicationCredentialRotationPhase::SuccessorBound
+    }) {
+        prove_application_successor(identity, config, environment, &successor_path, role).await?;
+        state
+            .credential_rotation
+            .as_mut()
+            .ok_or_else(|| invalid_input(identity))?
+            .phase = ApplicationCredentialRotationPhase::SuccessorProven;
+        persist_deployment_state(state_path, state).map_err(|_| {
+            local_error(
+                identity,
+                "deployment_state_write_failed",
+                "the successor proof could not be retained",
+            )
+        })?;
+        interrupt_application_deployment_after(environment, "rotation_successor_proven");
+    }
+
+    if state.credential_rotation.as_ref().is_some_and(|rotation| {
+        rotation.phase == ApplicationCredentialRotationPhase::SuccessorProven
+    }) {
+        persist_application_configs(
+            deployment_root,
+            config,
+            &successor_path,
+            authentication_audience,
+        )
+        .map_err(|_| {
+            local_error(
+                identity,
+                "application_config_write_failed",
+                "private application configuration could not switch to the proven successor",
+            )
+        })?;
+        state
+            .credential_rotation
+            .as_mut()
+            .ok_or_else(|| invalid_input(identity))?
+            .phase = ApplicationCredentialRotationPhase::ConfigsSwitched;
+        persist_deployment_state(state_path, state).map_err(|_| {
+            local_error(
+                identity,
+                "deployment_state_write_failed",
+                "the successor configuration switch could not be retained",
+            )
+        })?;
+        interrupt_application_deployment_after(environment, "rotation_configs_switched");
+    }
+
+    if state.credential_rotation.as_ref().is_some_and(|rotation| {
+        rotation.phase == ApplicationCredentialRotationPhase::ConfigsSwitched
+    }) {
+        let predecessor_id = state
+            .credential_rotation
+            .as_ref()
+            .ok_or_else(|| invalid_input(identity))?
+            .predecessor_capability_id
+            .clone();
+        revoke_deployment_capability(
+            identity,
+            operator_client,
+            operator_metadata,
+            &predecessor_id,
+        )
+        .await?;
+        state
+            .credential_rotation
+            .as_mut()
+            .ok_or_else(|| invalid_input(identity))?
+            .phase = ApplicationCredentialRotationPhase::PredecessorRevoked;
+        persist_deployment_state(state_path, state).map_err(|_| {
+            local_error(
+                identity,
+                "deployment_state_write_failed",
+                "predecessor revocation could not be retained",
+            )
+        })?;
+        interrupt_application_deployment_after(environment, "rotation_predecessor_revoked");
+    }
+
+    let rotation = state
+        .credential_rotation
+        .as_ref()
+        .ok_or_else(|| invalid_input(identity))?
+        .clone();
+    if rotation.phase != ApplicationCredentialRotationPhase::PredecessorRevoked {
+        return Err(local_error(
+            identity,
+            "credential_rotation_incomplete",
+            "credential rotation did not reach a terminal retained phase",
+        ));
+    }
+    let predecessor_path = state
+        .role
+        .as_ref()
+        .ok_or_else(|| invalid_input(identity))
+        .and_then(|role| {
+            retained_application_credential_path(deployment_root, role)
+                .map_err(|_| invalid_input(identity))
+        })?;
+    if predecessor_path != successor_path && predecessor_path.exists() {
+        fs::remove_file(&predecessor_path).map_err(|_| {
+            local_error(
+                identity,
+                "revoked_credential_cleanup_failed",
+                "the revoked predecessor credential could not be removed",
+            )
+        })?;
+    }
+    state.role = Some(ApplicationDeploymentRoleState {
+        role_name: rotation.target_role_name,
+        role_identity: rotation.target_role_identity,
+        capability_id: rotation.successor_capability_id,
+        bound: true,
+        authentication_audience: Some(rotation.authentication_audience),
+        credential_file: rotation.successor_credential_file,
+    });
+    state.credential_rotation = None;
+    persist_deployment_state(state_path, state).map_err(|_| {
+        local_error(
+            identity,
+            "deployment_state_write_failed",
+            "the completed credential rotation could not be retained",
+        )
+    })?;
+    Ok(successor_path)
+}
+
 async fn bind_compiled_role(
     binding: PreparedRoleBinding,
     identity: CommandIdentity,
     config: &EffectiveConfig,
     environment: &dyn Environment,
 ) -> Terminal {
+    match create_compiled_role_binding(binding, identity, config, environment).await {
+        Ok(disposition) => render_normal_create(identity, &disposition),
+        Err(terminal) => terminal,
+    }
+}
+
+async fn create_compiled_role_binding(
+    binding: PreparedRoleBinding,
+    identity: CommandIdentity,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Result<NormalCreateDisposition, Terminal> {
     let PreparedRoleBinding {
         role,
         principal,
@@ -4942,16 +5494,21 @@ async fn bind_compiled_role(
     } = binding;
     let lifetime_seconds = match parse_nonzero_u32(&lifetime_seconds) {
         Ok(value) => value,
-        Err(()) => return invalid_input(identity),
+        Err(()) => return Err(invalid_input(identity)),
     };
     let capability_id = match capability_id {
         Some(value) => match parse_uuid_v7(&value) {
             Some(value) => value,
-            None => return invalid_input(identity),
+            None => return Err(invalid_input(identity)),
         },
         None => match generate_capability_id() {
             Ok(value) => value.into_bytes(),
-            Err(error) => return client_error(identity, &ClientError::IdentifierGeneration(error)),
+            Err(error) => {
+                return Err(client_error(
+                    identity,
+                    &ClientError::IdentifierGeneration(error),
+                ));
+            }
         },
     };
     if validate_path(&credential_output).is_err()
@@ -4959,7 +5516,7 @@ async fn bind_compiled_role(
         || principal.is_empty()
         || audiences.is_empty()
     {
-        return invalid_input(identity);
+        return Err(invalid_input(identity));
     }
     let request = v1::CreateCapabilityRequest {
         request_id: Vec::new(),
@@ -4977,50 +5534,62 @@ async fn bind_compiled_role(
     };
     let template = match NormalCapabilityCreateTemplate::new(request) {
         Ok(template) => template,
-        Err(_) => return role_invalid(identity),
+        Err(_) => return Err(role_invalid(identity)),
     };
     let metadata = match required_metadata(identity, config, environment) {
         Ok(metadata) => metadata,
-        Err(terminal) => return terminal,
+        Err(terminal) => return Err(terminal),
     };
     let mut client = match connect(config).await {
         Ok(client) => client,
-        Err(error) => return client_error(identity, &error),
+        Err(error) => return Err(client_error(identity, &error)),
     };
     let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
     let mut response =
         match submit_normal_create_retry(&mut client, &template, attempts, &metadata).await {
             Ok(response) => response,
             Err(ClientError::OutcomeUnknown(_)) => {
-                return uncertain(
+                return Err(uncertain(
                     identity,
                     "role_bind_outcome_unknown",
                     "the role-binding outcome remains unknown",
                     "retry_with_same_capability_id",
                     Some(&capability_id),
-                );
+                ));
             }
-            Err(error) => return client_error(identity, &error),
+            Err(error) => return Err(client_error(identity, &error)),
         };
     let Some((disposition, token)) = take_normal_create_disposition(&mut response) else {
-        return local_error(identity, "output_render_failed", "output rendering failed");
+        return Err(local_error(
+            identity,
+            "output_render_failed",
+            "output rendering failed",
+        ));
     };
     match (&disposition, token) {
         (NormalCreateDisposition::Created(_), Some(token)) => {
+            interrupt_application_deployment_after(
+                environment,
+                "rotation_successor_created_remote",
+            );
             if retain_normal_token(&credential_output, token).is_err() {
-                return local_error(
+                return Err(local_error(
                     identity,
                     "credential_retention_failed",
                     "credential retention failed",
-                );
+                ));
             }
         }
         (NormalCreateDisposition::Created(_), None) | (_, Some(_)) => {
-            return local_error(identity, "output_render_failed", "output rendering failed");
+            return Err(local_error(
+                identity,
+                "output_render_failed",
+                "output rendering failed",
+            ));
         }
         _ => {}
     }
-    render_normal_create(identity, &disposition)
+    Ok(disposition)
 }
 
 async fn role_command(
@@ -6516,6 +7085,9 @@ fn demo_error(
 }
 
 async fn connect(config: &EffectiveConfig) -> Result<RiffDbClient, ClientError> {
+    if let Some(tls) = &config.tls {
+        return RiffDbClient::connect_verified_tls(tls).await;
+    }
     let endpoint = config
         .endpoint
         .parse()
@@ -8051,6 +8623,7 @@ mod tests {
             output: crate::cli::OutputMode::Json,
             max_attempts: 3,
             credential_file: None,
+            tls: None,
         }
     }
 
@@ -8154,6 +8727,7 @@ mod tests {
             capability_id: "01900000-0000-7000-8000-000000000001".to_owned(),
             bound: true,
             authentication_audience: Some("riffdb-grpc-loopback".to_owned()),
+            credential_file: String::new(),
         });
         persist_deployment_state(&path, &state).expect("durable deployment state");
 
@@ -8201,7 +8775,41 @@ mod tests {
         assert!(legacy.query_module_identities.is_empty());
         assert!(legacy.reactive_modules_deployed.is_empty());
         assert!(legacy.reactive_module_identities.is_empty());
+        assert!(legacy.credential_rotation.is_none());
         fs::remove_dir_all(directory).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn credential_rotation_state_is_role_bound_and_path_closed() {
+        let role = ApplicationDeploymentRoleState {
+            role_name: "EaApplication".to_owned(),
+            role_identity: "ef".repeat(32),
+            capability_id: "01900000-0000-7000-8000-000000000001".to_owned(),
+            bound: true,
+            authentication_audience: Some("riffdb-application".to_owned()),
+            credential_file: String::new(),
+        };
+        let rotation = ApplicationCredentialRotationState {
+            predecessor_capability_id: role.capability_id.clone(),
+            successor_capability_id: "01900000-0000-7000-8000-000000000002".to_owned(),
+            successor_credential_file:
+                "application-01900000-0000-7000-8000-000000000002.credential".to_owned(),
+            target_role_name: role.role_name.clone(),
+            target_role_identity: role.role_identity.clone(),
+            authentication_audience: "riffdb-application".to_owned(),
+            phase: ApplicationCredentialRotationPhase::IntentRetained,
+        };
+        assert!(valid_credential_rotation(&rotation, Some(&role)));
+
+        let mut invalid = rotation.clone();
+        invalid.successor_credential_file = "../application.credential".to_owned();
+        assert!(!valid_credential_rotation(&invalid, Some(&role)));
+        let mut invalid = rotation.clone();
+        invalid.authentication_audience = "another-audience".to_owned();
+        assert!(!valid_credential_rotation(&invalid, Some(&role)));
+        let mut unbound = role;
+        unbound.bound = false;
+        assert!(!valid_credential_rotation(&rotation, Some(&unbound)));
     }
 
     #[test]
@@ -8228,6 +8836,32 @@ mod tests {
         )));
         let mcp = fs::read_to_string(directory.join("mcp.toml")).expect("MCP config");
         assert!(mcp.contains("expected_audience = \"riffdb-grpc-loopback\"\n"));
+
+        let mut remote = test_config();
+        remote.endpoint = "https://127.0.0.1:7443".to_owned();
+        remote.tls = Some(
+            riffdb_config::TlsClientConfig::new(
+                riffdb_config::CanonicalHttpsEndpoint::parse(&remote.endpoint)
+                    .expect("HTTPS endpoint"),
+                riffdb_config::ProtectedFilePath::new(directory.join("trust.pem"))
+                    .expect("trust path"),
+                riffdb_config::TlsServerIdentity::parse("127.0.0.1").expect("server identity"),
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+                std::num::NonZeroU32::new(4).expect("pool bound"),
+                std::num::NonZeroU32::new(64).expect("stream bound"),
+            )
+            .expect("TLS client config"),
+        );
+        persist_application_configs(&directory, &remote, relative, "riffdb-application")
+            .expect("remote application configs");
+        let client = fs::read_to_string(directory.join("client.toml")).expect("client config");
+        assert!(client.contains(&format!(
+            "tls_trust_root = {}\n",
+            serde_json::to_string(directory.join("trust.pem").to_str().expect("UTF-8 path"))
+                .expect("quoted path")
+        )));
+        assert!(client.contains("tls_server_name = \"127.0.0.1\"\n"));
 
         fs::remove_dir_all(directory).expect("fixture cleanup");
     }

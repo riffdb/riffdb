@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+    printf 'remote Compose acceptance failed: %s\n' "$1" >&2
+    exit 1
+}
+
+for tool in docker openssl ruby; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
+done
+docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
+
+workspace="$(cd "$(dirname "$0")/.." && pwd -P)"
+temporary_parent="${TMPDIR:-${HOME}/tmp}"
+mkdir -p "$temporary_parent"
+work_root="$(mktemp -d "$temporary_parent/riffdb-remote-compose.XXXXXX")"
+runtime_root="$work_root/runtime"
+mkdir -p "$runtime_root/data" "$runtime_root/backups" "$runtime_root/bootstrap"
+chmod 0700 "$work_root" "$runtime_root" "$runtime_root/data" "$runtime_root/backups" \
+    "$runtime_root/bootstrap"
+
+image="riffdb:remote-alpha-acceptance"
+project="riffdb-remote-$PPID-$$"
+proxy_port="$(ruby -rsocket -e 's = TCPServer.new("127.0.0.1", 0); puts s.addr[1]; s.close')"
+compose=(docker compose --project-name "$project" -f "$workspace/release/container/compose.yaml")
+
+cleanup() {
+    RIFFDB_CONTAINER_ROOT="$runtime_root" \
+    RIFFDB_CONTAINER_UID="$(id -u)" \
+    RIFFDB_CONTAINER_GID="$(id -g)" \
+    RIFFDB_IMAGE="$image" \
+    RIFFDB_PROXY_PORT="$proxy_port" \
+        "${compose[@]}" down --timeout 25 >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+cp "$workspace/release/container/"{riffdbd,liveness,application,operator}.toml "$runtime_root/"
+sed "s#public_endpoint = .*#public_endpoint = \"https://127.0.0.1:$proxy_port\"#" \
+    "$runtime_root/riffdbd.toml" >"$work_root/riffdbd.toml.next"
+mv "$work_root/riffdbd.toml.next" "$runtime_root/riffdbd.toml"
+chmod 0600 "$runtime_root/"*.toml
+printf '%s\n' \
+    'riffdb-capability-digest-keys-v1' \
+    '1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' \
+    >"$runtime_root/capability.keys"
+printf '%s\n' \
+    'riffdb-idempotency-digest-keys-v1' \
+    '1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f' \
+    >"$runtime_root/idempotency.keys"
+chmod 0600 "$runtime_root/"*.keys
+
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+    -subj '/CN=RiffDB remote acceptance CA' \
+    -keyout "$work_root/ca.key" -out "$runtime_root/riffdb-ca.pem" \
+    >/dev/null 2>&1
+cat >"$work_root/server.ext" <<'EOF'
+subjectAltName=DNS:riffdbd,DNS:riffdb-proxy,IP:127.0.0.1
+extendedKeyUsage=serverAuth
+EOF
+openssl req -newkey rsa:2048 -nodes -subj '/CN=riffdbd' \
+    -keyout "$runtime_root/server-key.pem" -out "$work_root/server.csr" \
+    >/dev/null 2>&1
+openssl x509 -req -days 2 -sha256 \
+    -in "$work_root/server.csr" \
+    -CA "$runtime_root/riffdb-ca.pem" -CAkey "$work_root/ca.key" -CAcreateserial \
+    -extfile "$work_root/server.ext" -out "$runtime_root/server-chain.pem" \
+    >/dev/null 2>&1
+chmod 0600 "$runtime_root/server-key.pem" "$work_root/ca.key"
+chmod 0444 "$runtime_root/server-chain.pem" "$runtime_root/riffdb-ca.pem"
+
+cat >"$work_root/bootstrap.json" <<'EOF'
+{
+  "principal_id": "container-alpha-operator",
+  "actor_kind": "human",
+  "requested_lifetime_seconds": 3600,
+  "audiences": ["riffdb-container-application"],
+  "grant": {
+    "tenant_scope": {"type": "global"},
+    "partition_scope": {"type": "all"},
+    "permissions": [
+      {"type": "validate_contract"},
+      {"type": "read_contract"},
+      {"type": "deploy_contract"},
+      {"type": "read_health"},
+      {"type": "create_capability"},
+      {"type": "revoke_capability"},
+      {"type": "administer_capabilities"}
+    ],
+    "field_visibility": [],
+    "max_scan_rows": 50,
+    "approval_required": []
+  }
+}
+EOF
+cat >"$work_root/application.json" <<'EOF'
+{
+  "principal_id": "container-alpha-application",
+  "actor_kind": "service",
+  "requested_lifetime_seconds": 3600,
+  "audiences": ["riffdb-container-application"],
+  "grant": {
+    "tenant_scope": {"type": "global"},
+    "partition_scope": {"type": "all"},
+    "permissions": [{"type": "read_health"}],
+    "field_visibility": [],
+    "max_scan_rows": 50,
+    "approval_required": []
+  }
+}
+EOF
+cat >"$work_root/bootstrap-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$proxy_port"
+database = "default"
+output = "json"
+max_attempts = 3
+tls_trust_root = "$runtime_root/riffdb-ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+cat >"$runtime_root/bootstrap/bootstrap.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:7443"
+database = "default"
+output = "json"
+max_attempts = 3
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+cp "$work_root/bootstrap.json" "$runtime_root/bootstrap/bootstrap.json"
+chmod 0600 "$work_root/"*.json "$work_root/bootstrap-client.toml"
+chmod 0600 "$runtime_root/bootstrap/"*.toml "$runtime_root/bootstrap/"*.json
+
+cd "$workspace"
+TMPDIR="$temporary_parent" cargo +1.97.0 build --release -p riffdb-cli -p riffdb-server
+docker build \
+    --build-arg RIFFDB_PROFILE=release \
+    -t "$image" -f release/container/Dockerfile . >/dev/null
+
+RIFFDB_CONTAINER_ROOT="$runtime_root" \
+RIFFDB_CONTAINER_UID="$(id -u)" \
+RIFFDB_CONTAINER_GID="$(id -g)" \
+RIFFDB_IMAGE="$image" \
+RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" config --quiet
+RIFFDB_CONTAINER_ROOT="$runtime_root" \
+RIFFDB_CONTAINER_UID="$(id -u)" \
+RIFFDB_CONTAINER_GID="$(id -g)" \
+RIFFDB_IMAGE="$image" \
+RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" up -d --wait riffdbd riffdb-proxy
+
+cli="$workspace/target/release/riffdb"
+printf 'remote-compose phase=liveness\n' >&2
+"$cli" --config "$work_root/bootstrap-client.toml" server health >/dev/null
+printf 'remote-compose phase=bootstrap\n' >&2
+if ! RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+    RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" exec -T riffdbd \
+    riffdb --config /run/bootstrap/bootstrap.toml capability bootstrap \
+    --request /run/bootstrap/bootstrap.json \
+    --generate /run/bootstrap/bootstrap.credential \
+    --bearer-output /run/bootstrap/operator.credential \
+    >"$work_root/bootstrap-result.jsonl"; then
+    sed -n '1,20p' "$work_root/bootstrap-result.jsonl" >&2
+    fail "operator bootstrap failed"
+fi
+cp "$runtime_root/bootstrap/operator.credential" "$runtime_root/operator.credential"
+chmod 0600 "$runtime_root/operator.credential"
+
+cat >>"$work_root/bootstrap-client.toml" <<EOF
+credential_file = "$runtime_root/operator.credential"
+EOF
+printf 'remote-compose phase=application-credential\n' >&2
+if ! "$cli" --config "$work_root/bootstrap-client.toml" capability create \
+    --request "$work_root/application.json" \
+    --capability-id 01900000-0000-7000-8000-000000000001 \
+    --credential-output "$runtime_root/application.credential" \
+    >"$work_root/application-create.jsonl"; then
+    sed -n '1,20p' "$work_root/application-create.jsonl" >&2
+    fail "application credential creation failed"
+fi
+chmod 0600 "$runtime_root/application.credential"
+cp "$runtime_root/application.credential" "$work_root/predecessor.credential"
+chmod 0600 "$work_root/predecessor.credential"
+
+RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" --profile operator run --rm operator-probe >/dev/null
+RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" --profile application run --rm application-probe >/dev/null
+
+# Publish the same valid identity through new inodes. A new handshake triggers
+# server reload; deterministic paused-clock coverage proves predecessor drain.
+cp "$runtime_root/server-chain.pem" "$work_root/server-chain.next"
+cp "$runtime_root/server-key.pem" "$work_root/server-key.next"
+chmod 0444 "$work_root/server-chain.next"
+chmod 0600 "$work_root/server-key.next"
+mv "$work_root/server-chain.next" "$runtime_root/server-chain.pem"
+mv "$work_root/server-key.next" "$runtime_root/server-key.pem"
+"$cli" --config "$work_root/bootstrap-client.toml" server health >/dev/null
+
+# Prove successor-before-revocation with disjoint files, then prove the old
+# bearer is rejected even over an established public endpoint.
+"$cli" --config "$work_root/bootstrap-client.toml" capability create \
+    --request "$work_root/application.json" \
+    --capability-id 01900000-0000-7000-8000-000000000002 \
+    --credential-output "$work_root/application.next.credential" >/dev/null
+chmod 0600 "$work_root/application.next.credential"
+cp "$work_root/application.next.credential" "$runtime_root/.application.credential.next"
+chmod 0600 "$runtime_root/.application.credential.next"
+mv "$runtime_root/.application.credential.next" "$runtime_root/application.credential"
+RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" --profile application run --rm application-probe >/dev/null
+"$cli" --config "$work_root/bootstrap-client.toml" capability revoke \
+    01900000-0000-7000-8000-000000000001 --reason replaced >/dev/null
+
+sed "s#credential_file = .*#credential_file = \"$work_root/predecessor.credential\"#" \
+    "$work_root/bootstrap-client.toml" >"$work_root/predecessor.toml"
+chmod 0600 "$work_root/predecessor.toml"
+if "$cli" --config "$work_root/predecessor.toml" server health >/dev/null 2>&1; then
+    fail "revoked application predecessor remained authorized"
+fi
+
+cleanup
+trap - EXIT
+[[ -s "$runtime_root/data/riffdb.redb" ]] || fail "container did not retain its database"
+printf 'Remote Compose acceptance passed (TLS, proxy, liveness, readiness, rotation, drain).\n'

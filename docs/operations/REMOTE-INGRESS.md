@@ -78,6 +78,73 @@ peer identity on the client. There is no mTLS, native-root discovery,
 trust-all, redirect, downgrade, cipher-suite, protocol-version, or provider
 configuration.
 
+The CLI accepts the same verified target through its ordinary client file:
+
+```toml
+[client]
+endpoint = "https://riffdb.internal.example:7443"
+database = "default"
+credential_file = "/run/secrets/riffdb-application.credential"
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "riffdb.internal.example"
+```
+
+`RIFFDB_TLS_TRUST_ROOT` and `RIFFDB_TLS_SERVER_NAME` are the only environment
+overrides for those TLS selectors. They must be supplied together. The CLI
+does not accept certificate material, bearer material, or a verification
+override on the command line.
+
+## Liveness and readiness
+
+`riffdb server health` without a credential is a payload-free liveness probe.
+It must also omit a database selector. Its successful response says only that
+the application protocol process is alive: lifecycle is unspecified, the
+database alias and authentication audience are empty, and readiness is false.
+Adding a database selector to an unauthenticated probe rejects rather than
+confirming whether that alias exists.
+
+Database readiness is a separate authenticated probe. Supply the selected
+database and a protected credential authorized for health; the response may
+then include lifecycle, readiness, database alias, audience, and component
+status. Container routing must use authenticated readiness, while process
+restart may use unauthenticated liveness. Neither probe prints bearer material.
+
+## Application credential rotation
+
+An application deployed with `--provision-role` retains its exact role hash,
+capability ID, protected credential path, and resumable deployment state under
+`.riffdb/deployments/<database>/`. Rotate it by rerunning the same exact locked
+deployment with the same role and explicit replacement:
+
+```bash
+riffdb --config /run/secrets/riffdb-operator.toml application deploy \
+  riffdb.application.json \
+  --lock riffdb.application.lock.json \
+  --provision-role TicketDeskApplication \
+  --replace-role-credential
+```
+
+Replacement is a retained campaign, not revoke-then-create. RiffDB records a
+fresh successor identity, creates a new create-only protected credential file,
+proves the selected database and audience with authenticated health, proves
+the successor's active contract and complete authorized command/query catalog,
+switches generated application client configuration, then explicitly revokes
+the predecessor. The predecessor file is removed only after revocation is
+durably observed. The bearer is never returned in command output or deployment
+state.
+
+If the process stops at any phase, rerun the identical command with
+`--replace-role-credential`. Omitting the flag while a campaign is active
+fails with a resume instruction. If a crash loses a just-created successor
+secret before local retention, the retry revokes that exact unusable
+successor, preserves the predecessor, and asks for one more retry with a fresh
+identity. A capability-ID conflict is never treated as authority owned by the
+campaign and is never revoked.
+
+Certificate/trust rotation and capability rotation are independent. Replacing
+TLS files does not create, widen, or revoke an application role; replacing an
+application credential does not modify TLS trust.
+
 ## Protected local socket
 
 For a same-host or same-pod process, configure:
@@ -116,3 +183,36 @@ always repeated by the shared service.
 Per-principal request-rate limits and tenant storage quotas are explicitly
 deferred for alpha. Deploy remote ingress only on a controlled network behind
 external connection controls; do not claim untrusted public multi-tenancy.
+
+## Compose and Kubernetes
+
+The checked release examples are:
+
+- `release/container/compose.yaml`,
+  with a direct-TLS database, TCP pass-through proxy, and disjoint one-shot
+  application/operator proof containers; and
+- `release/kubernetes/riffdb.yaml`,
+  with a stateful database pod, persistent backup volume, authenticated
+  readiness, payload-free liveness, proxy Deployment, and separate application
+  and operator Secrets.
+
+The application workloads mount no database, backup, digest key, TLS private
+key, or operator credential. Kubernetes Secret projections are copied by a
+bounded init container into a memory-backed owner-only directory because
+RiffDB deliberately rejects group-readable bearer and private-key files. The
+Kubernetes Service publishes the not-yet-ready TLS endpoint only so an operator
+can perform the initial bootstrap and issue the least-authority readiness
+credential; application routing begins only after authenticated readiness.
+Bootstrap itself remains local-authority-only. The Compose ceremony executes
+that one operation inside the database container's loopback namespace and
+publishes the result to a protected operator-only handoff directory. It does
+not permit bootstrap through the proxy; every post-bootstrap operation and all
+application traffic use authenticated TLS through the sibling network.
+
+Run `./scripts/remote-compose-acceptance` for the real container proof and
+`./scripts/remote-kubernetes-render-check` for the closed manifest gate. The
+Compose proof builds the release image, starts sibling containers, bootstraps
+through the TLS proxy, proves separate credentials, rotates certificate files
+and the application credential, rejects the revoked predecessor, and performs
+a bounded graceful stop. Neither example treats proxy headers or network
+placement as authority.

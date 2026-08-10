@@ -885,6 +885,14 @@ pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
     match response.result.as_ref() {
         Some(Result::PreBootstrap(health)) => {
             let lifecycle = match v1::PreBootstrapLifecycle::try_from(health.lifecycle) {
+                Ok(v1::PreBootstrapLifecycle::Unspecified)
+                    if health.liveness
+                        && !health.readiness
+                        && response.database_alias.is_empty()
+                        && response.authentication_audience.is_empty() =>
+                {
+                    "process_alive"
+                }
                 Ok(v1::PreBootstrapLifecycle::InitializingValidation) => "initializing_validation",
                 Ok(v1::PreBootstrapLifecycle::InitializingBootstrap) => "initializing_bootstrap",
                 _ => return rendering_failure(CommandIdentity::ServerHealth),
@@ -2732,6 +2740,7 @@ mod tests {
         "capability.revoke.capability_not_found.jsonl",
         "server.health.initializing_validation.jsonl",
         "server.health.initializing_bootstrap.jsonl",
+        "server.health.process_alive.jsonl",
         "server.health.ready.jsonl",
         "server.health.not_ready.jsonl",
         "server.health.degraded.jsonl",
@@ -2804,7 +2813,7 @@ mod tests {
             );
             covered.insert(name);
         }
-        assert_eq!(covered.len(), 100);
+        assert_eq!(covered.len(), 101);
     }
 
     #[test]
@@ -3638,6 +3647,7 @@ mod tests {
     fn health_response(value: &JsonValue) -> v1::HealthResponse {
         let result = if value["status"] == "pre_bootstrap" {
             let lifecycle = match value["lifecycle"].as_str().expect("lifecycle") {
+                "process_alive" => v1::PreBootstrapLifecycle::Unspecified,
                 "initializing_validation" => v1::PreBootstrapLifecycle::InitializingValidation,
                 "initializing_bootstrap" => v1::PreBootstrapLifecycle::InitializingBootstrap,
                 unknown => panic!("unknown lifecycle {unknown}"),
@@ -3885,6 +3895,22 @@ mod tests {
         assert_fixture(
             &render_health(&health),
             include_bytes!("../fixtures/output-v1/server.health.initializing_bootstrap.jsonl"),
+        );
+
+        let process_alive = v1::HealthResponse {
+            result: Some(v1::health_response::Result::PreBootstrap(
+                v1::PreBootstrapHealth {
+                    lifecycle: v1::PreBootstrapLifecycle::Unspecified as i32,
+                    liveness: true,
+                    readiness: false,
+                },
+            )),
+            database_alias: String::new(),
+            authentication_audience: String::new(),
+        };
+        assert_fixture(
+            &render_health(&process_alive),
+            include_bytes!("../fixtures/output-v1/server.health.process_alive.jsonl"),
         );
     }
 

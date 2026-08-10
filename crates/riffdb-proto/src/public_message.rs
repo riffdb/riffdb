@@ -2392,12 +2392,19 @@ fn validate_health_response(message: &v1::HealthResponse) -> Result<(), PublicWi
         .ok_or(PublicWireError::MissingRequiredField)?
     {
         v1::health_response::Result::PreBootstrap(health) => {
-            if !matches!(
-                v1::PreBootstrapLifecycle::try_from(health.lifecycle),
-                Ok(v1::PreBootstrapLifecycle::InitializingValidation
-                    | v1::PreBootstrapLifecycle::InitializingBootstrap)
-            ) || health.readiness
-            {
+            let lifecycle = v1::PreBootstrapLifecycle::try_from(health.lifecycle)
+                .map_err(|_| PublicWireError::InvalidEnum)?;
+            let process_only = lifecycle == v1::PreBootstrapLifecycle::Unspecified
+                && health.liveness
+                && !health.readiness
+                && message.database_alias.is_empty()
+                && message.authentication_audience.is_empty();
+            let initializing = matches!(
+                lifecycle,
+                v1::PreBootstrapLifecycle::InitializingValidation
+                    | v1::PreBootstrapLifecycle::InitializingBootstrap
+            ) && !health.readiness;
+            if !process_only && !initializing {
                 return Err(PublicWireError::InconsistentFields);
             }
             Ok(())
@@ -2405,6 +2412,9 @@ fn validate_health_response(message: &v1::HealthResponse) -> Result<(), PublicWi
         v1::health_response::Result::Authenticated(health) => {
             // history_incarnation may be 0 while the server is still initializing
             // (pre-ready); once Ready it must be ≥ 1.
+            if message.database_alias.is_empty() || message.authentication_audience.is_empty() {
+                return Err(PublicWireError::InconsistentFields);
+            }
             if health.status == v1::HealthStatus::Ready as i32 && health.history_incarnation == 0 {
                 return Err(PublicWireError::InvalidIdentity);
             }

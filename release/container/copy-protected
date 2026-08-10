@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: copy-protected SOURCE_DIRECTORY DESTINATION_DIRECTORY" >&2
+  exit 64
+fi
+
+umask 077
+mkdir -p "$2"
+for source in "$1"/*; do
+  [ -f "$source" ] || continue
+  destination="$2/$(basename "$source")"
+  cp "$source" "$destination"
+  chmod 0600 "$destination"
+  chown 65532:65532 "$destination"
+done

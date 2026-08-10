@@ -87,5 +87,10 @@ name = "remote_ingress"
 path = "../../tests/remote_ingress.rs"
 harness = false
 
+[[test]]
+name = "remote_deployment_rotation"
+path = "../../tests/remote_deployment_rotation.rs"
+harness = false
+
 [lints]
 workspace = true

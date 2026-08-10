@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "yaml"
+
+root = File.expand_path("..", __dir__)
+path = File.join(root, "release", "kubernetes", "riffdb.yaml")
+documents = YAML.safe_load_stream(File.read(path, encoding: "UTF-8"), aliases: false).compact
+errors = []
+
+index = documents.to_h do |document|
+  [[document.fetch("kind"), document.fetch("metadata").fetch("name")], document]
+end
+
+stateful = index[["StatefulSet", "riffdbd"]]
+proxy = index[["Deployment", "riffdb-proxy"]]
+application = index[["Job", "riffdb-application-proof"]]
+operator = index[["Job", "riffdb-operator-proof"]]
+service = index[["Service", "riffdbd"]]
+config = index[["ConfigMap", "riffdb-config"]]
+
+errors << "missing RiffDB StatefulSet" unless stateful
+errors << "missing pass-through proxy Deployment" unless proxy
+errors << "missing application proof Job" unless application
+errors << "missing operator proof Job" unless operator
+errors << "bootstrap Service must publish not-ready TLS address" unless service&.dig("spec", "publishNotReadyAddresses") == true
+
+if stateful
+  pod = stateful.dig("spec", "template", "spec")
+  container = pod.fetch("containers").find { |entry| entry["name"] == "riffdbd" }
+  errors << "RiffDB pod has no bounded graceful stop" unless pod["terminationGracePeriodSeconds"].to_i.between?(16, 300)
+  errors << "RiffDB pod has no liveness probe" unless container&.key?("livenessProbe")
+  errors << "RiffDB pod has no authenticated readiness probe" unless container&.key?("readinessProbe")
+  errors << "RiffDB pod is not non-root" unless container&.dig("securityContext", "runAsNonRoot") == true
+  mounts = container.fetch("volumeMounts", []).map { |mount| mount["mountPath"] }
+  errors << "RiffDB pod lacks data mount" unless mounts.include?("/var/lib/riffdb/data")
+  errors << "RiffDB pod lacks backup mount" unless mounts.include?("/var/lib/riffdb/backups")
+end
+
+[[application, "application"], [operator, "operator"]].each do |job, audience|
+  next unless job
+  pod = job.dig("spec", "template", "spec")
+  containers = pod.fetch("containers")
+  mounts = containers.flat_map { |container| container.fetch("volumeMounts", []) }
+  paths = mounts.map { |mount| mount["mountPath"] }
+  errors << "#{audience} proof mounts database state" if paths.any? { |entry| entry.start_with?("/var/lib/riffdb") }
+  errors << "#{audience} proof is not non-root" unless containers.all? { |entry| entry.dig("securityContext", "runAsNonRoot") == true }
+end
+
+if config
+  server = config.dig("data", "riffdbd.toml").to_s
+  liveness = config.dig("data", "liveness.toml").to_s
+  readiness = config.dig("data", "readiness.toml").to_s
+  errors << "server is not direct TLS" unless server.include?('mode = "direct_tls"')
+  errors << "server lacks finite drain" unless server.include?("drain_timeout_seconds")
+  errors << "liveness must not carry a credential" if liveness.include?("credential_file")
+  errors << "readiness must carry a protected credential" unless readiness.include?("credential_file")
+end
+
+if proxy
+  proxy_text = index[["ConfigMap", "riffdb-proxy-config"]]&.dig("data", "haproxy.cfg").to_s
+  errors << "proxy is not bounded TCP pass-through" unless proxy_text.include?("mode tcp") && proxy_text.include?("timeout client")
+  errors << "proxy attempts to assert application authority" if proxy_text.match?(/authorization|principal|tenant|database/i)
+end
+
+unless errors.empty?
+  warn errors.join("\n")
+  exit 1
+end
+
+puts "Remote Kubernetes render is closed, bounded, TLS-only, and secret-separated."

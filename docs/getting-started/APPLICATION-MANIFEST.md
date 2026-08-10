@@ -257,8 +257,11 @@ same immutable module rather than inventing a new identity.
 
 A changed lock is deliberately not resumed under an old role. If a role is
 already retained, deploy requires `--provision-role <name>` together with
-`--replace-role-credential`, revokes the predecessor capability, and binds
-the role compiled from the successor lock. Application code and scripts should
+`--replace-role-credential`. The replacement is a resumable rotation: RiffDB
+retains the predecessor, creates and proves the exact successor, atomically
+switches the protected generated client and MCP configuration, and only then
+revokes the predecessor. A retry resumes from the retained phase; it never
+revokes the only proven credential. Application code and scripts should
 read identity from the generated client or lock and should never hardcode a
 contract version or module hash.
 

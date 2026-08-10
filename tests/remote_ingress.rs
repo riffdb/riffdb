@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use riffdb_client_rust::{CallMetadata, RiffDbClient, v1};
+use riffdb_client_rust::{CallMetadata, DatabaseAlias, RiffDbClient, v1};
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
 };
@@ -130,11 +130,24 @@ fn direct_tls_real_process_acceptance() -> TestResult<()> {
                 &CallMetadata::default(),
             )
             .await?;
-        if !matches!(
-            health.result,
-            Some(v1::health_response::Result::PreBootstrap(_))
-        ) {
-            return Err("verified TLS did not reach the shared health service".into());
+        let Some(v1::health_response::Result::PreBootstrap(liveness)) = health.result else {
+            return Err("verified TLS did not reach the payload-free liveness service".into());
+        };
+        if liveness.lifecycle != v1::PreBootstrapLifecycle::Unspecified as i32
+            || !liveness.liveness
+            || liveness.readiness
+            || !health.database_alias.is_empty()
+            || !health.authentication_audience.is_empty()
+        {
+            return Err("unauthenticated TLS liveness disclosed readiness identity".into());
+        }
+        let selected = CallMetadata::default().with_database(DatabaseAlias::default_alias());
+        if client
+            .health(v1::HealthRequest { request_id: None }, &selected)
+            .await
+            .is_ok()
+        {
+            return Err("unauthenticated liveness accepted a database selector".into());
         }
 
         if matches!(

@@ -34,7 +34,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -59,7 +59,7 @@ Options:
           [default: rust] [possible values: rust, typescript, python]
       --directory <DIRECTORY>
 
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
 
@@ -91,7 +91,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -114,7 +114,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -134,7 +134,7 @@ Options:
 
       --role <ROLE_PRESET>
           [default: application]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --watch
 
@@ -169,7 +169,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -190,7 +190,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -208,7 +208,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -226,7 +226,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -254,7 +254,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -278,7 +278,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -296,7 +296,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -323,7 +323,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -346,7 +346,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -366,7 +366,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -384,7 +384,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -404,7 +404,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -425,7 +425,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -449,7 +449,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -467,7 +467,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -488,7 +488,7 @@ Arguments:
 Options:
       --config <PATH>
       --to <v2>                            [possible values: v2]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --write
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -512,7 +512,7 @@ Options:
 
       --source-only
           Compiles author-owned sources and roles without comparing the exact lock or generated files
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
 
@@ -538,7 +538,7 @@ Arguments:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -560,7 +560,7 @@ Options:
       --config <PATH>
       --write
       --check
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
       --output <human|json>                [possible values: human, json]
@@ -582,7 +582,7 @@ Arguments:
 Options:
       --config <PATH>
       --locked
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -604,7 +604,7 @@ Arguments:
 Options:
       --config <PATH>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --provision-role <ROLE>
       --database <DATABASE>
       --tenant <TENANT>
@@ -631,7 +631,7 @@ Arguments:
 Options:
       --config <PATH>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --role <ROLE>
       --database <DATABASE>
       --tenant <TENANT>
@@ -653,7 +653,7 @@ Usage: riffdb migration plan [OPTIONS]
 Options:
       --application <APPLICATION_SOURCE>   [default: riffdb.application.json]
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -672,7 +672,7 @@ Usage: riffdb migration check [OPTIONS] --operation-id <UUIDV7>
 Options:
       --application <APPLICATION_SOURCE>        [default: riffdb.application.json]
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --lock <APPLICATION_LOCK>                 [default: riffdb.application.lock.json]
       --database <DATABASE>
       --operation-id <UUIDV7>
@@ -693,7 +693,7 @@ Usage: riffdb migration apply [OPTIONS] --operation-id <UUIDV7> --confirm-apply 
 Options:
       --application <APPLICATION_SOURCE>       [default: riffdb.application.json]
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --lock <APPLICATION_LOCK>                [default: riffdb.application.lock.json]
       --database <DATABASE>
       --operation-id <UUIDV7>
@@ -716,7 +716,7 @@ Arguments:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -734,7 +734,7 @@ Arguments:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -753,7 +753,7 @@ Arguments:
 Options:
       --config <PATH>
       --expected-version <VERSION>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -776,7 +776,7 @@ Options:
       --config <PATH>
       --expected-version <VERSION>
       --concurrency <1..32>                [default: 8]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --idempotency-field <FIELD>          [default: idempotency_key]
       --checkpoint <PATH>
@@ -799,7 +799,7 @@ Arguments:
 Options:
       --config <PATH>
       --input <JSON_INPUT>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --expected-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -819,7 +819,7 @@ Arguments:
 Options:
       --config <PATH>
       --input <JSON_INPUT>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --expected-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -839,7 +839,7 @@ Arguments:
 Options:
       --config <PATH>
       --lineage <CONTRACT_LINEAGE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --idempotency-key <IDEMPOTENCY_KEY>
       --database <DATABASE>
       --outcome-uri <OUTCOME_URI>
@@ -861,7 +861,7 @@ Options:
       --config <PATH>
       --entity-key <BASE64_ENTITY_KEY>
       --contract-lineage <LINEAGE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --contract-version <VERSION>
       --database <DATABASE>
       --field <FIELD_ID>
@@ -884,7 +884,7 @@ Options:
 
       --observed-history-incarnation <INCARNATION>
           Observed history incarnation fence (ADR-0072). Stale values fail closed
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
 
@@ -910,7 +910,7 @@ Arguments:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -931,7 +931,7 @@ Arguments:
 Options:
       --config <PATH>
       --partition <FIELD=JSON_VALUE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --field <FIELD>
       --after <COMMIT:ORDINAL>
       --database <DATABASE>
@@ -957,7 +957,7 @@ Arguments:
 Options:
       --config <PATH>
       --partition <FIELD=JSON_VALUE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --field <FIELD>
       --after <COMMIT:ORDINAL>
       --database <DATABASE>
@@ -980,7 +980,7 @@ Usage: riffdb event consume [OPTIONS] --module-hash <64_HEX_CHARS> --operation <
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1005,7 +1005,7 @@ Usage: riffdb event ack [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPER
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1029,7 +1029,7 @@ Usage: riffdb event nack [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPE
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1054,7 +1054,7 @@ Usage: riffdb event seek [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPE
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1076,7 +1076,7 @@ Usage: riffdb event retire [OPTIONS] --module-hash <64_HEX_CHARS> --operation <O
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1097,7 +1097,7 @@ Usage: riffdb event status [OPTIONS] --module-hash <64_HEX_CHARS> --operation <O
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1118,7 +1118,7 @@ Usage: riffdb contextual next [OPTIONS] --module-hash <64_HEX_CHARS> --operation
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1140,7 +1140,7 @@ Usage: riffdb contextual ack [OPTIONS] --module-hash <64_HEX_CHARS> --operation 
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1164,7 +1164,7 @@ Usage: riffdb contextual nack [OPTIONS] --module-hash <64_HEX_CHARS> --operation
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1189,7 +1189,7 @@ Usage: riffdb contextual status [OPTIONS] --module-hash <64_HEX_CHARS> --operati
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1210,7 +1210,7 @@ Usage: riffdb contextual react [OPTIONS] --module-hash <64_HEX_CHARS> --operatio
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --operation <OPERATION>
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
@@ -1238,7 +1238,7 @@ Options:
       --config <PATH>
       --input <JSON_INPUT>
       --contract-lineage <LINEAGE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --contract-version <VERSION>
       --database <DATABASE>
       --after <COMMIT_SEQUENCE>
@@ -1260,7 +1260,7 @@ Options:
       --config <PATH>
       --contract-lineage <LINEAGE>
       --contract-version <VERSION>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1280,7 +1280,7 @@ Options:
       --config <PATH>
       --contract-lineage <LINEAGE>
       --contract-version <VERSION>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1300,7 +1300,7 @@ Options:
       --config <PATH>
       --contract-lineage <LINEAGE>
       --contract-version <VERSION>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1320,7 +1320,7 @@ Options:
       --config <PATH>
       --parameters <JSON_PARAMETERS>
       --cursor <CURSOR>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --read-after-commit <COMMIT_SEQUENCE>
       --contract-lineage <LINEAGE>
@@ -1342,7 +1342,7 @@ Arguments:
 Options:
       --config <PATH>
       --module-hash <MODULE_HASH_HEX>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --parameters <JSON_PARAMETERS>
       --cursor <CURSOR>
       --database <DATABASE>
@@ -1368,7 +1368,7 @@ Arguments:
 Options:
       --config <PATH>
       --module-hash <64_HEX_CHARS>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --parameter <NAME=JSON_VALUE>
       --cursor <BASE64_CURSOR>
       --database <DATABASE>
@@ -1389,7 +1389,7 @@ Arguments:
 Options:
       --config <PATH>
       --module-name <MODULE_NAME>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --module-version <POSITIVE_VERSION>
       --database <DATABASE>
       --expected-active <any|absent|MODULE_HASH_HEX>  [default: any]
@@ -1410,7 +1410,7 @@ Options:
       --config <PATH>
       --module-hash <MODULE_HASH_HEX>
       --contract-lineage <LINEAGE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --contract-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -1428,7 +1428,7 @@ Options:
       --config <PATH>
       --contract-lineage <LINEAGE>
       --contract-version <VERSION>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1451,7 +1451,7 @@ Options:
 
       --org-scope <JSON_VALUE>
           Organization scope as typed InputValue JSON (e.g. `{"type":"uuid","value":"..."}`)
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --select <FIELD>
           Selected field names (repeatable). Empty = all projected fields
@@ -1506,7 +1506,7 @@ Arguments:
 Options:
       --config <PATH>
       --role <ROLE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --tenant <TENANT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -1526,7 +1526,7 @@ Arguments:
 Options:
       --config <PATH>
       --role <ROLE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --tenant <TENANT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -1546,7 +1546,7 @@ Arguments:
 Options:
       --config <PATH>
       --role <ROLE>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --tenant <TENANT>
       --database <DATABASE>
       --principal <PRINCIPAL>
@@ -1574,7 +1574,7 @@ Options:
 
       --reason <REASON>
           [possible values: requested, replaced, suspected_compromise, policy_change]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
 
@@ -1596,7 +1596,7 @@ Usage: riffdb capability bootstrap [OPTIONS] --request <JSON_REQUEST>
 Options:
       --config <PATH>
       --request <JSON_REQUEST>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --generate <PATH>
       --bootstrap-file <PATH>
       --database <DATABASE>
@@ -1617,7 +1617,7 @@ Options:
       --config <PATH>
       --request <JSON_REQUEST>
       --capability-id <CAPABILITY_UUIDV7>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --credential-output <PATH>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -1639,7 +1639,7 @@ Options:
 
       --reason <REASON>
           [possible values: requested, replaced, suspected_compromise, policy_change]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
 
@@ -1660,7 +1660,7 @@ Usage: riffdb server health [OPTIONS]
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1678,7 +1678,7 @@ Arguments:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1697,7 +1697,7 @@ Arguments:
 Options:
       --config <PATH>
       --confirm-replace-current-database
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1715,7 +1715,7 @@ Arguments:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1733,7 +1733,7 @@ Usage: riffdb storage preflight [OPTIONS] --database-path <PATH>
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1752,7 +1752,7 @@ Options:
       --config <PATH>
       --database-path <PATH>
       --backup <BACKUP_DIRECTORY>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1770,7 +1770,7 @@ Usage: riffdb retention status [OPTIONS] --database-path <PATH>
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1791,7 +1791,7 @@ Commands:
 
 Options:
       --config <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1809,7 +1809,7 @@ Usage: riffdb retention projection-detach [OPTIONS] --database-path <PATH> --pro
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --projection-id <ID>
       --database <DATABASE>
       --reason <TEXT>
@@ -1829,7 +1829,7 @@ Usage: riffdb retention projection-reattach [OPTIONS] --database-path <PATH> --p
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --projection-id <ID>
       --database <DATABASE>
       --reason <TEXT>
@@ -1849,7 +1849,7 @@ Usage: riffdb retention prune [OPTIONS] --database-path <PATH> --target-sequence
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --target-sequence <N>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
@@ -1870,7 +1870,7 @@ Options:
 
       --case <CASE>
           [possible values: sequential, contention, same_key_replay]
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
 
@@ -1892,7 +1892,7 @@ Usage: riffdb retention hold add [OPTIONS] --database-path <PATH> --hold-id <ID>
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --hold-id <ID>
       --database <DATABASE>
       --sequence <N>
@@ -1911,7 +1911,7 @@ Usage: riffdb retention hold remove [OPTIONS] --database-path <PATH> --hold-id <
 Options:
       --config <PATH>
       --database-path <PATH>
-      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --hold-id <ID>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
