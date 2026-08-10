@@ -74,7 +74,7 @@ class BearerCredential:
     def __init__(self, token: str) -> None:
         try:
             self.__native = _native._BearerCredential(token)
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     @classmethod
@@ -83,11 +83,14 @@ class BearerCredential:
             value = cls.__new__(cls)
             value.__native = _native._BearerCredential.from_protected_file(path)
             return value
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     def has_same_presentation(self, other: BearerCredential) -> bool:
-        return bool(self.__native.has_same_presentation(other.__native))
+        try:
+            return bool(self.__native.has_same_presentation(other.__native))
+        except BaseException as error:
+            raise _translate_native(error) from None
 
     def _native_value(self) -> _native._BearerCredential:
         return self.__native
@@ -290,7 +293,15 @@ class OutcomeUnknown(Exception):
     pass
 
 
-def _translate_native(error: Exception) -> Exception:
+def _translate_native(error: BaseException) -> Exception:
+    error_type = type(error)
+    if not isinstance(error, Exception):
+        if (
+            error_type.__module__ == "pyo3_runtime"
+            and error_type.__name__ == "PanicException"
+        ):
+            return ProtocolError("the native RiffDB client failed")
+        raise error
     if not isinstance(error, _native.NativeError) or len(error.args) != 2:
         return ProtocolError("the native RiffDB client failed")
     kind, encoded = error.args
@@ -340,7 +351,7 @@ class SyncApplicationTransport:
     def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
         try:
             return cls(_native._SyncClient.connect_uri(endpoint, metadata._native_value()))
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     def close(self) -> None:
@@ -348,7 +359,7 @@ class SyncApplicationTransport:
             try:
                 self._client.close()
                 self._closed = True
-            except Exception as error:
+            except BaseException as error:
                 raise _translate_native(error) from None
 
     def __enter__(self) -> Self:
@@ -374,7 +385,7 @@ class SyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     def _execute_command(self, **request: object) -> TypedCommandResult[dict[str, object]]:
@@ -398,7 +409,7 @@ class SyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     def _command_batch(
@@ -426,7 +437,7 @@ class AsyncApplicationTransport:
     async def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
         try:
             return cls(await _native.connect_async(endpoint, metadata._native_value()))
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def close(self) -> None:
@@ -434,7 +445,7 @@ class AsyncApplicationTransport:
             try:
                 await self._client.close()
                 self._closed = True
-            except Exception as error:
+            except BaseException as error:
                 raise _translate_native(error) from None
 
     async def __aenter__(self) -> Self:
@@ -460,7 +471,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _execute_command(self, **request: object) -> TypedCommandResult[dict[str, object]]:
@@ -484,7 +495,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _consume_event_stream(self, **request: object) -> AsyncIterator[dict[str, object]]:
@@ -517,7 +528,7 @@ class AsyncApplicationTransport:
                 OutcomeUnknown,
             ):
                 raise
-            except Exception as error:
+            except BaseException as error:
                 raise _translate_native(error) from None
 
     async def _consume_contextual_subscription(
@@ -542,7 +553,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _acknowledge_contextual_item(self, **request: object) -> str:
@@ -582,7 +593,7 @@ class AsyncApplicationTransport:
             raise
         except (AttributeError, TypeError):
             raise InvalidInput("contextual work item evidence is invalid") from None
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _contextual_subscription_status(
@@ -603,7 +614,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _execute_contextual_reaction(
@@ -628,7 +639,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _acknowledge_event(self, **request: object) -> str:
@@ -656,7 +667,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _seek_event_consumer(self, **request: object) -> str:
@@ -675,7 +686,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _event_consumer_status(self, **request: object) -> dict[str, object] | None:
@@ -694,7 +705,7 @@ class AsyncApplicationTransport:
             OutcomeUnknown,
         ):
             raise
-        except Exception as error:
+        except BaseException as error:
             raise _translate_native(error) from None
 
     async def _watch_named_query(self, **request: object) -> AsyncIterator[dict[str, object]]:
@@ -722,7 +733,7 @@ class AsyncApplicationTransport:
                 OutcomeUnknown,
             ):
                 raise
-            except Exception as error:
+            except BaseException as error:
                 raise _translate_native(error) from None
 
     async def _command_batch(

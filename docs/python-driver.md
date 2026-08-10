@@ -1,9 +1,25 @@
 # Python Application Driver
 
 RiffDB's Python package is `riffdb-application`; application code imports
-`riffdb_application`. It supports CPython 3.13 and 3.14 on Linux x86_64 and
-aarch64. Wheels use the stable `cp313-abi3` interface, so installing a wheel
-does not require Rust. Building the source distribution requires Rust 1.97.0.
+`riffdb_application`. Wheels use the stable `cp313-abi3` interface, so
+installing a wheel does not require Rust. Building the source distribution
+requires Rust 1.97.0.
+
+The alpha release matrix is deliberately finite:
+
+| Python | Platform | Architecture | Status |
+| --- | --- | --- | --- |
+| CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | x86_64 | Supported alpha wheel |
+| CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | aarch64 | Supported alpha wheel |
+| CPython | musllinux | x86_64 or aarch64 | Unsupported |
+| CPython | macOS | x86_64 or arm64 | Unsupported |
+| CPython | Windows | x86_64 or arm64 | Unsupported |
+| PyPy | Any | Any | Unsupported |
+
+Unsupported combinations fail installation; there is no pure-Python transport
+fallback. The machine-readable source of truth, including the reason for each
+unsupported family, is
+`release/python/platform-matrix-v1.json` in the source distribution repository.
 
 The package is application-only. It exposes generated named queries and typed
 commands through `SyncApplicationTransport` and `AsyncApplicationTransport`.
@@ -102,8 +118,21 @@ Maintainers build both wheels and the self-contained source distribution with:
 scripts/build-python-distribution dist/python
 ```
 
+The build also writes `riffdb-python-artifacts-v1.json`, a deterministic receipt
+containing the platform-matrix digest and the name, SHA-256, and byte length of
+each artifact. The sdist contains only the pinned Rust application-client
+closure, required persistent Protobuf fixtures, licenses, and Python package;
+it does not copy the repository or depend on a checkout. The release checks
+install the wheel with Rust absent from `PATH` and install the sdist with Cargo
+network access disabled.
+
 That command defaults to `manylinux_2_28`. Local development hosts that are not
 manylinux build environments can set `RIFFDB_PYTHON_COMPATIBILITY=linux` for a
 non-release smoke artifact. The pinned GitHub workflow builds and installs the
 x86_64 and aarch64 `cp313-abi3` wheels on CPython 3.13 and 3.14; it never
-publishes them.
+publishes them. Maintainers can run the same focused checks with:
+
+```bash
+./scripts/build-python-distributions --check
+./scripts/test-python-platform-matrix
+```

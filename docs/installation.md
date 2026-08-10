@@ -234,7 +234,7 @@ same command with the same exact lock.
 ### Python applications
 
 The Python application distribution is `riffdb-application` and supports
-CPython 3.13 and 3.14 on Linux x86_64 and aarch64. Release bundles carry the
+CPython 3.13 and 3.14 with manylinux 2.28 wheels on x86_64 and aarch64. Release bundles carry the
 matching limited-API wheel under `public/python`, allowing the installed CLI to
 create a fully locked, offline scaffold:
 

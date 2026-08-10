@@ -3,15 +3,19 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-temporary="$(mktemp -d)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+temporary="$(mktemp -d "$task_tmp_root/riffdb-python-package.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 export SOURCE_DATE_EPOCH=1735689600
+export UV_CACHE_DIR="$temporary/uv-cache"
+compatibility="${RIFFDB_PYTHON_CHECK_COMPATIBILITY:-linux}"
 
 build_once() {
     local destination="$1"
     mkdir -p "$destination"
-    (cd clients/python/runtime && python3 -m maturin build --quiet --release \
-        --interpreter python3 --compatibility linux --out "$destination")
+    (cd clients/python/runtime && python3 -m maturin build --quiet --release --locked \
+        --interpreter python3 --compatibility "$compatibility" --out "$destination")
 }
 
 sdist_once() {
@@ -24,7 +28,17 @@ build_once "$temporary/one"
 build_once "$temporary/two"
 wheel_one="$(find "$temporary/one" -maxdepth 1 -type f -name '*.whl' -print -quit)"
 wheel_two="$(find "$temporary/two" -maxdepth 1 -type f -name '*.whl' -print -quit)"
-[[ "$(basename "$wheel_one")" == riffdb_application-0.1.0-cp313-abi3-* ]]
+case "$(uname -m)" in
+    x86_64|aarch64) wheel_arch="$(uname -m)" ;;
+    *) echo "unsupported Python release-wheel architecture" >&2; exit 1 ;;
+esac
+case "$compatibility" in
+    linux) expected_platform="linux_${wheel_arch}" ;;
+    manylinux_2_28) expected_platform="manylinux_2_28_${wheel_arch}" ;;
+    *) echo "unsupported Python check compatibility" >&2; exit 1 ;;
+esac
+[[ "$(basename "$wheel_one")" == \
+    "riffdb_application-0.1.0-cp313-abi3-${expected_platform}.whl" ]]
 cmp "$wheel_one" "$wheel_two"
 
 sdist_once "$temporary/sdist-one"
@@ -33,6 +47,11 @@ sdist_one="$(find "$temporary/sdist-one" -maxdepth 1 -type f -name '*.tar.gz' -p
 sdist_two="$(find "$temporary/sdist-two" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
 [[ "$(basename "$sdist_one")" == riffdb_application-0.1.0.tar.gz ]]
 cmp "$sdist_one" "$sdist_two"
+
+./scripts/write-python-artifact-receipt "$temporary/one"
+cp "$temporary/one/riffdb-python-artifacts-v1.json" "$temporary/receipt-one.json"
+./scripts/write-python-artifact-receipt "$temporary/one"
+cmp "$temporary/receipt-one.json" "$temporary/one/riffdb-python-artifacts-v1.json"
 
 python3 - "$wheel_one" <<'PY'
 import sys
@@ -45,6 +64,7 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
     assert "riffdb_application/py.typed" in names
     assert any(name.startswith("riffdb_application/_native.abi3") for name in names)
     assert not any(name.endswith(".proto") for name in names)
+    assert not any("grpc" in name.lower() or "fallback" in name.lower() for name in names)
 PY
 
 python3 - "$sdist_one" <<'PY'
@@ -57,9 +77,13 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
     required = {
         root + "Cargo.lock",
         root + "Cargo.toml",
+        root + "LICENSE-APACHE",
+        root + "LICENSE-MIT",
         root + "crates/riffdb-client-python-native/src/lib.rs",
         root + "crates/riffdb-client-rust/src/lib.rs",
         root + "fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin",
+        root + "fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin",
+        root + "fixtures/proto/durable-schema-hashes.bin",
         root + "pyproject.toml",
         root + "rust-toolchain.toml",
         root + "clients/python/runtime/src/riffdb_application/__init__.py",
@@ -68,16 +92,53 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
     }
     assert required <= set(names), required - set(names)
     assert not any("/.git/" in name or "__pycache__" in name for name in names)
+    crates = {
+        name.split("/", 3)[2]
+        for name in names
+        if name.startswith(root + "crates/") and len(name.split("/", 3)) >= 4
+    }
+    assert crates == {
+        "riffdb-api-grpc",
+        "riffdb-client-python-native",
+        "riffdb-client-rust",
+        "riffdb-config",
+        "riffdb-errors",
+        "riffdb-proto",
+        "riffdb-types",
+    }, crates
+    for forbidden in ["adr/", "benchmarks/", "docs/", "examples/", "SPEC.md"]:
+        assert not any(name.startswith(root + forbidden) for name in names), forbidden
 PY
 
-export UV_CACHE_DIR="$temporary/uv-cache"
-uv venv --python python3 "$temporary/sdist-venv"
-uv pip install --python "$temporary/sdist-venv/bin/python" maturin==1.14.1
-uv pip install --python "$temporary/sdist-venv/bin/python" \
-    --no-build-isolation "$sdist_one"
+python3 - "$temporary/one/riffdb-python-artifacts-v1.json" "$wheel_one" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+wheel = pathlib.Path(sys.argv[2])
+assert receipt["schema"] == "riffdb.python-artifact-receipt/v1"
+assert receipt["rust_source_toolchain"] == "1.97.0"
+assert receipt["source_date_epoch"] == 1735689600
+assert receipt["artifacts"] == [{
+    "name": wheel.name,
+    "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+    "size_bytes": wheel.stat().st_size,
+}]
+PY
+
+uv venv --python python3 "$temporary/wheel-venv"
+uv pip install --offline --python "$temporary/wheel-venv/bin/python" "$wheel_one"
+env PATH=/usr/bin:/bin "$temporary/wheel-venv/bin/python" -c \
+    'import riffdb_application; assert "SyncApplicationTransport" in riffdb_application.__all__'
+
+uv venv --python python3 --system-site-packages "$temporary/sdist-venv"
+CARGO_NET_OFFLINE=true uv pip install --offline \
+    --python "$temporary/sdist-venv/bin/python" --no-build-isolation "$sdist_one"
 "$temporary/sdist-venv/bin/python" -c \
     'import riffdb_application; assert "SyncApplicationTransport" in riffdb_application.__all__'
 
 ./scripts/check-python-runtime
 cargo deny check
-printf 'Python wheel inventory and reproducibility checks passed.\n'
+printf 'Python wheel/sdist inventory, reproducibility, and offline installation checks passed.\n'

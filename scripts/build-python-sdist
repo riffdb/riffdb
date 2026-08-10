@@ -9,21 +9,48 @@ destination="${1:-}"
 }
 mkdir -p "$destination"
 destination="$(cd "$destination" && pwd)"
-temporary="$(mktemp -d)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+temporary="$(mktemp -d "$task_tmp_root/riffdb-python-sdist.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}"
 python_bin="${PYTHON:-python3}"
 
-rsync -a \
-    --exclude '.git/' \
-    --exclude '.venv/' \
-    --exclude 'node_modules/' \
-    --exclude 'target/' \
-    --exclude '**/__pycache__/' \
-    --exclude '**/.mypy_cache/' \
-    --exclude '**/.pytest_cache/' \
-    "$repo_root/" "$temporary/source/"
+mkdir -p "$temporary/source/crates" \
+    "$temporary/source/clients/python/runtime" \
+    "$temporary/source/fixtures/proto/descriptors"
+cp "$repo_root/release/python/Cargo.sdist.toml" "$temporary/source/Cargo.toml"
+cp "$repo_root/Cargo.lock" "$temporary/source/Cargo.lock"
+cp "$repo_root/rust-toolchain.toml" "$temporary/source/rust-toolchain.toml"
+cp "$repo_root/LICENSE-APACHE" "$temporary/source/LICENSE-APACHE"
+cp "$repo_root/LICENSE-MIT" "$temporary/source/LICENSE-MIT"
+cp "$repo_root/README.md" "$temporary/source/README.md"
+for crate in \
+    riffdb-api-grpc \
+    riffdb-client-python-native \
+    riffdb-client-rust \
+    riffdb-config \
+    riffdb-errors \
+    riffdb-proto \
+    riffdb-types
+do
+    cp -R "$repo_root/crates/$crate" "$temporary/source/crates/$crate"
+done
+cp "$repo_root/release/python/riffdb-api-grpc.Cargo.toml" \
+    "$temporary/source/crates/riffdb-api-grpc/Cargo.toml"
+cp -R "$repo_root/clients/python/runtime/src" \
+    "$temporary/source/clients/python/runtime/src"
+find "$repo_root/fixtures/proto" -maxdepth 1 -type f -name '*.bin' \
+    -exec cp '{}' "$temporary/source/fixtures/proto/" ';'
+find "$repo_root/fixtures/proto/descriptors" -maxdepth 1 -type f -name '*.bin' \
+    -exec cp '{}' "$temporary/source/fixtures/proto/descriptors/" ';'
 cp "$repo_root/release/python/pyproject.toml" "$temporary/source/pyproject.toml"
 
+if find "$temporary/source" -type l -print -quit | grep -q .; then
+    echo "Python source distribution staging contains a symbolic link" >&2
+    exit 1
+fi
+
 cd "$temporary/source"
+cargo +1.97.0 metadata --locked --no-deps --format-version 1 >/dev/null
 "$python_bin" -m maturin sdist --out "$destination"

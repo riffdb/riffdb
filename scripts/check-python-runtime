@@ -15,7 +15,9 @@ case "$version" in
         ;;
 esac
 
-temporary="$(mktemp -d)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+temporary="$(mktemp -d "$task_tmp_root/riffdb-python-runtime.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 export UV_CACHE_DIR="$temporary/uv-cache"
 

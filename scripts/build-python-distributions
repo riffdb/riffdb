@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+case "${1:-}" in
+    --check)
+        [[ $# -eq 1 ]] || {
+            echo "usage: scripts/build-python-distributions --check" >&2
+            exit 2
+        }
+        exec "$repo_root/scripts/check-python-package"
+        ;;
+    "")
+        echo "usage: scripts/build-python-distributions OUTPUT_DIRECTORY | --check" >&2
+        exit 2
+        ;;
+    *)
+        [[ $# -eq 1 ]] || {
+            echo "usage: scripts/build-python-distributions OUTPUT_DIRECTORY | --check" >&2
+            exit 2
+        }
+        exec "$repo_root/scripts/build-python-distribution" "$1"
+        ;;
+esac
