@@ -271,6 +271,7 @@ impl DeclarationKind {
                     | Token::Index
                     | Token::Unique
                     | Token::Reference
+                    | Token::VectorField
             ),
             Self::Event => matches!(token, Token::Colon),
             Self::Enum => matches!(token, Token::Identifier(_) | Token::IdempotencyKey),
@@ -494,6 +495,11 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "index",
     "unique",
     "reference",
+    "vector_field",
+    "cosine",
+    "euclidean",
+    "dot_product",
+    "staleness_slo",
     "event",
     "enum",
     "aggregate",
@@ -646,6 +652,11 @@ impl NodeCounter {
                             self.names(&reference.source_fields, item.span)?;
                             self.name(&reference.target_entity)?;
                             self.names(&reference.target_fields, item.span)?;
+                        }
+                        EntityItem::VectorField(vector_field) => {
+                            self.add(1, item.span)?;
+                            self.name(&vector_field.name)?;
+                            self.names(&vector_field.source_fields, item.span)?;
                         }
                     }
                 }

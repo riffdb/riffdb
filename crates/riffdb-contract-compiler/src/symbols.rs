@@ -208,6 +208,15 @@ fn allocate_symbols(
                                 &mut diagnostics,
                             );
                         }
+                        EntityItem::VectorField(vector_field) => {
+                            // Vector field names share the field namespace
+                            // but source_fields reference existing entity fields.
+                            fields.insert(&vector_field.name, &mut diagnostics);
+                            validate_unique_spanned_names(
+                                &vector_field.source_fields,
+                                &mut diagnostics,
+                            );
+                        }
                     }
                 }
                 if key_count != 1 {

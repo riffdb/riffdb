@@ -169,6 +169,12 @@ allocatable_nonzero_id!(
     NonZeroU32
 );
 allocatable_nonzero_id!(
+    /// A compiler-assigned stable vector field identifier.
+    VectorFieldId,
+    u32,
+    NonZeroU32
+);
+allocatable_nonzero_id!(
     /// A compiler-assigned stable enum variant identifier.
     EnumVariantId,
     u32,

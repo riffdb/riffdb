@@ -116,6 +116,16 @@ EntityItem: Spanned<EntityItem> = {
             target_entity,
             target_fields,
         }), lo, hi),
+    <lo:@L> "vector_field" <name:Identifier> "(" <dimension:UnsignedInteger> ","
+        <metric:VectorMetric> "," "(" <source_fields:IdentifierList> ")" ","
+        "staleness_slo" <staleness_slo:UnsignedInteger> ")" <hi:@R>
+        => parser::spanned(EntityItem::VectorField(VectorFieldDeclaration {
+            name,
+            dimension,
+            metric,
+            source_fields,
+            staleness_slo,
+        }), lo, hi),
 };
 
 IndexOption: Spanned<IndexOption> = {
@@ -130,6 +140,15 @@ TextKeyProfile: Spanned<TextKeyProfile> = {
         => parser::spanned(TextKeyProfile::BinaryUtf8V1, lo, hi),
     <lo:@L> "unicode_fold_v1" <hi:@R>
         => parser::spanned(TextKeyProfile::UnicodeFoldV1, lo, hi),
+};
+
+VectorMetric: Spanned<VectorMetricKeyword> = {
+    <lo:@L> "cosine" <hi:@R>
+        => parser::spanned(VectorMetricKeyword::Cosine, lo, hi),
+    <lo:@L> "euclidean" <hi:@R>
+        => parser::spanned(VectorMetricKeyword::Euclidean, lo, hi),
+    <lo:@L> "dot_product" <hi:@R>
+        => parser::spanned(VectorMetricKeyword::DotProduct, lo, hi),
 };
 
 EventDeclaration: EventDeclaration = {
@@ -537,6 +556,11 @@ extern {
         "unicode_fold_v1" => Token::UnicodeFoldV1,
         "unique" => Token::Unique,
         "reference" => Token::Reference,
+        "vector_field" => Token::VectorField,
+        "cosine" => Token::Cosine,
+        "euclidean" => Token::Euclidean,
+        "dot_product" => Token::DotProduct,
+        "staleness_slo" => Token::StalenessSlo,
         "event" => Token::Event,
         "enum" => Token::Enum,
         "aggregate" => Token::Aggregate,
