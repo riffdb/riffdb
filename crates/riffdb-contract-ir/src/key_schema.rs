@@ -13,6 +13,17 @@ use crate::{IrValidationError, ValueType, ValueTypeTag, checked_len};
 
 /// Immutable v1 key codec version.
 pub const KEY_CODEC_VERSION_V1: u32 = 1;
+/// Key codec supporting order-preserving byte components.
+pub const KEY_CODEC_VERSION_V2: u32 = 2;
+
+/// Physical codec for one key component.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum KeyComponentCodecV1 {
+    /// Existing fixed-width or length-delimited canonical encoding.
+    Canonical,
+    /// Zero-escaped, zero-terminated bytes preserving lexicographic byte order.
+    OrderedBytes,
+}
 
 /// A closed authoritative key purpose and stable owner.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -48,6 +59,7 @@ impl KeyPurpose {
 pub struct KeyComponentSchema {
     value_type: ValueType,
     enum_variants: Vec<EnumVariantId>,
+    codec: KeyComponentCodecV1,
     maximum_payload_bytes: usize,
 }
 
@@ -79,10 +91,25 @@ impl KeyComponentSchema {
                 reason: "non-enum key component carries enum variants",
             });
         }
-        let maximum_payload_bytes = authoritative_component_maximum(&value_type)?;
+        let maximum_payload_bytes =
+            authoritative_component_maximum(&value_type, KeyComponentCodecV1::Canonical)?;
         Ok(Self {
             value_type,
             enum_variants,
+            codec: KeyComponentCodecV1::Canonical,
+            maximum_payload_bytes,
+        })
+    }
+
+    /// Creates a bounded order-preserving byte component for text prefix indexes.
+    pub fn ordered_bytes(maximum_bytes: usize) -> Result<Self, IrValidationError> {
+        let value_type = ValueType::bytes(maximum_bytes)?;
+        let codec = KeyComponentCodecV1::OrderedBytes;
+        let maximum_payload_bytes = authoritative_component_maximum(&value_type, codec)?;
+        Ok(Self {
+            value_type,
+            enum_variants: Vec::new(),
+            codec,
             maximum_payload_bytes,
         })
     }
@@ -97,6 +124,12 @@ impl KeyComponentSchema {
     #[must_use]
     pub fn enum_variants(&self) -> &[EnumVariantId] {
         &self.enum_variants
+    }
+
+    /// Exact physical component codec.
+    #[must_use]
+    pub const fn codec(&self) -> KeyComponentCodecV1 {
+        self.codec
     }
 
     /// Maximum encoded component payload length, excluding the six-byte envelope.
@@ -116,6 +149,24 @@ pub struct KeySchema {
 }
 
 impl KeySchema {
+    /// Lowest codec version capable of reproducing this schema.
+    #[must_use]
+    pub fn codec_version(&self) -> u32 {
+        if self
+            .components
+            .iter()
+            .any(|component| component.codec == KeyComponentCodecV1::OrderedBytes)
+            || self
+                .entity_key_schema
+                .as_deref()
+                .is_some_and(|schema| schema.codec_version() == KEY_CODEC_VERSION_V2)
+        {
+            KEY_CODEC_VERSION_V2
+        } else {
+            KEY_CODEC_VERSION_V1
+        }
+    }
+
     /// Creates an entity, partition, or conflict schema.
     pub fn new(
         purpose: KeyPurpose,
@@ -366,6 +417,47 @@ impl KeySchema {
         })
     }
 
+    /// Encodes complete leading components followed by one ordered-byte prefix.
+    pub fn encode_index_ordered_prefix(
+        &self,
+        leading_values: &[CanonicalValue],
+        value_prefix: &[u8],
+    ) -> Result<IndexScanPrefix, IrValidationError> {
+        let KeyPurpose::Index { index_id, .. } = self.purpose else {
+            return Err(IrValidationError::InvalidKey {
+                reason: "not an index key schema",
+            });
+        };
+        let Some(component) = self.components.get(leading_values.len()) else {
+            return Err(IrValidationError::InvalidKey {
+                reason: "ordered prefix has no target component",
+            });
+        };
+        if component.codec != KeyComponentCodecV1::OrderedBytes
+            || value_prefix.len() > component.value_type.byte_bound().unwrap_or(0)
+        {
+            return Err(IrValidationError::InvalidKey {
+                reason: "ordered prefix does not match its component",
+            });
+        }
+        let mut builder = IndexEntryKeyBuilder::new(index_id);
+        append_components(
+            &mut builder,
+            &self.components[..leading_values.len()],
+            leading_values,
+        )?;
+        builder
+            .push_ordered_bytes_prefix(value_prefix)
+            .map_err(|_| IrValidationError::InvalidKey {
+                reason: "ordered prefix exceeds its checked bound",
+            })?;
+        Ok(IndexScanPrefix {
+            index_id,
+            component_count: leading_values.len(),
+            bytes: builder.as_bytes().to_vec(),
+        })
+    }
+
     /// Decodes and validates a component-complete transient index scan prefix.
     ///
     /// The prefix may stop after any complete leading component, including the
@@ -482,7 +574,24 @@ fn complete_key_maximum(
     Ok(total)
 }
 
-fn authoritative_component_maximum(value_type: &ValueType) -> Result<usize, IrValidationError> {
+fn authoritative_component_maximum(
+    value_type: &ValueType,
+    codec: KeyComponentCodecV1,
+) -> Result<usize, IrValidationError> {
+    if codec == KeyComponentCodecV1::OrderedBytes {
+        let maximum = value_type
+            .byte_bound()
+            .filter(|_| value_type.tag() == ValueTypeTag::Bytes)
+            .ok_or(IrValidationError::InvalidKey {
+                reason: "ordered key component must be bounded bytes",
+            })?;
+        return maximum
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(2))
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "ordered key component",
+            });
+    }
     let value = match value_type.tag() {
         ValueTypeTag::Bool => 1,
         ValueTypeTag::I64 | ValueTypeTag::U64 => 8,
@@ -505,13 +614,34 @@ fn authoritative_component_maximum(value_type: &ValueType) -> Result<usize, IrVa
 }
 
 trait ComponentBuilder {
-    fn push_value(&mut self, value: &CanonicalValue) -> Result<(), IrValidationError>;
+    fn push_value(
+        &mut self,
+        value: &CanonicalValue,
+        codec: KeyComponentCodecV1,
+    ) -> Result<(), IrValidationError>;
 }
 
 macro_rules! component_builder {
     ($builder:ty) => {
         impl ComponentBuilder for $builder {
-            fn push_value(&mut self, value: &CanonicalValue) -> Result<(), IrValidationError> {
+            fn push_value(
+                &mut self,
+                value: &CanonicalValue,
+                codec: KeyComponentCodecV1,
+            ) -> Result<(), IrValidationError> {
+                if codec == KeyComponentCodecV1::OrderedBytes {
+                    let CanonicalValue::Bytes(value) = value else {
+                        return Err(IrValidationError::InvalidKey {
+                            reason: "ordered key component requires bytes",
+                        });
+                    };
+                    return self
+                        .push_ordered_bytes(value.as_bytes())
+                        .map(|_| ())
+                        .map_err(|_| IrValidationError::InvalidKey {
+                            reason: "ordered key exceeds its checked bound",
+                        });
+                }
                 let result = match value {
                     CanonicalValue::Bool(value) => self.push_bool(*value).map(|_| ()),
                     CanonicalValue::I64(value) => self.push_i64(*value).map(|_| ()),
@@ -555,7 +685,7 @@ fn append_components<B: ComponentBuilder>(
     }
     for (schema, value) in schemas.iter().zip(values) {
         validate_key_value(schema, value)?;
-        builder.push_value(value)?;
+        builder.push_value(value, schema.codec)?;
     }
     Ok(())
 }
@@ -616,6 +746,16 @@ impl<'a> KeyCursor<'a> {
         &mut self,
         schema: &KeyComponentSchema,
     ) -> Result<CanonicalValue, IrValidationError> {
+        if schema.codec == KeyComponentCodecV1::OrderedBytes {
+            let value =
+                CanonicalValue::Bytes(CanonicalBytes::new(self.read_ordered_bytes()?).map_err(
+                    |_| IrValidationError::InvalidKey {
+                        reason: "oversized ordered bytes key",
+                    },
+                )?);
+            validate_key_value(schema, &value)?;
+            return Ok(value);
+        }
         let value = match schema.value_type.tag() {
             ValueTypeTag::Bool => match self.read(1)?[0] {
                 0 => CanonicalValue::Bool(false),
@@ -697,6 +837,26 @@ impl<'a> KeyCursor<'a> {
 
     fn read_u32(&mut self) -> Result<u32, IrValidationError> {
         Ok(u32::from_be_bytes(self.read_array()?))
+    }
+
+    fn read_ordered_bytes(&mut self) -> Result<Vec<u8>, IrValidationError> {
+        let mut output = Vec::new();
+        loop {
+            let byte = self.read(1)?[0];
+            if byte != 0 {
+                output.push(byte);
+                continue;
+            }
+            match self.read(1)?[0] {
+                0 => return Ok(output),
+                0xff => output.push(0),
+                _ => {
+                    return Err(IrValidationError::InvalidKey {
+                        reason: "invalid ordered-byte escape",
+                    });
+                }
+            }
+        }
     }
 
     fn read_array<const N: usize>(&mut self) -> Result<[u8; N], IrValidationError> {
@@ -804,5 +964,41 @@ mod tests {
         let mut wrong_owner = prefix.as_bytes().to_vec();
         wrong_owner[5] = 2;
         assert!(index.decode_index_prefix(&wrong_owner).is_err());
+    }
+
+    #[test]
+    fn ordered_byte_components_preserve_prefix_ranges_and_round_trip_zeroes() {
+        let entity = KeySchema::new(
+            KeyPurpose::Entity(EntityTypeId::first()),
+            vec![KeyComponentSchema::new(ValueType::u64(), vec![]).expect("component")],
+        )
+        .expect("entity");
+        let index = KeySchema::index(
+            IndexId::first(),
+            EntityTypeId::first(),
+            vec![
+                KeyComponentSchema::new(ValueType::uuid(), vec![]).expect("partition"),
+                KeyComponentSchema::ordered_bytes(32).expect("ordered text"),
+            ],
+            entity.clone(),
+        )
+        .expect("index");
+        let organization = CanonicalValue::Uuid([7; 16]);
+        let text = CanonicalValue::bytes(b"a\0bc".to_vec()).expect("text bytes");
+        let entity_key = entity
+            .encode_entity(&[CanonicalValue::U64(9)])
+            .expect("entity key");
+        let key = index
+            .encode_index(&[organization.clone(), text.clone()], entity_key)
+            .expect("index key");
+        assert_eq!(
+            index.decode_index(&key).expect("decode").values(),
+            &[organization.clone(), text]
+        );
+        let prefix = index
+            .encode_index_ordered_prefix(&[organization], b"a\0")
+            .expect("ordered prefix");
+        assert!(key.as_bytes().starts_with(prefix.as_bytes()));
+        assert_eq!(index.codec_version(), KEY_CODEC_VERSION_V2);
     }
 }

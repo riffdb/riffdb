@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use riffdb_contract_ir::{ContractBundle, ExpressionKind, KeySchema, ValueType};
+use riffdb_contract_ir::{
+    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeySchema, ValueType,
+};
 use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId};
 
 use crate::{
@@ -50,6 +52,7 @@ pub struct IndexSymbol {
     id: IndexId,
     name: String,
     fields: Vec<String>,
+    encodings: Vec<IndexFieldEncodingV1>,
     key_schema: KeySchema,
 }
 
@@ -96,6 +99,13 @@ impl IndexSymbol {
     #[must_use]
     pub fn fields(&self) -> &[String] {
         &self.fields
+    }
+
+    /// Compiler-owned encoding for each logical field.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_encodings(&self) -> &[IndexFieldEncodingV1] {
+        &self.encodings
     }
 
     /// Compiler-internal stable identity.
@@ -320,6 +330,7 @@ impl SymbolicCatalog {
                     id: index.id(),
                     name: index.name().to_owned(),
                     fields: component_names,
+                    encodings: index.encodings().to_vec(),
                     key_schema: index.key_schema().clone(),
                 };
                 if indexes.insert(symbol.name.clone(), symbol).is_some() {

@@ -30,6 +30,9 @@ riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features =
 riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
 riffdb-query-ir = { path = "../riffdb-query-ir", version = "0.1.0", default-features = false }
+riffdb-query-compiler = { path = "../riffdb-query-compiler", version = "0.1.0", default-features = false }
+riffdb-query-executor = { path = "../riffdb-query-executor", version = "0.1.0", default-features = false }
+riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax", version = "0.1.0", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
@@ -101,6 +104,10 @@ harness = false
 name = "driver_conformance_remote_client"
 path = "../../tests/driver_conformance_remote_client.rs"
 harness = false
+
+[[test]]
+name = "operational_queries"
+path = "../../tests/operational_queries.rs"
 
 [lints]
 workspace = true

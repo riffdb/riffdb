@@ -114,6 +114,7 @@ pub(crate) struct HirIndex {
     pub(crate) name: String,
     pub(crate) span: Span,
     pub(crate) fields: Vec<(FieldId, Span)>,
+    pub(crate) encodings: Vec<riffdb_contract_ir::IndexFieldEncodingV1>,
     pub(crate) unique: bool,
 }
 
@@ -567,11 +568,61 @@ fn lower_entities(
                             )),
                         }
                     }
+                    let mut encodings = vec![
+                        riffdb_contract_ir::IndexFieldEncodingV1::Canonical;
+                        index_fields.len()
+                    ];
+                    for option in &index.options {
+                        let (field, encoding) = match &option.value {
+                            riffdb_contract_syntax::ast::IndexOption::Presence { field } => (
+                                field,
+                                riffdb_contract_ir::IndexFieldEncodingV1::Presence,
+                            ),
+                            riffdb_contract_syntax::ast::IndexOption::TextKey {
+                                field,
+                                profile,
+                            } => (
+                                field,
+                                riffdb_contract_ir::IndexFieldEncodingV1::TextKey(
+                                    match profile.value {
+                                        riffdb_contract_syntax::ast::TextKeyProfile::BinaryUtf8V1 => {
+                                            riffdb_contract_ir::TextKeyProfileV1::BinaryUtf8
+                                        }
+                                        riffdb_contract_syntax::ast::TextKeyProfile::UnicodeFoldV1 => {
+                                            riffdb_contract_ir::TextKeyProfileV1::UnicodeFold
+                                        }
+                                    },
+                                ),
+                            ),
+                        };
+                        let Some(position) = index
+                            .fields
+                            .iter()
+                            .position(|candidate| candidate.value == field.value)
+                        else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                field.span,
+                            ));
+                            continue;
+                        };
+                        if encodings[position]
+                            != riffdb_contract_ir::IndexFieldEncodingV1::Canonical
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::DuplicateName,
+                                field.span,
+                            ));
+                            continue;
+                        }
+                        encodings[position] = encoding;
+                    }
                     indexes.push(HirIndex {
                         id: index_id,
                         name: index.name.value.clone(),
                         span: index.name.span,
                         fields: index_fields,
+                        encodings,
                         unique: false,
                     });
                 }
@@ -597,6 +648,10 @@ fn lower_entities(
                         id: index_id,
                         name: unique.name.value.clone(),
                         span: unique.name.span,
+                        encodings: vec![
+                            riffdb_contract_ir::IndexFieldEncodingV1::Canonical;
+                            index_fields.len()
+                        ],
                         fields: index_fields,
                         unique: true,
                     });

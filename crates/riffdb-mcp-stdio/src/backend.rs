@@ -924,6 +924,12 @@ impl PublicGrpcMcpBackend {
                     .await
                     .authenticated_client_result(&self.client_activity)?,
             ),
+            FixedGrpcRequest::ApplicationCatalog(request) => response::application_catalog(
+                client
+                    .get_application_catalog(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
             FixedGrpcRequest::CheckQuery(request) => response::check_query(
                 client
                     .check_query(request, &self.metadata)

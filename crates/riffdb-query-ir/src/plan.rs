@@ -52,6 +52,14 @@ pub enum QueryPredicateOperator {
     GreaterEqual,
     /// Membership in one canonical submitted set.
     In,
+    /// Logical field is explicitly null.
+    IsNull,
+    /// Logical field is present and non-null.
+    IsNotNull,
+    /// Logical field is present, including explicit null.
+    Exists,
+    /// Leading-byte match through a declared text-key profile.
+    Prefix,
 }
 
 /// Literal retained in a compiled predicate.
@@ -880,6 +888,10 @@ fn predicate_operator_tag(operator: QueryPredicateOperator) -> u8 {
         QueryPredicateOperator::Greater => 5,
         QueryPredicateOperator::GreaterEqual => 6,
         QueryPredicateOperator::In => 7,
+        QueryPredicateOperator::IsNull => 8,
+        QueryPredicateOperator::IsNotNull => 9,
+        QueryPredicateOperator::Exists => 10,
+        QueryPredicateOperator::Prefix => 11,
     }
 }
 

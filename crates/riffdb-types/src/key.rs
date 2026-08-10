@@ -95,6 +95,21 @@ macro_rules! key_component_methods {
             Ok(self)
         }
 
+        /// Appends zero-escaped bytes whose encoded order preserves byte order.
+        pub fn push_ordered_bytes(&mut self, value: &[u8]) -> Result<&mut Self, KeyEncodingError> {
+            self.0.push_ordered_bytes(value, true)?;
+            Ok(self)
+        }
+
+        /// Appends the non-terminated prefix of one ordered-byte component.
+        pub fn push_ordered_bytes_prefix(
+            &mut self,
+            value: &[u8],
+        ) -> Result<&mut Self, KeyEncodingError> {
+            self.0.push_ordered_bytes(value, false)?;
+            Ok(self)
+        }
+
         /// Returns the currently encoded prefix and components.
         pub fn as_bytes(&self) -> &[u8] {
             &self.0.bytes
@@ -261,6 +276,34 @@ impl KeyBuilder {
         self.ensure_additional(additional)?;
         self.bytes.extend_from_slice(&length.to_be_bytes());
         self.bytes.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn push_ordered_bytes(
+        &mut self,
+        bytes: &[u8],
+        terminated: bool,
+    ) -> Result<(), KeyEncodingError> {
+        let zeros = bytes.iter().filter(|byte| **byte == 0).count();
+        let additional = bytes
+            .len()
+            .checked_add(zeros)
+            .and_then(|value| value.checked_add(if terminated { 2 } else { 0 }))
+            .ok_or(KeyEncodingError::TooLong {
+                actual: usize::MAX,
+                maximum: MAX_KEY_BYTES,
+            })?;
+        self.ensure_additional(additional)?;
+        for byte in bytes {
+            if *byte == 0 {
+                self.bytes.extend_from_slice(&[0, 0xff]);
+            } else {
+                self.bytes.push(*byte);
+            }
+        }
+        if terminated {
+            self.bytes.extend_from_slice(&[0, 0]);
+        }
         Ok(())
     }
 

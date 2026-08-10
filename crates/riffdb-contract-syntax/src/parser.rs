@@ -624,6 +624,16 @@ impl NodeCounter {
                             self.add(1, item.span)?;
                             self.name(&index.name)?;
                             self.names(&index.fields, item.span)?;
+                            self.collection(index.options.len(), MAX_DECLARATION_ITEMS, item.span)?;
+                            for option in &index.options {
+                                self.add(1, option.span)?;
+                                match &option.value {
+                                    crate::ast::IndexOption::Presence { field }
+                                    | crate::ast::IndexOption::TextKey { field, .. } => {
+                                        self.name(field)?;
+                                    }
+                                }
+                            }
                         }
                         EntityItem::Unique(unique) => {
                             self.add(1, item.span)?;

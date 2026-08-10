@@ -224,11 +224,35 @@ impl InvariantPlan {
 }
 
 /// One local entity index declaration.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TextKeyProfileV1 {
+    /// Exact UTF-8 source bytes.
+    BinaryUtf8,
+    /// Unicode 17.0.0 NFKC followed by full non-Turkic case folding.
+    UnicodeFold,
+}
+
+/// Compiler-sealed physical encoding for one logical index field.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum IndexFieldEncodingV1 {
+    /// Existing canonical scalar component.
+    Canonical,
+    /// Missing, explicit null, and non-null use distinct byte discriminators.
+    Presence,
+    /// Versioned canonical text key.
+    TextKey(TextKeyProfileV1),
+}
+
+/// Maximum byte expansion charged for the frozen Unicode-fold profile.
+pub const UNICODE_FOLD_V1_MAXIMUM_EXPANSION: usize = 18;
+
+/// One local entity index declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexSchema {
     id: IndexId,
     name: String,
     fields: Vec<FieldId>,
+    encodings: Vec<IndexFieldEncodingV1>,
     key_schema: KeySchema,
 }
 
@@ -240,6 +264,18 @@ impl IndexSchema {
         fields: Vec<FieldId>,
         key_schema: KeySchema,
     ) -> Result<Self, IrValidationError> {
+        let encodings = vec![IndexFieldEncodingV1::Canonical; fields.len()];
+        Self::with_encodings(id, name, fields, encodings, key_schema)
+    }
+
+    /// Creates a checked local index with explicit physical field encodings.
+    pub fn with_encodings(
+        id: IndexId,
+        name: impl Into<String>,
+        fields: Vec<FieldId>,
+        encodings: Vec<IndexFieldEncodingV1>,
+        key_schema: KeySchema,
+    ) -> Result<Self, IrValidationError> {
         let name = name.into();
         validate_source_name(&name, "index")?;
         if fields.is_empty() {
@@ -247,7 +283,9 @@ impl IndexSchema {
                 kind: "index fields",
             });
         }
-        if fields.len() != key_schema.components().len() {
+        if fields.len() != encodings.len()
+            || physical_index_component_count(&encodings) != key_schema.components().len()
+        {
             return Err(IrValidationError::InvalidKey {
                 reason: "index field/schema arity mismatch",
             });
@@ -267,6 +305,7 @@ impl IndexSchema {
             id,
             name,
             fields,
+            encodings,
             key_schema,
         })
     }
@@ -287,6 +326,12 @@ impl IndexSchema {
     #[must_use]
     pub fn fields(&self) -> &[FieldId] {
         &self.fields
+    }
+
+    /// Physical encoding selected for each logical field in declared order.
+    #[must_use]
+    pub fn encodings(&self) -> &[IndexFieldEncodingV1] {
+        &self.encodings
     }
 
     /// Complete checked index-entry schema.
@@ -381,13 +426,19 @@ impl EntitySchema {
                     reason: "index does not embed the exact entity primary-key schema",
                 });
             }
-            if index.fields.iter().zip(index.key_schema.components()).any(
-                |(field_id, component)| {
-                    record
-                        .field(*field_id)
-                        .is_none_or(|field| field.value_type() != component.value_type())
-                },
-            ) {
+            let mut physical = index.key_schema.components().iter();
+            let invalid =
+                index
+                    .fields
+                    .iter()
+                    .zip(index.encodings.iter())
+                    .any(|(field_id, encoding)| {
+                        record.field(*field_id).is_none_or(|field| {
+                            !index_components_match(field.value_type(), *encoding, &mut physical)
+                        })
+                    })
+                    || physical.next().is_some();
+            if invalid {
                 return Err(IrValidationError::InvalidReference {
                     kind: "entity index field",
                 });
@@ -438,6 +489,47 @@ impl EntitySchema {
     #[must_use]
     pub fn indexes(&self) -> &[IndexSchema] {
         &self.indexes
+    }
+}
+
+fn physical_index_component_count(encodings: &[IndexFieldEncodingV1]) -> usize {
+    encodings
+        .iter()
+        .map(|encoding| match encoding {
+            IndexFieldEncodingV1::Presence => 2,
+            IndexFieldEncodingV1::Canonical | IndexFieldEncodingV1::TextKey(_) => 1,
+        })
+        .sum()
+}
+
+fn index_components_match<'a>(
+    logical: &ValueType,
+    encoding: IndexFieldEncodingV1,
+    physical: &mut impl Iterator<Item = &'a crate::KeyComponentSchema>,
+) -> bool {
+    match encoding {
+        IndexFieldEncodingV1::Canonical => physical
+            .next()
+            .is_some_and(|component| logical == component.value_type()),
+        IndexFieldEncodingV1::Presence => {
+            logical
+                .optional_inner()
+                .is_some_and(ValueType::is_authoritative_key_scalar)
+                && physical.next().is_some_and(|component| {
+                    component.value_type().tag() == crate::ValueTypeTag::U64
+                })
+                && physical.next().is_some_and(|component| {
+                    logical
+                        .optional_inner()
+                        .is_some_and(|inner| inner == component.value_type())
+                })
+        }
+        IndexFieldEncodingV1::TextKey(_) => {
+            logical.tag() == crate::ValueTypeTag::String
+                && physical.next().is_some_and(|component| {
+                    component.value_type().tag() == crate::ValueTypeTag::Bytes
+                })
+        }
     }
 }
 

@@ -43,6 +43,14 @@ pub(crate) enum Token {
     Invariant,
     #[token("index")]
     Index,
+    #[token("presence")]
+    Presence,
+    #[token("text_key")]
+    TextKey,
+    #[token("binary_utf8_v1")]
+    BinaryUtf8V1,
+    #[token("unicode_fold_v1")]
+    UnicodeFoldV1,
     #[token("unique")]
     Unique,
     #[token("reference")]

@@ -29,14 +29,14 @@ use crate::{
     CapabilityRequirement, CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode,
     CompatibilityEntry, CompatibilityReport, ConflictDerivationPlan, EntitySchema, EnumSchema,
     EnumVariantSchema, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionArena,
-    ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexSchema,
-    Instruction, InvariantPlan, IrValidationError, KeyComponentSchema, KeyPurpose, KeySchema,
-    LocalityPlan, McpCommandNameEntryV2, McpCommandNameRegistryV2, ObjectConstruction,
-    OutcomeConstruction, OutcomeSchema, ProjectionFrontierPolicy, ProjectionGroupComponentSchema,
-    ProjectionGroupSchema, ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef,
-    RetryPolicy, SchemaIr, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog,
-    WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema, checked_len,
-    validate_source_name,
+    ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexFieldEncodingV1,
+    IndexSchema, Instruction, InvariantPlan, IrValidationError, KeyComponentCodecV1,
+    KeyComponentSchema, KeyPurpose, KeySchema, LocalityPlan, McpCommandNameEntryV2,
+    McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction, OutcomeSchema,
+    ProjectionFrontierPolicy, ProjectionGroupComponentSchema, ProjectionGroupSchema,
+    ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy, SchemaIr,
+    TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog, WorkflowLeaseSchema,
+    WorkflowSchema, WorkflowTransitionSchema, checked_len, validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
@@ -54,6 +54,7 @@ pub const EXECUTABLE_IR_VERSION_V2: u32 = 2;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
+const INDEX_FIELD_ENCODING_EXTENSION: u32 = 0xffff_fffa;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -2428,7 +2429,24 @@ fn encode_index_schema(
     for field in index.fields() {
         writer.u32(field.get())?;
     }
-    encode_key_schema(writer, index.key_schema())
+    encode_key_schema(writer, index.key_schema())?;
+    if index
+        .encodings()
+        .iter()
+        .any(|encoding| *encoding != IndexFieldEncodingV1::Canonical)
+    {
+        writer.u32(INDEX_FIELD_ENCODING_EXTENSION)?;
+        writer.u32(index.encodings().len() as u32)?;
+        for encoding in index.encodings() {
+            writer.u8(match encoding {
+                IndexFieldEncodingV1::Canonical => 0,
+                IndexFieldEncodingV1::Presence => 1,
+                IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8) => 2,
+                IndexFieldEncodingV1::TextKey(TextKeyProfileV1::UnicodeFold) => 3,
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn encode_record_schema(
@@ -2491,7 +2509,8 @@ fn encode_value_type(writer: &mut Writer, value_type: &ValueType) -> Result<(), 
 }
 
 fn encode_key_schema(writer: &mut Writer, schema: &KeySchema) -> Result<(), IrValidationError> {
-    writer.u32(crate::KEY_CODEC_VERSION_V1)?;
+    let codec_version = schema.codec_version();
+    writer.u32(codec_version)?;
     writer.u8(schema.purpose().tag())?;
     match schema.purpose() {
         KeyPurpose::Entity(id) => writer.u32(id.get())?,
@@ -2507,6 +2526,12 @@ fn encode_key_schema(writer: &mut Writer, schema: &KeySchema) -> Result<(), IrVa
     writer.u32(schema.components().len() as u32)?;
     for component in schema.components() {
         encode_value_type(writer, component.value_type())?;
+        if codec_version >= crate::KEY_CODEC_VERSION_V2 {
+            writer.u8(match component.codec() {
+                KeyComponentCodecV1::Canonical => 0,
+                KeyComponentCodecV1::OrderedBytes => 1,
+            })?;
+        }
         writer.u32(component.enum_variants().len() as u32)?;
         for variant in component.enum_variants() {
             writer.u32(variant.get())?;
@@ -3637,7 +3662,32 @@ fn decode_index_schema(reader: &mut Reader<'_>) -> Result<IndexSchema, IrValidat
     for _ in 0..count {
         fields.push(decode_field_id(reader)?);
     }
-    IndexSchema::new(id, name, fields, decode_key_schema(reader, 0)?)
+    let key_schema = decode_key_schema(reader, 0)?;
+    let encodings =
+        if reader.remaining() >= 4 && reader.peek_u32()? == INDEX_FIELD_ENCODING_EXTENSION {
+            let _extension = reader.u32()?;
+            let encoding_count = decode_len(reader, "index field encodings", 1_024)?;
+            if encoding_count != fields.len() {
+                return Err(IrValidationError::InvalidKey {
+                    reason: "index field encoding arity mismatch",
+                });
+            }
+            (0..encoding_count)
+                .map(|_| match reader.u8()? {
+                    0 => Ok(IndexFieldEncodingV1::Canonical),
+                    1 => Ok(IndexFieldEncodingV1::Presence),
+                    2 => Ok(IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8)),
+                    3 => Ok(IndexFieldEncodingV1::TextKey(TextKeyProfileV1::UnicodeFold)),
+                    tag => Err(IrValidationError::UnknownTag {
+                        kind: "index field encoding",
+                        tag,
+                    }),
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![IndexFieldEncodingV1::Canonical; fields.len()]
+        };
+    IndexSchema::with_encodings(id, name, fields, encodings, key_schema)
 }
 
 fn decode_record_schema(reader: &mut Reader<'_>) -> Result<RecordSchema, IrValidationError> {
@@ -3730,7 +3780,16 @@ fn decode_key_schema(
             reason: "key schema nesting exceeds the index/entity shape",
         });
     }
-    require_version(reader.u32()?, crate::KEY_CODEC_VERSION_V1, "key codec")?;
+    let codec_version = reader.u32()?;
+    if !matches!(
+        codec_version,
+        crate::KEY_CODEC_VERSION_V1 | crate::KEY_CODEC_VERSION_V2
+    ) {
+        return Err(IrValidationError::UnsupportedVersion {
+            kind: "key codec",
+            value: codec_version,
+        });
+    }
     let purpose = match reader.u8()? {
         key_purpose_tag::ENTITY => KeyPurpose::Entity(decode_entity_id(reader)?),
         key_purpose_tag::PARTITION => KeyPurpose::Partition(decode_aggregate_id(reader)?),
@@ -3750,6 +3809,20 @@ fn decode_key_schema(
     let mut components = Vec::with_capacity(count);
     for _ in 0..count {
         let value_type = decode_value_type(reader, 0)?;
+        let codec = if codec_version >= crate::KEY_CODEC_VERSION_V2 {
+            match reader.u8()? {
+                0 => KeyComponentCodecV1::Canonical,
+                1 => KeyComponentCodecV1::OrderedBytes,
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "key component codec",
+                        tag,
+                    });
+                }
+            }
+        } else {
+            KeyComponentCodecV1::Canonical
+        };
         let variant_count = decode_len(
             reader,
             "key enum variants",
@@ -3760,7 +3833,21 @@ fn decode_key_schema(
             variants.push(decode_enum_variant_id(reader)?);
         }
         let stored_maximum = reader.u32()? as usize;
-        let component = KeyComponentSchema::new(value_type, variants)?;
+        let component = match codec {
+            KeyComponentCodecV1::Canonical => KeyComponentSchema::new(value_type, variants)?,
+            KeyComponentCodecV1::OrderedBytes => {
+                if !variants.is_empty() {
+                    return Err(IrValidationError::InvalidKey {
+                        reason: "ordered bytes component has enum variants",
+                    });
+                }
+                KeyComponentSchema::ordered_bytes(value_type.byte_bound().ok_or(
+                    IrValidationError::InvalidKey {
+                        reason: "ordered bytes component has no byte bound",
+                    },
+                )?)?
+            }
+        };
         if component.maximum_payload_bytes() != stored_maximum {
             return Err(IrValidationError::HashMismatch {
                 kind: "key component maximum",

@@ -19,7 +19,8 @@ fn assert_lex_error(source: &str, code: SyntaxDiagnosticCode) {
 #[test]
 fn lexes_every_reserved_keyword() {
     let source = concat!(
-        "contract version entity key field invariant index unique reference event enum aggregate root child ",
+        "contract version entity key field invariant index presence text_key binary_utf8_v1 ",
+        "unicode_fold_v1 unique reference event enum aggregate root child ",
         "partition_by conflict_key projection source where measure count sum frontier ",
         "transactionally_ordered command workflow state transition from to lease owner expires_at ",
         "fencing_token attempts duration_seconds service uuid_v7 transaction_time on revision ",
@@ -35,6 +36,10 @@ fn lexes_every_reserved_keyword() {
         Token::Field,
         Token::Invariant,
         Token::Index,
+        Token::Presence,
+        Token::TextKey,
+        Token::BinaryUtf8V1,
+        Token::UnicodeFoldV1,
         Token::Unique,
         Token::Reference,
         Token::Event,
