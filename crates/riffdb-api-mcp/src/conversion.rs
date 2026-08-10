@@ -484,6 +484,15 @@ pub enum McpFixedToolRequest {
         /// Active by default or an exact contract selection.
         contract: Option<McpContractSelection>,
     },
+    /// `riffdb_application_catalog`.
+    ApplicationCatalog {
+        /// Active by default or an exact contract selection.
+        contract: Option<McpContractSelection>,
+        /// Bounded number of authorized symbols to return.
+        limit: u16,
+        /// Optional opaque catalog continuation.
+        cursor: Option<[u8; crate::MCP_CURSOR_BYTES]>,
+    },
     /// `riffdb_query_check`.
     CheckQuery {
         /// Active by default or an exact contract selection.
@@ -941,6 +950,19 @@ pub fn decode_fixed_tool_request(
                 expected_contract_version: parse_optional_u64(request.expected_contract_version)?,
             })
         }
+        31 => {
+            let request: RawApplicationCatalog = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ApplicationCatalog {
+                contract: request.contract.map(TryInto::try_into).transpose()?,
+                limit: request.limit.unwrap_or(100),
+                cursor: request
+                    .cursor
+                    .as_deref()
+                    .map(crate::decode_mcp_cursor)
+                    .transpose()
+                    .map_err(conversion)?,
+            })
+        }
         _ => Err(McpConversionError),
     }
 }
@@ -1227,6 +1249,8 @@ pub enum McpFixedResultBranch {
     ContextualStatusCompleted,
     /// Contextual reaction completed.
     ContextualReactionCompleted,
+    /// Symbolic application-catalog page completed.
+    ApplicationCatalogPage,
 }
 
 impl McpFixedResultBranch {
@@ -1271,6 +1295,7 @@ impl McpFixedResultBranch {
             Self::ContextualNackCompleted => 28,
             Self::ContextualStatusCompleted => 29,
             Self::ContextualReactionCompleted => 30,
+            Self::ApplicationCatalogPage => 31,
         }
     }
 
@@ -1299,7 +1324,10 @@ impl McpFixedResultBranch {
             Self::DeployIncompatibleCandidate => "incompatible_candidate",
             Self::DeployMigrationRequired => "migration_required",
             Self::GetOutcomeReplayed => "replayed",
-            Self::ScanIndexPage | Self::CommitScanPage | Self::OutboxPage => "page",
+            Self::ScanIndexPage
+            | Self::CommitScanPage
+            | Self::OutboxPage
+            | Self::ApplicationCatalogPage => "page",
             Self::ProjectionReady => "ready",
             Self::ProjectionWaitTimedOut => "wait_timed_out",
             Self::ProjectionDegraded => "degraded",
@@ -1457,6 +1485,14 @@ struct RawSource {
 #[serde(deny_unknown_fields)]
 struct RawSymbolicDescribe {
     contract: Option<RawContractSelection>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawApplicationCatalog {
+    contract: Option<RawContractSelection>,
+    limit: Option<u16>,
+    cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2036,6 +2072,28 @@ mod tests {
                 },
                 McpSubmittedValue::Bytes(vec![1])
             ]
+        );
+
+        let catalog = decode_fixed_tool_request(
+            31,
+            &arguments(json!({
+                "contract": {"active": {}},
+                "cursor": "07".repeat(crate::MCP_CURSOR_BYTES)
+            })),
+        )
+        .expect("application catalog request");
+        let McpFixedToolRequest::ApplicationCatalog { limit, cursor, .. } = catalog else {
+            panic!("wrong application catalog request");
+        };
+        assert_eq!(limit, 100);
+        assert_eq!(cursor, Some([7; crate::MCP_CURSOR_BYTES]));
+        assert!(
+            decode_fixed_tool_request(
+                31,
+                &arguments(json!({"cursor": "AA".repeat(crate::MCP_CURSOR_BYTES)})),
+            )
+            .is_err(),
+            "opaque catalog cursors have one canonical lowercase spelling"
         );
     }
 

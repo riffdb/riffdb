@@ -20,6 +20,10 @@ const MAX_QUERY_ROWS: usize = 500;
 const MAX_DIAGNOSTICS: usize = 32;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 1_024;
 const MAX_CURSOR_BYTES: usize = 4_096;
+const MAX_APPLICATION_CATALOG_PAGE_ITEMS: usize = 100;
+const MAX_APPLICATION_CATALOG_PATH_COMPONENTS: usize = 8;
+const MAX_APPLICATION_CATALOG_TEXT_BYTES: usize = 256;
+const MAX_APPLICATION_CATALOG_FEATURES: usize = 6;
 
 fn preflight(
     input: &[u8],
@@ -216,6 +220,98 @@ app_message!(
         } else {
             Ok(())
         }
+    }
+);
+app_message!(
+    app_v1::GetApplicationCatalogRequest,
+    Some(riffdb_errors::ApplicationOperation::DescribeContract),
+    MAX_PUBLIC_REQUEST_BYTES,
+    100,
+    &[],
+    &[],
+    |value: &app_v1::GetApplicationCatalogRequest| {
+        validate_request_id(&value.request_id)?;
+        value.contract.as_ref().map_or(Ok(()), validate_selector)?;
+        if value.limit == 0 || value.limit as usize > MAX_APPLICATION_CATALOG_PAGE_ITEMS {
+            return Err(PublicWireError::TooManyItems);
+        }
+        if value
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES)
+        {
+            return Err(PublicWireError::InvalidBytes);
+        }
+        Ok(())
+    }
+);
+app_message!(
+    app_v1::GetApplicationCatalogResponse,
+    None,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    9,
+    &[5, 6, 7],
+    &[],
+    |value: &app_v1::GetApplicationCatalogResponse| {
+        if value.schema != "riffdb.application-catalog/v1"
+            || value.contract_lineage.is_empty()
+            || value.contract_lineage.len() > MAX_CONTRACT_LINEAGE_BYTES
+            || value.contract_version == 0
+            || !valid_hash(&value.contract_bundle_hash)
+            || value.query_module_hashes.len() > 1
+            || value
+                .query_module_hashes
+                .iter()
+                .any(|hash| !valid_hash(hash))
+            || value.symbols.len() > MAX_APPLICATION_CATALOG_PAGE_ITEMS
+            || value.features.len() > MAX_APPLICATION_CATALOG_FEATURES
+            || value
+                .next_cursor
+                .as_deref()
+                .is_some_and(|cursor| cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES)
+            || value.has_more != value.next_cursor.is_some()
+        {
+            return Err(PublicWireError::InvalidBytes);
+        }
+
+        let mut prior_symbol: Option<(i32, &[String])> = None;
+        for symbol in &value.symbols {
+            if symbol.kind == 0
+                || app_v1::ApplicationCatalogSymbolKind::try_from(symbol.kind).is_err()
+                || symbol.path.is_empty()
+                || symbol.path.len() > MAX_APPLICATION_CATALOG_PATH_COMPONENTS
+                || symbol.path.iter().any(|part| !valid_name(part))
+                || symbol.public_type.as_deref().is_some_and(|public_type| {
+                    public_type.is_empty() || public_type.len() > MAX_APPLICATION_CATALOG_TEXT_BYTES
+                })
+                || symbol
+                    .source_span
+                    .is_some_and(|span| span.start >= span.end)
+            {
+                return Err(PublicWireError::InvalidValue);
+            }
+            if prior_symbol
+                .as_ref()
+                .is_some_and(|prior| prior >= &(symbol.kind, symbol.path.as_slice()))
+            {
+                return Err(PublicWireError::NonCanonical);
+            }
+            prior_symbol = Some((symbol.kind, symbol.path.as_slice()));
+        }
+
+        let mut prior_feature = None;
+        for feature in &value.features {
+            if feature.feature == 0
+                || feature.state == 0
+                || app_v1::ApplicationCatalogFeature::try_from(feature.feature).is_err()
+                || app_v1::ApplicationCatalogFeatureState::try_from(feature.state).is_err()
+                || prior_feature.is_some_and(|prior| prior >= feature.feature)
+            {
+                return Err(PublicWireError::NonCanonical);
+            }
+            prior_feature = Some(feature.feature);
+        }
+        Ok(())
     }
 );
 app_message!(
@@ -748,6 +844,58 @@ mod tests {
         assert_eq!(
             impossible.validate_structure(),
             Err(PublicWireError::InconsistentFields)
+        );
+    }
+
+    #[test]
+    fn application_catalog_wire_shape_is_bounded_closed_and_canonical() {
+        let request = app_v1::GetApplicationCatalogRequest {
+            contract: Some(selector()),
+            limit: 100,
+            cursor: None,
+            request_id: vec![0x77; 16],
+        };
+        assert_eq!(request.validate_structure(), Ok(()));
+        let mut zero_limit = request;
+        zero_limit.limit = 0;
+        assert_eq!(
+            zero_limit.validate_structure(),
+            Err(PublicWireError::TooManyItems)
+        );
+
+        let response = app_v1::GetApplicationCatalogResponse {
+            schema: "riffdb.application-catalog/v1".to_owned(),
+            contract_lineage: "ReactiveBoundary".to_owned(),
+            contract_version: 1,
+            contract_bundle_hash: vec![0x11; 32],
+            query_module_hashes: Vec::new(),
+            symbols: vec![app_v1::ApplicationCatalogSymbol {
+                kind: app_v1::ApplicationCatalogSymbolKind::Contract as i32,
+                path: vec!["ReactiveBoundary".to_owned()],
+                public_type: None,
+                source_span: Some(app_v1::ApplicationCatalogSourceSpan { start: 1, end: 2 }),
+            }],
+            features: vec![app_v1::ApplicationCatalogFeatureView {
+                feature: app_v1::ApplicationCatalogFeature::StableCursorPages as i32,
+                state: app_v1::ApplicationCatalogFeatureState::Available as i32,
+            }],
+            has_more: false,
+            next_cursor: None,
+        };
+        assert_eq!(response.validate_structure(), Ok(()));
+
+        let mut unspecified = response.clone();
+        unspecified.symbols[0].kind = 0;
+        assert_eq!(
+            unspecified.validate_structure(),
+            Err(PublicWireError::InvalidValue)
+        );
+        let mut empty_span = response;
+        empty_span.symbols[0].source_span =
+            Some(app_v1::ApplicationCatalogSourceSpan { start: 2, end: 2 });
+        assert_eq!(
+            empty_span.validate_structure(),
+            Err(PublicWireError::InvalidValue)
         );
     }
 }

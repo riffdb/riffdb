@@ -2436,7 +2436,7 @@ fn discovery_catalog_fence(
     }
 }
 
-async fn read_active_query_module_for_discovery(
+pub(crate) async fn read_active_query_module_for_discovery(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     contract: ValidatedContractBundle,
@@ -3407,7 +3407,7 @@ fn lower_integrity_failure(
     service.internal_failure(operation, InternalDefect::LowerIntegrity)
 }
 
-async fn finish_discovery_result<T>(
+pub(crate) async fn finish_discovery_result<T>(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     completion: &BegunInvocationCompletion,

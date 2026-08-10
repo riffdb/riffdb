@@ -1,13 +1,19 @@
 //! Symbolic RiffQL application operations over the shared service boundary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::Instant;
 
+pub use riffdb_catalog::{
+    APPLICATION_CATALOG_SCHEMA_V1, ApplicationCatalogFeatureStateV1, ApplicationCatalogFeatureV1,
+    ApplicationCatalogFeatureViewV1, ApplicationCatalogPageV1, ApplicationCatalogSourceSpanV1,
+    ApplicationCatalogSymbolKindV1, ApplicationCatalogSymbolV1, MAX_APPLICATION_CATALOG_PAGE_ITEMS,
+};
 use riffdb_catalog::{
-    ActiveQueryModuleExpectation, PreparedQueryModuleActivation, PreparedReactiveModulePublication,
-    ValidatedQueryModule, ValidatedReactiveModule,
+    ActiveQueryModuleExpectation, ApplicationCatalogAuthorityV1, ApplicationCatalogCandidatesV1,
+    PreparedQueryModuleActivation, PreparedReactiveModulePublication, ValidatedQueryModule,
+    ValidatedReactiveModule,
 };
 use riffdb_commit::{
     ControlPlaneExecutionErrorKind, ControlPlaneTerminalAudit,
@@ -22,8 +28,10 @@ use riffdb_errors::{
     ValidationPath,
 };
 use riffdb_policy::{
-    ApplicationQueryAccessRequirement, ApplicationQueryTarget, AuthorizedApplicationQuery,
-    OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
+    ApplicationCatalogQueryCandidate, ApplicationQueryAccessRequirement, ApplicationQueryTarget,
+    AuthorizedApplicationQuery, CommandToolCandidate, DiscoveryVisibility,
+    MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate, OperationRequest, OperationTenantScope,
+    OutputClassification, PartitionConstraint,
 };
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
 use riffdb_query_executor::{
@@ -48,14 +56,16 @@ use riffdb_types::{
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
 use crate::orchestration::AuditScope;
 use crate::query_discovery_operations::{
-    finish_failure, finish_success, prepare_selected_contract,
+    finish_discovery_result, finish_failure, finish_success, prepare_selected_contract,
+    read_active_query_module_for_discovery,
 };
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
-    ContractSelection, CursorAccessError, CursorContractIdentity, CursorToken, InternalDefect,
-    QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService,
-    RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue,
+    ApplicationCatalogCursorLookup, ApplicationCatalogCursorState, ContractSelection,
+    CursorAccessError, CursorContractIdentity, CursorToken, InternalDefect, QueryCursorLookup,
+    QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService, RiffDbServiceInner,
+    ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent,
+    SourceName, SubmittedEnum, SubmittedValue,
 };
 
 /// Stricter application-surface source ceiling.
@@ -525,6 +535,71 @@ impl DescribeSymbolicContractResult {
     #[must_use]
     pub fn catalog(&self) -> &str {
         &self.catalog
+    }
+}
+
+/// One bounded authorization-filtered application-catalog request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationCatalogRequest {
+    contract: SymbolicContractSelector,
+    limit: NonZeroU16,
+    cursor: Option<CursorToken>,
+}
+
+impl ApplicationCatalogRequest {
+    /// Checks the public catalog page ceiling.
+    pub fn new(
+        contract: SymbolicContractSelector,
+        limit: NonZeroU16,
+        cursor: Option<CursorToken>,
+    ) -> Result<Self, SymbolicQueryInputError> {
+        if usize::from(limit.get()) > MAX_APPLICATION_CATALOG_PAGE_ITEMS {
+            return Err(SymbolicQueryInputError::TooLong);
+        }
+        Ok(Self {
+            contract,
+            limit,
+            cursor,
+        })
+    }
+
+    /// Exact selected contract.
+    #[must_use]
+    pub const fn contract(&self) -> &SymbolicContractSelector {
+        &self.contract
+    }
+
+    /// Requested bounded visible-symbol count.
+    #[must_use]
+    pub const fn limit(&self) -> NonZeroU16 {
+        self.limit
+    }
+
+    /// Opaque continuation, when this is not the first page.
+    #[must_use]
+    pub const fn cursor(&self) -> Option<CursorToken> {
+        self.cursor
+    }
+}
+
+/// One bounded symbolic application-catalog page and opaque continuation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationCatalogResult {
+    page: ApplicationCatalogPageV1,
+    next_cursor: Option<CursorToken>,
+}
+
+impl ApplicationCatalogResult {
+    /// Authorization-filtered name-only page.
+    #[must_use]
+    pub const fn page(&self) -> &ApplicationCatalogPageV1 {
+        &self.page
+    }
+
+    /// Opaque next-page token, present exactly when the page has more symbols.
+    #[must_use]
+    pub const fn next_cursor(&self) -> Option<CursorToken> {
+        self.next_cursor
     }
 }
 
@@ -1404,6 +1479,13 @@ pub trait SymbolicQueryApplication: Send + Sync {
         contract: SymbolicContractSelector,
     ) -> ServiceFuture<'_, DescribeSymbolicContractResult>;
 
+    /// Returns one bounded policy-filtered symbolic application-catalog page.
+    fn get_application_catalog(
+        &self,
+        context: RequestContext,
+        request: ApplicationCatalogRequest,
+    ) -> ServiceFuture<'_, ApplicationCatalogResult>;
+
     /// Parses, resolves, type checks, and plans without executing.
     fn check_symbolic_query(
         &self,
@@ -1471,6 +1553,18 @@ impl SymbolicQueryApplication for RiffDbService {
         let ingress = context.ingress();
         self.spawn_operation(ServiceOperationV1::DescribeContract, ingress, async move {
             describe_contract(service, context, contract).await
+        })
+    }
+
+    fn get_application_catalog(
+        &self,
+        context: RequestContext,
+        request: ApplicationCatalogRequest,
+    ) -> ServiceFuture<'_, ApplicationCatalogResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::DescribeContract, ingress, async move {
+            get_application_catalog(service, context, request).await
         })
     }
 
@@ -1609,6 +1703,286 @@ async fn describe_contract(
     begun.reauthorize(&service, &context).await?;
     finish_success(&service, &context, &begun).await?;
     Ok(result)
+}
+
+async fn get_application_catalog(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: ApplicationCatalogRequest,
+) -> ServiceResult<ApplicationCatalogResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::DescribeContract;
+    let bundle = prepare_selected_contract(
+        &service,
+        &context,
+        request.contract().selection(),
+        OPERATION,
+    )
+    .await?;
+    ensure_selected_hash(request.contract(), &bundle)?;
+    let module =
+        read_active_query_module_for_discovery(&service, &context, bundle.clone(), OPERATION)
+            .await?;
+    let candidates = ApplicationCatalogCandidatesV1::from_exact_application(
+        bundle.bundle(),
+        module.as_ref().map(ValidatedQueryModule::module),
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let targets =
+        ServiceAuditTargetMap::symbolic_query(bundle.lineage().clone(), bundle.contract_version())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = service
+        .begin_invocation(
+            &context,
+            OperationRequest::describe_contract(),
+            targets,
+            AuditScope::StandardRead,
+        )
+        .await?;
+    let authorities = candidates.authorities();
+    let current_visibility = filter_application_catalog_visibility(
+        &service,
+        &context,
+        &begun,
+        bundle.bundle(),
+        module.as_ref().map(ValidatedQueryModule::module),
+        authorities.as_slice(),
+    )
+    .await?;
+    let (_, completion) = begun.into_initial_authorization_and_completion();
+    let shaped = (|| {
+        let lookup = ApplicationCatalogCursorLookup::new(request.limit());
+        let prior = match request.cursor() {
+            Some(cursor) => match service.cursors.resolve_application_catalog(
+                cursor,
+                context.principal().principal_id(),
+                &lookup,
+            ) {
+                Ok(state)
+                    if state.contract_lineage() == bundle.lineage()
+                        && state.contract_version() == bundle.contract_version()
+                        && state.contract_hash() == bundle.bundle_hash()
+                        && state.module_hash()
+                            == module.as_ref().map(ValidatedQueryModule::identity)
+                        && state.authority_visibility().len() == authorities.len() =>
+                {
+                    Some(state)
+                }
+                Ok(_) | Err(CursorAccessError::InvalidCursor) => {
+                    return Err(application_catalog_invalid_cursor());
+                }
+                Err(CursorAccessError::Unavailable) => {
+                    service
+                        .providers
+                        .telemetry
+                        .record(ServiceTelemetryEvent::CursorUnavailable);
+                    return Err(PublicError::storage_unavailable().into());
+                }
+            },
+            None => None,
+        };
+        let effective_visibility = match prior.as_deref() {
+            Some(prior) => current_visibility
+                .iter()
+                .zip(prior.authority_visibility())
+                .map(|(current, prior)| *current && *prior)
+                .collect::<Vec<_>>(),
+            None => current_visibility,
+        };
+        let effective_limit = prior.as_deref().map_or(request.limit(), |prior| {
+            request.limit().min(prior.effective_limit())
+        });
+        let after_candidate = prior.as_deref().map(|prior| prior.after_candidate());
+        let visible = authorities
+            .iter()
+            .cloned()
+            .zip(effective_visibility.iter().copied())
+            .filter_map(|(authority, visible)| visible.then_some(authority))
+            .collect::<BTreeSet<_>>();
+        let (page, continuation_after_candidate) = candidates
+            .authorized_page(
+                &visible,
+                after_candidate,
+                usize::from(effective_limit.get()),
+            )
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        let cursor_guard = if page.has_more() {
+            let next_after = continuation_after_candidate.ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+            })?;
+            let state = ApplicationCatalogCursorState::new(
+                next_after,
+                bundle.lineage().clone(),
+                bundle.contract_version(),
+                bundle.bundle_hash(),
+                module.as_ref().map(ValidatedQueryModule::identity),
+                effective_visibility,
+                effective_limit,
+            )
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+            Some(
+                service
+                    .cursors
+                    .register_application_catalog_unpublished(
+                        context.principal().principal_id(),
+                        lookup,
+                        state,
+                    )
+                    .map_err(|_| PublicError::storage_unavailable())?,
+            )
+        } else {
+            None
+        };
+        let next_cursor = cursor_guard
+            .as_ref()
+            .map(crate::CursorPublicationGuard::token);
+        Ok((ApplicationCatalogResult { page, next_cursor }, cursor_guard))
+    })();
+    let (result, cursor_guard) =
+        finish_discovery_result(&service, &context, &completion, shaped).await?;
+    if let Some(guard) = cursor_guard {
+        guard.publish();
+    }
+    Ok(result)
+}
+
+async fn filter_application_catalog_visibility(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &crate::orchestration::BegunInvocation,
+    bundle: &riffdb_contract_ir::ContractBundle,
+    module: Option<&riffdb_query_module::QueryModule>,
+    authorities: &[ApplicationCatalogAuthorityV1],
+) -> ServiceResult<Vec<bool>> {
+    let query_candidates =
+        application_catalog_query_candidates(bundle, module).ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::DescribeContract,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+    let mut visibility = Vec::with_capacity(authorities.len());
+    for batch in authorities.chunks(MAX_DISCOVERY_PAGE_ITEMS) {
+        let authorization = begun.reauthorize(service, context).await?;
+        let mut commands = Vec::new();
+        let mut command_positions = Vec::new();
+        let mut queries = Vec::new();
+        let mut query_positions = Vec::new();
+        let mut batch_visibility = vec![false; batch.len()];
+        for (position, authority) in batch.iter().enumerate() {
+            match authority {
+                ApplicationCatalogAuthorityV1::Contract => batch_visibility[position] = true,
+                ApplicationCatalogAuthorityV1::Command {
+                    lineage,
+                    command_id,
+                } => {
+                    command_positions.push(position);
+                    commands.push(CommandToolCandidate::new(lineage.clone(), *command_id));
+                }
+                ApplicationCatalogAuthorityV1::Query {
+                    lineage,
+                    module_hash,
+                    query_name,
+                } => {
+                    let candidate = query_candidates.get(query_name).ok_or_else(|| {
+                        service.internal_failure(
+                            ServiceOperationV1::DescribeContract,
+                            InternalDefect::ProofMismatch,
+                        )
+                    })?;
+                    if candidate.operation().lineage() != lineage
+                        || candidate.operation().module_hash() != *module_hash
+                    {
+                        return Err(service.internal_failure(
+                            ServiceOperationV1::DescribeContract,
+                            InternalDefect::ProofMismatch,
+                        ));
+                    }
+                    query_positions.push(position);
+                    queries.push(candidate.clone());
+                }
+            }
+        }
+        let filtered = authorization
+            .into_discovery()
+            .and_then(|proof| proof.application_catalog(&commands, &queries))
+            .map_err(|_| {
+                service.internal_failure(
+                    ServiceOperationV1::DescribeContract,
+                    InternalDefect::ProofMismatch,
+                )
+            })?;
+        for (position, observed) in command_positions
+            .into_iter()
+            .zip(filtered.command_operations())
+        {
+            batch_visibility[position] = *observed == DiscoveryVisibility::Visible;
+        }
+        for (position, observed) in query_positions
+            .into_iter()
+            .zip(filtered.named_query_operations())
+        {
+            batch_visibility[position] = *observed == DiscoveryVisibility::Visible;
+        }
+        visibility.extend(batch_visibility);
+    }
+    Ok(visibility)
+}
+
+fn application_catalog_query_candidates(
+    bundle: &riffdb_contract_ir::ContractBundle,
+    module: Option<&riffdb_query_module::QueryModule>,
+) -> Option<BTreeMap<QueryOperationName, ApplicationCatalogQueryCandidate>> {
+    let mut candidates = BTreeMap::new();
+    let Some(module) = module else {
+        return Some(candidates);
+    };
+    for query in module.queries() {
+        let query_name = QueryOperationName::new(query.name().to_owned()).ok()?;
+        let mut accesses = Vec::with_capacity(query.plan().authorization().len());
+        for access in query.plan().authorization() {
+            let entity = bundle
+                .schema()
+                .entities()
+                .iter()
+                .find(|entity| entity.name() == access.entity())?;
+            let mut non_key_fields = access
+                .internal_fields()
+                .filter_map(|(_, field)| {
+                    (!entity.primary_key_fields().contains(&field)).then_some(field)
+                })
+                .collect::<Vec<_>>();
+            non_key_fields.sort_unstable();
+            non_key_fields.dedup();
+            let maximum_rows = NonZeroU16::new(u16::try_from(access.maximum_rows()).ok()?)?;
+            accesses.push(
+                ApplicationQueryAccessRequirement::new(
+                    entity.id(),
+                    None,
+                    non_key_fields,
+                    maximum_rows,
+                )
+                .ok()?,
+            );
+        }
+        let candidate = ApplicationCatalogQueryCandidate::new(
+            NamedQueryToolCandidate::new(
+                bundle.lineage().clone(),
+                module.identity(),
+                query_name.clone(),
+            ),
+            accesses,
+        )
+        .ok()?;
+        if candidates.insert(query_name, candidate).is_some() {
+            return None;
+        }
+    }
+    Some(candidates)
+}
+
+fn application_catalog_invalid_cursor() -> ServiceFailure {
+    let issue = ValidationIssue::new(ValidationCode::InvalidValue, ValidationPath::root());
+    PublicError::validation(ValidationIssues::one(issue)).into()
 }
 
 async fn check_query(

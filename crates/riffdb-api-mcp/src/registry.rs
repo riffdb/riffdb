@@ -783,6 +783,53 @@ fn append_symbolic_tools(
     });
     append_reactive_tools(tools, manifest)?;
     append_contextual_tools(tools, manifest)?;
+    append_application_catalog_tool(tools, manifest)?;
+    Ok(())
+}
+
+fn append_application_catalog_tool(
+    tools: &mut Vec<FixedToolDefinition>,
+    manifest: &mut Vec<String>,
+) -> Result<(), RegistryError> {
+    let name = "riffdb_application_catalog";
+    let input_id = format!("riffdb.fixed-tool/{name}/input/v1");
+    let result_id = format!("riffdb.fixed-tool/{name}/result/v1");
+    let input_schema = generated_schema(
+        input_id.clone(),
+        serde_json::json!({
+            "$schema": SCHEMA_DIALECT,
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "contract": {"type": "object"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "cursor": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+            }
+        }),
+    )?;
+    let result_schema = generated_schema(result_id.clone(), wrapped_result_schema("page"))?;
+    manifest.extend([input_id, result_id]);
+    tools.push(FixedToolDefinition {
+        kind: 31,
+        name: name.to_owned(),
+        title: "Inspect authorized application symbols".to_owned(),
+        description: "Return one bounded policy-filtered page of symbolic application operations and features without numeric or storage identities.".to_owned(),
+        risk_class: "symbolic_read".to_owned(),
+        grpc_service: "ApplicationQueryService".to_owned(),
+        grpc_method: "GetApplicationCatalog".to_owned(),
+        service_operation: "DescribeContract".to_owned(),
+        request_converter_id: "riffdb.mcp.symbolic.31.request/v1".to_owned(),
+        result_converter_id: "riffdb.mcp.symbolic.31.result/v1".to_owned(),
+        result_branches: vec!["page".to_owned()],
+        annotations: FixedToolAnnotations {
+            read_only_hint: true,
+            destructive_hint: false,
+            idempotent_hint: true,
+            open_world_hint: false,
+        },
+        input_schema,
+        result_schema,
+    });
     Ok(())
 }
 
@@ -1660,8 +1707,8 @@ mod tests {
     #[test]
     fn fixed_registry_reproduces_every_accepted_schema_identity() {
         let registry = fixed_tool_registry().expect("accepted fixed registry loads");
-        assert_eq!(registry.tools().len(), 30);
-        assert_eq!(registry.artifact_manifest().len(), 61);
+        assert_eq!(registry.tools().len(), 31);
+        assert_eq!(registry.artifact_manifest().len(), 63);
         assert_eq!(registry.operation_schemas().len(), 2);
         assert!(registry.fixed_schema_bytes() > EXPECTED_FIXED_SCHEMA_BYTES);
         assert!(registry.fixed_schema_bytes() <= MAX_FIXED_SCHEMA_BYTES);

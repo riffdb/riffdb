@@ -9,6 +9,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_auth::AuthenticationContext;
 use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_value_to_proto, v1};
 use riffdb_service::{
+    APPLICATION_CATALOG_SCHEMA_V1, ApplicationCatalogFeatureStateV1, ApplicationCatalogFeatureV1,
+    ApplicationCatalogRequest, ApplicationCatalogResult, ApplicationCatalogSymbolKindV1,
     ApplyContractMigrationRequest, BootstrapCapabilityRequest, BootstrapCapabilityResult,
     CapabilityIdentityView, CapabilityTransitionView, CheckContractMigrationRequest,
     CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
@@ -137,6 +139,25 @@ pub fn describe_symbolic_contract_request_from_proto(
         request_id_from_bytes(&request.request_id)?,
         symbolic_contract_selector_from_proto(request.contract)?,
     ))
+}
+
+/// Converts one bounded symbolic application-catalog request.
+pub fn application_catalog_request_from_proto(
+    request: app_v1::GetApplicationCatalogRequest,
+) -> Result<(RequestId, ApplicationCatalogRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let contract = symbolic_contract_selector_from_proto(request.contract)?;
+    let limit = u16::try_from(request.limit)
+        .ok()
+        .and_then(NonZeroU16::new)
+        .ok_or_else(invalid_request)?;
+    let cursor = request
+        .cursor
+        .map(|cursor| cursor_token_from_text(&cursor))
+        .transpose()?;
+    let request =
+        ApplicationCatalogRequest::new(contract, limit, cursor).map_err(|_| invalid_request())?;
+    Ok((request_id, request))
 }
 
 /// Converts an ad-hoc check request without parsing RiffQL in the transport.
@@ -391,6 +412,113 @@ pub fn describe_symbolic_contract_result_to_proto(
         contract_version: result.version().get(),
         contract_bundle_hash: result.bundle_hash().as_bytes().to_vec(),
         symbolic_catalog: result.catalog().to_owned(),
+    }
+}
+
+/// Converts one policy-filtered application-catalog page without inventing
+/// numeric or storage identities.
+pub fn application_catalog_result_to_proto(
+    result: &ApplicationCatalogResult,
+) -> app_v1::GetApplicationCatalogResponse {
+    let page = result.page();
+    app_v1::GetApplicationCatalogResponse {
+        schema: APPLICATION_CATALOG_SCHEMA_V1.to_owned(),
+        contract_lineage: page.identity().lineage().as_str().to_owned(),
+        contract_version: page.identity().version().get(),
+        contract_bundle_hash: page.identity().contract_hash().as_bytes().to_vec(),
+        query_module_hashes: page
+            .identity()
+            .module_hashes()
+            .iter()
+            .map(|hash| hash.as_bytes().to_vec())
+            .collect(),
+        symbols: page
+            .symbols()
+            .iter()
+            .map(|symbol| app_v1::ApplicationCatalogSymbol {
+                kind: application_catalog_symbol_kind_to_proto(symbol.kind()) as i32,
+                path: symbol.path().to_vec(),
+                public_type: symbol.public_type().map(str::to_owned),
+                source_span: symbol.source_span().map(|span| {
+                    app_v1::ApplicationCatalogSourceSpan {
+                        start: span.start(),
+                        end: span.end(),
+                    }
+                }),
+            })
+            .collect(),
+        features: page
+            .features()
+            .iter()
+            .map(|feature| app_v1::ApplicationCatalogFeatureView {
+                feature: application_catalog_feature_to_proto(feature.feature()) as i32,
+                state: match feature.state() {
+                    ApplicationCatalogFeatureStateV1::Available => {
+                        app_v1::ApplicationCatalogFeatureState::Available as i32
+                    }
+                    ApplicationCatalogFeatureStateV1::Unavailable => {
+                        app_v1::ApplicationCatalogFeatureState::Unavailable as i32
+                    }
+                },
+            })
+            .collect(),
+        has_more: page.has_more(),
+        next_cursor: result
+            .next_cursor()
+            .map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
+    }
+}
+
+fn application_catalog_symbol_kind_to_proto(
+    kind: ApplicationCatalogSymbolKindV1,
+) -> app_v1::ApplicationCatalogSymbolKind {
+    match kind {
+        ApplicationCatalogSymbolKindV1::Contract => app_v1::ApplicationCatalogSymbolKind::Contract,
+        ApplicationCatalogSymbolKindV1::Enum => app_v1::ApplicationCatalogSymbolKind::Enum,
+        ApplicationCatalogSymbolKindV1::Entity => app_v1::ApplicationCatalogSymbolKind::Entity,
+        ApplicationCatalogSymbolKindV1::Field => app_v1::ApplicationCatalogSymbolKind::Field,
+        ApplicationCatalogSymbolKindV1::Relationship => {
+            app_v1::ApplicationCatalogSymbolKind::Relationship
+        }
+        ApplicationCatalogSymbolKindV1::Index => app_v1::ApplicationCatalogSymbolKind::Index,
+        ApplicationCatalogSymbolKindV1::Command => app_v1::ApplicationCatalogSymbolKind::Command,
+        ApplicationCatalogSymbolKindV1::CommandOutcome => {
+            app_v1::ApplicationCatalogSymbolKind::CommandOutcome
+        }
+        ApplicationCatalogSymbolKindV1::Event => app_v1::ApplicationCatalogSymbolKind::Event,
+        ApplicationCatalogSymbolKindV1::QueryModule => {
+            app_v1::ApplicationCatalogSymbolKind::QueryModule
+        }
+        ApplicationCatalogSymbolKindV1::Query => app_v1::ApplicationCatalogSymbolKind::Query,
+        ApplicationCatalogSymbolKindV1::Role => app_v1::ApplicationCatalogSymbolKind::Role,
+        ApplicationCatalogSymbolKindV1::Operation => {
+            app_v1::ApplicationCatalogSymbolKind::Operation
+        }
+    }
+}
+
+fn application_catalog_feature_to_proto(
+    feature: ApplicationCatalogFeatureV1,
+) -> app_v1::ApplicationCatalogFeature {
+    match feature {
+        ApplicationCatalogFeatureV1::OperationalOptionalPredicates => {
+            app_v1::ApplicationCatalogFeature::OperationalOptionalPredicates
+        }
+        ApplicationCatalogFeatureV1::StableCursorPages => {
+            app_v1::ApplicationCatalogFeature::StableCursorPages
+        }
+        ApplicationCatalogFeatureV1::NullExistencePredicates => {
+            app_v1::ApplicationCatalogFeature::NullExistencePredicates
+        }
+        ApplicationCatalogFeatureV1::BinaryTextPrefix => {
+            app_v1::ApplicationCatalogFeature::BinaryTextPrefix
+        }
+        ApplicationCatalogFeatureV1::UnicodeFoldTextPrefixV1 => {
+            app_v1::ApplicationCatalogFeature::UnicodeFoldTextPrefixV1
+        }
+        ApplicationCatalogFeatureV1::ExactAggregates => {
+            app_v1::ApplicationCatalogFeature::ExactAggregates
+        }
     }
 }
 
@@ -5060,6 +5188,30 @@ mod tests {
             panic!("expected named query")
         };
         assert_eq!(request.minimum_application_head(), Some(42));
+    }
+
+    #[test]
+    fn application_catalog_request_enforces_visible_page_and_cursor_bounds() {
+        let (_, request) =
+            application_catalog_request_from_proto(app_v1::GetApplicationCatalogRequest {
+                contract: None,
+                limit: 100,
+                cursor: Some(URL_SAFE_NO_PAD.encode([7_u8; 16])),
+                request_id: request_id().as_bytes().to_vec(),
+            })
+            .expect("bounded catalog request");
+        assert_eq!(request.limit().get(), 100);
+        assert_eq!(request.cursor().expect("cursor").as_bytes(), &[7_u8; 16]);
+
+        assert!(
+            application_catalog_request_from_proto(app_v1::GetApplicationCatalogRequest {
+                contract: None,
+                limit: 101,
+                cursor: None,
+                request_id: request_id().as_bytes().to_vec(),
+            })
+            .is_err()
+        );
     }
 
     #[test]

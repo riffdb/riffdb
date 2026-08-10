@@ -16,7 +16,8 @@ use crate::operation::{
     resource_permission,
 };
 use crate::{
-    AgentSessionAdmissionPolicy, AuthorizedCapabilityMutationPreparation,
+    AgentSessionAdmissionPolicy, ApplicationCatalogQueryCandidate,
+    ApplicationQueryAccessRequirement, AuthorizedCapabilityMutationPreparation,
     AuthorizedCommandExecution, CommandAuthorizationBindingError, CommandToolCandidate,
     DiscoveryResource, FixedToolCandidate, NamedQueryToolCandidate, OperationRequest,
     UntrustedInvocationClaims,
@@ -829,7 +830,9 @@ impl AuthorizedOperation {
     pub fn into_discovery(self) -> Result<AuthorizedDiscovery, DiscoveryFilterError> {
         if !matches!(
             self.request.operation(),
-            ServiceOperationV1::DiscoverCommandTools | ServiceOperationV1::DiscoverResources
+            ServiceOperationV1::DiscoverCommandTools
+                | ServiceOperationV1::DiscoverResources
+                | ServiceOperationV1::DescribeContract
         ) {
             return Err(DiscoveryFilterError::CatalogMismatch);
         }
@@ -1038,6 +1041,33 @@ pub struct ToolCatalogVisibility {
     named_query_tools: Vec<DiscoveryVisibility>,
 }
 
+/// Visibility masks for one symbolic application-catalog authorization snapshot.
+#[derive(Eq, PartialEq)]
+pub struct ApplicationCatalogVisibility {
+    command_operations: Vec<DiscoveryVisibility>,
+    named_query_operations: Vec<DiscoveryVisibility>,
+}
+
+impl ApplicationCatalogVisibility {
+    /// Positional command-operation visibility.
+    #[must_use]
+    pub fn command_operations(&self) -> &[DiscoveryVisibility] {
+        &self.command_operations
+    }
+
+    /// Positional named-query-operation visibility.
+    #[must_use]
+    pub fn named_query_operations(&self) -> &[DiscoveryVisibility] {
+        &self.named_query_operations
+    }
+}
+
+impl fmt::Debug for ApplicationCatalogVisibility {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplicationCatalogVisibility([REDACTED])")
+    }
+}
+
 impl ToolCatalogVisibility {
     /// Returns masks corresponding exactly to [`FixedToolCandidate::ALL`].
     #[must_use]
@@ -1140,6 +1170,60 @@ impl AuthorizedDiscovery {
         })
     }
 
+    /// Consumes one `DescribeContract` safe-point proof to filter exact
+    /// application operations before symbolic catalog assembly.
+    pub fn application_catalog(
+        self,
+        command_candidates: &[CommandToolCandidate],
+        named_query_candidates: &[ApplicationCatalogQueryCandidate],
+    ) -> Result<ApplicationCatalogVisibility, DiscoveryFilterError> {
+        if self.request.operation() != ServiceOperationV1::DescribeContract {
+            return Err(DiscoveryFilterError::CatalogMismatch);
+        }
+        if command_candidates
+            .len()
+            .checked_add(named_query_candidates.len())
+            .is_none_or(|count| count > MAX_DISCOVERY_PAGE_ITEMS)
+        {
+            return Err(DiscoveryFilterError::TooManyCandidates);
+        }
+        let command_operations = command_candidates
+            .iter()
+            .map(|candidate| {
+                if check_permission(&self.grant, &command_tool_permission(candidate))
+                    == PermissionCheck::Allowed
+                {
+                    DiscoveryVisibility::Visible
+                } else {
+                    DiscoveryVisibility::Hidden
+                }
+            })
+            .collect();
+        let named_query_operations = named_query_candidates
+            .iter()
+            .map(|candidate| {
+                if check_permission(
+                    &self.grant,
+                    &named_query_tool_permission(candidate.operation()),
+                ) == PermissionCheck::Allowed
+                    && application_query_accesses_visible(
+                        &self.grant,
+                        candidate.operation().lineage(),
+                        candidate.accesses(),
+                    )
+                {
+                    DiscoveryVisibility::Visible
+                } else {
+                    DiscoveryVisibility::Hidden
+                }
+            })
+            .collect();
+        Ok(ApplicationCatalogVisibility {
+            command_operations,
+            named_query_operations,
+        })
+    }
+
     /// Consumes this safe-point proof to filter one bounded resource catalog.
     pub fn resource_catalog(
         self,
@@ -1208,6 +1292,29 @@ impl AuthorizedDiscovery {
             DiscoveryVisibility::Hidden
         }
     }
+}
+
+pub(crate) fn application_query_accesses_visible(
+    grant: &CapabilityGrantV1,
+    lineage: &ContractLineage,
+    accesses: &[ApplicationQueryAccessRequirement],
+) -> bool {
+    accesses.iter().all(|access| {
+        if access.maximum_rows() > grant.max_scan_rows() {
+            return false;
+        }
+        if access.non_key_fields().is_empty() {
+            return true;
+        }
+        grant.field_visibility().iter().any(|visibility| {
+            visibility.lineage() == lineage
+                && visibility.entity_type() == access.entity_type_id()
+                && access
+                    .non_key_fields()
+                    .iter()
+                    .all(|field| visibility.fields().binary_search(field).is_ok())
+        })
+    })
 }
 
 impl fmt::Debug for AuthorizedDiscovery {
@@ -1856,6 +1963,91 @@ mod tests {
         .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[], &[candidate])
         .expect("bounded catalog");
         assert_eq!(hidden.named_query_tools(), &[DiscoveryVisibility::Hidden]);
+    }
+
+    #[test]
+    fn application_catalog_filters_exact_operations_under_describe_authority() {
+        let module_hash = riffdb_types::QueryModuleHash::from_bytes([0x73; 32]);
+        let query_name = riffdb_types::QueryOperationName::new("TicketPage")
+            .expect("valid query operation name");
+        let command = CommandToolCandidate::new(lineage(), CommandId::first());
+        let query = ApplicationCatalogQueryCandidate::new(
+            crate::NamedQueryToolCandidate::new(lineage(), module_hash, query_name.clone()),
+            vec![
+                ApplicationQueryAccessRequirement::new(
+                    EntityTypeId::first(),
+                    None,
+                    vec![FieldId::first()],
+                    NonZeroU16::new(10).expect("nonzero rows"),
+                )
+                .expect("query access"),
+            ],
+        )
+        .expect("catalog query candidate");
+        let permissions = vec![
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadContract)
+                .expect("read-contract permission"),
+            CapabilityPermissionV1::ExecuteNamedQuery(lineage(), module_hash, query_name),
+        ];
+        let visibility = discovery(
+            OperationRequest::describe_contract(),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                permissions.clone(),
+                vec![
+                    EntityFieldVisibilityV1::new(
+                        lineage(),
+                        EntityTypeId::first(),
+                        vec![FieldId::first()],
+                    )
+                    .expect("field visibility"),
+                ],
+                Vec::new(),
+            ),
+        )
+        .application_catalog(std::slice::from_ref(&command), std::slice::from_ref(&query))
+        .expect("bounded application catalog");
+
+        assert_eq!(
+            visibility.command_operations(),
+            &[DiscoveryVisibility::Hidden]
+        );
+        assert_eq!(
+            visibility.named_query_operations(),
+            &[DiscoveryVisibility::Visible]
+        );
+        let hidden_fields = discovery(
+            OperationRequest::describe_contract(),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                permissions,
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .application_catalog(&[], std::slice::from_ref(&query))
+        .expect("bounded application catalog");
+        assert_eq!(
+            hidden_fields.named_query_operations(),
+            &[DiscoveryVisibility::Hidden],
+            "a named-query grant cannot disclose fields it cannot read"
+        );
+        assert_eq!(
+            discovery(
+                OperationRequest::discover_resources(),
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![],
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            )
+            .application_catalog(&[], &[]),
+            Err(DiscoveryFilterError::CatalogMismatch)
+        );
     }
 
     #[test]

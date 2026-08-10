@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    num::NonZeroU16,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -10,6 +11,7 @@ use std::{
 use base64::Engine as _;
 use riffdb_errors::ApplicationOperation;
 use riffdb_service::{
+    ApplicationCatalogFeatureStateV1, ApplicationCatalogRequest, ApplicationCatalogResult,
     ApplicationErrorContextBuilder, ApplicationService, CheckSymbolicQueryResult,
     CommandToolDescriptor, CommandToolDiscoveryItem, CompactCommandToolDiscoveryItem,
     CompactResourceDescriptor, CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
@@ -1136,6 +1138,31 @@ impl HostedServiceMcpBackend {
                     .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_symbolic_contract(result)
+            }
+            McpFixedToolRequest::ApplicationCatalog {
+                contract,
+                limit,
+                cursor,
+            } => {
+                let request = ApplicationCatalogRequest::new(
+                    symbolic_contract_selector(contract)?,
+                    NonZeroU16::new(limit).ok_or(McpBackendError::InvalidResponse)?,
+                    cursor.map(CursorToken::from_bytes),
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::DescribeContract),
+                )?;
+                let error_context =
+                    call.application_context(ApplicationOperation::DescribeContract)?;
+                let result = self
+                    .service
+                    .get_application_catalog(call.take_context()?, request)
+                    .await
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
+                call.complete();
+                render_application_catalog(result)
             }
             McpFixedToolRequest::CheckQuery { contract, source } => {
                 let request = CompileSymbolicQueryRequest::new(
@@ -3692,6 +3719,68 @@ fn render_symbolic_contract(
     compose(
         15,
         McpFixedResultBranch::ContractDescribed,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn render_application_catalog(
+    result: ApplicationCatalogResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let page = result.page();
+    let identity = page.identity();
+    let symbols = page
+        .symbols()
+        .iter()
+        .map(|symbol| {
+            let source_span = symbol.source_span().map(|span| {
+                serde_json::json!({
+                    "start": span.start(),
+                    "end": span.end(),
+                })
+            });
+            serde_json::json!({
+                "kind": symbol.kind().as_str(),
+                "path": symbol.path(),
+                "public_type": symbol.public_type(),
+                "source_span": source_span,
+            })
+        })
+        .collect::<Vec<_>>();
+    let features = page
+        .features()
+        .iter()
+        .map(|feature| {
+            serde_json::json!({
+                "feature": feature.feature().as_str(),
+                "state": match feature.state() {
+                    ApplicationCatalogFeatureStateV1::Available => "available",
+                    ApplicationCatalogFeatureStateV1::Unavailable => "unavailable",
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "schema": riffdb_service::APPLICATION_CATALOG_SCHEMA_V1,
+        "contract": {
+            "lineage": identity.lineage().as_str(),
+            "version": identity.version().get().to_string(),
+            "bundle_hash": lower_hex(identity.contract_hash().as_bytes()),
+        },
+        "query_module_hashes": identity
+            .module_hashes()
+            .iter()
+            .map(|hash| lower_hex(hash.as_bytes()))
+            .collect::<Vec<_>>(),
+        "symbols": symbols,
+        "features": features,
+        "has_more": page.has_more(),
+        "next_cursor": result
+            .next_cursor()
+            .map(|cursor| encode_mcp_cursor(*cursor.as_bytes())),
+    });
+    compose(
+        31,
+        McpFixedResultBranch::ApplicationCatalogPage,
         Some(payload_from(&payload)?),
     )
 }

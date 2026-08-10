@@ -39,6 +39,14 @@ closed.
 credential. A missing command may be absent, stale, or unauthorized; do not
 infer which.
 
+Use `riffdb_application_catalog` when an agent needs bounded symbolic
+introspection beyond the immediately callable tool list. It returns only
+authorized names, public types, source-relative spans, and closed feature
+availability. Page with its opaque lowercase cursor; do not decode it or retry
+an invalid cursor as a first-page request. The catalog intentionally never
+returns numeric compiler IDs, raw plans, capability details, storage keys, or
+hidden totals.
+
 For a command resource:
 
 - `riffdb://command/<lineage>/<command-id>/docs` is the invocation guide with
