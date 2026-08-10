@@ -40,7 +40,7 @@ mapfile -t mcp_tool_catalogs < <(
 )
 for catalog in "${mcp_tool_catalogs[@]}"; do
     if ! jq -e '
-        [.commands[]?.name, .tools[]?.name] as $names
+        [.commands[]?.name, .tools[]?.name, .reactive_tools[]?.name] as $names
         | ($names | length) > 0
         and all($names[]; type == "string" and test("^[a-z][a-z0-9_]{0,127}$"))
     ' "$catalog" >/dev/null; then

@@ -13,6 +13,12 @@ complete valid trust-root replacement for new connections and retains the last
 valid snapshot otherwise.
 See [Remote and Local Application Ingress](../operations/REMOTE-INGRESS.md).
 
+`StableApplicationClient::connect_verified_tls` constructs the
+application-only facade directly from the same closed TLS configuration. The
+first-party [Driver Host](DRIVER-HOST.md) uses that path to centralize trust,
+pooling, retry, cancellation, uncertainty, and reactive resumption for target
+languages without exposing the kernel client.
+
 ## Generated boundary
 
 Generate from the reviewed lock:

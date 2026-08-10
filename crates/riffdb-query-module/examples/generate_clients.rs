@@ -159,12 +159,13 @@ fn main() {
     let tools = generate_mcp_tools(&module).expect("generate MCP tools");
     let commands = generate_mcp_commands(&module, &contract).expect("generate MCP commands");
     let manifest = serde_json::json!({
-        "schema": "riffdb-generated-mcp-tools-v1",
+        "schema": "riffdb-generated-application-operations/v2",
         "application_manifest_hash": hex(application.identity().as_bytes()),
         "tools": tools
             .iter()
             .map(|tool| serde_json::json!({
                 "name": tool.name,
+                "operation_name": tool.operation_name,
                 "title": tool.title,
                 "description": tool.description,
                 "module_hash": hex(&tool.module_hash),
@@ -184,6 +185,7 @@ fn main() {
             .iter()
             .map(|command| serde_json::json!({
                 "name": command.name,
+                "operation_name": command.operation_name,
                 "title": command.title,
                 "description": command.description,
                 "contract_bundle_hash": hex(&command.contract_bundle_hash),

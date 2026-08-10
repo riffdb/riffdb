@@ -1863,6 +1863,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-driver-host"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "riffdb-client-rust",
+ "riffdb-config",
+ "riffdb-errors",
+ "riffdb-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "toml",
+ "tonic",
+]
+
+[[package]]
 name = "riffdb-errors"
 version = "0.1.0"
 dependencies = [
@@ -2167,6 +2184,7 @@ dependencies = [
  "riffdb-config",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-driver-host",
  "riffdb-invariant",
  "riffdb-proto",
  "riffdb-query-ir",
@@ -2601,12 +2619,12 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tempfile"
-version = "3.27.0"
+version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+checksum = "655da9c7eb6305c55742045d5a8d2037996d61d8de95806335c7c86ce0f82e9c"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

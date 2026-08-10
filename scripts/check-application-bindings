@@ -68,9 +68,13 @@ jq -e \
   --arg manifest_hash "$manifest_hash" \
   --arg module_hash "$module_hash" \
   --arg contract_hash "$contract_hash" '
-    .application_manifest_hash == $manifest_hash
+    .schema == "riffdb-generated-application-operations/v2"
+    and .application_manifest_hash == $manifest_hash
     and all(.tools[]; .module_hash == $module_hash)
+    and all(.tools[]; (.operation_name | type == "string" and length > 0))
     and all(.commands[]; .contract_bundle_hash == $contract_hash)
+    and all(.commands[]; (.operation_name | type == "string" and length > 0))
+    and all(.reactive_tools[]; (.operation_name | type == "string" and length > 0))
   ' examples/agent-alpha/generated/mcp/tools.json >/dev/null
 if ! rg -F "export const QUERY_MODULE_HASH = \"$module_hash\"" "$typescript" >/dev/null \
   || ! rg -F "export const CONTRACT_BUNDLE_HASH = \"$contract_hash\"" "$typescript" >/dev/null; then

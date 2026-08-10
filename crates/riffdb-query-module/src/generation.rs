@@ -17,6 +17,8 @@ const MCP_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 /// One compiler-owned generated MCP tool for a visible named query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedMcpTool {
+    /// Exact source-level query symbol.
+    pub operation_name: String,
     /// Stable module-qualified tool name.
     pub name: String,
     /// Human-facing title.
@@ -34,6 +36,8 @@ pub struct GeneratedMcpTool {
 /// One compiler-owned generated MCP command operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedMcpCommand {
+    /// Exact source-level command symbol.
+    pub operation_name: String,
     /// Stable module-qualified tool name.
     pub name: String,
     /// Human-facing title.
@@ -53,6 +57,18 @@ pub struct GeneratedMcpCommand {
 /// One compiler-owned generated MCP operation for a reactive stream or watch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedMcpReactiveTool {
+    /// Exact source-level reactive operation symbol.
+    pub operation_name: String,
+    /// Exact closed generated action name.
+    pub action: String,
+    /// Closed source operation class: stream, watch, or subscription.
+    pub operation_kind: String,
+    /// Exact declared reaction name for a reaction action.
+    pub reaction_name: Option<String>,
+    /// Exact target command symbol for a reaction action.
+    pub reaction_command_name: Option<String>,
+    /// Stable compiler-owned target command identity for proof forwarding.
+    pub reaction_command_id: Option<u32>,
     /// Stable underscore-only module, operation, and action name.
     pub name: String,
     /// Human-facing title.
@@ -124,6 +140,11 @@ pub fn generate_mcp_reactive_tools(
                 actions
             }
         };
+        let operation_kind = match operation.plan() {
+            ReactiveOperationPlanV1::Stream { .. } => "stream",
+            ReactiveOperationPlanV1::Watch { .. } => "watch",
+            ReactiveOperationPlanV1::Subscription { .. } => "subscription",
+        };
         for action in &actions {
             let name = format!(
                 "{}_{}_{}",
@@ -135,6 +156,18 @@ pub fn generate_mcp_reactive_tools(
                 return Err(McpToolGenerationError::NameCollision);
             }
             let mut properties = Map::new();
+            let reaction = if action.starts_with("react_") {
+                match operation.plan() {
+                    ReactiveOperationPlanV1::Subscription { reactions, .. } => {
+                        reactions.iter().find(|reaction| {
+                            action == &format!("react_{}", snake(reaction.reaction_name()))
+                        })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             properties.insert(
                 "parameters".to_owned(),
                 json!({
@@ -174,15 +207,7 @@ pub fn generate_mcp_reactive_tools(
                 properties.insert("cursor".to_owned(), json!({"type":["string", "null"]}));
             }
             if action.starts_with("react_") {
-                let reaction = match operation.plan() {
-                    ReactiveOperationPlanV1::Subscription { reactions, .. } => reactions
-                        .iter()
-                        .find(|reaction| {
-                            action == &format!("react_{}", snake(reaction.reaction_name()))
-                        })
-                        .expect("action was built from one declared reaction"),
-                    _ => unreachable!("reaction actions are subscription-only"),
-                };
+                let reaction = reaction.expect("action was built from one declared reaction");
                 let command = contract
                     .commands()
                     .iter()
@@ -239,6 +264,20 @@ pub fn generate_mcp_reactive_tools(
                 "additionalProperties": true,
             });
             tools.push(GeneratedMcpReactiveTool {
+                operation_name: operation.name().as_str().to_owned(),
+                action: action.clone(),
+                operation_kind: operation_kind.to_owned(),
+                reaction_name: reaction.map(|value| value.reaction_name().to_owned()),
+                reaction_command_name: reaction.map(|value| value.command_name().to_owned()),
+                reaction_command_id: reaction.map(|value| {
+                    contract
+                        .commands()
+                        .iter()
+                        .find(|command| command.name() == value.command_name())
+                        .expect("compiled reaction command")
+                        .command_id()
+                        .get()
+                }),
                 title: format!("{} {}", action, operation.name().as_str()),
                 description: format!(
                     "Run the authorized {} action for exact reactive operation {}.",
@@ -453,6 +492,7 @@ pub fn generate_mcp_tools(
                 "oneOf": branches,
             });
             Ok(GeneratedMcpTool {
+                operation_name: query.name().to_owned(),
                 title: format!("Run {}", query.name()),
                 description: format!(
                     "Execute the exact {} named query from immutable module {}.",
@@ -534,6 +574,7 @@ pub fn generate_mcp_commands(
                 })
                 .collect::<Vec<_>>();
             Ok(GeneratedMcpCommand {
+                operation_name: command.name().to_owned(),
                 name: format!(
                     "{}_{}",
                     snake(module.name().as_str()),

@@ -44,7 +44,11 @@ authority. It grants nothing. Binding is a separate authenticated operation.
 
 The Rust and TypeScript generated clients expose typed parameter structures,
 result/outcome unions, cursor types, retry-safe commands, and checked public
-errors. `generated/mcp/tools.json` carries schemas for the same operation set.
+errors. `generated/mcp/tools.json` carries the V2 generated application
+operation catalog for the same operation set: exact source symbols, immutable
+module/plan identities, input and result schemas, and closed reactive actions.
+The catalog is shared by MCP and the target-language driver host; descriptive
+text is never dispatch authority.
 Application code imports those operations, not Protobuf or kernel requests.
 
 The exact compatibility manifest at

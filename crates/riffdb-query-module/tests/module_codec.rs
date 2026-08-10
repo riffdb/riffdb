@@ -43,6 +43,8 @@ fn generated_mcp_tools_are_module_pinned_name_addressed_and_domain_shaped() {
     assert_eq!(tools.len(), 2);
     assert_eq!(tools[0].name, "ticketdesk_list_tickets");
     assert_eq!(tools[1].name, "ticketdesk_ticket_page");
+    assert_eq!(tools[0].operation_name, "ListTickets");
+    assert_eq!(tools[1].operation_name, "TicketPage");
     assert!(
         tools
             .iter()
