@@ -85,6 +85,8 @@ pub enum CompilerDiagnosticCode {
     InvalidServiceValue,
     /// `RDB-C037`: a workflow transition lacks one direct exact observed-revision input.
     MissingWorkflowRevision,
+    /// `RDB-C038`: a workflow lease operation lacks a required direct command input.
+    MissingWorkflowLeaseInput,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -95,7 +97,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -133,6 +135,7 @@ impl CompilerDiagnosticCode {
         Self::InvalidWorkflowLease,
         Self::InvalidServiceValue,
         Self::MissingWorkflowRevision,
+        Self::MissingWorkflowLeaseInput,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -179,6 +182,7 @@ impl CompilerDiagnosticCode {
             Self::InvalidWorkflowLease => "RDB-C035",
             Self::InvalidServiceValue => "RDB-C036",
             Self::MissingWorkflowRevision => "RDB-C037",
+            Self::MissingWorkflowLeaseInput => "RDB-C038",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -259,6 +263,9 @@ impl CompilerDiagnosticCode {
             }
             Self::MissingWorkflowRevision => {
                 "a workflow transition requires one direct exact observed-revision input"
+            }
+            Self::MissingWorkflowLeaseInput => {
+                "a workflow lease operation requires direct owner, duration, revision, and fencing-token inputs"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -364,6 +371,9 @@ impl CompilerDiagnosticCode {
             ),
             Self::MissingWorkflowRevision => Some(
                 "pass one required u64 command input containing the revision returned by the prior read",
+            ),
+            Self::MissingWorkflowLeaseInput => Some(
+                "pass the exact owner, duration, revision, and fencing token as required command inputs",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
@@ -539,7 +549,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 40);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 41);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

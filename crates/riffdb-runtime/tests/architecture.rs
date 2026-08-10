@@ -118,7 +118,7 @@ fn manifests_name_only_the_approved_semantic_layers() {
 }
 
 #[test]
-fn contract_workflows_do_not_expose_a_generic_state_machine_or_transition_surface() {
+fn contract_workflows_expose_only_compiled_transition_and_fenced_lease_surfaces() {
     for (layer, source) in [
         ("grammar", CONTRACT_GRAMMAR),
         ("syntax AST", CONTRACT_AST),
@@ -126,7 +126,12 @@ fn contract_workflows_do_not_expose_a_generic_state_machine_or_transition_surfac
         ("command IR", COMMAND_IR),
         ("IR format", IR_FORMAT),
     ] {
-        for forbidden in ["state_machine", "StateMachine"] {
+        for forbidden in [
+            "state_machine",
+            "StateMachine",
+            "CompareAndSwap",
+            "GenericLock",
+        ] {
             assert!(
                 !source.contains(forbidden),
                 "contract {layer} unexpectedly exposes generic {forbidden}"
@@ -154,6 +159,16 @@ fn contract_workflows_do_not_expose_a_generic_state_machine_or_transition_surfac
             RUNTIME_SOURCE,
             "Instruction::WorkflowTransition",
         ),
+        ("grammar", CONTRACT_GRAMMAR, "WorkflowLeaseOperation"),
+        ("syntax AST", CONTRACT_AST, "WorkflowLeaseOperation"),
+        ("compiler HIR", CONTRACT_HIR, "HirWorkflowLeaseOperation"),
+        ("command IR", COMMAND_IR, "WorkflowLease {"),
+        ("IR format", IR_FORMAT, "WorkflowLeaseOperation"),
+        (
+            "deterministic runtime",
+            RUNTIME_SOURCE,
+            "Instruction::WorkflowLease",
+        ),
     ] {
         assert!(
             source.contains(required),
@@ -165,6 +180,7 @@ fn contract_workflows_do_not_expose_a_generic_state_machine_or_transition_surfac
         "SetField {",
         "EmitEvent(",
         "WorkflowTransition {",
+        "WorkflowLease {",
         "Return(",
     ] {
         assert!(

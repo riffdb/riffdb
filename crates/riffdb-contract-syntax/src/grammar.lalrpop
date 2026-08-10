@@ -289,6 +289,99 @@ Effect: Spanned<Effect> = {
             stale,
             illegal,
         }), lo, hi),
+    <lo:@L> "lease" "claim" <lease:Identifier> "on" <binding:Identifier>
+        "owner" <owner:Expression>
+        "duration_seconds" <duration_seconds:Expression>
+        "revision" <expected_revision:Expression>
+        "stale" <stale:OutcomeExpression>
+        "unavailable" <unavailable:OutcomeExpression>
+        "invalid" <invalid:OutcomeExpression>
+        "exhausted" <exhausted:OutcomeExpression> <hi:@R>
+        => parser::spanned(Effect::WorkflowLease(Box::new(WorkflowLeaseEffect {
+            lease,
+            binding,
+            operation: WorkflowLeaseOperation::Claim {
+                owner: owner.into_syntax(),
+                duration_seconds: duration_seconds.into_syntax(),
+                expected_revision: expected_revision.into_syntax(),
+                stale,
+                unavailable,
+                invalid,
+                exhausted,
+            },
+        })), lo, hi),
+    <lo:@L> "lease" "renew" <lease:Identifier> "on" <binding:Identifier>
+        "owner" <owner:Expression>
+        "fencing_token" <fencing_token:Expression>
+        "duration_seconds" <duration_seconds:Expression>
+        "revision" <expected_revision:Expression>
+        "stale" <stale:OutcomeExpression>
+        "invalid" <invalid:OutcomeExpression>
+        "expired" <expired:OutcomeExpression>
+        "exhausted" <exhausted:OutcomeExpression> <hi:@R>
+        => parser::spanned(Effect::WorkflowLease(Box::new(WorkflowLeaseEffect {
+            lease,
+            binding,
+            operation: WorkflowLeaseOperation::Renew {
+                owner: owner.into_syntax(),
+                fencing_token: fencing_token.into_syntax(),
+                duration_seconds: duration_seconds.into_syntax(),
+                expected_revision: expected_revision.into_syntax(),
+                stale,
+                invalid,
+                expired,
+                exhausted,
+            },
+        })), lo, hi),
+    <lo:@L> "lease" "release" <lease:Identifier> "on" <binding:Identifier>
+        "owner" <owner:Expression>
+        "fencing_token" <fencing_token:Expression>
+        "revision" <expected_revision:Expression>
+        "stale" <stale:OutcomeExpression>
+        "invalid" <invalid:OutcomeExpression> <hi:@R>
+        => parser::spanned(Effect::WorkflowLease(Box::new(WorkflowLeaseEffect {
+            lease,
+            binding,
+            operation: WorkflowLeaseOperation::Release {
+                owner: owner.into_syntax(),
+                fencing_token: fencing_token.into_syntax(),
+                expected_revision: expected_revision.into_syntax(),
+                stale,
+                invalid,
+            },
+        })), lo, hi),
+    <lo:@L> "lease" "expire" <lease:Identifier> "on" <binding:Identifier>
+        "revision" <expected_revision:Expression>
+        "stale" <stale:OutcomeExpression>
+        "active" <active:OutcomeExpression> <hi:@R>
+        => parser::spanned(Effect::WorkflowLease(Box::new(WorkflowLeaseEffect {
+            lease,
+            binding,
+            operation: WorkflowLeaseOperation::Expire {
+                expected_revision: expected_revision.into_syntax(),
+                stale,
+                active,
+            },
+        })), lo, hi),
+    <lo:@L> "lease" "fence" <lease:Identifier> "on" <binding:Identifier>
+        "owner" <owner:Expression>
+        "fencing_token" <fencing_token:Expression>
+        "revision" <expected_revision:Expression>
+        "stale" <stale:OutcomeExpression>
+        "invalid" <invalid:OutcomeExpression>
+        "expired" <expired:OutcomeExpression> <hi:@R>
+        => parser::spanned(Effect::WorkflowLease(Box::new(WorkflowLeaseEffect {
+            lease,
+            binding,
+            operation: WorkflowLeaseOperation::Fence {
+                owner: owner.into_syntax(),
+                fencing_token: fencing_token.into_syntax(),
+                expected_revision: expected_revision.into_syntax(),
+                stale,
+                invalid,
+                expired,
+            },
+        })), lo, hi),
 };
 
 ReturnClause: Spanned<ReturnClause> = {
@@ -480,6 +573,11 @@ Identifier: Spanned<String> = {
     <lo:@L> "from" <hi:@R> => parser::spanned("from".to_owned(), lo, hi),
     <lo:@L> "to" <hi:@R> => parser::spanned("to".to_owned(), lo, hi),
     <lo:@L> "lease" <hi:@R> => parser::spanned("lease".to_owned(), lo, hi),
+    <lo:@L> "claim" <hi:@R> => parser::spanned("claim".to_owned(), lo, hi),
+    <lo:@L> "renew" <hi:@R> => parser::spanned("renew".to_owned(), lo, hi),
+    <lo:@L> "release" <hi:@R> => parser::spanned("release".to_owned(), lo, hi),
+    <lo:@L> "expire" <hi:@R> => parser::spanned("expire".to_owned(), lo, hi),
+    <lo:@L> "fence" <hi:@R> => parser::spanned("fence".to_owned(), lo, hi),
     <lo:@L> "owner" <hi:@R> => parser::spanned("owner".to_owned(), lo, hi),
     <lo:@L> "expires_at" <hi:@R> => parser::spanned("expires_at".to_owned(), lo, hi),
     <lo:@L> "fencing_token" <hi:@R> => parser::spanned("fencing_token".to_owned(), lo, hi),
@@ -494,6 +592,11 @@ Identifier: Spanned<String> = {
     <lo:@L> "revision" <hi:@R> => parser::spanned("revision".to_owned(), lo, hi),
     <lo:@L> "stale" <hi:@R> => parser::spanned("stale".to_owned(), lo, hi),
     <lo:@L> "illegal" <hi:@R> => parser::spanned("illegal".to_owned(), lo, hi),
+    <lo:@L> "unavailable" <hi:@R> => parser::spanned("unavailable".to_owned(), lo, hi),
+    <lo:@L> "invalid" <hi:@R> => parser::spanned("invalid".to_owned(), lo, hi),
+    <lo:@L> "exhausted" <hi:@R> => parser::spanned("exhausted".to_owned(), lo, hi),
+    <lo:@L> "expired" <hi:@R> => parser::spanned("expired".to_owned(), lo, hi),
+    <lo:@L> "active" <hi:@R> => parser::spanned("active".to_owned(), lo, hi),
 };
 
 UnsignedInteger: Spanned<String> = {
@@ -543,6 +646,11 @@ extern {
         "from" => Token::From,
         "to" => Token::To,
         "lease" => Token::Lease,
+        "claim" => Token::Claim,
+        "renew" => Token::Renew,
+        "release" => Token::Release,
+        "expire" => Token::Expire,
+        "fence" => Token::Fence,
         "owner" => Token::Owner,
         "expires_at" => Token::ExpiresAt,
         "fencing_token" => Token::FencingToken,
@@ -555,6 +663,11 @@ extern {
         "revision" => Token::Revision,
         "stale" => Token::Stale,
         "illegal" => Token::Illegal,
+        "unavailable" => Token::Unavailable,
+        "invalid" => Token::Invalid,
+        "exhausted" => Token::Exhausted,
+        "expired" => Token::Expired,
+        "active" => Token::Active,
         "input" => Token::Input,
         "idempotency_key" => Token::IdempotencyKey,
         "read" => Token::Read,

@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=40
+count=41
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -113,15 +113,18 @@ code.35.help=declare an idempotency key and use service uuid_v7 or service trans
 code.36.id=RDB-C037
 code.36.message=a workflow transition requires one direct exact observed-revision input
 code.36.help=pass one required u64 command input containing the revision returned by the prior read
-code.37.id=RDB-C201
-code.37.message=an identifier cannot form a valid MCP command tool-name segment
-code.37.help=start contract and command identifiers with an ASCII letter
-code.38.id=RDB-C202
-code.38.message=the complete MCP command tool name exceeds 128 bytes
-code.38.help=shorten the source contract or command identifier
-code.39.id=RDB-C203
-code.39.message=two commands normalize to the same MCP command tool name
-code.39.help=rename one command so lowercase identifiers remain distinct
+code.37.id=RDB-C038
+code.37.message=a workflow lease operation requires direct owner, duration, revision, and fencing-token inputs
+code.37.help=pass the exact owner, duration, revision, and fencing token as required command inputs
+code.38.id=RDB-C201
+code.38.message=an identifier cannot form a valid MCP command tool-name segment
+code.38.help=start contract and command identifiers with an ASCII letter
+code.39.id=RDB-C202
+code.39.message=the complete MCP command tool name exceeds 128 bytes
+code.39.help=shorten the source contract or command identifier
+code.40.id=RDB-C203
+code.40.message=two commands normalize to the same MCP command tool name
+code.40.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -471,12 +474,22 @@ diagnostic.0.help=declare unique source states and invoke one legal named transi
 [RDB-C035-invalid-workflow-lease]
 expected=RDB-C035
 kind=semantic
-count=1
+count=3
 diagnostic.0.code=RDB-C035
 diagnostic.0.message=the workflow lease fields or duration bounds are invalid
 diagnostic.0.primary=628..803
 diagnostic.0.related=none
 diagnostic.0.help=use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds
+diagnostic.1.code=RDB-C035
+diagnostic.1.message=the workflow lease fields or duration bounds are invalid
+diagnostic.1.primary=1386..1395
+diagnostic.1.related=none
+diagnostic.1.help=use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds
+diagnostic.2.code=RDB-C035
+diagnostic.2.message=the workflow lease fields or duration bounds are invalid
+diagnostic.2.primary=2038..2047
+diagnostic.2.related=none
+diagnostic.2.help=use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds
 
 [RDB-C036-invalid-service-value]
 expected=RDB-C036
@@ -484,8 +497,8 @@ kind=semantic
 count=1
 diagnostic.0.code=RDB-C036
 diagnostic.0.message=a service-owned value requires durable idempotent command admission
-diagnostic.0.primary=999..1009
-diagnostic.0.related=965..975
+diagnostic.0.primary=1053..1063
+diagnostic.0.related=1019..1029
 diagnostic.0.help=declare an idempotency key and use service uuid_v7 or service transaction_time only as a service-owned value
 
 [RDB-C037-missing-workflow-revision]
@@ -494,9 +507,19 @@ kind=semantic
 count=1
 diagnostic.0.code=RDB-C037
 diagnostic.0.message=a workflow transition requires one direct exact observed-revision input
-diagnostic.0.primary=1216..1221
+diagnostic.0.primary=1270..1275
 diagnostic.0.related=none
 diagnostic.0.help=pass one required u64 command input containing the revision returned by the prior read
+
+[RDB-C038-missing-workflow-lease-input]
+expected=RDB-C038
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C038
+diagnostic.0.message=a workflow lease operation requires direct owner, duration, revision, and fencing-token inputs
+diagnostic.0.primary=2038..2047
+diagnostic.0.related=none
+diagnostic.0.help=pass the exact owner, duration, revision, and fencing token as required command inputs
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

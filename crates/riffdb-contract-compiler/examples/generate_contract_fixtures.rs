@@ -17,7 +17,7 @@ use riffdb_contract_ir::{
     IrValidationError, KeyPurpose, KeySchema, LineageEntryState, ObjectConstruction,
     ProjectionAggregation, ProjectionFrontierPolicy, ProjectionGroupComponentSchema,
     ProjectionGroupSchema, RecordSchema, RecordTypeRef, RetryPolicy, StableIdNamespaceTag,
-    UnaryOperator, ValueType, ValueTypeTag,
+    UnaryOperator, ValueType, ValueTypeTag, WorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::{Span, SyntaxDiagnosticCode, ast::Declaration, parse_contract};
 use riffdb_types::{
@@ -1665,6 +1665,73 @@ fn render_instruction(instruction: &Instruction) -> String {
             render_object(stale.payload()),
             render_object(illegal.payload()),
         ),
+        Instruction::WorkflowLease {
+            binding,
+            fields,
+            operation,
+        } => {
+            let operation = match operation {
+                WorkflowLeaseOperation::Claim {
+                    owner,
+                    duration_seconds,
+                    expected_revision,
+                    ..
+                } => format!(
+                    "claim owner:{} duration:{} revision:{}",
+                    owner.get(),
+                    duration_seconds.get(),
+                    expected_revision.get()
+                ),
+                WorkflowLeaseOperation::Renew {
+                    owner,
+                    fencing_token,
+                    duration_seconds,
+                    expected_revision,
+                    ..
+                } => format!(
+                    "renew owner:{} fence:{} duration:{} revision:{}",
+                    owner.get(),
+                    fencing_token.get(),
+                    duration_seconds.get(),
+                    expected_revision.get()
+                ),
+                WorkflowLeaseOperation::Release {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    ..
+                } => format!(
+                    "release owner:{} fence:{} revision:{}",
+                    owner.get(),
+                    fencing_token.get(),
+                    expected_revision.get()
+                ),
+                WorkflowLeaseOperation::Expire {
+                    expected_revision, ..
+                } => format!("expire revision:{}", expected_revision.get()),
+                WorkflowLeaseOperation::Fence {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    ..
+                } => format!(
+                    "fence owner:{} fence:{} revision:{}",
+                    owner.get(),
+                    fencing_token.get(),
+                    expected_revision.get()
+                ),
+            };
+            format!(
+                "workflow_lease binding:{} owner_field:{} expiry_field:{} fence_field:{} attempt_field:{:?} duration:{}..={} {operation}",
+                binding.get(),
+                fields.owner_field.get(),
+                fields.expiry_field.get(),
+                fields.fencing_token_field.get(),
+                fields.attempt_field.map(|field| field.get()),
+                fields.minimum_duration_seconds,
+                fields.maximum_duration_seconds
+            )
+        }
         Instruction::EmitEvent(event) => format!(
             "emit event:{} payload:{}",
             event.event_type().get(),
@@ -2565,8 +2632,17 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             "RDB-C037-missing-workflow-revision",
             CompilerDiagnosticCode::MissingWorkflowRevision,
             workflow_surface.replacen(
-                "revision expected_revision",
-                "revision expected_revision + 0",
+                "transition Start on work revision expected_revision",
+                "transition Start on work revision expected_revision + 0",
+                1,
+            ),
+        ),
+        (
+            "RDB-C038-missing-workflow-lease-input",
+            CompilerDiagnosticCode::MissingWorkflowLeaseInput,
+            workflow_surface.replacen(
+                "duration_seconds duration revision expected_revision",
+                "duration_seconds duration + 0 revision expected_revision",
                 1,
             ),
         ),

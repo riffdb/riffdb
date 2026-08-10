@@ -71,6 +71,73 @@ fn parses_compiler_visible_workflow_and_service_values_with_exact_spans() {
 }
 
 #[test]
+fn parses_the_closed_fenced_lease_operation_family() {
+    let source = r#"
+contract LeaseEffects version 1 {
+  enum State { Ready, Running }
+  entity Work {
+    key (tenant: uuid, work_id: uuid)
+    field state: State
+    field owner: optional<uuid>
+    field expiry: optional<timestamp>
+    field fence: u64
+    field attempts: u64
+  }
+  aggregate Works { root Work partition_by tenant conflict_key (tenant, work_id) }
+  workflow Lifecycle {
+    entity Work
+    state state
+    transition Start from (Ready) to Running
+    lease execution {
+      owner owner
+      expires_at expiry
+      fencing_token fence
+      attempts attempts
+      duration_seconds (5, 60)
+    }
+  }
+  command Exercise {
+    input request_key: string<32>
+    input tenant: uuid
+    input work_id: uuid
+    input owner_id: uuid
+    input duration: u64
+    input revision: u64
+    input token: u64
+    idempotency_key request_key
+    mutate Work(tenant, work_id) as work else Missing {}
+    lease claim execution on work owner owner_id duration_seconds duration revision revision
+      stale Stale {} unavailable Busy {} invalid InvalidDuration {} exhausted Exhausted {}
+    lease renew execution on work owner owner_id fencing_token token duration_seconds duration
+      revision revision stale Stale {} invalid StaleLease {} expired Expired {} exhausted Exhausted {}
+    lease release execution on work owner owner_id fencing_token token revision revision
+      stale Stale {} invalid StaleLease {}
+    lease expire execution on work revision revision stale Stale {} active Active {}
+    lease fence execution on work owner owner_id fencing_token token revision revision
+      stale Stale {} invalid StaleLease {} expired Expired {}
+    return Done {}
+  }
+}
+"#;
+
+    let document = parse_contract(source).expect("lease operations parse");
+    let Declaration::Command(command) = &document.contract.value.declarations[4].value else {
+        panic!("fifth declaration must be the command")
+    };
+    assert_eq!(command.effects.len(), 5);
+    assert!(matches!(
+        command.effects[0].value,
+        Effect::WorkflowLease(ref effect)
+            if matches!(effect.operation, riffdb_contract_syntax::ast::WorkflowLeaseOperation::Claim { .. })
+    ));
+    assert!(matches!(
+        command.effects[4].value,
+        Effect::WorkflowLease(ref effect)
+            if matches!(effect.operation, riffdb_contract_syntax::ast::WorkflowLeaseOperation::Fence { .. })
+    ));
+}
+
+#[test]
 fn parses_required_same_partition_reference_with_exact_spans() {
     let source = concat!(
         "contract C version 1 { ",

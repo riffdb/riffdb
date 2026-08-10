@@ -7,7 +7,8 @@ use riffdb_contract_ir::{
     ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
     FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
     OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
-    RootValidationReadPlan, SchemaIr, ServiceValueKind, ServiceValueSchema,
+    RootValidationReadPlan, SchemaIr, ServiceValueKind, ServiceValueSchema, WorkflowLeaseFields,
+    WorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -15,7 +16,7 @@ use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, Invar
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::{
     HirBinding, HirCommand, HirEffect, HirExpressionArena, HirExpressionNode, HirOutcome,
-    TypedContractHir,
+    HirWorkflowLeaseOperation, TypedContractHir,
 };
 use crate::locality::command_expression_fingerprint;
 
@@ -39,11 +40,75 @@ enum RawInstruction {
         stale_occurrence: usize,
         illegal_occurrence: usize,
     },
+    WorkflowLease {
+        binding: BindingId,
+        fields: WorkflowLeaseFields,
+        operation: RawWorkflowLeaseOperation,
+    },
     EmitEvent {
         event_id: riffdb_types::EventTypeId,
         fields: Vec<FieldExpression>,
         span: Span,
     },
+}
+
+enum RawWorkflowLeaseOperation {
+    Claim {
+        owner: ExprId,
+        duration_seconds: ExprId,
+        expected_revision: ExprId,
+        outcomes: [usize; 4],
+    },
+    Renew {
+        owner: ExprId,
+        fencing_token: ExprId,
+        duration_seconds: ExprId,
+        expected_revision: ExprId,
+        outcomes: [usize; 4],
+    },
+    Release {
+        owner: ExprId,
+        fencing_token: ExprId,
+        expected_revision: ExprId,
+        outcomes: [usize; 2],
+    },
+    Expire {
+        expected_revision: ExprId,
+        outcomes: [usize; 2],
+    },
+    Fence {
+        owner: ExprId,
+        fencing_token: ExprId,
+        expected_revision: ExprId,
+        outcomes: [usize; 3],
+    },
+}
+
+fn lease_hir_outcomes(operation: &HirWorkflowLeaseOperation) -> Vec<&HirOutcome> {
+    match operation {
+        HirWorkflowLeaseOperation::Claim {
+            stale,
+            unavailable,
+            invalid,
+            exhausted,
+            ..
+        } => vec![stale, unavailable, invalid, exhausted],
+        HirWorkflowLeaseOperation::Renew {
+            stale,
+            invalid,
+            expired,
+            exhausted,
+            ..
+        } => vec![stale, invalid, expired, exhausted],
+        HirWorkflowLeaseOperation::Release { stale, invalid, .. } => vec![stale, invalid],
+        HirWorkflowLeaseOperation::Expire { stale, active, .. } => vec![stale, active],
+        HirWorkflowLeaseOperation::Fence {
+            stale,
+            invalid,
+            expired,
+            ..
+        } => vec![stale, invalid, expired],
+    }
 }
 
 struct NormalizedOutcome<'a> {
@@ -144,6 +209,7 @@ fn lower_command(
         )
         .chain(command.effects.iter().flat_map(|effect| match effect {
             HirEffect::WorkflowTransition { stale, illegal, .. } => vec![stale, illegal],
+            HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation),
             HirEffect::Set { .. } | HirEffect::Emit { .. } => Vec::new(),
         }))
         .chain(std::iter::once(&command.success))
@@ -161,14 +227,19 @@ fn lower_command(
         .map(|(index, binding)| (binding.id, index))
         .collect::<BTreeMap<_, _>>();
     let rejection_base = command.bindings.len();
-    let transition_outcome_count = command
+    let effect_outcome_count = command
         .effects
         .iter()
-        .filter(|effect| matches!(effect, HirEffect::WorkflowTransition { .. }))
-        .count()
-        .checked_mul(2)
+        .try_fold(0usize, |count, effect| {
+            let additional = match effect {
+                HirEffect::WorkflowTransition { .. } => 2,
+                HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation).len(),
+                HirEffect::Set { .. } | HirEffect::Emit { .. } => 0,
+            };
+            count.checked_add(additional)
+        })
         .ok_or_else(|| vec![ir_diagnostic(command.span)])?;
-    let success_occurrence = rejection_base + command.requirements.len() + transition_outcome_count;
+    let success_occurrence = rejection_base + command.requirements.len() + effect_outcome_count;
 
     let (locality, aggregate_id) =
         lower_locality(hir, schema, command, &mut hir_expressions, &mut diagnostics);
@@ -234,13 +305,27 @@ fn lower_command(
     )
     .map_err(|diagnostic| vec![diagnostic])?;
     for instruction in &raw_instructions {
-        if let RawInstruction::WorkflowTransition {
-            binding,
-            state_field,
-            ..
-        } = instruction
-        {
-            accessed_fields[binding.get() as usize].insert(*state_field);
+        match instruction {
+            RawInstruction::WorkflowTransition {
+                binding,
+                state_field,
+                ..
+            } => {
+                accessed_fields[binding.get() as usize].insert(*state_field);
+            }
+            RawInstruction::WorkflowLease {
+                binding, fields, ..
+            } => {
+                accessed_fields[binding.get() as usize].extend([
+                    fields.owner_field,
+                    fields.expiry_field,
+                    fields.fencing_token_field,
+                ]);
+                if let Some(field) = fields.attempt_field {
+                    accessed_fields[binding.get() as usize].insert(field);
+                }
+            }
+            _ => {}
         }
     }
     let binding_plans = command
@@ -339,6 +424,82 @@ fn lower_command(
                 stale: constructions[stale_occurrence].clone(),
                 illegal: constructions[illegal_occurrence].clone(),
             },
+            RawInstruction::WorkflowLease {
+                binding,
+                fields,
+                operation,
+            } => {
+                let operation = match operation {
+                    RawWorkflowLeaseOperation::Claim {
+                        owner,
+                        duration_seconds,
+                        expected_revision,
+                        outcomes,
+                    } => WorkflowLeaseOperation::Claim {
+                        owner,
+                        duration_seconds,
+                        expected_revision,
+                        stale: constructions[outcomes[0]].clone(),
+                        unavailable: constructions[outcomes[1]].clone(),
+                        invalid: constructions[outcomes[2]].clone(),
+                        exhausted: constructions[outcomes[3]].clone(),
+                    },
+                    RawWorkflowLeaseOperation::Renew {
+                        owner,
+                        fencing_token,
+                        duration_seconds,
+                        expected_revision,
+                        outcomes,
+                    } => WorkflowLeaseOperation::Renew {
+                        owner,
+                        fencing_token,
+                        duration_seconds,
+                        expected_revision,
+                        stale: constructions[outcomes[0]].clone(),
+                        invalid: constructions[outcomes[1]].clone(),
+                        expired: constructions[outcomes[2]].clone(),
+                        exhausted: constructions[outcomes[3]].clone(),
+                    },
+                    RawWorkflowLeaseOperation::Release {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        outcomes,
+                    } => WorkflowLeaseOperation::Release {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        stale: constructions[outcomes[0]].clone(),
+                        invalid: constructions[outcomes[1]].clone(),
+                    },
+                    RawWorkflowLeaseOperation::Expire {
+                        expected_revision,
+                        outcomes,
+                    } => WorkflowLeaseOperation::Expire {
+                        expected_revision,
+                        stale: constructions[outcomes[0]].clone(),
+                        active: constructions[outcomes[1]].clone(),
+                    },
+                    RawWorkflowLeaseOperation::Fence {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        outcomes,
+                    } => WorkflowLeaseOperation::Fence {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        stale: constructions[outcomes[0]].clone(),
+                        invalid: constructions[outcomes[1]].clone(),
+                        expired: constructions[outcomes[2]].clone(),
+                    },
+                };
+                Instruction::WorkflowLease {
+                    binding,
+                    fields,
+                    operation,
+                }
+            }
             RawInstruction::EmitEvent {
                 event_id,
                 fields,
@@ -980,7 +1141,7 @@ fn command_instructions(
             rejection_occurrence: rejection_base + index,
         });
     }
-    let mut transition_occurrence = rejection_base + command.requirements.len();
+    let mut effect_occurrence = rejection_base + command.requirements.len();
     for effect in &command.effects {
         match effect {
             HirEffect::Set {
@@ -1024,10 +1185,104 @@ fn command_instructions(
                     source_states: source_states.clone(),
                     destination: *destination,
                     expected_revision: expected_revision.id,
-                    stale_occurrence: transition_occurrence,
-                    illegal_occurrence: transition_occurrence + 1,
+                    stale_occurrence: effect_occurrence,
+                    illegal_occurrence: effect_occurrence + 1,
                 });
-                transition_occurrence += 2;
+                effect_occurrence += 2;
+            }
+            HirEffect::WorkflowLease {
+                binding,
+                owner_field,
+                expiry_field,
+                fencing_token_field,
+                attempt_field,
+                minimum_duration_seconds,
+                maximum_duration_seconds,
+                operation,
+                ..
+            } => {
+                let base = effect_occurrence;
+                let operation = match operation.as_ref() {
+                    HirWorkflowLeaseOperation::Claim {
+                        owner,
+                        duration_seconds,
+                        expected_revision,
+                        ..
+                    } => {
+                        effect_occurrence += 4;
+                        RawWorkflowLeaseOperation::Claim {
+                            owner: owner.id,
+                            duration_seconds: duration_seconds.id,
+                            expected_revision: expected_revision.id,
+                            outcomes: [base, base + 1, base + 2, base + 3],
+                        }
+                    }
+                    HirWorkflowLeaseOperation::Renew {
+                        owner,
+                        fencing_token,
+                        duration_seconds,
+                        expected_revision,
+                        ..
+                    } => {
+                        effect_occurrence += 4;
+                        RawWorkflowLeaseOperation::Renew {
+                            owner: owner.id,
+                            fencing_token: fencing_token.id,
+                            duration_seconds: duration_seconds.id,
+                            expected_revision: expected_revision.id,
+                            outcomes: [base, base + 1, base + 2, base + 3],
+                        }
+                    }
+                    HirWorkflowLeaseOperation::Release {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        ..
+                    } => {
+                        effect_occurrence += 2;
+                        RawWorkflowLeaseOperation::Release {
+                            owner: owner.id,
+                            fencing_token: fencing_token.id,
+                            expected_revision: expected_revision.id,
+                            outcomes: [base, base + 1],
+                        }
+                    }
+                    HirWorkflowLeaseOperation::Expire {
+                        expected_revision, ..
+                    } => {
+                        effect_occurrence += 2;
+                        RawWorkflowLeaseOperation::Expire {
+                            expected_revision: expected_revision.id,
+                            outcomes: [base, base + 1],
+                        }
+                    }
+                    HirWorkflowLeaseOperation::Fence {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        ..
+                    } => {
+                        effect_occurrence += 3;
+                        RawWorkflowLeaseOperation::Fence {
+                            owner: owner.id,
+                            fencing_token: fencing_token.id,
+                            expected_revision: expected_revision.id,
+                            outcomes: [base, base + 1, base + 2],
+                        }
+                    }
+                };
+                instructions.push(RawInstruction::WorkflowLease {
+                    binding: *binding,
+                    fields: WorkflowLeaseFields {
+                        owner_field: *owner_field,
+                        expiry_field: *expiry_field,
+                        fencing_token_field: *fencing_token_field,
+                        attempt_field: *attempt_field,
+                        minimum_duration_seconds: *minimum_duration_seconds,
+                        maximum_duration_seconds: *maximum_duration_seconds,
+                    },
+                    operation,
+                });
             }
         }
     }
@@ -1059,6 +1314,41 @@ fn collect_influential_roots(
             RawInstruction::WorkflowTransition {
                 expected_revision, ..
             } => roots.push(*expected_revision),
+            RawInstruction::WorkflowLease { operation, .. } => match operation {
+                RawWorkflowLeaseOperation::Claim {
+                    owner,
+                    duration_seconds,
+                    expected_revision,
+                    ..
+                } => roots.extend([*owner, *duration_seconds, *expected_revision]),
+                RawWorkflowLeaseOperation::Renew {
+                    owner,
+                    fencing_token,
+                    duration_seconds,
+                    expected_revision,
+                    ..
+                } => roots.extend([
+                    *owner,
+                    *fencing_token,
+                    *duration_seconds,
+                    *expected_revision,
+                ]),
+                RawWorkflowLeaseOperation::Release {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    ..
+                }
+                | RawWorkflowLeaseOperation::Fence {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    ..
+                } => roots.extend([*owner, *fencing_token, *expected_revision]),
+                RawWorkflowLeaseOperation::Expire {
+                    expected_revision, ..
+                } => roots.push(*expected_revision),
+            },
             RawInstruction::EmitEvent { fields, .. } => {
                 roots.extend(fields.iter().map(|field| field.expression()));
             }

@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
-//! Source parser and source-oriented AST for RiffDB contract grammar version 2.
+//! Source parser and source-oriented AST for RiffDB contract grammar version 3.
 //!
-//! Version 2 retains the complete version-1 language and adds compiler-visible
-//! workflow and service-owned-value syntax.
+//! Version 3 retains the earlier language and adds compiler-visible fenced
+//! workflow-lease operations.
 
 pub mod ast;
 pub mod diagnostic;

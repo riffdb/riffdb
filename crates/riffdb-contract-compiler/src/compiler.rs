@@ -287,8 +287,8 @@ mod tests {
             include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
         let bundle = compile_contract_source(source).expect("workflow surface compiles");
 
-        assert_eq!(bundle.grammar_version(), 2);
-        assert_eq!(bundle.ir_version(), 2);
+        assert_eq!(bundle.grammar_version(), 3);
+        assert_eq!(bundle.ir_version(), 3);
         assert_eq!(bundle.workflows().workflows().len(), 1);
         let workflow = &bundle.workflows().workflows()[0];
         assert_eq!(workflow.name(), "WorkLifecycle");
@@ -297,10 +297,14 @@ mod tests {
         assert_eq!(lease.name(), "execution");
         assert_eq!(lease.minimum_duration_seconds(), 5);
         assert_eq!(lease.maximum_duration_seconds(), 900);
-        assert_eq!(bundle.commands().len(), 1);
-        let command = &bundle.commands()[0];
+        assert_eq!(bundle.commands().len(), 2);
+        let command = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "StartWork")
+            .expect("start command");
         assert!(command.requires_ir_v2());
-        assert_eq!(command.input().record().fields().len(), 4);
+        assert_eq!(command.input().record().fields().len(), 6);
         assert_eq!(command.service_values().len(), 2);
         assert_eq!(command.service_values()[0].field().name(), "started_at");
         assert_eq!(
@@ -337,14 +341,41 @@ mod tests {
         assert_ne!(stale.outcome_id(), illegal.outcome_id());
         let explain = CommandExplain::from_plan(command);
         assert_eq!(explain.workflow_transitions().len(), 1);
+        assert_eq!(explain.workflow_leases().len(), 1);
         assert!(explain.render_text().contains("transaction-current:true"));
-        let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("v2 round trip");
+        let claim = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "ClaimWork")
+            .expect("claim command");
+        assert!(claim.requires_ir_v3());
+        let claim_explain = CommandExplain::from_plan(claim);
+        assert_eq!(claim_explain.workflow_leases().len(), 1);
+        assert!(claim_explain.render_text().contains("workflow-lease"));
+        let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("v3 round trip");
         assert_eq!(decoded, bundle);
 
         let v1 = compile_contract_source(include_str!("../../../contracts/examples/budget.riff"))
             .expect("legacy contract compiles");
         assert_eq!(v1.grammar_version(), 1);
         assert_eq!(v1.ir_version(), 1);
+    }
+
+    #[test]
+    fn lease_protected_mutation_cannot_omit_its_fence() {
+        let source =
+            include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff")
+                .replacen(
+                    "    lease fence execution on work owner owner_id fencing_token fencing_token revision expected_revision\n      stale FenceStale {}\n      invalid FenceInvalid {}\n      expired FenceExpired {}\n",
+                    "",
+                    1,
+                );
+        let error = compile_contract_source(&source).expect_err("missing lease fence must reject");
+        assert!(matches!(
+            error,
+            CompilationError::Semantic(ref diagnostics)
+                if diagnostics.as_slice().iter().any(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::InvalidWorkflowLease)
+        ));
     }
 
     #[test]

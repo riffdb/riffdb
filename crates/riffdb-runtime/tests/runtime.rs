@@ -320,6 +320,101 @@ contract WorkflowTransitions version 1 {
 }
 "#;
 
+const WORKFLOW_LEASE_SOURCE: &str = r#"
+contract WorkflowLeases version 1 {
+  enum WorkState { Queued, Running, Complete }
+  entity WorkItem {
+    key (organization_id: uuid, work_id: uuid)
+    field state: WorkState
+    field lease_owner: optional<uuid>
+    field lease_expires_at: optional<timestamp>
+    field lease_fence: u64
+    field lease_attempts: u64
+  }
+  aggregate WorkItems {
+    root WorkItem
+    partition_by organization_id
+    conflict_key (organization_id, work_id)
+  }
+  workflow WorkLifecycle {
+    entity WorkItem
+    state state
+    transition Finish from (Running) to Complete
+    lease execution {
+      owner lease_owner
+      expires_at lease_expires_at
+      fencing_token lease_fence
+      attempts lease_attempts
+      duration_seconds (5, 900)
+    }
+  }
+  command ClaimWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input owner_id: uuid
+    input duration: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else ClaimMissing {}
+    lease claim execution on work owner owner_id duration_seconds duration revision expected_revision
+      stale ClaimStale {} unavailable ClaimUnavailable {} invalid ClaimInvalid {} exhausted ClaimExhausted {}
+    return Claimed { work: work }
+  }
+  command RenewWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input owner_id: uuid
+    input token: u64
+    input duration: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else RenewMissing {}
+    lease renew execution on work owner owner_id fencing_token token duration_seconds duration revision expected_revision
+      stale RenewStale {} invalid RenewInvalid {} expired RenewExpired {} exhausted RenewExhausted {}
+    return Renewed { work: work }
+  }
+  command ReleaseWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input owner_id: uuid
+    input token: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else ReleaseMissing {}
+    lease release execution on work owner owner_id fencing_token token revision expected_revision
+      stale ReleaseStale {} invalid ReleaseInvalid {}
+    return Released { work: work }
+  }
+  command ExpireWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else ExpireMissing {}
+    lease expire execution on work revision expected_revision stale ExpireStale {} active ExpireActive {}
+    return ExpiredWork { work: work }
+  }
+  command CompleteWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input owner_id: uuid
+    input token: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else CompleteMissing {}
+    lease fence execution on work owner owner_id fencing_token token revision expected_revision
+      stale CompleteStale {} invalid CompleteInvalid {} expired CompleteExpired {}
+    transition Finish on work revision expected_revision stale TransitionStale {} illegal TransitionIllegal {}
+    return Completed { work: work }
+  }
+}
+"#;
+
 const SERVICE_TRANSACTION_TIME_SOURCE: &str = r#"
 contract ServiceTransactionTime version 1 {
   entity WorkItem {
@@ -560,6 +655,322 @@ fn workflow_transition_returns_declared_illegal_outcome_without_effects() {
     );
     assert!(evaluated.mutations().is_empty());
     assert!(evaluated.event_intents().is_empty());
+}
+
+#[test]
+fn workflow_lease_claim_is_fenced_by_revision_time_and_monotonic_counters() {
+    let bundle =
+        compile_contract_source(WORKFLOW_LEASE_SOURCE).expect("workflow lease contract compiles");
+    assert_eq!(bundle.format_version(), 3);
+    assert_eq!(bundle.ir_version(), 3);
+    let bytes = bundle.canonical_bytes().to_vec();
+    let decoded = ContractBundle::decode(&bytes).expect("lease bundle decodes");
+    assert_eq!(decoded.canonical_bytes(), bytes);
+    let plan = command(&bundle, "ClaimWork");
+    let input = workflow_lease_claim_input(plan, "claim-1", 5, EntityVersion::first().get());
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = workflow_lease_stored_record(
+        &bundle,
+        plan,
+        target,
+        EntityVersion::first(),
+        CanonicalValue::Null,
+        CanonicalValue::Null,
+        0,
+        0,
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(100, 7).expect("timestamp")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("claim evaluates")
+    else {
+        panic!("claim mutates");
+    };
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "Claimed")
+    );
+    let fields = evaluated.mutations()[0].post_image().fields();
+    assert_eq!(
+        field(fields, entity_field(&bundle, "WorkItem", "lease_owner")),
+        &CanonicalValue::Uuid([0xd3; 16])
+    );
+    assert_eq!(
+        field(
+            fields,
+            entity_field(&bundle, "WorkItem", "lease_expires_at")
+        ),
+        &CanonicalValue::Timestamp(Timestamp::new(105, 7).expect("timestamp"))
+    );
+    assert_eq!(
+        field(fields, entity_field(&bundle, "WorkItem", "lease_fence")),
+        &CanonicalValue::U64(1)
+    );
+    assert_eq!(
+        field(fields, entity_field(&bundle, "WorkItem", "lease_attempts")),
+        &CanonicalValue::U64(1)
+    );
+}
+
+#[test]
+fn workflow_lease_stale_revision_returns_declared_outcome_without_mutation() {
+    let bundle =
+        compile_contract_source(WORKFLOW_LEASE_SOURCE).expect("workflow lease contract compiles");
+    let plan = command(&bundle, "ClaimWork");
+    let input = workflow_lease_claim_input(plan, "claim-stale", 5, 2);
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = workflow_lease_stored_record(
+        &bundle,
+        plan,
+        target,
+        EntityVersion::first(),
+        CanonicalValue::Null,
+        CanonicalValue::Null,
+        0,
+        0,
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(100, 0).expect("timestamp")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("stale claim is declared")
+    else {
+        panic!("rejection is durable");
+    };
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "ClaimStale")
+    );
+    assert!(evaluated.mutations().is_empty());
+}
+
+#[test]
+fn workflow_lease_renew_release_expire_and_fence_are_closed_and_exact() {
+    let bundle = compile_contract_source(WORKFLOW_LEASE_SOURCE).expect("lease contract compiles");
+    let now = LogicalTime::new(Timestamp::new(100, 0).expect("timestamp"));
+
+    let renew = command(&bundle, "RenewWork");
+    let renew_input = input_record(
+        renew.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("renew-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xd1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xd2; 16])),
+            ("owner_id", CanonicalValue::Uuid([0xd3; 16])),
+            ("token", CanonicalValue::U64(7)),
+            ("duration", CanonicalValue::U64(10)),
+            ("expected_revision", CanonicalValue::U64(1)),
+        ],
+    );
+    let renew_target = derive_binding_target(renew, &renew_input, 0);
+    let renew_stored = workflow_lease_stored_record(
+        &bundle,
+        renew,
+        renew_target,
+        EntityVersion::first(),
+        CanonicalValue::Uuid([0xd3; 16]),
+        CanonicalValue::Timestamp(Timestamp::new(150, 0).expect("timestamp")),
+        7,
+        2,
+    );
+    let renew_snapshot = snapshot(
+        plan_ref(&bundle, renew),
+        vec![EntityObservation::Present(renew_stored)],
+    );
+    let ExecutionResult::CommitRequired(renewed) = execute_command(
+        &bundle,
+        &renew_input,
+        &renew_snapshot,
+        &context(&bundle, renew, &renew_input, now),
+        EvaluationBudget::v1(),
+    )
+    .expect("renew") else {
+        panic!("renew mutates");
+    };
+    assert_eq!(renewed.outcome().outcome_id(), outcome_id(renew, "Renewed"));
+    assert_eq!(
+        field(
+            renewed.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "lease_expires_at")
+        ),
+        &CanonicalValue::Timestamp(Timestamp::new(110, 0).expect("timestamp"))
+    );
+
+    let release = command(&bundle, "ReleaseWork");
+    let release_input = input_record(
+        release.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("release-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xd1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xd2; 16])),
+            ("owner_id", CanonicalValue::Uuid([0xd3; 16])),
+            ("token", CanonicalValue::U64(7)),
+            ("expected_revision", CanonicalValue::U64(1)),
+        ],
+    );
+    let release_target = derive_binding_target(release, &release_input, 0);
+    let release_stored = workflow_lease_stored_record(
+        &bundle,
+        release,
+        release_target,
+        EntityVersion::first(),
+        CanonicalValue::Uuid([0xd3; 16]),
+        CanonicalValue::Timestamp(Timestamp::new(150, 0).expect("timestamp")),
+        7,
+        2,
+    );
+    let release_snapshot = snapshot(
+        plan_ref(&bundle, release),
+        vec![EntityObservation::Present(release_stored)],
+    );
+    let ExecutionResult::CommitRequired(released) = execute_command(
+        &bundle,
+        &release_input,
+        &release_snapshot,
+        &context(&bundle, release, &release_input, now),
+        EvaluationBudget::v1(),
+    )
+    .expect("release") else {
+        panic!("release mutates");
+    };
+    assert_eq!(
+        released.outcome().outcome_id(),
+        outcome_id(release, "Released")
+    );
+    assert_eq!(
+        field(
+            released.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "lease_owner")
+        ),
+        &CanonicalValue::Null
+    );
+    assert_eq!(
+        field(
+            released.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "lease_fence")
+        ),
+        &CanonicalValue::U64(7)
+    );
+
+    let expire = command(&bundle, "ExpireWork");
+    let expire_input = input_record(
+        expire.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("expire-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xd1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xd2; 16])),
+            ("expected_revision", CanonicalValue::U64(1)),
+        ],
+    );
+    let expire_target = derive_binding_target(expire, &expire_input, 0);
+    let expire_stored = workflow_lease_stored_record(
+        &bundle,
+        expire,
+        expire_target,
+        EntityVersion::first(),
+        CanonicalValue::Uuid([0xd3; 16]),
+        CanonicalValue::Timestamp(Timestamp::new(99, 0).expect("timestamp")),
+        7,
+        2,
+    );
+    let expire_snapshot = snapshot(
+        plan_ref(&bundle, expire),
+        vec![EntityObservation::Present(expire_stored)],
+    );
+    let ExecutionResult::CommitRequired(expired) = execute_command(
+        &bundle,
+        &expire_input,
+        &expire_snapshot,
+        &context(&bundle, expire, &expire_input, now),
+        EvaluationBudget::v1(),
+    )
+    .expect("expire") else {
+        panic!("expire mutates");
+    };
+    assert_eq!(
+        expired.outcome().outcome_id(),
+        outcome_id(expire, "ExpiredWork")
+    );
+    assert_eq!(
+        field(
+            expired.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "lease_owner")
+        ),
+        &CanonicalValue::Null
+    );
+
+    let complete = command(&bundle, "CompleteWork");
+    let complete_input = input_record(
+        complete.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("complete-stale-holder").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xd1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xd2; 16])),
+            ("owner_id", CanonicalValue::Uuid([0xee; 16])),
+            ("token", CanonicalValue::U64(7)),
+            ("expected_revision", CanonicalValue::U64(1)),
+        ],
+    );
+    let complete_target = derive_binding_target(complete, &complete_input, 0);
+    let complete_stored = workflow_lease_stored_record(
+        &bundle,
+        complete,
+        complete_target,
+        EntityVersion::first(),
+        CanonicalValue::Uuid([0xd3; 16]),
+        CanonicalValue::Timestamp(Timestamp::new(150, 0).expect("timestamp")),
+        7,
+        2,
+    );
+    let complete_snapshot = snapshot(
+        plan_ref(&bundle, complete),
+        vec![EntityObservation::Present(complete_stored)],
+    );
+    let ExecutionResult::CommitRequired(rejected) = execute_command(
+        &bundle,
+        &complete_input,
+        &complete_snapshot,
+        &context(&bundle, complete, &complete_input, now),
+        EvaluationBudget::v1(),
+    )
+    .expect("stale holder is declared") else {
+        panic!("rejection durable");
+    };
+    assert_eq!(
+        rejected.outcome().outcome_id(),
+        outcome_id(complete, "CompleteInvalid")
+    );
+    assert!(rejected.mutations().is_empty());
 }
 
 #[test]
@@ -1627,6 +2038,69 @@ fn workflow_transition_input(plan: &CommandPlan, expected_revision: u64) -> Cano
             ("work_id", CanonicalValue::Uuid([0xd2; 16])),
             ("expected_revision", CanonicalValue::U64(expected_revision)),
         ],
+    )
+}
+
+fn workflow_lease_claim_input(
+    plan: &CommandPlan,
+    request_key: &str,
+    duration: u64,
+    expected_revision: u64,
+) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string(request_key).expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xd1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xd2; 16])),
+            ("owner_id", CanonicalValue::Uuid([0xd3; 16])),
+            ("duration", CanonicalValue::U64(duration)),
+            ("expected_revision", CanonicalValue::U64(expected_revision)),
+        ],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn workflow_lease_stored_record(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+    owner: CanonicalValue,
+    expiry: CanonicalValue,
+    fence: u64,
+    attempts: u64,
+) -> StoredEntityRecordV1 {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "WorkItem")
+        .expect("WorkItem entity");
+    let key_values = entity
+        .primary_key()
+        .decode_entity(target.key())
+        .expect("workflow key");
+    stored_record_with_version(
+        bundle,
+        plan,
+        target,
+        version,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", key_values[0].clone()),
+                ("work_id", key_values[1].clone()),
+                ("state", enum_value(bundle, "WorkState", "Running")),
+                ("lease_owner", owner),
+                ("lease_expires_at", expiry),
+                ("lease_fence", CanonicalValue::U64(fence)),
+                ("lease_attempts", CanonicalValue::U64(attempts)),
+            ],
+        ),
     )
 }
 

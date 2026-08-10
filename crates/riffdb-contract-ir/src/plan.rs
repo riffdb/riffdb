@@ -556,6 +556,168 @@ pub struct EventConstruction {
     payload: ObjectConstruction,
 }
 
+/// Stable fields and bounds of one compiler-declared workflow lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowLeaseFields {
+    /// Optional UUID owner field.
+    pub owner_field: FieldId,
+    /// Optional timestamp expiration field.
+    pub expiry_field: FieldId,
+    /// Monotonic nonzero fencing-token field.
+    pub fencing_token_field: FieldId,
+    /// Optional bounded attempt-counter field.
+    pub attempt_field: Option<FieldId>,
+    /// Inclusive minimum duration in seconds.
+    pub minimum_duration_seconds: u64,
+    /// Inclusive maximum duration in seconds.
+    pub maximum_duration_seconds: u64,
+}
+
+/// Closed executable operation family for a compiler-declared fenced lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkflowLeaseOperation {
+    /// Claim an unowned or expired lease.
+    Claim {
+        /// Required owner UUID input expression.
+        owner: ExprId,
+        /// Required duration-seconds input expression.
+        duration_seconds: ExprId,
+        /// Required exact revision input expression.
+        expected_revision: ExprId,
+        /// Stale revision outcome.
+        stale: OutcomeConstruction,
+        /// Still-active lease outcome.
+        unavailable: OutcomeConstruction,
+        /// Invalid duration outcome.
+        invalid: OutcomeConstruction,
+        /// Counter or timestamp overflow outcome.
+        exhausted: OutcomeConstruction,
+    },
+    /// Renew the exact current unexpired lease.
+    Renew {
+        /// Required owner UUID input expression.
+        owner: ExprId,
+        /// Required fencing-token input expression.
+        fencing_token: ExprId,
+        /// Required duration-seconds input expression.
+        duration_seconds: ExprId,
+        /// Required exact revision input expression.
+        expected_revision: ExprId,
+        /// Stale revision outcome.
+        stale: OutcomeConstruction,
+        /// Owner, token, or duration mismatch outcome.
+        invalid: OutcomeConstruction,
+        /// Expired lease outcome.
+        expired: OutcomeConstruction,
+        /// Timestamp overflow outcome.
+        exhausted: OutcomeConstruction,
+    },
+    /// Release the exact current lease.
+    Release {
+        /// Required owner UUID input expression.
+        owner: ExprId,
+        /// Required fencing-token input expression.
+        fencing_token: ExprId,
+        /// Required exact revision input expression.
+        expected_revision: ExprId,
+        /// Stale revision outcome.
+        stale: OutcomeConstruction,
+        /// Owner or token mismatch outcome.
+        invalid: OutcomeConstruction,
+    },
+    /// Clear a lease proven expired at transaction time.
+    Expire {
+        /// Required exact revision input expression.
+        expected_revision: ExprId,
+        /// Stale revision outcome.
+        stale: OutcomeConstruction,
+        /// Unowned or still-active outcome.
+        active: OutcomeConstruction,
+    },
+    /// Fence one protected mutation under the exact current lease.
+    Fence {
+        /// Required owner UUID input expression.
+        owner: ExprId,
+        /// Required fencing-token input expression.
+        fencing_token: ExprId,
+        /// Required exact revision input expression.
+        expected_revision: ExprId,
+        /// Stale revision outcome.
+        stale: OutcomeConstruction,
+        /// Owner or token mismatch outcome.
+        invalid: OutcomeConstruction,
+        /// Expired lease outcome.
+        expired: OutcomeConstruction,
+    },
+}
+
+impl WorkflowLeaseOperation {
+    fn expressions(&self) -> Vec<ExprId> {
+        match self {
+            Self::Claim {
+                owner,
+                duration_seconds,
+                expected_revision,
+                ..
+            } => vec![*owner, *duration_seconds, *expected_revision],
+            Self::Renew {
+                owner,
+                fencing_token,
+                duration_seconds,
+                expected_revision,
+                ..
+            } => vec![
+                *owner,
+                *fencing_token,
+                *duration_seconds,
+                *expected_revision,
+            ],
+            Self::Release {
+                owner,
+                fencing_token,
+                expected_revision,
+                ..
+            }
+            | Self::Fence {
+                owner,
+                fencing_token,
+                expected_revision,
+                ..
+            } => vec![*owner, *fencing_token, *expected_revision],
+            Self::Expire {
+                expected_revision, ..
+            } => vec![*expected_revision],
+        }
+    }
+
+    fn outcomes(&self) -> Vec<&OutcomeConstruction> {
+        match self {
+            Self::Claim {
+                stale,
+                unavailable,
+                invalid,
+                exhausted,
+                ..
+            } => vec![stale, unavailable, invalid, exhausted],
+            Self::Renew {
+                stale,
+                invalid,
+                expired,
+                exhausted,
+                ..
+            } => vec![stale, invalid, expired, exhausted],
+            Self::Release { stale, invalid, .. } => vec![stale, invalid],
+            Self::Expire { stale, active, .. } => vec![stale, active],
+            Self::Fence {
+                stale,
+                invalid,
+                expired,
+                ..
+            } => vec![stale, invalid, expired],
+        }
+    }
+}
+
 impl EventConstruction {
     /// Creates a checked event payload construction.
     pub fn new(
@@ -627,6 +789,15 @@ pub enum Instruction {
         /// Declared illegal-state business outcome.
         illegal: OutcomeConstruction,
     },
+    /// Apply one closed operation to a compiler-declared aggregate-local lease.
+    WorkflowLease {
+        /// Mutable workflow entity binding.
+        binding: BindingId,
+        /// Stable declared lease fields and bounds.
+        fields: WorkflowLeaseFields,
+        /// Closed checked operation.
+        operation: WorkflowLeaseOperation,
+    },
     /// Capture one durable event occurrence.
     EmitEvent(EventConstruction),
     /// Return the one terminal success outcome.
@@ -641,6 +812,7 @@ impl Instruction {
             Self::WorkflowTransition { .. } => {
                 crate::format_registry::instruction::WORKFLOW_TRANSITION
             }
+            Self::WorkflowLease { .. } => crate::format_registry::instruction::WORKFLOW_LEASE,
             Self::EmitEvent(_) => crate::format_registry::instruction::EMIT_EVENT,
             Self::Return(_) => crate::format_registry::instruction::RETURN,
         }
@@ -1183,10 +1355,19 @@ impl CommandPlan {
     #[must_use]
     pub fn requires_ir_v2(&self) -> bool {
         !self.service_values.is_empty()
-            || self
-                .instructions
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::WorkflowTransition { .. }))
+            || self.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::WorkflowTransition { .. } | Instruction::WorkflowLease { .. }
+                )
+            })
+    }
+    /// Whether this command requires fenced-lease executable IR v3.
+    #[must_use]
+    pub fn requires_ir_v3(&self) -> bool {
+        self.instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::WorkflowLease { .. }))
     }
     /// Outcomes in stable-ID order.
     #[must_use]
@@ -1342,6 +1523,7 @@ fn derive_relationship_checks(
             } => Some(((*binding, *field), *value)),
             Instruction::Require { .. }
             | Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. }
             | Instruction::EmitEvent(_)
             | Instruction::Return(_) => None,
         })
@@ -1451,6 +1633,7 @@ fn derive_unique_conflicts(
             } => Some(((*binding, *field), *value)),
             Instruction::Require { .. }
             | Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. }
             | Instruction::EmitEvent(_)
             | Instruction::Return(_) => None,
         })
@@ -1838,6 +2021,11 @@ fn validate_declared_constructions(
             Instruction::WorkflowTransition { stale, illegal, .. } => {
                 validate_outcome(stale, false)?;
                 validate_outcome(illegal, false)?;
+            }
+            Instruction::WorkflowLease { operation, .. } => {
+                for outcome in operation.outcomes() {
+                    validate_outcome(outcome, false)?;
+                }
             }
         }
     }
@@ -2993,6 +3181,165 @@ fn validate_instruction_stream(
                 }
                 initialized[binding.get() as usize].insert(*state_field);
             }
+            Instruction::WorkflowLease {
+                binding,
+                fields,
+                operation,
+            } => {
+                effect_seen = true;
+                for expression in operation.expressions() {
+                    ensure_initialized_reads(arena, expression, bindings, schema, &initialized)?;
+                }
+                for outcome in operation.outcomes() {
+                    for field in &outcome.payload.fields {
+                        ensure_initialized_reads(
+                            arena,
+                            field.expression,
+                            bindings,
+                            schema,
+                            &initialized,
+                        )?;
+                    }
+                }
+                let binding_plan = bindings.get(binding.get() as usize).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow lease binding",
+                    },
+                )?;
+                let entity = schema.entity(binding_plan.entity_type).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow lease entity",
+                    },
+                )?;
+                let owner = entity.record().field(fields.owner_field).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow lease owner",
+                    },
+                )?;
+                let expiry = entity.record().field(fields.expiry_field).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow lease expiry",
+                    },
+                )?;
+                let fence = entity.record().field(fields.fencing_token_field).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "workflow lease fence",
+                    },
+                )?;
+                let attempt_valid = fields.attempt_field.is_none_or(|field| {
+                    entity
+                        .record()
+                        .field(field)
+                        .is_some_and(|schema| schema.value_type().tag() == ValueTypeTag::U64)
+                });
+                let mut lease_fields = vec![
+                    fields.owner_field,
+                    fields.expiry_field,
+                    fields.fencing_token_field,
+                ];
+                if let Some(field) = fields.attempt_field {
+                    lease_fields.push(field);
+                }
+                lease_fields.sort_unstable();
+                let written_fields = match operation {
+                    WorkflowLeaseOperation::Claim { .. } => lease_fields.clone(),
+                    WorkflowLeaseOperation::Renew { .. } => vec![fields.expiry_field],
+                    WorkflowLeaseOperation::Release { .. }
+                    | WorkflowLeaseOperation::Expire { .. } => {
+                        vec![fields.owner_field, fields.expiry_field]
+                    }
+                    WorkflowLeaseOperation::Fence { .. } => Vec::new(),
+                };
+                let direct_input = |expression: ExprId, tag: ValueTypeTag| {
+                    arena.get(expression).is_some_and(|node| {
+                        node.result_type().tag() == tag
+                            && matches!(node.kind(), ExpressionKind::InputField(_))
+                    })
+                };
+                let expressions_valid = match operation {
+                    WorkflowLeaseOperation::Claim {
+                        owner,
+                        duration_seconds,
+                        expected_revision,
+                        ..
+                    } => {
+                        direct_input(*owner, ValueTypeTag::Uuid)
+                            && direct_input(*duration_seconds, ValueTypeTag::U64)
+                            && direct_input(*expected_revision, ValueTypeTag::U64)
+                    }
+                    WorkflowLeaseOperation::Renew {
+                        owner,
+                        fencing_token,
+                        duration_seconds,
+                        expected_revision,
+                        ..
+                    } => {
+                        direct_input(*owner, ValueTypeTag::Uuid)
+                            && direct_input(*fencing_token, ValueTypeTag::U64)
+                            && direct_input(*duration_seconds, ValueTypeTag::U64)
+                            && direct_input(*expected_revision, ValueTypeTag::U64)
+                    }
+                    WorkflowLeaseOperation::Release {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        ..
+                    }
+                    | WorkflowLeaseOperation::Fence {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        ..
+                    } => {
+                        direct_input(*owner, ValueTypeTag::Uuid)
+                            && direct_input(*fencing_token, ValueTypeTag::U64)
+                            && direct_input(*expected_revision, ValueTypeTag::U64)
+                    }
+                    WorkflowLeaseOperation::Expire {
+                        expected_revision, ..
+                    } => direct_input(*expected_revision, ValueTypeTag::U64),
+                };
+                let operation_outcomes = operation.outcomes();
+                let outcome_ids = operation_outcomes
+                    .iter()
+                    .map(|outcome| outcome.outcome_id)
+                    .collect::<BTreeSet<_>>();
+                if binding_plan.mode != BindingMode::Mutate
+                    || owner
+                        .value_type()
+                        .optional_inner()
+                        .is_none_or(|inner| inner.tag() != ValueTypeTag::Uuid)
+                    || expiry
+                        .value_type()
+                        .optional_inner()
+                        .is_none_or(|inner| inner.tag() != ValueTypeTag::Timestamp)
+                    || fence.value_type().tag() != ValueTypeTag::U64
+                    || !attempt_valid
+                    || !lease_fields.windows(2).all(|pair| pair[0] != pair[1])
+                    || lease_fields
+                        .iter()
+                        .any(|field| entity.primary_key_fields().contains(field))
+                    || written_fields
+                        .iter()
+                        .any(|field| !assigned.insert((*binding, *field)))
+                    || fields.minimum_duration_seconds == 0
+                    || fields.minimum_duration_seconds > fields.maximum_duration_seconds
+                    || fields.maximum_duration_seconds > 86_400
+                    || !expressions_valid
+                    || outcome_ids.len() != operation_outcomes.len()
+                    || operation_outcomes.iter().any(|outcome| {
+                        outcome.outcome_id == success_outcome
+                            || !outcomes
+                                .iter()
+                                .any(|declared| declared.id == outcome.outcome_id)
+                    })
+                {
+                    return Err(IrValidationError::InvalidInstructionStream {
+                        reason: "invalid workflow lease",
+                    });
+                }
+                initialized[binding.get() as usize].extend(written_fields);
+            }
             Instruction::EmitEvent(event) => {
                 effect_seen = true;
                 for field in &event.payload.fields {
@@ -3148,6 +3495,16 @@ fn validate_read_dependencies(
                     }
                 }
             }
+            Instruction::WorkflowLease { operation, .. } => {
+                for expression in operation.expressions() {
+                    include(expression)?;
+                }
+                for outcome in operation.outcomes() {
+                    for field in &outcome.payload.fields {
+                        include(field.expression)?;
+                    }
+                }
+            }
             Instruction::EmitEvent(event) => {
                 for field in &event.payload.fields {
                     include(field.expression)?;
@@ -3161,13 +3518,29 @@ fn validate_read_dependencies(
         }
     }
     for instruction in instructions {
-        if let Instruction::WorkflowTransition {
-            binding,
-            state_field,
-            ..
-        } = instruction
-        {
-            fields[binding.get() as usize].insert(*state_field);
+        match instruction {
+            Instruction::WorkflowTransition {
+                binding,
+                state_field,
+                ..
+            } => {
+                fields[binding.get() as usize].insert(*state_field);
+            }
+            Instruction::WorkflowLease {
+                binding,
+                fields: lease,
+                ..
+            } => {
+                fields[binding.get() as usize].extend([
+                    lease.owner_field,
+                    lease.expiry_field,
+                    lease.fencing_token_field,
+                ]);
+                if let Some(field) = lease.attempt_field {
+                    fields[binding.get() as usize].insert(field);
+                }
+            }
+            _ => {}
         }
     }
     for (index, binding) in bindings.iter().enumerate() {
@@ -3259,6 +3632,16 @@ fn validate_root_validation_expression_uses(
                     }
                 }
             }
+            Instruction::WorkflowLease { operation, .. } => {
+                for expression in operation.expressions() {
+                    reject(expression)?;
+                }
+                for outcome in operation.outcomes() {
+                    for field in &outcome.payload.fields {
+                        reject(field.expression)?;
+                    }
+                }
+            }
             Instruction::EmitEvent(event) => {
                 for field in &event.payload.fields {
                     reject(field.expression)?;
@@ -3319,6 +3702,12 @@ fn validate_command_expression_reachability(
             } => {
                 roots.push(*expected_revision);
                 for outcome in [stale, illegal] {
+                    roots.extend(outcome.payload.fields.iter().map(|field| field.expression));
+                }
+            }
+            Instruction::WorkflowLease { operation, .. } => {
+                roots.extend(operation.expressions());
+                for outcome in operation.outcomes() {
                     roots.extend(outcome.payload.fields.iter().map(|field| field.expression));
                 }
             }
@@ -3428,6 +3817,16 @@ fn validate_idempotency(
             } => {
                 collect(*expected_revision)?;
                 for outcome in [stale, illegal] {
+                    for field in &outcome.payload.fields {
+                        collect(field.expression)?;
+                    }
+                }
+            }
+            Instruction::WorkflowLease { operation, .. } => {
+                for expression in operation.expressions() {
+                    collect(expression)?;
+                }
+                for outcome in operation.outcomes() {
                     for field in &outcome.payload.fields {
                         collect(field.expression)?;
                     }

@@ -1,4 +1,4 @@
-//! Source-oriented syntax tree for contract grammar version 2.
+//! Source-oriented syntax tree for contract grammar version 3.
 
 pub use crate::span::{Span, Spanned};
 
@@ -385,6 +385,8 @@ pub enum Effect {
     Emit(EmitEffect),
     /// Apply one declared revision-checked workflow transition.
     WorkflowTransition(WorkflowTransitionEffect),
+    /// Apply one declared aggregate-local fenced lease operation.
+    WorkflowLease(Box<WorkflowLeaseEffect>),
 }
 
 /// A revision-checked invocation of one declared workflow transition.
@@ -400,6 +402,95 @@ pub struct WorkflowTransitionEffect {
     pub stale: Spanned<OutcomeExpression>,
     /// Declared result when current state is not a legal source.
     pub illegal: Spanned<OutcomeExpression>,
+}
+
+/// One compiler-visible operation over a declared workflow lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowLeaseEffect {
+    /// Lease symbol resolved from the bound entity's workflow.
+    pub lease: Spanned<String>,
+    /// Mutable entity binding carrying the lease fields.
+    pub binding: Spanned<String>,
+    /// Closed operation and its required expressions/outcomes.
+    pub operation: WorkflowLeaseOperation,
+}
+
+/// Closed source-level fenced lease operation family.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkflowLeaseOperation {
+    /// Claim an unowned or transaction-time-expired lease.
+    Claim {
+        /// Required owner UUID input.
+        owner: Spanned<Expression>,
+        /// Required bounded duration-seconds input.
+        duration_seconds: Spanned<Expression>,
+        /// Required exact observed entity revision input.
+        expected_revision: Spanned<Expression>,
+        /// Revision mismatch outcome.
+        stale: Spanned<OutcomeExpression>,
+        /// Still-owned and unexpired outcome.
+        unavailable: Spanned<OutcomeExpression>,
+        /// Duration outside the declared bounds outcome.
+        invalid: Spanned<OutcomeExpression>,
+        /// Fence or attempt counter exhaustion outcome.
+        exhausted: Spanned<OutcomeExpression>,
+    },
+    /// Renew a currently held, unexpired lease.
+    Renew {
+        /// Required exact owner UUID input.
+        owner: Spanned<Expression>,
+        /// Required exact current fencing-token input.
+        fencing_token: Spanned<Expression>,
+        /// Required bounded duration-seconds input.
+        duration_seconds: Spanned<Expression>,
+        /// Required exact observed entity revision input.
+        expected_revision: Spanned<Expression>,
+        /// Revision mismatch outcome.
+        stale: Spanned<OutcomeExpression>,
+        /// Owner or fencing-token mismatch outcome.
+        invalid: Spanned<OutcomeExpression>,
+        /// Already-expired lease outcome.
+        expired: Spanned<OutcomeExpression>,
+        /// Expiration arithmetic overflow outcome.
+        exhausted: Spanned<OutcomeExpression>,
+    },
+    /// Release a currently held lease without resetting its fence.
+    Release {
+        /// Required exact owner UUID input.
+        owner: Spanned<Expression>,
+        /// Required exact current fencing-token input.
+        fencing_token: Spanned<Expression>,
+        /// Required exact observed entity revision input.
+        expected_revision: Spanned<Expression>,
+        /// Revision mismatch outcome.
+        stale: Spanned<OutcomeExpression>,
+        /// Owner or fencing-token mismatch outcome.
+        invalid: Spanned<OutcomeExpression>,
+    },
+    /// Authoritatively clear a transaction-time-expired lease.
+    Expire {
+        /// Required exact observed entity revision input.
+        expected_revision: Spanned<Expression>,
+        /// Revision mismatch outcome.
+        stale: Spanned<OutcomeExpression>,
+        /// Unowned or not-yet-expired outcome.
+        active: Spanned<OutcomeExpression>,
+    },
+    /// Fence one lease-protected mutation under the current holder.
+    Fence {
+        /// Required exact owner UUID input.
+        owner: Spanned<Expression>,
+        /// Required exact current fencing-token input.
+        fencing_token: Spanned<Expression>,
+        /// Required exact observed entity revision input.
+        expected_revision: Spanned<Expression>,
+        /// Revision mismatch outcome.
+        stale: Spanned<OutcomeExpression>,
+        /// Owner or fencing-token mismatch outcome.
+        invalid: Spanned<OutcomeExpression>,
+        /// Already-expired lease outcome.
+        expired: Spanned<OutcomeExpression>,
+    },
 }
 
 /// A source-level field assignment effect.

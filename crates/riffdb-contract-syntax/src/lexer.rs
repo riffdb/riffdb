@@ -1,4 +1,4 @@
-//! Bounded lexical analysis for contract grammar version 2.
+//! Bounded lexical analysis for contract grammar version 3.
 
 use logos::{Lexer, Logos};
 
@@ -9,7 +9,7 @@ use crate::limits::{MAX_IDENTIFIER_BYTES, MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, M
 /// A token paired with its half-open UTF-8 byte span.
 pub(crate) type SpannedToken = Spanned<Token>;
 
-/// Reserved syntax which is deliberately absent from grammar version 2.
+/// Reserved syntax which is deliberately absent from grammar version 3.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DeferredKeyword {
     Module,
@@ -22,7 +22,7 @@ pub(crate) enum DeferredKeyword {
     Default,
 }
 
-/// The complete external token set for contract grammar version 2.
+/// The complete external token set for contract grammar version 3.
 #[derive(Clone, Debug, Eq, Hash, Logos, PartialEq)]
 #[allow(clippy::enum_variant_names)] // `fencing_token` is the accepted external keyword.
 #[logos(error = LexingError)]
@@ -99,6 +99,16 @@ pub(crate) enum Token {
     To,
     #[token("lease")]
     Lease,
+    #[token("claim")]
+    Claim,
+    #[token("renew")]
+    Renew,
+    #[token("release")]
+    Release,
+    #[token("expire")]
+    Expire,
+    #[token("fence")]
+    Fence,
     #[token("owner")]
     Owner,
     #[token("expires_at")]
@@ -123,6 +133,16 @@ pub(crate) enum Token {
     Stale,
     #[token("illegal")]
     Illegal,
+    #[token("unavailable")]
+    Unavailable,
+    #[token("invalid")]
+    Invalid,
+    #[token("exhausted")]
+    Exhausted,
+    #[token("expired")]
+    Expired,
+    #[token("active")]
+    Active,
     #[token("input")]
     Input,
     #[token("idempotency_key")]
