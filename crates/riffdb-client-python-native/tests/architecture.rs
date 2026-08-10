@@ -29,6 +29,7 @@ fn native_bridge_has_no_kernel_or_storage_dependency() {
     for forbidden in [
         "riffdb-storage-",
         "riffdb-commit",
+        "riffdb-runtime",
         "riffdb-command-runtime",
         "riffdb-admin",
         "riffdb-kernel",
