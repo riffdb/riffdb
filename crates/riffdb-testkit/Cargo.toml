@@ -97,5 +97,10 @@ name = "remote_deployment_rotation"
 path = "../../tests/remote_deployment_rotation.rs"
 harness = false
 
+[[test]]
+name = "driver_conformance_remote_client"
+path = "../../tests/driver_conformance_remote_client.rs"
+harness = false
+
 [lints]
 workspace = true

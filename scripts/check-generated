@@ -95,6 +95,8 @@ if rg -l -F 'riffdb\\.cmd\\.' \
     exit 1
 fi
 
+./scripts/check-driver-conformance-manifests >/dev/null
+
 snapshot "$after"
 if ! diff -r -- "$before" "$after"; then
     echo "generated-artifact check changed the worktree" >&2

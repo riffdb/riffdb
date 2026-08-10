@@ -1,0 +1,22 @@
+{
+  "schema": "riffdb.driver-conformance-corpus/v1",
+  "bounds": {
+    "pool_connections": 4,
+    "streams_per_connection": 64,
+    "command_attempts": 3
+  },
+  "shared_remote_operations": [
+    "create",
+    "idempotent_replay",
+    "read_after_commit",
+    "idempotency_key_reuse"
+  ],
+  "required_observation": {
+    "schema": "riffdb.driver-conformance-observation/v1",
+    "created": "Created",
+    "replayed": true,
+    "query": "Found",
+    "read_after_commit": true,
+    "reuse_error": "RDB-COMMAND-0101"
+  }
+}

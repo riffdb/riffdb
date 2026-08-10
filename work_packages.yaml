@@ -10221,7 +10221,9 @@ work_packages:
     PYD-004, PYD-005, PYD-006, PYD-007, LIVE-004, LIVE-005, LIVE-006, LIVE-007,
     DRV-014]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0080, ADR-0105, ADR-0106]
-  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/driver/**,
+  allowed_paths: [Cargo.toml, Cargo.lock, SPEC.md, work_packages.yaml,
+    crates/riffdb-client-python-native/**, fixtures/driver/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**, crates/riffdb-types/**,
     fixtures/application-parity/**, crates/riffdb-testkit/**, clients/**, examples/**,
     tests/**, scripts/**, docs/**, release/**, .github/**]
   deliverables:

@@ -5,7 +5,7 @@
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
 use riffdb_query_ir::{ReactiveOperationPlanV1, ReactiveUpdateModeV1};
 use riffdb_query_module::{
-    APPLICATION_LOCK_SCHEMA_V5, APPLICATION_SOURCE_SCHEMA_V4, ApplicationLock,
+    APPLICATION_LOCK_SCHEMA_V6, APPLICATION_SOURCE_SCHEMA_V5, ApplicationLock,
     ApplicationSourceManifest, NamedQuerySource, QueryModule, QueryModuleCandidate,
     QueryModuleName, QueryModuleVersion, compile_application_role_v2, compile_reactive_source,
 };
@@ -106,7 +106,7 @@ fn application() -> (
     QueryModule,
     riffdb_query_ir::ReactiveModulePlanV1,
 ) {
-    let source = ApplicationSourceManifest::parse(SOURCE).expect("TicketDesk Source V4");
+    let source = ApplicationSourceManifest::parse(SOURCE).expect("TicketDesk Source V5");
     let contract = compile_contract_source(CONTRACT).expect("TicketDesk contract");
     let query_module = QueryModule::compile(
         QueryModuleCandidate::new(
@@ -128,9 +128,9 @@ fn application() -> (
 }
 
 #[test]
-fn ticketdesk_v4_lock_freezes_partitioned_event_watches_context_and_roles() {
+fn ticketdesk_v5_lock_freezes_partitioned_event_watches_context_and_roles() {
     let (source, contract, query_module, reactive) = application();
-    assert_eq!(source.schema(), APPLICATION_SOURCE_SCHEMA_V4);
+    assert_eq!(source.schema(), APPLICATION_SOURCE_SCHEMA_V5);
     assert_eq!(reactive.name(), "TicketActivity");
     assert_eq!(
         reactive
@@ -206,8 +206,8 @@ fn ticketdesk_v4_lock_freezes_partitioned_event_watches_context_and_roles() {
             std::slice::from_ref(&reactive),
         )
         .expect("exact reactive manifest");
-    let lock = ApplicationLock::decode_canonical(LOCK).expect("canonical Lock V5");
-    assert_eq!(lock.schema(), APPLICATION_LOCK_SCHEMA_V5);
+    let lock = ApplicationLock::decode_canonical(LOCK).expect("canonical Lock V6");
+    assert_eq!(lock.schema(), APPLICATION_LOCK_SCHEMA_V6);
     assert_eq!(lock.source_hash(), source.identity());
     assert_eq!(lock.manifest_hash(), manifest.identity());
 

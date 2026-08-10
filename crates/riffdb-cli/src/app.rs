@@ -30,8 +30,8 @@ use riffdb_query_module::{
     compile_reactive_source,
 };
 use riffdb_types::{
-    CanonicalValue, CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId,
-    TenantScope,
+    CanonicalValue, CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
+    PartitionScopeV1, TenantId, TenantScope,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -6044,6 +6044,12 @@ fn application_role_permission_to_proto(
 ) -> v1::CapabilityPermission {
     use v1::capability_permission::Permission;
     let permission = match permission {
+        CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::ReadContract) => {
+            Permission::ReadContract(v1::Unit {})
+        }
+        CapabilityPermissionV1::Unparameterized(_) => {
+            unreachable!("application roles infer only contract-description access")
+        }
         CapabilityPermissionV1::InvokeCommand(lineage, command) => {
             Permission::InvokeCommand(v1::LineageScopedStableId {
                 contract_lineage: lineage.as_str().to_owned(),

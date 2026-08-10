@@ -7,10 +7,10 @@ use std::num::NonZeroU16;
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
-    ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1, CapabilityPermissionV1,
-    CapabilityPermissionsV1, ContractBundleHash, ContractLineage, ContractVersion,
-    EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash, QueryOperationName,
-    ReactiveModuleHash, TenantId, TenantScope, hash_application_role,
+    ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1, CapabilityPermissionKindV1,
+    CapabilityPermissionV1, CapabilityPermissionsV1, ContractBundleHash, ContractLineage,
+    ContractVersion, EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash,
+    QueryOperationName, ReactiveModuleHash, TenantId, TenantScope, hash_application_role,
 };
 
 use crate::{ApplicationManifest, ManifestRole, ManifestTenantScope, QueryModule};
@@ -266,7 +266,14 @@ fn compile_application_role_inner(
     let module_by_query = validate_modules(manifest, contract, modules)?;
 
     let lineage = contract.lineage().clone();
-    let mut permissions = Vec::with_capacity(role.queries().len() + role.commands().len());
+    // ADR-0056 makes contract-description access a compiler-derived part of
+    // every symbolic application role. This is required for an application
+    // driver to prove the exact active lineage/version/bundle before exposing
+    // its generated operation catalog; callers never assemble this grant.
+    let mut permissions = Vec::with_capacity(role.queries().len() + role.commands().len() + 1);
+    permissions.push(CapabilityPermissionV1::Unparameterized(
+        CapabilityPermissionKindV1::ReadContract,
+    ));
     let mut fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
     let mut maximum_rows = 1_u64;
     let mut operations = Vec::with_capacity(role.queries().len() + role.commands().len());
