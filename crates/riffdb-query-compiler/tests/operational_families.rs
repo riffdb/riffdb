@@ -6,7 +6,8 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     MAX_OPERATIONAL_PRESENCE_PARAMETERS, NamedTypeSchema, OperationalAggregateFunctionV1,
-    PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, SourceSymbolKind, SymbolicCatalog,
+    PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QueryDiagnosticCode, SourceSymbolKind,
+    SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::parse_query;
 
@@ -367,4 +368,38 @@ fn whole_set_aggregate_has_one_result_and_changes_family_identity() {
         &PageBound::Literal(1)
     );
     assert_ne!(count.identity(), sum.identity());
+}
+
+#[test]
+fn aggregate_result_aliases_fail_with_a_source_spanned_semantic_diagnostic() {
+    let catalog = catalog(CONTRACT);
+    let source = QUERY.replace(
+        "    return Found { tickets: tickets { ticket_id status priority updated_at } }",
+        r#"    aggregate summary from tickets { count() as ticket_count }
+    return Found { renamed: summary { ticket_count } }"#,
+    );
+    let document = parse_query(&source).expect("aggregate alias syntax");
+    let diagnostics = resolve_query_surface(&document, &catalog)
+        .expect_err("v1 aggregate result alias must fail closed");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), QueryDiagnosticCode::InvalidPath);
+    assert_eq!(diagnostic.symbol_path(), &["summary"]);
+    assert_eq!(
+        &source[diagnostic.primary().start as usize..diagnostic.primary().end as usize],
+        "renamed"
+    );
+    let rendered = format!(
+        "{}|{:?}|{}..{}|{}|{}|{}\n",
+        diagnostic.code().as_str(),
+        diagnostic.stage(),
+        diagnostic.primary().start,
+        diagnostic.primary().end,
+        diagnostic.symbol_path().join("."),
+        diagnostic.summary(),
+        diagnostic.help().unwrap_or("none"),
+    );
+    assert_eq!(
+        rendered,
+        include_str!("../../../fixtures/riffql/aggregate_result_alias.snapshot")
+    );
 }

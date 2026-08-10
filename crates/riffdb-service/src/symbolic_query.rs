@@ -27,8 +27,8 @@ use riffdb_policy::{
 };
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
 use riffdb_query_executor::{
-    QueryContinuation, QueryExecutionError, QueryOwnedSnapshot, QueryParameters, QueryResultValue,
-    QueryRow,
+    QueryAggregateCell, QueryAggregateRow, QueryContinuation, QueryExecutionError,
+    QueryOwnedSnapshot, QueryParameters, QueryResultValue, QueryRow,
 };
 use riffdb_query_ir::{
     NamedTypeSchema, QueryAccessKind, QueryAccessProgramV1, QueryDiagnostic, SymbolicCatalog,
@@ -1077,12 +1077,66 @@ impl ExecuteSymbolicQueryRequest {
 pub struct SymbolicResultRecord {
     entity: Arc<str>,
     fields: BTreeMap<Arc<str>, CanonicalValue>,
+    exact_decimals: BTreeMap<Arc<str>, ExactDecimalResult>,
+}
+
+/// Move-only components of one symbolic result record.
+pub type SymbolicResultRecordParts = (
+    Arc<str>,
+    BTreeMap<Arc<str>, CanonicalValue>,
+    BTreeMap<Arc<str>, ExactDecimalResult>,
+);
+
+/// Full-width exact decimal returned by an operational aggregate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactDecimalResult {
+    coefficient: i128,
+    scale: u8,
+}
+
+impl ExactDecimalResult {
+    /// Signed fixed-scale coefficient.
+    #[must_use]
+    pub const fn coefficient(self) -> i128 {
+        self.coefficient
+    }
+
+    /// Declared scale.
+    #[must_use]
+    pub const fn scale(self) -> u8 {
+        self.scale
+    }
 }
 
 impl SymbolicResultRecord {
     fn from_row(row: QueryRow) -> Self {
         let (entity, fields) = row.into_parts();
-        Self { entity, fields }
+        Self {
+            entity,
+            fields,
+            exact_decimals: BTreeMap::new(),
+        }
+    }
+
+    fn from_aggregate(row: QueryAggregateRow) -> Self {
+        let (entity, cells) = row.into_parts();
+        let mut fields = BTreeMap::new();
+        let mut exact_decimals = BTreeMap::new();
+        for (name, cell) in cells {
+            match cell {
+                QueryAggregateCell::Canonical(value) => {
+                    fields.insert(name, value);
+                }
+                QueryAggregateCell::ExactDecimal { coefficient, scale } => {
+                    exact_decimals.insert(name, ExactDecimalResult { coefficient, scale });
+                }
+            }
+        }
+        Self {
+            entity,
+            fields,
+            exact_decimals,
+        }
     }
 
     /// Test-only constructor for golden conversion fixtures.
@@ -1092,7 +1146,31 @@ impl SymbolicResultRecord {
         entity: Arc<str>,
         fields: BTreeMap<Arc<str>, CanonicalValue>,
     ) -> Self {
-        Self { entity, fields }
+        Self {
+            entity,
+            fields,
+            exact_decimals: BTreeMap::new(),
+        }
+    }
+
+    /// Test-only aggregate constructor for transport carriage fixtures.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn from_aggregate_for_test(
+        entity: Arc<str>,
+        fields: BTreeMap<Arc<str>, CanonicalValue>,
+        exact_decimals: BTreeMap<Arc<str>, (i128, u8)>,
+    ) -> Self {
+        Self {
+            entity,
+            fields,
+            exact_decimals: exact_decimals
+                .into_iter()
+                .map(|(name, (coefficient, scale))| {
+                    (name, ExactDecimalResult { coefficient, scale })
+                })
+                .collect(),
+        }
     }
 
     /// Contract entity name.
@@ -1107,10 +1185,16 @@ impl SymbolicResultRecord {
         &self.fields
     }
 
+    /// Full-width decimal fields in canonical name order.
+    #[must_use]
+    pub const fn exact_decimals(&self) -> &BTreeMap<Arc<str>, ExactDecimalResult> {
+        &self.exact_decimals
+    }
+
     /// Consumes the record into owned name handles and values.
     #[must_use]
-    pub fn into_parts(self) -> (Arc<str>, BTreeMap<Arc<str>, CanonicalValue>) {
-        (self.entity, self.fields)
+    pub fn into_parts(self) -> SymbolicResultRecordParts {
+        (self.entity, self.fields, self.exact_decimals)
     }
 }
 
@@ -1191,6 +1275,14 @@ impl ExecuteSymbolicQueryResult {
                     QueryResultValue::Many(rows) => SymbolicResultField::Many(
                         rows.into_iter()
                             .map(SymbolicResultRecord::from_row)
+                            .collect(),
+                    ),
+                    QueryResultValue::AggregateOne(row) => {
+                        SymbolicResultField::One(SymbolicResultRecord::from_aggregate(row))
+                    }
+                    QueryResultValue::AggregateMany(rows) => SymbolicResultField::Many(
+                        rows.into_iter()
+                            .map(SymbolicResultRecord::from_aggregate)
                             .collect(),
                     ),
                 };
@@ -1602,20 +1694,6 @@ async fn deploy_module(
             ApplicationErrorCode::QueryInvalid,
         )
     })?;
-    if module.module().queries().iter().any(|query| {
-        query
-            .operational_family()
-            .is_some_and(|family| !family.aggregates().is_empty())
-    }) {
-        // WP-563 seals aggregate syntax, types, authorization, cost, and module
-        // identity. WP-564 owns snapshot execution and exact result carriage.
-        // Refuse deployment until that executor exists so a checked aggregate
-        // can never be mistaken for its source row query.
-        return Err(application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::QueryInvalid,
-        ));
-    }
     let descriptor = QueryModuleDescriptor::from_module(&module);
     let operation = OperationRequest::deploy_query_module(
         bundle.lineage().clone(),
@@ -2033,17 +2111,6 @@ async fn execute_named_query(
             ApplicationErrorCode::QueryUnavailable,
         )
     })?;
-    if query
-        .operational_family()
-        .is_some_and(|family| !family.aggregates().is_empty())
-    {
-        // Defense in depth for modules restored or injected through an
-        // administrative path predating the WP-564 execution contract.
-        return Err(application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::QueryInvalid,
-        ));
-    }
     service
         .providers
         .telemetry
@@ -2072,11 +2139,15 @@ async fn execute_named_query(
             ApplicationErrorCode::QueryInvalid,
         )
     })?;
+    let aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]> = query
+        .operational_family()
+        .map_or_else(|| Arc::from([]), |family| Arc::from(family.aggregates()));
     execute_compiled_query(
         service,
         context,
         bundle,
         program,
+        aggregates,
         query.shared_document(),
         Some(module.identity()),
         Some(query.plan().identity()),
@@ -2155,6 +2226,7 @@ async fn execute_query(
         context,
         bundle,
         Arc::new(compiled.program),
+        Arc::from([]),
         Arc::new(compiled.document),
         None,
         None,
@@ -2180,6 +2252,7 @@ async fn execute_compiled_query(
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
     program: Arc<QueryAccessProgramV1>,
+    aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]>,
     document: Arc<Document>,
     module_hash: Option<QueryModuleHash>,
     named_plan_hash: Option<QueryPlanHash>,
@@ -2295,6 +2368,7 @@ async fn execute_compiled_query(
         |_attempt| {
             let execution_authorization = &execution_authorization;
             let program = &program;
+            let aggregates = &aggregates;
             let parameters = &parameters;
             let prior_cont = prior.as_deref().map(QueryCursorState::continuation);
             let cursor_lookup = cursor_lookup.clone();
@@ -2309,6 +2383,7 @@ async fn execute_compiled_query(
                     execution_authorization,
                     executor,
                     program,
+                    aggregates,
                     parameters,
                     prior_cont,
                 ) {
@@ -2778,6 +2853,7 @@ pub(crate) fn execute_authorized_query_page(
     authorization: &AuthorizedApplicationQuery,
     executor: &dyn riffdb_query_executor::QueryExecutionPort,
     program: &QueryAccessProgramV1,
+    aggregates: &[riffdb_query_ir::OperationalAggregateV1],
     parameters: &QueryParameters,
     prior: Option<&QueryContinuation>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
@@ -2796,7 +2872,11 @@ pub(crate) fn execute_authorized_query_page(
     if !exact_target {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    executor.execute_query_page(program, parameters, prior)
+    if aggregates.is_empty() {
+        executor.execute_query_page(program, parameters, prior)
+    } else {
+        executor.execute_operational_query_page(program, aggregates, parameters, prior)
+    }
 }
 
 pub(crate) fn execution_failure(
@@ -2821,6 +2901,7 @@ pub(crate) fn execution_failure(
         }
         QueryExecutionError::BackendLimitExceeded
         | QueryExecutionError::BoundExceeded
+        | QueryExecutionError::AggregateOverflow
         | QueryExecutionError::FuelExhausted => ServiceFailure::ResponseTooLarge,
         QueryExecutionError::MissingField { .. }
         | QueryExecutionError::InvalidDependentKey { .. }

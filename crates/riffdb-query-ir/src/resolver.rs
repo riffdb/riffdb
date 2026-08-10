@@ -982,6 +982,16 @@ impl<'a> Resolver<'a> {
                 }
             };
             if let Some(aggregate) = self.aggregates.get(binding_name).cloned() {
+                if let Some(alias) = &field.alias
+                    && alias.value.as_str() != binding_name
+                {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        alias.span,
+                        vec![binding_name.clone()],
+                        "operational aggregate result aliases are not available in v1",
+                    ));
+                }
                 let nested_fields =
                     self.resolve_aggregate_selection(nested, binding_name, &aggregate)?;
                 let record = NamedTypeSchema::Record(nested_fields);
@@ -1091,6 +1101,14 @@ impl<'a> Resolver<'a> {
         let mut names_seen = BTreeSet::new();
         let mut fields = Vec::with_capacity(selection.fields.len());
         for field in &selection.fields {
+            if let Some(alias) = &field.alias {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    alias.span,
+                    vec![aggregate_name.to_owned()],
+                    "operational aggregate field aliases are not available in v1",
+                ));
+            }
             if field.nested.is_some() || field.source.value.0.len() != 1 {
                 return Err(self.diagnostic(
                     QueryDiagnosticCode::InvalidPath,

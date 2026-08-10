@@ -47,11 +47,13 @@ is an exact presence-bit lookup; it performs no parsing or access-path planning.
 The selected member drives physical execution while responses and generated
 bindings retain the stable family identity.
 
-Language-version-2 aggregate declarations are parsed and canonically formatted,
-but are not yet members of an executable plan family. Both compilation paths
-return source-spanned `RDB-QP008` at the aggregate result symbol. This explicit
-gate prevents a declaration from being ignored while WP-564 adds exact shared
-aggregate lowering and its row-limit group-cardinality clamp.
+Language-version-2 aggregate declarations compile only through the finite
+operational-family path. The ordinary single-plan compiler returns
+source-spanned `RDB-QP008`, preventing an aggregate declaration from being
+ignored. The operational family seals exact aggregate descriptors, source
+fields, authorization union, cost, and the source-row-limit group clamp. At
+runtime the selected member access and all folds execute in one engine-owned
+snapshot; no storage scan fallback or client-side fold exists.
 
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded
@@ -96,7 +98,8 @@ The compiler derives each component conservatively:
 - dependent batches charge their complete source-key maximum;
 - intermediate rows are summed across all bindings rather than reset per
   entity or step;
-- projected values include every declared result copy; and
+- projected values include every declared result copy and every maximum
+  aggregate group cell; and
 - result bytes use contract field byte bounds plus deterministic envelope
   reserves.
 
@@ -125,3 +128,11 @@ point read, dependent key, retained intermediate row, projected value, and
 encoded result byte. Backend scan reports are reconciled with returned rows.
 An impossible, under-reported, over-reported, or exhausted execution returns a
 closed failure before a result or cursor is constructed.
+
+Aggregate grouping uses length-framed canonical value encodings as the ordered
+key. Whole-set folds always produce one record, including for an empty source;
+grouped folds produce no record for an empty source. Sum arithmetic is checked
+over `i128`; exact decimal scale comes from sealed result type metadata, never
+from a row or caller. Empty `min`/`max` outer absence is distinct from a
+contributed canonical null for optional inputs: the aggregate record omits the
+field only for the outer absence, while a present null remains a normal value.

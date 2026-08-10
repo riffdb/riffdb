@@ -3934,6 +3934,10 @@ fn render_contextual_next(
                                 QueryResultValue::Many(rows) => {
                                     ("many", rows.iter().collect::<Vec<_>>())
                                 }
+                                QueryResultValue::AggregateOne(_)
+                                | QueryResultValue::AggregateMany(_) => {
+                                    return Err(invalid_response("aggregate contextual result"));
+                                }
                             };
                             let rows = rows
                                 .into_iter()
@@ -4206,12 +4210,27 @@ fn named_query_record(
     result: &ExecuteSymbolicQueryResult,
     record: &SymbolicResultRecord,
 ) -> Result<serde_json::Value, McpBackendError> {
-    let fields = record
+    let mut fields = record
         .fields()
         .iter()
         .map(|(name, value)| Ok((name.as_ref().to_owned(), named_query_value(result, value)?)))
         .collect::<Result<serde_json::Map<_, _>, McpBackendError>>()?;
+    for (name, value) in record.exact_decimals() {
+        if fields
+            .insert(
+                name.as_ref().to_owned(),
+                named_query_exact_decimal(value.coefficient(), value.scale()),
+            )
+            .is_some()
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+    }
     Ok(serde_json::Value::Object(fields))
+}
+
+fn named_query_exact_decimal(coefficient: i128, scale: u8) -> serde_json::Value {
+    serde_json::Value::String(format!("{coefficient}e-{scale}"))
 }
 
 fn named_query_value(
@@ -4437,20 +4456,42 @@ fn symbolic_record_payload(
     result: &ExecuteSymbolicQueryResult,
     record: &SymbolicResultRecord,
 ) -> Result<serde_json::Value, McpBackendError> {
-    let fields = record
+    let canonical_fields = record
         .fields()
         .iter()
-        .map(|(name, value)| {
-            Ok(serde_json::json!({
-                "name": name,
-                "value": symbolic_presented_value(result, value)?,
-            }))
-        })
+        .map(|(name, value)| Ok((name, symbolic_presented_value(result, value)?)));
+    let exact_decimal_fields = record.exact_decimals().iter().map(|(name, value)| {
+        Ok((
+            name,
+            symbolic_exact_decimal(value.coefficient(), value.scale()),
+        ))
+    });
+    let mut fields = canonical_fields
+        .chain(exact_decimal_fields)
         .collect::<Result<Vec<_>, McpBackendError>>()?;
+    fields.sort_by_key(|(name, _)| *name);
+    let fields = fields
+        .into_iter()
+        .map(|(name, value)| {
+            serde_json::json!({
+                "name": name,
+                "value": value,
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "entity": record.entity(),
         "fields": fields,
     }))
+}
+
+fn symbolic_exact_decimal(coefficient: i128, scale: u8) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "decimal",
+        "coefficient": coefficient.to_string(),
+        "scale": scale,
+        "precision": serde_json::Value::Null,
+    })
 }
 
 fn symbolic_presented_value(
@@ -5903,6 +5944,23 @@ mod tests {
         };
         assert_eq!(money.amount().precision(), Some(4));
         assert_eq!(money.amount().scale(), 2);
+    }
+
+    #[test]
+    fn exact_aggregate_decimal_is_lossless_on_both_mcp_query_surfaces() {
+        assert_eq!(
+            named_query_exact_decimal(i128::MAX, 2),
+            serde_json::Value::String(format!("{}e-2", i128::MAX))
+        );
+        assert_eq!(
+            symbolic_exact_decimal(i128::MIN, 2),
+            serde_json::json!({
+                "kind": "decimal",
+                "coefficient": i128::MIN.to_string(),
+                "scale": 2,
+                "precision": null,
+            })
+        );
     }
 
     #[test]

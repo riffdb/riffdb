@@ -578,6 +578,7 @@ impl ServiceLiveQuerySubscription {
             &authorization,
             executor.as_ref(),
             &self.prepared.program,
+            &[],
             &self.prepared.parameters,
             None,
         )
@@ -699,6 +700,7 @@ async fn establish_live_query(
         &authorization,
         executor.as_ref(),
         &prepared.program,
+        &[],
         &prepared.parameters,
         None,
     )
@@ -1015,6 +1017,7 @@ fn map_live_execution(error: QueryExecutionError) -> LiveQueryTerminalReason {
         | QueryExecutionError::InvalidContinuation
         | QueryExecutionError::BackendLimitExceeded
         | QueryExecutionError::BoundExceeded
+        | QueryExecutionError::AggregateOverflow
         | QueryExecutionError::FuelExhausted
         | QueryExecutionError::MissingField { .. }
         | QueryExecutionError::InvalidDependentKey { .. }
