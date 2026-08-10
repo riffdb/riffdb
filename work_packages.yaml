@@ -11292,8 +11292,8 @@ work_packages:
   deferred:
   - Full SIM-003 evidence (AuthoritativeCommandModel equality at the recovered durable frontier,
     with model extension and the startup-validation plus structural-inspection passes on every
-    simulated recovery) belongs to the ADR-0113 oracle-wiring package; this package delivers the
-    engine-level shadow-map form only
+    simulated recovery) belongs to WP-582, the ADR-0113 oracle-wiring package; this package
+    delivers the engine-level shadow-map form only
   - SIM-004 evidence (simulator-found failures retained as seed-replayable regression fixtures
     replayed per merge, nightly exploration budget) belongs to the ADR-0113 corpus package
   - SIM-006 evidence (every storage-layer storage_recovery_matrix / RECOVERY_SCENARIOS arm
@@ -11366,4 +11366,65 @@ work_packages:
     scale: The media port adds one enum-dispatch branch on the journal hot loop's production
       arm and no allocation; simulated side-file state is bounded by the configured extent
       sizes and the smoke workload.
+  human_review_triggers: *id001
+- id: WP-582
+  name: DST recovery oracle — AuthoritativeCommandModel equality at the recovered durable frontier
+  depends_on: [WP-581]
+  objective: Continue ADR-0113 Phase 1 by wiring the testkit reference model to the simulated
+    redb store as the recovery oracle discharging SIM-003 — after every simulated recovery the
+    reopened engine passes the full startup-validation and structural-inspection pass and its
+    state equals AuthoritativeCommandModel at the recovered durable frontier, compared through
+    the store's own validated readers with every representational normalization documented.
+  requirements: [SIM-003]
+  required_adrs: [ADR-0012, ADR-0113]
+  allowed_paths: [Cargo.lock, work_packages.yaml,
+    adr/0113-deterministic-simulation-testing.md,
+    crates/riffdb-sim/**, crates/riffdb-testkit/**]
+  deliverables:
+  - DurableInspection accessor extension (additive, request-scoped, bounded) covering the four
+    families the model is compared through but inspection could not read — secondary-index
+    ranges with their atomically observed epochs, admissions by identity key through
+    lookup_admission's locator-resolving decode, terminal outcomes assembled by sequence from
+    the identity-keyed read surface, and the stored outbox intent record distinct from the
+    status-read view — plus the recovered application frontier from the commit scan's frozen
+    fence, structural page reach, and an inspect_opened_redb entry point for stores opened
+    over simulated media
+  - Model comparison support in riffdb-testkit; map iteration accessors, a first-divergence
+    model diff naming the diverging family and key, and verify_model_against_inspection — a
+    both-directions comparison with coverage checking (an under-declared harness fails loudly)
+    and per-family agreement counts so a passing oracle proves a non-trivial surface
+  - Recovery-oracle harness in riffdb-sim over the SIM-B seams; a mixed-admission-shape
+    workload (two-phase admission, fused vacant-terminal, ADR-0083 supersession chain) driven
+    in lockstep with the model and snapshotted at every acknowledged durable commit, recovered
+    through clean shutdown, all-synced dirty-shutdown repair, and a full crash-window sweep
+    with fused and two-phase interrupted commands under the two-state crash-boundary
+    acceptance (recovered frontier within [last acknowledged, last attempted]; interrupted
+    effects present exactly in full or absent exactly in full, both states provably exercised)
+  - The smoke torn test's first-tearing-window break removed so its sweep also recovers and
+    checks every crash window
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-sim --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-targets
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  deferred:
+  - The seeded workload generator and the open-ended exploration campaign with its regression
+    corpus (SIM-004) belong to the following ADR-0113 packages; this oracle runs fixed
+    fixtures over the existing crash-window sweep
+  - Administration audit records and projection state remain outside the model's coverage;
+    the comparison names the nine authoritative families it proves and the audit stream stays
+    matrix-covered evidence
+  exit_gate: Every simulated recovery in the harness — clean, dirty-repair, and every crashing
+    window of every swept seed — passes the complete startup-validation pass with zero
+    structural findings over at least one inspected page and lands model-equal at the recovered
+    frontier with the exact expected per-family agreement counts; the crash-boundary two-state
+    acceptance is exercised from both sides; and no production crate changes.
+  standing_design_tests:
+    interface_safety: No application-facing surface changes; every new accessor lives in the
+      dev-only testkit or simulator crates, reads through existing public store traits, and
+      adds no mutation, repair, or migration authority to the inspection surface.
+    scale: Inspection requests stay bounded by the existing 256-target and 10k-record limits,
+      the oracle workload is four commands, and the sweep budget is fixed by the window range
+      and seed count rather than database size.
   human_review_triggers: *id001

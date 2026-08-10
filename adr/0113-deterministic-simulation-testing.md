@@ -46,7 +46,7 @@ not aspiration:
 - A single writer holds all mutation authority (`SPEC.md` PERF-007), so
   storage-level histories are serial by construction.
 - An independent reference model of authoritative state already exists —
-  `AuthoritativeCommandModel` with twelve typed defect classes
+  `AuthoritativeCommandModel` with eleven typed defect classes
   (`crates/riffdb-testkit/src/model/authoritative.rs`) — but is wired only to
   the memory backend, never to the redb engine that ships.
 - redb 4.1.0 publicly exposes `StorageBackend` and
@@ -251,6 +251,11 @@ fixture data, so no redaction surface is added.
   registered the `SIM-*` family as SPEC §17.10; the remaining Phase-1
   packages (journal media seam, oracle wiring, generator, corpus) are
   numbered as they mint.
+- **Oracle-wiring package:** WP-582 (testkit durable-inspection accessor
+  extension, model comparison support, and the `riffdb-sim` recovery-oracle
+  harness) delivers Phase 1 item 4's `SIM-003` evidence — model equality at
+  the recovered durable frontier after every simulated recovery, with the
+  startup-validation and structural-inspection passes as its precondition.
 - **Final evidence:** the Phase-1 exploration campaign report over the
   journal/extent/fold machinery.
 
