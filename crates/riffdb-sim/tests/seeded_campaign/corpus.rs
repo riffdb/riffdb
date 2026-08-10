@@ -1,19 +1,31 @@
 //! D4 (SIM-C2, SPEC SIM-004): the found-seed regression corpus.
 //!
-//! Every seed that ever exercised interesting territory — a non-trivial
-//! two-state acceptance, a large torn-decision recovery, a crash inside a
-//! recovery window — is pinned here with its full replay coordinates (seed,
-//! generator version, campaign config, what it caught, pin date) and replayed
-//! per merge. A future simulator-found ENGINE failure would be a
-//! STOP-and-report event first; only after the defect is fixed does its seed
-//! land here as the regression fixture SIM-004 requires.
+//! Every seed that ever caught a real defect or exercised interesting
+//! territory — a non-trivial two-state acceptance, a large torn-decision
+//! recovery, a crash inside a recovery window — is pinned here with its full
+//! replay coordinates (seed, generator version, campaign config, what it
+//! caught, pin date) and replayed per merge. Entries grow append-only and are
+//! never edited to "keep passing": a replay that stops reproducing its
+//! territory is a finding.
+//!
+//! The inaugural entry is the campaign's first real engine catch: the redb
+//! 4.1.0 file-growth torn-crash wedge (fixed upstream in `fd82ced`,
+//! unreleased — see `campaign::REDB_PIN_CONTAINS_FD82CED`). While the pin
+//! predates the fix, the entry must REPRODUCE the wedge; once the pin
+//! advances and the constant flips, the same replay must instead assert a
+//! CLEAN recovery — both expectations are encoded, so the flip obligation
+//! cannot rot.
 
-use crate::campaign::{CampaignConfig, CampaignReport, run_campaign};
+use crate::campaign::{
+    CampaignConfig, CampaignOutcome, CampaignReport, REDB_PIN_CONTAINS_FD82CED,
+    run_campaign_outcome,
+};
 use crate::generator::WORKLOAD_GENERATOR_VERSION;
+use crate::subsumption::COMMIT_ARMS_CONFIG;
 
-/// Minimum evidence one corpus replay must reproduce. Every variant maps to a
-/// `CampaignReport` counter, so a replay that "passes" without reaching the
-/// pinned territory reds instead of rotting silently.
+/// Minimum evidence one completing corpus replay must reproduce. Every
+/// variant maps to a `CampaignReport` counter, so a replay that "passes"
+/// without reaching the pinned territory reds instead of rotting silently.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CorpusExpectation {
     /// At least this many seeded torn decisions across the run's recoveries.
@@ -50,8 +62,23 @@ impl CorpusExpectation {
     }
 }
 
-/// One pinned regression seed: full replay coordinates plus the minimum
-/// territory the replay must reach again.
+/// What one corpus entry's replay must demonstrate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CorpusOutcome {
+    /// The campaign must complete (oracle holding at every recovery, plan
+    /// exhausted, quiesced final verification green) AND reproduce the listed
+    /// evidence.
+    Completes(&'static [CorpusExpectation]),
+    /// The entry pins the redb 4.1.0 file-growth wedge: while
+    /// [`REDB_PIN_CONTAINS_FD82CED`] is `false` the replay must REPRODUCE the
+    /// wedge (the bug demonstrably still exists under the pin); once the pin
+    /// advances past `fd82ced` and the constant flips, the same replay must
+    /// COMPLETE with a clean recovery — the upstream fix demonstrably took.
+    WedgesUntilRedbFileGrowthFix,
+}
+
+/// One pinned regression seed: full replay coordinates plus the outcome the
+/// replay must demonstrate again.
 pub(crate) struct CorpusEntry {
     /// Campaign seed.
     pub seed: u64,
@@ -65,29 +92,88 @@ pub(crate) struct CorpusEntry {
     pub caught: &'static str,
     /// Pin date (UTC).
     pub pinned: &'static str,
-    /// Minimum evidence the replay must reproduce.
-    pub expect: &'static [CorpusExpectation],
+    /// The outcome the replay must demonstrate.
+    pub outcome: CorpusOutcome,
 }
 
-/// The corpus. Grows append-only: entries are never edited to "keep passing";
-/// a replay that stops reproducing its territory is a finding.
-///
-/// DELIBERATELY EMPTY at the SIM-C2 stop point: development surfaced an
-/// actual engine failure (the redb 4.1.0 reopen panic — see
-/// `finding_redb_reopen_panic_reproducer` in the campaign module) and the
-/// standing rule for a real bug is STOP and report, never a corpus entry.
-/// The first entries land when the finding is resolved and the interesting
-/// development seeds can replay to completion.
-pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[];
+/// The corpus. Append-only.
+pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
+    CorpusEntry {
+        seed: 0x51C2_C003,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "redb 4.1.0 file-growth torn-crash permanent wedge: the \
+                 fourth crash's torn recovery keeps the in-commit god-header \
+                 write (layout length 233472) while dropping the covering \
+                 set_len extension (durable length 118784), and every \
+                 subsequent open panics at page_manager.rs:231 before redb's \
+                 own repair path can run. Fixed upstream in commit fd82ced \
+                 (\"Make file growth durable to avoid an unopenable database \
+                 after a crash\", 2026-06-13), unreleased; the pinned =4.1.0 \
+                 predates it.",
+        pinned: "2026-08-10",
+        outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C067,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "heaviest torn-decision territory of the 256-seed development \
+                 scout: 55 seeded torn decisions across 14 recoveries (max 10 \
+                 in one), eight interrupted batches resolved absent in full, \
+                 and crashes inside three recovery windows — all with the \
+                 oracle holding at every recovered frontier.",
+        pinned: "2026-08-10",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::TornDecisionsAtLeast(30),
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::InitializationBoundary,
+        ]),
+    },
+    CorpusEntry {
+        seed: 0x51C2_C0E1,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "the only commit-PRESENT resolution in the 256-seed \
+                 development scout (the crash landed after the engine commit \
+                 and before the acknowledgement; the recovered frontier \
+                 included the unacknowledged batch and its complete effect \
+                 graph compared model-equal), alongside four absent \
+                 resolutions and four interrupted-admission resolutions; \
+                 rerun 12/12 with identical counters before pinning.",
+        pinned: "2026-08-10",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::InFlightCommitPresent,
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+    },
+    CorpusEntry {
+        seed: 0x51C2_C006,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "deepest crash-during-recovery chain of the development \
+                 scout: six of fourteen crashes landed inside recovery \
+                 windows (recovery of a recovery), with interrupted \
+                 admissions resolved on both retries and the oracle holding \
+                 throughout.",
+        pinned: "2026-08-10",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::TornDecisionsAtLeast(10),
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+    },
+];
 
-/// SIM-004: every corpus entry replays per merge and reproduces at least the
-/// territory it was pinned for.
+/// SIM-004: every corpus entry replays per merge and demonstrates its pinned
+/// outcome again.
 #[test]
-#[ignore = "SIM-C2 stopped before corpus population: a real engine finding is a bug report, not a corpus entry"]
 fn regression_corpus_replays_and_reproduces_its_territory() {
     assert!(
         !REGRESSION_CORPUS.is_empty(),
-        "the corpus must retain at least the development-found seeds"
+        "the corpus must retain at least the inaugural engine catch"
     );
     for entry in REGRESSION_CORPUS {
         assert_eq!(
@@ -97,23 +183,65 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
              of silently replaying a different plan",
             entry.seed, entry.generator_version
         );
-        let report = run_campaign(entry.seed, entry.config);
-        for expectation in entry.expect {
-            assert!(
-                expectation.holds(&report),
-                "corpus seed {:#x} (pinned {} for: {}) no longer reproduces \
-                 {expectation:?}; report: {report:?}",
-                entry.seed,
-                entry.pinned,
-                entry.caught
-            );
+        let outcome = run_campaign_outcome(entry.seed, entry.config);
+        match entry.outcome {
+            CorpusOutcome::Completes(expectations) => {
+                let CampaignOutcome::Completed(report) = outcome else {
+                    panic!(
+                        "corpus seed {:#x} (pinned {} for: {}) wedged instead \
+                         of completing: {outcome:?}",
+                        entry.seed, entry.pinned, entry.caught
+                    );
+                };
+                for expectation in expectations {
+                    assert!(
+                        expectation.holds(&report),
+                        "corpus seed {:#x} (pinned {} for: {}) no longer \
+                         reproduces {expectation:?}; report: {report:?}",
+                        entry.seed,
+                        entry.pinned,
+                        entry.caught
+                    );
+                }
+            }
+            CorpusOutcome::WedgesUntilRedbFileGrowthFix => {
+                if REDB_PIN_CONTAINS_FD82CED {
+                    // The pin advanced: the fix must hold — clean recovery.
+                    let CampaignOutcome::Completed(report) = outcome else {
+                        panic!(
+                            "corpus seed {:#x}: the redb pin claims to \
+                             contain fd82ced but the file-growth wedge still \
+                             reproduces — the fix regressed or the constant \
+                             was flipped wrongly",
+                            entry.seed
+                        );
+                    };
+                    assert_eq!(
+                        report.final_frontier,
+                        u64::from(entry.config.generator.commands),
+                        "corpus seed {:#x}: post-fix replay must recover \
+                         cleanly to the full plan frontier",
+                        entry.seed
+                    );
+                } else {
+                    // The pin predates the fix: the wedge must reproduce, or
+                    // the regression pin has silently lost its bug.
+                    assert!(
+                        matches!(outcome, CampaignOutcome::WedgedByRedb410FileGrowth { .. }),
+                        "corpus seed {:#x} no longer reproduces the redb \
+                         4.1.0 file-growth wedge under the =4.1.0 pin; the \
+                         inaugural catch has rotted: {outcome:?}",
+                        entry.seed
+                    );
+                }
+            }
         }
     }
 }
 
 /// The expectation-to-counter mapping is itself pinned: each variant holds
-/// exactly when its counter is live, so a future corpus entry's expectations
-/// mean what they say.
+/// exactly when its counter is live, so a corpus entry's expectations mean
+/// what they say.
 #[test]
 fn corpus_expectations_map_to_their_report_counters() {
     let quiet = CampaignReport::default();
