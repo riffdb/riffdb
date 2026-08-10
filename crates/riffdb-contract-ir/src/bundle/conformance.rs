@@ -209,6 +209,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "plan_root_hash",
                 "ledger",
                 "schema",
+                "workflows",
                 "commands",
                 "projections",
                 "schema_artifacts",
@@ -326,6 +327,33 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ),
         ("ExpressionArena", vec!["nodes"]),
         (
+            "WorkflowSchema",
+            vec![
+                "name",
+                "entity",
+                "state_field",
+                "state_enum",
+                "transitions",
+                "lease",
+            ],
+        ),
+        (
+            "WorkflowTransitionSchema",
+            vec!["name", "source_states", "destination"],
+        ),
+        (
+            "WorkflowLeaseSchema",
+            vec![
+                "name",
+                "owner_field",
+                "expiry_field",
+                "fencing_token_field",
+                "attempt_field",
+                "minimum_duration_seconds",
+                "maximum_duration_seconds",
+            ],
+        ),
+        (
             "CommandBundleEntry",
             vec![
                 "command_id",
@@ -339,6 +367,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             "CommandSemantics",
             vec![
                 "input",
+                "service_values",
                 "outcomes",
                 "success_outcome",
                 "idempotency_input",
@@ -520,6 +549,9 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("KeySchema", "key-purpose fixture"),
         ("KeyComponentSchema", "key-purpose fixture"),
         ("ExpressionArena", "expression fixture"),
+        ("WorkflowSchema", "workflow bundle fixture"),
+        ("WorkflowTransitionSchema", "workflow bundle fixture"),
+        ("WorkflowLeaseSchema", "workflow bundle fixture"),
         ("CommandBundleEntry", "root-validation command fixture"),
         ("CommandSemantics", "root-validation command fixture"),
         ("OutcomeSchema", "root-validation command fixture"),
@@ -665,6 +697,11 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                         "root-validation field",
                         vec!["result_type", "read", "field"],
                     ),
+                    (
+                        0x0c,
+                        "service-owned command value",
+                        vec!["result_type", "field"],
+                    ),
                 ],
             ),
             (
@@ -678,6 +715,19 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                     (0x02, "set field", vec!["binding", "field", "value"]),
                     (0x03, "emit event", vec!["event"]),
                     (0x04, "return", vec!["outcome"]),
+                    (
+                        0x05,
+                        "workflow transition",
+                        vec![
+                            "binding",
+                            "state_field",
+                            "source_states",
+                            "destination",
+                            "expected_revision",
+                            "stale",
+                            "illegal",
+                        ],
+                    ),
                 ],
             ),
             (

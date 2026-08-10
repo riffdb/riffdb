@@ -112,6 +112,8 @@ pub enum ExpressionKind {
     Constant(CanonicalValue),
     /// Stable field in the command input record.
     InputField(FieldId),
+    /// Compiler-declared service-owned command value.
+    ServiceValue(FieldId),
     /// Complete bound entity record.
     CompleteBinding(BindingId),
     /// Stable field of one bound entity record.
@@ -164,6 +166,7 @@ impl ExpressionKind {
         match self {
             Self::Constant(_) => crate::format_registry::expression::CONSTANT,
             Self::InputField(_) => crate::format_registry::expression::INPUT_FIELD,
+            Self::ServiceValue(_) => crate::format_registry::expression::SERVICE_VALUE,
             Self::CompleteBinding(_) => crate::format_registry::expression::COMPLETE_BINDING,
             Self::BoundField { .. } => crate::format_registry::expression::BOUND_FIELD,
             Self::SchemaField { .. } => crate::format_registry::expression::SCHEMA_FIELD,
@@ -326,6 +329,9 @@ impl ExpressionArena {
                 ExpressionKind::InputField(field) => {
                     result.input_fields.insert(*field);
                 }
+                ExpressionKind::ServiceValue(field) => {
+                    result.service_values.insert(*field);
+                }
                 ExpressionKind::CompleteBinding(binding) => {
                     result.bindings.insert(*binding);
                     result.complete_bindings.insert(*binding);
@@ -450,6 +456,7 @@ fn validate_ir_constant_shape(value: &CanonicalValue) -> Result<(), IrValidation
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExpressionDependencies {
     input_fields: BTreeSet<FieldId>,
+    service_values: BTreeSet<FieldId>,
     bindings: BTreeSet<BindingId>,
     complete_bindings: BTreeSet<BindingId>,
     bound_fields: BTreeSet<(BindingId, FieldId)>,
@@ -466,6 +473,12 @@ impl ExpressionDependencies {
     #[must_use]
     pub const fn input_fields(&self) -> &BTreeSet<FieldId> {
         &self.input_fields
+    }
+
+    /// Referenced service-owned command values.
+    #[must_use]
+    pub const fn service_values(&self) -> &BTreeSet<FieldId> {
+        &self.service_values
     }
 
     /// Referenced command bindings.
@@ -525,7 +538,8 @@ impl ExpressionDependencies {
     /// True only when the expression can be computed before entity reads.
     #[must_use]
     pub fn is_input_computable(&self) -> bool {
-        self.bindings.is_empty()
+        self.service_values.is_empty()
+            && self.bindings.is_empty()
             && self.schema_fields.is_empty()
             && self.root_validation_reads.is_empty()
             && self.source_event_fields.is_empty()

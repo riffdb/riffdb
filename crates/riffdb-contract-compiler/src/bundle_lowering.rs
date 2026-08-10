@@ -3,7 +3,7 @@
 use riffdb_contract_ir::{
     CommandPlan, CompatibilityReport, ContractBundle, GeneratedSchemaArtifact, LineageLedgerV1,
     McpCommandNameRegistryV2, ParentBundleRef, ProjectionPlan, SchemaIr, StableIdNamespace,
-    StableIdNamespaceTag, StableIdentity, required_lineage_allocation_namespaces,
+    StableIdNamespaceTag, StableIdentity, WorkflowSchema, required_lineage_allocation_namespaces,
 };
 use riffdb_types::{ContractLineage, SourceHash};
 
@@ -13,6 +13,7 @@ const COMPILER_SEMANTIC_VERSION: &str = "0.1.0";
 
 pub(crate) struct BundleParts {
     pub(crate) schema: SchemaIr,
+    pub(crate) workflows: Vec<WorkflowSchema>,
     pub(crate) commands: Vec<CommandPlan>,
     pub(crate) projections: Vec<ProjectionPlan>,
     pub(crate) mcp_names: McpCommandNameRegistryV2,
@@ -49,7 +50,7 @@ pub(crate) fn assemble_bundle(
     };
     let parent_ref =
         parent.map(|parent| ParentBundleRef::new(parent.contract_version(), parent.bundle_hash()));
-    ContractBundle::new(
+    ContractBundle::new_with_workflows(
         COMPILER_SEMANTIC_VERSION,
         lineage,
         symbols.contract_version,
@@ -57,6 +58,7 @@ pub(crate) fn assemble_bundle(
         source_hash,
         ledger,
         parts.schema,
+        parts.workflows,
         parts.commands,
         parts.projections,
         artifacts,

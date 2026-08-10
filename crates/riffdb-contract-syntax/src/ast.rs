@@ -1,4 +1,4 @@
-//! Source-oriented syntax tree for contract grammar version 1.
+//! Source-oriented syntax tree for contract grammar version 2.
 
 pub use crate::span::{Span, Spanned};
 
@@ -33,8 +33,55 @@ pub enum Declaration {
     Aggregate(AggregateDeclaration),
     /// A typed command declaration.
     Command(CommandDeclaration),
+    /// A compiler-lowered aggregate-local workflow declaration.
+    Workflow(WorkflowDeclaration),
     /// An event-derived projection declaration.
     Projection(ProjectionDeclaration),
+}
+
+/// One compiler-visible workflow over one aggregate-owned entity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowDeclaration {
+    /// The workflow symbol.
+    pub name: Spanned<String>,
+    /// The entity whose revision and state are protected.
+    pub entity: Spanned<String>,
+    /// The stored enum field containing authoritative workflow state.
+    pub state_field: Spanned<String>,
+    /// Legal directed transitions in source order.
+    pub transitions: Vec<Spanned<WorkflowTransitionDeclaration>>,
+    /// The optional aggregate-local fenced lease.
+    pub lease: Option<Spanned<WorkflowLeaseDeclaration>>,
+}
+
+/// One named legal transition in a workflow graph.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowTransitionDeclaration {
+    /// Transition symbol used by commands.
+    pub name: Spanned<String>,
+    /// Nonempty legal source-state set.
+    pub source_states: Vec<Spanned<String>>,
+    /// Exact destination state.
+    pub destination: Spanned<String>,
+}
+
+/// Stored fields and duration bounds for one workflow lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowLeaseDeclaration {
+    /// Lease symbol used by generated operations.
+    pub name: Spanned<String>,
+    /// Optional owner field.
+    pub owner_field: Spanned<String>,
+    /// Optional service-owned expiry field.
+    pub expiry_field: Spanned<String>,
+    /// Nonzero monotonically increasing fencing-token field.
+    pub fencing_token_field: Spanned<String>,
+    /// Optional bounded-attempt field.
+    pub attempt_field: Option<Spanned<String>>,
+    /// Inclusive minimum lease duration in seconds.
+    pub minimum_duration_seconds: Spanned<String>,
+    /// Inclusive maximum lease duration in seconds.
+    pub maximum_duration_seconds: Spanned<String>,
 }
 
 /// A persistent entity declaration with source-ordered items.
@@ -220,6 +267,8 @@ pub struct CommandDeclaration {
     pub name: Spanned<String>,
     /// Input declarations in source order.
     pub inputs: Vec<Spanned<InputDeclaration>>,
+    /// Service-owned deterministic values in source order.
+    pub service_values: Vec<Spanned<ServiceValueDeclaration>>,
     /// The optional idempotency declaration.
     pub idempotency: Option<Spanned<IdempotencyClause>>,
     /// Up-front entity bindings in source order.
@@ -237,6 +286,24 @@ pub struct CommandDeclaration {
 pub struct InputDeclaration {
     /// The input field syntax.
     pub field: TypedField,
+}
+
+/// A named value observed by the service and sealed before evaluation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceValueDeclaration {
+    /// Command-local value name.
+    pub name: Spanned<String>,
+    /// Closed source of the value.
+    pub kind: Spanned<ServiceValueKind>,
+}
+
+/// Sources permitted for compiler-visible service-owned command values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceValueKind {
+    /// A service-generated RFC 9562 UUIDv7 value.
+    UuidV7,
+    /// The exact admitted transaction time.
+    TransactionTime,
 }
 
 /// The expression supplying a command's idempotency key.
@@ -288,6 +355,23 @@ pub enum Effect {
     Set(SetEffect),
     /// Emit one durable typed event.
     Emit(EmitEffect),
+    /// Apply one declared revision-checked workflow transition.
+    WorkflowTransition(WorkflowTransitionEffect),
+}
+
+/// A revision-checked invocation of one declared workflow transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowTransitionEffect {
+    /// Transition symbol resolved from the bound entity's workflow.
+    pub transition: Spanned<String>,
+    /// Mutable entity binding receiving the destination state.
+    pub binding: Spanned<String>,
+    /// Caller-observed exact entity revision.
+    pub expected_revision: Spanned<Expression>,
+    /// Declared result when the exact revision is stale.
+    pub stale: Spanned<OutcomeExpression>,
+    /// Declared result when current state is not a legal source.
+    pub illegal: Spanned<OutcomeExpression>,
 }
 
 /// A source-level field assignment effect.

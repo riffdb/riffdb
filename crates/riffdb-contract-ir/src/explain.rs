@@ -2,13 +2,63 @@
 
 use std::fmt::Write;
 
-use riffdb_types::{CommandId, EventTypeId, FieldId, InvariantId, OutcomeId};
+use riffdb_types::{CommandId, EnumVariantId, EventTypeId, FieldId, InvariantId, OutcomeId};
 
 use crate::{
     BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
     EventConstruction, ExecutionClass, ExprId, ExpressionArena, ExpressionKind, KeySchema,
     OutcomeSchema, RelationshipCheckPlan, RootValidationReadPlan, UniqueConflictPlan,
 };
+
+/// Value-free structural explanation of one exact workflow transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowTransitionExplain {
+    binding: BindingId,
+    state_field: FieldId,
+    source_states: Vec<EnumVariantId>,
+    destination: EnumVariantId,
+    expected_revision: ExprId,
+    stale_outcome: OutcomeId,
+    illegal_outcome: OutcomeId,
+}
+
+impl WorkflowTransitionExplain {
+    /// Mutable workflow binding.
+    #[must_use]
+    pub const fn binding(&self) -> BindingId {
+        self.binding
+    }
+    /// Workflow state field.
+    #[must_use]
+    pub const fn state_field(&self) -> FieldId {
+        self.state_field
+    }
+    /// Canonical legal source states.
+    #[must_use]
+    pub fn source_states(&self) -> &[EnumVariantId] {
+        &self.source_states
+    }
+    /// Exact destination state.
+    #[must_use]
+    pub const fn destination(&self) -> EnumVariantId {
+        self.destination
+    }
+    /// Direct caller-supplied revision expression.
+    #[must_use]
+    pub const fn expected_revision(&self) -> ExprId {
+        self.expected_revision
+    }
+    /// Declared stale-revision outcome.
+    #[must_use]
+    pub const fn stale_outcome(&self) -> OutcomeId {
+        self.stale_outcome
+    }
+    /// Declared illegal-state outcome.
+    #[must_use]
+    pub const fn illegal_outcome(&self) -> OutcomeId {
+        self.illegal_outcome
+    }
+}
 
 /// A bounded stable-ID-only command explanation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,6 +70,7 @@ pub struct CommandExplain {
     bindings: Vec<BindingId>,
     read_fields: Vec<(BindingId, FieldId)>,
     write_fields: Vec<(BindingId, FieldId)>,
+    workflow_transitions: Vec<WorkflowTransitionExplain>,
     invariants: Vec<InvariantId>,
     events: Vec<EventTypeId>,
     outcomes: Vec<OutcomeId>,
@@ -56,11 +107,40 @@ impl CommandExplain {
             .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
-                crate::Instruction::SetField { binding, field, .. } => Some((*binding, *field)),
+                crate::Instruction::SetField { binding, field, .. }
+                | crate::Instruction::WorkflowTransition {
+                    binding,
+                    state_field: field,
+                    ..
+                } => Some((*binding, *field)),
                 _ => None,
             })
             .collect::<Vec<_>>();
         write_fields.sort_unstable();
+        let workflow_transitions = plan
+            .instructions()
+            .iter()
+            .filter_map(|instruction| match instruction {
+                crate::Instruction::WorkflowTransition {
+                    binding,
+                    state_field,
+                    source_states,
+                    destination,
+                    expected_revision,
+                    stale,
+                    illegal,
+                } => Some(WorkflowTransitionExplain {
+                    binding: *binding,
+                    state_field: *state_field,
+                    source_states: source_states.clone(),
+                    destination: *destination,
+                    expected_revision: *expected_revision,
+                    stale_outcome: stale.outcome_id(),
+                    illegal_outcome: illegal.outcome_id(),
+                }),
+                _ => None,
+            })
+            .collect();
         let invariants = plan
             .commit_checks()
             .iter()
@@ -92,6 +172,7 @@ impl CommandExplain {
             bindings,
             read_fields,
             write_fields,
+            workflow_transitions,
             invariants,
             events,
             outcomes,
@@ -143,6 +224,11 @@ impl CommandExplain {
     #[must_use]
     pub fn write_fields(&self) -> &[(BindingId, FieldId)] {
         &self.write_fields
+    }
+    /// Exact revision/state transition checks in instruction order.
+    #[must_use]
+    pub fn workflow_transitions(&self) -> &[WorkflowTransitionExplain] {
+        &self.workflow_transitions
     }
     /// Commit-validation invariants.
     #[must_use]
@@ -236,6 +322,9 @@ impl CommandExplain {
             let operation = match expression.kind() {
                 ExpressionKind::Constant(_) => "constant(redacted)".to_owned(),
                 ExpressionKind::InputField(field) => format!("input-field:{}", field.get()),
+                ExpressionKind::ServiceValue(field) => {
+                    format!("service-value:{}", field.get())
+                }
                 ExpressionKind::CompleteBinding(binding) => {
                     format!("complete-binding:{}", binding.get())
                 }
@@ -355,6 +444,25 @@ impl CommandExplain {
         }
         for (binding, field) in &self.write_fields {
             let _ = writeln!(output, "write:{}:{}", binding.get(), field.get());
+        }
+        for transition in &self.workflow_transitions {
+            let sources = transition
+                .source_states
+                .iter()
+                .map(|state| state.get().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = writeln!(
+                output,
+                "workflow-transition:{} field={} sources=[{}] destination={} expected-revision={} stale={} illegal={} transaction-current:true",
+                transition.binding.get(),
+                transition.state_field.get(),
+                sources,
+                transition.destination.get(),
+                transition.expected_revision.get(),
+                transition.stale_outcome.get(),
+                transition.illegal_outcome.get(),
+            );
         }
         for check in &self.commit_checks {
             let subjects = check

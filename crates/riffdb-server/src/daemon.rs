@@ -2,16 +2,29 @@
 
 use std::error::Error;
 use std::fmt;
+use std::fs;
+use std::future::Future;
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
+#[cfg(unix)]
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use futures_util::stream::FuturesUnordered;
 use riffdb_api_grpc::{GrpcApplication, GrpcDatabaseRoutes, GrpcLifecycleRoute, GrpcRequestLimits};
 use riffdb_api_mcp::MCP_PROTOCOL_VERSION;
 use riffdb_auth::{NoopAuthenticationTelemetry, load_digest_key_providers};
+use riffdb_config::{
+    ApplicationListenerConfig, DirectTlsListenerConfig, ListenerBounds, LocalSocketListenerConfig,
+    LoopbackCleartextListener, TlsServerIdentity,
+};
 use riffdb_contract_ir::EXECUTABLE_IR_VERSION_V1;
 use riffdb_policy::{
     AuthorizationClock, AuthorizationClockError, NoopAuthorizationTelemetry, TrustedAudienceCatalog,
@@ -31,9 +44,20 @@ use riffdb_storage_redb::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
 };
 use riffdb_types::{DatabaseAlias, OfflineMaintenanceOperationKind};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject as _};
 use tokio::sync::oneshot;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinError, JoinHandle as TokioJoinHandle};
-use tonic::transport::{Server, server::TcpIncoming};
+use tokio::{io::AsyncRead, io::AsyncWrite, io::ReadBuf};
+use tokio_rustls::TlsAcceptor;
+use tokio_stream::Stream;
+#[cfg(unix)]
+use tokio_stream::wrappers::UnixListenerStream;
+use tonic::transport::{
+    Server,
+    server::{Connected, TcpIncoming},
+};
+use zeroize::Zeroizing;
 
 use crate::clocks::{ProductionWallClocks, ServerProcessClockError};
 use crate::config::{DatabaseConfig, ServerConfig, ServerConfigError};
@@ -76,6 +100,8 @@ const TRANSPORT_DRAIN_LIMIT: Duration = Duration::from_secs(35);
 const RUNTIME_DRAIN_LIMIT: Duration = Duration::from_secs(5);
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
 const READY_PROTOCOL: &str = "riffdbd-ready-v1";
+const MAX_CERTIFICATE_CHAIN_BYTES: u64 = 256 * 1_024;
+const MAX_PRIVATE_KEY_BYTES: u64 = 64 * 1_024;
 
 type ShutdownReceiver = oneshot::Receiver<Result<ShutdownInput, ShutdownCommandError>>;
 
@@ -502,7 +528,7 @@ async fn run_server(
         .map_err(|_| DaemonError::GrpcConfiguration)?;
     let application =
         GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
-    let mut transport = HostedGrpc::bind(config.listen_address(), &application)?;
+    let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
     drop(application);
     let (maintenance_storage, reconciliation) =
         RedbMaintenanceStorage::open(config.database_path(), config.backup_root())
@@ -953,7 +979,7 @@ async fn run_multi_database_server(
         limits,
         config.audience().clone(),
     );
-    let mut transport = HostedGrpc::bind(config.listen_address(), &application)?;
+    let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
     drop(application);
 
     let mut graphs = Vec::with_capacity(pending.len());
@@ -1359,7 +1385,7 @@ async fn run_multi_database_server(
         None => None,
     };
 
-    publish_readiness(transport.local_address())?;
+    publish_readiness(transport.endpoint())?;
     let (shutdown_input, shutdown_thread) = spawn_shutdown_reader()?;
     let mut shutdown_input = Some(shutdown_input);
     let (event_sender, mut event_receiver) =
@@ -2118,8 +2144,7 @@ async fn run_ready_generations(
         .await?;
         return Ok(());
     }
-    if publish_initial && let Err(source) = publish_readiness(generation.transport.local_address())
-    {
+    if publish_initial && let Err(source) = publish_readiness(generation.transport.endpoint()) {
         shutdown_before_ready(
             generation.graph,
             &mut generation.transport,
@@ -2140,7 +2165,7 @@ async fn run_ready_generations(
             return Err(source);
         }
     };
-    let listen_address = generation.transport.local_address();
+    let listener_config = generation.transport.rebind_config();
     let mut shutdown = Some(shutdown);
     let mut stdin_thread = Some(stdin_thread);
 
@@ -2223,7 +2248,7 @@ async fn run_ready_generations(
         };
         generation = start_generation(
             config,
-            listen_address,
+            listener_config.clone(),
             started_at,
             startup,
             prepared,
@@ -2256,7 +2281,7 @@ async fn run_ready_generations(
                 .finish_ready(offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?)
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
         }
-        if let Err(source) = publish_readiness(generation.transport.local_address()) {
+        if let Err(source) = publish_readiness(generation.transport.endpoint()) {
             shutdown_before_ready(
                 generation.graph,
                 &mut generation.transport,
@@ -2360,7 +2385,7 @@ async fn run_restore_retry_until_ready(
 ) -> Result<(), DaemonError> {
     let operation_id = receipt.operation_id();
     let input_hash = receipt.input_hash();
-    let listen_address = transport.local_address();
+    let listener_config = transport.rebind_config();
     let routing = lifecycle.runtime_routing();
     // The narrow retry host discards the validated startup, so the target's
     // durable fence must be captured before the handoff. Without it the restore
@@ -2476,7 +2501,7 @@ async fn run_restore_retry_until_ready(
     let (_terminal_receipt, startup) = driver_result.into_parts();
     let mut generation = start_generation(
         config,
-        listen_address,
+        listener_config,
         started_at,
         startup,
         prepared,
@@ -2527,7 +2552,7 @@ async fn run_recovery_until_ready(
     host_identifiers: &ProductionIdentifierSources,
     recovery: &MaintenanceRecoveryController,
 ) -> Result<(), DaemonError> {
-    let listen_address = transport.local_address();
+    let listener_config = transport.rebind_config();
     let routing = lifecycle.runtime_routing();
     let recovery_host = RunningRecoveryHost::start(
         maintenance.clone(),
@@ -2708,7 +2733,7 @@ async fn run_recovery_until_ready(
 
                 let generation = start_generation(
                     config,
-                    listen_address,
+                    listener_config.clone(),
                     started_at,
                     startup,
                     prepared,
@@ -2783,7 +2808,7 @@ fn classify_recovery_driver_failure(
 #[allow(clippy::too_many_arguments)]
 async fn start_generation(
     config: &ServerConfig,
-    listen_address: SocketAddr,
+    listener_config: ApplicationListenerConfig,
     started_at: riffdb_types::Timestamp,
     startup: crate::startup::CheckedRedbStartup,
     inputs: GenerationInputs,
@@ -2810,7 +2835,7 @@ async fn start_generation(
         .map_err(|_| DaemonError::GrpcConfiguration)?;
     let application =
         GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
-    let mut transport = HostedGrpc::bind(listen_address, &application)?;
+    let mut transport = HostedGrpc::bind(listener_config, &application)?;
     let graph = match ProductionGraphBuilder::new(
         startup,
         activator,
@@ -3128,10 +3153,10 @@ async fn wait_for_shutdown_input(
     }
 }
 
-fn publish_readiness(address: SocketAddr) -> Result<(), DaemonError> {
+fn publish_readiness(endpoint: &HostedGrpcEndpoint) -> Result<(), DaemonError> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
-    writeln!(stdout, "{READY_PROTOCOL}\t{address}").map_err(DaemonError::Readiness)?;
+    writeln!(stdout, "{READY_PROTOCOL}\t{endpoint}").map_err(DaemonError::Readiness)?;
     stdout.flush().map_err(DaemonError::Readiness)
 }
 
@@ -3231,43 +3256,159 @@ fn signal_stream_closed() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "shutdown signal stream closed")
 }
 
+#[derive(Clone, Debug)]
+enum HostedGrpcEndpoint {
+    Tcp(SocketAddr),
+    LocalSocket,
+}
+
+impl fmt::Display for HostedGrpcEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp(address) => address.fmt(formatter),
+            Self::LocalSocket => formatter.write_str("local-socket"),
+        }
+    }
+}
+
+#[cfg(unix)]
+struct BoundLocalSocket {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl Drop for BoundLocalSocket {
+    fn drop(&mut self) {
+        let Ok(metadata) = fs::symlink_metadata(&self.path) else {
+            return;
+        };
+        if metadata.file_type().is_socket()
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 struct HostedGrpc {
-    local_address: SocketAddr,
+    endpoint: HostedGrpcEndpoint,
+    rebind_config: ApplicationListenerConfig,
+    drain_limit: Duration,
+    #[cfg(unix)]
+    _local_socket: Option<BoundLocalSocket>,
     shutdown: Option<oneshot::Sender<()>>,
     task: TokioJoinHandle<Result<(), tonic::transport::Error>>,
 }
 
 impl HostedGrpc {
-    fn bind(address: SocketAddr, application: &GrpcApplication) -> Result<Self, DaemonError> {
-        // HTTP/2 emits small control and data frames independently. Leaving
-        // Nagle enabled on the accepted side couples those frames to the peer's
-        // delayed-ACK timer and adds a repeatable ~40 ms to otherwise local
-        // unary calls. The public client already enables TCP_NODELAY.
-        let incoming = TcpIncoming::bind(address)
-            .map_err(DaemonError::Listener)?
-            .with_nodelay(Some(true));
-        let local_address = incoming.local_addr().map_err(DaemonError::Listener)?;
+    fn bind(
+        config: ApplicationListenerConfig,
+        application: &GrpcApplication,
+    ) -> Result<Self, DaemonError> {
         let (shutdown, stopped) = oneshot::channel();
-        let router = Server::builder()
-            .add_service(application.contract_server())
-            .add_service(application.command_server())
-            .add_service(application.query_server())
-            .add_service(application.application_query_server())
-            .add_service(application.commit_server())
-            .add_service(application.event_server())
-            .add_service(application.admin_server());
-        let task = tokio::spawn(router.serve_with_incoming_shutdown(incoming, async move {
-            let _ = stopped.await;
-        }));
-        Ok(Self {
-            local_address,
-            shutdown: Some(shutdown),
-            task,
-        })
+        match config {
+            ApplicationListenerConfig::LoopbackCleartext(listener) => {
+                let address = listener.listen_address();
+                // HTTP/2 emits small control and data frames independently. Leaving
+                // Nagle enabled on the accepted side couples those frames to the peer's
+                // delayed-ACK timer and adds a repeatable ~40 ms to otherwise local
+                // unary calls. The public client already enables TCP_NODELAY.
+                let incoming = TcpIncoming::bind(address)
+                    .map_err(DaemonError::Listener)?
+                    .with_nodelay(Some(true));
+                let local_address = incoming.local_addr().map_err(DaemonError::Listener)?;
+                let rebind_config = ApplicationListenerConfig::LoopbackCleartext(
+                    LoopbackCleartextListener::new(local_address)
+                        .map_err(|_| DaemonError::GrpcConfiguration)?,
+                );
+                let router = application_router(Server::builder(), application, None);
+                let task = tokio::spawn(
+                    router.serve_with_incoming_shutdown(incoming, shutdown_signal(stopped)),
+                );
+                Ok(Self {
+                    endpoint: HostedGrpcEndpoint::Tcp(local_address),
+                    rebind_config,
+                    drain_limit: TRANSPORT_DRAIN_LIMIT,
+                    #[cfg(unix)]
+                    _local_socket: None,
+                    shutdown: Some(shutdown),
+                    task,
+                })
+            }
+            ApplicationListenerConfig::DirectTls(listener) => {
+                let identity = ReloadableTlsIdentity::load(&listener)?;
+                let incoming = TcpIncoming::bind(listener.listen_address())
+                    .map_err(DaemonError::Listener)?
+                    .with_nodelay(Some(true));
+                let local_address = incoming.local_addr().map_err(DaemonError::Listener)?;
+                let bounds = listener.bounds();
+                let incoming = ReloadingTlsIncoming::new(
+                    BoundedIncoming::new(incoming, bounds.max_connections()),
+                    identity,
+                    bounds,
+                );
+                let router = application_router(Server::builder(), application, Some(bounds));
+                let rebind_config = ApplicationListenerConfig::DirectTls(listener);
+                let task = tokio::spawn(
+                    router.serve_with_incoming_shutdown(incoming, shutdown_signal(stopped)),
+                );
+                Ok(Self {
+                    endpoint: HostedGrpcEndpoint::Tcp(local_address),
+                    rebind_config,
+                    drain_limit: bounds.drain_timeout(),
+                    #[cfg(unix)]
+                    _local_socket: None,
+                    shutdown: Some(shutdown),
+                    task,
+                })
+            }
+            ApplicationListenerConfig::LocalSocket(listener) => {
+                #[cfg(unix)]
+                {
+                    let (incoming, guard) = bind_local_socket(&listener)?;
+                    let bounds = listener.bounds();
+                    let router = application_router(Server::builder(), application, Some(bounds));
+                    let rebind_config = ApplicationListenerConfig::LocalSocket(listener);
+                    let task = tokio::spawn(router.serve_with_incoming_shutdown(
+                        BoundedIncoming::new(incoming, bounds.max_connections()),
+                        shutdown_signal(stopped),
+                    ));
+                    Ok(Self {
+                        endpoint: HostedGrpcEndpoint::LocalSocket,
+                        rebind_config,
+                        drain_limit: bounds.drain_timeout(),
+                        _local_socket: Some(guard),
+                        shutdown: Some(shutdown),
+                        task,
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = listener;
+                    let _ = stopped;
+                    Err(DaemonError::LocalSocketUnsupported)
+                }
+            }
+        }
     }
 
-    const fn local_address(&self) -> SocketAddr {
-        self.local_address
+    const fn endpoint(&self) -> &HostedGrpcEndpoint {
+        &self.endpoint
+    }
+
+    fn rebind_config(&self) -> ApplicationListenerConfig {
+        self.rebind_config.clone()
+    }
+
+    #[cfg(test)]
+    const fn tcp_address(&self) -> Option<SocketAddr> {
+        match self.endpoint {
+            HostedGrpcEndpoint::Tcp(address) => Some(address),
+            HostedGrpcEndpoint::LocalSocket => None,
+        }
     }
 
     fn is_finished(&self) -> bool {
@@ -3278,7 +3419,7 @@ impl HostedGrpc {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        let completion = tokio::time::timeout(TRANSPORT_DRAIN_LIMIT, &mut self.task)
+        let completion = tokio::time::timeout(self.drain_limit, &mut self.task)
             .await
             .map_err(|_| DaemonError::TransportDrainTimeout)?;
         classify_transport_completion(&completion)
@@ -3288,6 +3429,439 @@ impl HostedGrpc {
         let completion = (&mut self.task).await;
         classify_transport_completion(&completion)
     }
+}
+
+fn application_router(
+    mut builder: Server,
+    application: &GrpcApplication,
+    bounds: Option<ListenerBounds>,
+) -> tonic::transport::server::Router {
+    if let Some(bounds) = bounds {
+        builder = builder
+            .max_concurrent_streams(bounds.max_streams_per_connection().get())
+            .http2_keepalive_interval(Some(bounds.keepalive_interval()))
+            .http2_keepalive_timeout(Some(bounds.keepalive_interval()))
+            .timeout(REQUEST_DURATION_LIMIT);
+    }
+    builder
+        .add_service(application.contract_server())
+        .add_service(application.command_server())
+        .add_service(application.query_server())
+        .add_service(application.application_query_server())
+        .add_service(application.commit_server())
+        .add_service(application.event_server())
+        .add_service(application.admin_server())
+}
+
+async fn shutdown_signal(stopped: oneshot::Receiver<()>) {
+    let _ = stopped.await;
+}
+
+struct BoundedIncoming<S> {
+    incoming: Pin<Box<S>>,
+    permits: Arc<Semaphore>,
+}
+
+impl<S> BoundedIncoming<S> {
+    fn new(incoming: S, maximum_connections: NonZeroU32) -> Self {
+        Self {
+            incoming: Box::pin(incoming),
+            permits: Arc::new(Semaphore::new(maximum_connections.get() as usize)),
+        }
+    }
+}
+
+struct AdmittedConnection<IO> {
+    io: IO,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl<S, IO, E> Stream for BoundedIncoming<S>
+where
+    S: Stream<Item = Result<IO, E>>,
+{
+    type Item = Result<AdmittedConnection<IO>, E>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            let item = match self.incoming.as_mut().poll_next(context) {
+                Poll::Ready(Some(item)) => item,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            match item {
+                Ok(io) => match Arc::clone(&self.permits).try_acquire_owned() {
+                    Ok(permit) => {
+                        return Poll::Ready(Some(Ok(AdmittedConnection {
+                            io,
+                            _permit: permit,
+                        })));
+                    }
+                    Err(_) => drop(io),
+                },
+                Err(error) => return Poll::Ready(Some(Err(error))),
+            }
+        }
+    }
+}
+
+impl<IO: AsyncRead + Unpin> AsyncRead for AdmittedConnection<IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(context, buffer)
+    }
+}
+
+impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.io).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.io).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.io).poll_shutdown(context)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.io).poll_write_vectored(context, buffers)
+    }
+}
+
+impl<IO: Connected> Connected for AdmittedConnection<IO> {
+    type ConnectInfo = IO::ConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.io.connect_info()
+    }
+}
+
+type TlsConnection = tokio_rustls::server::TlsStream<AdmittedConnection<tokio::net::TcpStream>>;
+type TlsHandshake =
+    Pin<Box<dyn Future<Output = Option<Result<TlsConnection, io::Error>>> + Send + 'static>>;
+
+struct ReloadingTlsIncoming {
+    incoming: BoundedIncoming<TcpIncoming>,
+    handshakes: FuturesUnordered<TlsHandshake>,
+    identity: ReloadableTlsIdentity,
+    handshake_timeout: Duration,
+    maximum_handshakes: usize,
+}
+
+impl ReloadingTlsIncoming {
+    fn new(
+        incoming: BoundedIncoming<TcpIncoming>,
+        identity: ReloadableTlsIdentity,
+        bounds: ListenerBounds,
+    ) -> Self {
+        Self {
+            incoming,
+            handshakes: FuturesUnordered::new(),
+            identity,
+            handshake_timeout: bounds.handshake_timeout(),
+            maximum_handshakes: bounds.max_connections().get() as usize,
+        }
+    }
+}
+
+impl Stream for ReloadingTlsIncoming {
+    type Item = Result<TlsConnection, io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        while self.handshakes.len() < self.maximum_handshakes {
+            match Pin::new(&mut self.incoming).poll_next(context) {
+                Poll::Ready(Some(Ok(connection))) => {
+                    let snapshot = self.identity.snapshot_for_new_handshake();
+                    let timeout = self.handshake_timeout;
+                    self.handshakes.push(Box::pin(async move {
+                        match tokio::time::timeout(
+                            timeout,
+                            TlsAcceptor::from(snapshot).accept(connection),
+                        )
+                        .await
+                        {
+                            Ok(Ok(connection)) => Some(Ok(connection)),
+                            Ok(Err(_)) | Err(_) => None,
+                        }
+                    }));
+                }
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                Poll::Ready(None) => break,
+                Poll::Pending => break,
+            }
+        }
+        loop {
+            match Pin::new(&mut self.handshakes).poll_next(context) {
+                Poll::Ready(Some(Some(result))) => return Poll::Ready(Some(result)),
+                Poll::Ready(Some(None)) => {}
+                Poll::Ready(None) | Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TransportFileIdentity {
+    bytes: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TlsFilePairIdentity {
+    certificate: TransportFileIdentity,
+    private_key: TransportFileIdentity,
+}
+
+struct ReloadableTlsIdentity {
+    certificate_path: PathBuf,
+    private_key_path: PathBuf,
+    expected_identity: TlsServerIdentity,
+    current_files: TlsFilePairIdentity,
+    current: Arc<tokio_rustls::rustls::ServerConfig>,
+    rejected_files: Option<TlsFilePairIdentity>,
+    unavailable_reported: bool,
+}
+
+impl ReloadableTlsIdentity {
+    fn load(listener: &DirectTlsListenerConfig) -> Result<Self, DaemonError> {
+        let certificate_path = listener.tls().certificate_chain().as_path().to_path_buf();
+        let private_key_path = listener.tls().private_key().as_path().to_path_buf();
+        let expected_identity = listener.public_endpoint().identity().clone();
+        let (current, current_files) =
+            load_tls_snapshot(&certificate_path, &private_key_path, &expected_identity)?;
+        Ok(Self {
+            certificate_path,
+            private_key_path,
+            expected_identity,
+            current_files,
+            current,
+            rejected_files: None,
+            unavailable_reported: false,
+        })
+    }
+
+    fn snapshot_for_new_handshake(&mut self) -> Arc<tokio_rustls::rustls::ServerConfig> {
+        let observed = tls_file_pair_identity(&self.certificate_path, &self.private_key_path);
+        let Ok(observed) = observed else {
+            if !self.unavailable_reported {
+                eprintln!(
+                    "riffdbd transport reload rejected kind=tls_material retained_previous=true"
+                );
+                self.unavailable_reported = true;
+            }
+            return Arc::clone(&self.current);
+        };
+        self.unavailable_reported = false;
+        if observed == self.current_files || self.rejected_files.as_ref() == Some(&observed) {
+            return Arc::clone(&self.current);
+        }
+        match load_tls_snapshot(
+            &self.certificate_path,
+            &self.private_key_path,
+            &self.expected_identity,
+        ) {
+            Ok((snapshot, files)) => {
+                self.current = snapshot;
+                self.current_files = files;
+                self.rejected_files = None;
+            }
+            Err(_) => {
+                eprintln!(
+                    "riffdbd transport reload rejected kind=tls_configuration retained_previous=true"
+                );
+                self.rejected_files = Some(observed);
+            }
+        }
+        Arc::clone(&self.current)
+    }
+}
+
+fn load_tls_snapshot(
+    certificate_path: &Path,
+    private_key_path: &Path,
+    expected_identity: &TlsServerIdentity,
+) -> Result<(Arc<tokio_rustls::rustls::ServerConfig>, TlsFilePairIdentity), DaemonError> {
+    let (certificate_chain, certificate_identity) =
+        read_transport_file(certificate_path, MAX_CERTIFICATE_CHAIN_BYTES, false)?;
+    let (private_key, private_key_identity) =
+        read_transport_file(private_key_path, MAX_PRIVATE_KEY_BYTES, true)?;
+    verify_certificate_identity(&certificate_chain, expected_identity)?;
+    let mut certificate_reader = io::Cursor::new(&certificate_chain);
+    let certificates = CertificateDer::pem_reader_iter(&mut certificate_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| DaemonError::TlsConfiguration)?;
+    if certificates.is_empty() {
+        return Err(DaemonError::TlsConfiguration);
+    }
+    let private_key = Zeroizing::new(private_key);
+    let private_key = PrivateKeyDer::from_pem_reader(io::Cursor::new(private_key.as_slice()))
+        .map_err(|_| DaemonError::TlsConfiguration)?;
+    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let mut config = tokio_rustls::rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| DaemonError::TlsConfiguration)?
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|_| DaemonError::TlsConfiguration)?;
+    config.alpn_protocols.push(b"h2".to_vec());
+    Ok((
+        Arc::new(config),
+        TlsFilePairIdentity {
+            certificate: certificate_identity,
+            private_key: private_key_identity,
+        },
+    ))
+}
+
+fn read_transport_file(
+    path: &Path,
+    maximum_bytes: u64,
+    private: bool,
+) -> Result<(Vec<u8>, TransportFileIdentity), DaemonError> {
+    let before = transport_file_identity(path, private)?;
+    let file = fs::File::open(path).map_err(|_| DaemonError::TlsMaterial)?;
+    let opened_metadata = file.metadata().map_err(|_| DaemonError::TlsMaterial)?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() == 0
+        || opened_metadata.len() > maximum_bytes
+        || !opened_file_matches_identity(&before, &opened_metadata)
+    {
+        return Err(DaemonError::TlsMaterial);
+    }
+    let mut contents = Vec::with_capacity(opened_metadata.len() as usize);
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut contents)
+        .map_err(|_| DaemonError::TlsMaterial)?;
+    if contents.is_empty() || contents.len() as u64 > maximum_bytes {
+        return Err(DaemonError::TlsMaterial);
+    }
+    let after = transport_file_identity(path, private)?;
+    if after != before {
+        return Err(DaemonError::TlsMaterial);
+    }
+    Ok((contents, after))
+}
+
+fn tls_file_pair_identity(
+    certificate_path: &Path,
+    private_key_path: &Path,
+) -> Result<TlsFilePairIdentity, DaemonError> {
+    Ok(TlsFilePairIdentity {
+        certificate: transport_file_identity(certificate_path, false)?,
+        private_key: transport_file_identity(private_key_path, true)?,
+    })
+}
+
+fn transport_file_identity(
+    path: &Path,
+    private: bool,
+) -> Result<TransportFileIdentity, DaemonError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| DaemonError::TlsMaterial)?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(DaemonError::TlsMaterial);
+    }
+    #[cfg(unix)]
+    {
+        let forbidden = if private { 0o077 } else { 0o022 };
+        if metadata.permissions().mode() & forbidden != 0 {
+            return Err(DaemonError::TlsMaterialPermissions);
+        }
+    }
+    Ok(TransportFileIdentity {
+        bytes: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+    })
+}
+
+fn verify_certificate_identity(
+    certificate_chain: &[u8],
+    expected: &TlsServerIdentity,
+) -> Result<(), DaemonError> {
+    let mut reader = io::Cursor::new(certificate_chain);
+    let certificate = CertificateDer::pem_reader_iter(&mut reader)
+        .next()
+        .ok_or(DaemonError::TlsConfiguration)?
+        .map_err(|_| DaemonError::TlsConfiguration)?;
+    let certificate =
+        webpki::EndEntityCert::try_from(&certificate).map_err(|_| DaemonError::TlsConfiguration)?;
+    let expected =
+        ServerName::try_from(expected.as_str()).map_err(|_| DaemonError::TlsConfiguration)?;
+    certificate
+        .verify_is_valid_for_subject_name(&expected)
+        .map_err(|_| DaemonError::TlsConfiguration)
+}
+
+#[cfg(unix)]
+fn opened_file_matches_identity(identity: &TransportFileIdentity, opened: &fs::Metadata) -> bool {
+    identity.device == opened.dev() && identity.inode == opened.ino()
+}
+
+#[cfg(not(unix))]
+fn opened_file_matches_identity(identity: &TransportFileIdentity, opened: &fs::Metadata) -> bool {
+    identity.bytes == opened.len() && identity.modified == opened.modified().ok()
+}
+
+#[cfg(unix)]
+fn bind_local_socket(
+    listener: &LocalSocketListenerConfig,
+) -> Result<(UnixListenerStream, BoundLocalSocket), DaemonError> {
+    let path = listener.path();
+    let parent = path.parent().ok_or(DaemonError::LocalSocketConfiguration)?;
+    let parent_metadata =
+        fs::symlink_metadata(parent).map_err(|_| DaemonError::LocalSocketConfiguration)?;
+    if !parent_metadata.file_type().is_dir() || parent_metadata.permissions().mode() & 0o022 != 0 {
+        return Err(DaemonError::LocalSocketPermissions);
+    }
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) | Err(_) => return Err(DaemonError::LocalSocketOccupied),
+    }
+    let socket = tokio::net::UnixListener::bind(path).map_err(DaemonError::Listener)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(listener.access().mode()))
+        .map_err(|_| DaemonError::LocalSocketPermissions)?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| DaemonError::LocalSocketPermissions)?;
+    if !metadata.file_type().is_socket()
+        || metadata.permissions().mode() & 0o777 != listener.access().mode()
+    {
+        return Err(DaemonError::LocalSocketPermissions);
+    }
+    let guard = BoundLocalSocket {
+        path: path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    Ok((UnixListenerStream::new(socket), guard))
 }
 
 fn classify_transport_completion(
@@ -3326,6 +3900,14 @@ enum DaemonError {
     StartupInventory(StorageValueError),
     GrpcConfiguration,
     Listener(io::Error),
+    TlsConfiguration,
+    TlsMaterial,
+    TlsMaterialPermissions,
+    LocalSocketConfiguration,
+    LocalSocketPermissions,
+    LocalSocketOccupied,
+    #[cfg(not(unix))]
+    LocalSocketUnsupported,
     McpDependencies,
     McpStart(HostedMcpStartError),
     McpStop(HostedMcpStopError),
@@ -3366,6 +3948,14 @@ impl DaemonError {
             Self::StartupInventory(_) => "startup_inventory",
             Self::GrpcConfiguration => "grpc_configuration",
             Self::Listener(_) => "listener",
+            Self::TlsConfiguration => "tls_configuration",
+            Self::TlsMaterial => "tls_material",
+            Self::TlsMaterialPermissions => "tls_material_permissions",
+            Self::LocalSocketConfiguration => "local_socket_configuration",
+            Self::LocalSocketPermissions => "local_socket_permissions",
+            Self::LocalSocketOccupied => "local_socket_occupied",
+            #[cfg(not(unix))]
+            Self::LocalSocketUnsupported => "local_socket_unsupported",
             Self::McpDependencies => "mcp_dependencies",
             Self::McpStart(_) => "mcp_start",
             Self::McpStop(_) => "mcp_stop",
@@ -3433,8 +4023,16 @@ impl Error for DaemonError {
             Self::RestoreRetryHostShutdown(source) => Some(source),
             Self::GraphBuild(source) => Some(source),
             Self::GraphShutdown(source) => Some(source),
+            #[cfg(not(unix))]
+            Self::LocalSocketUnsupported => None,
             Self::DigestKeys
             | Self::GrpcConfiguration
+            | Self::TlsConfiguration
+            | Self::TlsMaterial
+            | Self::TlsMaterialPermissions
+            | Self::LocalSocketConfiguration
+            | Self::LocalSocketPermissions
+            | Self::LocalSocketOccupied
             | Self::McpDependencies
             | Self::BuildInfo
             | Self::MaintenanceDriver
@@ -3764,7 +4362,7 @@ mod tests {
             .0;
         let hosted = production
             .split_once("impl HostedGrpc {")
-            .and_then(|(_, tail)| tail.split_once("const fn local_address"))
+            .and_then(|(_, tail)| tail.split_once("const fn endpoint"))
             .map(|(body, _)| body)
             .expect("hosted gRPC construction");
 
@@ -3946,12 +4544,18 @@ mod tests {
             GrpcRequestLimits::new(REQUEST_DURATION_LIMIT).expect("fixed request limit"),
         );
         let mut transport = HostedGrpc::bind(
-            "127.0.0.1:0".parse().expect("loopback address"),
+            ApplicationListenerConfig::LoopbackCleartext(
+                LoopbackCleartextListener::new("127.0.0.1:0".parse().expect("loopback address"))
+                    .expect("loopback listener"),
+            ),
             &application,
         )
         .expect("bound initializing listener");
-        let endpoint = Endpoint::from_shared(format!("http://{}", transport.local_address()))
-            .expect("loopback endpoint");
+        let endpoint = Endpoint::from_shared(format!(
+            "http://{}",
+            transport.tcp_address().expect("TCP listener")
+        ))
+        .expect("loopback endpoint");
         let mut client = RiffDbClient::connect(endpoint)
             .await
             .expect("connect to initializing listener");
@@ -3979,5 +4583,302 @@ mod tests {
             .drain_after_signal()
             .await
             .expect("initializing transport drains");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_local_socket_is_published_exactly_and_removed_by_its_owner() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-local-socket-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create protected socket directory");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("protect socket directory");
+        let socket_path = root.join("application.sock");
+
+        let (initializing, _activator, issuer) = RiffDbService::begin_initialization();
+        let lifecycle = Arc::new(ProductionLifecycleRoute::new(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+        ));
+        let route: Arc<dyn GrpcLifecycleRoute> = lifecycle;
+        let application = GrpcApplication::new(
+            route,
+            GrpcRequestLimits::new(REQUEST_DURATION_LIMIT).expect("fixed request limit"),
+        );
+        let listener = LocalSocketListenerConfig::new(
+            socket_path.clone(),
+            riffdb_config::LocalSocketAccess::OwnerOnly,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("local socket config");
+        let mut transport = HostedGrpc::bind(
+            ApplicationListenerConfig::LocalSocket(listener),
+            &application,
+        )
+        .expect("bind protected local socket");
+
+        let metadata = fs::symlink_metadata(&socket_path).expect("published socket");
+        assert!(metadata.file_type().is_socket());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert!(matches!(
+            transport.endpoint(),
+            HostedGrpcEndpoint::LocalSocket
+        ));
+
+        transport
+            .drain_after_signal()
+            .await
+            .expect("drain local socket");
+        drop(transport);
+        assert!(!socket_path.exists());
+        fs::remove_dir(&root).expect("remove empty socket directory");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_tls_accepts_verified_peer_and_rejects_cleartext_and_wrong_name() {
+        use std::num::NonZeroU32;
+
+        use riffdb_config::{
+            CanonicalHttpsEndpoint, DirectTlsListenerConfig, ProtectedFilePath, ServerTlsFiles,
+            TlsClientConfig, TlsServerIdentity,
+        };
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-direct-tls-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create TLS test directory");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("protect TLS test directory");
+        let certificate = root.join("server.pem");
+        let private_key = root.join("server.key");
+        let trust_root = root.join("ca.pem");
+        fs::write(
+            &certificate,
+            include_bytes!("../tests/fixtures/localhost-cert.pem"),
+        )
+        .expect("write test certificate");
+        fs::write(
+            &private_key,
+            include_bytes!("../tests/fixtures/localhost-key.pem"),
+        )
+        .expect("write test private key");
+        fs::write(&trust_root, include_bytes!("../tests/fixtures/test-ca.pem"))
+            .expect("write test trust root");
+        fs::set_permissions(&certificate, fs::Permissions::from_mode(0o444))
+            .expect("protect test certificate");
+        fs::set_permissions(&private_key, fs::Permissions::from_mode(0o600))
+            .expect("protect test private key");
+        fs::set_permissions(&trust_root, fs::Permissions::from_mode(0o444))
+            .expect("protect test trust root");
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test port");
+        let port = probe.local_addr().expect("test address").port();
+        drop(probe);
+        let public_endpoint = CanonicalHttpsEndpoint::parse(&format!("https://127.0.0.1:{port}"))
+            .expect("public endpoint");
+        let server_files = ServerTlsFiles::new(
+            ProtectedFilePath::new(certificate.clone()).expect("certificate path"),
+            ProtectedFilePath::new(private_key.clone()).expect("private-key path"),
+        )
+        .expect("server files");
+        let listener = DirectTlsListenerConfig::new(
+            format!("0.0.0.0:{port}").parse().expect("bind address"),
+            public_endpoint.clone(),
+            server_files,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("direct TLS listener");
+
+        let (initializing, _activator, issuer) = RiffDbService::begin_initialization();
+        let lifecycle = Arc::new(ProductionLifecycleRoute::new(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+        ));
+        let route: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
+        let application = GrpcApplication::new(
+            route,
+            GrpcRequestLimits::new(REQUEST_DURATION_LIMIT).expect("fixed request limit"),
+        );
+        let mismatched_listener = DirectTlsListenerConfig::new(
+            format!("0.0.0.0:{port}").parse().expect("bind address"),
+            CanonicalHttpsEndpoint::parse(&format!("https://127.0.0.2:{port}"))
+                .expect("mismatched endpoint"),
+            ServerTlsFiles::new(
+                ProtectedFilePath::new(certificate.clone()).expect("certificate path"),
+                ProtectedFilePath::new(private_key.clone()).expect("private-key path"),
+            )
+            .expect("mismatched server files"),
+            ListenerBounds::alpha_default(),
+        )
+        .expect("mismatched listener shape");
+        assert!(matches!(
+            HostedGrpc::bind(
+                ApplicationListenerConfig::DirectTls(mismatched_listener),
+                &application,
+            ),
+            Err(DaemonError::TlsConfiguration)
+        ));
+        let pre_bind_probe = std::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+            .expect("identity mismatch fails before bind");
+        drop(pre_bind_probe);
+        let mut transport =
+            HostedGrpc::bind(ApplicationListenerConfig::DirectTls(listener), &application)
+                .expect("bind direct TLS listener");
+
+        let verified = TlsClientConfig::new(
+            public_endpoint,
+            ProtectedFilePath::new(trust_root.clone()).expect("trust root path"),
+            TlsServerIdentity::parse("127.0.0.1").expect("server identity"),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            NonZeroU32::new(1).expect("pool"),
+            NonZeroU32::new(64).expect("streams"),
+        )
+        .expect("verified client config");
+        let mut client = RiffDbClient::connect_verified_tls(&verified)
+            .await
+            .expect("verified TLS connection");
+        let health = client
+            .health(
+                v1::HealthRequest { request_id: None },
+                &CallMetadata::default(),
+            )
+            .await
+            .expect("health over verified TLS");
+        assert!(matches!(
+            health.result,
+            Some(v1::health_response::Result::PreBootstrap(_))
+        ));
+
+        let wrong_endpoint = CanonicalHttpsEndpoint::parse(&format!("https://127.0.0.2:{port}"))
+            .expect("wrong-name endpoint");
+        let wrong_name = TlsClientConfig::new(
+            wrong_endpoint,
+            ProtectedFilePath::new(trust_root.clone()).expect("trust root path"),
+            TlsServerIdentity::parse("127.0.0.2").expect("wrong identity"),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            NonZeroU32::new(1).expect("pool"),
+            NonZeroU32::new(64).expect("streams"),
+        )
+        .expect("wrong-name client shape remains structurally valid");
+        assert!(matches!(
+            RiffDbClient::connect_verified_tls(&wrong_name).await,
+            Err(riffdb_client_rust::ClientError::Tls(
+                riffdb_client_rust::TlsClientFailure::ConnectionOrPeerVerification
+            ))
+        ));
+
+        let cleartext =
+            Endpoint::from_shared(format!("http://127.0.0.1:{port}")).expect("cleartext endpoint");
+        match RiffDbClient::connect(cleartext).await {
+            Err(_) => {}
+            Ok(mut cleartext_client) => assert!(
+                cleartext_client
+                    .health(
+                        v1::HealthRequest { request_id: None },
+                        &CallMetadata::default(),
+                    )
+                    .await
+                    .is_err()
+            ),
+        }
+
+        lifecycle.stop();
+        drop(client);
+        transport
+            .drain_after_signal()
+            .await
+            .expect("drain direct TLS listener");
+        fs::remove_file(certificate).expect("remove certificate");
+        fs::remove_file(private_key).expect("remove private key");
+        fs::remove_file(trust_root).expect("remove trust root");
+        fs::remove_dir(root).expect("remove TLS test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tls_identity_reload_swaps_complete_valid_snapshot_and_retains_last_good_on_failure() {
+        use riffdb_config::{
+            CanonicalHttpsEndpoint, DirectTlsListenerConfig, ProtectedFilePath, ServerTlsFiles,
+        };
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-tls-reload-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create TLS reload root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect root");
+        let certificate = root.join("server.pem");
+        let private_key = root.join("server.key");
+        fs::write(
+            &certificate,
+            include_bytes!("../tests/fixtures/localhost-cert.pem"),
+        )
+        .expect("write certificate");
+        fs::write(
+            &private_key,
+            include_bytes!("../tests/fixtures/localhost-key.pem"),
+        )
+        .expect("write private key");
+        fs::set_permissions(&certificate, fs::Permissions::from_mode(0o444))
+            .expect("protect certificate");
+        fs::set_permissions(&private_key, fs::Permissions::from_mode(0o600))
+            .expect("protect private key");
+        let listener = DirectTlsListenerConfig::new(
+            "127.0.0.1:7443".parse().expect("address"),
+            CanonicalHttpsEndpoint::parse("https://127.0.0.1:7443").expect("endpoint"),
+            ServerTlsFiles::new(
+                ProtectedFilePath::new(certificate.clone()).expect("certificate path"),
+                ProtectedFilePath::new(private_key.clone()).expect("private-key path"),
+            )
+            .expect("TLS files"),
+            ListenerBounds::alpha_default(),
+        )
+        .expect("listener");
+        let mut identity = ReloadableTlsIdentity::load(&listener).expect("initial snapshot");
+        let initial = identity.snapshot_for_new_handshake();
+
+        let replacement = root.join("server.next.pem");
+        fs::write(
+            &replacement,
+            include_bytes!("../tests/fixtures/localhost-cert.pem"),
+        )
+        .expect("write replacement");
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o444))
+            .expect("protect replacement");
+        fs::rename(&replacement, &certificate).expect("publish replacement atomically");
+        let reloaded = identity.snapshot_for_new_handshake();
+        assert!(!Arc::ptr_eq(&initial, &reloaded));
+
+        let invalid = root.join("server.invalid.pem");
+        fs::write(&invalid, b"not a certificate").expect("write invalid replacement");
+        fs::set_permissions(&invalid, fs::Permissions::from_mode(0o444))
+            .expect("protect invalid replacement");
+        fs::rename(&invalid, &certificate).expect("publish invalid replacement atomically");
+        let retained = identity.snapshot_for_new_handshake();
+        assert!(Arc::ptr_eq(&reloaded, &retained));
+
+        fs::remove_file(certificate).expect("remove invalid certificate");
+        fs::remove_file(private_key).expect("remove private key");
+        fs::remove_dir(root).expect("remove reload root");
     }
 }

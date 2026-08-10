@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use riffdb_contract_syntax::ast::{
-    BinaryOperator, Binding, Declaration, Effect, EntityItem, Expression, Literal,
+    BinaryOperator, Binding, Declaration, Effect, EntityItem, Expression, Literal, ServiceValueKind,
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
@@ -15,6 +15,60 @@ const FULL_SURFACE: &str =
 const RELATIONSHIPS: &str =
     include_str!("../../../contracts/parser-fixtures/valid/relationships.riff");
 const SPEC: &str = include_str!("../../../SPEC.md");
+const WORKFLOW_SURFACE: &str =
+    include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
+
+#[test]
+fn parses_compiler_visible_workflow_and_service_values_with_exact_spans() {
+    let document = parse_contract(WORKFLOW_SURFACE).expect("workflow surface parses");
+    let Declaration::Workflow(workflow) = &document.contract.value.declarations[3].value else {
+        panic!("fourth declaration must be the workflow");
+    };
+    assert_eq!(workflow.name.value, "WorkLifecycle");
+    assert_eq!(workflow.entity.value, "WorkItem");
+    assert_eq!(workflow.state_field.value, "state");
+    assert_eq!(workflow.transitions.len(), 2);
+    assert_eq!(workflow.transitions[0].value.name.value, "Start");
+    assert_eq!(
+        workflow.transitions[0]
+            .value
+            .source_states
+            .iter()
+            .map(|state| state.value.as_str())
+            .collect::<Vec<_>>(),
+        ["Queued"]
+    );
+    assert_eq!(workflow.transitions[0].value.destination.value, "Running");
+    let lease = workflow.lease.as_ref().expect("workflow lease");
+    assert_eq!(lease.value.name.value, "execution");
+    assert_eq!(lease.value.minimum_duration_seconds.value, "5");
+    assert_eq!(lease.value.maximum_duration_seconds.value, "900");
+
+    let Declaration::Command(command) = &document.contract.value.declarations[4].value else {
+        panic!("fifth declaration must be the command");
+    };
+    assert_eq!(command.service_values.len(), 2);
+    assert_eq!(
+        command.service_values[0].value.kind.value,
+        ServiceValueKind::TransactionTime
+    );
+    assert_eq!(
+        command.service_values[1].value.kind.value,
+        ServiceValueKind::UuidV7
+    );
+    let Effect::WorkflowTransition(transition) = &command.effects[0].value else {
+        panic!("first effect must be an exact workflow transition");
+    };
+    assert_eq!(transition.transition.value, "Start");
+    assert_eq!(transition.binding.value, "work");
+    assert_eq!(transition.stale.value.name.value, "StaleRevision");
+    assert_eq!(transition.illegal.value.name.value, "IllegalState");
+
+    let start = WORKFLOW_SURFACE
+        .find("transition Start")
+        .expect("transition text");
+    assert_eq!(workflow.transitions[0].span.start() as usize, start);
+}
 
 #[test]
 fn parses_required_same_partition_reference_with_exact_spans() {

@@ -684,6 +684,36 @@ impl NodeCounter {
                 self.add(1, declaration.span)?;
                 self.command(command, declaration.span)?;
             }
+            Declaration::Workflow(workflow) => {
+                self.add(1, declaration.span)?;
+                self.name(&workflow.name)?;
+                self.name(&workflow.entity)?;
+                self.name(&workflow.state_field)?;
+                let items = workflow
+                    .transitions
+                    .len()
+                    .saturating_add(usize::from(workflow.lease.is_some()))
+                    .saturating_add(2);
+                self.collection(items, MAX_DECLARATION_ITEMS, declaration.span)?;
+                for transition in &workflow.transitions {
+                    self.add(2, transition.span)?;
+                    self.name(&transition.value.name)?;
+                    self.names(&transition.value.source_states, transition.span)?;
+                    self.name(&transition.value.destination)?;
+                }
+                if let Some(lease) = &workflow.lease {
+                    self.add(3, lease.span)?;
+                    self.name(&lease.value.name)?;
+                    self.name(&lease.value.owner_field)?;
+                    self.name(&lease.value.expiry_field)?;
+                    self.name(&lease.value.fencing_token_field)?;
+                    if let Some(field) = &lease.value.attempt_field {
+                        self.name(field)?;
+                    }
+                    self.name(&lease.value.minimum_duration_seconds)?;
+                    self.name(&lease.value.maximum_duration_seconds)?;
+                }
+            }
             Declaration::Projection(projection) => {
                 self.add(1, declaration.span)?;
                 self.projection(projection, declaration.span)?;
@@ -701,6 +731,7 @@ impl NodeCounter {
         let items = command
             .inputs
             .len()
+            .saturating_add(command.service_values.len())
             .saturating_add(usize::from(command.idempotency.is_some()))
             .saturating_add(command.bindings.len())
             .saturating_add(command.requirements.len())
@@ -710,6 +741,10 @@ impl NodeCounter {
         for input in &command.inputs {
             self.add(2, input.span)?;
             self.typed_field(&input.value.field)?;
+        }
+        for value in &command.service_values {
+            self.add(3, value.span)?;
+            self.name(&value.value.name)?;
         }
         if let Some(idempotency) = &command.idempotency {
             self.add(2, idempotency.span)?;
@@ -741,6 +776,14 @@ impl NodeCounter {
                     self.add(1, effect.span)?;
                     self.name(&emit.event)?;
                     self.object(&emit.payload)?;
+                }
+                Effect::WorkflowTransition(transition) => {
+                    self.add(3, effect.span)?;
+                    self.name(&transition.transition)?;
+                    self.name(&transition.binding)?;
+                    self.expression(&transition.expected_revision)?;
+                    self.outcome(&transition.stale)?;
+                    self.outcome(&transition.illegal)?;
                 }
             }
         }

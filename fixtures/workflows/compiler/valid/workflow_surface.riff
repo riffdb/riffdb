@@ -1,0 +1,57 @@
+contract WorkflowSurface version 1 {
+  enum WorkState {
+    Queued,
+    Running,
+    Complete,
+  }
+
+  entity WorkItem {
+    key (organization_id: uuid, work_id: uuid)
+    field state: WorkState
+    field lease_owner: optional<uuid>
+    field lease_expires_at: optional<timestamp>
+    field lease_fence: u64
+    field lease_attempts: u64
+  }
+
+  aggregate WorkItems {
+    root WorkItem
+    partition_by organization_id
+    conflict_key (organization_id, work_id)
+  }
+
+  workflow WorkLifecycle {
+    entity WorkItem
+    state state
+    transition Start from (Queued) to Running
+    transition Finish from (Running) to Complete
+    lease execution {
+      owner lease_owner
+      expires_at lease_expires_at
+      fencing_token lease_fence
+      attempts lease_attempts
+      duration_seconds (5, 900)
+    }
+  }
+
+  command StartWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input expected_revision: u64
+    service started_at: transaction_time
+    service execution_id: uuid_v7
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else Missing {
+      organization_id: organization_id,
+      work_id: work_id,
+    }
+    transition Start on work revision expected_revision
+      stale StaleRevision {}
+      illegal IllegalState {}
+    return Started {
+      execution_id: execution_id,
+      started_at: started_at,
+    }
+  }
+}

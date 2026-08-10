@@ -126,6 +126,8 @@ pub enum ClientError {
     IdentifierGeneration(IdentifierGenerationError),
     /// Channel construction or connection failed before a typed response existed.
     ConnectionFailure,
+    /// Verified TLS configuration, trust-root, connection, or peer failure.
+    Tls(crate::TlsClientFailure),
     /// Automatic same-input recovery exhausted its explicit attempt budget.
     OutcomeUnknown(OutcomeUnknown),
 }
@@ -147,6 +149,7 @@ impl ClientError {
             | Self::Protocol(_)
             | Self::IdentifierGeneration(_)
             | Self::ConnectionFailure
+            | Self::Tls(_)
             | Self::OutcomeUnknown(_) => None,
         }
     }
@@ -161,6 +164,7 @@ impl ClientError {
             | Self::Protocol(_)
             | Self::IdentifierGeneration(_)
             | Self::ConnectionFailure
+            | Self::Tls(_)
             | Self::OutcomeUnknown(_) => None,
         }
     }
@@ -182,6 +186,7 @@ impl fmt::Display for ClientError {
             Self::Protocol(error) => error.fmt(formatter),
             Self::IdentifierGeneration(error) => error.fmt(formatter),
             Self::ConnectionFailure => formatter.write_str("the gRPC channel could not connect"),
+            Self::Tls(error) => error.fmt(formatter),
             Self::OutcomeUnknown(error) => error.fmt(formatter),
         }
     }
@@ -378,6 +383,7 @@ pub(crate) const fn is_retryable(error: &ClientError) -> bool {
         | ClientError::Protocol(_)
         | ClientError::IdentifierGeneration(_)
         | ClientError::ConnectionFailure
+        | ClientError::Tls(_)
         | ClientError::OutcomeUnknown(_) => false,
     }
 }

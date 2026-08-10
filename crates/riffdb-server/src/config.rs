@@ -9,10 +9,17 @@ use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use riffdb_api_mcp::{
     MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES, MAX_ALLOWED_ORIGINS, MAX_ORIGIN_BYTES, MCP_ROUTE,
+};
+use riffdb_config::{
+    ApplicationListenerConfig, CanonicalHttpsEndpoint, DirectTlsListenerConfig, ListenerBounds,
+    LocalSocketAccess, LocalSocketListenerConfig, LoopbackCleartextListener, ProtectedFilePath,
+    RemoteConfigError, ServerTlsFiles,
 };
 use riffdb_storage_redb::RedbCommitProfile;
 use riffdb_types::{Audience, DatabaseAlias, Environment, MAX_DATABASES_PER_PROCESS};
@@ -49,7 +56,7 @@ const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
 /// protected-file custody; this configuration carries paths only.
 pub(crate) struct ServerConfig {
     databases: Vec<DatabaseConfig>,
-    listen_address: SocketAddr,
+    application_listener: ApplicationListenerConfig,
     audience: Audience,
     mcp_listen_address: Option<SocketAddr>,
     mcp_origins: Vec<String>,
@@ -168,11 +175,7 @@ impl ServerConfig {
     }
 
     fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, ServerConfigError> {
-        Self::resolve(
-            arguments,
-            &EmptyEnvironment,
-            Path::new("/tmp/riffdb-config"),
-        )
+        Self::resolve(arguments, &EmptyEnvironment, Path::new("/riffdb-config"))
     }
 
     fn resolve(
@@ -254,12 +257,25 @@ impl ServerConfig {
         } else {
             parse_named_databases(named_databases)?
         };
-        let listen_address = parse_loopback_address(&select_os(
-            arguments.listen.as_ref(),
-            environment.value(LISTEN_ENVIRONMENT),
-            server.grpc_listen.map(OsString::from),
-            OsString::from(DEFAULT_LISTEN_ADDRESS),
-        )?)?;
+        let listen_environment = environment.value(LISTEN_ENVIRONMENT);
+        let uses_legacy_listener_configuration = arguments.listen.is_some()
+            || listen_environment.is_some()
+            || server.grpc_listen.is_some();
+        if server.application_listener.is_some() && uses_legacy_listener_configuration {
+            return Err(ServerConfigError::MixedApplicationListenerConfiguration);
+        }
+        let application_listener = match server.application_listener {
+            Some(document) => parse_application_listener(document)?,
+            None => ApplicationListenerConfig::LoopbackCleartext(
+                LoopbackCleartextListener::new(parse_loopback_address(&select_os(
+                    arguments.listen.as_ref(),
+                    listen_environment,
+                    server.grpc_listen.map(OsString::from),
+                    OsString::from(DEFAULT_LISTEN_ADDRESS),
+                )?)?)
+                .map_err(ServerConfigError::ApplicationListener)?,
+            ),
+        };
         let audience = parse_audience(select_os(
             arguments.audience.as_ref(),
             environment.value(AUDIENCE_ENVIRONMENT),
@@ -310,7 +326,7 @@ impl ServerConfig {
 
         let config = Self {
             databases,
-            listen_address,
+            application_listener,
             audience,
             mcp_listen_address,
             mcp_origins,
@@ -368,8 +384,20 @@ impl ServerConfig {
         &self.databases
     }
 
-    pub(crate) const fn listen_address(&self) -> SocketAddr {
-        self.listen_address
+    pub(crate) const fn application_listener(&self) -> &ApplicationListenerConfig {
+        &self.application_listener
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loopback_listen_address(&self) -> Option<SocketAddr> {
+        match self.application_listener() {
+            ApplicationListenerConfig::LoopbackCleartext(listener) => {
+                Some(listener.listen_address())
+            }
+            ApplicationListenerConfig::DirectTls(_) | ApplicationListenerConfig::LocalSocket(_) => {
+                None
+            }
+        }
     }
 
     pub(crate) fn environment(&self) -> &Environment {
@@ -422,7 +450,7 @@ impl fmt::Debug for ServerConfig {
         formatter
             .debug_struct("ServerConfig")
             .field("databases", &self.databases)
-            .field("listen_address", &self.listen_address)
+            .field("application_listener", &self.application_listener)
             .field("audience", &"[CONFIGURED]")
             .field("mcp_listen_address", &self.mcp_listen_address)
             .field("mcp_origins", &"[CONFIGURED]")
@@ -521,6 +549,7 @@ struct ConfigDocument {
 struct ServerDocument {
     database: Option<String>,
     grpc_listen: Option<String>,
+    application_listener: Option<ApplicationListenerDocument>,
     environment: Option<String>,
     audience: Option<String>,
     mcp_listen: Option<String>,
@@ -528,6 +557,59 @@ struct ServerDocument {
     capability_keys: Option<String>,
     idempotency_keys: Option<String>,
     redb_commit_profile: Option<String>,
+}
+
+/// The versioned file-only application ingress selection.
+///
+/// Legacy `grpc_listen`, `--listen`, and `RIFFDB_LISTEN` remain the exact
+/// loopback-development form. Remote and local-socket profiles are deliberately
+/// complete documents so an individual environment override cannot detach a
+/// bind address from its peer identity or protected material.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum ApplicationListenerDocument {
+    LoopbackCleartext {
+        listen: String,
+    },
+    DirectTls {
+        listen: String,
+        public_endpoint: String,
+        certificate_chain: String,
+        private_key: String,
+        bounds: Option<ListenerBoundsDocument>,
+    },
+    LocalSocket {
+        path: String,
+        access: LocalSocketAccessDocument,
+        bounds: Option<ListenerBoundsDocument>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalSocketAccessDocument {
+    OwnerOnly,
+    OwnerAndGroup,
+}
+
+impl From<LocalSocketAccessDocument> for LocalSocketAccess {
+    fn from(value: LocalSocketAccessDocument) -> Self {
+        match value {
+            LocalSocketAccessDocument::OwnerOnly => Self::OwnerOnly,
+            LocalSocketAccessDocument::OwnerAndGroup => Self::OwnerAndGroup,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListenerBoundsDocument {
+    max_connections: Option<u32>,
+    max_streams_per_connection: Option<u32>,
+    handshake_timeout_seconds: Option<u64>,
+    idle_timeout_seconds: Option<u64>,
+    keepalive_interval_seconds: Option<u64>,
+    drain_timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -768,6 +850,105 @@ fn parse_loopback_address(value: &OsStr) -> Result<SocketAddr, ServerConfigError
     Ok(address)
 }
 
+fn parse_application_listener(
+    document: ApplicationListenerDocument,
+) -> Result<ApplicationListenerConfig, ServerConfigError> {
+    let listener = match document {
+        ApplicationListenerDocument::LoopbackCleartext { listen } => {
+            ApplicationListenerConfig::LoopbackCleartext(
+                LoopbackCleartextListener::new(parse_loopback_address(OsStr::new(&listen))?)
+                    .map_err(ServerConfigError::ApplicationListener)?,
+            )
+        }
+        ApplicationListenerDocument::DirectTls {
+            listen,
+            public_endpoint,
+            certificate_chain,
+            private_key,
+            bounds,
+        } => {
+            let listen = listen
+                .parse::<SocketAddr>()
+                .map_err(|_| ServerConfigError::InvalidListenAddress)?;
+            let endpoint = CanonicalHttpsEndpoint::parse(&public_endpoint)
+                .map_err(ServerConfigError::ApplicationListener)?;
+            let files = ServerTlsFiles::new(
+                ProtectedFilePath::new(certificate_chain)
+                    .map_err(ServerConfigError::ApplicationListener)?,
+                ProtectedFilePath::new(private_key)
+                    .map_err(ServerConfigError::ApplicationListener)?,
+            )
+            .map_err(ServerConfigError::ApplicationListener)?;
+            ApplicationListenerConfig::DirectTls(
+                DirectTlsListenerConfig::new(
+                    listen,
+                    endpoint,
+                    files,
+                    parse_listener_bounds(bounds)?,
+                )
+                .map_err(ServerConfigError::ApplicationListener)?,
+            )
+        }
+        ApplicationListenerDocument::LocalSocket {
+            path,
+            access,
+            bounds,
+        } => ApplicationListenerConfig::LocalSocket(
+            LocalSocketListenerConfig::new(path, access.into(), parse_listener_bounds(bounds)?)
+                .map_err(ServerConfigError::ApplicationListener)?,
+        ),
+    };
+    Ok(listener)
+}
+
+fn parse_listener_bounds(
+    document: Option<ListenerBoundsDocument>,
+) -> Result<ListenerBounds, ServerConfigError> {
+    let Some(document) = document else {
+        return Ok(ListenerBounds::alpha_default());
+    };
+    let defaults = ListenerBounds::alpha_default();
+    ListenerBounds::new(
+        parse_nonzero_bound(document.max_connections, defaults.max_connections())?,
+        parse_nonzero_bound(
+            document.max_streams_per_connection,
+            defaults.max_streams_per_connection(),
+        )?,
+        Duration::from_secs(
+            document
+                .handshake_timeout_seconds
+                .unwrap_or(defaults.handshake_timeout().as_secs()),
+        ),
+        Duration::from_secs(
+            document
+                .idle_timeout_seconds
+                .unwrap_or(defaults.idle_timeout().as_secs()),
+        ),
+        Duration::from_secs(
+            document
+                .keepalive_interval_seconds
+                .unwrap_or(defaults.keepalive_interval().as_secs()),
+        ),
+        Duration::from_secs(
+            document
+                .drain_timeout_seconds
+                .unwrap_or(defaults.drain_timeout().as_secs()),
+        ),
+    )
+    .map_err(ServerConfigError::ApplicationListener)
+}
+
+fn parse_nonzero_bound(
+    configured: Option<u32>,
+    default: NonZeroU32,
+) -> Result<NonZeroU32, ServerConfigError> {
+    configured.map_or(Ok(default), |value| {
+        NonZeroU32::new(value).ok_or(ServerConfigError::ApplicationListener(
+            RemoteConfigError::InvalidBound,
+        ))
+    })
+}
+
 fn parse_mcp_loopback_address(value: &OsStr) -> Result<SocketAddr, ServerConfigError> {
     let address = parse_loopback_address(value)?;
     if address.port() == 0 {
@@ -852,6 +1033,8 @@ pub(crate) enum ServerConfigError {
     },
     InvalidListenAddress,
     NonLoopbackListenAddress,
+    MixedApplicationListenerConfiguration,
+    ApplicationListener(RemoteConfigError),
     InvalidEnvironment,
     InvalidAudience,
     InvalidMcpConfiguration,
@@ -882,6 +1065,10 @@ impl fmt::Display for ServerConfigError {
             }
             Self::InvalidListenAddress => "configured listen address is invalid",
             Self::NonLoopbackListenAddress => "POC listen address must be loopback",
+            Self::MixedApplicationListenerConfiguration => {
+                "legacy loopback and application listener configuration cannot be combined"
+            }
+            Self::ApplicationListener(source) => return source.fmt(formatter),
             Self::InvalidEnvironment => "configured environment is invalid",
             Self::InvalidAudience => "configured audience is invalid",
             Self::InvalidMcpConfiguration => "configured MCP endpoint is invalid",
@@ -968,7 +1155,10 @@ mod tests {
     fn exact_bounded_cli_configuration_is_accepted() {
         let config = ServerConfig::parse(valid_arguments()).expect("valid server configuration");
         assert_eq!(config.database_path(), Path::new("database.redb"));
-        assert_eq!(config.listen_address(), "127.0.0.1:0".parse().unwrap());
+        assert_eq!(
+            config.loopback_listen_address(),
+            Some("127.0.0.1:0".parse().unwrap())
+        );
         assert_eq!(config.environment().as_str(), "development");
         assert_eq!(config.audience().as_str(), "riffdb-grpc-loopback");
         assert_eq!(config.mcp_listen_address(), None);
@@ -982,18 +1172,15 @@ mod tests {
         let config = ServerConfig::parse(Vec::new()).expect("defaults");
         assert_eq!(config.database_path(), Path::new(DEFAULT_DATABASE_PATH));
         assert_eq!(
-            config.listen_address(),
-            DEFAULT_LISTEN_ADDRESS.parse().unwrap()
+            config.loopback_listen_address(),
+            Some(DEFAULT_LISTEN_ADDRESS.parse().unwrap())
         );
         assert_eq!(config.environment().as_str(), DEFAULT_ENVIRONMENT);
         assert_eq!(config.audience().as_str(), DEFAULT_AUDIENCE);
-        assert_eq!(
-            config.backup_root(),
-            Path::new("/tmp/riffdb-config/backups")
-        );
+        assert_eq!(config.backup_root(), Path::new("/riffdb-config/backups"));
         assert_eq!(
             config.projections_root(),
-            Path::new("/tmp/riffdb-config/projections")
+            Path::new("/riffdb-config/projections")
         );
         assert!(config.projections().is_empty());
         assert_eq!(
@@ -1005,6 +1192,109 @@ mod tests {
             Path::new(DEFAULT_IDEMPOTENCY_KEY_PATH)
         );
         assert_eq!(config.redb_commit_profile(), RedbCommitProfile::Standard);
+    }
+
+    #[test]
+    fn file_listener_profiles_are_closed_complete_and_pre_bind_checked() {
+        let root = TestRoot::new();
+        let direct = root.write(
+            br#"
+[server]
+audience = "riffdb-grpc-tls"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7443"
+public_endpoint = "https://riffdb.example.test:7443"
+certificate_chain = "/var/lib/riffdb/tls/server.pem"
+private_key = "/var/lib/riffdb/tls/server.key"
+
+[server.application_listener.bounds]
+max_connections = 512
+max_streams_per_connection = 64
+handshake_timeout_seconds = 5
+idle_timeout_seconds = 120
+keepalive_interval_seconds = 20
+drain_timeout_seconds = 15
+"#,
+        );
+        let config = ServerConfig::resolve(
+            [OsString::from("--config"), direct.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("complete direct TLS listener");
+        let ApplicationListenerConfig::DirectTls(listener) = config.application_listener() else {
+            panic!("direct TLS profile expected");
+        };
+        assert_eq!(listener.listen_address(), "0.0.0.0:7443".parse().unwrap());
+        assert_eq!(
+            listener.public_endpoint().as_str(),
+            "https://riffdb.example.test:7443"
+        );
+        assert_eq!(listener.bounds().max_connections().get(), 512);
+
+        let local = root.write(
+            br#"
+[server.application_listener]
+mode = "local_socket"
+path = "/run/riffdb/application.sock"
+access = "owner_only"
+"#,
+        );
+        let config = ServerConfig::resolve(
+            [OsString::from("--config"), local.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("protected local listener");
+        let ApplicationListenerConfig::LocalSocket(listener) = config.application_listener() else {
+            panic!("local-socket profile expected");
+        };
+        assert_eq!(listener.access().mode(), 0o600);
+        assert_eq!(listener.path(), Path::new("/run/riffdb/application.sock"));
+
+        let insecure = root.write(
+            br#"
+[server.application_listener]
+mode = "loopback_cleartext"
+listen = "0.0.0.0:7443"
+"#,
+        );
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), insecure.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::NonLoopbackListenAddress
+        );
+    }
+
+    #[test]
+    fn legacy_listener_and_closed_profile_cannot_be_mixed() {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server]
+grpc_listen = "127.0.0.1:7443"
+
+[server.application_listener]
+mode = "local_socket"
+path = "/run/riffdb/application.sock"
+access = "owner_only"
+"#,
+        );
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), document.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::MixedApplicationListenerConfiguration
+        );
     }
 
     #[test]
@@ -1062,7 +1352,10 @@ backup_root = "/tmp/riffdb-toml-backups"
             ServerConfig::resolve(arguments, &environment, &root.0).expect("resolved config");
 
         assert_eq!(config.database_path(), Path::new("environment.redb"));
-        assert_eq!(config.listen_address(), "127.0.0.1:7002".parse().unwrap());
+        assert_eq!(
+            config.loopback_listen_address(),
+            Some("127.0.0.1:7002".parse().unwrap())
+        );
         assert_eq!(config.environment().as_str(), "environment");
         assert_eq!(config.audience().as_str(), "cli-audience");
         assert_eq!(

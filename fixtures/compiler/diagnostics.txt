@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=35
+count=40
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -98,15 +98,30 @@ code.30.help=wait for the documented migration implementation gate
 code.31.id=RDB-C032
 code.31.message=the migration expression or conversion is not exact and deterministic
 code.31.help=use only the old row, canonical literals, checked operators, and closed conversions
-code.32.id=RDB-C201
-code.32.message=an identifier cannot form a valid MCP command tool-name segment
-code.32.help=start contract and command identifiers with an ASCII letter
-code.33.id=RDB-C202
-code.33.message=the complete MCP command tool name exceeds 128 bytes
-code.33.help=shorten the source contract or command identifier
-code.34.id=RDB-C203
-code.34.message=two commands normalize to the same MCP command tool name
-code.34.help=rename one command so lowercase identifiers remain distinct
+code.32.id=RDB-C033
+code.32.message=the workflow entity, state field, or aggregate ownership is invalid
+code.32.help=name one aggregate-owned entity and one required enum state field
+code.33.id=RDB-C034
+code.33.message=the workflow transition is unknown, duplicated, or illegal for its state graph
+code.33.help=declare unique source states and invoke one legal named transition
+code.34.id=RDB-C035
+code.34.message=the workflow lease fields or duration bounds are invalid
+code.34.help=use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds
+code.35.id=RDB-C036
+code.35.message=a service-owned value cannot be supplied or used as caller-owned input
+code.35.help=declare service uuid_v7 or service transaction_time and omit it from caller input
+code.36.id=RDB-C037
+code.36.message=a workflow transition requires one direct exact observed-revision input
+code.36.help=pass one required u64 command input containing the revision returned by the prior read
+code.37.id=RDB-C201
+code.37.message=an identifier cannot form a valid MCP command tool-name segment
+code.37.help=start contract and command identifiers with an ASCII letter
+code.38.id=RDB-C202
+code.38.message=the complete MCP command tool name exceeds 128 bytes
+code.38.help=shorten the source contract or command identifier
+code.39.id=RDB-C203
+code.39.message=two commands normalize to the same MCP command tool name
+code.39.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -432,6 +447,56 @@ diagnostic.0.message=the migration expression or conversion is not exact and det
 diagnostic.0.primary=1050..1055
 diagnostic.0.related=none
 diagnostic.0.help=use only the old row, canonical literals, checked operators, and closed conversions
+
+[RDB-C033-invalid-workflow]
+expected=RDB-C033
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C033
+diagnostic.0.message=the workflow entity, state field, or aggregate ownership is invalid
+diagnostic.0.primary=140..143
+diagnostic.0.related=none
+diagnostic.0.help=name one aggregate-owned entity and one required enum state field
+
+[RDB-C034-invalid-workflow-transition]
+expected=RDB-C034
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C034
+diagnostic.0.message=the workflow transition is unknown, duplicated, or illegal for its state graph
+diagnostic.0.primary=556..563
+diagnostic.0.related=none
+diagnostic.0.help=declare unique source states and invoke one legal named transition
+
+[RDB-C035-invalid-workflow-lease]
+expected=RDB-C035
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C035
+diagnostic.0.message=the workflow lease fields or duration bounds are invalid
+diagnostic.0.primary=628..803
+diagnostic.0.related=none
+diagnostic.0.help=use optional UUID owner/expiry, nonzero u64 fence, optional u64 attempts, and bounded seconds
+
+[RDB-C036-invalid-service-value]
+expected=RDB-C036
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C036
+diagnostic.0.message=a service-owned value cannot be supplied or used as caller-owned input
+diagnostic.0.primary=999..1009
+diagnostic.0.related=965..975
+diagnostic.0.help=declare service uuid_v7 or service transaction_time and omit it from caller input
+
+[RDB-C037-missing-workflow-revision]
+expected=RDB-C037
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C037
+diagnostic.0.message=a workflow transition requires one direct exact observed-revision input
+diagnostic.0.primary=1216..1221
+diagnostic.0.related=none
+diagnostic.0.help=pass one required u64 command input containing the revision returned by the prior read
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

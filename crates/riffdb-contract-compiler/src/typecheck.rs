@@ -1,7 +1,7 @@
 //! Grammar-v1 source-type resolution into IR-owned value types.
 
 use riffdb_contract_ir::ValueType;
-use riffdb_contract_syntax::ast::{Declaration, EntityItem, TypeExpression};
+use riffdb_contract_syntax::ast::{Declaration, EntityItem, ServiceValueKind, TypeExpression};
 use riffdb_contract_syntax::{ContractDocument, Spanned};
 use riffdb_types::{CommandId, EntityTypeId, EventTypeId, FieldId};
 use riffdb_types::{CurrencyCode, DecimalSpec};
@@ -16,6 +16,7 @@ pub(crate) struct ResolvedTypes {
     pub(crate) entity_fields: BTreeMap<(EntityTypeId, FieldId), ValueType>,
     pub(crate) event_fields: BTreeMap<(EventTypeId, FieldId), ValueType>,
     pub(crate) command_inputs: BTreeMap<(CommandId, FieldId), ValueType>,
+    pub(crate) command_service_values: BTreeMap<(CommandId, FieldId), ValueType>,
 }
 
 /// Resolves and checks every source-declared value type.
@@ -36,6 +37,7 @@ pub(crate) fn resolve_declared_types(
     let mut entity_fields = BTreeMap::new();
     let mut event_fields = BTreeMap::new();
     let mut command_inputs = BTreeMap::new();
+    let mut command_service_values = BTreeMap::new();
     for declaration in &document.contract.value.declarations {
         match &declaration.value {
             Declaration::Entity(entity) => {
@@ -112,8 +114,28 @@ pub(crate) fn resolve_declared_types(
                         command_inputs.insert((command_id, field_id), value_type);
                     }
                 }
+                for value in &command.service_values {
+                    let value_type = match value.value.kind.value {
+                        ServiceValueKind::UuidV7 => ValueType::uuid(),
+                        ServiceValueKind::TransactionTime => ValueType::timestamp(),
+                    };
+                    if let (Some(command_id), Some(field_id)) = (
+                        command_id,
+                        command_id.and_then(|command_id| {
+                            symbols
+                                .command_service_values
+                                .get(&(command_id, value.value.name.value.clone()))
+                                .copied()
+                        }),
+                    ) {
+                        command_service_values.insert((command_id, field_id), value_type);
+                    }
+                }
             }
-            Declaration::Enum(_) | Declaration::Aggregate(_) | Declaration::Projection(_) => {}
+            Declaration::Enum(_)
+            | Declaration::Aggregate(_)
+            | Declaration::Workflow(_)
+            | Declaration::Projection(_) => {}
         }
     }
     if diagnostics.is_empty() {
@@ -121,6 +143,7 @@ pub(crate) fn resolve_declared_types(
             entity_fields,
             event_fields,
             command_inputs,
+            command_service_values,
         })
     } else {
         Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))

@@ -146,6 +146,41 @@ fn validate_command(
                 validate_create_object_reads(command, &states, fields, diagnostics);
                 influential_roots.extend(fields.iter().map(|field| &field.value));
             }
+            HirEffect::WorkflowTransition {
+                transition_span,
+                binding,
+                state_field,
+                expected_revision,
+                stale,
+                illegal,
+                ..
+            } => {
+                let Some(state) = states.get(binding) else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        *transition_span,
+                    ));
+                    continue;
+                };
+                if state.mode != BindingMode::Mutate
+                    || state.key_fields.contains(state_field)
+                    || !written.insert((*binding, *state_field))
+                {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidWorkflowTransition,
+                        *transition_span,
+                    ));
+                    continue;
+                }
+                validate_create_reads(command, &states, expected_revision, diagnostics);
+                validate_create_object_reads(command, &states, &stale.fields, diagnostics);
+                validate_create_object_reads(command, &states, &illegal.fields, diagnostics);
+                influential_roots.push(expected_revision);
+                influential_roots.extend(stale.fields.iter().map(|field| &field.value));
+                influential_roots.extend(illegal.fields.iter().map(|field| &field.value));
+                outcomes.push(stale);
+                outcomes.push(illegal);
+            }
         }
     }
     validate_create_object_reads(command, &states, &command.success.fields, diagnostics);
@@ -184,6 +219,7 @@ fn validate_unique_conflicts(
                 ..
             } => Some(((*binding, *field), value)),
             HirEffect::Emit { .. } => None,
+            HirEffect::WorkflowTransition { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
     for binding in command
@@ -253,6 +289,7 @@ fn validate_relationship_reads(
                 ..
             } => Some(((*binding, *field), value)),
             HirEffect::Emit { .. } => None,
+            HirEffect::WorkflowTransition { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -341,6 +378,9 @@ fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<Compil
         .map_or(command.span, |effect| match effect {
             HirEffect::Set { target_span, .. } => *target_span,
             HirEffect::Emit { event_span, .. } => *event_span,
+            HirEffect::WorkflowTransition {
+                transition_span, ..
+            } => *transition_span,
         });
     diagnostics.push(CompilerDiagnostic::new(
         CompilerDiagnosticCode::InvalidBinding,

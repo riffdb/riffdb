@@ -7,7 +7,7 @@ use riffdb_contract_ir::{
     ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
     FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
     OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
-    RootValidationReadPlan, SchemaIr,
+    RootValidationReadPlan, SchemaIr, ServiceValueKind, ServiceValueSchema,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -29,6 +29,15 @@ enum RawInstruction {
         binding: BindingId,
         field: FieldId,
         value: ExprId,
+    },
+    WorkflowTransition {
+        binding: BindingId,
+        state_field: FieldId,
+        source_states: Vec<riffdb_types::EnumVariantId>,
+        destination: riffdb_types::EnumVariantId,
+        expected_revision: ExprId,
+        stale_occurrence: usize,
+        illegal_occurrence: usize,
     },
     EmitEvent {
         event_id: riffdb_types::EventTypeId,
@@ -133,6 +142,10 @@ fn lower_command(
                 .iter()
                 .map(|requirement| &requirement.rejection),
         )
+        .chain(command.effects.iter().flat_map(|effect| match effect {
+            HirEffect::WorkflowTransition { stale, illegal, .. } => vec![stale, illegal],
+            HirEffect::Set { .. } | HirEffect::Emit { .. } => Vec::new(),
+        }))
         .chain(std::iter::once(&command.success))
         .collect::<Vec<_>>();
     let (outcome_schemas, normalized_outcomes) = normalize_outcomes(
@@ -148,7 +161,14 @@ fn lower_command(
         .map(|(index, binding)| (binding.id, index))
         .collect::<BTreeMap<_, _>>();
     let rejection_base = command.bindings.len();
-    let success_occurrence = rejection_base + command.requirements.len();
+    let transition_outcome_count = command
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect, HirEffect::WorkflowTransition { .. }))
+        .count()
+        .checked_mul(2)
+        .ok_or_else(|| vec![ir_diagnostic(command.span)])?;
+    let success_occurrence = rejection_base + command.requirements.len() + transition_outcome_count;
 
     let (locality, aggregate_id) =
         lower_locality(hir, schema, command, &mut hir_expressions, &mut diagnostics);
@@ -206,13 +226,23 @@ fn lower_command(
         .map_err(|diagnostic| vec![diagnostic])?;
 
     let all_roots = collect_influential_roots(&raw_checks, &raw_instructions, &constructions);
-    let (accessed_fields, complete_access) = read_dependencies(
+    let (mut accessed_fields, complete_access) = read_dependencies(
         &expressions,
         command.bindings.len(),
         &all_roots,
         command.span,
     )
     .map_err(|diagnostic| vec![diagnostic])?;
+    for instruction in &raw_instructions {
+        if let RawInstruction::WorkflowTransition {
+            binding,
+            state_field,
+            ..
+        } = instruction
+        {
+            accessed_fields[binding.get() as usize].insert(*state_field);
+        }
+    }
     let binding_plans = command
         .bindings
         .iter()
@@ -292,6 +322,23 @@ fn lower_command(
                 field,
                 value,
             },
+            RawInstruction::WorkflowTransition {
+                binding,
+                state_field,
+                source_states,
+                destination,
+                expected_revision,
+                stale_occurrence,
+                illegal_occurrence,
+            } => Instruction::WorkflowTransition {
+                binding,
+                state_field,
+                source_states,
+                destination,
+                expected_revision,
+                stale: constructions[stale_occurrence].clone(),
+                illegal: constructions[illegal_occurrence].clone(),
+            },
             RawInstruction::EmitEvent {
                 event_id,
                 fields,
@@ -330,12 +377,33 @@ fn lower_command(
         None
     };
     let locality = locality.ok_or_else(|| vec![ir_diagnostic(command.span)])?;
-    CommandPlan::new(
+    let service_values = command
+        .service_values
+        .iter()
+        .map(|value| {
+            let field = FieldSchema::new(
+                value.field.id,
+                value.field.name.clone(),
+                value.field.value_type.clone(),
+            )
+            .map_err(|_| ir_diagnostic(value.field.name_span))?;
+            let kind = match value.kind {
+                crate::hir::HirServiceValueKind::UuidV7 => ServiceValueKind::UuidV7,
+                crate::hir::HirServiceValueKind::TransactionTime => {
+                    ServiceValueKind::TransactionTime
+                }
+            };
+            ServiceValueSchema::new(field, kind).map_err(|_| ir_diagnostic(value.field.name_span))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|diagnostic| vec![diagnostic])?;
+    CommandPlan::new_with_service_values(
         command.id,
         contract_lineage,
         command.name.clone(),
         hir.contract_version,
         input_schema,
+        service_values,
         outcome_schemas,
         command.success.id,
         idempotency_input,
@@ -912,6 +980,7 @@ fn command_instructions(
             rejection_occurrence: rejection_base + index,
         });
     }
+    let mut transition_occurrence = rejection_base + command.requirements.len();
     for effect in &command.effects {
         match effect {
             HirEffect::Set {
@@ -941,6 +1010,25 @@ fn command_instructions(
                     span: *event_span,
                 });
             }
+            HirEffect::WorkflowTransition {
+                binding,
+                state_field,
+                source_states,
+                destination,
+                expected_revision,
+                ..
+            } => {
+                instructions.push(RawInstruction::WorkflowTransition {
+                    binding: *binding,
+                    state_field: *state_field,
+                    source_states: source_states.clone(),
+                    destination: *destination,
+                    expected_revision: expected_revision.id,
+                    stale_occurrence: transition_occurrence,
+                    illegal_occurrence: transition_occurrence + 1,
+                });
+                transition_occurrence += 2;
+            }
         }
     }
     instructions
@@ -968,6 +1056,9 @@ fn collect_influential_roots(
         match instruction {
             RawInstruction::Require { predicate, .. } => roots.push(*predicate),
             RawInstruction::SetField { value, .. } => roots.push(*value),
+            RawInstruction::WorkflowTransition {
+                expected_revision, ..
+            } => roots.push(*expected_revision),
             RawInstruction::EmitEvent { fields, .. } => {
                 roots.extend(fields.iter().map(|field| field.expression()));
             }

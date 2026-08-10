@@ -175,3 +175,200 @@ Accepted by the maintainer on 2026-08-08, as revised against ADR-0101:
 changelog frames follow published durable frontiers, dual-frontier
 addressed; the replication implementation arc opens with the emitter
 package against this boundary.
+
+## Proposed Amendment 2 — Delete-aware entity transition frames
+
+- **Status:** Proposed
+- **Date:** 2026-08-09
+- **Amends:** this record's closed insert-or-replace entry algebra
+- **Related:** ADR-0019 Amendment 1 (validated-prefix proof), ADR-0083
+  (post-image-free entity references), ADR-0085 (retention tombstones),
+  ADR-0101/ADR-0104 (local overlay tombstones), ADR-0107 (compiler-bounded
+  checked deletion)
+
+### Context
+
+ADR-0107 permits command-time deletion only after replication and startup
+validation can represent it exactly. The current changelog cannot: its V1
+entries are puts, and an entity point-read after a published frontier returns
+either the final post-image or absence. That is insufficient when one durable
+publication covers multiple FIFO subgroups that touch the same entity. For
+example, a create followed by a delete has no final entity row, while a delete
+followed by a recreate has only the recreated row. A follower cannot infer or
+validate either intermediate transition from the final snapshot.
+
+This is not fixed by shipping local journal mutations. ADR-0100 and ADR-0101
+deliberately separate journal bytes from the replication contract. The missing
+authority must instead be retained in command history and exposed through a
+versioned changelog algebra.
+
+### Decision
+
+#### 1. V1 remains immutable; deletion requires exact V2 negotiation
+
+`ChangelogFrameV1` remains a put-only format. It is never reinterpreted to
+accept a delete tag. A deletion-capable primary emits `ChangelogFrameV2`, and a
+follower or bootstrap receiver must negotiate that exact format before any
+frame or snapshot is transferred. A V1-only receiver refuses a V2 stream with
+a typed `changelog_format_unsupported` result before apply; it never skips an
+unknown transition. V2 uses a distinct magic/version domain and hash chain, so
+V1 bytes cannot decode as V2 or the reverse.
+
+The format rotation may activate only at a receipted frame boundary. The
+receipt binds database ID, history incarnation, predecessor dual frontier,
+prior V1 terminal hash, and initial V2 chain hash. Resume cursors name their
+format, and no cursor crosses the rotation without that receipt.
+
+#### 2. Command history carries every entity transition
+
+The successor command capsule stores a bounded, canonically ordered
+`CommittedEntityTransitionV1` for every entity mutation. Each transition binds:
+
+- command sequence and mutation ordinal;
+- canonical entity target and physical entity key;
+- prior chain state: `NeverExisted`, `Live`, or `Deleted`, with prior chain
+  revision, prior value hash when live, and prior transition hash when not the
+  first transition;
+- next chain state: `Live` with exact post-image version and hash, or `Deleted`;
+- database ID and history incarnation through its containing command segment;
+  and
+- a domain-separated transition hash over every preceding field.
+
+One command may transition a target at most once. Transitions are canonical by
+target within a command and by `(command sequence, mutation ordinal)` across a
+frame. Create is `NeverExisted -> Live`; update is `Live -> Live`; delete is
+`Live -> Deleted`; recreate is `Deleted -> Live`. Chain revision increases by
+exactly one for every transition and never resets after deletion.
+
+Legacy post-image references remain readable for pre-rotation history. Every
+post-rotation entity mutation must carry the successor transition form; a
+mixed command segment or a missing transition is corruption. A rotation
+checkpoint anchors the complete chain-head state at the V1/V2 boundary so
+post-rotation validation never guesses a predecessor omitted by V1 history.
+
+#### 3. One canonical entity-delete tombstone entry class
+
+V2 adds exactly one delete entry class, `EntityDeleteTombstone`. Its payload is
+the exact `Live -> Deleted` committed transition plus its transition hash. The
+entry repeats the command sequence and mutation ordinal used for canonical
+ordering, and the frame header supplies the database/history and published
+frontier binding. Its physical key is the canonical entity key. It is distinct
+in magic, tag, and hash domain from ADR-0085 retention-range tombstones and
+ADR-0101/ADR-0104 in-process overlay tombstones.
+
+V2 continues to carry final live entity rows as exact puts, but a follower
+validates *all* committed entity transitions in sequence order before
+materializing the frame's final current state. The commit entries supply every
+intermediate live hash; the tombstone entry supplies every delete transition;
+the final entity put, when present, must match the last live transition. This
+proves create-update-delete-recreate histories even when intermediate
+post-images are not materialized in the published snapshot.
+
+A repeated complete frame is idempotent only when its frontier, chain hash,
+and encoded bytes match the already-applied frame receipt exactly. At entry
+level, an entity tombstone is accepted only when the current chain head equals
+its complete prior state. Missing, duplicated, stale, reordered,
+cross-history, prior-value-mismatched, or transition-hash-mismatched
+tombstones fail the entire frame atomically.
+
+#### 4. Entity chain heads are explicit authoritative current state
+
+A registry-governed `entity_chain_heads` table holds one row per entity
+identity ever transitioned after format rotation. Each row binds target,
+chain revision, live/deleted state, current value hash when live, last command
+sequence, and last transition hash. It contains no application field payload.
+
+The commit coordinator updates the entity row, derived indexes, and chain head
+in the same command transaction. A delete removes current entity/index rows and
+writes the deleted chain head; a recreate writes the live entity/index rows and
+replaces that head. The changelog follower performs the same transition while
+applying its frame. Application reads never expose chain-head rows, and neither
+an application nor MCP can submit them directly.
+
+Bootstrap and backup enumerate `entity_chain_heads` as authoritative state.
+The bootstrap manifest binds its row count and content digest. A receiver that
+cannot represent the table refuses the bootstrap before installing any row.
+
+#### 5. Validated-prefix proof distinguishes live rows from chain history
+
+The V2 validated-prefix checkpoint replaces the current entity-only
+fingerprint with a fingerprint over canonical sorted chain heads. It records
+separately:
+
+- live entity-row cardinality;
+- deleted chain-head cardinality;
+- total chain-head cardinality; and
+- checked cumulative chain-transition count (the sum of chain revisions).
+
+The fingerprint includes target, state tag, chain revision, current value hash
+when live, last command sequence, and last transition hash. Checkpoint creation
+walks current chain heads, not command history, so its cost is O(entity
+identities) rather than O(transitions). Startup verifies live entity rows
+against live heads, verifies absence for deleted heads, and validates every
+post-checkpoint transition from the anchored head map.
+
+Suffix reconstruction uses each first post-checkpoint transition's explicit
+prior state rather than `entity_version - 1`. Create-update-delete-recreate is
+therefore reversible to the checkpoint boundary without treating current table
+length as historical transition count. Retention-range deletion below the
+watermark remains separately typed and cannot create, satisfy, or remove an
+entity chain head.
+
+A V1 checkpoint is usable only before the receipted V2 rotation boundary. A
+database containing a V2 command segment, delete tombstone, or chain-head row
+with only a V1 checkpoint falls back to full mixed-history validation from the
+rotation receipt; it never accepts V2 state under the V1 `len() ==
+count-at-bound` proof.
+
+#### 6. Follower and bootstrap apply are atomic and fail closed
+
+For each V2 frame the follower first validates identity, format, frontier,
+chain, checksums, canonical order, commit/tombstone reciprocity, and every
+entity transition against an in-transaction chain-head view. Only after the
+complete frame validates does it apply authoritative puts, entity/index
+removals, and chain-head replacements in one storage transaction. A crash
+leaves the predecessor frame or the complete successor frame.
+
+Bootstrap transfers one verified snapshot at a named V2 frame boundary,
+including chain heads and the rotation receipt, followed by frames whose
+predecessor is exactly that boundary. Resume and replay use the same validator;
+there is no bootstrap-only tolerance for a missing or mismatched tombstone.
+
+### Consequences
+
+- Entity deletion becomes an ordinary immutable command transition while
+  current state remains materialized; RiffDB does not become an event-sourced
+  database.
+- One additional authoritative row is maintained per post-rotation entity
+  identity. This is the bounded cost of preserving delete/recreate chain
+  identity without scanning history on every checkpoint or mutation.
+- Changelog V2 and checkpoint V2 are compatibility boundaries. Their fixtures,
+  registry migration, rotation receipt, backup enumeration, crash matrix, and
+  mixed-version refusal ship in WP-559 before the compiler can emit a delete.
+- Replication transport remains independent: `ShipChangelog` carries negotiated
+  frames and does not inherit journal encoding or storage-engine bytes.
+
+### Required acceptance evidence
+
+1. Create, update, delete, recreate, and a same-publication
+   create-then-delete/delete-then-recreate corpus reconstruct byte-identical
+   follower current state and chain heads.
+2. Missing, duplicate, stale, reordered, cross-database, cross-incarnation,
+   prior-value-substituted, and transition-hash-substituted tombstones refuse
+   the complete frame without partial apply.
+3. V1/V2 stream and bootstrap mismatches refuse before mutation; the receipted
+   boundary resumes exactly after restart.
+4. A V2 checkpoint opens create-update-delete-recreate history through its fast
+   path; corrupting live count, deleted count, transition count, state tag,
+   value hash, or chain hash refuses or takes the documented full-validation
+   fallback, never a successful stale open.
+5. Kill arms cover rotation receipt persistence, delete frame apply, chain-head
+   replacement, checkpoint write, and follower acknowledgement.
+6. Compiler and runtime keep delete unavailable until all preceding evidence is
+   green.
+
+### Acceptance
+
+Proposed for maintainer review on 2026-08-09. No durable encoding, registry
+entry, follower apply rule, or delete command may land under this amendment
+until its exact text is accepted.

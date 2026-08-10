@@ -34,16 +34,23 @@ use crate::{
     LocalityPlan, McpCommandNameEntryV2, McpCommandNameRegistryV2, ObjectConstruction,
     OutcomeConstruction, OutcomeSchema, ProjectionFrontierPolicy, ProjectionGroupComponentSchema,
     ProjectionGroupSchema, ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef,
-    RetryPolicy, SchemaIr, UnaryOperator, ValueType, ValueTypeTag, checked_len,
+    RetryPolicy, SchemaIr, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog,
+    WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema, checked_len,
     validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
 pub const BUNDLE_FORMAT_VERSION_V1: u32 = 1;
+/// Bundle framing for workflow and service-value executable IR.
+pub const BUNDLE_FORMAT_VERSION_V2: u32 = 2;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
+/// Contract grammar containing compiled workflows and service-owned values.
+pub const GRAMMAR_VERSION_V2: u32 = 2;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
+/// Executable IR containing compiled workflow transitions and service values.
+pub const EXECUTABLE_IR_VERSION_V2: u32 = 2;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -135,6 +142,7 @@ impl StableIdNamespace {
                         | record_owner_tag::COMMAND_INPUT
                         | record_owner_tag::COMMAND_OUTCOME
                         | record_owner_tag::PROJECTION_RESULT
+                        | record_owner_tag::COMMAND_SERVICE_VALUE
                 ) && matches!(owner_ids.len(), 1 | 2)
                     && (owner_kind == record_owner_tag::COMMAND_OUTCOME) == (owner_ids.len() == 2)
             }
@@ -269,6 +277,7 @@ impl StableIdAllocationNamespace {
                         | record_owner_tag::COMMAND_INPUT
                         | record_owner_tag::COMMAND_OUTCOME
                         | record_owner_tag::PROJECTION_RESULT
+                        | record_owner_tag::COMMAND_SERVICE_VALUE
                 ) && matches!(owner_ids.len(), 1 | 2)
                     && (owner_kind == record_owner_tag::COMMAND_OUTCOME) == (owner_ids.len() == 2)
             }
@@ -848,6 +857,9 @@ impl ParentBundleRef {
 /// A fully validated immutable executable contract bundle.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractBundle {
+    format_version: u32,
+    grammar_version: u32,
+    ir_version: u32,
     compiler_version: String,
     lineage: ContractLineage,
     contract_version: ContractVersion,
@@ -856,6 +868,7 @@ pub struct ContractBundle {
     plan_root_hash: ContractPlanRootHash,
     ledger: LineageLedgerV1,
     schema: SchemaIr,
+    workflows: WorkflowCatalog,
     commands: Vec<CommandPlan>,
     projections: Vec<ProjectionPlan>,
     schema_artifacts: Vec<GeneratedSchemaArtifact>,
@@ -876,12 +889,110 @@ impl ContractBundle {
         source_hash: SourceHash,
         ledger: LineageLedgerV1,
         schema: SchemaIr,
+        commands: Vec<CommandPlan>,
+        projections: Vec<ProjectionPlan>,
+        schema_artifacts: Vec<GeneratedSchemaArtifact>,
+        mcp_command_names: McpCommandNameRegistryV2,
+        compatibility: CompatibilityReport,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_with_workflows(
+            compiler_version,
+            lineage,
+            contract_version,
+            parent,
+            source_hash,
+            ledger,
+            schema,
+            Vec::new(),
+            commands,
+            projections,
+            schema_artifacts,
+            mcp_command_names,
+            compatibility,
+        )
+    }
+
+    /// Creates a bundle containing the complete checked workflow catalog.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_workflows(
+        compiler_version: impl Into<String>,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        parent: Option<ParentBundleRef>,
+        source_hash: SourceHash,
+        ledger: LineageLedgerV1,
+        schema: SchemaIr,
+        workflows: Vec<WorkflowSchema>,
+        commands: Vec<CommandPlan>,
+        projections: Vec<ProjectionPlan>,
+        schema_artifacts: Vec<GeneratedSchemaArtifact>,
+        mcp_command_names: McpCommandNameRegistryV2,
+        compatibility: CompatibilityReport,
+    ) -> Result<Self, IrValidationError> {
+        let requires_v2 = !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2);
+        let version = if requires_v2 {
+            BUNDLE_FORMAT_VERSION_V2
+        } else {
+            BUNDLE_FORMAT_VERSION_V1
+        };
+        Self::new_with_versions(
+            version,
+            version,
+            version,
+            compiler_version,
+            lineage,
+            contract_version,
+            parent,
+            source_hash,
+            ledger,
+            schema,
+            workflows,
+            commands,
+            projections,
+            schema_artifacts,
+            mcp_command_names,
+            compatibility,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_versions(
+        format_version: u32,
+        grammar_version: u32,
+        ir_version: u32,
+        compiler_version: impl Into<String>,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        parent: Option<ParentBundleRef>,
+        source_hash: SourceHash,
+        ledger: LineageLedgerV1,
+        schema: SchemaIr,
+        workflows: Vec<WorkflowSchema>,
         mut commands: Vec<CommandPlan>,
         mut projections: Vec<ProjectionPlan>,
         mut schema_artifacts: Vec<GeneratedSchemaArtifact>,
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
+        if !matches!(
+            (format_version, grammar_version, ir_version),
+            (
+                BUNDLE_FORMAT_VERSION_V1,
+                GRAMMAR_VERSION_V1,
+                EXECUTABLE_IR_VERSION_V1
+            ) | (
+                BUNDLE_FORMAT_VERSION_V2,
+                GRAMMAR_VERSION_V2,
+                EXECUTABLE_IR_VERSION_V2
+            )
+        ) || (ir_version == EXECUTABLE_IR_VERSION_V1
+            && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
+        {
+            return Err(IrValidationError::UnsupportedVersion {
+                kind: "contract bundle version tuple",
+                value: ir_version,
+            });
+        }
         let compiler_version = compiler_version.into();
         if compiler_version.is_empty()
             || compiler_version.len() > 64
@@ -892,6 +1003,7 @@ impl ContractBundle {
             });
         }
         validate_source_name(lineage.as_str(), "contract lineage")?;
+        let workflows = WorkflowCatalog::new(workflows, &schema)?;
         if let Some(parent) = parent {
             if contract_version <= parent.contract_version {
                 return Err(IrValidationError::InvalidReference {
@@ -947,8 +1059,17 @@ impl ContractBundle {
         validate_ledger(&ledger, &schema, &commands, &projections)?;
         validate_mcp_registry(&lineage, &commands, &mcp_command_names)?;
         validate_schema_artifacts(&schema, &commands, &projections, &schema_artifacts)?;
-        let plan_root_hash = compute_plan_root_hash(&schema, &commands, &projections)?;
+        let plan_root_hash = compute_plan_root_hash_versioned(
+            &schema,
+            &workflows,
+            &commands,
+            &projections,
+            ir_version,
+        )?;
         let mut bundle = Self {
+            format_version,
+            grammar_version,
+            ir_version,
             compiler_version,
             lineage,
             contract_version,
@@ -957,6 +1078,7 @@ impl ContractBundle {
             plan_root_hash,
             ledger,
             schema,
+            workflows,
             commands,
             projections,
             schema_artifacts,
@@ -979,17 +1101,17 @@ impl ContractBundle {
     /// Bundle format version.
     #[must_use]
     pub const fn format_version(&self) -> u32 {
-        BUNDLE_FORMAT_VERSION_V1
+        self.format_version
     }
     /// Grammar version.
     #[must_use]
     pub const fn grammar_version(&self) -> u32 {
-        GRAMMAR_VERSION_V1
+        self.grammar_version
     }
     /// Executable IR version.
     #[must_use]
     pub const fn ir_version(&self) -> u32 {
-        EXECUTABLE_IR_VERSION_V1
+        self.ir_version
     }
     /// Compiler semantic version.
     #[must_use]
@@ -1030,6 +1152,11 @@ impl ContractBundle {
     #[must_use]
     pub const fn schema(&self) -> &SchemaIr {
         &self.schema
+    }
+    /// Complete compiler-checked aggregate-local workflow catalog.
+    #[must_use]
+    pub const fn workflows(&self) -> &WorkflowCatalog {
+        &self.workflows
     }
     /// Commands in stable-ID order.
     #[must_use]
@@ -1507,9 +1634,14 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    let ir_version = if plan.requires_ir_v2() {
+        EXECUTABLE_IR_VERSION_V2
+    } else {
+        EXECUTABLE_IR_VERSION_V1
+    };
+    writer.u32(ir_version)?;
     writer.u32(plan.command_id().get())?;
-    encode_command_semantics(&mut writer, plan, schema, false)?;
+    encode_command_semantics_versioned(&mut writer, plan, schema, false, ir_version)?;
     encode_enum_closure(
         &mut writer,
         &collect_command_enum_closure(plan, schema)?,
@@ -1822,10 +1954,27 @@ fn collect_value_type_enum_ids(
     Ok(())
 }
 
+#[cfg(test)]
 fn compute_plan_root_hash(
     schema: &SchemaIr,
     commands: &[CommandPlan],
     projections: &[ProjectionPlan],
+) -> Result<ContractPlanRootHash, IrValidationError> {
+    let ir_version = if commands.iter().any(CommandPlan::requires_ir_v2) {
+        EXECUTABLE_IR_VERSION_V2
+    } else {
+        EXECUTABLE_IR_VERSION_V1
+    };
+    let workflows = WorkflowCatalog::new(Vec::new(), schema)?;
+    compute_plan_root_hash_versioned(schema, &workflows, commands, projections, ir_version)
+}
+
+fn compute_plan_root_hash_versioned(
+    schema: &SchemaIr,
+    workflows: &WorkflowCatalog,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+    ir_version: u32,
 ) -> Result<ContractPlanRootHash, IrValidationError> {
     let schema_bytes = encode_structural_schema(schema)?;
     let mut schema_preimage = Writer::new(MAX_BUNDLE_BYTES);
@@ -1836,8 +1985,11 @@ fn compute_plan_root_hash(
 
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(ROOT_PLAN_MAGIC)?;
-    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.u32(ir_version)?;
     writer.raw(structural_hash.as_bytes())?;
+    if ir_version >= EXECUTABLE_IR_VERSION_V2 {
+        encode_workflows(&mut writer, workflows)?;
+    }
     writer.u32(commands.len() as u32)?;
     for command in commands {
         writer.u32(command.command_id().get())?;
@@ -1981,9 +2133,9 @@ fn visit_expected_schema_artifacts(
 fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(BUNDLE_MAGIC)?;
-    writer.u32(BUNDLE_FORMAT_VERSION_V1)?;
-    writer.u32(GRAMMAR_VERSION_V1)?;
-    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.u32(bundle.format_version)?;
+    writer.u32(bundle.grammar_version)?;
+    writer.u32(bundle.ir_version)?;
     writer.string(&bundle.compiler_version)?;
     writer.string(bundle.lineage.as_str())?;
     writer.u64(bundle.contract_version.get())?;
@@ -1996,9 +2148,17 @@ fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> 
     writer.raw(bundle.plan_root_hash.as_bytes())?;
     encode_ledger(&mut writer, &bundle.ledger)?;
     encode_schema(&mut writer, &bundle.schema)?;
+    if bundle.ir_version >= EXECUTABLE_IR_VERSION_V2 {
+        encode_workflows(&mut writer, &bundle.workflows)?;
+    }
     writer.u32(bundle.commands.len() as u32)?;
     for command in &bundle.commands {
-        encode_command_bundle_entry(&mut writer, command, &bundle.schema)?;
+        encode_command_bundle_entry_versioned(
+            &mut writer,
+            command,
+            &bundle.schema,
+            bundle.ir_version,
+        )?;
     }
     writer.u32(bundle.projections.len() as u32)?;
     for projection in &bundle.projections {
@@ -2065,6 +2225,42 @@ fn encode_structural_schema(schema: &SchemaIr) -> Result<Vec<u8>, IrValidationEr
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     encode_schema(&mut writer, schema)?;
     Ok(writer.finish())
+}
+
+fn encode_workflows(
+    writer: &mut Writer,
+    catalog: &WorkflowCatalog,
+) -> Result<(), IrValidationError> {
+    writer.u32(catalog.workflows().len() as u32)?;
+    for workflow in catalog.workflows() {
+        writer.string(workflow.name())?;
+        writer.u32(workflow.entity().get())?;
+        writer.u32(workflow.state_field().get())?;
+        writer.u32(workflow.state_enum().get())?;
+        writer.u32(workflow.transitions().len() as u32)?;
+        for transition in workflow.transitions() {
+            writer.string(transition.name())?;
+            writer.u32(transition.source_states().len() as u32)?;
+            for state in transition.source_states() {
+                writer.u32(state.get())?;
+            }
+            writer.u32(transition.destination().get())?;
+        }
+        writer.bool(workflow.lease().is_some())?;
+        if let Some(lease) = workflow.lease() {
+            writer.string(lease.name())?;
+            writer.u32(lease.owner_field().get())?;
+            writer.u32(lease.expiry_field().get())?;
+            writer.u32(lease.fencing_token_field().get())?;
+            writer.bool(lease.attempt_field().is_some())?;
+            if let Some(field) = lease.attempt_field() {
+                writer.u32(field.get())?;
+            }
+            writer.u64(lease.minimum_duration_seconds())?;
+            writer.u64(lease.maximum_duration_seconds())?;
+        }
+    }
+    Ok(())
 }
 
 fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidationError> {
@@ -2341,7 +2537,9 @@ pub(crate) fn encode_expression_arena(
                     }
                 })?)?
             }
-            ExpressionKind::InputField(field) | ExpressionKind::SourceEventField(field) => {
+            ExpressionKind::InputField(field)
+            | ExpressionKind::ServiceValue(field)
+            | ExpressionKind::SourceEventField(field) => {
                 writer.u32(field.get())?;
             }
             ExpressionKind::CompleteBinding(binding) => writer.u32(binding.get())?,
@@ -2376,25 +2574,67 @@ pub(crate) fn encode_expression_arena(
     Ok(())
 }
 
+#[cfg(test)]
 fn encode_command_bundle_entry(
     writer: &mut Writer,
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
+    let ir_version = if command.requires_ir_v2() {
+        EXECUTABLE_IR_VERSION_V2
+    } else {
+        EXECUTABLE_IR_VERSION_V1
+    };
+    encode_command_bundle_entry_versioned(writer, command, schema, ir_version)
+}
+
+fn encode_command_bundle_entry_versioned(
+    writer: &mut Writer,
+    command: &CommandPlan,
+    schema: &SchemaIr,
+    ir_version: u32,
+) -> Result<(), IrValidationError> {
     writer.u32(command.command_id().get())?;
     writer.string(command.name())?;
     writer.u64(command.contract_version().get())?;
     writer.raw(command.plan_hash().as_bytes())?;
-    encode_command_semantics(writer, command, schema, true)
+    encode_command_semantics_versioned(writer, command, schema, true, ir_version)
 }
 
+#[cfg(test)]
 fn encode_command_semantics(
     writer: &mut Writer,
     command: &CommandPlan,
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
+    let ir_version = if command.requires_ir_v2() {
+        EXECUTABLE_IR_VERSION_V2
+    } else {
+        EXECUTABLE_IR_VERSION_V1
+    };
+    encode_command_semantics_versioned(writer, command, schema, include_display_names, ir_version)
+}
+
+fn encode_command_semantics_versioned(
+    writer: &mut Writer,
+    command: &CommandPlan,
+    schema: &SchemaIr,
+    include_display_names: bool,
+    ir_version: u32,
+) -> Result<(), IrValidationError> {
     encode_record_schema(writer, command.input().record())?;
+    if ir_version >= EXECUTABLE_IR_VERSION_V2 {
+        writer.u32(command.service_values().len() as u32)?;
+        for value in command.service_values() {
+            writer.u32(value.field().id().get())?;
+            if include_display_names {
+                writer.string(value.field().name())?;
+            }
+            encode_value_type(writer, value.field().value_type())?;
+            writer.u8(value.kind() as u8)?;
+        }
+    }
     writer.u32(command.outcomes().len() as u32)?;
     for outcome in command.outcomes() {
         encode_outcome_schema(writer, outcome)?;
@@ -2621,6 +2861,26 @@ fn encode_instruction(
             writer.u32(field.get())?;
             writer.u32(value.get())
         }
+        Instruction::WorkflowTransition {
+            binding,
+            state_field,
+            source_states,
+            destination,
+            expected_revision,
+            stale,
+            illegal,
+        } => {
+            writer.u32(binding.get())?;
+            writer.u32(state_field.get())?;
+            writer.u32(source_states.len() as u32)?;
+            for source in source_states {
+                writer.u32(source.get())?;
+            }
+            writer.u32(destination.get())?;
+            writer.u32(expected_revision.get())?;
+            encode_outcome_construction(writer, stale)?;
+            encode_outcome_construction(writer, illegal)
+        }
         Instruction::EmitEvent(event) => encode_event_construction(writer, event),
         Instruction::Return(outcome) => encode_outcome_construction(writer, outcome),
     }
@@ -2766,9 +3026,26 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             kind: "bundle magic",
         });
     }
-    require_version(reader.u32()?, BUNDLE_FORMAT_VERSION_V1, "bundle format")?;
-    require_version(reader.u32()?, GRAMMAR_VERSION_V1, "grammar")?;
-    require_version(reader.u32()?, EXECUTABLE_IR_VERSION_V1, "executable IR")?;
+    let format_version = reader.u32()?;
+    let grammar_version = reader.u32()?;
+    let ir_version = reader.u32()?;
+    if !matches!(
+        (format_version, grammar_version, ir_version),
+        (
+            BUNDLE_FORMAT_VERSION_V1,
+            GRAMMAR_VERSION_V1,
+            EXECUTABLE_IR_VERSION_V1
+        ) | (
+            BUNDLE_FORMAT_VERSION_V2,
+            GRAMMAR_VERSION_V2,
+            EXECUTABLE_IR_VERSION_V2
+        )
+    ) {
+        return Err(IrValidationError::UnsupportedVersion {
+            kind: "contract bundle version tuple",
+            value: ir_version,
+        });
+    }
     let compiler_version = reader.string(64)?;
     let lineage_text = reader.string(256)?;
     validate_source_name(&lineage_text, "contract lineage")?;
@@ -2794,14 +3071,22 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
     let stored_root_hash = ContractPlanRootHash::from_bytes(reader.array()?);
     let ledger = decode_ledger(&mut reader)?;
     let schema = decode_schema(&mut reader)?;
-    let commands = decode_commands(&mut reader, &lineage, &schema)?;
+    let workflows = if ir_version >= EXECUTABLE_IR_VERSION_V2 {
+        decode_workflows(&mut reader, &schema)?
+    } else {
+        WorkflowCatalog::new(Vec::new(), &schema)?
+    };
+    let commands = decode_commands(&mut reader, &lineage, &schema, ir_version)?;
     let projections = decode_projections(&mut reader, &schema)?;
     let schema_artifacts = decode_schema_artifacts(&mut reader, &schema, &commands, &projections)?;
     let mcp_command_names = decode_mcp_registry(&mut reader)?;
     let compatibility = decode_compatibility(&mut reader, parent.is_some())?;
     reader.finish()?;
 
-    let bundle = ContractBundle::new(
+    let bundle = ContractBundle::new_with_versions(
+        format_version,
+        grammar_version,
+        ir_version,
         compiler_version,
         lineage,
         contract_version,
@@ -2809,6 +3094,7 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
         source_hash,
         ledger,
         schema,
+        workflows.workflows().to_vec(),
         commands,
         projections,
         schema_artifacts,
@@ -2826,6 +3112,76 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
         });
     }
     Ok(bundle)
+}
+
+fn decode_workflows(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+) -> Result<WorkflowCatalog, IrValidationError> {
+    let count = decode_len_with_minimum(reader, "workflows", crate::MAX_DECLARATIONS_PER_KIND, 21)?;
+    let mut workflows = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = reader.string(256)?;
+        let entity = decode_entity_id(reader)?;
+        let state_field = decode_field_id(reader)?;
+        let state_enum = decode_enum_id(reader)?;
+        let transition_count = decode_len_with_minimum(
+            reader,
+            "workflow transitions",
+            crate::MAX_DECLARATIONS_PER_KIND,
+            17,
+        )?;
+        let mut transitions = Vec::with_capacity(transition_count);
+        for _ in 0..transition_count {
+            let transition_name = reader.string(256)?;
+            let source_count = decode_len_with_minimum(
+                reader,
+                "workflow transition source states",
+                crate::MAX_DECLARATIONS_PER_KIND,
+                4,
+            )?;
+            let mut source_states = Vec::with_capacity(source_count);
+            for _ in 0..source_count {
+                source_states.push(decode_enum_variant_id(reader)?);
+            }
+            transitions.push(WorkflowTransitionSchema::new(
+                transition_name,
+                source_states,
+                decode_enum_variant_id(reader)?,
+            )?);
+        }
+        let lease = if reader.bool()? {
+            let lease_name = reader.string(256)?;
+            let owner_field = decode_field_id(reader)?;
+            let expiry_field = decode_field_id(reader)?;
+            let fencing_token_field = decode_field_id(reader)?;
+            let attempt_field = if reader.bool()? {
+                Some(decode_field_id(reader)?)
+            } else {
+                None
+            };
+            Some(WorkflowLeaseSchema::new(
+                lease_name,
+                owner_field,
+                expiry_field,
+                fencing_token_field,
+                attempt_field,
+                reader.u64()?,
+                reader.u64()?,
+            )?)
+        } else {
+            None
+        };
+        workflows.push(WorkflowSchema::new(
+            name,
+            entity,
+            state_field,
+            state_enum,
+            transitions,
+            lease,
+        )?);
+    }
+    WorkflowCatalog::new(workflows, schema)
 }
 
 fn require_version(value: u32, expected: u32, kind: &'static str) -> Result<(), IrValidationError> {
@@ -3448,6 +3804,13 @@ fn decode_key_schema(
 pub(crate) fn decode_expression_arena(
     reader: &mut Reader<'_>,
 ) -> Result<ExpressionArena, IrValidationError> {
+    decode_expression_arena_versioned(reader, EXECUTABLE_IR_VERSION_V1)
+}
+
+fn decode_expression_arena_versioned(
+    reader: &mut Reader<'_>,
+    ir_version: u32,
+) -> Result<ExpressionArena, IrValidationError> {
     let count =
         decode_len_with_minimum(reader, "expression arena", crate::MAX_EXPRESSION_NODES, 2)?;
     let mut nodes = Vec::with_capacity(count);
@@ -3463,6 +3826,9 @@ pub(crate) fn decode_expression_arena(
                 })?
             }),
             expression_tag::INPUT_FIELD => ExpressionKind::InputField(decode_field_id(reader)?),
+            expression_tag::SERVICE_VALUE if ir_version >= EXECUTABLE_IR_VERSION_V2 => {
+                ExpressionKind::ServiceValue(decode_field_id(reader)?)
+            }
             expression_tag::COMPLETE_BINDING => {
                 ExpressionKind::CompleteBinding(BindingId::new(reader.u32()?))
             }
@@ -3709,19 +4075,32 @@ fn decode_commands(
     reader: &mut Reader<'_>,
     lineage: &ContractLineage,
     schema: &SchemaIr,
+    ir_version: u32,
 ) -> Result<Vec<CommandPlan>, IrValidationError> {
     let count = decode_len_with_minimum(reader, "commands", crate::MAX_DECLARATIONS_PER_KIND, 48)?;
     let mut commands = Vec::with_capacity(count);
     for _ in 0..count {
-        commands.push(decode_command(reader, lineage, schema)?);
+        commands.push(decode_command_versioned(
+            reader, lineage, schema, ir_version,
+        )?);
     }
     Ok(commands)
 }
 
+#[cfg(test)]
 fn decode_command(
     reader: &mut Reader<'_>,
     lineage: &ContractLineage,
     schema: &SchemaIr,
+) -> Result<CommandPlan, IrValidationError> {
+    decode_command_versioned(reader, lineage, schema, EXECUTABLE_IR_VERSION_V1)
+}
+
+fn decode_command_versioned(
+    reader: &mut Reader<'_>,
+    lineage: &ContractLineage,
+    schema: &SchemaIr,
+    ir_version: u32,
 ) -> Result<CommandPlan, IrValidationError> {
     let command_id = decode_command_id(reader)?;
     let name = reader.string(256)?;
@@ -3731,6 +4110,40 @@ fn decode_command(
         })?;
     let stored_plan_hash = PlanHash::from_bytes(reader.array()?);
     let input = CommandInputSchema::new(command_id, decode_record_schema(reader)?)?;
+    let service_values = if ir_version >= EXECUTABLE_IR_VERSION_V2 {
+        let count = decode_len_with_minimum(
+            reader,
+            "command service values",
+            crate::MAX_COMMAND_ITEMS,
+            4,
+        )?;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            let field = FieldSchema::new(
+                decode_field_id(reader)?,
+                reader.string(256)?,
+                decode_value_type(reader, 0)?,
+            )?;
+            let kind = match reader.u8()? {
+                crate::format_registry::service_value_kind::UUID_V7 => {
+                    crate::ServiceValueKind::UuidV7
+                }
+                crate::format_registry::service_value_kind::TRANSACTION_TIME => {
+                    crate::ServiceValueKind::TransactionTime
+                }
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "service-owned command value",
+                        tag,
+                    });
+                }
+            };
+            values.push(crate::ServiceValueSchema::new(field, kind)?);
+        }
+        values
+    } else {
+        Vec::new()
+    };
     let outcome_count = decode_len(reader, "command outcomes", crate::MAX_COMMAND_ITEMS)?;
     let mut outcomes = Vec::with_capacity(outcome_count);
     for _ in 0..outcome_count {
@@ -3759,7 +4172,7 @@ fn decode_command(
             kind: "command generated schema",
         });
     }
-    let expressions = decode_expression_arena(reader)?;
+    let expressions = decode_expression_arena_versioned(reader, ir_version)?;
     let binding_count = decode_len(reader, "command bindings", crate::MAX_COMMAND_ITEMS)?;
     let mut bindings = Vec::with_capacity(binding_count);
     for _ in 0..binding_count {
@@ -3853,7 +4266,13 @@ fn decode_command(
     let instruction_count = decode_len(reader, "command instructions", crate::MAX_COMMAND_ITEMS)?;
     let mut instructions = Vec::with_capacity(instruction_count);
     for _ in 0..instruction_count {
-        instructions.push(decode_instruction(reader, &outcomes, schema, &expressions)?);
+        instructions.push(decode_instruction_versioned(
+            reader,
+            &outcomes,
+            schema,
+            &expressions,
+            ir_version,
+        )?);
     }
     let execution_class = decode_execution_class(reader.u8()?)?;
     let _retry_policy = decode_retry_policy(reader.u8()?)?;
@@ -3876,12 +4295,13 @@ fn decode_command(
         locality.aggregate_id(),
         &instructions,
     )?;
-    let plan = CommandPlan::new(
+    let plan = CommandPlan::new_with_service_values(
         command_id,
         lineage.clone(),
         name,
         contract_version,
         input,
+        service_values,
         outcomes,
         success_outcome,
         idempotency_input,
@@ -4049,11 +4469,22 @@ fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidation
     )
 }
 
+#[cfg(test)]
 fn decode_instruction(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
     schema: &SchemaIr,
     arena: &ExpressionArena,
+) -> Result<Instruction, IrValidationError> {
+    decode_instruction_versioned(reader, outcomes, schema, arena, EXECUTABLE_IR_VERSION_V1)
+}
+
+fn decode_instruction_versioned(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    schema: &SchemaIr,
+    arena: &ExpressionArena,
+    ir_version: u32,
 ) -> Result<Instruction, IrValidationError> {
     match reader.u8()? {
         instruction_tag::REQUIRE => Ok(Instruction::Require {
@@ -4066,6 +4497,28 @@ fn decode_instruction(
             field: decode_field_id(reader)?,
             value: ExprId::new(reader.u32()?),
         }),
+        instruction_tag::WORKFLOW_TRANSITION if ir_version >= EXECUTABLE_IR_VERSION_V2 => {
+            let binding = BindingId::new(reader.u32()?);
+            let state_field = decode_field_id(reader)?;
+            let count = decode_len(
+                reader,
+                "workflow transition source states",
+                crate::MAX_COMMAND_ITEMS,
+            )?;
+            let mut source_states = Vec::with_capacity(count);
+            for _ in 0..count {
+                source_states.push(decode_enum_variant_id(reader)?);
+            }
+            Ok(Instruction::WorkflowTransition {
+                binding,
+                state_field,
+                source_states,
+                destination: decode_enum_variant_id(reader)?,
+                expected_revision: ExprId::new(reader.u32()?),
+                stale: decode_outcome_construction(reader, outcomes, arena)?,
+                illegal: decode_outcome_construction(reader, outcomes, arena)?,
+            })
+        }
         instruction_tag::EMIT_EVENT => Ok(Instruction::EmitEvent(decode_event_construction(
             reader, schema, arena,
         )?)),

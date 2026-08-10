@@ -10,6 +10,7 @@ const CREDENTIAL_FILE: &str = include_str!("../src/credential_file.rs");
 const IDS: &str = include_str!("../src/ids.rs");
 const METADATA: &str = include_str!("../src/metadata.rs");
 const STATUS: &str = include_str!("../src/status.rs");
+const TLS: &str = include_str!("../src/tls.rs");
 const GENERATED: &str = include_str!("../src/generated/mod.rs");
 const LEGAL_SPEND: &str = include_str!("../src/generated/legal_spend.rs");
 
@@ -43,14 +44,26 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     assert!(manifest.contains("default = []"));
     assert!(manifest.contains("getrandom = { version = \"=0.3.4\", default-features = false }"));
     assert!(manifest.contains(
-        "tonic = { version = \"=0.14.6\", default-features = false, features = [\"channel\", \"codegen\"] }"
+        "tonic = { version = \"=0.14.6\", default-features = false, features = [\"channel\", \"codegen\", \"tls-ring\"] }"
     ));
     assert!(manifest.contains("tonic-prost = { version = \"=0.14.6\", default-features = false }"));
     assert!(manifest.contains(
         "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }"
     ));
     assert!(manifest.contains("default-features = false, features = [\"client\"]"));
-    for forbidden in ["base64 =", "tls-", "gzip", "deflate", "zstd"] {
+    assert!(manifest.contains(
+        "riffdb-config = { version = \"0.1.0\", path = \"../riffdb-config\", default-features = false }"
+    ));
+    for forbidden in [
+        "base64 =",
+        "rustls =",
+        "tokio-rustls =",
+        "ring =",
+        "tls-aws-lc",
+        "gzip",
+        "deflate",
+        "zstd",
+    ] {
         assert!(!manifest.contains(forbidden));
     }
 }
@@ -64,6 +77,7 @@ fn operating_system_identity_sources_are_isolated_and_stateless() {
         CREDENTIAL_FILE,
         METADATA,
         STATUS,
+        TLS,
         GENERATED,
         LEGAL_SPEND,
     ] {
@@ -87,6 +101,7 @@ fn first_party_client_forbids_unsafe_rust() {
         IDS,
         METADATA,
         STATUS,
+        TLS,
         GENERATED,
         LEGAL_SPEND,
     ] {
