@@ -286,13 +286,21 @@ pub(super) struct CommandEvaluationPool {
 }
 
 impl CommandEvaluationPool {
-    pub(super) fn new<Repository>(repository: Repository) -> Result<Self, ()>
+    /// The evaluation worker count production coordinators pass to
+    /// [`Self::new`]: host parallelism clamped to the reviewed bounds. This is
+    /// the only ambient read; the pool itself takes the count as an explicit
+    /// input so deterministic harnesses can fix it (ADR-0113 hygiene).
+    pub(super) fn production_worker_count() -> usize {
+        thread::available_parallelism()
+            .map_or(2, std::num::NonZeroUsize::get)
+            .clamp(2, MAX_PARALLEL_EVALUATION_WORKERS)
+    }
+
+    pub(super) fn new<Repository>(repository: Repository, worker_count: usize) -> Result<Self, ()>
     where
         Repository: AdmissionRepository + SnapshotReader + Send + Sync + 'static,
     {
-        let worker_count = thread::available_parallelism()
-            .map_or(2, std::num::NonZeroUsize::get)
-            .clamp(2, MAX_PARALLEL_EVALUATION_WORKERS);
+        let worker_count = worker_count.clamp(1, MAX_PARALLEL_EVALUATION_WORKERS);
         let repository: Arc<dyn CommandEvaluationReadPort> = Arc::new(repository);
         let (sender, receiver) =
             mpsc::sync_channel::<CommandEvaluationTask>(MAX_QUEUED_EVALUATIONS);
@@ -1226,9 +1234,9 @@ fn partition_fifo_by_compatibility<T>(
 }
 
 struct CompatibleCommandGroup {
-    keys: std::collections::HashSet<riffdb_types::ConflictKey>,
-    reads: std::collections::HashSet<EntityTarget>,
-    writes: std::collections::HashSet<EntityTarget>,
+    keys: std::collections::BTreeSet<riffdb_types::ConflictKey>,
+    reads: std::collections::BTreeSet<EntityTarget>,
+    writes: std::collections::BTreeSet<EntityTarget>,
     all_commutative_child_appends: bool,
     shared_conflict_lease: bool,
 }
@@ -1240,9 +1248,9 @@ struct CompatibleCommandGroup {
 /// because a later unit may need to re-evaluate against the predecessor's
 /// newly published state.
 pub(super) struct DeferredPipelineFootprint {
-    keys: std::collections::HashSet<riffdb_types::ConflictKey>,
-    reads: std::collections::HashSet<EntityTarget>,
-    writes: std::collections::HashSet<EntityTarget>,
+    keys: std::collections::BTreeSet<riffdb_types::ConflictKey>,
+    reads: std::collections::BTreeSet<EntityTarget>,
+    writes: std::collections::BTreeSet<EntityTarget>,
 }
 
 impl DeferredPipelineFootprint {
@@ -1262,9 +1270,9 @@ pub(super) fn command_group_deferred_pipeline_footprint<'a>(
     preparations: impl IntoIterator<Item = &'a CommandExecutionPreparation>,
 ) -> Option<DeferredPipelineFootprint> {
     let mut footprint = DeferredPipelineFootprint {
-        keys: std::collections::HashSet::new(),
-        reads: std::collections::HashSet::new(),
-        writes: std::collections::HashSet::new(),
+        keys: std::collections::BTreeSet::new(),
+        reads: std::collections::BTreeSet::new(),
+        writes: std::collections::BTreeSet::new(),
     };
     let mut count = 0_usize;
     for preparation in preparations {
@@ -1290,9 +1298,9 @@ pub(super) fn command_group_deferred_pipeline_footprint<'a>(
 impl Default for CompatibleCommandGroup {
     fn default() -> Self {
         Self {
-            keys: std::collections::HashSet::new(),
-            reads: std::collections::HashSet::new(),
-            writes: std::collections::HashSet::new(),
+            keys: std::collections::BTreeSet::new(),
+            reads: std::collections::BTreeSet::new(),
+            writes: std::collections::BTreeSet::new(),
             all_commutative_child_appends: true,
             shared_conflict_lease: false,
         }
@@ -1307,8 +1315,8 @@ enum CompatibilityFailure {
 
 impl CompatibleCommandGroup {
     fn try_insert(&mut self, state: &PendingCommandAttempts) -> Result<(), CompatibilityFailure> {
-        let mut reads = std::collections::HashSet::new();
-        let mut writes = std::collections::HashSet::new();
+        let mut reads = std::collections::BTreeSet::new();
+        let mut writes = std::collections::BTreeSet::new();
         for (mode, target) in state.binding_accesses() {
             match mode {
                 riffdb_contract_ir::BindingMode::Read => {
@@ -1334,8 +1342,8 @@ impl CompatibleCommandGroup {
         &mut self,
         candidate: PreparedCommandCompatibility,
     ) -> Result<(), CompatibilityFailure> {
-        let mut reads = std::collections::HashSet::new();
-        let mut writes = std::collections::HashSet::new();
+        let mut reads = std::collections::BTreeSet::new();
+        let mut writes = std::collections::BTreeSet::new();
         for (mode, target) in candidate.binding_accesses {
             match mode {
                 riffdb_contract_ir::BindingMode::Read => {
@@ -1354,8 +1362,8 @@ impl CompatibleCommandGroup {
     fn try_insert_accesses(
         &mut self,
         conflict_keys: &[riffdb_types::ConflictKey],
-        reads: std::collections::HashSet<EntityTarget>,
-        writes: std::collections::HashSet<EntityTarget>,
+        reads: std::collections::BTreeSet<EntityTarget>,
+        writes: std::collections::BTreeSet<EntityTarget>,
         is_commutative_child_append: bool,
     ) -> Result<(), CompatibilityFailure> {
         let shares_conflict_key = conflict_keys.iter().any(|key| self.keys.contains(key));
@@ -1475,10 +1483,10 @@ fn partition_pending_fifo_by_compatibility(
 }
 
 fn exact_accesses_are_compatible(
-    prior_reads: &std::collections::HashSet<EntityTarget>,
-    prior_writes: &std::collections::HashSet<EntityTarget>,
-    reads: &std::collections::HashSet<EntityTarget>,
-    writes: &std::collections::HashSet<EntityTarget>,
+    prior_reads: &std::collections::BTreeSet<EntityTarget>,
+    prior_writes: &std::collections::BTreeSet<EntityTarget>,
+    reads: &std::collections::BTreeSet<EntityTarget>,
+    writes: &std::collections::BTreeSet<EntityTarget>,
 ) -> bool {
     !writes
         .iter()
@@ -4211,8 +4219,8 @@ mod tests {
         key.push_uuid(&[7; 16]).expect("bounded UUID key");
         let target = EntityTarget::new(entity_type, key.finish().expect("entity key"))
             .expect("entity target");
-        let none = std::collections::HashSet::new();
-        let one = std::collections::HashSet::from([target]);
+        let none = std::collections::BTreeSet::new();
+        let one = std::collections::BTreeSet::from([target]);
 
         assert!(!exact_accesses_are_compatible(&one, &none, &none, &one));
         assert!(!exact_accesses_are_compatible(&none, &one, &one, &none));
@@ -4232,21 +4240,21 @@ mod tests {
         let first = target(7);
         let second = target(8);
         let footprint = |reads, writes| DeferredPipelineFootprint {
-            keys: std::collections::HashSet::new(),
+            keys: std::collections::BTreeSet::new(),
             reads,
             writes,
         };
         let predecessor = footprint(
-            std::collections::HashSet::from([first.clone()]),
-            std::collections::HashSet::new(),
+            std::collections::BTreeSet::from([first.clone()]),
+            std::collections::BTreeSet::new(),
         );
         let overlapping = footprint(
-            std::collections::HashSet::new(),
-            std::collections::HashSet::from([first]),
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::from([first]),
         );
         let disjoint = footprint(
-            std::collections::HashSet::new(),
-            std::collections::HashSet::from([second]),
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::from([second]),
         );
 
         assert!(predecessor.requires_private_successor(&overlapping));
@@ -4491,5 +4499,54 @@ mod tests {
             );
             assert!(error.source().is_none());
         }
+    }
+
+    struct UnreachableEvaluationPort;
+
+    impl AdmissionRepository for UnreachableEvaluationPort {
+        fn admit_or_resolve(
+            &self,
+            _request: riffdb_storage_api::AdmissionRequestV1,
+        ) -> Result<riffdb_storage_api::AdmissionResultV1, StorageError> {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+
+        fn lookup_admission(
+            &self,
+            _candidates: riffdb_storage_api::IdempotencyLookupCandidatesV1,
+        ) -> Result<AdmissionLookupResultV1, StorageError> {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+    }
+
+    impl SnapshotReader for UnreachableEvaluationPort {
+        fn read_snapshot(
+            &self,
+            _request: riffdb_storage_api::SnapshotRequest,
+        ) -> Result<riffdb_storage_api::ReadSnapshot, StorageError> {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+    }
+
+    #[test]
+    fn evaluation_pool_worker_count_is_an_explicit_bounded_input() {
+        let single = CommandEvaluationPool::new(UnreachableEvaluationPort, 1)
+            .expect("single-worker pool starts");
+        assert_eq!(single.worker_count, 1, "explicit count is honored");
+        assert_eq!(single.workers.len(), 1);
+
+        let clamped = CommandEvaluationPool::new(UnreachableEvaluationPort, usize::MAX)
+            .expect("oversized request clamps");
+        assert_eq!(clamped.worker_count, MAX_PARALLEL_EVALUATION_WORKERS);
+
+        let floored = CommandEvaluationPool::new(UnreachableEvaluationPort, 0)
+            .expect("zero request floors to one worker");
+        assert_eq!(floored.worker_count, 1);
+
+        let production = CommandEvaluationPool::production_worker_count();
+        assert!(
+            (2..=MAX_PARALLEL_EVALUATION_WORKERS).contains(&production),
+            "production default keeps the reviewed clamp"
+        );
     }
 }

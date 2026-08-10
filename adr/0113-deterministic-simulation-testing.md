@@ -246,6 +246,11 @@ fixture data, so no redaction surface is added.
   oracle wiring, generator, corpus), numbered at package time — with the
   duplicate-id check against concurrent sessions that the merge ritual now
   requires.
+- **Phase-1 foundation package:** WP-580 (`riffdb-sim` crate, SimDisk, redb
+  backend adapter, determinism pin, and the two enabling hygiene items)
+  registered the `SIM-*` family as SPEC §17.10; the remaining Phase-1
+  packages (journal media seam, oracle wiring, generator, corpus) are
+  numbered as they mint.
 - **Final evidence:** the Phase-1 exploration campaign report over the
   journal/extent/fold machinery.
 
