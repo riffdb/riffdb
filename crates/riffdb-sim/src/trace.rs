@@ -14,6 +14,12 @@
 /// digests never collide silently.
 ///
 /// Version history:
+/// - 3: journal media surface (SIM-B). New event kinds for the side-file
+///   namespace — probe, open, create, remove, rename, parent sync, media
+///   sync, and the self-sufficient not-found / already-exists refusals —
+///   while media reads and writes reuse the backend read/write/set-len
+///   encodings. Media fault sensitivity is pinned alongside the existing
+///   families in `tests/trace_sensitivity.rs`.
 /// - 2: refusal events became self-sufficient — closed-handle refusals fold a
 ///   dedicated discriminator plus the refused operation kind, and
 ///   stale-handle, out-of-range, and capacity events fold the full operation
@@ -22,7 +28,7 @@
 ///   sensitivity to every fault family is pinned by
 ///   `tests/trace_sensitivity.rs`.
 /// - 1: initial format.
-pub const TRACE_FORMAT_VERSION: u32 = 2;
+pub const TRACE_FORMAT_VERSION: u32 = 3;
 
 const FNV64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV64_PRIME: u64 = 0x0000_0100_0000_01B3;

@@ -3,10 +3,9 @@
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::media::{JournalMedia, RealJournalMedia};
 use riffdb_storage_api::{
     DURABLE_FORMAT_MARKER_BYTES, DurableFormatAction, DurableFormatIdentity,
     DurableFormatMarkerError, DurableFormatPreflightError, current_durable_format_manifest,
@@ -111,9 +110,18 @@ pub fn durable_format_marker_path(database_path: &Path) -> PathBuf {
 pub fn preflight_durable_format_path(
     database_path: &Path,
 ) -> Result<RedbDurableFormatPreflight, RedbDurableFormatPreflightError> {
+    preflight_durable_format_path_with_media(&RealJournalMedia, database_path)
+}
+
+/// Media-parameterized preflight so a simulated open is simulated from its
+/// first filesystem touch (ADR-0113 Phase 1 item 2).
+pub(crate) fn preflight_durable_format_path_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+) -> Result<RedbDurableFormatPreflight, RedbDurableFormatPreflightError> {
     let marker_path = durable_format_marker_path(database_path);
-    let database = metadata_state(database_path)?;
-    let marker = metadata_state(&marker_path)?;
+    let database = metadata_state(media, database_path)?;
+    let marker = metadata_state(media, &marker_path)?;
 
     match (database, marker) {
         (FileState::Absent, FileState::Absent) => Ok(RedbDurableFormatPreflight::InitializeCurrent),
@@ -132,12 +140,12 @@ pub fn preflight_durable_format_path(
                 action,
             })
         }
-        (FileState::Present, FileState::Present) => preflight_existing_marker(&marker_path),
+        (FileState::Present, FileState::Present) => preflight_existing_marker(media, &marker_path),
         (FileState::Present, FileState::Empty) => {
             Err(RedbDurableFormatPreflightError::AmbiguousInventory)
         }
         (FileState::Absent | FileState::Empty, FileState::Present) => {
-            match preflight_existing_marker(&marker_path)? {
+            match preflight_existing_marker(media, &marker_path)? {
                 RedbDurableFormatPreflight::OpenCurrent => {
                     Ok(RedbDurableFormatPreflight::InitializeCurrent)
                 }
@@ -160,14 +168,25 @@ pub fn preflight_durable_format_path(
 /// `InitializeCurrent`; the caller must retain the exact pre-open witness, so
 /// this function cannot stamp an existing predecessor database. Publication is
 /// create-only, file-synced, rename-published, and parent-directory-synced.
+/// Real-filesystem wrapper retained for this module's unit tests; the store's
+/// open path routes through the media-parameterized form below.
+#[cfg(test)]
 pub(crate) fn publish_initialized_current_marker(
+    database_path: &Path,
+    preflight: RedbDurableFormatPreflight,
+) -> Result<(), RedbDurableFormatPreflightError> {
+    publish_initialized_current_marker_with_media(&RealJournalMedia, database_path, preflight)
+}
+
+pub(crate) fn publish_initialized_current_marker_with_media(
+    media: &dyn JournalMedia,
     database_path: &Path,
     preflight: RedbDurableFormatPreflight,
 ) -> Result<(), RedbDurableFormatPreflightError> {
     if preflight != RedbDurableFormatPreflight::InitializeCurrent {
         return Err(RedbDurableFormatPreflightError::AmbiguousInventory);
     }
-    publish_current_marker_create_only(database_path)
+    publish_current_marker_create_only(media, database_path)
 }
 
 /// Publishes the current marker only for the exact manifest-declared
@@ -194,18 +213,19 @@ pub(crate) fn publish_upgraded_current_marker(
     {
         return Err(RedbDurableFormatPreflightError::AmbiguousInventory);
     }
-    publish_current_marker_create_only(database_path)
+    publish_current_marker_create_only(&RealJournalMedia, database_path)
 }
 
 fn publish_current_marker_create_only(
+    media: &dyn JournalMedia,
     database_path: &Path,
 ) -> Result<(), RedbDurableFormatPreflightError> {
     let marker_path = durable_format_marker_path(database_path);
-    if marker_path
-        .try_exists()
+    if media
+        .try_exists(&marker_path)
         .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?
     {
-        return match preflight_existing_marker(&marker_path)? {
+        return match preflight_existing_marker(media, &marker_path)? {
             RedbDurableFormatPreflight::OpenCurrent => Ok(()),
             RedbDurableFormatPreflight::InitializeCurrent
             | RedbDurableFormatPreflight::OfflineUpgradeRequired { .. } => {
@@ -214,10 +234,8 @@ fn publish_current_marker_create_only(
         };
     }
     let staging_path = sibling_with_suffix(database_path, MARKER_STAGING_SUFFIX);
-    let mut staging = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&staging_path)
+    let mut staging = media
+        .create_new_write_only(&staging_path)
         .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
     let encoded = encode_durable_format_marker(current_durable_format_marker());
     let result = (|| {
@@ -228,20 +246,24 @@ fn publish_current_marker_create_only(
             .sync_all()
             .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
         drop(staging);
-        fs::rename(&staging_path, &marker_path)
+        media
+            .rename(&staging_path, &marker_path)
             .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
-        sync_parent(&marker_path)
+        media
+            .sync_parent_all(&marker_path)
+            .map_err(|_| RedbDurableFormatPreflightError::Unavailable)
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&staging_path);
+        let _ = media.remove_file(&staging_path);
     }
     result
 }
 
 fn preflight_existing_marker(
+    media: &dyn JournalMedia,
     marker_path: &Path,
 ) -> Result<RedbDurableFormatPreflight, RedbDurableFormatPreflightError> {
-    let marker = read_marker(marker_path)?;
+    let marker = read_marker(media, marker_path)?;
     let manifest = current_durable_format_manifest();
     let action = preflight_durable_format(marker.identity())
         .map_err(RedbDurableFormatPreflightError::Unsupported)?;
@@ -263,18 +285,20 @@ fn preflight_existing_marker(
 }
 
 fn read_marker(
+    media: &dyn JournalMedia,
     marker_path: &Path,
 ) -> Result<riffdb_storage_api::DurableFormatMarker, RedbDurableFormatPreflightError> {
-    let metadata =
-        fs::metadata(marker_path).map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
-    if metadata.len() != u64::try_from(DURABLE_FORMAT_MARKER_BYTES).expect("marker length fits u64")
-    {
+    let metadata = media
+        .metadata(marker_path)
+        .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
+    if metadata.len != u64::try_from(DURABLE_FORMAT_MARKER_BYTES).expect("marker length fits u64") {
         return Err(RedbDurableFormatPreflightError::Marker(
             DurableFormatMarkerError::Malformed,
         ));
     }
-    let mut file =
-        File::open(marker_path).map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
+    let mut file = media
+        .open_read(marker_path)
+        .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
     let mut encoded = [0_u8; DURABLE_FORMAT_MARKER_BYTES];
     file.read_exact(&mut encoded)
         .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
@@ -288,12 +312,15 @@ enum FileState {
     Present,
 }
 
-fn metadata_state(path: &Path) -> Result<FileState, RedbDurableFormatPreflightError> {
-    match fs::metadata(path) {
-        Ok(metadata) if !metadata.is_file() => {
+fn metadata_state(
+    media: &dyn JournalMedia,
+    path: &Path,
+) -> Result<FileState, RedbDurableFormatPreflightError> {
+    match media.metadata(path) {
+        Ok(metadata) if !metadata.is_file => {
             Err(RedbDurableFormatPreflightError::AmbiguousInventory)
         }
-        Ok(metadata) if metadata.len() == 0 => Ok(FileState::Empty),
+        Ok(metadata) if metadata.len == 0 => Ok(FileState::Empty),
         Ok(_) => Ok(FileState::Present),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileState::Absent),
         Err(_) => Err(RedbDurableFormatPreflightError::Unavailable),
@@ -306,17 +333,9 @@ fn sibling_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn sync_parent(path: &Path) -> Result<(), RedbDurableFormatPreflightError> {
-    let parent = path
-        .parent()
-        .ok_or(RedbDurableFormatPreflightError::Unavailable)?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| RedbDurableFormatPreflightError::Unavailable)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::{current_durable_format_marker, encode_durable_format_marker};
