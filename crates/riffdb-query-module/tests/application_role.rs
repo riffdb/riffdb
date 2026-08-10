@@ -123,7 +123,8 @@ fn symbolic_role_lowers_only_to_exact_application_operations() {
     assert!(grant.permissions().as_slice().iter().all(|permission| {
         matches!(
             permission,
-            CapabilityPermissionV1::ExecuteNamedQuery(..)
+            CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::ReadContract)
+                | CapabilityPermissionV1::ExecuteNamedQuery(..)
                 | CapabilityPermissionV1::InvokeCommand(..)
                 | CapabilityPermissionV1::ApplicationRoleIdentity(..)
         )
@@ -134,8 +135,12 @@ fn symbolic_role_lowers_only_to_exact_application_operations() {
             CapabilityPermissionV1::ApplicationRoleIdentity(hash) if *hash == role.identity()
         )
     }));
+    assert!(
+        grant
+            .permissions()
+            .contains_kind(CapabilityPermissionKindV1::ReadContract)
+    );
     for forbidden in [
-        CapabilityPermissionKindV1::ReadContract,
         CapabilityPermissionKindV1::ReadEntity,
         CapabilityPermissionKindV1::ScanIndex,
         CapabilityPermissionKindV1::CheckAdHocQuery,

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+corpus="$repo_root/fixtures/driver/corpus-v1.json"
+digest="$(sha256sum "$corpus" | cut -d' ' -f1)"
+languages=(rust go typescript python)
+
+(
+    cd "$repo_root/fixtures/driver/conformance-app"
+    cargo +1.97.0 run --quiet --manifest-path "$repo_root/Cargo.toml" \
+        -p riffdb-cli --bin riffdb -- application lock --check >/dev/null
+)
+
+for language in "${languages[@]}"; do
+    manifest="$repo_root/fixtures/driver/manifests/$language-v1.json"
+    [[ -f "$manifest" ]] || { echo "driver manifest is absent: $language" >&2; exit 1; }
+    jq -e \
+        --arg language "$language" --arg digest "$digest" \
+        '.schema == "riffdb.driver-conformance-manifest/v1"
+         and .language == $language
+         and .corpus_sha256 == $digest
+         and .remote_tls == "installed"
+         and .typed_errors == "installed"
+         and .read_after_commit == "installed"
+         and (.unavailable | type == "array")' \
+        "$manifest" >/dev/null || {
+        echo "driver manifest is invalid or stale: $language" >&2
+        exit 1
+    }
+done
+
+echo "driver conformance manifests are exact"

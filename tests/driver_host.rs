@@ -11,6 +11,38 @@ use std::fs;
 use riffdb_driver_host::{ApplicationCatalog, OperationKind, ReactiveKind};
 
 #[test]
+fn shared_driver_conformance_catalog_is_exact() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let application = root.join("fixtures/driver/conformance-app");
+    let lock = fs::read(application.join("riffdb.application.lock.json")).expect("lock");
+    let manifest =
+        fs::read(application.join("generated/riffdb.application.exact.json")).expect("manifest");
+    let operations = fs::read(application.join("generated/mcp/tools.json")).expect("operations");
+    let catalog = ApplicationCatalog::from_exact_artifacts(
+        &lock,
+        &manifest,
+        &operations,
+        "default",
+        "DriverConformanceApplication",
+    )
+    .expect("shared conformance catalog");
+    assert_eq!(
+        catalog
+            .operation("driver_conformance_create_item")
+            .expect("command")
+            .kind(),
+        OperationKind::Command
+    );
+    assert_eq!(
+        catalog
+            .operation("driver_conformance_item_page")
+            .expect("query")
+            .kind(),
+        OperationKind::Query
+    );
+}
+
+#[test]
 fn exact_ticketdesk_catalog_covers_commands_queries_and_reactive_actions_only() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let application = root.join("examples/ticketdesk");

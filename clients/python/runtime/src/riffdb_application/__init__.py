@@ -153,6 +153,27 @@ class QueryOptions:
     read_after_commit: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedTlsConfig:
+    endpoint: str
+    trust_root: str
+    server_name: str
+    pool_connections: int = 4
+    streams_per_connection: int = 64
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.endpoint, str)
+            or not isinstance(self.trust_root, str)
+            or not isinstance(self.server_name, str)
+            or type(self.pool_connections) is not int
+            or type(self.streams_per_connection) is not int
+            or not 1 <= self.pool_connections <= 16
+            or not 1 <= self.streams_per_connection <= 256
+        ):
+            raise InvalidInput("verified TLS configuration is invalid")
+
+
 MAX_COMMAND_BATCH_CONCURRENCY = 384
 
 
@@ -354,6 +375,22 @@ class SyncApplicationTransport:
         except BaseException as error:
             raise _translate_native(error) from None
 
+    @classmethod
+    def connect_verified_tls(cls, config: VerifiedTlsConfig, metadata: CallMetadata) -> Self:
+        try:
+            return cls(
+                _native._SyncClient.connect_verified_tls(
+                    config.endpoint,
+                    config.trust_root,
+                    config.server_name,
+                    config.pool_connections,
+                    config.streams_per_connection,
+                    metadata._native_value(),
+                )
+            )
+        except BaseException as error:
+            raise _translate_native(error) from None
+
     def close(self) -> None:
         if not self._closed:
             try:
@@ -437,6 +474,24 @@ class AsyncApplicationTransport:
     async def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
         try:
             return cls(await _native.connect_async(endpoint, metadata._native_value()))
+        except BaseException as error:
+            raise _translate_native(error) from None
+
+    @classmethod
+    async def connect_verified_tls(
+        cls, config: VerifiedTlsConfig, metadata: CallMetadata
+    ) -> Self:
+        try:
+            return cls(
+                await _native.connect_async_verified_tls(
+                    config.endpoint,
+                    config.trust_root,
+                    config.server_name,
+                    config.pool_connections,
+                    config.streams_per_connection,
+                    metadata._native_value(),
+                )
+            )
         except BaseException as error:
             raise _translate_native(error) from None
 
@@ -879,4 +934,5 @@ __all__ = [
     "TraceParent",
     "TypedCommandResult",
     "TypedQueryResult",
+    "VerifiedTlsConfig",
 ]

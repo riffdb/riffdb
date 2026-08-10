@@ -21,6 +21,7 @@ from riffdb_application import (
     RiffDate,
     SyncApplicationTransport,
     Timestamp,
+    VerifiedTlsConfig,
 )
 from riffdb_application import _translate_native, _validate_batch
 from riffdb_application import _native
@@ -147,6 +148,8 @@ class RuntimeTests(unittest.TestCase):
         invalid_metadata = CallMetadata().with_database(DatabaseAlias("NOT_CANONICAL"))
         with self.assertRaises(InvalidInput):
             SyncApplicationTransport.connect_uri("http://127.0.0.1:1", invalid_metadata)
+        with self.assertRaises(InvalidInput):
+            VerifiedTlsConfig("https://127.0.0.1:7443", "/ca.pem", "127.0.0.1", 17, 64)
 
     def test_credentials_are_redacted_and_non_pickleable(self) -> None:
         credential = BearerCredential("A" * 43)

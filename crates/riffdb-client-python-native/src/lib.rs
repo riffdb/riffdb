@@ -3,8 +3,10 @@
 //! Private PyO3 bridge for the stable RiffDB application client.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -18,6 +20,9 @@ use riffdb_client_rust::{
     ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
     NamedQuery, QueryOptions, StableApplicationClient, TraceParent,
     load_protected_bearer_credential,
+};
+use riffdb_config::{
+    CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -152,6 +157,42 @@ impl NativeSyncClient {
         })
     }
 
+    #[classmethod]
+    // PyO3 exposes this as keyword-only constructor fields; retaining the
+    // closed scalar boundary avoids accepting an unvalidated mapping.
+    #[allow(clippy::too_many_arguments)]
+    fn connect_verified_tls(
+        _class: &Bound<'_, PyType>,
+        py: Python<'_>,
+        endpoint: String,
+        trust_root: String,
+        server_name: String,
+        pool_connections: u32,
+        streams_per_connection: u32,
+        metadata: PyRef<'_, NativeCallMetadata>,
+    ) -> PyResult<Self> {
+        let tls = tls_config(
+            endpoint,
+            trust_root,
+            server_name,
+            pool_connections,
+            streams_per_connection,
+        )?;
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .map_err(|_| native_error("connection_failure", None))?;
+        let client = py
+            .detach(|| runtime.block_on(StableApplicationClient::connect_verified_tls(&tls)))
+            .map_err(client_error)?;
+        Ok(Self {
+            runtime,
+            client: Mutex::new(Some(client)),
+            metadata: metadata.inner.clone(),
+        })
+    }
+
     fn execute_named_query(&self, py: Python<'_>, request: &str) -> PyResult<String> {
         let request = parse_query(request)?;
         let mut client = self.client()?;
@@ -219,6 +260,48 @@ fn connect_async<'py>(
     let metadata = metadata.inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let client = StableApplicationClient::connect_uri(endpoint)
+            .await
+            .map_err(client_error)?;
+        Python::attach(|py| {
+            Py::new(
+                py,
+                NativeAsyncClient {
+                    client: Mutex::new(Some(client)),
+                    metadata,
+                },
+            )
+        })
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    endpoint,
+    trust_root,
+    server_name,
+    pool_connections,
+    streams_per_connection,
+    metadata
+))]
+fn connect_async_verified_tls<'py>(
+    py: Python<'py>,
+    endpoint: String,
+    trust_root: String,
+    server_name: String,
+    pool_connections: u32,
+    streams_per_connection: u32,
+    metadata: PyRef<'_, NativeCallMetadata>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let tls = tls_config(
+        endpoint,
+        trust_root,
+        server_name,
+        pool_connections,
+        streams_per_connection,
+    )?;
+    let metadata = metadata.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let client = StableApplicationClient::connect_verified_tls(&tls)
             .await
             .map_err(client_error)?;
         Python::attach(|py| {
@@ -1393,6 +1476,37 @@ fn parse_json<T: for<'de> Deserialize<'de>>(source: &str) -> PyResult<T> {
     serde_json::from_str(source).map_err(|_| native_error("invalid_input", None))
 }
 
+fn tls_config(
+    endpoint: String,
+    trust_root: String,
+    server_name: String,
+    pool_connections: u32,
+    streams_per_connection: u32,
+) -> PyResult<TlsClientConfig> {
+    let endpoint = CanonicalHttpsEndpoint::parse(&endpoint)
+        .map_err(|_| native_error("invalid_input", None))?;
+    let trust_root = ProtectedFilePath::new(Path::new(&trust_root).to_path_buf())
+        .map_err(|_| native_error("invalid_input", None))?;
+    let server_name =
+        TlsServerIdentity::parse(&server_name).map_err(|_| native_error("invalid_input", None))?;
+    let pool_connections = NonZeroU32::new(pool_connections)
+        .filter(|value| value.get() <= 16)
+        .ok_or_else(|| native_error("invalid_input", None))?;
+    let streams_per_connection = NonZeroU32::new(streams_per_connection)
+        .filter(|value| value.get() <= 256)
+        .ok_or_else(|| native_error("invalid_input", None))?;
+    TlsClientConfig::new(
+        endpoint,
+        trust_root,
+        server_name,
+        Duration::from_secs(5),
+        Duration::from_secs(30),
+        pool_connections,
+        streams_per_connection,
+    )
+    .map_err(|_| native_error("invalid_input", None))
+}
+
 fn serialize(value: &Value) -> PyResult<String> {
     serde_json::to_string(value).map_err(|_| native_error("protocol_error", None))
 }
@@ -1505,6 +1619,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeSyncClient>()?;
     module.add_class::<NativeAsyncClient>()?;
     module.add_function(wrap_pyfunction!(connect_async, module)?)?;
+    module.add_function(wrap_pyfunction!(connect_async_verified_tls, module)?)?;
     module.add_function(wrap_pyfunction!(validate_bridge_value, module)?)?;
     Ok(())
 }

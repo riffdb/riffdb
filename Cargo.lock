@@ -1751,6 +1751,7 @@ dependencies = [
  "pyo3",
  "pyo3-async-runtimes",
  "riffdb-client-rust",
+ "riffdb-config",
  "serde",
  "serde_json",
  "tokio",

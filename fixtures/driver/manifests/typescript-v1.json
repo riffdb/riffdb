@@ -1,0 +1,15 @@
+{
+  "schema": "riffdb.driver-conformance-manifest/v1",
+  "language": "typescript",
+  "artifact": "offline-npm-tree",
+  "transport": "retained-rust-driver-host",
+  "platforms": ["linux-x86_64"],
+  "corpus_sha256": "69e9fdcbc350308ceda6fbaf1d97ff65ff6b4598dfe3b37693ed9043a05ca764",
+  "remote_tls": "installed",
+  "typed_errors": "installed",
+  "read_after_commit": "installed",
+  "pooling": "installed-in-host",
+  "cancellation": "installed",
+  "reactive_streams": "installed",
+  "unavailable": []
+}

@@ -1,0 +1,15 @@
+{
+  "schema": "riffdb.driver-conformance-manifest/v1",
+  "language": "python",
+  "artifact": "native-wheel",
+  "transport": "native-grpc",
+  "platforms": ["linux-x86_64-cpython-3.13", "linux-x86_64-cpython-3.14", "linux-aarch64-cpython-3.13", "linux-aarch64-cpython-3.14"],
+  "corpus_sha256": "69e9fdcbc350308ceda6fbaf1d97ff65ff6b4598dfe3b37693ed9043a05ca764",
+  "remote_tls": "installed",
+  "typed_errors": "installed",
+  "read_after_commit": "installed",
+  "pooling": "installed-native",
+  "cancellation": "installed",
+  "reactive_streams": "installed-async",
+  "unavailable": ["reactive-stream-sync-facade"]
+}

@@ -122,6 +122,26 @@ action, checked operation and symbol path, authorized contract identity, trace
 identity, incident identity, and command uncertainty flag. Local parsing never
 classifies failures from prose.
 
+## Cross-language conformance
+
+The alpha freezes one shared corpus under `fixtures/driver`. Rust, Go,
+TypeScript, and Python each create and replay a command, perform a
+read-after-commit query, and observe the same typed idempotency-reuse failure
+against one verified-TLS daemon, database, contract, and symbolic role. The
+same gate revokes that role and proves the retained host no longer supplies
+authority. Local installed-artifact cells cover bounded cancellation,
+uncertainty, malformed frames, reactive cursor/lease handling, and shutdown.
+
+Run the complete proof with:
+
+```bash
+./scripts/driver-conformance --all-languages --remote
+```
+
+`fixtures/driver/manifests/*-v1.json` states each language's exact transport,
+platform claims, feature availability, and corpus digest. An unsupported cell
+is named explicitly; it is not filled by handwritten application glue.
+
 The POC driver host is Linux-only. Generated Go and long-lived TypeScript
 bindings speak this protocol through one retained local session. Their public
 runtimes expose only the protected socket and public exact-handshake identity;

@@ -28,7 +28,7 @@ or the private native module. Both transports delegate gRPC status validation,
 request identity, bounded retry, and uncertain-outcome behavior to the stable
 Rust application client.
 
-`AsyncApplicationTransport` also backs Application Source V4 generated event
+`AsyncApplicationTransport` also backs Application Source V5 generated event
 iterators and live named-query iterators. Generated delivery types retain the
 attempt-specific acknowledgement evidence, and live cursors are returned as
 standard padded Base64 for persistence. See [Reactive Application
@@ -70,6 +70,27 @@ Credentials are Rust-owned, redacted, nonextractable, non-pickleable objects.
 Use `BearerCredential.from_protected_file()` for a mode-0600 Linux credential.
 Use `CallMetadata.with_database(DatabaseAlias("my_database"))` to select one
 database before authentication.
+
+For an authenticated remote listener, configure explicit private-CA trust;
+Python never falls back to native roots or a trust-all mode:
+
+```python
+from riffdb_application import SyncApplicationTransport, VerifiedTlsConfig
+
+tls = VerifiedTlsConfig(
+    endpoint="https://riffdb.internal:7443",
+    trust_root="/run/secrets/riffdb-ca.pem",
+    server_name="riffdb.internal",
+    pool_connections=4,
+    streams_per_connection=64,
+)
+with SyncApplicationTransport.connect_verified_tls(tls, metadata) as transport:
+    client = MyAppClient(transport, AttemptBudget(3))
+```
+
+The asynchronous transport exposes the same verified-TLS constructor. Pool
+connections are bounded from 1 through 16 and streams per connection from 1
+through 256 before native transport work begins.
 
 ## Existing applications
 
