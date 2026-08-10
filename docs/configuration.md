@@ -1,7 +1,9 @@
 # Configuration Reference
 
-All current POC network listeners and public client endpoints are literal
-loopback addresses. Cleartext loopback HTTP is the only accepted transport.
+Application gRPC has a closed listener profile: development-only cleartext on
+a literal loopback address, verified direct TLS on TCP, or a protected Unix
+socket. There is no insecure remote mode. Hosted MCP remains loopback-only.
+See [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md).
 
 ## `riffdbd`
 
@@ -23,7 +25,7 @@ with alias `default`. A process may instead define 1 through 32
 | Setting | CLI | Environment | TOML | Default | Restart | Impact |
 |---|---|---|---|---|---|---|
 | Database | `--database` | `RIFFDB_DATABASE` | `server.database` | `data/riffdb.redb` | Yes | Correctness, storage compatibility |
-| gRPC listen | `--listen` | `RIFFDB_LISTEN` | `server.grpc_listen` | `127.0.0.1:7443` | Yes | Availability, security |
+| Application listener | `--listen` (legacy loopback only) | `RIFFDB_LISTEN` (legacy loopback only) | `server.grpc_listen` or `server.application_listener` | `127.0.0.1:7443` loopback cleartext | Yes | Availability, security |
 | Environment | `--environment` | `RIFFDB_ENVIRONMENT` | `server.environment` | `local` | Yes | Capability authentication compatibility |
 | gRPC audience | `--audience` | `RIFFDB_AUDIENCE` | `server.audience` | `riffdb-grpc-loopback` | Yes | Capability authentication compatibility |
 | Hosted MCP listen | `--mcp-listen` | `RIFFDB_MCP_LISTEN` | `server.mcp_listen` | absent | Yes | Availability, security |
@@ -48,6 +50,47 @@ idempotency_keys = "/etc/riffdb/idempotency.keys"
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
 ```
+
+The legacy `server.grpc_listen` form always means literal-loopback cleartext.
+For an explicit closed listener profile, omit `grpc_listen` and select exactly
+one tagged table:
+
+```toml
+[server.application_listener]
+mode = "loopback_cleartext"
+listen = "127.0.0.1:7443"
+```
+
+```toml
+[server.application_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7443"
+public_endpoint = "https://riffdb.internal.example:7443"
+certificate_chain = "/etc/riffdb/tls/server-chain.pem"
+private_key = "/etc/riffdb/tls/server-key.pem"
+
+[server.application_listener.bounds]
+max_connections = 1024
+max_streams_per_connection = 128
+handshake_timeout_seconds = 10
+idle_timeout_seconds = 300
+keepalive_interval_seconds = 30
+drain_timeout_seconds = 30
+```
+
+```toml
+[server.application_listener]
+mode = "local_socket"
+path = "/run/riffdb/application.sock"
+access = "owner_only" # or "owner_and_group"
+```
+
+The explicit listener table cannot be mixed with `grpc_listen`, `--listen`, or
+`RIFFDB_LISTEN`. TLS has no cleartext fallback, native-root mode, trust-all
+mode, mutual-TLS selector, cipher-suite selector, or provider selector. The
+certificate must contain the DNS/IP identity in `public_endpoint`; validation
+happens before bind. Certificate/key replacements are adopted atomically for
+new handshakes only after the complete pair validates.
 
 The equivalent multi-database form is:
 
@@ -185,10 +228,12 @@ The TOML path is selected only by `--config`, then `RIFFDB_CONFIG`, then
 absence. There is no directory discovery. A present invalid higher-precedence
 value rejects instead of falling through.
 
-The sole TOML table is `[client]`; unknown, duplicate, or wrong-type input
-rejects. The endpoint is exact lowercase
-`http://<literal-loopback-IP>:<port-1..65535>`. Output is `human` or `json`.
-Attempts is canonical decimal `1..=10`.
+The CLI's current `[client]` endpoint remains exact lowercase
+`http://<literal-loopback-IP>:<port-1..65535>`; remote verified-TLS application
+connections use the Rust client configuration documented in
+[Remote and Local Application Ingress](operations/REMOTE-INGRESS.md). Unknown,
+duplicate, or wrong-type input rejects. Output is `human` or `json`. Attempts
+is canonical decimal `1..=10`.
 
 Exactly one normal credential source may resolve:
 

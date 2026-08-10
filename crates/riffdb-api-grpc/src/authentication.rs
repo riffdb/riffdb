@@ -259,6 +259,42 @@ mod tests {
     }
 
     #[test]
+    fn forwarded_identity_and_authorization_headers_never_become_credentials() {
+        const TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut metadata = MetadataMap::new();
+        for (name, value) in [
+            ("forwarded", "for=127.0.0.1;proto=https"),
+            ("x-forwarded-authorization", "Bearer forwarded"),
+            ("x-forwarded-user", "administrator"),
+            ("x-riffdb-principal", "operator"),
+            ("x-riffdb-tenant", "all"),
+            ("x-riffdb-database", "default"),
+        ] {
+            metadata.insert(
+                name,
+                value.parse().expect("valid ASCII proxy metadata value"),
+            );
+        }
+        assert_eq!(
+            extract_normal_credential(&metadata)
+                .expect_err("forwarded metadata must not authenticate")
+                .code(),
+            Code::Unauthenticated
+        );
+
+        metadata.insert(
+            AUTHORIZATION_METADATA_KEY,
+            format!("Bearer {TOKEN}")
+                .parse()
+                .expect("valid direct authorization metadata"),
+        );
+        assert_eq!(
+            extract_normal_credential(&metadata).expect("direct bearer is the sole authority"),
+            TOKEN.as_bytes()
+        );
+    }
+
+    #[test]
     fn bootstrap_rejects_authorization_metadata() {
         let mut metadata = MetadataMap::new();
         metadata.insert(

@@ -1339,6 +1339,7 @@ pub(crate) fn map_client_error(error: ClientError) -> McpBackendError {
         | ClientError::Protocol(_)
         | ClientError::IdentifierGeneration(_)
         | ClientError::ConnectionFailure
+        | ClientError::Tls(_)
         | ClientError::OutcomeUnknown(_) => McpBackendError::InvalidResponse,
     }
 }
@@ -2325,6 +2326,17 @@ mod tests {
             )),
             McpBackendError::TargetUnavailable
         ));
+        for failure in [
+            riffdb_client_rust::TlsClientFailure::TrustRootUnavailable,
+            riffdb_client_rust::TlsClientFailure::TrustRootPermissions,
+            riffdb_client_rust::TlsClientFailure::InvalidConfiguration,
+            riffdb_client_rust::TlsClientFailure::ConnectionOrPeerVerification,
+        ] {
+            assert!(matches!(
+                map_client_error(ClientError::Tls(failure)),
+                McpBackendError::InvalidResponse
+            ));
+        }
     }
 
     #[test]

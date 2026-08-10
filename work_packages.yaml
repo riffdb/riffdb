@@ -9998,7 +9998,9 @@ work_packages:
     fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-errors/**,
     crates/riffdb-config/**, crates/riffdb-auth/**, crates/riffdb-service/**,
     crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
-    crates/riffdb-server/**, crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-server/**, crates/riffdb-observability/**, crates/riffdb-cli/**,
+    crates/riffdb-client-python-native/**, crates/riffdb-mcp-stdio/**, examples/**,
+    tests/**, scripts/**, docs/**]
   deliverables:
   - Closed loopback-cleartext, direct-TLS, and protected-local-socket listener configuration with
     canonical endpoint identity and pre-bind validation

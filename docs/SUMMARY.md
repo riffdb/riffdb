@@ -61,6 +61,7 @@
 # Operate RiffDB
 
 - [Configuration](configuration.md)
+- [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md)
 - [Multiple Databases](operations/MULTIPLE-DATABASES.md)
 - [Backup and Restore](backup-restore.md)
 - [Contract Migration Acceptance](operations/CONTRACT-MIGRATION-ACCEPTANCE.md)

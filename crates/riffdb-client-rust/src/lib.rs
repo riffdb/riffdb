@@ -83,7 +83,7 @@ pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
 pub use status::{
     ClientError, DetailsFreeStatus, OutcomeUnknown, ProtocolFailure, ProtocolFailureKind,
 };
-pub use tls::TlsClientFailure;
+pub use tls::{TlsClientFailure, TlsTrustReloadStatus, VerifiedTlsConnector};
 
 pub use riffdb_errors::{
     ApplicationError, ApplicationErrorCategory, ApplicationErrorCode, ApplicationErrorContext,

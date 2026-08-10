@@ -1444,14 +1444,19 @@ fn client_error(error: ClientError) -> PyErr {
     if let Some(error) = error.application_error() {
         return native_error("application", Some(application_error_json(error)));
     }
+    native_error(non_application_client_error_kind(&error), None)
+}
+
+fn non_application_client_error_kind(error: &ClientError) -> &'static str {
     match error {
         ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
         | ClientError::ConnectionFailure
-        | ClientError::IdentifierGeneration(_) => native_error("connection_failure", None),
-        ClientError::OutcomeUnknown(_) => native_error("outcome_unknown", None),
-        ClientError::Protocol(_) => native_error("protocol_error", None),
+        | ClientError::IdentifierGeneration(_)
+        | ClientError::Tls(_) => "connection_failure",
+        ClientError::OutcomeUnknown(_) => "outcome_unknown",
+        ClientError::Protocol(_) => "protocol_error",
         ClientError::Public(_) | ClientError::Application(_) | ClientError::DetailsFree(_) => {
-            native_error("protocol_error", None)
+            "protocol_error"
         }
     }
 }

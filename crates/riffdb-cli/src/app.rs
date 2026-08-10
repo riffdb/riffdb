@@ -7979,8 +7979,14 @@ mod tests {
             value["error"]["next_command"],
             "run the RiffDB binary matching the database format manifest"
         );
-        assert_eq!(fs::read(&path).expect("re-read database"), b"retained-database");
-        assert_eq!(fs::read(&marker).expect("re-read marker"), b"corrupt-marker");
+        assert_eq!(
+            fs::read(&path).expect("re-read database"),
+            b"retained-database"
+        );
+        assert_eq!(
+            fs::read(&marker).expect("re-read marker"),
+            b"corrupt-marker"
+        );
         fs::remove_file(marker).expect("remove marker fixture");
         fs::remove_file(path).expect("remove database fixture");
     }

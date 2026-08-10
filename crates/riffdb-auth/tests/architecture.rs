@@ -115,8 +115,14 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
         (
             "zeroize",
             "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }",
-            ["riffdb-auth", "riffdb-cli", "riffdb-client-rust"].as_slice(),
-            ["riffdb-auth", "riffdb-client-rust"].as_slice(),
+            [
+                "riffdb-auth",
+                "riffdb-cli",
+                "riffdb-client-rust",
+                "riffdb-server",
+            ]
+            .as_slice(),
+            ["riffdb-auth", "riffdb-client-rust", "riffdb-server"].as_slice(),
         ),
     ];
     for (dependency, row, allowed, required_now) in registries {
@@ -129,7 +135,7 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
         for required in required_now {
             assert!(
                 actual.iter().any(|owner| owner == required),
-                "WP-137 requires the reviewed {dependency} edge in {required}"
+                "an accepted dependency boundary requires the reviewed {dependency} edge in {required}"
             );
         }
     }
@@ -264,12 +270,17 @@ fn retained_opaque_credential_stays_auth_owned_and_non_exposing() {
     assert!(implementation.contains("pub fn borrow(&self) -> OpaqueCredential<'_>"));
     let zeroize_row =
         "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }";
-    let allowed = ["riffdb-auth", "riffdb-cli", "riffdb-client-rust"];
+    let allowed = [
+        "riffdb-auth",
+        "riffdb-cli",
+        "riffdb-client-rust",
+        "riffdb-server",
+    ];
     let actual = production_dependency_owners("zeroize");
     assert_eq!(
         actual,
         owners_with_reviewed_row(&allowed, zeroize_row),
-        "retained credentials must not add a new direct zeroize owner"
+        "only the reviewed TLS server may join the retained-credential zeroize owners"
     );
     assert!(
         !actual.iter().any(|owner| owner == "riffdb-api-mcp"),

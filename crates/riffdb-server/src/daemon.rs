@@ -3346,7 +3346,7 @@ impl HostedGrpc {
                 let local_address = incoming.local_addr().map_err(DaemonError::Listener)?;
                 let bounds = listener.bounds();
                 let incoming = ReloadingTlsIncoming::new(
-                    BoundedIncoming::new(incoming, bounds.max_connections()),
+                    BoundedIncoming::new(incoming, bounds.max_connections(), bounds.idle_timeout()),
                     identity,
                     bounds,
                 );
@@ -3373,7 +3373,11 @@ impl HostedGrpc {
                     let router = application_router(Server::builder(), application, Some(bounds));
                     let rebind_config = ApplicationListenerConfig::LocalSocket(listener);
                     let task = tokio::spawn(router.serve_with_incoming_shutdown(
-                        BoundedIncoming::new(incoming, bounds.max_connections()),
+                        BoundedIncoming::new(
+                            incoming,
+                            bounds.max_connections(),
+                            bounds.idle_timeout(),
+                        ),
                         shutdown_signal(stopped),
                     ));
                     Ok(Self {
@@ -3460,13 +3464,15 @@ async fn shutdown_signal(stopped: oneshot::Receiver<()>) {
 struct BoundedIncoming<S> {
     incoming: Pin<Box<S>>,
     permits: Arc<Semaphore>,
+    idle_timeout: Duration,
 }
 
 impl<S> BoundedIncoming<S> {
-    fn new(incoming: S, maximum_connections: NonZeroU32) -> Self {
+    fn new(incoming: S, maximum_connections: NonZeroU32, idle_timeout: Duration) -> Self {
         Self {
             incoming: Box::pin(incoming),
             permits: Arc::new(Semaphore::new(maximum_connections.get() as usize)),
+            idle_timeout,
         }
     }
 }
@@ -3474,6 +3480,8 @@ impl<S> BoundedIncoming<S> {
 struct AdmittedConnection<IO> {
     io: IO,
     _permit: OwnedSemaphorePermit,
+    idle_timeout: Duration,
+    idle: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl<S, IO, E> Stream for BoundedIncoming<S>
@@ -3495,6 +3503,8 @@ where
                         return Poll::Ready(Some(Ok(AdmittedConnection {
                             io,
                             _permit: permit,
+                            idle_timeout: self.idle_timeout,
+                            idle: Box::pin(tokio::time::sleep(self.idle_timeout)),
                         })));
                     }
                     Err(_) => drop(io),
@@ -3511,7 +3521,19 @@ impl<IO: AsyncRead + Unpin> AsyncRead for AdmittedConnection<IO> {
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_read(context, buffer)
+        if self.idle.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut self.io).poll_read(context, buffer);
+        if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > before {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.idle.as_mut().reset(deadline);
+        }
+        result
     }
 }
 
@@ -3521,7 +3543,18 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        Pin::new(&mut self.io).poll_write(context, buffer)
+        if self.idle.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let result = Pin::new(&mut self.io).poll_write(context, buffer);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.idle.as_mut().reset(deadline);
+        }
+        result
     }
 
     fn poll_flush(
@@ -3547,7 +3580,18 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<Result<usize, io::Error>> {
-        Pin::new(&mut self.io).poll_write_vectored(context, buffers)
+        if self.idle.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let result = Pin::new(&mut self.io).poll_write_vectored(context, buffers);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.idle.as_mut().reset(deadline);
+        }
+        result
     }
 }
 
@@ -3565,6 +3609,7 @@ type TlsHandshake =
 
 struct ReloadingTlsIncoming {
     incoming: BoundedIncoming<TcpIncoming>,
+    incoming_ended: bool,
     handshakes: FuturesUnordered<TlsHandshake>,
     identity: ReloadableTlsIdentity,
     handshake_timeout: Duration,
@@ -3579,6 +3624,7 @@ impl ReloadingTlsIncoming {
     ) -> Self {
         Self {
             incoming,
+            incoming_ended: false,
             handshakes: FuturesUnordered::new(),
             identity,
             handshake_timeout: bounds.handshake_timeout(),
@@ -3591,32 +3637,36 @@ impl Stream for ReloadingTlsIncoming {
     type Item = Result<TlsConnection, io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        while self.handshakes.len() < self.maximum_handshakes {
-            match Pin::new(&mut self.incoming).poll_next(context) {
-                Poll::Ready(Some(Ok(connection))) => {
-                    let snapshot = self.identity.snapshot_for_new_handshake();
-                    let timeout = self.handshake_timeout;
-                    self.handshakes.push(Box::pin(async move {
-                        match tokio::time::timeout(
-                            timeout,
-                            TlsAcceptor::from(snapshot).accept(connection),
-                        )
-                        .await
-                        {
-                            Ok(Ok(connection)) => Some(Ok(connection)),
-                            Ok(Err(_)) | Err(_) => None,
-                        }
-                    }));
+        'poll: loop {
+            while !self.incoming_ended && self.handshakes.len() < self.maximum_handshakes {
+                match Pin::new(&mut self.incoming).poll_next(context) {
+                    Poll::Ready(Some(Ok(connection))) => {
+                        let snapshot = self.identity.snapshot_for_new_handshake();
+                        let timeout = self.handshake_timeout;
+                        self.handshakes.push(Box::pin(async move {
+                            match tokio::time::timeout(
+                                timeout,
+                                TlsAcceptor::from(snapshot).accept(connection),
+                            )
+                            .await
+                            {
+                                Ok(Ok(connection)) => Some(Ok(connection)),
+                                Ok(Err(_)) | Err(_) => None,
+                            }
+                        }));
+                    }
+                    Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                    Poll::Ready(None) => {
+                        self.incoming_ended = true;
+                        break;
+                    }
+                    Poll::Pending => break,
                 }
-                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
-                Poll::Ready(None) => break,
-                Poll::Pending => break,
             }
-        }
-        loop {
             match Pin::new(&mut self.handshakes).poll_next(context) {
                 Poll::Ready(Some(Some(result))) => return Poll::Ready(Some(result)),
-                Poll::Ready(Some(None)) => {}
+                Poll::Ready(Some(None)) => continue 'poll,
+                Poll::Ready(None) if self.incoming_ended => return Poll::Ready(None),
                 Poll::Ready(None) | Poll::Pending => return Poll::Pending,
             }
         }
