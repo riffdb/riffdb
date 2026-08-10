@@ -2377,6 +2377,71 @@ mod tests {
     }
 
     #[test]
+    fn query_cursor_binds_operational_family_and_parameter_presence() {
+        fn uuid_bytes(seed: u8) -> [u8; 16] {
+            let mut bytes = [seed; 16];
+            bytes[6] = 0x70 | (seed & 0x0f);
+            bytes[8] = 0x80 | (seed & 0x3f);
+            bytes
+        }
+
+        fn lookup(family: u8, parameters: u8) -> QueryCursorLookup {
+            QueryCursorLookup::new(
+                CursorContractIdentity::new(
+                    ContractLineage::new("operational").expect("bounded lineage"),
+                    ContractVersion::new(1).expect("nonzero contract version"),
+                    ContractBundleHash::from_bytes([0x11; 32]),
+                ),
+                Some(riffdb_types::QueryModuleHash::from_bytes([0x22; 32])),
+                QueryPlanHash::from_bytes([family; 32]),
+                QueryParameterHash::from_bytes([parameters; 32]),
+                CapabilityId::from_bytes(uuid_bytes(0x33)).expect("valid capability UUIDv7"),
+                NonZeroU64::new(1).expect("nonzero capability revision"),
+            )
+        }
+
+        let registry = CursorRegistry::new(SequentialGenerator::new(), FixedClock::at(0));
+        let principal = ActorId::new("operational-reader").expect("bounded principal");
+        let exact_lookup = lookup(0x44, 0x55);
+        let token = registry
+            .register(
+                CursorBinding::new(
+                    principal.clone(),
+                    ServiceCursorLookup::Query(exact_lookup.clone()),
+                ),
+                7_u8,
+            )
+            .expect("query cursor registers")
+            .token();
+
+        assert_eq!(
+            *registry
+                .resolve(
+                    token,
+                    &CursorBinding::new(
+                        principal.clone(),
+                        ServiceCursorLookup::Query(exact_lookup),
+                    ),
+                )
+                .expect("exact operational cursor resolves"),
+            7
+        );
+
+        for mismatch in [
+            lookup(0x45, 0x55), // changed deployed family identity
+            lookup(0x44, 0x56), // changed values or optional-parameter presence
+        ] {
+            assert!(matches!(
+                registry.resolve(
+                    token,
+                    &CursorBinding::new(principal.clone(), ServiceCursorLookup::Query(mismatch),),
+                ),
+                Err(CursorAccessError::InvalidCursor)
+            ));
+        }
+    }
+
+    #[test]
     fn unpublished_cursor_is_removed_and_published_cursor_is_retained() {
         let registry = ServiceCursorRegistries::new(
             Arc::new(SequentialGenerator::new()),
