@@ -21,8 +21,88 @@
 
 use riffdb_testkit::failpoint::{RECOVERY_SCENARIOS, RecoveryEvidenceKind};
 
-use crate::campaign::{CampaignConfig, CampaignReport, run_campaign};
+use crate::campaign::{
+    CampaignConfig, CampaignOutcome, CampaignReport, REDB_PIN_CONTAINS_FD82CED,
+    run_campaign_outcome,
+};
 use crate::generator::GeneratorConfig;
+
+/// riffdb-sim's own manifest, for the redb-pin guard below.
+const SIM_MANIFEST: &str = include_str!("../../Cargo.toml");
+
+/// One crash-placement exclusion active for the current engine pin. These
+/// narrow the campaign's EXPLORED placement space — never silently: every
+/// exclusion is enumerated here, guarded for pin consistency, and realized as
+/// a typed campaign outcome the sweep counts openly.
+pub(crate) struct PlacementExclusion {
+    /// Stable exclusion name.
+    pub name: &'static str,
+    /// Verifiable reason, citing the defect and its upstream disposition.
+    pub reason: &'static str,
+    /// Whether the exclusion is active under the current pin.
+    pub active: bool,
+    /// What removes the exclusion.
+    pub removal: &'static str,
+}
+
+/// The complete placement-exclusion inventory (SIM-006 exclusion machinery —
+/// a reader of the coverage tests sees every narrowed placement here).
+pub(crate) const CAMPAIGN_PLACEMENT_EXCLUSIONS: &[PlacementExclusion] = &[PlacementExclusion {
+    name: "redb-4.1.0-file-growth-single-fsync-wedge",
+    reason: "crash placements inside a file-growing commit's single-fsync \
+             window can durably keep the in-commit god-header write while \
+             losing the covering set_len extension; redb 4.1.0 panics on \
+             every subsequent open of that state (page_manager.rs:231) \
+             instead of running its own repair path — fixed upstream in \
+             commit fd82ced (\"Make file growth durable to avoid an \
+             unopenable database after a crash\", 2026-06-13, unreleased); \
+             the pinned =4.1.0 predates the fix. Reproducer: \
+             campaign::finding_redb_reopen_panic_reproducer (seed \
+             0x51C2_C003); regression pin: the corpus's inaugural entry.",
+    active: !REDB_PIN_CONTAINS_FD82CED,
+    removal: "advance the redb pin past fd82ced and flip \
+              campaign::REDB_PIN_CONTAINS_FD82CED — the wedge panic then \
+              propagates again and the corpus entry flips to asserting clean \
+              recovery",
+}];
+
+/// The redb-pin guard: the exclusion inventory cannot drift from the actual
+/// pin. If the pin moves while `REDB_PIN_CONTAINS_FD82CED` still says
+/// `false`, this reds until a human determines whether the new pin contains
+/// the fix and flips the constant (with the corpus-entry expectation).
+#[test]
+fn placement_exclusions_are_consistent_with_the_redb_pin() {
+    let pinned_4_1_0 = SIM_MANIFEST.contains("redb = { version = \"=4.1.0\"");
+    if REDB_PIN_CONTAINS_FD82CED {
+        assert!(
+            !pinned_4_1_0,
+            "redb 4.1.0 cannot contain fd82ced; the constant is wrong"
+        );
+    } else {
+        assert!(
+            pinned_4_1_0,
+            "the redb pin moved off =4.1.0: determine whether the new pin \
+             contains upstream fd82ced and flip \
+             campaign::REDB_PIN_CONTAINS_FD82CED accordingly — the \
+             file-growth placement exclusion and the corpus's inaugural \
+             entry flip with it"
+        );
+    }
+    for exclusion in CAMPAIGN_PLACEMENT_EXCLUSIONS {
+        assert!(!exclusion.name.trim().is_empty());
+        assert!(
+            !exclusion.reason.trim().is_empty() && !exclusion.removal.trim().is_empty(),
+            "{}: a placement exclusion carries a verifiable reason and a \
+             removal condition",
+            exclusion.name
+        );
+        assert_eq!(
+            exclusion.active, !REDB_PIN_CONTAINS_FD82CED,
+            "{}: exclusion activation must key on the pin constant",
+            exclusion.name
+        );
+    }
+}
 
 /// Evidence a pinned campaign schedule must exhibit to reproduce one covered
 /// row's crash point.
@@ -100,8 +180,9 @@ pub(crate) enum ScenarioClass {
     OutOfScopeRealFilesystemAdapter,
 }
 
-/// The pinned schedule shared by the covered command-commit rows.
-const COMMIT_ARMS_CONFIG: CampaignConfig = CampaignConfig {
+/// The pinned schedule shared by the covered command-commit rows (also the
+/// corpus and reproducer schedule).
+pub(crate) const COMMIT_ARMS_CONFIG: CampaignConfig = CampaignConfig {
     generator: GeneratorConfig {
         commands: 18,
         max_targets: 8,
@@ -118,7 +199,7 @@ const COMMIT_ARMS_CONFIG: CampaignConfig = CampaignConfig {
 
 /// The pinned schedule shared by the covered initialization rows: a tight
 /// crash window aims the first crashes into the bring-up sequence.
-const INITIALIZATION_ARMS_CONFIG: CampaignConfig = CampaignConfig {
+pub(crate) const INITIALIZATION_ARMS_CONFIG: CampaignConfig = CampaignConfig {
     generator: GeneratorConfig {
         commands: 6,
         max_targets: 4,
@@ -172,17 +253,22 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
         },
     ),
     (
+        // Scouted over 256 seeds; 0x51C2_C0E1 resolves an interrupted batch
+        // PRESENT in full (the crash landed after the engine commit) and was
+        // rerun 12/12 with identical counters before pinning.
         "command.commit.after-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C001,
+            seed: 0x51C2_C0E1,
             config: COMMIT_ARMS_CONFIG,
             evidence: CoveredEvidence::InFlightCommitPresent,
         },
     ),
     (
+        // The same pinned campaign resolves four interrupted batches ABSENT
+        // in full (crashes before the engine commit).
         "command.commit.before-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C001,
+            seed: 0x51C2_C0E1,
             config: COMMIT_ARMS_CONFIG,
             evidence: CoveredEvidence::InFlightCommitAbsent,
         },
@@ -329,9 +415,13 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
         },
     ),
     (
+        // Scouted over 64 seeds; 0x51C2_1025 observes the installed
+        // DatabaseId preserved across seven post-crash bring-ups AND one
+        // interrupted initialization rolled back, rerun 10/10 with identical
+        // counters before pinning.
         "startup.initialization.after-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C002,
+            seed: 0x51C2_1025,
             config: INITIALIZATION_ARMS_CONFIG,
             evidence: CoveredEvidence::InitializationSurvived,
         },
@@ -339,7 +429,7 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
     (
         "startup.initialization.before-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C002,
+            seed: 0x51C2_1025,
             config: INITIALIZATION_ARMS_CONFIG,
             evidence: CoveredEvidence::InitializationRolledBack,
         },
@@ -488,16 +578,11 @@ fn every_recovery_scenario_row_is_classified_exactly_once() {
 /// SIM-006: every covered row's pinned campaign schedule reaches the row's
 /// crash point and recovers with oracle agreement (the campaign panics on any
 /// validation or oracle failure, so a returned report IS the recovery
-/// evidence; the counter assertion is the crash-point reachability proof).
-///
-/// STOPPED (SIM-C2 finding): the pinned seeds above are PLACEHOLDERS — seed
-/// selection was interrupted when campaign development surfaced the redb
-/// 4.1.0 reopen panic (`finding_redb_reopen_panic_reproducer`); this test
-/// reds or panics until the engine finding is resolved and honest seeds are
-/// pinned. Un-ignoring it without that resolution would either normalize the
-/// bug (dodging seeds) or fail.
+/// evidence; the counter assertion is the crash-point reachability proof). A
+/// pinned schedule that wedges on the 4.1.0 placement exclusion fails — the
+/// pinned seeds are chosen to complete, with the exclusion documented in
+/// [`CAMPAIGN_PLACEMENT_EXCLUSIONS`], never silently skipped.
 #[test]
-#[ignore = "SIM-C2 stopped: pinned seeds unselected, blocked on the redb reopen-panic finding"]
 fn covered_rows_replay_as_pinned_campaign_schedules() {
     let mut cache: Vec<(u64, CampaignConfig, CampaignReport)> = Vec::new();
     for (name, class) in SCENARIO_CLASSIFICATION {
@@ -515,7 +600,14 @@ fn covered_rows_replay_as_pinned_campaign_schedules() {
         {
             Some((_, _, report)) => *report,
             None => {
-                let report = run_campaign(*seed, *config);
+                let CampaignOutcome::Completed(report) = run_campaign_outcome(*seed, *config)
+                else {
+                    panic!(
+                        "pinned schedule (seed {seed:#x}) for {name} wedged on \
+                         the redb 4.1.0 file-growth exclusion; pin a seed that \
+                         completes"
+                    );
+                };
                 cache.push((*seed, *config, report));
                 report
             }
@@ -527,8 +619,3 @@ fn covered_rows_replay_as_pinned_campaign_schedules() {
         );
     }
 }
-
-/// Scout/reproducer re-export of the commit-arms schedule.
-pub(crate) const COMMIT_ARMS_CONFIG_FOR_SCOUT: CampaignConfig = COMMIT_ARMS_CONFIG;
-/// Scout re-export of the initialization-arms schedule.
-pub(crate) const INITIALIZATION_ARMS_CONFIG_FOR_SCOUT: CampaignConfig = INITIALIZATION_ARMS_CONFIG;

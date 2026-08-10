@@ -3,16 +3,19 @@
 //! SIM-C2 (ADR-0113 Phase 1 items 5-7, SPEC SIM-004 and SIM-006): the seeded
 //! exploration campaign over the simulated store.
 //!
-//! **PACKAGE STOPPED ON AN ENGINE FINDING**: the campaign's first exploration
-//! beyond the hand-fixed fixtures surfaced a reachable torn-crash durable
-//! state that panics redb 4.1.0 on every subsequent open (see
-//! `campaign::finding_redb_reopen_panic_reproducer`). Per the standing rule a
-//! real engine failure is a stop-and-report event, so the standing sweep, the
-//! covered-row replays, and the corpus population are frozen
-//! (`#[ignore]`-with-reason) rather than tuned around the bug; SIM-004 and
-//! SIM-006 are NOT discharged by this tree. The generator and its determinism
-//! pins, the SIM-006 classification guard, and the corpus mechanism are
-//! complete and active.
+//! FIRST REAL ENGINE CATCH: the campaign's first exploration beyond the
+//! hand-fixed fixtures surfaced a reachable torn-crash durable state that
+//! panics redb 4.1.0 on every subsequent open — file growth is not durable
+//! until the one-phase commit's single fsync, so a torn crash can keep the
+//! in-commit header while losing the extension, and 4.1.0 asserts instead of
+//! repairing. Fixed upstream in `fd82ced` ("Make file growth durable to
+//! avoid an unopenable database after a crash"), unreleased; the pinned
+//! `=4.1.0` predates it. Until the pin advances the wedge is a TYPED,
+//! pin-guarded placement exclusion (`subsumption::CAMPAIGN_PLACEMENT_EXCLUSIONS`,
+//! flipped by `campaign::REDB_PIN_CONTAINS_FD82CED`), the corpus's inaugural
+//! entry must keep reproducing it, and
+//! `campaign::finding_redb_reopen_panic_reproducer` demonstrates it on
+//! demand.
 //!
 //! - [`generator`]: `WorkloadPlan::generate(seed, config)` — a deterministic,
 //!   pure-value command sequence over the compiled fixture contract family

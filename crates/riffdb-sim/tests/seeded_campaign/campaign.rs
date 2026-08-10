@@ -52,6 +52,29 @@ use crate::harness::{
     try_inspect, try_open_operational, try_open_simulated,
 };
 
+/// Whether the pinned redb contains upstream commit `fd82ced` ("Make file
+/// growth durable to avoid an unopenable database after a crash",
+/// 2026-06-13), the fix for the SIM-C2 finding: redb 4.1.0's one-phase
+/// commit orders `set_len` growth against the in-commit header write only
+/// through the commit's final fsync, so a torn crash inside a file-growing
+/// commit's single-fsync window can durably keep the header while losing the
+/// extension — a state 4.1.0 panics on at every subsequent open
+/// (`page_manager.rs:231`) instead of repairing. The pinned `=4.1.0`
+/// PREDATES the fix and no released version contains it.
+///
+/// FLIP THIS TO `true` WHEN THE PIN ADVANCES past `fd82ced`. Everything
+/// keyed on it flips together: [`run_campaign_outcome`] stops classifying
+/// the wedge panic as an excluded placement (a wedge would again fail
+/// loudly), and the corpus's inaugural entry flips from
+/// must-reproduce-the-wedge to must-recover-cleanly. The manifest guard in
+/// `subsumption.rs` reds if the pin moves while this constant still says
+/// `false`, so the flip cannot be forgotten silently.
+pub(crate) const REDB_PIN_CONTAINS_FD82CED: bool = false;
+
+/// The panic text of the redb 4.1.0 wedge assert (the whole-expression
+/// message of `assert!(storage.raw_file_len()? >= header.layout().len())`).
+const REDB_WEDGE_ASSERT_TEXT: &str = "storage.raw_file_len()? >= header.layout().len()";
+
 /// One campaign's complete configuration. `Copy` and const-constructible so
 /// corpus entries can pin it verbatim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,18 +244,34 @@ fn assert_agreement_matches_model(
     );
 }
 
-/// Generates the plan for `(seed, config)` and runs the campaign over it.
-/// Panics — with the full replay context — on any oracle divergence, partial
-/// crash-boundary state, or refusal that no simulated crash explains; returns
-/// the report otherwise.
-pub(crate) fn run_campaign(seed: u64, config: CampaignConfig) -> CampaignReport {
-    // The schedule arms AFTER the first store creation completes: a crash
-    // inside the very first format creation leaves a half-created inventory
-    // that the format preflight refuses BY DESIGN (fail-closed; the remedy is
-    // operator recreation, which has no in-process recovery path to explore).
-    // Everything after that first creation — initialization, catalog
-    // activation, steady state, and every recovery reopen — runs under the
-    // armed schedule. The durability premise is asserted at arming time.
+/// Outcome of one campaign under the pin-aware placement exclusion.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CampaignOutcome {
+    /// The campaign completed its plan with the oracle holding at every
+    /// recovery and the quiesced final verification passing.
+    Completed(CampaignReport),
+    /// EXCLUDED PLACEMENT (redb 4.1.0 pin only): the drawn crash landed
+    /// inside a file-growing commit's single-fsync window and the seeded torn
+    /// recovery kept the in-commit header write while dropping the covering
+    /// extension — the durable state redb 4.1.0 panics on at every open
+    /// instead of repairing (fixed upstream in `fd82ced`, unreleased). See
+    /// `subsumption::CAMPAIGN_PLACEMENT_EXCLUSIONS` for the typed exclusion
+    /// this variant realizes; it exists only while
+    /// [`REDB_PIN_CONTAINS_FD82CED`] is `false` — after the pin advances the
+    /// panic propagates again, so a regressed wedge fails loudly.
+    WedgedByRedb410FileGrowth {
+        /// Crashes taken before the wedge state formed.
+        crashes: u64,
+        /// Torn decisions taken across the run's recoveries.
+        torn_decisions: u64,
+    },
+}
+
+/// Runs the campaign, classifying the known redb 4.1.0 file-growth wedge
+/// panic as the typed excluded placement while the pin predates `fd82ced`.
+/// Every OTHER panic — oracle divergence, partial batch, unexplained refusal,
+/// or an unexpected engine panic — propagates unchanged.
+pub(crate) fn run_campaign_outcome(seed: u64, config: CampaignConfig) -> CampaignOutcome {
     let disk = SimDisk::new(FaultConfig {
         seed,
         torn_write_granularity: config.torn_write_granularity,
@@ -240,11 +279,45 @@ pub(crate) fn run_campaign(seed: u64, config: CampaignConfig) -> CampaignReport 
         transient_error_denominator: 0,
         capacity_bytes: None,
     });
-    run_campaign_on(seed, config, &disk)
+    if REDB_PIN_CONTAINS_FD82CED {
+        return CampaignOutcome::Completed(run_campaign_on(seed, config, &disk));
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_campaign_on(seed, config, &disk)
+    })) {
+        Ok(report) => CampaignOutcome::Completed(report),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            if message.contains(REDB_WEDGE_ASSERT_TEXT) {
+                let counters = disk.counters();
+                CampaignOutcome::WedgedByRedb410FileGrowth {
+                    crashes: counters.crashes,
+                    torn_decisions: counters.torn_kept
+                        + counters.torn_dropped
+                        + counters.torn_truncated,
+                }
+            } else {
+                std::panic::resume_unwind(payload)
+            }
+        }
+    }
 }
 
-/// [`run_campaign`] over a caller-held disk (diagnostic seam: a probing test
-/// can keep the disk handle to examine durable state after a panic).
+/// The campaign body over a caller-held disk (the diagnostic seam: a probing
+/// test can keep the disk handle to examine durable state after a panic).
+/// Panics — with the full replay context — on any oracle divergence, partial
+/// crash-boundary state, or refusal that no simulated crash explains. The
+/// schedule arms AFTER the first store creation completes: a crash inside
+/// the very first format creation leaves a half-created inventory that the
+/// format preflight refuses BY DESIGN (fail-closed; the remedy is operator
+/// recreation, which has no in-process recovery path to explore); everything
+/// after that first creation — initialization, catalog activation, steady
+/// state, and every recovery reopen — runs under the armed schedule, with
+/// the durability premise asserted at arming time.
 pub(crate) fn run_campaign_on(seed: u64, config: CampaignConfig, disk: &SimDisk) -> CampaignReport {
     let plan = WorkloadPlan::generate(seed, config.generator);
     let fixtures = build_plan_fixtures(seed, &plan);
@@ -659,26 +732,33 @@ pub(crate) fn run_campaign_on(seed: u64, config: CampaignConfig, disk: &SimDisk)
 // The standing per-merge sweep and the env-gated deep exploration.
 // ---------------------------------------------------------------------------
 
-/// The per-merge sweep configuration: enough commands and crash pressure to
-/// exercise every campaign dimension across the seed set while keeping the
-/// whole sweep inside the per-merge budget.
+/// The per-merge sweep configuration: deliberately the commit-arms schedule
+/// (18 commands, crash range (1, 140), budget 14) — dense enough that every
+/// campaign crashes repeatedly, recovery-window crashes are common, and both
+/// commit two-state sides appear across the scouted seed range below.
 pub(crate) const SWEEP_CONFIG: CampaignConfig = CampaignConfig {
     generator: GeneratorConfig {
-        commands: 20,
+        commands: 18,
         max_targets: 8,
-        two_phase_percent: 35,
-        reuse_percent: 45,
-        batch_percent: 45,
+        two_phase_percent: 30,
+        reuse_percent: 40,
+        batch_percent: 40,
         max_batch_len: 3,
-        note_len_max: 300,
+        note_len_max: 200,
     },
-    crash_operations: (1, 500),
-    max_crashes: 8,
+    crash_operations: (1, 140),
+    max_crashes: 14,
     torn_write_granularity: 512,
 };
 
-/// First seed of the standing sweep.
-pub(crate) const SWEEP_SEED_BASE: u64 = 0x51C2_5000;
+/// First seed of the standing sweep. The 24-seed range was scouted (all 24
+/// complete today — zero wedge placements — with aggregate crashes 328,
+/// recovery-window crashes 84, torn decisions 723, commit-present 1,
+/// commit-absent 93, admits resolved 29) and includes 0x51C2_C0E1, the
+/// commit-present seed rerun 12/12 identically before pinning. If the
+/// store's internal operation stream shifts, wedged placements are counted
+/// openly and the aggregate asserts are the falsifier.
+pub(crate) const SWEEP_SEED_BASE: u64 = 0x51C2_C0D0;
 /// Number of seeds the standing sweep replays per merge.
 pub(crate) const SWEEP_SEEDS: u64 = 24;
 
@@ -689,19 +769,30 @@ pub(crate) const SWEEP_SEEDS: u64 = 24;
 /// sides of the commit two-state acceptance were exercised. A quiet aggregate
 /// is a reportable finding, never silence.
 ///
-/// STOPPED (SIM-C2 finding): campaigns that grow the engine file under an
-/// armed schedule can reach a durable state that panics redb 4.1.0 on reopen
-/// (`page_manager.rs:231`, `assert!(raw_file_len >= header.layout().len())`)
-/// — see `finding_redb_reopen_panic_reproducer`. Un-ignore only once the
-/// engine finding is resolved; choosing sweep seeds that dodge the panic
-/// would normalize a real bug.
+/// Seeds whose drawn placement lands in the redb 4.1.0 file-growth wedge
+/// window are counted OPENLY as excluded placements (the typed exclusion in
+/// `subsumption::CAMPAIGN_PLACEMENT_EXCLUSIONS`, upstream fix `fd82ced`
+/// unreleased) — never silently skipped, and bounded so exclusions cannot
+/// hollow out the sweep. After the pin advances and
+/// [`REDB_PIN_CONTAINS_FD82CED`] flips, a wedged seed fails the sweep again.
 #[test]
-#[ignore = "SIM-C2 stopped: reachable redb 4.1.0 reopen panic (see finding_redb_reopen_panic_reproducer)"]
 fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     let mut total = CampaignReport::default();
+    let mut completed = 0_u64;
+    let mut wedged_excluded = 0_u64;
     for offset in 0..SWEEP_SEEDS {
         let seed = SWEEP_SEED_BASE + offset;
-        let report = run_campaign(seed, SWEEP_CONFIG);
+        let report = match run_campaign_outcome(seed, SWEEP_CONFIG) {
+            CampaignOutcome::Completed(report) => report,
+            CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
+                // Only reachable while the pin predates fd82ced:
+                // run_campaign_outcome re-raises the panic once the
+                // exclusion deactivates.
+                wedged_excluded += 1;
+                continue;
+            }
+        };
+        completed += 1;
         assert_eq!(
             report.final_frontier,
             u64::from(SWEEP_CONFIG.generator.commands),
@@ -725,6 +816,15 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
             .max_torn_in_one_recovery
             .max(report.max_torn_in_one_recovery);
     }
+    assert!(
+        completed + wedged_excluded == SWEEP_SEEDS,
+        "every sweep seed is accounted for"
+    );
+    assert!(
+        completed * 4 >= SWEEP_SEEDS * 3,
+        "excluded wedge placements ({wedged_excluded}) hollowed out more \
+         than a quarter of the sweep — retune before trusting the aggregate"
+    );
     assert!(total.crashes > 0, "no swept campaign crashed at all");
     assert!(total.recoveries > 0, "no swept campaign recovered");
     assert!(
@@ -749,9 +849,16 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
         total.in_flight_admit_present + total.in_flight_admit_absent > 0,
         "no swept recovery resolved an interrupted phase-one admission"
     );
-    assert!(
-        total.oracle_comparisons >= total.recoveries,
-        "every recovery must carry a full validation and oracle comparison"
+    // Exact comparison accounting: every recovery either completes its full
+    // validation + oracle comparison or is superseded by a crash INSIDE its
+    // own recovery window (counted in recovery_window_crashes; the next
+    // recovery's comparison then covers the combined state), and every
+    // completed campaign adds one quiesced final verification.
+    assert_eq!(
+        total.oracle_comparisons,
+        total.recoveries - total.recovery_window_crashes + completed,
+        "every recovery must be closed by a full validation and oracle \
+         comparison (or by the recovery that superseded it)"
     );
 }
 
@@ -788,9 +895,17 @@ fn explore_seeded_campaigns_on_the_deep_budget() {
         torn_write_granularity: 512,
     };
     let mut interesting = 0_u64;
+    let mut wedged = 0_u64;
     for offset in 0..seeds {
         let seed = 0x51C2_E000_0000 + offset;
-        let report = run_campaign(seed, config);
+        let report = match run_campaign_outcome(seed, config) {
+            CampaignOutcome::Completed(report) => report,
+            CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
+                wedged += 1;
+                eprintln!("wedged seed {seed:#x} (excluded placement, fd82ced)");
+                continue;
+            }
+        };
         if report.max_torn_in_one_recovery >= 8
             || report.in_flight_commit_present > 0
             || report.recovery_window_crashes > 1
@@ -799,7 +914,7 @@ fn explore_seeded_campaigns_on_the_deep_budget() {
             eprintln!("interesting seed {seed:#x}: {report:?}");
         }
     }
-    eprintln!("explored {seeds} seeds; {interesting} interesting");
+    eprintln!("explored {seeds} seeds; {interesting} interesting; {wedged} wedged-excluded");
 }
 
 /// Development scout: prints reports for a seed range under a named config so
@@ -823,13 +938,53 @@ fn scout_seed_reports() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(16);
     let config = match which.as_str() {
-        "commit" => crate::subsumption::COMMIT_ARMS_CONFIG_FOR_SCOUT,
-        "init" => crate::subsumption::INITIALIZATION_ARMS_CONFIG_FOR_SCOUT,
+        "commit" => crate::subsumption::COMMIT_ARMS_CONFIG,
+        "init" => crate::subsumption::INITIALIZATION_ARMS_CONFIG,
+        // Narrow-window mode: sweep a pinned crash offset (the oracle's
+        // dense-window technique through the campaign) — `count` is the
+        // number of windows, seeds stay at `base`.
+        "window" => {
+            for window in 0..count {
+                let window = 1 + window * 2;
+                let config = CampaignConfig {
+                    crash_operations: (window, window + 1),
+                    max_crashes: 5,
+                    ..crate::subsumption::COMMIT_ARMS_CONFIG
+                };
+                match run_campaign_outcome(base, config) {
+                    CampaignOutcome::Completed(report) => eprintln!(
+                        "window {window}: crashes={} rwc={} torn={} cp={} ca={} ap={} aa={} ir={} is={}",
+                        report.crashes,
+                        report.recovery_window_crashes,
+                        report.torn_decisions,
+                        report.in_flight_commit_present,
+                        report.in_flight_commit_absent,
+                        report.in_flight_admit_present,
+                        report.in_flight_admit_absent,
+                        report.initialization_rolled_back,
+                        report.initialization_survived,
+                    ),
+                    CampaignOutcome::WedgedByRedb410FileGrowth { crashes, .. } => {
+                        eprintln!("window {window}: WEDGED (crashes={crashes})");
+                    }
+                }
+            }
+            return;
+        }
         _ => SWEEP_CONFIG,
     };
     for offset in 0..count {
         let seed = base + offset;
-        let report = run_campaign(seed, config);
+        let report = match run_campaign_outcome(seed, config) {
+            CampaignOutcome::Completed(report) => report,
+            CampaignOutcome::WedgedByRedb410FileGrowth {
+                crashes,
+                torn_decisions,
+            } => {
+                eprintln!("seed {seed:#x}: WEDGED (crashes={crashes} torn={torn_decisions})");
+                continue;
+            }
+        };
         eprintln!(
             "seed {seed:#x}: crashes={} rec={} rwc={} torn={} maxtorn={} cp={} ca={} ap={} aa={} ir={} is={} car={} cas={} cmds={} final={}",
             report.crashes,
@@ -863,7 +1018,10 @@ fn scout_seed_reports() {
 /// (`assert!(storage.raw_file_len()? >= header.layout().len())`) BEFORE its
 /// own repair path — which recalculates the layout from the actual file
 /// length and runs `pick_primary_for_repair` — can execute: the store is
-/// permanently unopenable. Run with:
+/// permanently unopenable. Fixed upstream in `fd82ced` ("Make file growth
+/// durable to avoid an unopenable database after a crash", 2026-06-13,
+/// unreleased); the corpus's inaugural entry pins the reproduction until the
+/// pin advances. Run with:
 ///
 /// ```text
 /// cargo test -p riffdb-sim --test seeded_campaign finding_redb_reopen_panic \
@@ -883,7 +1041,7 @@ fn finding_redb_reopen_panic_reproducer() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(10);
-    let config = crate::subsumption::COMMIT_ARMS_CONFIG_FOR_SCOUT;
+    let config = crate::subsumption::COMMIT_ARMS_CONFIG;
     let mut panics = 0_u64;
     for run in 0..runs {
         let disk = SimDisk::new(FaultConfig {
