@@ -597,6 +597,11 @@ impl ApplicationLock {
             .iter()
             .map(|role| role_value(role, modules, reactive_modules, contract))
             .collect::<Result<Vec<_>, _>>()?;
+        let query_module_format = modules
+            .iter()
+            .map(QueryModule::format_version)
+            .max()
+            .unwrap_or(QUERY_MODULE_FORMAT_VERSION_V1);
         let mut value = json!({
             "artifacts": artifacts.iter().map(|artifact| json!({
                 "content_hash": hex(artifact.content_hash.as_bytes()),
@@ -610,7 +615,7 @@ impl ApplicationLock {
                 "contract_bundle": contract.format_version(),
                 "contract_grammar": contract.grammar_version(),
                 "contract_ir": contract.ir_version(),
-                "query_module": QUERY_MODULE_FORMAT_VERSION_V1,
+                "query_module": query_module_format,
             },
             "contract": {
                 "bundle_hash": hex(contract.bundle_hash().as_bytes()),
@@ -1080,7 +1085,7 @@ fn module_value(module: &QueryModule) -> Value {
         "name": module.name().as_str(),
         "queries": module.queries().iter().map(|query| json!({
             "name": query.name(),
-            "plan_hash": hex(query.program().identity().hash().as_bytes()),
+            "plan_hash": hex(query.plan().identity().as_bytes()),
             "source_hash": hex(query.source_hash().as_bytes()),
         })).collect::<Vec<_>>(),
         "version": module.version().get(),
@@ -1102,7 +1107,7 @@ fn role_value(
         queries.push(json!({
             "module_hash": hex(module.identity().as_bytes()),
             "name": name,
-            "plan_hash": hex(query.program().identity().hash().as_bytes()),
+            "plan_hash": hex(query.plan().identity().as_bytes()),
         }));
     }
     let mut commands = Vec::with_capacity(role.commands().len());

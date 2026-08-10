@@ -51,17 +51,19 @@ pub use reactive_module::{
 };
 
 use riffdb_contract_ir::ContractBundle;
-use riffdb_query_compiler::compile_query;
+use riffdb_query_compiler::{compile_operational_query_family, compile_query};
 use riffdb_query_ir::{
-    QUERY_IR_VERSION_V1, QueryAccessProgramV1, SourceSymbolKind, SymbolicCatalog,
+    AuthorizationEntityAccess, NamedQuerySchemas, OperationalQueryFamilyV1,
+    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
+    SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
-    format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, format_query, parse_query,
 };
 use riffdb_types::{
-    ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash, QuerySourceHash,
-    hash_query_module, hash_query_source,
+    ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
+    QueryPlanHash, QuerySourceHash, hash_query_module, hash_query_source,
 };
 use std::fmt;
 
@@ -74,6 +76,8 @@ pub use riffdb_types::{QueryModuleName, QueryModuleVersion};
 const MODULE_MAGIC: &[u8] = b"RIFFDB-QUERY-MODULE\0";
 /// Canonical query-module codec version.
 pub const QUERY_MODULE_FORMAT_VERSION_V1: u32 = 1;
+/// Additive module codec for finite operational plan families.
+pub const QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1: u32 = 2;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -165,7 +169,75 @@ pub struct CompiledNamedQuery {
     canonical_source: String,
     document: Arc<Document>,
     source_hash: QuerySourceHash,
-    program: Arc<QueryAccessProgramV1>,
+    plan: CompiledNamedQueryPlan,
+}
+
+/// Closed versioned executable plan kind for one named query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompiledNamedQueryPlan {
+    /// Original single bounded access program.
+    V1(Arc<QueryAccessProgramV1>),
+    /// Finite optional-presence plan family.
+    OperationalV1(Arc<OperationalQueryFamilyV1>),
+}
+
+impl CompiledNamedQueryPlan {
+    /// Public typed parameter/result schemas shared by every selectable plan.
+    #[must_use]
+    pub fn schemas(&self) -> &NamedQuerySchemas {
+        match self {
+            Self::V1(program) => program.surface().schemas(),
+            Self::OperationalV1(family) => family.surface().schemas(),
+        }
+    }
+
+    /// Plan or complete plan-family identity.
+    #[must_use]
+    pub fn identity(&self) -> QueryPlanHash {
+        match self {
+            Self::V1(program) => program.identity().hash(),
+            Self::OperationalV1(family) => family.identity().hash(),
+        }
+    }
+
+    /// Complete authorization required before runtime member selection.
+    #[must_use]
+    pub fn authorization(&self) -> &[AuthorizationEntityAccess] {
+        match self {
+            Self::V1(program) => program.authorization(),
+            Self::OperationalV1(family) => family.authorization_union(),
+        }
+    }
+
+    /// Whole-plan or componentwise whole-family maximum cost.
+    #[must_use]
+    pub fn cost(&self) -> QueryCostVectorV1 {
+        match self {
+            Self::V1(program) => program.cost(),
+            Self::OperationalV1(family) => family.maximum_cost(),
+        }
+    }
+
+    /// Canonical bytes bound by `identity`.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        match self {
+            Self::V1(program) => program.canonical_bytes(),
+            Self::OperationalV1(family) => family.canonical_bytes(),
+        }
+    }
+
+    /// One member used only for invariant metadata shared by the complete plan.
+    ///
+    /// Callers must use `CompiledNamedQuery::select_program` for execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn representative_program(&self) -> &QueryAccessProgramV1 {
+        match self {
+            Self::V1(program) => program,
+            Self::OperationalV1(family) => family.members()[0].program(),
+        }
+    }
 }
 
 impl CompiledNamedQuery {
@@ -205,18 +277,55 @@ impl CompiledNamedQuery {
         self.source_hash
     }
 
-    /// Complete checked executable access program.
+    /// Complete checked executable plan or finite family.
     #[must_use]
-    pub fn program(&self) -> &QueryAccessProgramV1 {
-        &self.program
+    pub const fn plan(&self) -> &CompiledNamedQueryPlan {
+        &self.plan
     }
 
-    /// Shared checked executable access program.
-    ///
-    /// The program remains pinned to the module's exact contract identity.
+    /// Original V1 program, when this is not an operational family.
     #[must_use]
-    pub fn shared_program(&self) -> Arc<QueryAccessProgramV1> {
-        Arc::clone(&self.program)
+    pub fn ordinary_program(&self) -> Option<&QueryAccessProgramV1> {
+        match &self.plan {
+            CompiledNamedQueryPlan::V1(program) => Some(program),
+            CompiledNamedQueryPlan::OperationalV1(_) => None,
+        }
+    }
+
+    /// Shared original V1 program, when present.
+    #[must_use]
+    pub fn shared_ordinary_program(&self) -> Option<Arc<QueryAccessProgramV1>> {
+        match &self.plan {
+            CompiledNamedQueryPlan::V1(program) => Some(Arc::clone(program)),
+            CompiledNamedQueryPlan::OperationalV1(_) => None,
+        }
+    }
+
+    /// Finite operational family, when present.
+    #[must_use]
+    pub fn operational_family(&self) -> Option<&OperationalQueryFamilyV1> {
+        match &self.plan {
+            CompiledNamedQueryPlan::V1(_) => None,
+            CompiledNamedQueryPlan::OperationalV1(family) => Some(family),
+        }
+    }
+
+    /// Shared selected member for exact compiler-ordered presence flags.
+    #[must_use]
+    pub fn select_program(&self, presence: &[bool]) -> Option<Arc<QueryAccessProgramV1>> {
+        match &self.plan {
+            CompiledNamedQueryPlan::V1(program) if presence.is_empty() => Some(Arc::clone(program)),
+            CompiledNamedQueryPlan::V1(_) => None,
+            CompiledNamedQueryPlan::OperationalV1(family) => family
+                .select(presence)
+                .map(riffdb_query_ir::OperationalPlanMemberV1::shared_program),
+        }
+    }
+
+    /// Bounded name-only explanation of the program or complete family.
+    #[must_use]
+    pub fn explain_lines(&self) -> Vec<String> {
+        query_explain_lines(self)
     }
 }
 
@@ -227,7 +336,7 @@ impl fmt::Debug for CompiledNamedQuery {
             .field("name", &self.name)
             .field("source", &"[REDACTED]")
             .field("source_hash", &self.source_hash)
-            .field("plan_hash", &self.program.identity().hash())
+            .field("plan_hash", &self.plan.identity())
             .finish()
     }
 }
@@ -270,8 +379,8 @@ impl QueryModule {
                 ));
             }
             let canonical_source = format_query(&document);
-            let _source_checked_program =
-                compile_query(&document, &catalog).map_err(|diagnostics| {
+            let _source_checked_plan =
+                compile_document_plan(&document, &catalog).map_err(|diagnostics| {
                     QueryModuleError::query(
                         submitted.name.clone(),
                         QueryCompilationDiagnostics::Planner(diagnostics),
@@ -283,18 +392,19 @@ impl QueryModule {
                     QueryCompilationDiagnostics::Syntax(diagnostics),
                 )
             })?;
-            let program = compile_query(&canonical_document, &catalog).map_err(|diagnostics| {
-                QueryModuleError::query(
-                    submitted.name.clone(),
-                    QueryCompilationDiagnostics::Planner(diagnostics),
-                )
-            })?;
+            let plan =
+                compile_document_plan(&canonical_document, &catalog).map_err(|diagnostics| {
+                    QueryModuleError::query(
+                        submitted.name.clone(),
+                        QueryCompilationDiagnostics::Planner(diagnostics),
+                    )
+                })?;
             queries.push(CompiledNamedQuery {
                 name: submitted.name,
                 source_hash: hash_query_source(canonical_source.as_bytes()),
                 canonical_source,
                 document: Arc::new(canonical_document),
-                program: Arc::new(program),
+                plan,
             });
         }
         let canonical_bytes =
@@ -402,6 +512,20 @@ impl QueryModule {
     #[must_use]
     pub const fn identity(&self) -> QueryModuleHash {
         self.identity
+    }
+
+    /// Canonical module codec selected by its contained plan kinds.
+    #[must_use]
+    pub fn format_version(&self) -> u32 {
+        if self
+            .queries
+            .iter()
+            .any(|query| query.operational_family().is_some())
+        {
+            QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+        } else {
+            QUERY_MODULE_FORMAT_VERSION_V1
+        }
     }
 }
 
@@ -527,35 +651,111 @@ fn valid_name(value: &str) -> bool {
         })
 }
 
+fn compile_document_plan(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<CompiledNamedQueryPlan, riffdb_query_compiler::PlannerDiagnostics> {
+    if document.language_version == RIFFQL_LANGUAGE_VERSION {
+        compile_query(document, catalog)
+            .map(|program| CompiledNamedQueryPlan::V1(Arc::new(program)))
+    } else {
+        compile_operational_query_family(document, catalog)
+            .map(|family| CompiledNamedQueryPlan::OperationalV1(Arc::new(family)))
+    }
+}
+
+fn query_source_map(query: &CompiledNamedQuery) -> &QuerySourceMap {
+    match query.plan() {
+        CompiledNamedQueryPlan::V1(program) => program.surface().source_map(),
+        CompiledNamedQueryPlan::OperationalV1(family) => family.surface().source_map(),
+    }
+}
+
+fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
+    match query.plan() {
+        CompiledNamedQueryPlan::V1(program) => program.explain().lines().to_vec(),
+        CompiledNamedQueryPlan::OperationalV1(family) => {
+            let mut lines = vec![
+                format!(
+                    "operational.presence_parameters={}",
+                    family.presence_parameters().join(",")
+                ),
+                format!("operational.members={}", family.members().len()),
+            ];
+            for member in family.members() {
+                for line in member.program().explain().lines() {
+                    lines.push(format!(
+                        "operational.member.{}.{}",
+                        member.presence_mask(),
+                        line
+                    ));
+                }
+            }
+            lines
+        }
+    }
+}
+
 fn encode_module(
     name: &QueryModuleName,
     version: QueryModuleVersion,
     contract: &ContractBundle,
     queries: &[CompiledNamedQuery],
 ) -> Result<Vec<u8>, QueryModuleError> {
+    let operational = queries
+        .iter()
+        .any(|query| matches!(query.plan(), CompiledNamedQueryPlan::OperationalV1(_)));
     let mut output = Vec::new();
     output.extend_from_slice(MODULE_MAGIC);
-    output.extend_from_slice(&QUERY_MODULE_FORMAT_VERSION_V1.to_be_bytes());
+    output.extend_from_slice(
+        &if operational {
+            QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+        } else {
+            QUERY_MODULE_FORMAT_VERSION_V1
+        }
+        .to_be_bytes(),
+    );
     write_text(&mut output, name.as_str())?;
     output.extend_from_slice(&version.get().to_be_bytes());
     write_text(&mut output, contract.lineage().as_str())?;
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
-    output.extend_from_slice(&RIFFQL_LANGUAGE_VERSION.to_be_bytes());
-    output.extend_from_slice(&QUERY_IR_VERSION_V1.to_be_bytes());
+    output.extend_from_slice(
+        &if operational {
+            RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+        } else {
+            RIFFQL_LANGUAGE_VERSION
+        }
+        .to_be_bytes(),
+    );
+    output.extend_from_slice(
+        &if operational {
+            QUERY_IR_VERSION_OPERATIONAL_V1
+        } else {
+            QUERY_IR_VERSION_V1
+        }
+        .to_be_bytes(),
+    );
     write_text(&mut output, contract.compiler_version())?;
     write_count(&mut output, queries.len())?;
     for query in queries {
         write_text(&mut output, query.name())?;
         write_bytes(&mut output, query.canonical_source().as_bytes())?;
         output.extend_from_slice(query.source_hash().as_bytes());
-        write_bytes(&mut output, query.program().canonical_bytes())?;
-        output.extend_from_slice(query.program().identity().hash().as_bytes());
-        write_count(&mut output, query.program().explain().lines().len())?;
-        for line in query.program().explain().lines() {
+        if operational {
+            output.push(match query.plan() {
+                CompiledNamedQueryPlan::V1(_) => 1,
+                CompiledNamedQueryPlan::OperationalV1(_) => 2,
+            });
+        }
+        write_bytes(&mut output, query.plan().canonical_bytes())?;
+        output.extend_from_slice(query.plan().identity().as_bytes());
+        let explain = query_explain_lines(query);
+        write_count(&mut output, explain.len())?;
+        for line in &explain {
             write_text(&mut output, line)?;
         }
-        let entries = query.program().surface().source_map().entries();
+        let entries = query_source_map(query).entries();
         write_count(&mut output, entries.len())?;
         for entry in entries {
             output.extend_from_slice(&entry.span().start.to_be_bytes());
@@ -584,7 +784,11 @@ struct DecodedCandidate {
 fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> {
     let mut input = Reader::new(bytes);
     input.exact(MODULE_MAGIC)?;
-    if input.u32()? != QUERY_MODULE_FORMAT_VERSION_V1 {
+    let format_version = input.u32()?;
+    if !matches!(
+        format_version,
+        QUERY_MODULE_FORMAT_VERSION_V1 | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+    ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
         ));
@@ -598,7 +802,19 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
     let contract_version = ContractVersion::new(input.u64()?)
         .ok_or_else(|| QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding))?;
     let contract_hash = ContractBundleHash::from_bytes(input.array()?);
-    if input.u32()? != RIFFQL_LANGUAGE_VERSION || input.u32()? != QUERY_IR_VERSION_V1 {
+    let language_version = input.u32()?;
+    let ir_version = input.u32()?;
+    let versions_match = match format_version {
+        QUERY_MODULE_FORMAT_VERSION_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION && ir_version == QUERY_IR_VERSION_V1
+        }
+        QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+                && ir_version == QUERY_IR_VERSION_OPERATIONAL_V1
+        }
+        _ => false,
+    };
+    if !versions_match {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
         ));
@@ -613,6 +829,11 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         let query_name = input.text(MAX_IDENTIFIER_BYTES)?;
         let source = input.text(MAX_SOURCE_BYTES)?;
         input.skip(32)?;
+        if format_version == QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+            && !matches!(input.u8()?, 1 | 2)
+        {
+            return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
+        }
         input.bytes(riffdb_query_ir::MAX_QUERY_ARTIFACT_BYTES)?;
         input.skip(32)?;
         for _ in 0..input.count(riffdb_query_ir::MAX_SOURCE_MAP_ENTRIES)? {

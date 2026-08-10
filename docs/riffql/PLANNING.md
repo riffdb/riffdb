@@ -30,6 +30,23 @@ name-only view of the same program. An absent compatible index produces
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice.
 
+## Finite operational plan families
+
+Language-version-2 optional predicates compile at deployment into a closed
+family of ordinary access programs. Presence parameters are canonically ordered
+and capped at eight, so the family contains exactly `2^n` members and no more
+than 256. Every member has the same contract, query name, partition parameter,
+and result schema. Each member must independently pass the ordinary index,
+locality, cardinality, and bounded-cost planner.
+
+The family has its own canonical identity over the resolved query surface,
+ordered presence domain, every member program, complete authorization union,
+and component-wise maximum cost. Policy therefore authorizes the whole deployed
+family rather than only the member selected by one request. Runtime selection
+is an exact presence-bit lookup; it performs no parsing or access-path planning.
+The selected member drives physical execution while responses and generated
+bindings retain the stable family identity.
+
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded
 dependent-key batch. It cannot infer colocation, omit a partition predicate,

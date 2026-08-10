@@ -2,10 +2,11 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    ApplicationManifest, ManifestErrorKind, NamedQuerySource, QueryModule, QueryModuleCandidate,
-    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_go_client,
-    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
-    generate_typescript_client,
+    ApplicationManifest, CompiledNamedQueryPlan, ManifestErrorKind, NamedQuerySource,
+    QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QUERY_MODULE_FORMAT_VERSION_V1, QueryModule,
+    QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName, QueryModuleVersion,
+    generate_go_client, generate_mcp_commands, generate_mcp_tools, generate_python_client,
+    generate_rust_client, generate_typescript_client,
 };
 use std::sync::Arc;
 
@@ -107,13 +108,110 @@ fn cloned_named_query_handles_share_immutable_checked_artifacts() {
 
     let first_document = query.shared_document();
     let second_document = query.shared_document();
-    let first_program = query.shared_program();
-    let second_program = query.shared_program();
+    let first_program = query.shared_ordinary_program().expect("ordinary");
+    let second_program = query.shared_ordinary_program().expect("ordinary");
 
     assert!(Arc::ptr_eq(&first_document, &second_document));
     assert!(Arc::ptr_eq(&first_program, &second_program));
     assert_eq!(query.document(), first_document.as_ref());
-    assert_eq!(query.program(), first_program.as_ref());
+    assert_eq!(
+        query.ordinary_program().expect("ordinary"),
+        first_program.as_ref()
+    );
+}
+
+#[test]
+fn operational_module_round_trips_a_complete_family_without_changing_v1_codec() {
+    const OPERATIONAL_CONTRACT: &str = r#"
+contract Operational version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: string<32>
+    field updated_at: timestamp
+    index a_status (organization_id, status, updated_at, ticket_id)
+    index z_all (organization_id, updated_at, ticket_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+    const QUERY: &str = r#"
+query SearchTickets(
+    $organization_id: Ticket.organization_id,
+    $status: Ticket.status?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+        order by updated_at asc, ticket_id asc
+        take 25
+    return Found { tickets: tickets { ticket_id status updated_at } }
+    outcomes Found
+}
+"#;
+    let bundle = compile_contract_source(OPERATIONAL_CONTRACT).expect("contract");
+    let operational_candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("operational").expect("name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("SearchTickets", QUERY).expect("query")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(operational_candidate, &bundle).expect("module");
+    assert_eq!(
+        u32::from_be_bytes(
+            module.canonical_bytes()[20..24]
+                .try_into()
+                .expect("version")
+        ),
+        QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
+    );
+    let query = module.query("SearchTickets").expect("query");
+    let CompiledNamedQueryPlan::OperationalV1(family) = query.plan() else {
+        panic!("expected family");
+    };
+    assert_eq!(family.members().len(), 2);
+    assert_eq!(query.plan().authorization(), family.authorization_union());
+    assert_eq!(query.plan().identity(), family.identity().hash());
+    assert!(query.ordinary_program().is_none());
+    assert!(query.select_program(&[false]).is_some());
+    assert!(query.select_program(&[true]).is_some());
+    assert!(query.select_program(&[]).is_none());
+
+    let rust = generate_rust_client(&module, &bundle);
+    let typescript = generate_typescript_client(&module, &bundle);
+    let python = generate_python_client(&module, &bundle).expect("Python");
+    let go = generate_go_client(&module, &bundle);
+    let mcp = generate_mcp_tools(&module).expect("MCP");
+    assert!(rust.contains("pub status: Option<String>"));
+    assert!(typescript.contains("readonly status?: string | null;"));
+    assert!(python.contains("status: str | None = None"));
+    assert!(go.contains("Status *string"));
+    let input: serde_json::Value = serde_json::from_str(&mcp[0].input_schema).expect("MCP input");
+    assert!(
+        !input["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .any(|name| name == "status")
+    );
+
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &bundle)
+        .expect("strict operational decode");
+    assert_eq!(decoded, module);
+
+    let legacy_bundle = compile_contract_source(CONTRACT).expect("legacy contract");
+    let legacy = QueryModule::compile(candidate(false), &legacy_bundle).expect("legacy module");
+    assert_eq!(
+        u32::from_be_bytes(
+            legacy.canonical_bytes()[20..24]
+                .try_into()
+                .expect("version")
+        ),
+        QUERY_MODULE_FORMAT_VERSION_V1
+    );
 }
 
 #[test]

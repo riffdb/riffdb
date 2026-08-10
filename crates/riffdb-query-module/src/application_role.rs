@@ -292,8 +292,8 @@ fn compile_application_role_inner(
             module.identity(),
             operation_name,
         ));
-        maximum_rows = maximum_rows.max(query.program().cost().scanned_index_rows());
-        for access in query.program().authorization() {
+        maximum_rows = maximum_rows.max(query.plan().cost().scanned_index_rows());
+        for access in query.plan().authorization() {
             let entity = contract
                 .schema()
                 .entities()

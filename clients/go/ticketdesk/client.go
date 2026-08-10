@@ -1846,7 +1846,9 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["ticket_id"] = riffdb.UUID(parameters.TicketId)
-	input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	if parameters.After != nil {
+		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	}
 	if parameters.Limit != nil {
 		input["limit"] = riffdb.U64(uint64(*parameters.Limit))
 	}
@@ -1963,7 +1965,9 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
 	input["statuses"] = riffdb.Values(parameters.Statuses, func(item TicketStatus) riffdb.Value { return riffdb.Enum(string(item)) })
-	input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	if parameters.After != nil {
+		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	}
 	if parameters.Limit != nil {
 		input["limit"] = riffdb.U64(uint64(*parameters.Limit))
 	}
@@ -2080,7 +2084,9 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["assignee_id"] = riffdb.UUID(parameters.AssigneeId)
 	input["statuses"] = riffdb.Values(parameters.Statuses, func(item TicketStatus) riffdb.Value { return riffdb.Enum(string(item)) })
-	input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	if parameters.After != nil {
+		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	}
 	if parameters.Limit != nil {
 		input["limit"] = riffdb.U64(uint64(*parameters.Limit))
 	}
@@ -2156,7 +2162,9 @@ func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMemb
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
-	input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	if parameters.After != nil {
+		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+	}
 	response, err := client.session.Invoke(ctx, ProjectMembersOperation, input, options)
 	if err != nil {
 		return QueryResult[ProjectMembersResult]{}, err

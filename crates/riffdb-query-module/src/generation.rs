@@ -471,7 +471,7 @@ pub fn generate_mcp_tools(
             if !names.insert(name.clone()) {
                 return Err(McpToolGenerationError::NameCollision);
             }
-            let schemas = query.program().surface().schemas();
+            let schemas = query.plan().schemas();
             let mut properties = Map::new();
             let mut required = Vec::new();
             for parameter in schemas.parameters() {
@@ -479,7 +479,10 @@ pub fn generate_mcp_tools(
                     parameter.name().to_owned(),
                     mcp_type_schema(parameter.value_type()),
                 );
-                if !parameter.has_default() && !is_cursor_type(parameter.value_type()) {
+                if !parameter.has_default()
+                    && !is_cursor_type(parameter.value_type())
+                    && !is_optional_type(parameter.value_type())
+                {
                     required.push(Value::String(parameter.name().to_owned()));
                 }
             }
@@ -743,6 +746,10 @@ fn is_cursor_type(value_type: &NamedTypeSchema) -> bool {
         )
 }
 
+fn is_optional_type(value_type: &NamedTypeSchema) -> bool {
+    matches!(value_type, NamedTypeSchema::Optional(_))
+}
+
 /// Generates a dependency-free Rust request model for every named query and command.
 #[must_use]
 pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> String {
@@ -765,7 +772,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
 
     for query in module.queries() {
         let name = query.name();
-        let schemas = query.program().surface().schemas();
+        let schemas = query.plan().schemas();
         let params_name = format!("{name}Params");
         emit_rust_fields_struct(
             &mut output,
@@ -800,7 +807,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
             &mut output,
             name,
             schemas,
-            query.program().identity().hash().as_bytes(),
+            query.plan().identity().as_bytes(),
         );
     }
 
@@ -1990,8 +1997,8 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
 
     for query in module.queries() {
         let name = query.name();
-        let schemas = query.program().surface().schemas();
-        let plan_hash = hex(query.program().identity().hash().as_bytes());
+        let schemas = query.plan().schemas();
+        let plan_hash = hex(query.plan().identity().as_bytes());
         let (driver_operation_name, driver_input_schema_hash) = query_driver_operations
             .get(name)
             .expect("generated query operation");
@@ -2003,7 +2010,10 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         .expect("string");
         writeln!(output, "export interface {name}Params {{").expect("string");
         for parameter in schemas.parameters() {
-            let optional = if parameter.has_default() || is_cursor_type(parameter.value_type()) {
+            let optional = if parameter.has_default()
+                || is_cursor_type(parameter.value_type())
+                || is_optional_type(parameter.value_type())
+            {
                 "?"
             } else {
                 ""

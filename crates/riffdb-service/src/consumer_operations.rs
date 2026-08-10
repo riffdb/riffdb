@@ -1560,14 +1560,20 @@ async fn hydrate_contextual_delivery(
         let query = module
             .module()
             .query(hydration.query_name())
-            .filter(|query| query.program().identity().hash() == hydration.plan_hash())
+            .filter(|query| query.plan().identity() == hydration.plan_hash())
             .ok_or_else(|| {
                 service.internal_failure(
                     ServiceOperationV1::ConsumeContextualSubscription,
                     InternalDefect::ProofMismatch,
                 )
             })?;
-        compiled_hydrations.push((hydration, query.shared_program()));
+        let program = query.shared_ordinary_program().ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+        compiled_hydrations.push((hydration, program));
     }
     let executor = service.providers.query_executor.as_ref().ok_or_else(|| {
         service.internal_failure(

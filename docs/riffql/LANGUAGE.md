@@ -1,4 +1,4 @@
-# RiffQL language version 1
+# RiffQL language versions
 
 RiffQL is RiffDB's formal, symbolic, read-only application language. It is an
 inspectable compiler input, not natural-language execution and not SQL.
@@ -157,3 +157,50 @@ Application evidence did not justify `exists`, aggregate, computed-field,
 fragment, search, projection-source, or general-join syntax. Such a construct
 still requires repeated domain evidence and a separate accepted ADR before any
 grammar or IR change.
+
+## Operational optional predicates (language version 2)
+
+Named deployed queries may declare up to eight optional predicate parameters
+and guard a top-level conjunct with the matching parameter:
+
+```riffql
+query SearchTickets(
+    $organization_id: Ticket.organization_id,
+    $status: Ticket.status?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+        order by updated_at asc, ticket_id asc
+        take 25
+
+    return Found { tickets: tickets { ticket_id status updated_at } }
+    outcomes Found
+}
+```
+
+The compiler enumerates the complete presence family at deployment: at most
+eight parameters and 256 ordinary bounded plans. Every member must independently
+prove the same partition route, result schema, locality, declared access path,
+and ordinary RiffQL safety properties. One missing index or unsafe member
+rejects the whole query with a source-spanned diagnostic; there is no runtime
+planner, scan fallback, predicate object, or caller-selected field/operator.
+
+At invocation, a value selects the present member; omission or explicit null
+selects the absent member. Generated bindings expose the parameter as an
+optional language value. Authorization covers the union of every family member
+and policy charges the component-wise maximum cost before execution. The query
+service then selects the exact compiler-owned member by presence and executes
+it against one snapshot. Values never influence plan selection.
+
+An operational source has a version-2 language and query-module identity.
+Ordinary version-1 sources retain their original canonical bytes and identities.
+The ad-hoc source path and version-1 reactive/live-query modules reject
+operational families until those surfaces receive their own versioned
+presence-selection contracts.
+
+The parser reserves version-2 spellings for null/existence and prefix
+predicates, but they remain unavailable until declared discriminator/text-key
+indexes and their compatibility rules ship. A parsed spelling is not an
+executable feature: module compilation continues to fail closed unless every
+required storage and planning proof exists.

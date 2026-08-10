@@ -17,6 +17,19 @@ Cached plans are bounded and keyed by immutable identity. The server authorizes
 the complete compiler-derived application-query request for every invocation;
 a module or generated client conveys no authority.
 
+Ordinary modules retain the original version-1 byte layout and identities.
+A module containing an operational optional-predicate query uses the additive
+version-2 representation. It stores the complete finite plan family, its
+authorization union, maximum cost, and family identity. Generated clients pin
+that family identity; the service selects one exact member only from parameter
+presence and returns the family identity on the response. Strict decoding
+recompiles source against the exact contract and compares canonical bytes.
+
+Operational families currently execute through the named-query application
+surface. Version-1 reactive/live-query modules do not substitute a representative
+member: compilation excludes an operational family until a versioned reactive
+presence-selection surface exists.
+
 ## Generated artifacts
 
 The compiler emits:
@@ -47,5 +60,6 @@ The checked fixtures are:
 - `clients/typescript/ticketdesk/client.ts`
 - `fixtures/query-modules/ticketdesk.mcp.json`
 
-`scripts/generate-query-clients --check` regenerates all three, compares exact
-bytes, compiles the Rust fixture, and validates the TypeScript source.
+`scripts/generate-query-clients --check` regenerates the checked Rust, Go,
+TypeScript, Python, and MCP artifacts, compares exact bytes, and validates their
+language-specific build boundaries.
