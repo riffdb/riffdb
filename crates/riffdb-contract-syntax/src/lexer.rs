@@ -24,6 +24,7 @@ pub(crate) enum DeferredKeyword {
 
 /// The complete external token set for contract grammar version 2.
 #[derive(Clone, Debug, Eq, Hash, Logos, PartialEq)]
+#[allow(clippy::enum_variant_names)] // `fencing_token` is the accepted external keyword.
 #[logos(error = LexingError)]
 #[logos(skip r"[ \t\r\n\x0C]+")]
 #[logos(skip(r"//[^\r\n]*", allow_greedy = true))]

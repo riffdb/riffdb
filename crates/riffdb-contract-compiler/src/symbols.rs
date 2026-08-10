@@ -325,11 +325,13 @@ fn allocate_symbols(
                     &allocator,
                     command_id,
                     command,
-                    &mut command_inputs,
-                    &mut command_service_values,
-                    &mut outcomes,
-                    &mut outcome_fields,
-                    &mut diagnostics,
+                    CommandSymbolTables {
+                        inputs: &mut command_inputs,
+                        service_values: &mut command_service_values,
+                        outcomes: &mut outcomes,
+                        outcome_fields: &mut outcome_fields,
+                        diagnostics: &mut diagnostics,
+                    },
                 );
             }
             Declaration::Projection(projection) => {
@@ -426,16 +428,27 @@ fn allocate_symbols(
     })
 }
 
+struct CommandSymbolTables<'a> {
+    inputs: &'a mut BTreeMap<(CommandId, String), FieldId>,
+    service_values: &'a mut BTreeMap<(CommandId, String), FieldId>,
+    outcomes: &'a mut BTreeMap<(CommandId, String), OutcomeId>,
+    outcome_fields: &'a mut BTreeMap<(CommandId, OutcomeId, String), FieldId>,
+    diagnostics: &'a mut Vec<CompilerDiagnostic>,
+}
+
 fn allocate_command_symbols(
     allocator: &StableIdAllocator<'_>,
     command_id: CommandId,
     command: &CommandDeclaration,
-    command_inputs: &mut BTreeMap<(CommandId, String), FieldId>,
-    command_service_values: &mut BTreeMap<(CommandId, String), FieldId>,
-    outcomes: &mut BTreeMap<(CommandId, String), OutcomeId>,
-    outcome_fields: &mut BTreeMap<(CommandId, OutcomeId, String), FieldId>,
-    diagnostics: &mut Vec<CompilerDiagnostic>,
+    tables: CommandSymbolTables<'_>,
 ) {
+    let CommandSymbolTables {
+        inputs: command_inputs,
+        service_values: command_service_values,
+        outcomes,
+        outcome_fields,
+        diagnostics,
+    } = tables;
     let mut inputs = NameCollector::default();
     for input in &command.inputs {
         inputs.insert(&input.value.field.name, diagnostics);

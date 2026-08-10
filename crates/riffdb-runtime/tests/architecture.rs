@@ -118,7 +118,7 @@ fn manifests_name_only_the_approved_semantic_layers() {
 }
 
 #[test]
-fn grammar_v1_has_no_contract_state_machine_or_transition_execution_surface() {
+fn contract_workflows_do_not_expose_a_generic_state_machine_or_transition_surface() {
     for (layer, source) in [
         ("grammar", CONTRACT_GRAMMAR),
         ("syntax AST", CONTRACT_AST),
@@ -126,10 +126,10 @@ fn grammar_v1_has_no_contract_state_machine_or_transition_execution_surface() {
         ("command IR", COMMAND_IR),
         ("IR format", IR_FORMAT),
     ] {
-        for forbidden in ["state_machine", "StateMachine", "TRANSITION", "Transition"] {
+        for forbidden in ["state_machine", "StateMachine"] {
             assert!(
                 !source.contains(forbidden),
-                "grammar-v1 {layer} unexpectedly exposes {forbidden}"
+                "contract {layer} unexpectedly exposes generic {forbidden}"
             );
         }
     }
@@ -143,10 +143,33 @@ fn grammar_v1_has_no_contract_state_machine_or_transition_execution_surface() {
             "runtime unexpectedly dispatches {forbidden}"
         );
     }
-    for required in ["Require {", "SetField {", "EmitEvent(", "Return("] {
+    for (layer, source, required) in [
+        ("grammar", CONTRACT_GRAMMAR, "WorkflowTransitionDeclaration"),
+        ("syntax AST", CONTRACT_AST, "WorkflowTransition("),
+        ("compiler HIR", CONTRACT_HIR, "HirWorkflowTransition"),
+        ("command IR", COMMAND_IR, "WorkflowTransition {"),
+        ("IR format", IR_FORMAT, "WorkflowTransitionSchema"),
+        (
+            "deterministic runtime",
+            RUNTIME_SOURCE,
+            "Instruction::WorkflowTransition",
+        ),
+    ] {
+        assert!(
+            source.contains(required),
+            "accepted compiled-workflow {layer} lost {required}"
+        );
+    }
+    for required in [
+        "Require {",
+        "SetField {",
+        "EmitEvent(",
+        "WorkflowTransition {",
+        "Return(",
+    ] {
         assert!(
             COMMAND_IR.contains(required),
-            "closed grammar-v1 instruction set lost {required}"
+            "closed command instruction set lost {required}"
         );
     }
     assert!(

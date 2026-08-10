@@ -301,6 +301,12 @@ pub fn execute_command(
                 };
                 builder.push_event(event).map_err(map_storage_value_error)?;
             }
+            // Workflow transition IR was frozen ahead of WP-566 runtime and
+            // commit semantics. Until that package supplies the checked
+            // revision/fence evaluator, encountering the instruction must
+            // fail closed rather than falling through or treating it as an
+            // ordinary field write.
+            Instruction::WorkflowTransition { .. } => return Err(ExecutionFault::Integrity),
             Instruction::Return(outcome) => {
                 let outcome = {
                     let values = RuntimeValues {
