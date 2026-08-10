@@ -13,8 +13,9 @@ pub use formatter::format_query;
 pub use parser::{parse_query, parse_query_bytes};
 pub use syntax::{
     BinaryOperator, Binding, Cardinality, Direction, Document, Expression, FieldSelection,
-    Identifier, Literal, OrderTerm, Parameter, Path, QueryBody, RIFFQL_LANGUAGE_VERSION, Selection,
-    Span, Spanned, Take, TypeReference,
+    Identifier, Literal, OrderTerm, Parameter, Path, QueryBody, RIFFQL_LANGUAGE_VERSION,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, Selection, Span, Spanned, Take, TypeReference,
+    UnaryOperator,
 };
 
 /// Maximum accepted UTF-8 query source bytes.

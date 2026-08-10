@@ -10438,7 +10438,7 @@ work_packages:
   required_adrs: [ADR-0051, ADR-0052, ADR-0053, ADR-0054, ADR-0055, ADR-0087,
     ADR-0108]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
-    crates/riffdb-query-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
     crates/riffdb-diagnostics/**, crates/riffdb-catalog/**, fixtures/riffql/**,
     fixtures/query-modules/**, fixtures/application-manifests/**,

@@ -522,6 +522,47 @@ impl AuthorizationEntityAccess {
             .zip(self.field_ids.iter().copied())
     }
 
+    /// Forms the least authority covering every supplied access for one exact entity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_union(accesses: &[Self]) -> Option<Self> {
+        let first = accesses.first()?;
+        let mut fields = std::collections::BTreeMap::new();
+        let mut indexes = std::collections::BTreeMap::new();
+        let mut maximum_rows = 0_u64;
+        for access in accesses {
+            if access.entity != first.entity || access.entity_id != first.entity_id {
+                return None;
+            }
+            maximum_rows = maximum_rows.max(access.maximum_rows);
+            for (name, id) in access.fields.iter().zip(access.field_ids.iter().copied()) {
+                if fields
+                    .insert(name.clone(), id)
+                    .is_some_and(|prior| prior != id)
+                {
+                    return None;
+                }
+            }
+            for (name, id) in access.indexes.iter().zip(access.index_ids.iter().copied()) {
+                if indexes
+                    .insert(name.clone(), id)
+                    .is_some_and(|prior| prior != id)
+                {
+                    return None;
+                }
+            }
+        }
+        Self::checked(
+            first.entity.clone(),
+            fields.keys().cloned().collect(),
+            indexes.keys().cloned().collect(),
+            maximum_rows,
+            first.entity_id,
+            fields.into_values().collect(),
+            indexes.into_values().collect(),
+        )
+    }
+
     #[doc(hidden)]
     pub fn checked(
         entity: String,

@@ -885,7 +885,7 @@ fn query_plan_class(
         Code::NonLocal => (AuthoringCause::NonLocal, AuthoringFix::SupplyPartitionRoute),
         Code::Unindexed | Code::Unordered => (AuthoringCause::MissingIndex, AuthoringFix::AddIndex),
         Code::Unbounded => (AuthoringCause::Unbounded, AuthoringFix::AddBound),
-        Code::InternalInvariant => (
+        Code::InternalInvariant | Code::OperationalFamilyRequired => (
             AuthoringCause::InternalInvariant,
             AuthoringFix::ContactOperator,
         ),
@@ -1097,6 +1097,46 @@ query Bad($organization_id: Organization.organization_id, $title: Ticket.title) 
             assert!(!rendered.contains("$organization_id"));
             assert!(!rendered.contains("title == "));
         }
+    }
+
+    #[test]
+    fn operational_query_cannot_escape_through_the_v1_module_compiler() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let query = r#"
+query Operational($organization_id: Organization.organization_id, $title: Ticket.title?) {
+    many tickets from Ticket
+        where organization_id == $organization_id && when $title { title == $title }
+        order by updated_at desc
+        take 10
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+        let error = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("diagnostic").expect("name"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("Operational", query).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect_err("v1 module compiler must reject operational syntax");
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/operational.riffq").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-QP008");
+        assert_eq!(diagnostic.cause(), AuthoringCause::InternalInvariant);
+        assert_eq!(diagnostic.fixes(), &[AuthoringFix::ContactOperator]);
+        assert!(
+            diagnostic
+                .span()
+                .is_some_and(|span| span.start() < span.end())
+        );
     }
 
     #[test]
