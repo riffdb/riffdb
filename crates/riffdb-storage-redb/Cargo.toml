@@ -41,3 +41,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[example]]
+name = "generate_migration_durable_fixtures"
+required-features = ["test-fixtures"]
