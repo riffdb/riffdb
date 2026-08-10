@@ -320,6 +320,59 @@ impl AuthoritativeCommandModel {
     pub fn commit_count(&self) -> usize {
         self.commits.len()
     }
+
+    /// Iterates modeled admissions in canonical storage-key order.
+    pub fn admissions(
+        &self,
+    ) -> impl Iterator<Item = (&IdempotencyIdentityKey, &StoredAdmissionStateV1)> {
+        self.admissions.iter()
+    }
+
+    /// Iterates modeled entity post-images in canonical target order.
+    pub fn entities(
+        &self,
+    ) -> impl Iterator<Item = (&riffdb_storage_api::EntityTarget, &StoredEntityRecordV1)> {
+        self.entities.iter()
+    }
+
+    /// Iterates modeled index entries in canonical key order.
+    pub fn index_entries(&self) -> impl Iterator<Item = (&IndexEntryKey, &StoredIndexEntryV2)> {
+        self.index_entries.iter()
+    }
+
+    /// Iterates modeled index epochs in canonical target order.
+    pub fn index_epochs(
+        &self,
+    ) -> impl Iterator<Item = (&PartitionIndexTarget, &StoredIndexEpochV1)> {
+        self.index_epochs.iter()
+    }
+
+    /// Iterates modeled terminal outcomes ascending by commit sequence.
+    pub fn outcomes(&self) -> impl Iterator<Item = (&CommitSequence, &StoredOutcomeV1)> {
+        self.outcomes.iter()
+    }
+
+    /// Iterates modeled commit records ascending by commit sequence.
+    pub fn commits(&self) -> impl Iterator<Item = (&CommitSequence, &StoredCommitRecordV1)> {
+        self.commits.iter()
+    }
+
+    /// Iterates modeled provenance records in identity order.
+    pub fn provenance_records(
+        &self,
+    ) -> impl Iterator<Item = (&ProvenanceId, &StoredProvenanceRecordV1)> {
+        self.provenance.iter()
+    }
+
+    /// Iterates modeled durable events in identity order.
+    pub fn events(&self) -> impl Iterator<Item = (&EventId, &StoredDurableEventV1)> {
+        self.events.iter()
+    }
+
+    /// Iterates modeled authoritative outbox intents in identity order.
+    pub fn outbox_intents(&self) -> impl Iterator<Item = (&EventId, &StoredOutboxIntentV1)> {
+        self.outbox_intents.iter()
+    }
 }
 
 fn identity_key(identity: &IdempotencyIdentity) -> Result<IdempotencyIdentityKey, ModelApplyError> {
