@@ -1,8 +1,9 @@
 # Security Posture and Threat Model
 
-RiffDB's POC target is a trusted Linux host used for local development and
-architecture validation. It is not hardened for an untrusted network or
-multi-tenant production deployment.
+RiffDB's alpha target is a controlled Linux deployment. Application gRPC can
+use verified direct TLS or a protected Unix socket; hosted MCP remains local.
+The system is not hardened for an untrusted internet-facing or shared
+multi-tenant service.
 
 ## Trust Boundaries
 
@@ -34,15 +35,21 @@ multi-tenant production deployment.
 
 ## Deployment Rules
 
-- Keep gRPC and hosted MCP on literal loopback addresses.
-- Do not place a reverse proxy, port forward, or public tunnel in front of the
-  POC endpoints.
+- Keep cleartext application gRPC and hosted MCP on literal loopback. Remote
+  application gRPC must use the `direct_tls` profile; same-host/sidecar clients
+  may use a protected `local_socket` profile.
+- A TCP or HTTP/2 proxy may forward verified TLS, but forwarded identity,
+  tenant, database, principal, and authorization assertions are ignored. The
+  normal RiffDB bearer credential and database selector remain mandatory.
 - Keep the database file, backup root, capability digest-key file, and
   idempotency digest-key file lexically disjoint. The packaged layout does so.
 - Make the `riffdb` service account the only writer to the database directory.
   Never run two `riffdbd` processes against one database, and never grant the
   CLI, MCP bridge, backup utilities, or another service direct write access.
 - Own secret files by the exact service effective user at mode `0600`.
+- Protect TLS private keys with no group or other permission bits. Replace the
+  certificate and key atomically; an invalid replacement retains the last
+  valid identity for new handshakes.
 - Give the optional MCP bridge a narrowly scoped normal capability. Never use
   the bootstrap document as its long-lived credential.
 - Treat membership in the `riffdb-mcp` socket group as access to the bridge

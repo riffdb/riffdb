@@ -24,6 +24,7 @@ riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
 riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
+riffdb-config = { path = "../riffdb-config", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
@@ -31,7 +32,7 @@ riffdb-query-ir = { path = "../riffdb-query-ir", version = "0.1.0", default-feat
 riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "tls-ring"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [[test]]
@@ -80,6 +81,11 @@ path = "../../tests/contextual_agent_subscriptions.rs"
 [[test]]
 name = "reactive_ticketdesk_acceptance"
 path = "../../tests/reactive_ticketdesk_acceptance.rs"
+
+[[test]]
+name = "remote_ingress"
+path = "../../tests/remote_ingress.rs"
+harness = false
 
 [lints]
 workspace = true

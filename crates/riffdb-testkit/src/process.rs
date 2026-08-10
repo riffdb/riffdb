@@ -28,6 +28,7 @@ pub struct ChildProcessSpec {
     executable: PathBuf,
     arguments: Vec<OsString>,
     environment: Vec<(OsString, OsString)>,
+    inherit_environment: bool,
 }
 
 impl ChildProcessSpec {
@@ -39,7 +40,15 @@ impl ChildProcessSpec {
             executable,
             arguments: Vec::new(),
             environment: Vec::new(),
+            inherit_environment: true,
         })
+    }
+
+    /// Clears the parent environment before adding the explicitly selected entries.
+    #[must_use]
+    pub fn clear_environment(mut self) -> Self {
+        self.inherit_environment = false;
+        self
     }
 
     /// Appends one bounded argument.
@@ -94,6 +103,12 @@ impl ChildProcessSpec {
     #[must_use]
     pub fn environment(&self) -> &[(OsString, OsString)] {
         &self.environment
+    }
+
+    /// Reports whether unlisted parent environment entries are inherited.
+    #[must_use]
+    pub const fn inherits_environment(&self) -> bool {
+        self.inherit_environment
     }
 }
 
@@ -173,6 +188,9 @@ impl ChildProcessController {
     /// Spawns one checked process with piped lifecycle channels.
     pub fn spawn(specification: &ChildProcessSpec) -> Result<Self, ChildProcessError> {
         let mut command = Command::new(specification.executable());
+        if !specification.inherits_environment() {
+            command.env_clear();
+        }
         command
             .args(specification.arguments())
             .envs(
@@ -495,6 +513,7 @@ mod tests {
     fn process_spec_is_bounded_and_environment_keys_are_unique() {
         let spec = ChildProcessSpec::new("/test/riffdbd")
             .expect("executable")
+            .clear_environment()
             .arg("--database")
             .expect("argument")
             .arg("/tmp/riffdb.redb")
@@ -503,6 +522,7 @@ mod tests {
             .expect("environment");
         assert_eq!(spec.arguments().len(), 2);
         assert_eq!(spec.environment().len(), 1);
+        assert!(!spec.inherits_environment());
         assert_eq!(
             spec.clone().env("RIFFDB_MODE", "other"),
             Err(ChildProcessSpecError::InvalidEnvironment)

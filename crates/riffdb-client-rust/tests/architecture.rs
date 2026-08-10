@@ -13,6 +13,7 @@ const STATUS: &str = include_str!("../src/status.rs");
 const TLS: &str = include_str!("../src/tls.rs");
 const GENERATED: &str = include_str!("../src/generated/mod.rs");
 const LEGAL_SPEND: &str = include_str!("../src/generated/legal_spend.rs");
+const PYTHON_NATIVE: &str = include_str!("../../riffdb-client-python-native/src/lib.rs");
 
 #[test]
 fn client_has_no_direct_lower_semantic_authority_dependency() {
@@ -54,9 +55,14 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     assert!(manifest.contains(
         "riffdb-config = { version = \"0.1.0\", path = \"../riffdb-config\", default-features = false }"
     ));
+    assert!(manifest.contains(
+        "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"
+    ));
+    assert!(manifest.contains(
+        "rustls-webpki = { version = \"=0.103.13\", default-features = false, features = [\"std\"] }"
+    ));
     for forbidden in [
         "base64 =",
-        "rustls =",
         "tokio-rustls =",
         "ring =",
         "tls-aws-lc",
@@ -66,6 +72,17 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     ] {
         assert!(!manifest.contains(forbidden));
     }
+    assert!(
+        !manifest
+            .lines()
+            .any(|line| line.trim_start().starts_with("rustls ="))
+    );
+}
+
+#[test]
+fn python_adapter_collapses_tls_failures_without_exposing_configuration() {
+    assert!(PYTHON_NATIVE.contains("| ClientError::Tls(_) => \"connection_failure\""));
+    assert!(!PYTHON_NATIVE.contains("TlsClientFailure::"));
 }
 
 #[test]

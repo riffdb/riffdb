@@ -111,9 +111,11 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
             "forbidden production dependency capability: {forbidden}"
         );
     }
-    assert!(!production
-        .lines()
-        .any(|line| line.trim_start().starts_with("rustls =")));
+    assert!(
+        !production
+            .lines()
+            .any(|line| line.trim_start().starts_with("rustls ="))
+    );
 }
 
 #[test]

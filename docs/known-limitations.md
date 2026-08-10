@@ -15,8 +15,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   checks validate the shared systemd assets. Automation does not execute the
   source installer's real account, `/etc`, or `/usr/local` flow. System scope
   requires first-install acceptance on its disposable or staging host.
-- gRPC and hosted MCP are loopback-only, cleartext, and have no TLS, proxy,
-  OAuth, or remote-bind support.
+- Application gRPC supports literal-loopback cleartext, verified direct TLS,
+  and a protected Unix socket. Hosted MCP remains loopback-only. Direct TLS has
+  static certificate/key paths and intentionally exposes no mTLS, native-root,
+  trust-all, cipher-suite, protocol-version, or provider knobs. OAuth,
+  automatic certificate issuance, and untrusted internet-facing operation are
+  unsupported.
 - `riffdbd` exposes only the documented POC configuration fields. There is no
   network metrics listener, storage-engine selector, general tuning surface,
   or secret value in TOML.

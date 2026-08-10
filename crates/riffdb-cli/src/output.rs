@@ -337,6 +337,16 @@ pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Ter
             "the gRPC channel could not connect",
             1,
         ),
+        ClientError::Tls(_) => error_with_exit(
+            command,
+            &ClientErrorDto {
+                code: "tls_connection_failed",
+                message: "the verified TLS channel could not connect",
+            },
+            "tls_connection_failed",
+            "the verified TLS channel could not connect",
+            1,
+        ),
     }
 }
 
@@ -3729,6 +3739,43 @@ mod tests {
         assert_eq!(
             terminal.json_bytes().expect("JSON"),
             include_bytes!("../fixtures/output-v1/entity.get.public_error.jsonl")
+        );
+    }
+
+    #[test]
+    fn tls_client_errors_are_path_free_and_actionable() {
+        use riffdb_client_rust::TlsClientFailure;
+
+        let terminal = client_error(
+            CommandIdentity::ServerHealth,
+            &ClientError::Tls(TlsClientFailure::TrustRootUnavailable),
+        );
+        let json = terminal.json_bytes().expect("JSON");
+        assert_eq!(
+            json,
+            concat!(
+                "{\"schema\":\"riffdb.cli.output/v1\",",
+                "\"command\":\"server.health\",\"ok\":false,",
+                "\"error\":{\"type\":\"client\",",
+                "\"code\":\"tls_connection_failed\",",
+                "\"message\":\"the verified TLS channel could not connect\"}}\n"
+            )
+            .as_bytes()
+        );
+        assert!(
+            !json
+                .windows(b"trust".len())
+                .any(|window| window == b"trust")
+        );
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit = terminal.emit(OutputMode::Human, &mut stdout, &mut stderr);
+        assert_eq!(exit, ExitCode::from(1));
+        assert!(stdout.is_empty());
+        assert_eq!(
+            stderr,
+            b"server.health: tls_connection_failed: the verified TLS channel could not connect\n"
         );
     }
 

@@ -1,8 +1,10 @@
 # Installation
 
-RiffDB's POC deployment target is Linux. Protected key and bearer loaders
-depend on Linux `/proc/self/status` and exact owner/mode checks. Public
-interfaces are loopback-only and do not include TLS.
+RiffDB's alpha deployment target is Linux. Protected key and bearer loaders
+depend on Linux `/proc/self/status` and exact owner/mode checks. The convenience
+installer retains its loopback development profile; controlled remote
+application deployments can opt into verified direct TLS through explicit
+server configuration.
 
 RiffDB is available under either the MIT License or the Apache License, Version
 2.0, at your option. A verified release bundle includes the ownership notice

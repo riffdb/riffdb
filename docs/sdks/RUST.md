@@ -4,6 +4,15 @@ Rust applications use the public `riffdb-client-rust` facade plus a generated
 module for the exact application lock. They do not depend on server, storage,
 policy, compiler, Tonic, Prost, or raw Protobuf crates.
 
+For a remote daemon, construct the closed `riffdb_config::TlsClientConfig` and
+call `RiffDbClient::connect_verified_tls`. The client loads one protected CA
+root, verifies the exact DNS/IP identity, and has no native-root, trust-all,
+cleartext-fallback, client-certificate, cipher-suite, or provider selector.
+Long-lived hosts can retain `VerifiedTlsConnector`; it atomically adopts only a
+complete valid trust-root replacement for new connections and retains the last
+valid snapshot otherwise.
+See [Remote and Local Application Ingress](../operations/REMOTE-INGRESS.md).
+
 ## Generated boundary
 
 Generate from the reviewed lock:

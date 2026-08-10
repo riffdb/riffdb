@@ -56,10 +56,11 @@ authorization headers. The opaque RiffDB credential and database selector are
 still authenticated and authorized by the shared service. Proxy source address
 is diagnostic transport metadata only and is redacted before public errors.
 
-TLS client certificates may be configured as an additional ingress admission
-condition. They do not become a RiffDB principal, capability, role, tenant, or
-authorization decision. Bearer capability authentication remains mandatory for
-protected operations in the first alpha.
+The first alpha exposes no client-certificate, cipher-suite, protocol-version,
+or cryptographic-provider knobs. Server configuration is exactly a certificate
+chain and private-key path; client configuration is exactly a trust-root path
+and expected peer identity. Mutual TLS is deferred. Bearer capability
+authentication remains mandatory for protected operations.
 
 ### Architecture-pin amendment and replication sequencing
 
@@ -175,9 +176,13 @@ Private keys are loaded only from protected files or injected secret handles,
 never CLI literals or public diagnostics. Credentials, certificate material,
 submitted values, peer prose, and absolute paths remain redacted. TLS parsing
 and cryptographic dependencies require explicit dependency and feature review
-before ADR acceptance or implementation. That review includes the complete
-transitive lockfile closure and the exact replacement assertions for both
-architecture pins named above.
+before ADR acceptance or implementation. The accepted provider is rustls with
+the `ring` backend (`tls-ring` in Tonic), chosen over AWS-LC to avoid a
+CMake/NASM installation requirement. This deliberately introduces the
+reviewed C/assembly implementation in `ring`; it receives exact version pins,
+Cargo-deny review, and lockfile/checksum discipline. The transport architecture
+pins confine this stack to ingress/client transport crates and forbid it from
+service, command, storage, and deterministic-runtime dependency graphs.
 
 ## Standing Design Tests
 

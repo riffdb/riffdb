@@ -17,6 +17,8 @@ riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
 # Already transitive via tonic; direct dep with only `time` for non-blocking
 # Overloaded backoff (must not block the async runtime during saturation).
 tokio = { version = "=1.52.0", default-features = false, features = ["time"] }
