@@ -824,6 +824,138 @@ pub(crate) fn describe_contract(
     )
 }
 
+pub(crate) fn application_catalog(
+    response: app_v1::GetApplicationCatalogResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    if response.schema != "riffdb.application_catalog.v1"
+        || response.contract_lineage.is_empty()
+        || response.contract_version == 0
+    {
+        return Err(ResponseConversionError);
+    }
+    let contract_bundle_hash = exact_hash(&response.contract_bundle_hash)?;
+    let query_module_hashes = response
+        .query_module_hashes
+        .iter()
+        .map(|hash| exact_hash(hash).map(|hash| lower_hex(&hash)))
+        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    let next_cursor = response
+        .next_cursor
+        .as_deref()
+        .map(|cursor| {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(cursor.as_bytes())
+                .map_err(|_| ResponseConversionError)?;
+            let bytes: [u8; riffdb_api_mcp::MCP_CURSOR_BYTES] =
+                bytes.try_into().map_err(|_| ResponseConversionError)?;
+            Ok(riffdb_api_mcp::encode_mcp_cursor(bytes))
+        })
+        .transpose()?;
+    if response.has_more != next_cursor.is_some() {
+        return Err(ResponseConversionError);
+    }
+    let symbols = response
+        .symbols
+        .into_iter()
+        .map(|symbol| {
+            if symbol.path.is_empty()
+                || symbol
+                    .source_span
+                    .as_ref()
+                    .is_some_and(|span| span.start > span.end)
+            {
+                return Err(ResponseConversionError);
+            }
+            Ok(serde_json::json!({
+                "kind": application_catalog_symbol_kind(symbol.kind)?,
+                "path": symbol.path,
+                "public_type": symbol.public_type,
+                "source_span": symbol.source_span.map(|span| serde_json::json!({
+                    "start": span.start,
+                    "end": span.end,
+                })),
+            }))
+        })
+        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    let features = response
+        .features
+        .into_iter()
+        .map(|feature| {
+            Ok(serde_json::json!({
+                "feature": application_catalog_feature(feature.feature)?,
+                "state": application_catalog_feature_state(feature.state)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    let payload = serde_json::json!({
+        "schema": response.schema,
+        "contract": {
+            "lineage": response.contract_lineage,
+            "version": response.contract_version.to_string(),
+            "bundle_hash": lower_hex(&contract_bundle_hash),
+        },
+        "query_module_hashes": query_module_hashes,
+        "symbols": symbols,
+        "features": features,
+        "has_more": response.has_more,
+        "next_cursor": next_cursor,
+    });
+    compose(
+        31,
+        McpFixedResultBranch::ApplicationCatalogPage,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn application_catalog_symbol_kind(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match app_v1::ApplicationCatalogSymbolKind::try_from(value).ok() {
+        Some(app_v1::ApplicationCatalogSymbolKind::Contract) => Ok("contract"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Enum) => Ok("enum"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Entity) => Ok("entity"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Field) => Ok("field"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Relationship) => Ok("relationship"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Index) => Ok("index"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Command) => Ok("command"),
+        Some(app_v1::ApplicationCatalogSymbolKind::CommandOutcome) => Ok("command_outcome"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Event) => Ok("event"),
+        Some(app_v1::ApplicationCatalogSymbolKind::QueryModule) => Ok("query_module"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Query) => Ok("query"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Role) => Ok("role"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Operation) => Ok("operation"),
+        Some(app_v1::ApplicationCatalogSymbolKind::Unspecified) | None => {
+            Err(ResponseConversionError)
+        }
+    }
+}
+
+fn application_catalog_feature(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match app_v1::ApplicationCatalogFeature::try_from(value).ok() {
+        Some(app_v1::ApplicationCatalogFeature::OperationalOptionalPredicates) => {
+            Ok("operational_optional_predicates")
+        }
+        Some(app_v1::ApplicationCatalogFeature::StableCursorPages) => Ok("stable_cursor_pages"),
+        Some(app_v1::ApplicationCatalogFeature::NullExistencePredicates) => {
+            Ok("null_existence_predicates")
+        }
+        Some(app_v1::ApplicationCatalogFeature::BinaryTextPrefix) => Ok("binary_text_prefix"),
+        Some(app_v1::ApplicationCatalogFeature::UnicodeFoldTextPrefixV1) => {
+            Ok("unicode_fold_text_prefix_v1")
+        }
+        Some(app_v1::ApplicationCatalogFeature::ExactAggregates) => Ok("exact_aggregates"),
+        Some(app_v1::ApplicationCatalogFeature::Unspecified) | None => Err(ResponseConversionError),
+    }
+}
+
+fn application_catalog_feature_state(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match app_v1::ApplicationCatalogFeatureState::try_from(value).ok() {
+        Some(app_v1::ApplicationCatalogFeatureState::Available) => Ok("available"),
+        Some(app_v1::ApplicationCatalogFeatureState::Unavailable) => Ok("unavailable"),
+        Some(app_v1::ApplicationCatalogFeatureState::Unspecified) | None => {
+            Err(ResponseConversionError)
+        }
+    }
+}
+
 pub(crate) fn check_query(
     response: app_v1::CheckQueryResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
@@ -2832,6 +2964,73 @@ fn health_component_status(value: i32) -> Result<&'static str, ResponseConversio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_catalog_preserves_only_the_symbolic_public_page() {
+        let result = application_catalog(app_v1::GetApplicationCatalogResponse {
+            schema: "riffdb.application_catalog.v1".to_owned(),
+            contract_lineage: "Example".to_owned(),
+            contract_version: 7,
+            contract_bundle_hash: vec![0xab; 32],
+            query_module_hashes: vec![vec![0xcd; 32]],
+            symbols: vec![app_v1::ApplicationCatalogSymbol {
+                kind: app_v1::ApplicationCatalogSymbolKind::Field.into(),
+                path: vec!["Ticket".to_owned(), "title".to_owned()],
+                public_type: Some("String<1..200>".to_owned()),
+                source_span: Some(app_v1::ApplicationCatalogSourceSpan { start: 11, end: 16 }),
+            }],
+            features: vec![app_v1::ApplicationCatalogFeatureView {
+                feature: app_v1::ApplicationCatalogFeature::BinaryTextPrefix.into(),
+                state: app_v1::ApplicationCatalogFeatureState::Available.into(),
+            }],
+            has_more: true,
+            next_cursor: Some(URL_SAFE_NO_PAD.encode([7_u8; riffdb_api_mcp::MCP_CURSOR_BYTES])),
+        })
+        .expect("catalog response converts");
+
+        assert_eq!(
+            result,
+            McpToolResult::from_serializable(&serde_json::json!({
+                "page": {
+                    "schema": "riffdb.application_catalog.v1",
+                    "contract": {
+                        "lineage": "Example",
+                        "version": "7",
+                        "bundle_hash": "ab".repeat(32),
+                    },
+                    "query_module_hashes": ["cd".repeat(32)],
+                    "symbols": [{
+                        "kind": "field",
+                        "path": ["Ticket", "title"],
+                        "public_type": "String<1..200>",
+                        "source_span": {"start": 11, "end": 16},
+                    }],
+                    "features": [{
+                        "feature": "binary_text_prefix",
+                        "state": "available",
+                    }],
+                    "has_more": true,
+                    "next_cursor": "07".repeat(riffdb_api_mcp::MCP_CURSOR_BYTES),
+                }
+            }))
+            .expect("expected MCP result")
+        );
+
+        assert!(
+            application_catalog(app_v1::GetApplicationCatalogResponse {
+                schema: "riffdb.application_catalog.v1".to_owned(),
+                contract_lineage: "Example".to_owned(),
+                contract_version: 7,
+                contract_bundle_hash: vec![0xab; 31],
+                query_module_hashes: Vec::new(),
+                symbols: Vec::new(),
+                features: Vec::new(),
+                has_more: false,
+                next_cursor: None,
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn empty_event_pull_is_a_valid_completed_mcp_result() {

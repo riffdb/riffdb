@@ -869,8 +869,8 @@ fn insert_unique_target(
         .encode_index_prefix(values)
         .map_err(|_| CommandIndexError::internal_defect())?;
     let mut storage_prefix = IndexRangePrefixBuilder::new(index.id());
-    for value in values {
-        push_storage_prefix_component(&mut storage_prefix, value)?;
+    for (component, value) in index.key_schema().components().iter().zip(values) {
+        push_storage_prefix_component(&mut storage_prefix, component.codec(), value)?;
     }
     let storage = storage_prefix.finish();
     if storage.as_bytes() != prefix.as_bytes() {
@@ -889,18 +889,8 @@ fn index_values(
     index: &IndexSchema,
     record: &CanonicalRecord,
 ) -> Result<Vec<CanonicalValue>, CommandIndexError> {
-    index
-        .fields()
-        .iter()
-        .map(|field| {
-            record
-                .fields()
-                .binary_search_by_key(field, |(candidate, _)| *candidate)
-                .ok()
-                .map(|position| record.fields()[position].1.clone())
-                .ok_or_else(CommandIndexError::internal_defect)
-        })
-        .collect()
+    riffdb_contract_ir::encode_operational_index_values_v1(index, record)
+        .map_err(|_| CommandIndexError::internal_defect())
 }
 
 fn insert_generation(
@@ -909,12 +899,12 @@ fn insert_generation(
     partition: &PartitionKey,
     builder: &mut IndexDerivationBuilder,
 ) -> Result<(), CommandIndexError> {
-    if values.len() != index.fields().len() {
+    if values.len() != index.key_schema().components().len() {
         return Err(CommandIndexError::internal_defect());
     }
     let mut storage_prefix = IndexRangePrefixBuilder::new(index.id());
-    for value in values {
-        push_storage_prefix_component(&mut storage_prefix, value)?;
+    for (component, value) in index.key_schema().components().iter().zip(values) {
+        push_storage_prefix_component(&mut storage_prefix, component.codec(), value)?;
     }
     let ir_prefix = index
         .key_schema()
@@ -929,8 +919,18 @@ fn insert_generation(
 
 fn push_storage_prefix_component(
     builder: &mut IndexRangePrefixBuilder,
+    codec: riffdb_contract_ir::KeyComponentCodecV1,
     value: &CanonicalValue,
 ) -> Result<(), CommandIndexError> {
+    if codec == riffdb_contract_ir::KeyComponentCodecV1::OrderedBytes {
+        let CanonicalValue::Bytes(value) = value else {
+            return Err(CommandIndexError::internal_defect());
+        };
+        return builder
+            .push_ordered_bytes(value.as_bytes())
+            .map(|_| ())
+            .map_err(|_| CommandIndexError::internal_defect());
+    }
     let result = match value {
         CanonicalValue::Bool(value) => builder.push_bool(*value),
         CanonicalValue::I64(value) => builder.push_i64(*value),
@@ -1031,6 +1031,18 @@ contract ScalarPrefixes version 1 {
     field blob: bytes<16>
     field text: string<16>
     index by_all (flag, unsigned, signed, at, day, status, other_id, blob, text)
+  }
+}
+"#;
+
+    const OPERATIONAL_INDEX_SOURCE: &str = r#"
+contract OperationalIndexes version 1 {
+  entity Document {
+    key (id: uuid)
+    field deleted_at: optional<timestamp>
+    field title: string<32>
+    index by_deleted (deleted_at, id) presence(deleted_at)
+    index by_title (title, id) text_key(title, binary_utf8_v1)
   }
 }
 "#;
@@ -1683,6 +1695,81 @@ contract ScalarPrefixes version 1 {
         assert_eq!(
             actual_generation_ids(&derived),
             BTreeSet::from([index.id()])
+        );
+    }
+
+    #[test]
+    fn operational_index_values_and_storage_prefixes_share_the_sealed_codec() {
+        let compiled =
+            compile_contract_source(OPERATIONAL_INDEX_SOURCE).expect("operational source compiles");
+        let bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("operational bundle validates");
+        let entity = &bundle.bundle().schema().entities()[0];
+        let deleted = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_deleted")
+            .expect("presence index");
+        let title = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_title")
+            .expect("text index");
+        let deleted_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "deleted_at")
+            .expect("deleted field")
+            .id();
+        let title_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "title")
+            .expect("title field")
+            .id();
+        let id_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "id")
+            .expect("id field")
+            .id();
+        let id = CanonicalValue::Uuid([9; 16]);
+        let explicit_null = CanonicalRecord::new(vec![
+            (id_field, id.clone()),
+            (deleted_field, CanonicalValue::Null),
+        ])
+        .expect("explicit-null record");
+        let missing =
+            CanonicalRecord::new(vec![(id_field, id.clone())]).expect("missing-field record");
+        assert_eq!(
+            index_values(deleted, &missing).expect("missing discriminator")[0],
+            CanonicalValue::U64(riffdb_contract_ir::PRESENCE_MISSING_V1)
+        );
+        assert_eq!(
+            index_values(deleted, &explicit_null).expect("null discriminator")[0],
+            CanonicalValue::U64(riffdb_contract_ir::PRESENCE_NULL_V1)
+        );
+
+        let record = CanonicalRecord::new(vec![(id_field, id), (title_field, string("a\0title"))])
+            .expect("text record");
+        let values = index_values(title, &record).expect("ordered text values");
+        let mut builder = IndexDerivationBuilder::new(0, 0).expect("builder");
+        let partition = PartitionKeyBuilder::new(AggregateTypeId::first())
+            .finish()
+            .expect("partition key");
+        insert_generation(title, &values, &partition, &mut builder)
+            .expect("storage prefix must match ordered IR prefix");
+        assert_eq!(
+            builder
+                .finish()
+                .expect("derived")
+                .affected_targets
+                .as_slice()
+                .len(),
+            1
         );
     }
 

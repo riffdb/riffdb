@@ -103,8 +103,9 @@ EntityItem: Spanned<EntityItem> = {
         => parser::spanned(EntityItem::Field(field), lo, hi),
     <lo:@L> <invariant:InvariantDeclaration> <hi:@R>
         => parser::spanned(EntityItem::Invariant(invariant), lo, hi),
-    <lo:@L> "index" <name:Identifier> "(" <fields:IdentifierList> ")" <hi:@R>
-        => parser::spanned(EntityItem::Index(IndexDeclaration { name, fields }), lo, hi),
+    <lo:@L> "index" <name:Identifier> "(" <fields:IdentifierList> ")"
+        <options:IndexOption*> <hi:@R>
+        => parser::spanned(EntityItem::Index(IndexDeclaration { name, fields, options }), lo, hi),
     <lo:@L> "unique" <name:Identifier> "(" <fields:IdentifierList> ")" <hi:@R>
         => parser::spanned(EntityItem::Unique(UniqueDeclaration { name, fields }), lo, hi),
     <lo:@L> "reference" <name:Identifier> "(" <source_fields:IdentifierList> ")"
@@ -115,6 +116,20 @@ EntityItem: Spanned<EntityItem> = {
             target_entity,
             target_fields,
         }), lo, hi),
+};
+
+IndexOption: Spanned<IndexOption> = {
+    <lo:@L> "presence" "(" <field:Identifier> ")" <hi:@R>
+        => parser::spanned(IndexOption::Presence { field }, lo, hi),
+    <lo:@L> "text_key" "(" <field:Identifier> "," <profile:TextKeyProfile> ")" <hi:@R>
+        => parser::spanned(IndexOption::TextKey { field, profile }, lo, hi),
+};
+
+TextKeyProfile: Spanned<TextKeyProfile> = {
+    <lo:@L> "binary_utf8_v1" <hi:@R>
+        => parser::spanned(TextKeyProfile::BinaryUtf8V1, lo, hi),
+    <lo:@L> "unicode_fold_v1" <hi:@R>
+        => parser::spanned(TextKeyProfile::UnicodeFoldV1, lo, hi),
 };
 
 EventDeclaration: EventDeclaration = {
@@ -467,6 +482,12 @@ OrOperator: Spanned<BinaryOperator> = {
 
 Identifier: Spanned<String> = {
     <lo:@L> <value:"identifier"> <hi:@R> => parser::spanned(value, lo, hi),
+    <lo:@L> "presence" <hi:@R> => parser::spanned("presence".to_owned(), lo, hi),
+    <lo:@L> "text_key" <hi:@R> => parser::spanned("text_key".to_owned(), lo, hi),
+    <lo:@L> "binary_utf8_v1" <hi:@R>
+        => parser::spanned("binary_utf8_v1".to_owned(), lo, hi),
+    <lo:@L> "unicode_fold_v1" <hi:@R>
+        => parser::spanned("unicode_fold_v1".to_owned(), lo, hi),
     <lo:@L> "idempotency_key" <hi:@R>
         => parser::spanned("idempotency_key".to_owned(), lo, hi),
     <lo:@L> "workflow" <hi:@R> => parser::spanned("workflow".to_owned(), lo, hi),
@@ -510,6 +531,10 @@ extern {
         "field" => Token::Field,
         "invariant" => Token::Invariant,
         "index" => Token::Index,
+        "presence" => Token::Presence,
+        "text_key" => Token::TextKey,
+        "binary_utf8_v1" => Token::BinaryUtf8V1,
+        "unicode_fold_v1" => Token::UnicodeFoldV1,
         "unique" => Token::Unique,
         "reference" => Token::Reference,
         "event" => Token::Event,

@@ -6,8 +6,8 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     MAX_OPERATIONAL_PRESENCE_PARAMETERS, NamedTypeSchema, OperationalAggregateFunctionV1,
-    PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QueryDiagnosticCode, SourceSymbolKind,
-    SymbolicCatalog, resolve_query_surface,
+    PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QueryDiagnosticCode,
+    QueryPredicateOperator, SourceSymbolKind, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::parse_query;
 
@@ -18,6 +18,7 @@ contract Operational version 1 {
     field status: string<32>
     field priority: string<32>
     field story_points: i64
+    field deleted_at: optional<timestamp>
     field created_at: timestamp
     field updated_at: timestamp
     index a_status_priority (organization_id, status, priority, updated_at, ticket_id)
@@ -46,6 +47,17 @@ query SearchTickets(
         order by updated_at asc, ticket_id asc
         take 25
     return Found { tickets: tickets { ticket_id status priority updated_at } }
+    outcomes Found
+}
+"#;
+
+const UNINDEXED_NULL_QUERY: &str = r#"
+query DeletedTickets($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id && deleted_at is null
+        order by updated_at asc, ticket_id asc
+        take 25
+    return Found { tickets: tickets { ticket_id deleted_at updated_at } }
     outcomes Found
 }
 "#;
@@ -112,6 +124,138 @@ fn ordinary_compiler_rejects_operational_source_instead_of_ignoring_it() {
         diagnostics.as_slice()[0].code(),
         PlannerDiagnosticCode::OperationalFamilyRequired
     );
+}
+
+#[test]
+fn null_and_existence_require_a_declared_discriminator_index() {
+    let catalog = catalog(CONTRACT);
+    for predicate in [
+        "deleted_at is null",
+        "deleted_at is not null",
+        "exists deleted_at",
+    ] {
+        let source = QUERY.replace(
+            "&& when $priority { priority == $priority }",
+            &format!("&& {predicate}"),
+        );
+        let document = parse_query(&source).expect("null/existence syntax");
+        let diagnostics = compile_operational_query_family(&document, &catalog)
+            .expect_err("ordinary index must not collapse missing, null, and non-null");
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+        assert!(diagnostic.primary().start < diagnostic.primary().end);
+        assert!(
+            diagnostic
+                .suggested_index()
+                .is_some_and(|suggestion| suggestion.contains("presence"))
+        );
+    }
+}
+
+#[test]
+fn unindexed_null_diagnostic_has_a_frozen_span_and_operational_remediation() {
+    let diagnostics = compile_operational_query_family(
+        &parse_query(UNINDEXED_NULL_QUERY).expect("null syntax"),
+        &catalog(CONTRACT),
+    )
+    .expect_err("ordinary index cannot answer explicit null");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(
+        format!(
+            "{}|{}..{}|{}|{}|{}\n",
+            diagnostic.code().as_str(),
+            diagnostic.primary().start,
+            diagnostic.primary().end,
+            diagnostic.symbol_path().join("."),
+            diagnostic.summary(),
+            diagnostic.suggested_index().unwrap_or("")
+        ),
+        include_str!("../../../fixtures/riffql/unindexed-null.snapshot")
+    );
+}
+
+#[test]
+fn prefix_requires_a_declared_versioned_text_key_index() {
+    let catalog = catalog(CONTRACT);
+    let source = QUERY
+        .replace("$priority: Ticket.priority?", "$priority: Ticket.priority")
+        .replace(
+            "&& when $priority { priority == $priority }",
+            "&& priority prefix $priority",
+        );
+    let document = parse_query(&source).expect("prefix syntax");
+    let diagnostics = compile_operational_query_family(&document, &catalog)
+        .expect_err("ordinary string index has no versioned text-key identity");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    assert!(diagnostic.primary().start < diagnostic.primary().end);
+    assert!(
+        diagnostic
+            .suggested_index()
+            .is_some_and(|suggestion| suggestion.contains("text_key"))
+    );
+}
+
+#[test]
+fn declared_operational_indexes_lower_to_sealed_predicates() {
+    let contract = CONTRACT.replace(
+        "    index z_all (organization_id, updated_at, ticket_id)",
+        concat!(
+            "    index z_all (organization_id, updated_at, ticket_id)\n",
+            "    index y_deleted (organization_id, deleted_at, updated_at, ticket_id) ",
+            "presence(deleted_at)\n",
+            "    index x_priority_text (organization_id, priority, updated_at, ticket_id) ",
+            "text_key(priority, binary_utf8_v1)",
+        ),
+    );
+    let catalog = catalog(&contract);
+    let cases = [
+        (
+            "deleted_at is null",
+            "order by updated_at asc, ticket_id asc",
+            "y_deleted",
+            QueryPredicateOperator::IsNull,
+        ),
+        (
+            "exists deleted_at",
+            "order by deleted_at asc, updated_at asc, ticket_id asc",
+            "y_deleted",
+            QueryPredicateOperator::Exists,
+        ),
+        (
+            "priority prefix $priority",
+            "order by priority asc, updated_at asc, ticket_id asc",
+            "x_priority_text",
+            QueryPredicateOperator::Prefix,
+        ),
+    ];
+    for (predicate, order, expected_index, expected_operator) in cases {
+        let source = QUERY
+            .replace("$priority: Ticket.priority?", "$priority: Ticket.priority")
+            .replace(
+                "&& when $priority { priority == $priority }",
+                &format!("&& {predicate}"),
+            )
+            .replace("order by updated_at asc, ticket_id asc", order);
+        let family = compile_operational_query_family(
+            &parse_query(&source).expect("operational syntax"),
+            &catalog,
+        )
+        .expect("declared operational index lowers");
+        for member in family.members() {
+            let step = &member.program().steps()[0];
+            assert!(matches!(
+                step.access(),
+                riffdb_query_ir::QueryAccessKind::Index { index, .. }
+                    if index == expected_index
+            ));
+            assert!(
+                step.predicates()
+                    .iter()
+                    .any(|predicate| predicate.operator() == expected_operator)
+            );
+        }
+    }
 }
 
 #[test]

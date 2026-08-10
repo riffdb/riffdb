@@ -308,10 +308,7 @@ impl QueryReadView for RedbQueryView<'_> {
         limit: u64,
         after: Option<&[u8]>,
     ) -> Result<QueryScanPage, Self::Error> {
-        let QueryAccessKind::Index {
-            fields, direction, ..
-        } = step.access()
-        else {
+        let QueryAccessKind::Index { direction, .. } = step.access() else {
             return Err(invariant());
         };
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
@@ -333,13 +330,11 @@ impl QueryReadView for RedbQueryView<'_> {
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let mut inspected = 0usize;
-        let mut prefixes = index_prefixes(fields, predicates)?
-            .into_iter()
-            .map(|values| schema.encode_index_prefix(&values).map_err(|_| invariant()))
-            .collect::<Result<Vec<_>, _>>()?;
-        prefixes.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
+            .map_err(|_| invariant())?;
+        prefixes.sort_unstable();
         let unique_len = prefixes.len();
-        prefixes.dedup_by(|left, right| left.as_bytes() == right.as_bytes());
+        prefixes.dedup();
         if prefixes.len() != unique_len {
             return Err(invariant());
         }
@@ -349,10 +344,10 @@ impl QueryReadView for RedbQueryView<'_> {
 
         self.touch_indexes();
         'prefixes: for prefix in prefixes {
-            let upper = exclusive_prefix_end(prefix.as_bytes()).ok_or_else(invariant)?;
+            let upper = exclusive_prefix_end(prefix.as_slice()).ok_or_else(invariant)?;
             if after.is_some_and(|after| match direction {
                 AccessDirection::Forward => upper.as_slice() <= after,
-                AccessDirection::Reverse => prefix.as_bytes() > after,
+                AccessDirection::Reverse => prefix.as_slice() > after,
             }) {
                 continue;
             }
@@ -363,8 +358,8 @@ impl QueryReadView for RedbQueryView<'_> {
             let rows = match direction {
                 AccessDirection::Forward => {
                     let start = after
-                        .filter(|after| after.starts_with(prefix.as_bytes()))
-                        .unwrap_or(prefix.as_bytes());
+                        .filter(|after| after.starts_with(prefix.as_slice()))
+                        .unwrap_or(prefix.as_slice());
                     self.transaction.read_range(
                         JournalTable::SecondaryIndexes,
                         start,
@@ -374,11 +369,11 @@ impl QueryReadView for RedbQueryView<'_> {
                 }
                 AccessDirection::Reverse => {
                     let end = after
-                        .filter(|after| after.starts_with(prefix.as_bytes()))
+                        .filter(|after| after.starts_with(prefix.as_slice()))
                         .unwrap_or(upper.as_slice());
                     self.transaction.read_range_reverse(
                         JournalTable::SecondaryIndexes,
-                        prefix.as_bytes(),
+                        prefix.as_slice(),
                         end,
                         remaining_scan,
                     )?
@@ -500,45 +495,6 @@ fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalVa
         })
         .map(|predicate| predicate.value().clone())
         .ok_or_else(invariant)
-}
-
-fn index_prefixes(
-    fields: &[String],
-    predicates: &[BoundPredicate],
-) -> Result<Vec<Vec<CanonicalValue>>, StorageError> {
-    let mut prefixes = vec![Vec::new()];
-    for field in fields {
-        let predicate = predicates
-            .iter()
-            .find(|predicate| predicate.field() == field);
-        match predicate.map(BoundPredicate::operator) {
-            Some(QueryPredicateOperator::Equal) => {
-                let value = predicate.ok_or_else(invariant)?.value().clone();
-                for prefix in &mut prefixes {
-                    prefix.push(value.clone());
-                }
-            }
-            Some(QueryPredicateOperator::In) => {
-                let CanonicalValue::List(values) = predicate.ok_or_else(invariant)?.value() else {
-                    return Err(invariant());
-                };
-                if values.values().is_empty() || values.values().len() > 1_024 {
-                    return Err(storage_error(StorageErrorKind::LimitExceeded));
-                }
-                let prior = std::mem::take(&mut prefixes);
-                for prefix in prior {
-                    for value in values.values() {
-                        let mut expanded = prefix.clone();
-                        expanded.push(value.clone());
-                        prefixes.push(expanded);
-                    }
-                }
-                break;
-            }
-            _ => break,
-        }
-    }
-    Ok(prefixes)
 }
 
 /// Per-step field-name interning for one-pass row materialization.

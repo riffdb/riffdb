@@ -1997,6 +1997,7 @@ name = "riffdb-query-executor"
 version = "0.1.0"
 dependencies = [
  "riffdb-contract-compiler",
+ "riffdb-contract-ir",
  "riffdb-query-compiler",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
@@ -2195,8 +2196,11 @@ dependencies = [
  "riffdb-driver-host",
  "riffdb-invariant",
  "riffdb-proto",
+ "riffdb-query-compiler",
+ "riffdb-query-executor",
  "riffdb-query-ir",
  "riffdb-query-module",
+ "riffdb-riffql-syntax",
  "riffdb-runtime",
  "riffdb-server",
  "riffdb-service",

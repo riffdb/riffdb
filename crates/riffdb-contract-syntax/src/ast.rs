@@ -142,6 +142,34 @@ pub struct IndexDeclaration {
     pub name: Spanned<String>,
     /// Indexed field names in declared order.
     pub fields: Vec<Spanned<String>>,
+    /// Compiler-visible physical encodings for selected logical fields.
+    pub options: Vec<Spanned<IndexOption>>,
+}
+
+/// One closed operational-index encoding declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IndexOption {
+    /// Record missing, explicit-null, and non-null as distinct key states.
+    Presence {
+        /// Indexed optional field receiving the discriminator.
+        field: Spanned<String>,
+    },
+    /// Encode one string field through a versioned text-key profile.
+    TextKey {
+        /// Indexed string field receiving the transform.
+        field: Spanned<String>,
+        /// Exact transform profile.
+        profile: Spanned<TextKeyProfile>,
+    },
+}
+
+/// Closed alpha text-key profile names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextKeyProfile {
+    /// Exact source UTF-8 bytes.
+    BinaryUtf8V1,
+    /// Unicode 17.0.0 compatibility normalization plus full non-Turkic fold.
+    UnicodeFoldV1,
 }
 
 /// A named same-partition unique key over stored required fields.

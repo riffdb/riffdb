@@ -2185,18 +2185,12 @@ fn derive_indexes(
         .filter(|index| rebuild_all || required.is_some_and(|ids| ids.contains(&index.id())))
         .map(|index| {
             let index_id = index.id();
-            let values = index
-                .fields()
-                .iter()
-                .map(|field| {
-                    field_value(record, *field).cloned().ok_or_else(|| {
-                        MigrationFinding::new(migration_finding_code::INDEX_INVALID)
-                            .entity(entity.id())
-                            .with_field(*field)
-                            .with_index(index_id)
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let values = riffdb_contract_ir::encode_operational_index_values_v1(index, record)
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                        .entity(entity.id())
+                        .with_index(index_id)
+                })?;
             let key = index
                 .key_schema()
                 .encode_index(&values, target.key().clone())

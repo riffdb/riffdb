@@ -27,6 +27,7 @@ pub(crate) enum FixedGrpcRequest {
     ListPendingOutboxDeliveries(v1::ListPendingOutboxDeliveriesRequest),
     Health(v1::HealthRequest),
     DescribeContract(app_v1::DescribeContractRequest),
+    ApplicationCatalog(app_v1::GetApplicationCatalogRequest),
     CheckQuery(app_v1::CheckQueryRequest),
     ExplainQuery(app_v1::ExplainQueryRequest),
     ExecuteQuery(app_v1::ExecuteQueryRequest),
@@ -201,6 +202,16 @@ pub(crate) fn fixed_request_to_proto(
                 request_id,
             })
         }
+        McpFixedToolRequest::ApplicationCatalog {
+            contract,
+            limit,
+            cursor,
+        } => FixedGrpcRequest::ApplicationCatalog(app_v1::GetApplicationCatalogRequest {
+            contract: contract.and_then(symbolic_contract_selection_to_proto),
+            limit: u32::from(limit),
+            cursor: cursor.map(|cursor| URL_SAFE_NO_PAD.encode(cursor)),
+            request_id,
+        }),
         McpFixedToolRequest::CheckQuery { contract, source } => {
             FixedGrpcRequest::CheckQuery(app_v1::CheckQueryRequest {
                 contract: contract.and_then(symbolic_contract_selection_to_proto),
@@ -933,6 +944,38 @@ mod tests {
         };
         assert_eq!(exact.contract_lineage, "Example");
         assert_eq!(exact.contract_version, 7);
+    }
+
+    #[test]
+    fn application_catalog_preserves_bounds_identity_and_cursor() {
+        let request = fixed_request_to_proto(
+            [7; 16],
+            McpFixedToolRequest::ApplicationCatalog {
+                contract: Some(McpContractSelection::Exact {
+                    contract_lineage: "Example".to_owned(),
+                    contract_version: 7,
+                }),
+                limit: 32,
+                cursor: Some([9; riffdb_api_mcp::MCP_CURSOR_BYTES]),
+            },
+        )
+        .expect("catalog request lowers");
+        let FixedGrpcRequest::ApplicationCatalog(request) = request else {
+            panic!("expected application catalog request");
+        };
+        let contract = request.contract.expect("exact contract");
+        assert_eq!(contract.lineage, "Example");
+        assert_eq!(contract.version, 7);
+        assert_eq!(request.limit, 32);
+        assert_eq!(
+            request.cursor.as_deref(),
+            Some(
+                URL_SAFE_NO_PAD
+                    .encode([9; riffdb_api_mcp::MCP_CURSOR_BYTES])
+                    .as_str()
+            )
+        );
+        assert_eq!(request.request_id, [7; 16]);
     }
 
     #[test]

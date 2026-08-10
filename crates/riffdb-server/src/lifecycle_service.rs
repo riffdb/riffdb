@@ -10,12 +10,13 @@ use riffdb_api_grpc::{
 };
 use riffdb_errors::PublicError;
 use riffdb_service::{
-    AdministrationApplication, CheckSymbolicQueryResult, CommandApplication, CommitApplication,
-    CompileSymbolicQueryRequest, ConsumeContextualSubscriptionRequest,
-    ConsumeContextualSubscriptionResult, ConsumeEventStreamRequest, ConsumeEventStreamResult,
-    ContextualSubscriptionApplication, ContractApplication, ContractValidationResult,
-    CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
-    DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
+    AdministrationApplication, ApplicationCatalogRequest, ApplicationCatalogResult,
+    CheckSymbolicQueryResult, CommandApplication, CommitApplication, CompileSymbolicQueryRequest,
+    ConsumeContextualSubscriptionRequest, ConsumeContextualSubscriptionResult,
+    ConsumeEventStreamRequest, ConsumeEventStreamResult, ContextualSubscriptionApplication,
+    ContractApplication, ContractValidationResult, CreateCapabilityInvocation,
+    CreateCapabilityResult, CreateOfflineBackupRequest, DeployContractRequest,
+    DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
     DeployReactiveModuleRequest, DeployReactiveModuleResult, DescribeEventRequest,
     DescribeEventResult, DescribeSymbolicContractResult, DiscoverCommandToolsRequest,
     DiscoverCommandToolsResult, DiscoverResourcesRequest, DiscoverResourcesResult,
@@ -497,6 +498,10 @@ delegate_operation! {
             context: RequestContext,
             request: SymbolicContractSelector
         ) -> DescribeSymbolicContractResult => DescribeContract;
+        get_application_catalog(
+            context: RequestContext,
+            request: ApplicationCatalogRequest
+        ) -> ApplicationCatalogResult => DescribeContract;
         check_symbolic_query(
             context: RequestContext,
             request: CompileSymbolicQueryRequest

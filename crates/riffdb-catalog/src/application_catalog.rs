@@ -133,6 +133,17 @@ impl ApplicationCatalogFeatureV1 {
             Self::ExactAggregates => "exact_aggregates",
         }
     }
+
+    const fn state(self) -> ApplicationCatalogFeatureStateV1 {
+        match self {
+            Self::OperationalOptionalPredicates
+            | Self::StableCursorPages
+            | Self::NullExistencePredicates
+            | Self::BinaryTextPrefix
+            | Self::ExactAggregates => ApplicationCatalogFeatureStateV1::Available,
+            Self::UnicodeFoldTextPrefixV1 => ApplicationCatalogFeatureStateV1::Unavailable,
+        }
+    }
 }
 
 /// Availability of one closed feature under the selected exact application identity.
@@ -664,21 +675,7 @@ impl ApplicationCatalogCandidatesV1 {
         }
         let features = ApplicationCatalogFeatureV1::ALL
             .into_iter()
-            .map(|feature| {
-                let state = match feature {
-                    ApplicationCatalogFeatureV1::OperationalOptionalPredicates
-                    | ApplicationCatalogFeatureV1::StableCursorPages
-                    | ApplicationCatalogFeatureV1::ExactAggregates => {
-                        ApplicationCatalogFeatureStateV1::Available
-                    }
-                    ApplicationCatalogFeatureV1::NullExistencePredicates
-                    | ApplicationCatalogFeatureV1::BinaryTextPrefix
-                    | ApplicationCatalogFeatureV1::UnicodeFoldTextPrefixV1 => {
-                        ApplicationCatalogFeatureStateV1::Unavailable
-                    }
-                };
-                ApplicationCatalogFeatureViewV1::new(feature, state)
-            })
+            .map(|feature| ApplicationCatalogFeatureViewV1::new(feature, feature.state()))
             .collect();
         Ok(Self {
             lineage: contract.lineage().clone(),
@@ -980,6 +977,20 @@ mod tests {
                 true,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn operational_feature_preflight_matches_the_executable_surface() {
+        for feature in [
+            ApplicationCatalogFeatureV1::NullExistencePredicates,
+            ApplicationCatalogFeatureV1::BinaryTextPrefix,
+        ] {
+            assert_eq!(feature.state(), ApplicationCatalogFeatureStateV1::Available);
+        }
+        assert_eq!(
+            ApplicationCatalogFeatureV1::UnicodeFoldTextPrefixV1.state(),
+            ApplicationCatalogFeatureStateV1::Unavailable
         );
     }
 

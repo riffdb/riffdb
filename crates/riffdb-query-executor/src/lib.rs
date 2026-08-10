@@ -343,6 +343,124 @@ impl BoundPredicate {
     }
 }
 
+/// Encodes the exact finite set of physical index prefixes selected by predicates.
+#[doc(hidden)]
+pub fn bound_index_prefix_bytes_v1(
+    step: &QueryAccessStep,
+    predicates: &[BoundPredicate],
+) -> Result<Vec<Vec<u8>>, QueryExecutionError> {
+    let QueryAccessKind::Index { fields, .. } = step.access() else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    let schema = step
+        .internal_index_key_schema()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let mut leading = vec![Vec::<CanonicalValue>::new()];
+    for field in fields {
+        let Some(predicate) = predicates
+            .iter()
+            .find(|predicate| predicate.field() == field)
+        else {
+            return encode_complete_prefixes(schema, leading);
+        };
+        match predicate.operator() {
+            QueryPredicateOperator::Equal => {
+                for values in &mut leading {
+                    values.push(predicate.value().clone());
+                }
+            }
+            QueryPredicateOperator::In => {
+                let CanonicalValue::List(items) = predicate.value() else {
+                    return Err(QueryExecutionError::InvalidProgram);
+                };
+                if items.values().is_empty() || items.values().len() > MAX_QUERY_PARAMETERS {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
+                let prior = std::mem::take(&mut leading);
+                for values in prior {
+                    for item in items.values() {
+                        let mut expanded = values.clone();
+                        expanded.push(item.clone());
+                        leading.push(expanded);
+                    }
+                }
+                return encode_complete_prefixes(schema, leading);
+            }
+            QueryPredicateOperator::IsNull => {
+                for values in &mut leading {
+                    let payload = schema
+                        .components()
+                        .get(values.len() + 1)
+                        .ok_or(QueryExecutionError::InvalidProgram)
+                        .and_then(|component| {
+                            riffdb_contract_ir::presence_placeholder_v1(component)
+                                .map_err(|_| QueryExecutionError::InvalidProgram)
+                        })?;
+                    values.push(CanonicalValue::U64(riffdb_contract_ir::PRESENCE_NULL_V1));
+                    values.push(payload);
+                }
+            }
+            QueryPredicateOperator::IsNotNull => {
+                for values in &mut leading {
+                    values.push(CanonicalValue::U64(riffdb_contract_ir::PRESENCE_VALUE_V1));
+                }
+                return encode_complete_prefixes(schema, leading);
+            }
+            QueryPredicateOperator::Exists => {
+                let prior = std::mem::take(&mut leading);
+                for values in prior {
+                    for state in [
+                        riffdb_contract_ir::PRESENCE_NULL_V1,
+                        riffdb_contract_ir::PRESENCE_VALUE_V1,
+                    ] {
+                        let mut expanded = values.clone();
+                        expanded.push(CanonicalValue::U64(state));
+                        leading.push(expanded);
+                    }
+                }
+                return encode_complete_prefixes(schema, leading);
+            }
+            QueryPredicateOperator::Prefix => {
+                let CanonicalValue::String(prefix) = predicate.value() else {
+                    return Err(QueryExecutionError::InvalidProgram);
+                };
+                return leading
+                    .into_iter()
+                    .map(|values| {
+                        schema
+                            .encode_index_ordered_prefix(&values, prefix.as_str().as_bytes())
+                            .map(|prefix| prefix.as_bytes().to_vec())
+                            .map_err(|_| QueryExecutionError::InvalidProgram)
+                    })
+                    .collect();
+            }
+            QueryPredicateOperator::NotEqual
+            | QueryPredicateOperator::Less
+            | QueryPredicateOperator::LessEqual
+            | QueryPredicateOperator::Greater
+            | QueryPredicateOperator::GreaterEqual => {
+                return encode_complete_prefixes(schema, leading);
+            }
+        }
+    }
+    encode_complete_prefixes(schema, leading)
+}
+
+fn encode_complete_prefixes(
+    schema: &riffdb_contract_ir::KeySchema,
+    prefixes: Vec<Vec<CanonicalValue>>,
+) -> Result<Vec<Vec<u8>>, QueryExecutionError> {
+    prefixes
+        .into_iter()
+        .map(|values| {
+            schema
+                .encode_index_prefix(&values)
+                .map(|prefix| prefix.as_bytes().to_vec())
+                .map_err(|_| QueryExecutionError::InvalidProgram)
+        })
+        .collect()
+}
+
 /// Owned result of one bounded index access inside the current read view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryScanPage {
@@ -1781,17 +1899,36 @@ fn predicates_match(
     predicates: &[BoundPredicate],
 ) -> Result<bool, QueryExecutionError> {
     for predicate in predicates {
-        let actual =
-            row.field(&predicate.field)
-                .ok_or_else(|| QueryExecutionError::MissingField {
-                    entity: row.entity.to_string(),
-                    field: predicate.field.clone(),
-                })?;
+        let actual = row.field(&predicate.field);
+        let unary = match predicate.operator {
+            QueryPredicateOperator::IsNull => Some(matches!(actual, Some(CanonicalValue::Null))),
+            QueryPredicateOperator::IsNotNull => {
+                Some(actual.is_some_and(|value| !matches!(value, CanonicalValue::Null)))
+            }
+            QueryPredicateOperator::Exists => Some(actual.is_some()),
+            _ => None,
+        };
+        if let Some(matches) = unary {
+            if !matches {
+                return Ok(false);
+            }
+            continue;
+        }
+        let actual = actual.ok_or_else(|| QueryExecutionError::MissingField {
+            entity: row.entity.to_string(),
+            field: predicate.field.clone(),
+        })?;
         let matches = match predicate.operator {
             QueryPredicateOperator::Equal => actual == &predicate.value,
             QueryPredicateOperator::NotEqual => actual != &predicate.value,
             QueryPredicateOperator::In => match &predicate.value {
                 CanonicalValue::List(values) => values.values().iter().any(|value| value == actual),
+                _ => return Err(QueryExecutionError::InvalidProgram),
+            },
+            QueryPredicateOperator::Prefix => match (actual, &predicate.value) {
+                (CanonicalValue::String(actual), CanonicalValue::String(prefix)) => {
+                    actual.as_str().starts_with(prefix.as_str())
+                }
                 _ => return Err(QueryExecutionError::InvalidProgram),
             },
             operator => {
@@ -1804,7 +1941,11 @@ fn predicates_match(
                     QueryPredicateOperator::GreaterEqual => ordering != Ordering::Less,
                     QueryPredicateOperator::Equal
                     | QueryPredicateOperator::NotEqual
-                    | QueryPredicateOperator::In => unreachable!(),
+                    | QueryPredicateOperator::In
+                    | QueryPredicateOperator::IsNull
+                    | QueryPredicateOperator::IsNotNull
+                    | QueryPredicateOperator::Exists
+                    | QueryPredicateOperator::Prefix => unreachable!(),
                 }
             }
         };
@@ -1851,6 +1992,7 @@ mod pipeline_clone_tests {
     use riffdb_query_compiler::{compile_operational_query_family, compile_query};
     use riffdb_query_ir::{QueryAccessStep, SymbolicCatalog};
     use riffdb_riffql_syntax::parse_query;
+    use riffdb_types::CanonicalRecord;
 
     const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
     const OPEN_TICKETS: &str = r#"
@@ -1962,6 +2104,59 @@ query OverflowingSummary($organization_id: Entry.organization_id) {
 }
 "#;
 
+    const OPERATIONAL_INDEX_CONTRACT: &str = r#"
+contract OperationalIndexQueries version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field deleted_at: optional<timestamp>
+    field title: string<64>
+    index by_deleted (organization_id, deleted_at, document_id) presence(deleted_at)
+    index by_title (organization_id, title, document_id) text_key(title, binary_utf8_v1)
+  }
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+}
+"#;
+
+    const NULL_DOCUMENTS: &str = r#"
+query NullDocuments($organization_id: Document.organization_id) {
+    many documents from Document
+        where organization_id == $organization_id && deleted_at is null
+        order by document_id asc
+        take 10
+    return Found { documents: documents { document_id deleted_at } }
+    outcomes Found
+}
+"#;
+
+    const EXISTING_DOCUMENTS: &str = r#"
+query ExistingDocuments($organization_id: Document.organization_id) {
+    many documents from Document
+        where organization_id == $organization_id && exists deleted_at
+        order by deleted_at asc, document_id asc
+        take 10
+    return Found { documents: documents { document_id deleted_at } }
+    outcomes Found
+}
+"#;
+
+    const PREFIX_DOCUMENTS: &str = r#"
+query PrefixDocuments(
+    $organization_id: Document.organization_id,
+    $prefix: Document.title,
+) {
+    many documents from Document
+        where organization_id == $organization_id && title prefix $prefix
+        order by title asc, document_id asc
+        take 10
+    return Found { documents: documents { document_id title } }
+    outcomes Found
+}
+"#;
+
     const OPTIONAL_MINIMUM_SUMMARY: &str = r#"
 query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
     many tickets from Ticket
@@ -2038,6 +2233,200 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 .collect(),
         )
         .expect("row")
+    }
+
+    fn compiled_operational_step(
+        source: &str,
+    ) -> (riffdb_contract_ir::ContractBundle, QueryAccessStep) {
+        let bundle = compile_contract_source(OPERATIONAL_INDEX_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family = compile_operational_query_family(
+            &parse_query(source).expect("operational query"),
+            &catalog,
+        )
+        .expect("operational family");
+        (
+            bundle,
+            family.select(&[]).expect("sole member").program().steps()[0].clone(),
+        )
+    }
+
+    fn matching_prefix(prefixes: &[Vec<u8>], key: &[u8]) -> bool {
+        prefixes.iter().any(|prefix| key.starts_with(prefix))
+    }
+
+    #[test]
+    fn presence_prefixes_and_row_filters_distinguish_missing_null_and_value() {
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            organization.clone(),
+        )]))
+        .expect("parameters");
+        let (bundle, null_step) = compiled_operational_step(NULL_DOCUMENTS);
+        let null_predicates = bind_predicates(&null_step, &parameters, &BTreeMap::new())
+            .expect("bound null predicates");
+        let null_prefixes =
+            bound_index_prefix_bytes_v1(&null_step, &null_predicates).expect("null prefixes");
+        let entity = &bundle.schema().entities()[0];
+        let index = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_deleted")
+            .expect("presence index");
+        let deleted_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "deleted_at")
+            .expect("deleted field")
+            .id();
+        let field_id = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .expect("field")
+                .id()
+        };
+        for (ordinal, (presence, expected_null)) in [
+            None,
+            Some(CanonicalValue::Null),
+            Some(CanonicalValue::Timestamp(
+                riffdb_types::Timestamp::new(1, 0).expect("timestamp"),
+            )),
+        ]
+        .into_iter()
+        .zip([false, true, false])
+        .enumerate()
+        {
+            let document_id = CanonicalValue::Uuid([ordinal as u8 + 2; 16]);
+            let mut fields = vec![
+                (field_id("organization_id"), organization.clone()),
+                (field_id("document_id"), document_id.clone()),
+            ];
+            if let Some(value) = presence {
+                fields.push((deleted_field, value));
+            }
+            let record = CanonicalRecord::new(fields).expect("presence record");
+            let values = riffdb_contract_ir::encode_operational_index_values_v1(index, &record)
+                .expect("physical presence values");
+            let key = index
+                .key_schema()
+                .encode_index(
+                    &values,
+                    entity
+                        .primary_key()
+                        .encode_entity(&[organization.clone(), document_id])
+                        .expect("entity key"),
+                )
+                .expect("index key");
+            assert_eq!(
+                matching_prefix(&null_prefixes, key.as_bytes()),
+                expected_null
+            );
+        }
+
+        let (_, exists_step) = compiled_operational_step(EXISTING_DOCUMENTS);
+        let exists_predicates = bind_predicates(&exists_step, &parameters, &BTreeMap::new())
+            .expect("bound exists predicates");
+        let missing_row = row("Document", &[("organization_id", organization.clone())]);
+        let null_row = row(
+            "Document",
+            &[
+                ("organization_id", organization.clone()),
+                ("deleted_at", CanonicalValue::Null),
+            ],
+        );
+        let value_row = row(
+            "Document",
+            &[
+                ("organization_id", organization),
+                (
+                    "deleted_at",
+                    CanonicalValue::Timestamp(
+                        riffdb_types::Timestamp::new(1, 0).expect("timestamp"),
+                    ),
+                ),
+            ],
+        );
+        assert!(!predicates_match(&missing_row, &exists_predicates).expect("missing filter"));
+        assert!(predicates_match(&null_row, &exists_predicates).expect("null filter"));
+        assert!(predicates_match(&value_row, &exists_predicates).expect("value filter"));
+    }
+
+    #[test]
+    fn binary_text_prefix_selects_only_the_exact_ordered_byte_range() {
+        let organization = CanonicalValue::Uuid([7; 16]);
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization.clone()),
+            (
+                "prefix".to_owned(),
+                CanonicalValue::string("ab").expect("prefix"),
+            ),
+        ]))
+        .expect("parameters");
+        let (bundle, step) = compiled_operational_step(PREFIX_DOCUMENTS);
+        let predicates =
+            bind_predicates(&step, &parameters, &BTreeMap::new()).expect("bound predicates");
+        let prefixes = bound_index_prefix_bytes_v1(&step, &predicates).expect("prefix range");
+        assert_eq!(prefixes.len(), 1);
+        let entity = &bundle.schema().entities()[0];
+        let index = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_title")
+            .expect("text index");
+        let title_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "title")
+            .expect("title field")
+            .id();
+        for (title, expected) in [("a", false), ("ab", true), ("abacus", true), ("ac", false)] {
+            let document_id = CanonicalValue::Uuid([title.len() as u8; 16]);
+            let record = CanonicalRecord::new(vec![
+                (
+                    entity
+                        .record()
+                        .fields()
+                        .iter()
+                        .find(|field| field.name() == "organization_id")
+                        .expect("organization field")
+                        .id(),
+                    organization.clone(),
+                ),
+                (
+                    entity
+                        .record()
+                        .fields()
+                        .iter()
+                        .find(|field| field.name() == "document_id")
+                        .expect("document field")
+                        .id(),
+                    document_id.clone(),
+                ),
+                (title_field, CanonicalValue::string(title).expect("title")),
+            ])
+            .expect("record");
+            let values = riffdb_contract_ir::encode_operational_index_values_v1(index, &record)
+                .expect("physical text values");
+            let entity_key = entity
+                .primary_key()
+                .encode_entity(&[organization.clone(), document_id])
+                .expect("entity key");
+            let key = index
+                .key_schema()
+                .encode_index(&values, entity_key)
+                .expect("index key");
+            assert_eq!(
+                matching_prefix(&prefixes, key.as_bytes()),
+                expected,
+                "{title}"
+            );
+        }
     }
 
     /// Falsifiability: leaf many-query projection must not clone selected values.

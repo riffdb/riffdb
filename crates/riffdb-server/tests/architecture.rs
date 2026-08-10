@@ -4,6 +4,8 @@
 
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
+const LIFECYCLE_SERVICE: &str = include_str!("../src/lifecycle_service.rs");
+const LIFECYCLE: &str = include_str!("../src/lifecycle.rs");
 
 fn rust_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
     fn visit(root: &std::path::Path, sources: &mut Vec<(std::path::PathBuf, String)>) {
@@ -42,6 +44,17 @@ fn development_dependencies() -> &'static str {
         .split_once("[[test]]")
         .expect("server external-test boundary")
         .0
+}
+
+#[test]
+fn lifecycle_wrappers_cover_the_symbolic_catalog_surface() {
+    for source in [LIFECYCLE_SERVICE, LIFECYCLE] {
+        assert!(
+            source.contains("get_application_catalog"),
+            "every lifecycle wrapper must fail closed or delegate the complete symbolic catalog surface"
+        );
+    }
+    assert!(LIFECYCLE_SERVICE.contains(") -> ApplicationCatalogResult => DescribeContract;"));
 }
 
 fn locked_version(package: &str) -> &'static str {

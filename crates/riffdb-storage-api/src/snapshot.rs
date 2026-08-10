@@ -83,7 +83,7 @@ impl fmt::Debug for EntityTarget {
 /// A storage-owned structurally checked index scan prefix.
 ///
 /// Values can be produced only by [`IndexRangePrefixBuilder`], which appends
-/// complete canonical key components. Choosing component methods that match the
+/// complete versioned key components. Choosing component methods that match the
 /// historical plan remains the coordinator's private IR-aware responsibility.
 #[derive(Clone)]
 pub struct IndexRangePrefix {
@@ -195,6 +195,10 @@ impl IndexRangePrefixBuilder {
     range_prefix_component_method!(
         /// Appends one complete length-delimited byte component.
         push_bytes(value: &[u8]) => push_bytes
+    );
+    range_prefix_component_method!(
+        /// Appends one complete zero-escaped ordered-byte component.
+        push_ordered_bytes(value: &[u8]) => push_ordered_bytes
     );
     range_prefix_component_method!(
         /// Appends one complete length-delimited UTF-8 component.

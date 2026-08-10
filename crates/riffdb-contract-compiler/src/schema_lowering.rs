@@ -491,22 +491,23 @@ fn lower_entities(
         let mut indexes = Vec::new();
         for index in &entity.indexes {
             let mut components = Vec::new();
-            for (field_id, span) in &index.fields {
+            for ((field_id, span), encoding) in index.fields.iter().zip(&index.encodings) {
                 let Some(field) = entity.fields.iter().find(|field| field.id == *field_id) else {
                     diagnostics.push(ir_diagnostic(*span));
                     continue;
                 };
-                match key_component(field.value_type.clone(), hir) {
-                    Ok(component) => components.push(component),
+                match operational_index_components(field.value_type.clone(), *encoding, hir) {
+                    Ok(lowered) => components.extend(lowered),
                     Err(code) => diagnostics.push(CompilerDiagnostic::new(code, *span)),
                 }
             }
             let key_schema = KeySchema::index(index.id, entity.id, components, primary_key.clone());
             match key_schema.and_then(|key_schema| {
-                IndexSchema::new(
+                IndexSchema::with_encodings(
                     index.id,
                     index.name.clone(),
                     index.fields.iter().map(|field| field.0).collect(),
+                    index.encodings.clone(),
                     key_schema,
                 )
             }) {
@@ -749,6 +750,48 @@ fn key_component(
         }
         _ => CompilerDiagnosticCode::InvalidType,
     })
+}
+
+fn operational_index_components(
+    logical: ValueType,
+    encoding: riffdb_contract_ir::IndexFieldEncodingV1,
+    hir: &TypedContractHir,
+) -> Result<Vec<KeyComponentSchema>, CompilerDiagnosticCode> {
+    use riffdb_contract_ir::{
+        IndexFieldEncodingV1, TextKeyProfileV1, UNICODE_FOLD_V1_MAXIMUM_EXPANSION,
+    };
+
+    match encoding {
+        IndexFieldEncodingV1::Canonical => key_component(logical, hir).map(|value| vec![value]),
+        IndexFieldEncodingV1::Presence => {
+            let inner = logical
+                .optional_inner()
+                .filter(|inner| inner.is_authoritative_key_scalar())
+                .ok_or(CompilerDiagnosticCode::InvalidType)?;
+            Ok(vec![
+                key_component(ValueType::u64(), hir)?,
+                key_component(inner.clone(), hir)?,
+            ])
+        }
+        IndexFieldEncodingV1::TextKey(profile) => {
+            let maximum = logical
+                .byte_bound()
+                .filter(|_| logical.tag() == riffdb_contract_ir::ValueTypeTag::String)
+                .ok_or(CompilerDiagnosticCode::InvalidType)?;
+            let maximum = match profile {
+                TextKeyProfileV1::BinaryUtf8 => maximum,
+                TextKeyProfileV1::UnicodeFold => {
+                    let _reserved_bound = maximum
+                        .checked_mul(UNICODE_FOLD_V1_MAXIMUM_EXPANSION)
+                        .ok_or(CompilerDiagnosticCode::BoundExceeded)?;
+                    return Err(CompilerDiagnosticCode::InvalidType);
+                }
+            };
+            riffdb_contract_ir::KeyComponentSchema::ordered_bytes(maximum)
+                .map_err(|_| CompilerDiagnosticCode::BoundExceeded)
+                .map(|value| vec![value])
+        }
+    }
 }
 
 fn enum_variants(enum_id: EnumTypeId, hir: &TypedContractHir) -> Vec<EnumVariantId> {

@@ -1100,7 +1100,7 @@ query Bad($organization_id: Organization.organization_id, $title: Ticket.title) 
     }
 
     #[test]
-    fn operational_query_cannot_escape_through_the_v1_module_compiler() {
+    fn operational_query_without_a_safe_index_fails_closed_through_the_module_compiler() {
         let bundle = compile_contract_source(CONTRACT).expect("contract");
         let query = r#"
 query Operational($organization_id: Organization.organization_id, $title: Ticket.title?) {
@@ -1121,7 +1121,7 @@ query Operational($organization_id: Organization.organization_id, $title: Ticket
             .expect("candidate"),
             &bundle,
         )
-        .expect_err("v1 module compiler must reject operational syntax");
+        .expect_err("operational module must reject an unindexed family");
         let diagnostics = AuthoringDiagnostics::from_query_module(
             AuthoringSourcePath::new("riffdb/queries/operational.riffq").expect("path"),
             &error,
@@ -1129,9 +1129,9 @@ query Operational($organization_id: Organization.organization_id, $title: Ticket
         .expect("diagnostics");
         let diagnostic = &diagnostics.as_slice()[0];
 
-        assert_eq!(diagnostic.code().as_str(), "RDB-QP008");
-        assert_eq!(diagnostic.cause(), AuthoringCause::InternalInvariant);
-        assert_eq!(diagnostic.fixes(), &[AuthoringFix::ContactOperator]);
+        assert_eq!(diagnostic.code().as_str(), "RDB-QP003");
+        assert_eq!(diagnostic.cause(), AuthoringCause::MissingIndex);
+        assert_eq!(diagnostic.fixes(), &[AuthoringFix::AddIndex]);
         assert!(
             diagnostic
                 .span()

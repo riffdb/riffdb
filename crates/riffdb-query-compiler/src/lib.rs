@@ -8,7 +8,7 @@ pub use reactive::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use riffdb_contract_ir::{ValueType, ValueTypeTag};
+use riffdb_contract_ir::{IndexFieldEncodingV1, ValueType, ValueTypeTag};
 use riffdb_query_ir::{
     AccessDirection, AuthorizationEntityAccess, EntitySymbol, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
     OperationalPlanMemberV1, OperationalQueryFamilyV1, QueryAccessKind, QueryAccessProgramV1,
@@ -17,7 +17,7 @@ use riffdb_query_ir::{
 };
 use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
-    Span, Spanned, TypeReference,
+    Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::QueryCostVectorV1;
 
@@ -209,20 +209,6 @@ fn compile_query_member(
     catalog: &SymbolicCatalog,
     unwrapped_optional_parameters: BTreeSet<String>,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
-    if let Some(span) = document
-        .body
-        .bindings
-        .iter()
-        .find_map(|binding| first_operational_expression_span(&binding.predicate.value))
-    {
-        return Err(one(
-            PlannerDiagnosticCode::OperationalFamilyRequired,
-            span,
-            Vec::new(),
-            "operational predicate has no implemented finite-family lowering",
-            None,
-        ));
-    }
     let surface = resolve_query_surface(document, catalog).map_err(|_| {
         one(
             PlannerDiagnosticCode::InternalInvariant,
@@ -492,9 +478,9 @@ impl<'a> Planner<'a> {
             let partition_field = entity.partition_field();
             let route = comparisons.iter().find_map(|comparison| {
                 (comparison.field == partition_field
-                    && comparison.operator == BinaryOperator::Equal)
-                    .then(|| parameter_name(comparison.value))
-                    .flatten()
+                    && comparison.operator.is_binary(BinaryOperator::Equal))
+                .then(|| comparison.value.and_then(parameter_name))
+                .flatten()
             });
             let Some(route) = route else {
                 return Err(one(
@@ -670,7 +656,19 @@ impl<'a> Planner<'a> {
     ) -> Result<(), PlannerDiagnostics> {
         for comparison in comparisons {
             let field = entity.field(comparison.field).ok_or_else(internal)?;
-            if let Expression::Parameter(parameter) = comparison.value {
+            if matches!(comparison.operator, SourcePredicateOperator::Unary(_)) {
+                if !field.value_type().is_optional() {
+                    return Err(one(
+                        PlannerDiagnosticCode::TypeMismatch,
+                        binding.predicate.span,
+                        vec![entity.name().to_owned(), comparison.field.to_owned()],
+                        "null/existence predicate requires an optional contract field",
+                        None,
+                    ));
+                }
+                continue;
+            }
+            if let Some(Expression::Parameter(parameter)) = comparison.value {
                 let parameter_type = self
                     .parameters
                     .get(parameter.value.as_str())
@@ -687,7 +685,7 @@ impl<'a> Planner<'a> {
                 } else {
                     parameter_type
                 };
-                let actual = if comparison.operator == BinaryOperator::In {
+                let actual = if comparison.operator.is_binary(BinaryOperator::In) {
                     match effective_parameter_type {
                         TypeReference::Set(inner) => self.resolve_parameter_type(&inner.value),
                         _ => None,
@@ -695,7 +693,7 @@ impl<'a> Planner<'a> {
                 } else {
                     self.resolve_parameter_type(effective_parameter_type)
                 };
-                let compatible = if comparison.operator == BinaryOperator::In {
+                let compatible = if comparison.operator.is_binary(BinaryOperator::In) {
                     actual.as_ref().is_some_and(|actual| expected == actual)
                 } else {
                     actual.as_ref().is_some_and(|actual| expected == actual)
@@ -709,7 +707,7 @@ impl<'a> Planner<'a> {
                         None,
                     ));
                 }
-            } else if let Expression::Path(path) = comparison.value
+            } else if let Some(Expression::Path(path)) = comparison.value
                 && path.0.len() == 2
                 && let Some(source_entity) = self.binding_entities.get(path.0[0].value.as_str())
             {
@@ -720,7 +718,7 @@ impl<'a> Planner<'a> {
                     .copied()
                     .ok_or_else(internal)?;
                 let cardinality_is_valid = match comparison.operator {
-                    BinaryOperator::In => {
+                    SourcePredicateOperator::Binary(BinaryOperator::In) => {
                         source_cardinality == Cardinality::Many
                             && binding.cardinality.value == Cardinality::Many
                     }
@@ -755,7 +753,7 @@ impl<'a> Planner<'a> {
                         None,
                     ));
                 }
-            } else if let Expression::Literal(literal) = comparison.value
+            } else if let Some(Expression::Literal(literal)) = comparison.value
                 && !literal_compatible(field.value_type(), literal)
             {
                 return Err(one(
@@ -778,10 +776,10 @@ impl<'a> Planner<'a> {
             .iter()
             .map(|comparison| {
                 let value = match comparison.value {
-                    Expression::Parameter(parameter) => {
+                    Some(Expression::Parameter(parameter)) => {
                         QueryPredicateValue::Parameter(parameter.value.as_str().to_owned())
                     }
-                    Expression::Path(path) if path.0.len() == 2 => {
+                    Some(Expression::Path(path)) if path.0.len() == 2 => {
                         let first = path.0[0].value.as_str();
                         let second = path.0[1].value.as_str();
                         if self.binding_entities.contains_key(first) {
@@ -813,16 +811,21 @@ impl<'a> Planner<'a> {
                             return Err(internal());
                         }
                     }
-                    Expression::Literal(literal) => QueryPredicateValue::Literal(match literal {
-                        Literal::Unsigned(value) => QueryLiteral::Unsigned(value.clone()),
-                        Literal::String(value) => QueryLiteral::String(value.clone()),
-                        Literal::Boolean(value) => QueryLiteral::Boolean(*value),
-                        Literal::Null => QueryLiteral::Null,
-                    }),
-                    Expression::Path(_)
-                    | Expression::PresenceGuard { .. }
-                    | Expression::Unary { .. }
-                    | Expression::Binary { .. } => {
+                    Some(Expression::Literal(literal)) => {
+                        QueryPredicateValue::Literal(match literal {
+                            Literal::Unsigned(value) => QueryLiteral::Unsigned(value.clone()),
+                            Literal::String(value) => QueryLiteral::String(value.clone()),
+                            Literal::Boolean(value) => QueryLiteral::Boolean(*value),
+                            Literal::Null => QueryLiteral::Null,
+                        })
+                    }
+                    None => QueryPredicateValue::Literal(QueryLiteral::Null),
+                    Some(
+                        Expression::Path(_)
+                        | Expression::PresenceGuard { .. }
+                        | Expression::Unary { .. }
+                        | Expression::Binary { .. },
+                    ) => {
                         return Err(internal());
                     }
                 };
@@ -1111,17 +1114,29 @@ fn aggregate_field_bytes(
 }
 
 fn predicate_operator(
-    operator: BinaryOperator,
+    operator: SourcePredicateOperator,
 ) -> Result<QueryPredicateOperator, PlannerDiagnostics> {
     Ok(match operator {
-        BinaryOperator::Equal => QueryPredicateOperator::Equal,
-        BinaryOperator::NotEqual => QueryPredicateOperator::NotEqual,
-        BinaryOperator::Less => QueryPredicateOperator::Less,
-        BinaryOperator::LessEqual => QueryPredicateOperator::LessEqual,
-        BinaryOperator::Greater => QueryPredicateOperator::Greater,
-        BinaryOperator::GreaterEqual => QueryPredicateOperator::GreaterEqual,
-        BinaryOperator::In => QueryPredicateOperator::In,
-        BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Prefix => {
+        SourcePredicateOperator::Binary(BinaryOperator::Equal) => QueryPredicateOperator::Equal,
+        SourcePredicateOperator::Binary(BinaryOperator::NotEqual) => {
+            QueryPredicateOperator::NotEqual
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::Less) => QueryPredicateOperator::Less,
+        SourcePredicateOperator::Binary(BinaryOperator::LessEqual) => {
+            QueryPredicateOperator::LessEqual
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::Greater) => QueryPredicateOperator::Greater,
+        SourcePredicateOperator::Binary(BinaryOperator::GreaterEqual) => {
+            QueryPredicateOperator::GreaterEqual
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::In) => QueryPredicateOperator::In,
+        SourcePredicateOperator::Binary(BinaryOperator::Prefix) => QueryPredicateOperator::Prefix,
+        SourcePredicateOperator::Unary(UnaryOperator::IsNull) => QueryPredicateOperator::IsNull,
+        SourcePredicateOperator::Unary(UnaryOperator::IsNotNull) => {
+            QueryPredicateOperator::IsNotNull
+        }
+        SourcePredicateOperator::Unary(UnaryOperator::Exists) => QueryPredicateOperator::Exists,
+        SourcePredicateOperator::Binary(BinaryOperator::And | BinaryOperator::Or) => {
             return Err(internal());
         }
     })
@@ -1189,8 +1204,20 @@ impl<'a> AuthAccumulator<'a> {
 
 struct Comparison<'a> {
     field: &'a str,
-    operator: BinaryOperator,
-    value: &'a Expression,
+    operator: SourcePredicateOperator,
+    value: Option<&'a Expression>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourcePredicateOperator {
+    Binary(BinaryOperator),
+    Unary(UnaryOperator),
+}
+
+impl SourcePredicateOperator {
+    fn is_binary(self, expected: BinaryOperator) -> bool {
+        matches!(self, Self::Binary(actual) if actual == expected)
+    }
 }
 
 fn comparisons(expression: &Expression) -> Vec<Comparison<'_>> {
@@ -1200,24 +1227,40 @@ fn comparisons(expression: &Expression) -> Vec<Comparison<'_>> {
 }
 
 fn collect_comparisons<'a>(expression: &'a Expression, output: &mut Vec<Comparison<'a>>) {
-    if let Expression::Binary {
-        operator,
-        left,
-        right,
-    } = expression
-    {
-        if operator.value == BinaryOperator::And {
-            collect_comparisons(&left.value, output);
-            collect_comparisons(&right.value, output);
-        } else if let Expression::Path(path) = &left.value
-            && let Some(field) = path_field(path)
-        {
-            output.push(Comparison {
-                field,
-                operator: operator.value,
-                value: &right.value,
-            });
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            if operator.value == BinaryOperator::And {
+                collect_comparisons(&left.value, output);
+                collect_comparisons(&right.value, output);
+            } else if let Expression::Path(path) = &left.value
+                && let Some(field) = path_field(path)
+            {
+                output.push(Comparison {
+                    field,
+                    operator: SourcePredicateOperator::Binary(operator.value),
+                    value: Some(&right.value),
+                });
+            }
         }
+        Expression::Unary { operator, operand } => {
+            if let Expression::Path(path) = &operand.value
+                && let Some(field) = path_field(path)
+            {
+                output.push(Comparison {
+                    field,
+                    operator: SourcePredicateOperator::Unary(operator.value),
+                    value: None,
+                });
+            }
+        }
+        Expression::PresenceGuard { predicate, .. } => {
+            collect_comparisons(&predicate.value, output);
+        }
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => {}
     }
 }
 
@@ -1233,10 +1276,10 @@ fn choose_access(
     let collection_dependencies = comparisons
         .iter()
         .filter_map(|comparison| {
-            if comparison.operator != BinaryOperator::In {
+            if !comparison.operator.is_binary(BinaryOperator::In) {
                 return None;
             }
-            let Expression::Path(path) = comparison.value else {
+            let Some(Expression::Path(path)) = comparison.value else {
                 return None;
             };
             let [source_binding, source_field] = path.0.as_slice() else {
@@ -1261,7 +1304,7 @@ fn choose_access(
         let complete_key = key_fields.iter().all(|field| {
             comparisons.iter().any(|comparison| {
                 comparison.field == field
-                    && (comparison.operator == BinaryOperator::Equal
+                    && (comparison.operator.is_binary(BinaryOperator::Equal)
                         || std::ptr::eq(comparison, collection))
             })
         });
@@ -1335,7 +1378,7 @@ fn choose_access(
 
     if entity.primary_key().iter().all(|field| {
         comparisons.iter().any(|comparison| {
-            comparison.field == field && comparison.operator == BinaryOperator::Equal
+            comparison.field == field && comparison.operator.is_binary(BinaryOperator::Equal)
         })
     }) {
         return Ok((
@@ -1385,19 +1428,36 @@ fn choose_access(
     }
 
     for index in entity.indexes() {
+        if !operational_predicates_supported(index, comparisons) {
+            continue;
+        }
         let mut order_start = 0;
         while order_start < index.fields().len() {
             let field = index.fields()[order_start].as_str();
+            let encoding = index.internal_encodings()[order_start];
             let equality = comparisons.iter().any(|comparison| {
-                comparison.field == field && comparison.operator == BinaryOperator::Equal
+                comparison.field == field
+                    && comparison.operator.is_binary(BinaryOperator::Equal)
+                    && encoding == IndexFieldEncodingV1::Canonical
             });
             if equality {
                 order_start += 1;
                 continue;
             }
             let membership = comparisons.iter().any(|comparison| {
-                comparison.field == field && comparison.operator == BinaryOperator::In
+                comparison.field == field
+                    && comparison.operator.is_binary(BinaryOperator::In)
+                    && encoding == IndexFieldEncodingV1::Canonical
             });
+            let exact_null = comparisons.iter().any(|comparison| {
+                comparison.field == field
+                    && comparison.operator == SourcePredicateOperator::Unary(UnaryOperator::IsNull)
+                    && encoding == IndexFieldEncodingV1::Presence
+            });
+            if exact_null {
+                order_start += 1;
+                continue;
+            }
             if !membership {
                 break;
             }
@@ -1406,10 +1466,8 @@ fn choose_access(
         if order_start == 0
             && !comparisons.iter().any(|comparison| {
                 comparison.field == index.fields()[0]
-                    && matches!(
-                        comparison.operator,
-                        BinaryOperator::Equal | BinaryOperator::In
-                    )
+                    && (comparison.operator.is_binary(BinaryOperator::Equal)
+                        || comparison.operator.is_binary(BinaryOperator::In))
             })
         {
             continue;
@@ -1458,10 +1516,11 @@ fn suggested_index(
 ) -> Option<String> {
     let mut fields = Vec::new();
     for comparison in comparisons {
-        if matches!(
-            comparison.operator,
-            BinaryOperator::Equal | BinaryOperator::In
-        ) && !fields.contains(&comparison.field)
+        if (comparison.operator.is_binary(BinaryOperator::Equal)
+            || comparison.operator.is_binary(BinaryOperator::In)
+            || matches!(comparison.operator, SourcePredicateOperator::Unary(_))
+            || comparison.operator.is_binary(BinaryOperator::Prefix))
+            && !fields.contains(&comparison.field)
         {
             fields.push(comparison.field);
         }
@@ -1473,12 +1532,68 @@ fn suggested_index(
         }
     }
     (!fields.is_empty()).then(|| {
-        format!(
+        let mut suggestion = format!(
             "index by_query on {} ({})",
             entity.name(),
             fields.join(", ")
-        )
+        );
+        for comparison in comparisons {
+            match comparison.operator {
+                SourcePredicateOperator::Unary(_) => {
+                    suggestion.push_str(&format!(" presence({})", comparison.field));
+                }
+                SourcePredicateOperator::Binary(BinaryOperator::Prefix) => {
+                    suggestion
+                        .push_str(&format!(" text_key({}, binary_utf8_v1)", comparison.field));
+                }
+                _ => {}
+            }
+        }
+        suggestion
     })
+}
+
+fn operational_predicates_supported(
+    index: &riffdb_query_ir::IndexSymbol,
+    comparisons: &[Comparison<'_>],
+) -> bool {
+    let predicates_match = comparisons.iter().all(|comparison| {
+        let Some(position) = index
+            .fields()
+            .iter()
+            .position(|field| field == comparison.field)
+        else {
+            return !matches!(
+                comparison.operator,
+                SourcePredicateOperator::Unary(_)
+                    | SourcePredicateOperator::Binary(BinaryOperator::Prefix)
+            );
+        };
+        match comparison.operator {
+            SourcePredicateOperator::Unary(_) => {
+                index.internal_encodings()[position] == IndexFieldEncodingV1::Presence
+            }
+            SourcePredicateOperator::Binary(BinaryOperator::Prefix) => matches!(
+                index.internal_encodings()[position],
+                IndexFieldEncodingV1::TextKey(_)
+            ),
+            _ => true,
+        }
+    });
+    predicates_match
+        && index.internal_encodings().iter().enumerate().all(
+            |(position, encoding)| match encoding {
+                IndexFieldEncodingV1::Canonical => true,
+                IndexFieldEncodingV1::Presence => comparisons.iter().any(|comparison| {
+                    comparison.field == index.fields()[position]
+                        && matches!(comparison.operator, SourcePredicateOperator::Unary(_))
+                }),
+                IndexFieldEncodingV1::TextKey(_) => comparisons.iter().any(|comparison| {
+                    comparison.field == index.fields()[position]
+                        && comparison.operator.is_binary(BinaryOperator::Prefix)
+                }),
+            },
+        )
 }
 
 fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerDiagnostics> {

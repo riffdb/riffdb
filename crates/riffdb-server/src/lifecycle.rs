@@ -902,6 +902,12 @@ mod tests {
             riffdb_service::DescribeSymbolicContractResult
         );
         denied_operation!(
+            get_application_catalog,
+            RequestContext,
+            riffdb_service::ApplicationCatalogRequest,
+            riffdb_service::ApplicationCatalogResult
+        );
+        denied_operation!(
             check_symbolic_query,
             RequestContext,
             riffdb_service::CompileSymbolicQueryRequest,

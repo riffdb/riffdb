@@ -24,6 +24,33 @@ command, and indexes belong to their owning entity. A duplicate diagnostic
 identifies the current declaration and includes the related span of the first
 declaration.
 
+## Operational query indexes
+
+Indexes used by null/existence and text-prefix RiffQL predicates declare their
+physical semantics in the contract:
+
+```riff
+entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field deleted_at: optional<timestamp>
+    field title: string<200>
+
+    index by_deleted (organization_id, deleted_at, document_id)
+        presence(deleted_at)
+    index by_title (organization_id, title, document_id)
+        text_key(title, binary_utf8_v1)
+}
+```
+
+`presence` is valid only for an optional authoritative key scalar and preserves
+missing, explicit null, and non-null as distinct index states. `text_key` is
+valid only for a bounded string field. `binary_utf8_v1` compares exact UTF-8
+bytes; it is case-sensitive and performs no Unicode normalization. The
+`unicode_fold_v1` profile is reserved but is not executable in the current
+build. Adding or changing either encoding changes durable index identity and
+requires the contract migration/rebuild path; RiffDB never silently changes a
+text profile during a software upgrade.
+
 ## CLI application JSON
 
 The application CLI accepts inline JSON, `@path`, a legacy bare path, or `-`

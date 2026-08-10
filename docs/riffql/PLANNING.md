@@ -16,6 +16,17 @@ The v1 planner accepts only:
 - one wholly forward or wholly reverse traversal direction;
 - explicit row bounds no greater than the 500-row service ceiling.
 
+Operational version-2 members may additionally use null/existence or binary
+prefix predicates when the selected contract index carries the matching sealed
+physical encoding. `presence(field)` expands one logical optional field into a
+missing/null/value discriminator and a typed payload component. The executor
+forms only the finite discriminator prefixes required by the source predicate;
+it never fetches an unbounded candidate set to answer existence. A
+`text_key(field, binary_utf8_v1)` component uses a zero-escaped ordered-byte
+codec, allowing an exact leading-byte range while returning the original field
+value. Compiler, command index maintenance, and both storage readers consume
+the same versioned key schema.
+
 The program contains ordered accesses, dependency edges, cardinality and row
 bounds, and the complete entity/field/index authorization requirement. The
 application supplies names; stable numeric IDs remain compiler-internal.

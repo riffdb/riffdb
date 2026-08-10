@@ -200,11 +200,37 @@ The ad-hoc source path and version-1 reactive/live-query modules reject
 operational families until those surfaces receive their own versioned
 presence-selection contracts.
 
-The parser reserves version-2 spellings for null/existence and prefix
-predicates, but they remain unavailable until declared discriminator/text-key
-indexes and their compatibility rules ship. A parsed spelling is not an
-executable feature: module compilation continues to fail closed unless every
-required storage and planning proof exists.
+Version 2 executes `is null`, `is not null`, `exists`, and binary UTF-8
+`prefix` predicates only through explicitly declared operational indexes. For
+example:
+
+```riffql
+query SearchDocuments(
+    $organization_id: Document.organization_id,
+    $title_prefix: Document.title,
+) {
+    many documents from Document
+        where organization_id == $organization_id
+          && title prefix $title_prefix
+        order by title asc, document_id asc
+        take 25
+    return Found { documents: documents { document_id title } }
+    outcomes Found
+}
+```
+
+`is null` matches only an explicitly stored null. `is not null` matches only a
+present non-null value. `exists` matches both explicit null and present
+non-null values; it does not match a field missing from an older compatible
+record. The compiler requires `presence(field)` on the selected index so these
+three states cannot collapse during planning or execution.
+
+Binary prefix lookup compares the exact UTF-8 bytes of the original string and
+requires `text_key(field, binary_utf8_v1)`. It performs no case folding,
+normalization, locale collation, tokenization, or relevance scoring. The
+`unicode_fold_v1` spelling is reserved but remains unavailable until its frozen
+Unicode tables and migration fixtures ship. A parsed spelling is not an
+executable feature unless every required storage and planning proof exists.
 
 ## Bounded exact aggregates (language version 2)
 
