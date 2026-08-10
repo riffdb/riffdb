@@ -2014,7 +2014,12 @@ impl AuditDatabase {
 }
 
 fn next_database_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target")
+        .join("service-harness");
+    std::fs::create_dir_all(&root).expect("create service harness directory");
+    root.join(format!(
         "riffdb-service-harness-{}-{}.redb",
         std::process::id(),
         NEXT_PATH.fetch_add(1, Ordering::Relaxed)
@@ -2023,7 +2028,19 @@ fn next_database_path() -> PathBuf {
 
 impl Drop for AuditDatabase {
     fn drop(&mut self) {
-        let _result = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(riffdb_storage_redb::durable_format_marker_path(&self.path));
+        for suffix in [
+            ".riffjournal",
+            ".riffjournal.checkpoint",
+            ".riffjournal.next",
+            ".riffjournal.rewrite",
+            ".riffjournal.extent-v3",
+        ] {
+            let mut companion = self.path.as_os_str().to_os_string();
+            companion.push(suffix);
+            let _ = std::fs::remove_file(PathBuf::from(companion));
+        }
     }
 }
 
@@ -4973,7 +4990,12 @@ fn board_ticket_input(
 }
 
 fn board_projection_directory() -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target")
+        .join("service-harness");
+    std::fs::create_dir_all(&root).expect("create service harness directory");
+    let path = root.join(format!(
         "riffdb-service-board-{}-{}",
         std::process::id(),
         NEXT_PATH.fetch_add(1, Ordering::Relaxed)
