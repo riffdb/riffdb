@@ -231,7 +231,12 @@ fixture data, so no redaction surface is added.
   the existing startup validation and structural inspection passes.
 - Corpus: every `RECOVERY_SCENARIOS` row tagged for the storage layer is
   reproduced as a pinned schedule; found-bug seeds accumulate as regression
-  fixtures.
+  fixtures. (As delivered by WP-583: the engine-commit crash arms carry
+  pinned campaign schedules, while the migration-batch arms, the
+  owner-typestate rows without a process crash point, and — until the engine
+  pin advances past upstream `fd82ced` — the redb 4.1.0 file-growth crash
+  placement are TYPED, guard-enumerated exclusions in the classification
+  machinery rather than pinned schedules.)
 - Architecture tests: `riffdb-sim` absent from all production dependency
   graphs; conflict-path BTree-only pin; existing runtime determinism checks
   unchanged.
@@ -256,6 +261,16 @@ fixture data, so no redaction surface is added.
   harness) delivers Phase 1 item 4's `SIM-003` evidence — model equality at
   the recovered durable frontier after every simulated recovery, with the
   startup-validation and structural-inspection passes as its precondition.
+- **Seeded-campaign package:** WP-583 (seeded workload generator, the
+  crash-schedule campaign driving the simulated store with the model in
+  lockstep, the found-seed regression corpus, and the crash-matrix
+  subsumption classification) delivers Phase 1 items 5-7's `SIM-004` and
+  `SIM-006` evidence. Its first exploration surfaced a real redb 4.1.0
+  crash-recovery defect (file growth left non-durable until the commit's
+  single fsync, wedging the database unopenable after a torn crash; fixed
+  upstream in `fd82ced`, unreleased) — retained as the corpus's inaugural
+  entry behind a typed, pin-guarded placement exclusion until the engine pin
+  advances.
 - **Final evidence:** the Phase-1 exploration campaign report over the
   journal/extent/fold machinery.
 
