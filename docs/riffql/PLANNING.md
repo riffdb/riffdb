@@ -47,6 +47,12 @@ is an exact presence-bit lookup; it performs no parsing or access-path planning.
 The selected member drives physical execution while responses and generated
 bindings retain the stable family identity.
 
+Language-version-2 aggregate declarations are parsed and canonically formatted,
+but are not yet members of an executable plan family. Both compilation paths
+return source-spanned `RDB-QP008` at the aggregate result symbol. This explicit
+gate prevents a declaration from being ignored while WP-564 adds exact shared
+aggregate lowering and its row-limit group-cardinality clamp.
+
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded
 dependent-key batch. It cannot infer colocation, omit a partition predicate,

@@ -110,12 +110,51 @@ pub enum TypeReference {
 pub struct QueryBody {
     /// Cardinality-declared bindings.
     pub bindings: Vec<Binding>,
+    /// Bounded exact aggregate declarations over prior collection bindings.
+    pub aggregates: Vec<AggregateBinding>,
     /// Returned outcome name, if declared.
     pub outcome: Option<Spanned<Identifier>>,
     /// Returned record.
     pub selection: Selection,
     /// Closed declared outcome union.
     pub outcomes: Vec<Spanned<Identifier>>,
+}
+
+/// One bounded aggregate result derived from a prior collection binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AggregateBinding {
+    /// Query-local aggregate result name.
+    pub name: Spanned<Identifier>,
+    /// Earlier collection binding being folded.
+    pub source: Spanned<Identifier>,
+    /// Declared grouping fields, empty for one whole-set result.
+    pub group_by: Vec<Spanned<Path>>,
+    /// Closed exact measures.
+    pub measures: Vec<AggregateMeasure>,
+}
+
+/// One named exact aggregate measure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AggregateMeasure {
+    /// Closed aggregate function.
+    pub function: Spanned<AggregateFunction>,
+    /// Input field for `sum`, `min`, and `max`; absent for `count`.
+    pub field: Option<Spanned<Path>>,
+    /// Returned field name.
+    pub alias: Spanned<Identifier>,
+}
+
+/// Closed exact aggregate function registry shared with WP-492 semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AggregateFunction {
+    /// Exact row count.
+    Count,
+    /// Checked exact sum.
+    Sum,
+    /// Minimum value or the shared empty-set absence.
+    Min,
+    /// Maximum value or the shared empty-set absence.
+    Max,
 }
 
 /// Expected binding cardinality.

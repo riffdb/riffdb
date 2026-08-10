@@ -10324,7 +10324,7 @@ work_packages:
     sources for tuple, metric, document-graph, and pipeline-step mutations
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-features
-  - cargo +1.97.0 fuzz run contract_parser -- -max_total_time=60
+  - cargo +nightly-2026-07-12 fuzz run contract_parser -- -max_total_time=60
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
@@ -10459,7 +10459,7 @@ work_packages:
     semantics and group cardinality remains clamped by the requested row limit
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-query-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog --all-features
-  - cargo +1.97.0 fuzz run riffql_parser -- -max_total_time=60
+  - cargo +nightly-2026-07-12 fuzz run riffql_parser -- -max_total_time=60
   - ./scripts/check-generated
   - ./scripts/check-application-bindings
   - ./scripts/check-requirement-coverage
@@ -10779,8 +10779,8 @@ work_packages:
     capability contents, hidden branches, row values, numeric IDs, or existence leaks
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-types -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-auth -p riffdb-policy -p riffdb-diagnostics --all-features
-  - cargo +1.97.0 fuzz run contract_parser -- -max_total_time=60
-  - cargo +1.97.0 fuzz run riffql_parser -- -max_total_time=60
+  - cargo +nightly-2026-07-12 fuzz run contract_parser -- -max_total_time=60
+  - cargo +nightly-2026-07-12 fuzz run riffql_parser -- -max_total_time=60
   - ./scripts/check-application-bindings
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage

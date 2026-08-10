@@ -120,6 +120,7 @@ pub fn compile_query(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    reject_unlowered_aggregates(document)?;
     if let Some(span) = document
         .body
         .bindings
@@ -142,6 +143,7 @@ pub fn compile_operational_query_family(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
+    reject_unlowered_aggregates(document)?;
     let surface = resolve_query_surface(document, catalog).map_err(|_| {
         one(
             PlannerDiagnosticCode::InternalInvariant,
@@ -208,6 +210,7 @@ fn compile_query_member(
     catalog: &SymbolicCatalog,
     unwrapped_optional_parameters: BTreeSet<String>,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    reject_unlowered_aggregates(document)?;
     if let Some(span) = document
         .body
         .bindings
@@ -232,6 +235,19 @@ fn compile_query_member(
         )
     })?;
     Planner::new(document, catalog, unwrapped_optional_parameters).compile(surface)
+}
+
+fn reject_unlowered_aggregates(document: &Document) -> Result<(), PlannerDiagnostics> {
+    let Some(aggregate) = document.body.aggregates.first() else {
+        return Ok(());
+    };
+    Err(one(
+        PlannerDiagnosticCode::OperationalFamilyRequired,
+        aggregate.name.span,
+        vec![aggregate.name.value.as_str().to_owned()],
+        "operational aggregates require exact aggregate lowering",
+        None,
+    ))
 }
 
 fn validate_operational_expression(
