@@ -51,6 +51,11 @@ pub trait ExpressionValueSource {
         None
     }
 
+    /// Resolves a compiler-declared service-owned command value.
+    fn service_value(&self, _field: FieldId) -> Option<CanonicalValue> {
+        None
+    }
+
     /// Resolves one complete bound entity record.
     fn complete_binding(&self, _binding: BindingId) -> Option<CanonicalValue> {
         None
@@ -191,6 +196,7 @@ impl<'arena> ExpressionEvaluator<'arena> {
         let value = match kind {
             ExpressionKind::Constant(value) => Some(value),
             ExpressionKind::InputField(field) => values.input_field(field),
+            ExpressionKind::ServiceValue(field) => values.service_value(field),
             ExpressionKind::CompleteBinding(binding) => values.complete_binding(binding),
             ExpressionKind::BoundField { binding, field } => values.bound_field(binding, field),
             ExpressionKind::SchemaField { entity_type, field } => {
@@ -499,12 +505,17 @@ mod tests {
     #[derive(Default)]
     struct Values {
         inputs: BTreeMap<FieldId, CanonicalValue>,
+        service_values: BTreeMap<FieldId, CanonicalValue>,
         logical_time: Option<LogicalTime>,
     }
 
     impl ExpressionValueSource for Values {
         fn input_field(&self, field: FieldId) -> Option<CanonicalValue> {
             self.inputs.get(&field).cloned()
+        }
+
+        fn service_value(&self, field: FieldId) -> Option<CanonicalValue> {
+            self.service_values.get(&field).cloned()
         }
 
         fn transaction_time(&self) -> Option<LogicalTime> {
@@ -532,6 +543,28 @@ mod tests {
             ),
         ])
         .expect("valid expression arena")
+    }
+
+    #[test]
+    fn service_values_resolve_through_the_source_and_fail_closed_when_absent() {
+        let field = FieldId::first();
+        let arena = ExpressionArena::new(vec![(
+            ExpressionKind::ServiceValue(field),
+            ValueType::bool(),
+        )])
+        .expect("single service-value expression");
+        assert_eq!(
+            evaluate_expression(&arena, ExprId::new(0), &Values::default()),
+            Err(EvaluationError::Integrity)
+        );
+        let values = Values {
+            service_values: BTreeMap::from([(field, CanonicalValue::Bool(true))]),
+            ..Values::default()
+        };
+        assert_eq!(
+            evaluate_expression(&arena, ExprId::new(0), &values),
+            Ok(CanonicalValue::Bool(true))
+        );
     }
 
     #[test]
@@ -786,7 +819,7 @@ mod tests {
         for expected in [true, false] {
             let values = Values {
                 inputs: BTreeMap::from([(field, CanonicalValue::Bool(expected))]),
-                logical_time: None,
+                ..Values::default()
             };
             assert_eq!(
                 evaluator.batch(&values).evaluate_predicate(ExprId::new(0)),
@@ -807,7 +840,7 @@ mod tests {
         let mut evaluator = ExpressionEvaluator::new(&arena);
         let first_values = Values {
             inputs: BTreeMap::from([(field, CanonicalValue::Bool(true))]),
-            logical_time: None,
+            ..Values::default()
         };
         let mut forgotten = evaluator.batch(&first_values);
         assert_eq!(forgotten.evaluate_predicate(ExprId::new(0)), Ok(true));
@@ -815,7 +848,7 @@ mod tests {
 
         let second_values = Values {
             inputs: BTreeMap::from([(field, CanonicalValue::Bool(false))]),
-            logical_time: None,
+            ..Values::default()
         };
         assert_eq!(
             evaluator
