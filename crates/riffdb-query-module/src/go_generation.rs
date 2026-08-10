@@ -145,10 +145,13 @@ fn emit_query_types(output: &mut String, module: &QueryModule, contract: &Contra
     for query in module.queries() {
         let name = go_public(query.name());
         writeln!(output, "type {name}Params struct {{").unwrap();
-        for parameter in query.program().surface().schemas().parameters() {
+        for parameter in query.plan().schemas().parameters() {
             let mut ty = go_named_type(parameter.value_type(), contract);
             if (parameter.has_default()
-                || matches!(parameter.value_type(), NamedTypeSchema::Cursor))
+                || matches!(
+                    parameter.value_type(),
+                    NamedTypeSchema::Cursor | NamedTypeSchema::Optional(_)
+                ))
                 && !ty.starts_with('*')
             {
                 ty = format!("*{ty}");
@@ -157,7 +160,7 @@ fn emit_query_types(output: &mut String, module: &QueryModule, contract: &Contra
         }
         output.push_str("}\n\n");
         writeln!(output, "type {name}Result interface {{ is{name}Result() }}").unwrap();
-        for branch in query.program().surface().schemas().results() {
+        for branch in query.plan().schemas().results() {
             let branch_name = format!("{name}{}", go_public(branch.name()));
             writeln!(output, "type {branch_name} struct {{\n\tOutcome string").unwrap();
             for field in branch.fields() {
@@ -250,7 +253,7 @@ fn emit_query_methods(
         let (operation, schema_hash) = &operations[source_name];
         writeln!(output, "var {name}Operation = riffdb.Operation{{Name: \"{operation}\", InputSchemaHash: \"{schema_hash}\"}}").unwrap();
         writeln!(output, "func decode{name}Result(value riffdb.Value) ({name}Result, error) {{ fields, err := riffdb.RecordFields(value); if err != nil {{ return nil, err }}; outcomeValue, err := requiredField(fields, \"outcome\"); if err != nil {{ return nil, err }}; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil {{ return nil, err }}; var raw riffdb.Value; switch outcome {{").unwrap();
-        for branch in query.program().surface().schemas().results() {
+        for branch in query.plan().schemas().results() {
             let branch_name = format!("{name}{}", go_public(branch.name()));
             writeln!(
                 output,
@@ -266,9 +269,13 @@ fn emit_query_methods(
         }
         output.push_str("default: return nil, errors.New(\"RiffDB driver returned unknown query outcome\") } }\n");
         writeln!(output, "func (client *Client) {name}(ctx context.Context, parameters {name}Params, options QueryOptions) (QueryResult[{name}Result], error) {{ input := map[string]riffdb.Value{{}}").unwrap();
-        for parameter in query.program().surface().schemas().parameters() {
+        for parameter in query.plan().schemas().parameters() {
             let field = go_public(parameter.name());
-            if parameter.has_default() || matches!(parameter.value_type(), NamedTypeSchema::Cursor)
+            if parameter.has_default()
+                || matches!(
+                    parameter.value_type(),
+                    NamedTypeSchema::Cursor | NamedTypeSchema::Optional(_)
+                )
             {
                 let inner = if go_named_type(parameter.value_type(), contract).starts_with('*') {
                     format!("parameters.{field}")

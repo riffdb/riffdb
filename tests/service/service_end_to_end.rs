@@ -1817,7 +1817,7 @@ fn capability_create_and_revoke_fail_closed_at_their_owned_dependency_boundaries
 }
 
 #[test]
-fn named_query_records_read_pipeline_stage_histograms() {
+fn operational_named_query_selects_presence_members_and_records_read_stages() {
     use std::sync::Arc;
 
     use riffdb_errors::IncidentIdSource;
@@ -1836,10 +1836,12 @@ fn named_query_records_read_pipeline_stage_histograms() {
 query GetBudget(
     $organization_id: Budget.organization_id,
     $fiscal_year: Budget.fiscal_year,
+    $minimum_fiscal_year: Budget.fiscal_year?,
 ) {
     one budget from Budget
         where organization_id == $organization_id
             && fiscal_year == $fiscal_year
+            && when $minimum_fiscal_year { fiscal_year >= $minimum_fiscal_year }
         else NotFound
 
     return Found {
@@ -1869,6 +1871,12 @@ query GetBudget(
         let module =
             riffdb_catalog::ValidatedQueryModule::compile(candidate, &validated).expect("module");
         let module_hash = module.identity();
+        let family_hash = module
+            .module()
+            .query("GetBudget")
+            .expect("query")
+            .plan()
+            .identity();
         let query_name = QueryOperationName::new("GetBudget").expect("query name");
         let named_permission = CapabilityPermissionV1::ExecuteNamedQuery(
             validated.lineage().clone(),
@@ -1912,7 +1920,7 @@ query GetBudget(
             SymbolicContractSelector::active(),
             "GetBudget".to_owned(),
             Some(module_hash),
-            SymbolicQueryParameters::new(values).expect("parameters"),
+            SymbolicQueryParameters::new(values.clone()).expect("parameters"),
         )
         .expect("named request");
 
@@ -1920,10 +1928,31 @@ query GetBudget(
             .service
             .execute_named_symbolic_query(context, request)
             .await
-            .expect("named query succeeds through empty executor");
+            .expect("absent optional member succeeds through empty executor");
         assert_eq!(result.outcome(), "NotFound");
+        assert_eq!(result.identity().plan_hash(), family_hash);
 
-        let queries = 1_u64;
+        values.insert(
+            "minimum_fiscal_year".to_owned(),
+            riffdb_service::SubmittedValue::I64(2020),
+        );
+        let request = NamedSymbolicQueryRequest::new(
+            SymbolicContractSelector::active(),
+            "GetBudget".to_owned(),
+            Some(module_hash),
+            SymbolicQueryParameters::new(values).expect("parameters"),
+        )
+        .expect("named request");
+        let (present_context, _present_cancellation) = harness.context(0x92);
+        let result = harness
+            .service
+            .execute_named_symbolic_query(present_context, request)
+            .await
+            .expect("present optional member succeeds through empty executor");
+        assert_eq!(result.outcome(), "NotFound");
+        assert_eq!(result.identity().plan_hash(), family_hash);
+
+        let queries = 2_u64;
         for stage in [
             ReadPipelineStage::SpawnDispatch,
             ReadPipelineStage::PlanLookup,
@@ -1958,8 +1987,8 @@ query GetBudget(
         ] {
             assert_eq!(
                 observability.metrics().read_stage_duration(stage).count,
-                1,
-                "{stage:?} should observe exactly once"
+                queries,
+                "{stage:?} should observe exactly once per query"
             );
         }
     });

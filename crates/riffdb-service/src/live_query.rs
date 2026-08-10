@@ -876,12 +876,14 @@ async fn prepare_live_query(
         .module()
         .query(query.query_name())
         .ok_or_else(invalid_live_query_request)?;
-    if named_query.program().identity().hash() != query.plan_hash()
-        || named_query.program().cost() != query.cost()
+    if named_query.plan().identity() != query.plan_hash()
+        || named_query.plan().cost() != query.cost()
     {
         return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
     }
-    let program = named_query.shared_program();
+    let program = named_query
+        .shared_ordinary_program()
+        .ok_or_else(invalid_live_query_request)?;
     let live_plan = LiveQueryPlanV1::derive(&program, *update_mode, patch_key)
         .map_err(|_| invalid_live_query_request())?;
     let dependencies = bind_live_query_dependencies(&program, selection.parameters())

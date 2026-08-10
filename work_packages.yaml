@@ -10440,7 +10440,8 @@ work_packages:
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**,
     crates/riffdb-query-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
-    crates/riffdb-diagnostics/**, crates/riffdb-catalog/**, fixtures/riffql/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-catalog/**, crates/riffdb-service/**,
+    crates/riffdb-cli/**, fixtures/riffql/**,
     fixtures/query-modules/**, fixtures/application-manifests/**,
     fixtures/application-locks/**, examples/agent-alpha/**, examples/ticketdesk/**,
     clients/**, fuzz/**, tests/**, scripts/**, docs/**]

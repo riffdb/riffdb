@@ -1015,7 +1015,7 @@ fn compile_symbolic_application_mode(
                         modules
                             .iter()
                             .find_map(|module| module.query(query_name))
-                            .filter(|query| query.program().cost().scanned_index_rows() > 500)
+                            .filter(|query| query.plan().cost().scanned_index_rows() > 500)
                             .map(|query| query.name())
                     })
                 })

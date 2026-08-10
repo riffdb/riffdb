@@ -869,7 +869,7 @@ default: return nil, errors.New("RiffDB driver returned unknown query outcome") 
 func (client *Client) ListComments(ctx context.Context, parameters ListCommentsParams, options QueryOptions) (QueryResult[ListCommentsResult], error) { input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["ticket_id"] = riffdb.UUID(parameters.TicketId)
-input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 response, err := client.session.Invoke(ctx, ListCommentsOperation, input, options); if err != nil { return QueryResult[ListCommentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListCommentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListCommentsResult(response.Value); if err != nil { return QueryResult[ListCommentsResult]{}, err }; return QueryResult[ListCommentsResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
@@ -883,7 +883,7 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["project_id"] = riffdb.UUID(parameters.ProjectId)
 input["statuses"] = riffdb.Values(parameters.Statuses, func(item TicketStatus) riffdb.Value { return riffdb.Enum(string(item)) })
-input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 response, err := client.session.Invoke(ctx, ListTicketsOperation, input, options); if err != nil { return QueryResult[ListTicketsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListTicketsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListTicketsResult(response.Value); if err != nil { return QueryResult[ListTicketsResult]{}, err }; return QueryResult[ListTicketsResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
@@ -897,7 +897,7 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["assignee_id"] = riffdb.UUID(parameters.AssigneeId)
 input["statuses"] = riffdb.Values(parameters.Statuses, func(item TicketStatus) riffdb.Value { return riffdb.Enum(string(item)) })
-input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 response, err := client.session.Invoke(ctx, ListTicketsByAssigneeOperation, input, options); if err != nil { return QueryResult[ListTicketsByAssigneeResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListTicketsByAssigneeResult(response.Value); if err != nil { return QueryResult[ListTicketsByAssigneeResult]{}, err }; return QueryResult[ListTicketsByAssigneeResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
@@ -910,7 +910,7 @@ default: return nil, errors.New("RiffDB driver returned unknown query outcome") 
 func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMembersParams, options QueryOptions) (QueryResult[ProjectMembersResult], error) { input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["project_id"] = riffdb.UUID(parameters.ProjectId)
-input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
+if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, ProjectMembersOperation, input, options); if err != nil { return QueryResult[ProjectMembersResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ProjectMembersResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeProjectMembersResult(response.Value); if err != nil { return QueryResult[ProjectMembersResult]{}, err }; return QueryResult[ProjectMembersResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 var ProjectSummaryOperation = riffdb.Operation{Name: "ticketdesk_project_summary", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
@@ -968,7 +968,7 @@ default: return nil, errors.New("RiffDB driver returned unknown query outcome") 
 func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPagePagedParams, options QueryOptions) (QueryResult[TicketPagePagedResult], error) { input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["ticket_id"] = riffdb.UUID(parameters.TicketId)
-input["comments_after"] = riffdb.Optional(parameters.CommentsAfter, func(item string) riffdb.Value { return riffdb.String(item) })
+if parameters.CommentsAfter != nil { input["comments_after"] = riffdb.Optional(parameters.CommentsAfter, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, TicketPagePagedOperation, input, options); if err != nil { return QueryResult[TicketPagePagedResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[TicketPagePagedResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeTicketPagePagedResult(response.Value); if err != nil { return QueryResult[TicketPagePagedResult]{}, err }; return QueryResult[TicketPagePagedResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 var TicketQueueOperation = riffdb.Operation{Name: "ticketdesk_ticket_queue", InputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68"}

@@ -98,12 +98,17 @@ pub fn reactive_query_catalog(
             return Err(ReactiveModuleCompilationError::InvalidQueryCatalog);
         }
         for query in module.queries() {
+            // Operational families require per-delivery presence selection.
+            // Reactive V1 has no such identity, so it must not bind one by
+            // accidentally treating a representative member as executable.
+            if query.operational_family().is_some() {
+                continue;
+            }
             if !names.insert(query.name()) {
                 return Err(ReactiveModuleCompilationError::InvalidQueryCatalog);
             }
             let mut parameters = query
-                .program()
-                .surface()
+                .plan()
                 .schemas()
                 .parameters()
                 .iter()
@@ -118,9 +123,9 @@ pub fn reactive_query_catalog(
                 ReactiveQueryCatalogEntry::checked(
                     module.identity(),
                     query.name().to_owned(),
-                    query.program().identity().hash(),
+                    query.plan().identity(),
                     parameters,
-                    query.program().cost(),
+                    query.plan().cost(),
                     patch_key(contract, query),
                 )
                 .ok_or(ReactiveModuleCompilationError::InvalidQueryCatalog)?,
@@ -204,7 +209,8 @@ fn canonical_type(value: &NamedTypeSchema) -> Option<String> {
 
 fn patch_key(contract: &ContractBundle, query: &crate::CompiledNamedQuery) -> Vec<String> {
     let steps = query
-        .program()
+        .plan()
+        .representative_program()
         .steps()
         .iter()
         .filter(|step| !step.result_names().is_empty())

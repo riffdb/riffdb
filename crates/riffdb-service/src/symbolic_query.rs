@@ -34,7 +34,7 @@ use riffdb_query_ir::{
     NamedTypeSchema, QueryAccessKind, QueryAccessProgramV1, QueryDiagnostic, SymbolicCatalog,
     resolve_query_surface,
 };
-use riffdb_query_module::{NamedQuerySource, QueryModuleCandidate};
+use riffdb_query_module::{CompiledNamedQuery, NamedQuerySource, QueryModuleCandidate};
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
 };
@@ -296,6 +296,28 @@ impl SymbolicQueryIdentity {
         identity
     }
 
+    fn from_named_plan(
+        program: &QueryAccessProgramV1,
+        module_hash: QueryModuleHash,
+        plan_hash: QueryPlanHash,
+    ) -> Self {
+        let mut identity = Self::from_named(program, module_hash);
+        identity.plan_hash = plan_hash;
+        identity
+    }
+
+    fn from_named_query(query: &CompiledNamedQuery, module_hash: QueryModuleHash) -> Self {
+        let program = query.plan().representative_program();
+        Self {
+            lineage: program.contract().lineage().clone(),
+            version: program.contract().version(),
+            bundle_hash: program.contract().bundle_hash(),
+            name: Some(query.name().to_owned()),
+            plan_hash: query.plan().identity(),
+            module_hash: Some(module_hash),
+        }
+    }
+
     /// Exact contract lineage.
     #[must_use]
     pub const fn lineage(&self) -> &ContractLineage {
@@ -343,7 +365,14 @@ pub struct SymbolicQuerySchema {
 
 impl SymbolicQuerySchema {
     fn from_program(program: &QueryAccessProgramV1) -> Self {
-        let schemas = program.surface().schemas();
+        Self::from_schemas(program.surface().schemas())
+    }
+
+    fn from_named_query(query: &CompiledNamedQuery) -> Self {
+        Self::from_schemas(query.plan().schemas())
+    }
+
+    fn from_schemas(schemas: &riffdb_query_ir::NamedQuerySchemas) -> Self {
         let mut parameters = schemas
             .parameters()
             .iter()
@@ -421,10 +450,10 @@ impl CheckedSymbolicQuery {
         }
     }
 
-    fn from_named(program: &QueryAccessProgramV1, module_hash: QueryModuleHash) -> Self {
+    fn from_named_query(query: &CompiledNamedQuery, module_hash: QueryModuleHash) -> Self {
         Self {
-            identity: SymbolicQueryIdentity::from_named(program, module_hash),
-            schema: SymbolicQuerySchema::from_program(program),
+            identity: SymbolicQueryIdentity::from_named_query(query, module_hash),
+            schema: SymbolicQuerySchema::from_named_query(query),
         }
     }
 
@@ -1945,11 +1974,11 @@ async fn explain_named_query(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
     let result = ExplainSymbolicQueryResult::Valid {
-        query: Box::new(CheckedSymbolicQuery::from_named(
-            query.program(),
+        query: Box::new(CheckedSymbolicQuery::from_named_query(
+            query,
             module.identity(),
         )),
-        lines: query.program().explain().lines().to_vec(),
+        lines: query.explain_lines(),
     };
     begun.reauthorize(&service, &context).await?;
     finish_success(&service, &context, &begun).await?;
@@ -1997,13 +2026,35 @@ async fn execute_named_query(
             stage: ReadPipelineStage::PlanLookup,
             elapsed: plan_lookup_started.elapsed(),
         });
+    let presence = query
+        .operational_family()
+        .map(|family| {
+            family
+                .presence_parameters()
+                .iter()
+                .map(|name| {
+                    request
+                        .parameters
+                        .get(name)
+                        .is_some_and(|value| !matches!(value, SubmittedValue::Null))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let program = query.select_program(&presence).ok_or_else(|| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryInvalid,
+        )
+    })?;
     execute_compiled_query(
         service,
         context,
         bundle,
-        query.shared_program(),
+        program,
         query.shared_document(),
         Some(module.identity()),
+        Some(query.plan().identity()),
         QueryAuthority::Named {
             module_hash,
             query_name,
@@ -2081,6 +2132,7 @@ async fn execute_query(
         Arc::new(compiled.program),
         Arc::new(compiled.document),
         None,
+        None,
         QueryAuthority::AdHoc,
         request.parameters,
         request.cursor,
@@ -2105,6 +2157,7 @@ async fn execute_compiled_query(
     program: Arc<QueryAccessProgramV1>,
     document: Arc<Document>,
     module_hash: Option<QueryModuleHash>,
+    named_plan_hash: Option<QueryPlanHash>,
     authority: QueryAuthority,
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
@@ -2142,7 +2195,7 @@ async fn execute_compiled_query(
             program.contract().bundle_hash(),
         ),
         module_hash,
-        program.identity().hash(),
+        named_plan_hash.unwrap_or_else(|| program.identity().hash()),
         parameter_hash,
         context.principal().capability_id(),
         context.principal().capability_revision(),
@@ -2316,7 +2369,11 @@ async fn execute_compiled_query(
         Arc::clone(bundle.enum_variant_names()),
     );
     if let Some(module_hash) = module_hash {
-        result.identity = SymbolicQueryIdentity::from_named(&program, module_hash);
+        result.identity = SymbolicQueryIdentity::from_named_plan(
+            &program,
+            module_hash,
+            named_plan_hash.unwrap_or_else(|| program.identity().hash()),
+        );
     }
     service
         .providers
@@ -2441,6 +2498,20 @@ fn materialize_query_parameters(
                 if matches!(inner.value, TypeReference::Cursor) =>
             {
                 return Err(validation_failure(ValidationCode::InvalidValue));
+            }
+            (TypeReference::Optional(_), None | Some(SubmittedValue::Null)) => continue,
+            (TypeReference::Optional(inner), Some(value)) => {
+                let value_type = query_value_type(bundle, &inner.value).ok_or_else(|| {
+                    service.internal_failure(operation, InternalDefect::ProofMismatch)
+                })?;
+                let value = materialize_natural_query_value(
+                    bundle,
+                    &value_type,
+                    value,
+                    service,
+                    operation,
+                )?;
+                canonical.insert(name.to_owned(), value);
             }
             (TypeReference::Limit, None) if parameter.default.is_some() => continue,
             (_, None) => return Err(validation_failure(ValidationCode::InvalidValue)),

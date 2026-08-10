@@ -390,7 +390,7 @@ pub fn generate_python_client(
     for query in module.queries() {
         let wire_name = query.name();
         let name = pascal(wire_name);
-        let schemas = query.program().surface().schemas();
+        let schemas = query.plan().schemas();
         for parameter in schemas.parameters() {
             emit_named_nested(
                 &mut output,
@@ -403,7 +403,7 @@ pub fn generate_python_client(
             output,
             "{}_QUERY_PLAN_HASH: Final[str] = {:?}\n\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Params:",
             screaming_snake(wire_name),
-            hex(query.program().identity().hash().as_bytes())
+            hex(query.plan().identity().as_bytes())
         )
         .expect("String writes cannot fail");
         if schemas.parameters().is_empty() {
@@ -411,7 +411,9 @@ pub fn generate_python_client(
         }
         for parameter in schemas.parameters() {
             let nested = format!("{name}Params{}", pascal(parameter.name()));
-            let defaulted = parameter.has_default() || is_cursor(parameter.value_type());
+            let defaulted = parameter.has_default()
+                || is_cursor(parameter.value_type())
+                || matches!(parameter.value_type(), NamedTypeSchema::Optional(_));
             let mut value_type = python_named_type(parameter.value_type(), &nested, contract);
             let default = if defaulted {
                 if !value_type.ends_with(" | None") {
@@ -703,7 +705,7 @@ fn emit_python_reactive_module(
                 let query_module = module
                     .query(query.query_name())
                     .expect("reactive compiler retained exact query dependency");
-                for branch in query_module.program().surface().schemas().results() {
+                for branch in query_module.plan().schemas().results() {
                     writeln!(
                         output,
                         "            {:?}: {}{},",
@@ -947,7 +949,7 @@ fn emit_client(
             constant = screaming_snake(wire_name)
         )
         .expect("String writes cannot fail");
-        for branch in query.program().surface().schemas().results() {
+        for branch in query.plan().schemas().results() {
             writeln!(
                 output,
                 "            {:?}: {name}{},",
@@ -1215,7 +1217,7 @@ fn validate_names(
             query_origin(),
         )?;
 
-        let schemas = query.program().surface().schemas();
+        let schemas = query.plan().schemas();
         validate_normalized_names(
             schemas.parameters().iter().map(|field| {
                 (

@@ -1,5 +1,7 @@
 //! Closed finite plan families for operational RiffQL.
 
+use std::sync::Arc;
+
 use riffdb_types::{QueryCostVectorV1, QueryPlanHash, hash_query_plan};
 
 use crate::{
@@ -30,7 +32,7 @@ impl OperationalQueryFamilyIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationalPlanMemberV1 {
     presence_mask: u16,
-    program: QueryAccessProgramV1,
+    program: Arc<QueryAccessProgramV1>,
 }
 
 impl OperationalPlanMemberV1 {
@@ -42,16 +44,22 @@ impl OperationalPlanMemberV1 {
 
     /// Complete ordinary bounded access plan for this member.
     #[must_use]
-    pub const fn program(&self) -> &QueryAccessProgramV1 {
+    pub fn program(&self) -> &QueryAccessProgramV1 {
         &self.program
+    }
+
+    /// Shared immutable access program for request execution.
+    #[must_use]
+    pub fn shared_program(&self) -> Arc<QueryAccessProgramV1> {
+        Arc::clone(&self.program)
     }
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn checked(presence_mask: u16, program: QueryAccessProgramV1) -> Self {
+    pub fn checked(presence_mask: u16, program: QueryAccessProgramV1) -> Self {
         Self {
             presence_mask,
-            program,
+            program: Arc::new(program),
         }
     }
 }
