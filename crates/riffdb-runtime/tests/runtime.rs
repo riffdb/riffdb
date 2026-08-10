@@ -320,6 +320,106 @@ contract WorkflowTransitions version 1 {
 }
 "#;
 
+const SERVICE_TRANSACTION_TIME_SOURCE: &str = r#"
+contract ServiceTransactionTime version 1 {
+  entity WorkItem {
+    key (organization_id: uuid, work_id: uuid)
+    field updated_at: timestamp
+  }
+
+  aggregate WorkItems {
+    root WorkItem
+    partition_by organization_id
+    conflict_key (organization_id, work_id)
+  }
+
+  command TouchWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    service observed_at: transaction_time
+    idempotency_key request_key
+    mutate WorkItem(organization_id, work_id) as work else Missing {}
+    set work.updated_at = observed_at
+    return Touched { observed_at: observed_at }
+  }
+}
+"#;
+
+#[test]
+fn service_transaction_time_is_the_sealed_admitted_logical_time() {
+    let bundle = compile_contract_source(SERVICE_TRANSACTION_TIME_SOURCE)
+        .expect("service transaction-time contract compiles");
+    let plan = command(&bundle, "TouchWork");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("touch-work-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0xe1; 16])),
+            ("work_id", CanonicalValue::Uuid([0xe2; 16])),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "WorkItem")
+        .expect("WorkItem entity");
+    let key_values = entity
+        .primary_key()
+        .decode_entity(target.key())
+        .expect("work key");
+    let stored = stored_record(
+        &bundle,
+        plan,
+        target,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", key_values[0].clone()),
+                ("work_id", key_values[1].clone()),
+                (
+                    "updated_at",
+                    CanonicalValue::Timestamp(Timestamp::new(1, 0).expect("old timestamp")),
+                ),
+            ],
+        ),
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let admitted_time = Timestamp::new(-55, 987_654_321).expect("admitted timestamp");
+    let context = context(&bundle, plan, &input, LogicalTime::new(admitted_time));
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("sealed transaction time evaluates")
+    else {
+        panic!("touch mutates");
+    };
+
+    let expected = CanonicalValue::Timestamp(admitted_time);
+    assert_eq!(
+        field(
+            evaluated.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "WorkItem", "updated_at")
+        ),
+        &expected
+    );
+    assert_eq!(
+        field(
+            evaluated.outcome().value(),
+            outcome_field(plan, "Touched", "observed_at")
+        ),
+        &expected
+    );
+}
+
 #[test]
 fn workflow_transition_requires_exact_revision_and_assigns_declared_state() {
     let bundle = compile_contract_source(WORKFLOW_TRANSITION_SOURCE)
@@ -1678,6 +1778,21 @@ fn outcome_id(plan: &CommandPlan, name: &str) -> OutcomeId {
         .iter()
         .find(|outcome| outcome.name() == name)
         .expect("outcome exists")
+        .id()
+}
+
+fn outcome_field(plan: &CommandPlan, outcome: &str, field: &str) -> FieldId {
+    plan.outcomes()
+        .iter()
+        .find(|candidate| candidate.name() == outcome)
+        .and_then(|outcome| {
+            outcome
+                .payload()
+                .fields()
+                .iter()
+                .find(|candidate| candidate.name() == field)
+        })
+        .expect("outcome field")
         .id()
 }
 
