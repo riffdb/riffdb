@@ -31,7 +31,7 @@ pub(crate) enum TopLevel {
             long,
             value_enum,
             default_value = "rust",
-            value_name = "rust|typescript|python"
+            value_name = "rust|go|typescript|python"
         )]
         language: ApplicationLanguage,
         #[arg(long, value_name = "DIRECTORY")]
@@ -319,6 +319,7 @@ pub(crate) enum ApplicationCommand {
 #[value(rename_all = "lower")]
 pub(crate) enum ApplicationLanguage {
     Rust,
+    Go,
     Typescript,
     Python,
 }
@@ -1395,6 +1396,15 @@ mod tests {
             python.command,
             TopLevel::New {
                 language: ApplicationLanguage::Python,
+                ..
+            }
+        ));
+        let go = Cli::try_parse_from(["riffdb", "new", "inventory", "--language", "go"])
+            .expect("accepted Go scaffold command");
+        assert!(matches!(
+            go.command,
+            TopLevel::New {
+                language: ApplicationLanguage::Go,
                 ..
             }
         ));

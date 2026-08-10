@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/index.test.js"
+    "test": "npm run build && node --test dist/index.test.js dist/driver.test.js"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

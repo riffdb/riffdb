@@ -16,10 +16,10 @@ use riffdb_query_module::{
     GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpReactiveTool,
     GeneratedMcpTool, NamedQuerySource, PythonGenerationError, QueryModule, QueryModuleCandidate,
     QueryModuleName, QueryModuleVersion, compile_application_role, compile_application_role_v2,
-    compile_reactive_source, generate_mcp_commands, generate_mcp_reactive_tools,
-    generate_mcp_tools, generate_python_application_client, generate_python_client,
-    generate_rust_application_client, generate_rust_client, generate_typescript_application_client,
-    generate_typescript_client,
+    compile_reactive_source, generate_go_application_client, generate_mcp_commands,
+    generate_mcp_reactive_tools, generate_mcp_tools, generate_python_application_client,
+    generate_python_client, generate_rust_application_client, generate_rust_client,
+    generate_typescript_application_client, generate_typescript_client,
 };
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
@@ -32,6 +32,10 @@ const AUTHORING_TEMPLATE: &str = include_str!("../../../templates/application/AU
 const RUST_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/rust-main.rs");
 const TYPESCRIPT_MAIN_TEMPLATE: &str =
     include_str!("../../../templates/application/typescript-main.ts");
+const GO_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/go-main.go");
+const GO_MOD_TEMPLATE: &str = include_str!("../../../templates/application/go.mod");
+const GO_RUNTIME_SOURCE: &str = include_str!("../../../clients/go/runtime/runtime.go");
+const GO_RUNTIME_MOD: &str = include_str!("../../../clients/go/runtime/go.mod");
 const PYTHON_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/python-main.py");
 const PYPROJECT_TEMPLATE: &str = include_str!("../../../templates/application/pyproject.toml");
 const CARGO_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.toml");
@@ -45,6 +49,10 @@ const TYPESCRIPT_RUNTIME_JS: &str =
     include_str!("../../../clients/typescript/runtime/dist/index.js");
 const TYPESCRIPT_RUNTIME_TYPES: &str =
     include_str!("../../../clients/typescript/runtime/dist/index.d.ts");
+const TYPESCRIPT_DRIVER_JS: &str =
+    include_str!("../../../clients/typescript/runtime/dist/driver.js");
+const TYPESCRIPT_DRIVER_TYPES: &str =
+    include_str!("../../../clients/typescript/runtime/dist/driver.d.ts");
 const MAX_APPLICATION_NAME_BYTES: usize = 64;
 const MAX_SCAFFOLD_TOP_LEVEL_ENTRIES: usize = 16;
 const MAX_TYPESCRIPT_TOOLCHAIN_FILES: usize = 16_384;
@@ -55,6 +63,7 @@ const DEFAULT_LOCK_PATH: &str = "riffdb.application.lock.json";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ScaffoldLanguage {
     Rust,
+    Go,
     Typescript,
     Python,
 }
@@ -143,7 +152,8 @@ pub(crate) fn generate_application(
             "riffdb.application-source/v1"
             | "riffdb.application-source/v2"
             | "riffdb.application-source/v3"
-            | "riffdb.application-source/v4",
+            | "riffdb.application-source/v4"
+            | "riffdb.application-source/v5",
         ) if locked => generate_application_locked(
             manifest_path,
             lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
@@ -152,7 +162,8 @@ pub(crate) fn generate_application(
             "riffdb.application-source/v1"
             | "riffdb.application-source/v2"
             | "riffdb.application-source/v3"
-            | "riffdb.application-source/v4",
+            | "riffdb.application-source/v4"
+            | "riffdb.application-source/v5",
         ) => Err(ScaffoldError::LockRequired),
         _ => Err(ScaffoldError::Manifest),
     }
@@ -393,6 +404,7 @@ pub(crate) fn refresh_application_lock_from_pinned_bundle(
         riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
     ) {
         return Ok(PinnedLockRefresh::NotPinned);
     }
@@ -708,6 +720,7 @@ fn compile_for_existing_lock(
         riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
     ) {
         let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
             lock_diagnostic(
@@ -961,7 +974,11 @@ fn compile_symbolic_application_mode(
         reactive_outputs.push((path, module.canonical_bytes().to_vec()));
         reactive_modules.push(module);
     }
-    let exact = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4 {
+    let exact = if matches!(
+        source.schema(),
+        riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
+            | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
+    ) {
         source.exact_manifest_v2(&contract, &modules, &reactive_modules)
     } else {
         source.exact_manifest(&contract, &modules)
@@ -974,8 +991,11 @@ fn compile_symbolic_application_mode(
                 Some(TenantId::new("application-check").map_err(|_| ScaffoldError::CompileRole)?)
             }
         };
-        let compiled_role = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
-        {
+        let compiled_role = if matches!(
+            source.schema(),
+            riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
+                | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
+        ) {
             compile_application_role_v2(
                 &exact,
                 role.name(),
@@ -1052,6 +1072,12 @@ fn compile_symbolic_application_mode(
                 .into_bytes(),
         ));
     }
+    if let Some(path) = source.generation().go() {
+        outputs.push((
+            path.to_owned(),
+            generate_go_application_client(module, &contract, &reactive_modules).into_bytes(),
+        ));
+    }
     if lock_v3 {
         outputs.push((
             CONTRACT_BUNDLE_ARTIFACT_PATH.to_owned(),
@@ -1070,6 +1096,8 @@ fn compile_symbolic_application_mode(
                 GeneratedApplicationArtifactKind::TypeScript
             } else if source.generation().python() == Some(path.as_str()) {
                 GeneratedApplicationArtifactKind::Python
+            } else if source.generation().go() == Some(path.as_str()) {
+                GeneratedApplicationArtifactKind::Go
             } else if path == CONTRACT_BUNDLE_ARTIFACT_PATH {
                 GeneratedApplicationArtifactKind::ContractBundle
             } else if path.ends_with(".riffdb.reactive.module") {
@@ -1081,7 +1109,17 @@ fn compile_symbolic_application_mode(
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4 {
+    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5 {
+        ApplicationLock::compile_v6(
+            &source,
+            &exact,
+            &contract,
+            &modules,
+            &reactive_modules,
+            &artifacts,
+            &migration_inputs,
+        )
+    } else if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4 {
         ApplicationLock::compile_v5(
             &source,
             &exact,
@@ -1280,22 +1318,14 @@ pub(crate) fn create_application(
     .map_err(|_| ScaffoldError::CompileQuery)?;
     let module =
         QueryModule::compile(candidate, &contract).map_err(|_| ScaffoldError::CompileQuery)?;
-    let python = matches!(language, ScaffoldLanguage::Python);
     let python_generation_path = format!("src/{}/generated.py", application.replace('-', "_"));
-    let generation = if python {
-        json!({
-            "mcp": "generated/mcp/tools.json",
-            "python": python_generation_path,
-            "rust": "generated/rust/client.rs",
-            "typescript": "generated/typescript/client.ts",
-        })
-    } else {
-        json!({
-            "mcp": "generated/mcp/tools.json",
-            "rust": "generated/rust/client.rs",
-            "typescript": "generated/typescript/client.ts",
-        })
-    };
+    let generation = json!({
+        "go": "generated/go/client.go",
+        "mcp": "generated/mcp/tools.json",
+        "python": python_generation_path,
+        "rust": "generated/rust/client.rs",
+        "typescript": "generated/typescript/client.ts",
+    });
     let application_source = serde_json::to_string(&json!({
         "application": application,
         "contract": {
@@ -1304,6 +1334,7 @@ pub(crate) fn create_application(
             "version": contract.contract_version().get(),
         },
         "generation": generation,
+        "migrations": [],
         "query_modules": [{
             "name": module_name,
             "queries": [{
@@ -1312,28 +1343,33 @@ pub(crate) fn create_application(
             }],
             "version": 1,
         }],
+        "reactive_modules": [],
         "roles": [{
+            "agent_subscriptions": [],
             "commands": ["CreateItem"],
             "environment": "development",
+            "event_streams": [],
             "name": role_name,
             "queries": ["ItemPage"],
             "tenant_scope": "global",
+            "watch_queries": [],
         }],
-        "schema": if python { "riffdb.application-source/v2" } else { "riffdb.application-source/v1" },
+        "schema": "riffdb.application-source/v5",
         "seed_inputs": ["riffdb/seed/01-CreateItem.jsonl"],
     }))
     .map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(&application_source)
         .map_err(|_| ScaffoldError::ApplicationSource)?;
     let manifest = source
-        .exact_manifest(&contract, std::slice::from_ref(&module))
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
         .map_err(|_| ScaffoldError::IdentityMismatch)?;
-    compile_application_role(
+    compile_application_role_v2(
         &manifest,
         &role_name,
         None,
         &contract,
         std::slice::from_ref(&module),
+        &[],
     )
     .map_err(|_| ScaffoldError::CompileRole)?;
     let tools = generate_mcp_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
@@ -1342,10 +1378,9 @@ pub(crate) fn create_application(
     let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands, &[])?;
     let generated_rust = generate_rust_client(&module, &contract);
     let generated_typescript = generate_typescript_client(&module, &contract);
-    let generated_python = python
-        .then(|| generate_python_client(&module, &contract))
-        .transpose()
-        .map_err(|_| ScaffoldError::GeneratePython)?;
+    let generated_go = generate_go_application_client(&module, &contract, &[]);
+    let generated_python =
+        generate_python_client(&module, &contract).map_err(|_| ScaffoldError::GeneratePython)?;
     let mut artifacts = vec![
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Manifest,
@@ -1366,25 +1401,32 @@ pub(crate) fn create_application(
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
         GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Go,
+            source
+                .generation()
+                .go()
+                .ok_or(ScaffoldError::ApplicationSource)?,
+            generated_go.as_bytes(),
+        )
+        .map_err(|_| ScaffoldError::ApplicationLock)?,
+        GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Mcp,
             source.generation().mcp(),
             generated_mcp.as_bytes(),
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
     ];
-    if let Some(generated_python) = &generated_python {
-        artifacts.push(
-            GeneratedApplicationArtifact::new(
-                GeneratedApplicationArtifactKind::Python,
-                source
-                    .generation()
-                    .python()
-                    .ok_or(ScaffoldError::ApplicationSource)?,
-                generated_python.as_bytes(),
-            )
-            .map_err(|_| ScaffoldError::ApplicationLock)?,
-        );
-    }
+    artifacts.push(
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Python,
+            source
+                .generation()
+                .python()
+                .ok_or(ScaffoldError::ApplicationSource)?,
+            generated_python.as_bytes(),
+        )
+        .map_err(|_| ScaffoldError::ApplicationLock)?,
+    );
     artifacts.push(
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::ContractBundle,
@@ -1393,12 +1435,14 @@ pub(crate) fn create_application(
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
     );
-    let lock = ApplicationLock::compile_v3(
+    let lock = ApplicationLock::compile_v6(
         &source,
         &manifest,
         &contract,
         std::slice::from_ref(&module),
+        &[],
         &artifacts,
+        &[],
     )
     .map_err(|_| ScaffoldError::ApplicationLock)?;
 
@@ -1425,7 +1469,8 @@ pub(crate) fn create_application(
         manifest.canonical_bytes(),
         &generated_rust,
         &generated_typescript,
-        generated_python.as_deref(),
+        &generated_go,
+        &generated_python,
         &generated_mcp,
         contract.canonical_bytes(),
     )
@@ -1612,7 +1657,8 @@ fn write_repository(
     exact_manifest: &[u8],
     generated_rust: &str,
     generated_typescript: &str,
-    generated_python: Option<&str>,
+    generated_go: &str,
+    generated_python: &str,
     generated_mcp: &str,
     contract_bundle: &[u8],
 ) -> Result<(), ScaffoldError> {
@@ -1643,12 +1689,11 @@ fn write_repository(
         "generated/typescript/client.ts",
         generated_typescript.as_bytes(),
     )?;
+    write_file(root, "generated/go/client.go", generated_go.as_bytes())?;
     write_file(root, "generated/mcp/tools.json", generated_mcp.as_bytes())?;
     write_file(root, CONTRACT_BUNDLE_ARTIFACT_PATH, contract_bundle)?;
-    if let Some(generated_python) = generated_python {
-        let path = format!("src/{}/generated.py", application.replace('-', "_"));
-        write_file(root, &path, generated_python.as_bytes())?;
-    }
+    let path = format!("src/{}/generated.py", application.replace('-', "_"));
+    write_file(root, &path, generated_python.as_bytes())?;
     write_file(
         root,
         "README.md",
@@ -1698,6 +1743,42 @@ fn write_repository(
                 root,
                 "src/generated.rs",
                 b"#![allow(dead_code)]\ninclude!(\"../generated/rust/client.rs\");\n",
+            )?;
+        }
+        ScaffoldLanguage::Go => {
+            write_file(
+                root,
+                "go.mod",
+                render(
+                    GO_MOD_TEMPLATE,
+                    application,
+                    contract_name,
+                    role_name,
+                    module_client,
+                )
+                .as_bytes(),
+            )?;
+            write_file(
+                root,
+                "main.go",
+                render(
+                    GO_MAIN_TEMPLATE,
+                    application,
+                    contract_name,
+                    role_name,
+                    module_client,
+                )
+                .as_bytes(),
+            )?;
+            write_file(
+                root,
+                "third_party/riffdb-application/go.mod",
+                GO_RUNTIME_MOD.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "third_party/riffdb-application/runtime.go",
+                GO_RUNTIME_SOURCE.as_bytes(),
             )?;
         }
         ScaffoldLanguage::Typescript => {
@@ -1758,6 +1839,16 @@ fn write_repository(
             )?;
             write_file(
                 root,
+                "vendor/riffdb-application/dist/driver.js",
+                TYPESCRIPT_DRIVER_JS.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "vendor/riffdb-application/dist/driver.d.ts",
+                TYPESCRIPT_DRIVER_TYPES.as_bytes(),
+            )?;
+            write_file(
+                root,
                 "node_modules/@riffdb/application/package.json",
                 br#"{
   "name": "@riffdb/application",
@@ -1780,6 +1871,16 @@ fn write_repository(
                 root,
                 "node_modules/@riffdb/application/dist/index.d.ts",
                 TYPESCRIPT_RUNTIME_TYPES.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "node_modules/@riffdb/application/dist/driver.js",
+                TYPESCRIPT_DRIVER_JS.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "node_modules/@riffdb/application/dist/driver.d.ts",
+                TYPESCRIPT_DRIVER_TYPES.as_bytes(),
             )?;
             materialize_installed_typescript_toolchain(root)?;
         }
@@ -1991,13 +2092,25 @@ fn render_uv_lock(application: &str, wheel: &str, wheel_bytes: &[u8]) -> String 
 }
 
 fn materialize_installed_typescript_toolchain(root: &Path) -> Result<(), ScaffoldError> {
-    let executable = std::env::current_exe()?;
-    let Some(bundle_root) = executable.parent().and_then(Path::parent) else {
+    let explicit = std::env::var_os("RIFFDB_TYPESCRIPT_TOOLCHAIN").map(PathBuf::from);
+    let installed = std::env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("public/typescript/node_modules"))
+    });
+    let source = if let Some(explicit) = explicit {
+        explicit
+    } else if let Some(installed) = installed.filter(|path| path.is_dir()) {
+        installed
+    } else {
         return Ok(());
     };
-    let source = bundle_root.join("public/typescript/node_modules");
     if !source.is_dir() {
-        return Ok(());
+        return Err(ScaffoldError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "TypeScript offline toolchain is unavailable",
+        )));
     }
     let mut budget = TypeScriptCopyBudget::default();
     copy_typescript_tree(&source, &root.join("node_modules"), &source, 0, &mut budget)
@@ -2495,6 +2608,32 @@ mod tests {
         create_application("migrate-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
         let lock_path = base.join(DEFAULT_LOCK_PATH);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("source JSON"))
+                .expect("source value");
+        legacy["schema"] = json!(riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V1);
+        legacy
+            .as_object_mut()
+            .expect("source object")
+            .remove("migrations");
+        legacy
+            .as_object_mut()
+            .expect("source object")
+            .remove("reactive_modules");
+        let generation = legacy["generation"].as_object_mut().expect("generation");
+        generation.remove("go");
+        generation.remove("python");
+        for role in legacy["roles"].as_array_mut().expect("roles") {
+            let role = role.as_object_mut().expect("role");
+            role.remove("agent_subscriptions");
+            role.remove("event_streams");
+            role.remove("watch_queries");
+        }
+        let legacy = ApplicationSourceManifest::parse(
+            &serde_json::to_string(&legacy).expect("legacy source"),
+        )
+        .expect("legacy V1");
+        fs::write(&source_path, legacy.canonical_bytes()).expect("write legacy source");
         let original_source = fs::read(&source_path).expect("source");
         let original_lock = fs::read(&lock_path).expect("lock");
 
@@ -2535,7 +2674,6 @@ mod tests {
         }
         create_application("collision-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
-        migrate_application_source_v2(&source_path, true).expect("migrate source");
         let contract_path = base.join("riffdb/contract.riff");
         let contract = fs::read_to_string(&contract_path).expect("contract");
         let contract = contract.replace(
@@ -2660,6 +2798,53 @@ mod tests {
                 | ScaffoldError::Authoring(_))
         ));
         assert!(create_application("order-desk", ScaffoldLanguage::Rust, &first).is_err());
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn go_scaffold_is_exact_offline_and_application_only() {
+        let base =
+            std::env::temp_dir().join(format!("riffdb-new-test-{}-{}", std::process::id(), "go"));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("order-desk", ScaffoldLanguage::Go, &base).expect("Go scaffold");
+        let source = ApplicationSourceManifest::decode_canonical(
+            &fs::read(base.join("riffdb.application.json")).expect("source"),
+        )
+        .expect("canonical source");
+        assert_eq!(
+            source.schema(),
+            riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
+        );
+        assert_eq!(source.generation().go(), Some("generated/go/client.go"));
+        let lock = ApplicationLock::decode_canonical(
+            &fs::read(base.join(DEFAULT_LOCK_PATH)).expect("lock"),
+        )
+        .expect("canonical lock");
+        assert_eq!(
+            lock.schema(),
+            riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
+        );
+        for required in [
+            "go.mod",
+            "main.go",
+            "generated/go/client.go",
+            "third_party/riffdb-application/go.mod",
+            "third_party/riffdb-application/runtime.go",
+        ] {
+            assert!(base.join(required).is_file(), "missing {required}");
+        }
+        let generated =
+            fs::read_to_string(base.join("generated/go/client.go")).expect("generated Go client");
+        for forbidden in ["google.golang.org/grpc", "credential", "protobuf"] {
+            assert!(
+                !generated.contains(forbidden),
+                "forbidden Go surface: {forbidden}"
+            );
+        }
+        check_application_lock(&base.join("riffdb.application.json"), None)
+            .expect("exact Go scaffold");
         fs::remove_dir_all(base).expect("cleanup");
     }
 
@@ -3005,6 +3190,20 @@ mod tests {
         source["schema"] = json!(riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V3);
         source["contract"]["version"] = json!(2);
         source["generation"]["python"] = json!("generated/python/client.py");
+        source["generation"]
+            .as_object_mut()
+            .expect("generation")
+            .remove("go");
+        source
+            .as_object_mut()
+            .expect("source")
+            .remove("reactive_modules");
+        for role in source["roles"].as_array_mut().expect("roles") {
+            let role = role.as_object_mut().expect("role");
+            role.remove("agent_subscriptions");
+            role.remove("event_streams");
+            role.remove("watch_queries");
+        }
         source["migrations"] = json!([{
             "parent_bundle": "retained/v1.bundle",
             "source": "riffdb/migrations/v1-to-v2.riffm",

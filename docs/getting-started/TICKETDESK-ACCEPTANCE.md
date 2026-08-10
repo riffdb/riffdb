@@ -16,7 +16,7 @@ This score is tied to machine-checked behavior:
 | Authorization | 8 | Compiler-derived fields, indexes, rows, and partition route |
 | Day-one loop | 8 | `riffdb dev --seed` performs bounded bootstrap and setup |
 | Debuggability | 8 | Source-spanned diagnostics and name-only explain plans |
-| Type safety/codegen | 8 | Reproducible Rust, TypeScript, and MCP artifacts |
+| Type safety/codegen | 8 | Reproducible Rust, Go, TypeScript, Python, and MCP artifacts |
 | Application docs | 8 | CRUD workflow, language, planning, and module guides |
 
 The original feedback’s six concrete failure modes are closed:

@@ -1,6 +1,9 @@
 import { createServer } from "node:http";
 
-import { CliApplicationTransport } from "@riffdb/application";
+import {
+  DriverApplicationTransport,
+  DriverGeneratedApplicationTransport,
+} from "@riffdb/application";
 
 import {
   {{MODULE_CLIENT}},
@@ -9,12 +12,30 @@ import {
 } from "../generated/typescript/client.js";
 
 const ITEM_ID = "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b11";
-const [endpoint, credentialFile, riffdbPath] = process.argv.slice(2);
-if (endpoint === undefined || credentialFile === undefined || riffdbPath === undefined) {
-  throw new Error("usage: server ENDPOINT CREDENTIAL_FILE RIFFDB_PATH");
+const [socketPath, applicationManifestHash, operationCatalogHash, database, role,
+  roleDefinitionHash, remoteIdentityHash, contractLineage, contractVersion, contractBundleHash] =
+  process.argv.slice(2);
+if ([socketPath, applicationManifestHash, operationCatalogHash, database, role,
+  roleDefinitionHash, remoteIdentityHash, contractLineage, contractVersion,
+  contractBundleHash].some((value) => value === undefined)) {
+  throw new Error("usage: server SOCKET MANIFEST_HASH CATALOG_HASH DATABASE ROLE ROLE_HASH REMOTE_HASH LINEAGE VERSION BUNDLE_HASH");
 }
 
-const transport = new CliApplicationTransport({ riffdbPath, endpoint, credentialFile });
+const driver = await DriverApplicationTransport.connect({
+  socketPath: socketPath!,
+  identity: {
+    applicationManifestHash: applicationManifestHash!,
+    operationCatalogHash: operationCatalogHash!,
+    database: database!,
+    role: role!,
+    roleDefinitionHash: roleDefinitionHash!,
+    remoteIdentityHash: remoteIdentityHash!,
+    contractLineage: contractLineage!,
+    contractVersion: BigInt(contractVersion!),
+    contractBundleHash: contractBundleHash!,
+  },
+});
+const transport = new DriverGeneratedApplicationTransport(driver);
 const application = new {{MODULE_CLIENT}}(transport, 3);
 
 const server = createServer(async (request, response) => {
@@ -52,6 +73,7 @@ server.listen(0, "127.0.0.1", () => {
   if (address === null || typeof address === "string") throw new Error("invalid web address");
   process.stdout.write(`riffdb-app-ready-v1\t${address.port}\n`);
 });
+server.on("close", () => { void driver.shutdown(); });
 
 function assertCommandOutcome(outcome: CreateItemOutcome): void {
   if (outcome.outcome !== "Created" && outcome.outcome !== "ItemExists") {

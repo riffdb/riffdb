@@ -47,7 +47,7 @@ the source of truth.
 
 ## One semantic path
 
-Generated Rust, TypeScript, and Python clients, the CLI, public gRPC, and native
+Generated Rust, Go, TypeScript, and Python clients, the CLI, public gRPC, and native
 MCP all use the shared application service. Authentication and authorization
 run before command execution. The deterministic runtime cannot use the network,
 filesystem, operating-system clock, process-global mutation, or untracked

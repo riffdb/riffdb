@@ -113,7 +113,8 @@ export type ApplicationValueSchema =
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
   | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly maximum?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
-export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
+export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
+export interface NamedQueryRequest<P, R> { readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
 export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; readonly planHash: string; }
 export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {
   return identity.contractLineage === request.contractLineage
@@ -123,7 +124,7 @@ export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity
     && identity.queryName === request.queryName
     && identity.planHash === request.planHash;
 }
-export interface CommandRequest<I, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
+export interface CommandRequest<I, R> { readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
@@ -135,6 +136,7 @@ export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBa
 export interface ApplicationTransport {
   executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
   executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+  executeCommandBatch?<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<CommandBatchResult<R>>;
 }
 
 export const ITEM_PAGE_QUERY_PLAN_HASH = "cccd49a2d01a10015f444aeba4dcc20e038b681734ad14e3cec692425b31b654" as const;
@@ -154,7 +156,7 @@ export interface ItemPageNotFound {
 export type ItemPageResult = ItemPageFound | ItemPageNotFound;
 
 export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPageParams, ItemPageResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", planHash: ITEM_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { driverOperation: { name: "agent_alpha_item_page", inputSchemaHash: "e80f7b5c93c2a56b94d286b35377068aea67449dcb2a8f243a00375ffe92e47b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", planHash: ITEM_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateItemInput {
@@ -167,7 +169,7 @@ export type CreateItemOutcome = { readonly outcome: "Created"; readonly item: { 
 
 export const CREATE_ITEM_PLAN_HASH = "1c556595b9c28cdd10c24500e2b5c448ab4aa80a1b5f8c6afc64c5570d65c8ba" as const;
 export function createItem(input: CreateItemInput): CommandRequest<CreateItemInput, CreateItemOutcome> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"item","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"item_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { driverOperation: { name: "agent_alpha_create_item", inputSchemaHash: "5c7a3a44a20ddd450af975c763a45de00e5bbf246598171dcc2a556089935dc2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"item","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"item_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AgentAlphaClient {
@@ -195,6 +197,8 @@ export class AgentAlphaClient {
     if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    if (start === inputs.length) return { items: [], checkpoint: start };
+    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createItem(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
     const items: CommandBatchItem<CreateItemOutcome>[] = [];
     let next = start;
     let completed = start;

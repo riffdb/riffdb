@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "9f99cd11bd01d0cfac59768dd628be15eedf66a52f5bbdf0f0b98f5decd35b91",
+  "application_manifest_hash": "53f75ee7aaa5695912588f28d6119cd0ac9f86b9cc1628fac17d4bdf508f1d34",
   "commands": [
     {
       "annotations": {
@@ -1846,6 +1846,11 @@
               "organization_id"
             ],
             "type": "object"
+          },
+          "retry_delay_nanos": {
+            "default": "0",
+            "pattern": "^(0|[1-9][0-9]{0,17})$",
+            "type": "string"
           }
         },
         "required": [
@@ -1884,9 +1889,27 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "batch_limit": {
+            "default": 1,
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
           "consumer_name": {
             "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
             "type": "string"
+          },
+          "in_flight_limit": {
+            "default": 16,
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "lease_seconds": {
+            "default": 60,
+            "maximum": 900,
+            "minimum": 5,
+            "type": "integer"
           },
           "parameters": {
             "additionalProperties": false,
@@ -2362,6 +2385,11 @@
               "organization_id"
             ],
             "type": "object"
+          },
+          "retry_delay_nanos": {
+            "default": "0",
+            "pattern": "^(0|[1-9][0-9]{0,17})$",
+            "type": "string"
           }
         },
         "required": [

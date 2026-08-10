@@ -134,7 +134,7 @@ semantics.
 
 ## Generated application clients
 
-Stable named operations can generate Rust, TypeScript, and MCP artifacts:
+Stable named operations can generate Rust, Go, TypeScript, Python, and MCP artifacts:
 
 ```bash
 ./scripts/generate-query-clients

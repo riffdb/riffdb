@@ -1592,6 +1592,10 @@ fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
             // transitive via tonic; see riffdb-client-rust Cargo.toml comment).
             "riffdb-client-rust",
             "riffdb-commit",
+            // ADR-0106 driver host: owns the bounded local socket/session
+            // runtime while all remote transport trust remains in the Rust
+            // application client.
+            "riffdb-driver-host",
             "riffdb-mcp-stdio",
             "riffdb-server",
         ],

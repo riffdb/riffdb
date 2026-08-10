@@ -1,8 +1,9 @@
 # Symbolic application source and exact lock
 
-The normal author-owned input is `riffdb.application.json` using
-`riffdb.application-source/v1`. It names source paths, operations, roles, and
-output paths. It never asks an author or agent to discover, copy, or maintain a
+The normal author-owned input is `riffdb.application.json`. New repositories
+use `riffdb.application-source/v5`; older V1 through V4 documents remain exact
+compatibility inputs. The source names paths, operations, roles, and output
+targets. It never asks an author or agent to discover, copy, or maintain a
 compiler-derived identity.
 
 The compiler writes `riffdb.application.lock.json` using
@@ -100,6 +101,31 @@ no operations of that kind. Consume authority never implies stream seek
 authority. See [Reactive Modules](../reactive/MODULES.md) for grammar and fixed
 bounds.
 
+Application Source V5 adds one exact Go generation target. It emits
+Application Manifest V3 and Lock V6; the lock pins Go, Rust, TypeScript,
+Python, MCP, contract-bundle, migration, and reactive artifacts in one closure.
+The `reactive_modules` member remains required but may be empty—an application
+with named reads and commands does not invent a dummy stream.
+
+```json
+{
+  "schema": "riffdb.application-source/v5",
+  "generation": {
+    "go": "generated/go/client.go",
+    "mcp": "generated/mcp/tools.json",
+    "python": "generated/python/client.py",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts"
+  },
+  "migrations": [],
+  "reactive_modules": []
+}
+```
+
+`riffdb new --language rust|go|typescript|python` uses this same V5/V3/V6
+identity chain for every language. Selecting a language changes the runnable
+starter, not the compiled application identity or operation schemas.
+
 The source document is closed JSON with exactly these top-level members:
 
 ```json
@@ -155,7 +181,7 @@ shape, and scan ceilings are compiler-private consequences of those names.
 
 RiffDB sorts every set-like collection, serializes the validated source as
 compact canonical JSON with a final line feed, and hashes those bytes under the
-`riffdb.application-source/v1` domain. The compiler exposes byte spans for
+source version's domain. The compiler exposes byte spans for
 source-defined symbols and paths so diagnostics can point to the reviewed
 input. Reformatting or reordering set-like members does not change identity;
 changing a semantic value does.
@@ -184,7 +210,8 @@ riffdb application generate --locked
 ```
 
 Generated Rust and TypeScript facades are present in V1; V2 also requires the
-generated Python facade. V3 and V4 retain all four generation targets. They own
+generated Python facade. V3 and V4 retain all four generation targets. V5 adds
+the generated Go facade and requires all five targets. They own
 parameter serialization, response decoding,
 exact identity checks, opaque cursors, read-after-commit fences, typed command
 outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from

@@ -1,3 +1,4 @@
+import { DriverApplicationTransport, type DriverApplicationError, type DriverOperation } from "./driver.js";
 export type ApplicationValueSchema = {
     readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit";
 } | {
@@ -51,6 +52,7 @@ export interface QueryOptions {
     readonly readAfterCommit?: bigint;
 }
 interface NamedQueryRequest<P, R> {
+    readonly driverOperation?: DriverOperation;
     readonly contractLineage: string;
     readonly contractVersion: number;
     readonly contractBundleHash: string;
@@ -64,6 +66,7 @@ interface NamedQueryRequest<P, R> {
     readonly resultType?: R;
 }
 interface CommandRequest<I, R> {
+    readonly driverOperation?: DriverOperation;
     readonly contractLineage: string;
     readonly contractVersion: number;
     readonly commandName: string;
@@ -103,6 +106,7 @@ export interface CliApplicationTransportOptions {
     readonly credentialFile: string;
 }
 export interface ReactiveConsumerRequest<P> {
+    readonly driverOperations?: Readonly<Record<string, DriverOperation>>;
     readonly reactiveModuleHash: string;
     readonly operationName: string;
     readonly parameters: P;
@@ -114,6 +118,7 @@ export interface ReactiveConsumerOptions {
     readonly inFlightLimit?: number;
     readonly leaseSeconds?: number;
     readonly maximumWaitMs?: number;
+    readonly signal?: AbortSignal;
 }
 export interface ReactiveEventDelivery<E> {
     readonly eventId: string;
@@ -237,4 +242,45 @@ export declare class CliApplicationTransport {
     private invoke;
     private invokeArguments;
 }
-export {};
+/**
+ * Generated-facade adapter for one retained Rust driver-host session.
+ *
+ * The adapter owns only checked value assembly and result decoding. Remote
+ * trust, credentials, retries, pooling, and uncertainty remain in Rust.
+ */
+export declare class DriverGeneratedApplicationTransport {
+    private readonly driver;
+    constructor(driver: DriverApplicationTransport);
+    executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
+    executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+    executeCommandBatch<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<{
+        readonly items: ReadonlyArray<{
+            readonly index: number;
+            readonly result?: TypedCommandResult<R>;
+            readonly error?: DriverApplicationError;
+        }>;
+        readonly checkpoint: number;
+    }>;
+    consumeEventStream<P, E>(request: ReactiveConsumerRequest<P>, options?: ReactiveConsumerOptions): AsyncIterable<ReactiveConsumerBatch<E>>;
+    acknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>): Promise<ReactiveEventMutationResult>;
+    negativeAcknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+    seekEventConsumer<P>(request: ReactiveConsumerRequest<P>, checkpoint: string): Promise<ReactiveEventMutationResult>;
+    eventConsumerStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+    consumeContextualSubscription<P, E>(request: ReactiveConsumerRequest<P>, maximumWaitMs?: number, signal?: AbortSignal): Promise<ContextualBatch<E>>;
+    acknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>): Promise<ReactiveEventMutationResult>;
+    negativeAcknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+    contextualSubscriptionStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+    executeContextualReaction<P, I, R>(request: ReactiveConsumerRequest<P>, reaction: ContextualReaction, command: CommandRequest<I, R>): Promise<TypedCommandResult<R>>;
+    watchNamedQuery<P, T>(request: {
+        readonly driverOperations?: Readonly<Record<string, DriverOperation>>;
+        readonly reactiveModuleHash: string;
+        readonly operationName: string;
+        readonly parameters: P;
+        readonly parameterSchema: ApplicationValueSchema;
+        readonly cursor?: string;
+        readonly signal?: AbortSignal;
+    }): AsyncIterable<LiveQueryUpdate<T>>;
+    private mutateDriverLease;
+}
+export { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, } from "./driver.js";
+export type { DriverApplicationIdentity, DriverApplicationTransportOptions, DriverBatchItem, DriverBatchResult, DriverBatchSuccess, DriverDecimal, DriverErrorDetails, DriverInvokeOptions, DriverMoney, DriverOperation, DriverResult, DriverTimestamp, DriverValue, } from "./driver.js";

@@ -2025,6 +2025,7 @@ dependencies = [
  "riffdb-riffql-syntax",
  "riffdb-types",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
