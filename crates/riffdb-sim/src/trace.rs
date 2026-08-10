@@ -12,7 +12,17 @@
 /// or the PRNG consumption order changes: digests are only comparable within
 /// one version, and the version itself seeds the chain so cross-version
 /// digests never collide silently.
-pub const TRACE_FORMAT_VERSION: u32 = 1;
+///
+/// Version history:
+/// - 2: refusal events became self-sufficient — closed-handle refusals fold a
+///   dedicated discriminator plus the refused operation kind, and
+///   stale-handle, out-of-range, and capacity events fold the full operation
+///   parameters (operation kind, offset, length), so the chain's completeness
+///   rests on the mechanism rather than on a soundness argument. Digest
+///   sensitivity to every fault family is pinned by
+///   `tests/trace_sensitivity.rs`.
+/// - 1: initial format.
+pub const TRACE_FORMAT_VERSION: u32 = 2;
 
 const FNV64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV64_PRIME: u64 = 0x0000_0100_0000_01B3;

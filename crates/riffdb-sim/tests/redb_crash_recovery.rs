@@ -17,13 +17,30 @@
 //! - Sync-per-durable-commit correspondence is asserted from backend
 //!   observation, not assumed: see
 //!   [`every_acknowledged_immediate_commit_syncs_the_backend_exactly_once`].
+//!   PRECONDITION: the identity holds for redb's default ONE-PHASE commit
+//!   only. Under two-phase commit `commit_inner` flushes twice
+//!   (page_manager.rs:626 conditional, :636 unconditional), and riffdb
+//!   production enables two-phase for checkpoint and backup writes
+//!   (riffdb-storage-redb validated_prefix.rs, backup.rs) — the
+//!   acknowledged-commit ≡ acknowledged-sync identity does not survive it,
+//!   so campaigns over riffdb's store must re-derive the correspondence.
 //! - Each transaction touches exactly one user table. redb 4.1.0 drains
 //!   `pending_table_updates` from a `std::collections::HashMap` during
 //!   commit, so a transaction updating two tables flushes their roots in
 //!   hash-random order and the backend write order — and therefore the trace
 //!   digest — would not replay across runs. Alternating single-table
 //!   transactions keeps the workload deterministic while still covering both
-//!   tables.
+//!   tables. This constraint is STRUCTURALLY sufficient for the commit and
+//!   open/repair paths, not merely empirically: redb's page-level sets
+//!   (`allocated_since_commit`, `unpersisted`, `open_dirty_pages`,
+//!   `read_page_ref_counts`) hash with the deterministic `FastHasher64`
+//!   (fast_hash.rs:9) so their iteration is order-stable — including
+//!   `rollback_uncommitted_writes_inner`, which the 1-in-8 aborts exercise —
+//!   the relocation maps are lookup-only, and the remaining std-RandomState
+//!   iterations (`created_persistent.drain()` / `allocated_pages.reset()`,
+//!   transactions.rs:807, :1222) live inside `restore_savepoint` paths this
+//!   campaign never enters. Savepoints are the residual determinism
+//!   boundary.
 
 use std::collections::BTreeMap;
 
@@ -519,8 +536,12 @@ fn every_acknowledged_immediate_commit_syncs_the_backend_exactly_once() {
     // acknowledged `Durability::Immediate` commit (data, commit slot, and god
     // byte are flushed by a single fsync). The shadow model snapshots at
     // acknowledged commits, which this correspondence ties to acknowledged
-    // syncs. If a redb upgrade changes the algorithm, this pin is the canary
-    // to re-derive the oracle.
+    // syncs. PRECONDITION: one-phase commit only — `set_two_phase_commit(true)`
+    // makes `commit_inner` flush twice (page_manager.rs:626 and :636), and
+    // riffdb production uses two-phase on its checkpoint/backup writes, so a
+    // campaign over riffdb's store must not inherit this `== 1` pin. If a
+    // redb upgrade or configuration change alters the algorithm, this pin is
+    // the canary to re-derive the oracle.
     let disk = SimDisk::new(FaultConfig::quiet(0x0B5E_44ED));
     let db = open_database(&disk).expect("quiet disk opens");
     for round in 0..10_u64 {

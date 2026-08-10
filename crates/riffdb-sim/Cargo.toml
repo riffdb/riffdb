@@ -12,5 +12,8 @@ default = []
 [dependencies]
 redb = { version = "=4.1.0", default-features = false }
 
+[dev-dependencies]
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+
 [lints]
 workspace = true

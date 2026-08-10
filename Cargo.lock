@@ -2093,6 +2093,7 @@ name = "riffdb-sim"
 version = "0.1.0"
 dependencies = [
  "redb",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
-//! `StorageBackend` conformance for [`SimBackend`] and direct fault-arm
+//! `StorageBackend` conformance for [`SimBackend`] (`SIM-005`: the adapter
+//! passes a behavior suite for its production contract) and direct fault-arm
 //! semantics for [`SimDisk`] (`SIM-002`: every arm is reachable and behaves
 //! as specified — transient errors leave state unchanged, crashes tear only
 //! unsynced regions, capacity exhaustion is a typed refusal).
