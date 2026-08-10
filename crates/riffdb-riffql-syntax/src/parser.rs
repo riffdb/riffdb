@@ -1,13 +1,15 @@
 use crate::lexer::{Token, TokenKind, lex};
 use crate::{
-    BinaryOperator, Binding, Cardinality, DiagnosticCode, Direction, Document, Expression,
-    FieldSelection, Identifier, Literal, MAX_BINDINGS, MAX_COLLECTION_ITEMS, MAX_NESTING,
-    MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path, QueryBody,
-    RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, Selection, Span, Spanned,
-    Take, TypeReference, UnaryOperator,
+    AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding, Cardinality,
+    DiagnosticCode, Direction, Document, Expression, FieldSelection, Identifier, Literal,
+    MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
+    MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic,
+    ParseDiagnostics, Path, QueryBody, RIFFQL_LANGUAGE_VERSION,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, Selection, Span, Spanned, Take, TypeReference,
+    UnaryOperator,
 };
 
-/// Parses one UTF-8 RiffQL v1 source document.
+/// Parses one UTF-8 RiffQL source document in a supported language version.
 pub fn parse_query(source: &str) -> Result<Document, ParseDiagnostics> {
     let trimmed = source.trim_start();
     let leading_whitespace = source.len() - trimmed.len();
@@ -91,6 +93,17 @@ impl Parser {
             }
             bindings.push(self.binding()?);
         }
+        let mut aggregates = Vec::new();
+        while self.peek_word("aggregate") {
+            if aggregates.len() == MAX_AGGREGATE_BINDINGS {
+                return Err(self.error(
+                    DiagnosticCode::TooManyItems,
+                    "query aggregate declaration limit exceeded",
+                    Some("split aggregate results into bounded named operations"),
+                ));
+            }
+            aggregates.push(self.aggregate_binding()?);
+        }
         self.expect_word("return")?;
         let outcome = if matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
             && matches!(
@@ -117,14 +130,16 @@ impl Parser {
         }
         let body = QueryBody {
             bindings,
+            aggregates,
             outcome,
             selection,
             outcomes,
         };
-        let language_version = if body
-            .bindings
-            .iter()
-            .any(|binding| expression_uses_operational_syntax(&binding.predicate.value))
+        let language_version = if !body.aggregates.is_empty()
+            || body
+                .bindings
+                .iter()
+                .any(|binding| expression_uses_operational_syntax(&binding.predicate.value))
         {
             RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
         } else {
@@ -275,6 +290,96 @@ impl Parser {
             order,
             take,
             absence_outcome,
+        })
+    }
+
+    fn aggregate_binding(&mut self) -> Result<AggregateBinding, ParseDiagnostics> {
+        self.expect_word("aggregate")?;
+        let name = self.identifier()?;
+        self.expect_word("from")?;
+        let source = self.identifier()?;
+        self.enter_nesting()?;
+        self.expect(TokenKind::LeftBrace)?;
+        let mut group_by = Vec::new();
+        if self.take_word("group").is_some() {
+            self.expect_word("by")?;
+            loop {
+                if group_by.len() == MAX_AGGREGATE_GROUP_KEYS {
+                    return Err(self.error(
+                        DiagnosticCode::TooManyItems,
+                        "aggregate grouping-key limit exceeded",
+                        Some("reduce grouping dimensions or split the operation"),
+                    ));
+                }
+                group_by.push(self.spanned_path()?);
+                if self.take(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        let mut measures = Vec::new();
+        while !self.peek(TokenKind::RightBrace) {
+            if measures.len() == MAX_AGGREGATE_MEASURES {
+                return Err(self.error(
+                    DiagnosticCode::TooManyItems,
+                    "aggregate measure limit exceeded",
+                    Some("split measures into another bounded named operation"),
+                ));
+            }
+            measures.push(self.aggregate_measure()?);
+            let _ = self.take(TokenKind::Comma);
+        }
+        if measures.is_empty() {
+            return Err(self.error(
+                DiagnosticCode::UnexpectedToken,
+                "aggregate declaration requires at least one measure",
+                Some("add count(), sum(field), min(field), or max(field)"),
+            ));
+        }
+        self.expect(TokenKind::RightBrace)?;
+        self.leave_nesting();
+        self.node()?;
+        Ok(AggregateBinding {
+            name,
+            source,
+            group_by,
+            measures,
+        })
+    }
+
+    fn aggregate_measure(&mut self) -> Result<AggregateMeasure, ParseDiagnostics> {
+        let token = self.next()?.clone();
+        let (function, requires_field) = match &token.kind {
+            TokenKind::Ident(value) if value == "count" => (AggregateFunction::Count, false),
+            TokenKind::Ident(value) if value == "sum" => (AggregateFunction::Sum, true),
+            TokenKind::Ident(value) if value == "min" => (AggregateFunction::Min, true),
+            TokenKind::Ident(value) if value == "max" => (AggregateFunction::Max, true),
+            _ => {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnexpectedToken,
+                    token.span,
+                    "unknown aggregate function",
+                    Some("use count(), sum(field), min(field), or max(field)"),
+                )));
+            }
+        };
+        self.expect(TokenKind::LeftParen)?;
+        let field = if requires_field {
+            Some(self.spanned_path()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::RightParen)?;
+        self.expect_word("as")?;
+        let alias = self.identifier()?;
+        self.node()?;
+        Ok(AggregateMeasure {
+            function: Spanned {
+                value: function,
+                span: token.span,
+            },
+            field,
+            alias,
         })
     }
 

@@ -153,10 +153,11 @@ fan-out (`RDB-QP007`), and a collection without `take` (`RDB-QS009`). Exact
 spans, classifications, and smallest remedies are generated in
 `fixtures/agent-alpha/gap-report-v1.json`.
 
-Application evidence did not justify `exists`, aggregate, computed-field,
-fragment, search, projection-source, or general-join syntax. Such a construct
-still requires repeated domain evidence and a separate accepted ADR before any
-grammar or IR change.
+The original application evidence did not justify computed-field, fragment,
+projection-source, or general-join syntax. Those constructs remain outside the
+language. Operational evidence has since justified the closed version-2
+predicate and aggregate declarations below; this does not introduce a general
+query-expression or optimizer surface.
 
 ## Operational optional predicates (language version 2)
 
@@ -204,6 +205,54 @@ predicates, but they remain unavailable until declared discriminator/text-key
 indexes and their compatibility rules ship. A parsed spelling is not an
 executable feature: module compilation continues to fail closed unless every
 required storage and planning proof exists.
+
+## Bounded exact aggregates (language version 2)
+
+Version 2 also reserves a closed aggregate declaration over one earlier,
+bounded collection binding:
+
+```riffql
+query TicketSummary($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take 50
+
+    aggregate summary from tickets {
+        group by status, priority
+        count() as ticket_count
+        sum(story_points) as total_points
+        min(created_at) as earliest
+        max(updated_at) as latest
+    }
+
+    return Found {
+        summary: summary {
+            status
+            priority
+            ticket_count
+            total_points
+            earliest
+            latest
+        }
+    }
+    outcomes Found
+}
+```
+
+The grammar is deliberately closed: a query may declare at most 16 aggregate
+results, each with at most eight grouping keys and 16 measures. The only
+functions are `count()`, `sum(field)`, `min(field)`, and `max(field)`. Function
+names, input fields, aliases, grouping keys, and the source binding are source
+declarations; callers cannot submit any of them at runtime.
+
+This syntax is frozen ahead of WP-564 execution work. Today, both ordinary and
+finite-family compilation reject an aggregate declaration at its symbolic
+source span with `RDB-QP008`; it is never ignored or executed using a fallback.
+WP-564 must lower it through the existing exact aggregate descriptors and
+Decimal, empty-set, group-order, inference, and requested-row-limit clamps
+before a module containing it can deploy. Documentation therefore does not yet
+present aggregates as an executable application feature.
 
 ## Symbolic catalog schema
 

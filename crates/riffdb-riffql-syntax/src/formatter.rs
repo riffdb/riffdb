@@ -1,11 +1,11 @@
 use std::fmt::Write;
 
 use crate::{
-    BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
-    Selection, TypeReference, UnaryOperator,
+    AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
+    FieldSelection, Literal, Path, Selection, TypeReference, UnaryOperator,
 };
 
-/// Emits the canonical, idempotent RiffQL v1 source spelling.
+/// Emits the canonical, idempotent RiffQL source spelling for the document version.
 #[must_use]
 pub fn format_query(document: &Document) -> String {
     let mut output = String::new();
@@ -83,6 +83,40 @@ pub fn format_query(document: &Document) -> String {
                 .expect("String writes cannot fail");
         }
         output.push('\n');
+    }
+    for aggregate in &document.body.aggregates {
+        writeln!(
+            output,
+            "    aggregate {} from {} {{",
+            aggregate.name.value.as_str(),
+            aggregate.source.value.as_str()
+        )
+        .expect("String writes cannot fail");
+        if !aggregate.group_by.is_empty() {
+            output.push_str("        group by ");
+            for (index, field) in aggregate.group_by.iter().enumerate() {
+                if index > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&format_path(&field.value));
+            }
+            output.push('\n');
+        }
+        for measure in &aggregate.measures {
+            output.push_str("        ");
+            output.push_str(match measure.function.value {
+                AggregateFunction::Count => "count(",
+                AggregateFunction::Sum => "sum(",
+                AggregateFunction::Min => "min(",
+                AggregateFunction::Max => "max(",
+            });
+            if let Some(field) = &measure.field {
+                output.push_str(&format_path(&field.value));
+            }
+            writeln!(output, ") as {}", measure.alias.value.as_str())
+                .expect("String writes cannot fail");
+        }
+        output.push_str("    }\n\n");
     }
     output.push_str("    return");
     if let Some(outcome) = &document.body.outcome {

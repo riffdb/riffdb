@@ -1,8 +1,8 @@
 //! Operational-predicate grammar and canonical-format acceptance.
 
 use riffdb_riffql_syntax::{
-    BinaryOperator, Expression, RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    UnaryOperator, format_query, parse_query,
+    AggregateFunction, BinaryOperator, DiagnosticCode, Expression, RIFFQL_LANGUAGE_VERSION,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, UnaryOperator, format_query, parse_query,
 };
 
 const OPERATIONAL_QUERY: &str = r#"
@@ -97,6 +97,98 @@ fn malformed_presence_guard_reports_the_guard_span() {
     let status = source.find("status ==").expect("predicate spelling");
     assert!(diagnostic.span().start as usize <= status);
     assert_eq!(diagnostic.summary(), "unexpected RiffQL token");
+}
+
+#[test]
+fn bounded_aggregate_declarations_parse_and_format_canonically() {
+    let source = r#"query TicketSummary($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take 50
+
+    aggregate summary from tickets {
+        group by status, priority
+        count() as ticket_count
+        sum(story_points) as total_points
+        min(created_at) as earliest
+        max(updated_at) as latest
+    }
+
+    return Found { summary: summary { status priority ticket_count total_points earliest latest } }
+    outcomes Found
+}"#;
+    let parsed = parse_query(source).expect("aggregate query parses");
+    assert_eq!(
+        parsed.language_version,
+        RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+    );
+    let aggregate = &parsed.body.aggregates[0];
+    assert_eq!(aggregate.name.value.as_str(), "summary");
+    assert_eq!(aggregate.source.value.as_str(), "tickets");
+    assert_eq!(aggregate.group_by.len(), 2);
+    assert_eq!(aggregate.measures.len(), 4);
+    assert_eq!(
+        aggregate
+            .measures
+            .iter()
+            .map(|measure| measure.function.value)
+            .collect::<Vec<_>>(),
+        [
+            AggregateFunction::Count,
+            AggregateFunction::Sum,
+            AggregateFunction::Min,
+            AggregateFunction::Max,
+        ]
+    );
+    assert!(aggregate.measures[0].field.is_none());
+    assert!(aggregate.measures[1].field.is_some());
+
+    let canonical = format_query(&parsed);
+    let reparsed = parse_query(&canonical).expect("canonical aggregate query parses");
+    assert_eq!(format_query(&reparsed), canonical);
+    assert!(canonical.contains("aggregate summary from tickets"));
+    assert!(canonical.contains("group by status, priority"));
+    assert!(canonical.contains("count() as ticket_count"));
+}
+
+#[test]
+fn aggregate_declarations_reject_missing_and_excessive_measures() {
+    let empty = r#"query Empty($organization_id: Ticket.organization_id) {
+    many tickets from Ticket where organization_id == $organization_id order by ticket_id asc take 1
+    aggregate summary from tickets {}
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}"#;
+    let diagnostics = parse_query(empty).expect_err("empty aggregate rejects");
+    assert_eq!(
+        diagnostics.as_slice()[0].summary(),
+        "aggregate declaration requires at least one measure"
+    );
+
+    let measures = (0..17)
+        .map(|index| format!("count() as count_{index}"))
+        .collect::<Vec<_>>()
+        .join("\n        ");
+    let excessive = format!(
+        r#"query Excessive($organization_id: Ticket.organization_id) {{
+    many tickets from Ticket where organization_id == $organization_id order by ticket_id asc take 1
+    aggregate summary from tickets {{
+        {measures}
+    }}
+    return Found {{ tickets: tickets {{ ticket_id }} }}
+    outcomes Found
+}}"#
+    );
+    let diagnostics = parse_query(&excessive).expect_err("measure ceiling rejects");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        DiagnosticCode::TooManyItems
+    );
+    assert_eq!(
+        diagnostics.as_slice()[0].summary(),
+        "aggregate measure limit exceeded"
+    );
 }
 
 fn visit(expression: &Expression, visitor: &mut impl FnMut(&Expression)) {

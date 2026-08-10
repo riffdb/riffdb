@@ -196,3 +196,32 @@ fn presence_dimension_count_is_hard_bounded_before_enumeration() {
         PlannerDiagnosticCode::Unbounded
     );
 }
+
+#[test]
+fn aggregate_syntax_fails_closed_at_its_symbol_until_exact_lowering_exists() {
+    let catalog = catalog(CONTRACT);
+    let source = QUERY.replace(
+        "    return Found",
+        "    aggregate summary from tickets { count() as ticket_count }\n    return Found",
+    );
+    let document = parse_query(&source).expect("aggregate syntax");
+    let expected_start = source.find("summary from").expect("aggregate symbol") as u32;
+
+    for diagnostics in [
+        compile_query(&document, &catalog).expect_err("ordinary compiler must reject"),
+        compile_operational_query_family(&document, &catalog)
+            .expect_err("family compiler must reject"),
+    ] {
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(
+            diagnostic.code(),
+            PlannerDiagnosticCode::OperationalFamilyRequired
+        );
+        assert_eq!(diagnostic.primary().start, expected_start);
+        assert_eq!(diagnostic.symbol_path(), &["summary"]);
+        assert_eq!(
+            diagnostic.summary(),
+            "operational aggregates require exact aggregate lowering"
+        );
+    }
+}
