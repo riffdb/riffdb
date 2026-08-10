@@ -77,7 +77,8 @@ pub(crate) fn resolve_declared_types(
                         EntityItem::Invariant(_)
                         | EntityItem::Index(_)
                         | EntityItem::Unique(_)
-                        | EntityItem::Reference(_) => {}
+                        | EntityItem::Reference(_)
+                        | EntityItem::VectorField(_) => {}
                     }
                 }
             }
