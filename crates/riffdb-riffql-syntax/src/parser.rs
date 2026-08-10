@@ -3,7 +3,8 @@ use crate::{
     BinaryOperator, Binding, Cardinality, DiagnosticCode, Direction, Document, Expression,
     FieldSelection, Identifier, Literal, MAX_BINDINGS, MAX_COLLECTION_ITEMS, MAX_NESTING,
     MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path, QueryBody,
-    RIFFQL_LANGUAGE_VERSION, Selection, Span, Spanned, Take, TypeReference,
+    RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, Selection, Span, Spanned,
+    Take, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL v1 source document.
@@ -114,16 +115,26 @@ impl Parser {
                 None,
             ));
         }
+        let body = QueryBody {
+            bindings,
+            outcome,
+            selection,
+            outcomes,
+        };
+        let language_version = if body
+            .bindings
+            .iter()
+            .any(|binding| expression_uses_operational_syntax(&binding.predicate.value))
+        {
+            RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+        } else {
+            RIFFQL_LANGUAGE_VERSION
+        };
         Ok(Document {
-            language_version: RIFFQL_LANGUAGE_VERSION,
+            language_version,
             name,
             parameters,
-            body: QueryBody {
-                bindings,
-                outcome,
-                selection,
-                outcomes,
-            },
+            body,
         })
     }
 
@@ -338,7 +349,26 @@ impl Parser {
     ) -> Result<Spanned<Expression>, ParseDiagnostics> {
         let start = self.current_start();
         let mut left = self.primary()?;
-        while let Some((operator, precedence, span)) = self.binary_operator() {
+        loop {
+            if minimum_precedence <= 3
+                && let Some((operator, span)) = self.take_null_operator()
+            {
+                self.node()?;
+                left = Spanned {
+                    value: Expression::Unary {
+                        operator: Spanned {
+                            value: operator,
+                            span,
+                        },
+                        operand: Box::new(left),
+                    },
+                    span: self.span_from(start),
+                };
+                continue;
+            }
+            let Some((operator, precedence, span)) = self.binary_operator() else {
+                break;
+            };
             if precedence < minimum_precedence {
                 break;
             }
@@ -363,6 +393,35 @@ impl Parser {
     fn primary(&mut self) -> Result<Spanned<Expression>, ParseDiagnostics> {
         let start = self.current_start();
         let value = match self.peek_kind() {
+            Some(TokenKind::Ident(word)) if word == "when" => {
+                self.index += 1;
+                let parameter = self.parameter_name()?;
+                self.enter_nesting()?;
+                self.expect(TokenKind::LeftBrace)?;
+                let predicate = self.expression(0)?;
+                self.expect(TokenKind::RightBrace)?;
+                self.leave_nesting();
+                Expression::PresenceGuard {
+                    parameter,
+                    predicate: Box::new(predicate),
+                }
+            }
+            Some(TokenKind::Ident(word)) if word == "exists" => {
+                let operator_span = self.tokens[self.index].span;
+                self.index += 1;
+                let operand_start = self.current_start();
+                let operand = Spanned {
+                    value: Expression::Path(self.path()?),
+                    span: self.span_from(operand_start),
+                };
+                Expression::Unary {
+                    operator: Spanned {
+                        value: UnaryOperator::Exists,
+                        span: operator_span,
+                    },
+                    operand: Box::new(operand),
+                }
+            }
             Some(TokenKind::Parameter(_)) => Expression::Parameter(self.parameter_name()?),
             Some(TokenKind::Unsigned(_)) | Some(TokenKind::String(_)) => {
                 Expression::Literal(self.literal()?.value)
@@ -555,9 +614,31 @@ impl Parser {
             TokenKind::Greater => (BinaryOperator::Greater, 3),
             TokenKind::GreaterEqual => (BinaryOperator::GreaterEqual, 3),
             TokenKind::Ident(word) if word == "in" => (BinaryOperator::In, 3),
+            TokenKind::Ident(word) if word == "prefix" => (BinaryOperator::Prefix, 3),
             _ => return None,
         };
         Some((pair.0, pair.1, token.span))
+    }
+
+    fn take_null_operator(&mut self) -> Option<(UnaryOperator, Span)> {
+        if !self.peek_word("is") {
+            return None;
+        }
+        let start = self.tokens[self.index].span.start as usize;
+        let (operator, consumed) = match (
+            self.tokens.get(self.index + 1).map(|token| &token.kind),
+            self.tokens.get(self.index + 2).map(|token| &token.kind),
+        ) {
+            (Some(TokenKind::Ident(word)), _) if word == "null" => (UnaryOperator::IsNull, 2),
+            (Some(TokenKind::Ident(not)), Some(TokenKind::Ident(null)))
+                if not == "not" && null == "null" =>
+            {
+                (UnaryOperator::IsNotNull, 3)
+            }
+            _ => return None,
+        };
+        self.index += consumed;
+        Some((operator, self.span_from(start)))
     }
 
     fn reject_forbidden_lead(&self) -> Result<(), ParseDiagnostics> {
@@ -713,6 +794,22 @@ impl Parser {
     }
 }
 
+fn expression_uses_operational_syntax(expression: &Expression) -> bool {
+    match expression {
+        Expression::PresenceGuard { .. } | Expression::Unary { .. } => true,
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            operator.value == BinaryOperator::Prefix
+                || expression_uses_operational_syntax(&left.value)
+                || expression_uses_operational_syntax(&right.value)
+        }
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => false,
+    }
+}
+
 fn reserved(value: &str) -> bool {
     matches!(
         value,
@@ -732,6 +829,11 @@ fn reserved(value: &str) -> bool {
             | "return"
             | "outcomes"
             | "in"
+            | "when"
+            | "exists"
+            | "is"
+            | "not"
+            | "prefix"
             | "true"
             | "false"
             | "null"

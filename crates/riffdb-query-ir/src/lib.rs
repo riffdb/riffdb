@@ -5,6 +5,7 @@
 mod catalog;
 mod diagnostic;
 mod live;
+mod operational;
 mod plan;
 mod reactive;
 mod resolver;
@@ -15,6 +16,7 @@ pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
 };
 pub use live::*;
+pub use operational::*;
 pub use plan::{
     AccessDirection, AuthorizationEntityAccess, QueryAccessKind, QueryAccessProgramV1,
     QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity, QueryPredicate,
@@ -32,6 +34,8 @@ pub use schema::{
 
 /// Canonical typed query-IR version.
 pub const QUERY_IR_VERSION_V1: u32 = 1;
+/// Canonical finite operational plan-family IR version.
+pub const QUERY_IR_VERSION_OPERATIONAL_V1: u32 = 2;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

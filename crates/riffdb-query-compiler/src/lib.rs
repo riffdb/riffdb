@@ -10,13 +10,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_query_ir::{
-    AccessDirection, AuthorizationEntityAccess, EntitySymbol, QueryAccessKind,
-    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator,
-    QueryPredicateValue, QueryRowLimit, SymbolicCatalog, resolve_query_surface,
+    AccessDirection, AuthorizationEntityAccess, EntitySymbol, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
+    OperationalPlanMemberV1, OperationalQueryFamilyV1, QueryAccessKind, QueryAccessProgramV1,
+    QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
+    QueryRowLimit, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
-    Span, TypeReference,
+    Span, Spanned, TypeReference,
 };
 use riffdb_types::QueryCostVectorV1;
 
@@ -39,6 +40,8 @@ pub enum PlannerDiagnosticCode {
     InternalInvariant,
     /// Scalar and bounded-collection cardinality are used incompatibly.
     Cardinality,
+    /// Operational predicates require finite-family compilation.
+    OperationalFamilyRequired,
 }
 
 impl PlannerDiagnosticCode {
@@ -53,6 +56,7 @@ impl PlannerDiagnosticCode {
             Self::Unbounded => "RDB-QP005",
             Self::InternalInvariant => "RDB-QP006",
             Self::Cardinality => "RDB-QP007",
+            Self::OperationalFamilyRequired => "RDB-QP008",
         }
     }
 }
@@ -116,6 +120,108 @@ pub fn compile_query(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    if let Some(span) = document
+        .body
+        .bindings
+        .iter()
+        .find_map(|binding| first_operational_expression_span(&binding.predicate.value))
+    {
+        return Err(one(
+            PlannerDiagnosticCode::OperationalFamilyRequired,
+            span,
+            Vec::new(),
+            "operational predicates require finite plan-family compilation",
+            None,
+        ));
+    }
+    compile_query_member(document, catalog, BTreeSet::new())
+}
+
+/// Compiles every optional-presence combination into one closed bounded family.
+pub fn compile_operational_query_family(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
+    let surface = resolve_query_surface(document, catalog).map_err(|_| {
+        one(
+            PlannerDiagnosticCode::InternalInvariant,
+            Span { start: 0, end: 0 },
+            Vec::new(),
+            "symbolic resolution failed before operational planning",
+            None,
+        )
+    })?;
+    let declared_optional = document
+        .parameters
+        .iter()
+        .filter(|parameter| matches!(parameter.ty.value, TypeReference::Optional(_)))
+        .map(|parameter| (parameter.name.value.as_str(), parameter.name.span))
+        .collect::<BTreeMap<_, _>>();
+    let mut guards = BTreeMap::<String, Span>::new();
+    for binding in &document.body.bindings {
+        validate_operational_expression(
+            &binding.predicate,
+            true,
+            None,
+            &declared_optional,
+            &mut guards,
+        )?;
+    }
+    if guards.len() > MAX_OPERATIONAL_PRESENCE_PARAMETERS {
+        let span = guards
+            .values()
+            .nth(MAX_OPERATIONAL_PRESENCE_PARAMETERS)
+            .copied()
+            .unwrap_or(Span { start: 0, end: 0 });
+        return Err(one(
+            PlannerDiagnosticCode::Unbounded,
+            span,
+            Vec::new(),
+            "optional predicate combinations exceed the finite family bound",
+            None,
+        ));
+    }
+    let presence_parameters = guards.keys().cloned().collect::<Vec<_>>();
+    let unwrapped_parameters = presence_parameters.iter().cloned().collect::<BTreeSet<_>>();
+    let member_count = 1_usize
+        .checked_shl(u32::try_from(presence_parameters.len()).map_err(|_| internal())?)
+        .ok_or_else(internal)?;
+    let mut members = Vec::with_capacity(member_count);
+    for mask in 0..member_count {
+        let enabled = presence_parameters
+            .iter()
+            .enumerate()
+            .map(|(bit, name)| (name.as_str(), mask & (1_usize << bit) != 0))
+            .collect::<BTreeMap<_, _>>();
+        let expanded = expand_operational_document(document, &enabled)?;
+        let program = compile_query_member(&expanded, catalog, unwrapped_parameters.clone())?;
+        members.push(OperationalPlanMemberV1::checked(
+            u16::try_from(mask).map_err(|_| internal())?,
+            program,
+        ));
+    }
+    OperationalQueryFamilyV1::checked(surface, presence_parameters, members).ok_or_else(internal)
+}
+
+fn compile_query_member(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+    unwrapped_optional_parameters: BTreeSet<String>,
+) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    if let Some(span) = document
+        .body
+        .bindings
+        .iter()
+        .find_map(|binding| first_operational_expression_span(&binding.predicate.value))
+    {
+        return Err(one(
+            PlannerDiagnosticCode::OperationalFamilyRequired,
+            span,
+            Vec::new(),
+            "operational predicate has no implemented finite-family lowering",
+            None,
+        ));
+    }
     let surface = resolve_query_surface(document, catalog).map_err(|_| {
         one(
             PlannerDiagnosticCode::InternalInvariant,
@@ -125,7 +231,196 @@ pub fn compile_query(
             None,
         )
     })?;
-    Planner::new(document, catalog).compile(surface)
+    Planner::new(document, catalog, unwrapped_optional_parameters).compile(surface)
+}
+
+fn validate_operational_expression(
+    expression: &Spanned<Expression>,
+    top_level_conjunct: bool,
+    active_guard: Option<&str>,
+    declared_optional: &BTreeMap<&str, Span>,
+    guards: &mut BTreeMap<String, Span>,
+) -> Result<(), PlannerDiagnostics> {
+    match &expression.value {
+        Expression::PresenceGuard {
+            parameter,
+            predicate,
+        } => {
+            let name = parameter.value.as_str();
+            if !top_level_conjunct || active_guard.is_some() {
+                return Err(one(
+                    PlannerDiagnosticCode::OperationalFamilyRequired,
+                    parameter.span,
+                    vec![name.to_owned()],
+                    "optional predicate guard must be one top-level conjunct",
+                    None,
+                ));
+            }
+            if !declared_optional.contains_key(name) {
+                return Err(one(
+                    PlannerDiagnosticCode::TypeMismatch,
+                    parameter.span,
+                    vec![name.to_owned()],
+                    "presence guard parameter must have an optional type",
+                    None,
+                ));
+            }
+            if !expression_references_parameter(&predicate.value, name) {
+                return Err(one(
+                    PlannerDiagnosticCode::OperationalFamilyRequired,
+                    parameter.span,
+                    vec![name.to_owned()],
+                    "presence guard predicate must consume its guarded parameter",
+                    None,
+                ));
+            }
+            guards.entry(name.to_owned()).or_insert(parameter.span);
+            validate_operational_expression(predicate, false, Some(name), declared_optional, guards)
+        }
+        Expression::Parameter(parameter) => {
+            let name = parameter.value.as_str();
+            if declared_optional.contains_key(name) && active_guard != Some(name) {
+                return Err(one(
+                    PlannerDiagnosticCode::OperationalFamilyRequired,
+                    parameter.span,
+                    vec![name.to_owned()],
+                    "optional parameter may only appear inside its matching presence guard",
+                    None,
+                ));
+            }
+            Ok(())
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            let children_are_conjuncts =
+                top_level_conjunct && operator.value == BinaryOperator::And;
+            validate_operational_expression(
+                left,
+                children_are_conjuncts,
+                active_guard,
+                declared_optional,
+                guards,
+            )?;
+            validate_operational_expression(
+                right,
+                children_are_conjuncts,
+                active_guard,
+                declared_optional,
+                guards,
+            )
+        }
+        Expression::Unary { operand, .. } => {
+            validate_operational_expression(operand, false, active_guard, declared_optional, guards)
+        }
+        Expression::Path(_) | Expression::Literal(_) => Ok(()),
+    }
+}
+
+fn expression_references_parameter(expression: &Expression, expected: &str) -> bool {
+    match expression {
+        Expression::Parameter(parameter) => parameter.value.as_str() == expected,
+        Expression::PresenceGuard { predicate, .. } => {
+            expression_references_parameter(&predicate.value, expected)
+        }
+        Expression::Unary { operand, .. } => {
+            expression_references_parameter(&operand.value, expected)
+        }
+        Expression::Binary { left, right, .. } => {
+            expression_references_parameter(&left.value, expected)
+                || expression_references_parameter(&right.value, expected)
+        }
+        Expression::Path(_) | Expression::Literal(_) => false,
+    }
+}
+
+fn expand_operational_document(
+    document: &Document,
+    enabled: &BTreeMap<&str, bool>,
+) -> Result<Document, PlannerDiagnostics> {
+    let mut expanded = document.clone();
+    for binding in &mut expanded.body.bindings {
+        binding.predicate = expand_operational_expression(&binding.predicate, enabled)?
+            .ok_or_else(|| {
+                one(
+                    PlannerDiagnosticCode::NonLocal,
+                    binding.predicate.span,
+                    vec![binding.name.value.as_str().to_owned()],
+                    "optional predicates cannot remove the complete partition route",
+                    None,
+                )
+            })?;
+    }
+    Ok(expanded)
+}
+
+fn expand_operational_expression(
+    expression: &Spanned<Expression>,
+    enabled: &BTreeMap<&str, bool>,
+) -> Result<Option<Spanned<Expression>>, PlannerDiagnostics> {
+    match &expression.value {
+        Expression::PresenceGuard {
+            parameter,
+            predicate,
+        } => {
+            let include = enabled
+                .get(parameter.value.as_str())
+                .copied()
+                .ok_or_else(internal)?;
+            Ok(include.then(|| predicate.as_ref().clone()))
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::And => {
+            let left = expand_operational_expression(left, enabled)?;
+            let right = expand_operational_expression(right, enabled)?;
+            Ok(match (left, right) {
+                (Some(left), Some(right)) => Some(Spanned {
+                    span: expression.span,
+                    value: Expression::Binary {
+                        operator: operator.clone(),
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                }),
+                (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
+                (None, None) => None,
+            })
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            let left = expand_operational_expression(left, enabled)?.ok_or_else(internal)?;
+            let right = expand_operational_expression(right, enabled)?.ok_or_else(internal)?;
+            Ok(Some(Spanned {
+                span: expression.span,
+                value: Expression::Binary {
+                    operator: operator.clone(),
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+            }))
+        }
+        Expression::Unary { operator, operand } => {
+            let operand = expand_operational_expression(operand, enabled)?.ok_or_else(internal)?;
+            Ok(Some(Spanned {
+                span: expression.span,
+                value: Expression::Unary {
+                    operator: operator.clone(),
+                    operand: Box::new(operand),
+                },
+            }))
+        }
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => {
+            Ok(Some(expression.clone()))
+        }
+    }
 }
 
 struct Planner<'a> {
@@ -135,10 +430,15 @@ struct Planner<'a> {
     binding_entities: BTreeMap<&'a str, &'a EntitySymbol>,
     binding_cardinalities: BTreeMap<&'a str, Cardinality>,
     binding_maximum_rows: BTreeMap<&'a str, u64>,
+    unwrapped_optional_parameters: BTreeSet<String>,
 }
 
 impl<'a> Planner<'a> {
-    fn new(document: &'a Document, catalog: &'a SymbolicCatalog) -> Self {
+    fn new(
+        document: &'a Document,
+        catalog: &'a SymbolicCatalog,
+        unwrapped_optional_parameters: BTreeSet<String>,
+    ) -> Self {
         Self {
             document,
             catalog,
@@ -150,6 +450,7 @@ impl<'a> Planner<'a> {
             binding_entities: BTreeMap::new(),
             binding_cardinalities: BTreeMap::new(),
             binding_maximum_rows: BTreeMap::new(),
+            unwrapped_optional_parameters,
         }
     }
 
@@ -360,13 +661,24 @@ impl<'a> Planner<'a> {
                     .get(parameter.value.as_str())
                     .ok_or_else(internal)?;
                 let expected = field.value_type();
-                let actual = if comparison.operator == BinaryOperator::In {
+                let effective_parameter_type = if self
+                    .unwrapped_optional_parameters
+                    .contains(parameter.value.as_str())
+                {
                     match parameter_type {
+                        TypeReference::Optional(inner) => &inner.value,
+                        _ => parameter_type,
+                    }
+                } else {
+                    parameter_type
+                };
+                let actual = if comparison.operator == BinaryOperator::In {
+                    match effective_parameter_type {
                         TypeReference::Set(inner) => self.resolve_parameter_type(&inner.value),
                         _ => None,
                     }
                 } else {
-                    self.resolve_parameter_type(parameter_type)
+                    self.resolve_parameter_type(effective_parameter_type)
                 };
                 let compatible = if comparison.operator == BinaryOperator::In {
                     actual.as_ref().is_some_and(|actual| expected == actual)
@@ -492,7 +804,10 @@ impl<'a> Planner<'a> {
                         Literal::Boolean(value) => QueryLiteral::Boolean(*value),
                         Literal::Null => QueryLiteral::Null,
                     }),
-                    Expression::Path(_) | Expression::Binary { .. } => {
+                    Expression::Path(_)
+                    | Expression::PresenceGuard { .. }
+                    | Expression::Unary { .. }
+                    | Expression::Binary { .. } => {
                         return Err(internal());
                     }
                 };
@@ -717,7 +1032,9 @@ fn predicate_operator(
         BinaryOperator::Greater => QueryPredicateOperator::Greater,
         BinaryOperator::GreaterEqual => QueryPredicateOperator::GreaterEqual,
         BinaryOperator::In => QueryPredicateOperator::In,
-        BinaryOperator::And | BinaryOperator::Or => return Err(internal()),
+        BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Prefix => {
+            return Err(internal());
+        }
     })
 }
 
@@ -1172,6 +1489,10 @@ fn collect_dependency_fields(
             collect_dependency_fields(&left.value, output);
             collect_dependency_fields(&right.value, output);
         }
+        Expression::PresenceGuard { predicate, .. } => {
+            collect_dependency_fields(&predicate.value, output);
+        }
+        Expression::Unary { operand, .. } => collect_dependency_fields(&operand.value, output),
         Expression::Path(_) | Expression::Parameter(_) | Expression::Literal(_) => {}
     }
 }
@@ -1232,7 +1553,33 @@ fn collect_expression_dependencies<'a>(
             collect_expression_dependencies(&left.value, known, output);
             collect_expression_dependencies(&right.value, known, output);
         }
+        Expression::PresenceGuard { predicate, .. } => {
+            collect_expression_dependencies(&predicate.value, known, output);
+        }
+        Expression::Unary { operand, .. } => {
+            collect_expression_dependencies(&operand.value, known, output);
+        }
         Expression::Parameter(_) | Expression::Literal(_) => {}
+    }
+}
+
+fn first_operational_expression_span(expression: &Expression) -> Option<Span> {
+    match expression {
+        Expression::PresenceGuard { parameter, .. } => Some(parameter.span),
+        Expression::Unary { operator, .. } => Some(operator.span),
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            if operator.value == BinaryOperator::Prefix {
+                Some(operator.span)
+            } else {
+                first_operational_expression_span(&left.value)
+                    .or_else(|| first_operational_expression_span(&right.value))
+            }
+        }
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => None,
     }
 }
 

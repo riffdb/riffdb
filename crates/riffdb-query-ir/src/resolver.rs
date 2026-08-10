@@ -602,6 +602,29 @@ impl<'a> Resolver<'a> {
                 .resolve_value_path(path, span, Some(current_entity))
                 .map(|_| ()),
             Expression::Literal(_) => Ok(()),
+            Expression::PresenceGuard {
+                parameter,
+                predicate,
+            } => {
+                let name = parameter.value.as_str();
+                if !self.parameters.contains_key(name) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        parameter.span,
+                        vec![name.to_owned()],
+                        "unknown optional predicate parameter",
+                    ));
+                }
+                self.push_map(
+                    parameter.span,
+                    SourceSymbolKind::Parameter,
+                    vec![name.to_owned()],
+                )?;
+                self.resolve_expression(&predicate.value, predicate.span, current_entity)
+            }
+            Expression::Unary { operand, .. } => {
+                self.resolve_expression(&operand.value, operand.span, current_entity)
+            }
             Expression::Binary { left, right, .. } => {
                 self.resolve_expression(&left.value, left.span, current_entity)?;
                 self.resolve_expression(&right.value, right.span, current_entity)

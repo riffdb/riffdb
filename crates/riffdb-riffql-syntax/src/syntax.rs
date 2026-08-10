@@ -2,8 +2,10 @@ use std::fmt;
 
 use crate::MAX_IDENTIFIER_BYTES;
 
-/// RiffQL source language version emitted by this parser.
+/// Original named-query language version retained for V1 source.
 pub const RIFFQL_LANGUAGE_VERSION: u32 = 1;
+/// Operational-predicate language version.
+pub const RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1: u32 = 2;
 
 /// Checked half-open UTF-8 byte span.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -207,6 +209,20 @@ pub enum Expression {
     Path(Path),
     /// Literal.
     Literal(Literal),
+    /// Predicate enabled only when one declared optional parameter is present.
+    PresenceGuard {
+        /// Optional parameter controlling membership in the finite plan family.
+        parameter: Spanned<Identifier>,
+        /// Predicate compiled into members where the parameter is present.
+        predicate: Box<Spanned<Self>>,
+    },
+    /// Closed null/existence predicate.
+    Unary {
+        /// Predicate operator.
+        operator: Spanned<UnaryOperator>,
+        /// Symbolic field path being tested.
+        operand: Box<Spanned<Self>>,
+    },
     /// Binary expression.
     Binary {
         /// Operator.
@@ -216,6 +232,17 @@ pub enum Expression {
         /// Right operand.
         right: Box<Spanned<Self>>,
     },
+}
+
+/// Closed RiffQL v2 unary predicate set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnaryOperator {
+    /// Field value is explicitly null.
+    IsNull,
+    /// Field value is present and non-null.
+    IsNotNull,
+    /// Field is present, including an explicitly null value.
+    Exists,
 }
 
 /// Closed RiffQL v1 binary operator set.
@@ -235,6 +262,8 @@ pub enum BinaryOperator {
     GreaterEqual,
     /// Membership in a submitted set.
     In,
+    /// Canonical leading-byte text-key match.
+    Prefix,
     /// Boolean conjunction.
     And,
     /// Boolean disjunction.

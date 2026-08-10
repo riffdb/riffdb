@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use crate::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
-    Selection, TypeReference,
+    Selection, TypeReference, UnaryOperator,
 };
 
 /// Emits the canonical, idempotent RiffQL v1 source spelling.
@@ -149,6 +149,25 @@ fn format_expression(value: &Expression, parent_precedence: u8) -> String {
         Expression::Parameter(name) => format!("${}", name.value.as_str()),
         Expression::Path(path) => format_path(path),
         Expression::Literal(literal) => format_literal(literal),
+        Expression::PresenceGuard {
+            parameter,
+            predicate,
+        } => format!(
+            "when ${} {{ {} }}",
+            parameter.value.as_str(),
+            format_expression(&predicate.value, 0)
+        ),
+        Expression::Unary { operator, operand } => match operator.value {
+            UnaryOperator::IsNull => {
+                format!("{} is null", format_expression(&operand.value, 3))
+            }
+            UnaryOperator::IsNotNull => {
+                format!("{} is not null", format_expression(&operand.value, 3))
+            }
+            UnaryOperator::Exists => {
+                format!("exists {}", format_expression(&operand.value, 3))
+            }
+        },
         Expression::Binary {
             operator,
             left,
@@ -164,6 +183,7 @@ fn format_expression(value: &Expression, parent_precedence: u8) -> String {
                 BinaryOperator::Greater => (">", 3),
                 BinaryOperator::GreaterEqual => (">=", 3),
                 BinaryOperator::In => ("in", 3),
+                BinaryOperator::Prefix => ("prefix", 3),
             };
             let rendered = format!(
                 "{} {text} {}",
