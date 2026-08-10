@@ -256,6 +256,16 @@ fixture data, so no redaction surface is added.
   harness) delivers Phase 1 item 4's `SIM-003` evidence — model equality at
   the recovered durable frontier after every simulated recovery, with the
   startup-validation and structural-inspection passes as its precondition.
+- **Seeded-campaign package:** WP-583 (seeded workload generator, the
+  crash-schedule campaign driving the simulated store with the model in
+  lockstep, the found-seed regression corpus, and the crash-matrix
+  subsumption classification) delivers Phase 1 items 5-7's `SIM-004` and
+  `SIM-006` evidence. Its first exploration surfaced a real redb 4.1.0
+  crash-recovery defect (file growth left non-durable until the commit's
+  single fsync, wedging the database unopenable after a torn crash; fixed
+  upstream in `fd82ced`, unreleased) — retained as the corpus's inaugural
+  entry behind a typed, pin-guarded placement exclusion until the engine pin
+  advances.
 - **Final evidence:** the Phase-1 exploration campaign report over the
   journal/extent/fold machinery.
 
