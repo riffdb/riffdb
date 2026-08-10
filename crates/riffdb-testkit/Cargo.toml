@@ -109,5 +109,9 @@ harness = false
 name = "operational_queries"
 path = "../../tests/operational_queries.rs"
 
+[[test]]
+name = "workflow_concurrency"
+path = "../../tests/workflow_concurrency.rs"
+
 [lints]
 workspace = true

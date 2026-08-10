@@ -354,6 +354,17 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             ],
         ),
         (
+            "WorkflowLeaseFields",
+            vec![
+                "owner_field",
+                "expiry_field",
+                "fencing_token_field",
+                "attempt_field",
+                "minimum_duration_seconds",
+                "maximum_duration_seconds",
+            ],
+        ),
+        (
             "CommandBundleEntry",
             vec![
                 "command_id",
@@ -552,6 +563,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("WorkflowSchema", "workflow bundle fixture"),
         ("WorkflowTransitionSchema", "workflow bundle fixture"),
         ("WorkflowLeaseSchema", "workflow bundle fixture"),
+        ("WorkflowLeaseFields", "workflow lease instruction fixture"),
         ("CommandBundleEntry", "root-validation command fixture"),
         ("CommandSemantics", "root-validation command fixture"),
         ("OutcomeSchema", "root-validation command fixture"),
@@ -727,6 +739,67 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                             "stale",
                             "illegal",
                         ],
+                    ),
+                    (
+                        0x06,
+                        "workflow lease",
+                        vec!["binding", "fields", "operation"]
+                    ),
+                ],
+            ),
+            (
+                "WorkflowLeaseOperation",
+                vec![
+                    (
+                        0x01,
+                        "claim",
+                        vec![
+                            "owner",
+                            "duration_seconds",
+                            "expected_revision",
+                            "stale",
+                            "unavailable",
+                            "invalid",
+                            "exhausted"
+                        ]
+                    ),
+                    (
+                        0x02,
+                        "renew",
+                        vec![
+                            "owner",
+                            "fencing_token",
+                            "duration_seconds",
+                            "expected_revision",
+                            "stale",
+                            "invalid",
+                            "expired",
+                            "exhausted"
+                        ]
+                    ),
+                    (
+                        0x03,
+                        "release",
+                        vec![
+                            "owner",
+                            "fencing_token",
+                            "expected_revision",
+                            "stale",
+                            "invalid"
+                        ]
+                    ),
+                    (0x04, "expire", vec!["expected_revision", "stale", "active"]),
+                    (
+                        0x05,
+                        "fence",
+                        vec![
+                            "owner",
+                            "fencing_token",
+                            "expected_revision",
+                            "stale",
+                            "invalid",
+                            "expired"
+                        ]
                     ),
                 ],
             ),

@@ -795,6 +795,86 @@ impl NodeCounter {
                     self.outcome(&transition.stale)?;
                     self.outcome(&transition.illegal)?;
                 }
+                Effect::WorkflowLease(lease) => {
+                    self.add(3, effect.span)?;
+                    self.name(&lease.lease)?;
+                    self.name(&lease.binding)?;
+                    match &lease.operation {
+                        WorkflowLeaseOperation::Claim {
+                            owner,
+                            duration_seconds,
+                            expected_revision,
+                            stale,
+                            unavailable,
+                            invalid,
+                            exhausted,
+                        } => {
+                            self.expression(owner)?;
+                            self.expression(duration_seconds)?;
+                            self.expression(expected_revision)?;
+                            self.outcome(stale)?;
+                            self.outcome(unavailable)?;
+                            self.outcome(invalid)?;
+                            self.outcome(exhausted)?;
+                        }
+                        WorkflowLeaseOperation::Renew {
+                            owner,
+                            fencing_token,
+                            duration_seconds,
+                            expected_revision,
+                            stale,
+                            invalid,
+                            expired,
+                            exhausted,
+                        } => {
+                            self.expression(owner)?;
+                            self.expression(fencing_token)?;
+                            self.expression(duration_seconds)?;
+                            self.expression(expected_revision)?;
+                            self.outcome(stale)?;
+                            self.outcome(invalid)?;
+                            self.outcome(expired)?;
+                            self.outcome(exhausted)?;
+                        }
+                        WorkflowLeaseOperation::Release {
+                            owner,
+                            fencing_token,
+                            expected_revision,
+                            stale,
+                            invalid,
+                        } => {
+                            self.expression(owner)?;
+                            self.expression(fencing_token)?;
+                            self.expression(expected_revision)?;
+                            self.outcome(stale)?;
+                            self.outcome(invalid)?;
+                        }
+                        WorkflowLeaseOperation::Expire {
+                            expected_revision,
+                            stale,
+                            active,
+                        } => {
+                            self.expression(expected_revision)?;
+                            self.outcome(stale)?;
+                            self.outcome(active)?;
+                        }
+                        WorkflowLeaseOperation::Fence {
+                            owner,
+                            fencing_token,
+                            expected_revision,
+                            stale,
+                            invalid,
+                            expired,
+                        } => {
+                            self.expression(owner)?;
+                            self.expression(fencing_token)?;
+                            self.expression(expected_revision)?;
+                            self.outcome(stale)?;
+                            self.outcome(invalid)?;
+                            self.outcome(expired)?;
+                        }
+                    }
+                }
             }
         }
         self.add(2, command.return_clause.span)?;

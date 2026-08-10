@@ -9,6 +9,7 @@ use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
     AggregateItem, Aggregation, Binding, Declaration, Effect, EntityItem, Expression,
     ObjectLiteral, OutcomeExpression, Path, ServiceValueKind,
+    WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::{ContractDocument, Spanned};
 use riffdb_types::{
@@ -297,6 +298,60 @@ pub(crate) enum HirEffect {
         expected_revision: HirExpressionRoot,
         stale: HirOutcome,
         illegal: HirOutcome,
+    },
+    WorkflowLease {
+        lease_span: Span,
+        binding: BindingId,
+        owner_field: FieldId,
+        expiry_field: FieldId,
+        fencing_token_field: FieldId,
+        attempt_field: Option<FieldId>,
+        minimum_duration_seconds: u64,
+        maximum_duration_seconds: u64,
+        operation: Box<HirWorkflowLeaseOperation>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum HirWorkflowLeaseOperation {
+    Claim {
+        owner: HirExpressionRoot,
+        duration_seconds: HirExpressionRoot,
+        expected_revision: HirExpressionRoot,
+        stale: HirOutcome,
+        unavailable: HirOutcome,
+        invalid: HirOutcome,
+        exhausted: HirOutcome,
+    },
+    Renew {
+        owner: HirExpressionRoot,
+        fencing_token: HirExpressionRoot,
+        duration_seconds: HirExpressionRoot,
+        expected_revision: HirExpressionRoot,
+        stale: HirOutcome,
+        invalid: HirOutcome,
+        expired: HirOutcome,
+        exhausted: HirOutcome,
+    },
+    Release {
+        owner: HirExpressionRoot,
+        fencing_token: HirExpressionRoot,
+        expected_revision: HirExpressionRoot,
+        stale: HirOutcome,
+        invalid: HirOutcome,
+    },
+    Expire {
+        expected_revision: HirExpressionRoot,
+        stale: HirOutcome,
+        active: HirOutcome,
+    },
+    Fence {
+        owner: HirExpressionRoot,
+        fencing_token: HirExpressionRoot,
+        expected_revision: HirExpressionRoot,
+        stale: HirOutcome,
+        invalid: HirOutcome,
+        expired: HirOutcome,
     },
 }
 
@@ -1381,6 +1436,7 @@ fn lower_commands(
             .collect::<BTreeMap<_, _>>();
         let mut effects = Vec::new();
         let mut transitioned_bindings = BTreeSet::new();
+        let mut leased_bindings = BTreeSet::new();
         for effect in &source.effects {
             match &effect.value {
                 Effect::Set(set) => {
@@ -1547,6 +1603,153 @@ fn lower_commands(
                         illegal,
                     });
                 }
+                Effect::WorkflowLease(effect_source) => {
+                    let Some(binding) = binding_by_name
+                        .get(effect_source.binding.value.as_str())
+                        .copied()
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::UnknownName,
+                            effect_source.binding.span,
+                        ));
+                        continue;
+                    };
+                    let Some(lease) = workflows
+                        .iter()
+                        .find(|workflow| workflow.entity_id == binding.entity_id)
+                        .and_then(|workflow| workflow.lease.as_ref())
+                        .filter(|lease| lease.name == effect_source.lease.value)
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowLease,
+                            effect_source.lease.span,
+                        ));
+                        continue;
+                    };
+                    if binding.mode != BindingMode::Mutate || !leased_bindings.insert(binding.id) {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowLease,
+                            effect.span,
+                        ));
+                        continue;
+                    }
+
+                    macro_rules! lease_root {
+                        ($source:expr, $expected:expr) => {{
+                            let Some(value) = lower_root(
+                                &mut resolver,
+                                $source,
+                                Some($expected),
+                                false,
+                                diagnostics,
+                            ) else {
+                                continue;
+                            };
+                            value
+                        }};
+                    }
+                    macro_rules! lease_outcome {
+                        ($source:expr) => {{
+                            let Some(value) = lower_outcome(
+                                command_id,
+                                $source,
+                                symbols,
+                                &mut resolver,
+                                false,
+                                diagnostics,
+                            ) else {
+                                continue;
+                            };
+                            value
+                        }};
+                    }
+                    let operation = match &effect_source.operation {
+                        SyntaxWorkflowLeaseOperation::Claim {
+                            owner,
+                            duration_seconds,
+                            expected_revision,
+                            stale,
+                            unavailable,
+                            invalid,
+                            exhausted,
+                        } => HirWorkflowLeaseOperation::Claim {
+                            owner: lease_root!(owner, &ValueType::uuid()),
+                            duration_seconds: lease_root!(duration_seconds, &ValueType::u64()),
+                            expected_revision: lease_root!(expected_revision, &ValueType::u64()),
+                            stale: lease_outcome!(stale),
+                            unavailable: lease_outcome!(unavailable),
+                            invalid: lease_outcome!(invalid),
+                            exhausted: lease_outcome!(exhausted),
+                        },
+                        SyntaxWorkflowLeaseOperation::Renew {
+                            owner,
+                            fencing_token,
+                            duration_seconds,
+                            expected_revision,
+                            stale,
+                            invalid,
+                            expired,
+                            exhausted,
+                        } => HirWorkflowLeaseOperation::Renew {
+                            owner: lease_root!(owner, &ValueType::uuid()),
+                            fencing_token: lease_root!(fencing_token, &ValueType::u64()),
+                            duration_seconds: lease_root!(duration_seconds, &ValueType::u64()),
+                            expected_revision: lease_root!(expected_revision, &ValueType::u64()),
+                            stale: lease_outcome!(stale),
+                            invalid: lease_outcome!(invalid),
+                            expired: lease_outcome!(expired),
+                            exhausted: lease_outcome!(exhausted),
+                        },
+                        SyntaxWorkflowLeaseOperation::Release {
+                            owner,
+                            fencing_token,
+                            expected_revision,
+                            stale,
+                            invalid,
+                        } => HirWorkflowLeaseOperation::Release {
+                            owner: lease_root!(owner, &ValueType::uuid()),
+                            fencing_token: lease_root!(fencing_token, &ValueType::u64()),
+                            expected_revision: lease_root!(expected_revision, &ValueType::u64()),
+                            stale: lease_outcome!(stale),
+                            invalid: lease_outcome!(invalid),
+                        },
+                        SyntaxWorkflowLeaseOperation::Expire {
+                            expected_revision,
+                            stale,
+                            active,
+                        } => HirWorkflowLeaseOperation::Expire {
+                            expected_revision: lease_root!(expected_revision, &ValueType::u64()),
+                            stale: lease_outcome!(stale),
+                            active: lease_outcome!(active),
+                        },
+                        SyntaxWorkflowLeaseOperation::Fence {
+                            owner,
+                            fencing_token,
+                            expected_revision,
+                            stale,
+                            invalid,
+                            expired,
+                        } => HirWorkflowLeaseOperation::Fence {
+                            owner: lease_root!(owner, &ValueType::uuid()),
+                            fencing_token: lease_root!(fencing_token, &ValueType::u64()),
+                            expected_revision: lease_root!(expected_revision, &ValueType::u64()),
+                            stale: lease_outcome!(stale),
+                            invalid: lease_outcome!(invalid),
+                            expired: lease_outcome!(expired),
+                        },
+                    };
+                    effects.push(HirEffect::WorkflowLease {
+                        lease_span: effect_source.lease.span,
+                        binding: binding.id,
+                        owner_field: lease.owner_field,
+                        expiry_field: lease.expiry_field,
+                        fencing_token_field: lease.fencing_token_field,
+                        attempt_field: lease.attempt_field,
+                        minimum_duration_seconds: lease.minimum_duration_seconds,
+                        maximum_duration_seconds: lease.maximum_duration_seconds,
+                        operation: Box::new(operation),
+                    });
+                }
             }
         }
         let Some(success) = lower_outcome(
@@ -1567,24 +1770,67 @@ fn lower_commands(
             }
         };
         for effect in &effects {
-            let HirEffect::WorkflowTransition {
-                expected_revision,
-                transition_span,
-                ..
-            } = effect
-            else {
-                continue;
-            };
-            if !matches!(
-                expressions
-                    .node(expected_revision.id)
-                    .map(|node| &node.kind),
-                Some(ExpressionKind::InputField(_))
-            ) {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::MissingWorkflowRevision,
-                    *transition_span,
-                ));
+            let (code, span, roots): (CompilerDiagnosticCode, Span, Vec<&HirExpressionRoot>) =
+                match effect {
+                    HirEffect::WorkflowTransition {
+                        expected_revision,
+                        transition_span,
+                        ..
+                    } => (
+                        CompilerDiagnosticCode::MissingWorkflowRevision,
+                        *transition_span,
+                        vec![expected_revision],
+                    ),
+                    HirEffect::WorkflowLease {
+                        lease_span,
+                        operation,
+                        ..
+                    } => {
+                        let roots = match operation.as_ref() {
+                            HirWorkflowLeaseOperation::Claim {
+                                owner,
+                                duration_seconds,
+                                expected_revision,
+                                ..
+                            } => vec![owner, duration_seconds, expected_revision],
+                            HirWorkflowLeaseOperation::Renew {
+                                owner,
+                                fencing_token,
+                                duration_seconds,
+                                expected_revision,
+                                ..
+                            } => vec![owner, fencing_token, duration_seconds, expected_revision],
+                            HirWorkflowLeaseOperation::Release {
+                                owner,
+                                fencing_token,
+                                expected_revision,
+                                ..
+                            }
+                            | HirWorkflowLeaseOperation::Fence {
+                                owner,
+                                fencing_token,
+                                expected_revision,
+                                ..
+                            } => vec![owner, fencing_token, expected_revision],
+                            HirWorkflowLeaseOperation::Expire {
+                                expected_revision, ..
+                            } => vec![expected_revision],
+                        };
+                        (
+                            CompilerDiagnosticCode::MissingWorkflowLeaseInput,
+                            *lease_span,
+                            roots,
+                        )
+                    }
+                    HirEffect::Set { .. } | HirEffect::Emit { .. } => continue,
+                };
+            if roots.iter().any(|root| {
+                !matches!(
+                    expressions.node(root.id).map(|node| &node.kind),
+                    Some(ExpressionKind::InputField(_))
+                )
+            }) {
+                diagnostics.push(CompilerDiagnostic::new(code, span));
             }
         }
         result.push(HirCommand {

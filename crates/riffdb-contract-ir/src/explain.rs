@@ -8,6 +8,7 @@ use crate::{
     BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
     EventConstruction, ExecutionClass, ExprId, ExpressionArena, ExpressionKind, KeySchema,
     OutcomeSchema, RelationshipCheckPlan, RootValidationReadPlan, UniqueConflictPlan,
+    WorkflowLeaseFields, WorkflowLeaseOperation,
 };
 
 /// Value-free structural explanation of one exact workflow transition.
@@ -60,6 +61,59 @@ impl WorkflowTransitionExplain {
     }
 }
 
+/// Closed lease operation kind exposed by value-free explain output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowLeaseOperationKind {
+    /// Claim.
+    Claim,
+    /// Renew.
+    Renew,
+    /// Release.
+    Release,
+    /// Expire.
+    Expire,
+    /// Fence protected work.
+    Fence,
+}
+
+/// Value-free structural explanation of one fenced lease operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowLeaseExplain {
+    binding: BindingId,
+    fields: WorkflowLeaseFields,
+    operation: WorkflowLeaseOperationKind,
+    required_inputs: Vec<ExprId>,
+    rejection_outcomes: Vec<OutcomeId>,
+}
+
+impl WorkflowLeaseExplain {
+    /// Mutable workflow binding.
+    #[must_use]
+    pub const fn binding(&self) -> BindingId {
+        self.binding
+    }
+    /// Declared fields and duration bounds.
+    #[must_use]
+    pub const fn fields(&self) -> &WorkflowLeaseFields {
+        &self.fields
+    }
+    /// Closed operation kind.
+    #[must_use]
+    pub const fn operation(&self) -> WorkflowLeaseOperationKind {
+        self.operation
+    }
+    /// Required direct caller input expressions.
+    #[must_use]
+    pub fn required_inputs(&self) -> &[ExprId] {
+        &self.required_inputs
+    }
+    /// Declared rejection outcomes in evaluation order.
+    #[must_use]
+    pub fn rejection_outcomes(&self) -> &[OutcomeId] {
+        &self.rejection_outcomes
+    }
+}
+
 /// A bounded stable-ID-only command explanation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandExplain {
@@ -71,6 +125,7 @@ pub struct CommandExplain {
     read_fields: Vec<(BindingId, FieldId)>,
     write_fields: Vec<(BindingId, FieldId)>,
     workflow_transitions: Vec<WorkflowTransitionExplain>,
+    workflow_leases: Vec<WorkflowLeaseExplain>,
     invariants: Vec<InvariantId>,
     events: Vec<EventTypeId>,
     outcomes: Vec<OutcomeId>,
@@ -116,6 +171,32 @@ impl CommandExplain {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        for instruction in plan.instructions() {
+            if let crate::Instruction::WorkflowLease {
+                binding,
+                fields,
+                operation,
+            } = instruction
+            {
+                let written = match operation {
+                    WorkflowLeaseOperation::Claim { .. } => vec![
+                        fields.owner_field,
+                        fields.expiry_field,
+                        fields.fencing_token_field,
+                    ]
+                    .into_iter()
+                    .chain(fields.attempt_field)
+                    .collect::<Vec<_>>(),
+                    WorkflowLeaseOperation::Renew { .. } => vec![fields.expiry_field],
+                    WorkflowLeaseOperation::Release { .. }
+                    | WorkflowLeaseOperation::Expire { .. } => {
+                        vec![fields.owner_field, fields.expiry_field]
+                    }
+                    WorkflowLeaseOperation::Fence { .. } => Vec::new(),
+                };
+                write_fields.extend(written.into_iter().map(|field| (*binding, field)));
+            }
+        }
         write_fields.sort_unstable();
         let workflow_transitions = plan
             .instructions()
@@ -139,6 +220,107 @@ impl CommandExplain {
                     illegal_outcome: illegal.outcome_id(),
                 }),
                 _ => None,
+            })
+            .collect();
+        let workflow_leases = plan
+            .instructions()
+            .iter()
+            .filter_map(|instruction| {
+                let crate::Instruction::WorkflowLease {
+                    binding,
+                    fields,
+                    operation,
+                } = instruction
+                else {
+                    return None;
+                };
+                let (kind, inputs, outcomes) = match operation {
+                    WorkflowLeaseOperation::Claim {
+                        owner,
+                        duration_seconds,
+                        expected_revision,
+                        stale,
+                        unavailable,
+                        invalid,
+                        exhausted,
+                    } => (
+                        WorkflowLeaseOperationKind::Claim,
+                        vec![*owner, *duration_seconds, *expected_revision],
+                        vec![
+                            stale.outcome_id(),
+                            unavailable.outcome_id(),
+                            invalid.outcome_id(),
+                            exhausted.outcome_id(),
+                        ],
+                    ),
+                    WorkflowLeaseOperation::Renew {
+                        owner,
+                        fencing_token,
+                        duration_seconds,
+                        expected_revision,
+                        stale,
+                        invalid,
+                        expired,
+                        exhausted,
+                    } => (
+                        WorkflowLeaseOperationKind::Renew,
+                        vec![
+                            *owner,
+                            *fencing_token,
+                            *duration_seconds,
+                            *expected_revision,
+                        ],
+                        vec![
+                            stale.outcome_id(),
+                            invalid.outcome_id(),
+                            expired.outcome_id(),
+                            exhausted.outcome_id(),
+                        ],
+                    ),
+                    WorkflowLeaseOperation::Release {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        stale,
+                        invalid,
+                    } => (
+                        WorkflowLeaseOperationKind::Release,
+                        vec![*owner, *fencing_token, *expected_revision],
+                        vec![stale.outcome_id(), invalid.outcome_id()],
+                    ),
+                    WorkflowLeaseOperation::Expire {
+                        expected_revision,
+                        stale,
+                        active,
+                    } => (
+                        WorkflowLeaseOperationKind::Expire,
+                        vec![*expected_revision],
+                        vec![stale.outcome_id(), active.outcome_id()],
+                    ),
+                    WorkflowLeaseOperation::Fence {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        stale,
+                        invalid,
+                        expired,
+                    } => (
+                        WorkflowLeaseOperationKind::Fence,
+                        vec![*owner, *fencing_token, *expected_revision],
+                        vec![
+                            stale.outcome_id(),
+                            invalid.outcome_id(),
+                            expired.outcome_id(),
+                        ],
+                    ),
+                };
+                Some(WorkflowLeaseExplain {
+                    binding: *binding,
+                    fields: fields.clone(),
+                    operation: kind,
+                    required_inputs: inputs,
+                    rejection_outcomes: outcomes,
+                })
             })
             .collect();
         let invariants = plan
@@ -173,6 +355,7 @@ impl CommandExplain {
             read_fields,
             write_fields,
             workflow_transitions,
+            workflow_leases,
             invariants,
             events,
             outcomes,
@@ -229,6 +412,11 @@ impl CommandExplain {
     #[must_use]
     pub fn workflow_transitions(&self) -> &[WorkflowTransitionExplain] {
         &self.workflow_transitions
+    }
+    /// Exact fenced lease operations in instruction order.
+    #[must_use]
+    pub fn workflow_leases(&self) -> &[WorkflowLeaseExplain] {
+        &self.workflow_leases
     }
     /// Commit-validation invariants.
     #[must_use]
@@ -462,6 +650,38 @@ impl CommandExplain {
                 transition.expected_revision.get(),
                 transition.stale_outcome.get(),
                 transition.illegal_outcome.get(),
+            );
+        }
+        for lease in &self.workflow_leases {
+            let inputs = lease
+                .required_inputs
+                .iter()
+                .map(|input| input.get().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let outcomes = lease
+                .rejection_outcomes
+                .iter()
+                .map(|outcome| outcome.get().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let attempt = lease
+                .fields
+                .attempt_field
+                .map_or_else(|| "none".to_owned(), |field| field.get().to_string());
+            let _ = writeln!(
+                output,
+                "workflow-lease:{} operation={:?} owner-field={} expiry-field={} fence-field={} attempt-field={} duration={}..={} inputs=[{}] rejections=[{}] transaction-current:true grants-authority:false",
+                lease.binding.get(),
+                lease.operation,
+                lease.fields.owner_field.get(),
+                lease.fields.expiry_field.get(),
+                lease.fields.fencing_token_field.get(),
+                attempt,
+                lease.fields.minimum_duration_seconds,
+                lease.fields.maximum_duration_seconds,
+                inputs,
+                outcomes,
             );
         }
         for check in &self.commit_checks {

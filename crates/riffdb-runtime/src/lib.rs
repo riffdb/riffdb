@@ -12,6 +12,7 @@ use std::fmt;
 use riffdb_contract_ir::{
     BindingId, BindingMode, CommandPlan, ContractBundle, ExecutionClass, Instruction,
     ObjectConstruction, RecordSchema, RootValidationReadId, SchemaIr, ValueType,
+    WorkflowLeaseOperation,
 };
 use riffdb_invariant::{
     EvaluationBatch, EvaluationError, ExpressionEvaluator, ExpressionValueSource,
@@ -23,7 +24,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     AdmittedActorContext, CanonicalCodecError, CanonicalRecord, CanonicalValue, FieldId,
-    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKey, RequestId, ValueError,
+    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKey, RequestId, Timestamp, ValueError,
     encode_canonical_record, encode_canonical_value,
 };
 
@@ -449,6 +450,320 @@ pub fn execute_command(
                     *state_field,
                     destination,
                 )?;
+            }
+            Instruction::WorkflowLease {
+                binding,
+                fields,
+                operation,
+            } => {
+                let binding_index = binding.get() as usize;
+                let lease_binding = plan
+                    .bindings()
+                    .get(binding_index)
+                    .filter(|candidate| {
+                        candidate.id() == *binding && candidate.mode() == BindingMode::Mutate
+                    })
+                    .ok_or(ExecutionFault::Integrity)?;
+                let observation = snapshot
+                    .bindings()
+                    .get(binding_index)
+                    .filter(|observation| {
+                        observation.target().entity_type_id() == lease_binding.entity_type()
+                    })
+                    .ok_or(ExecutionFault::Integrity)?;
+                let EntityObservation::Present(stored) = observation else {
+                    return Err(ExecutionFault::Integrity);
+                };
+                let record = records
+                    .get(binding_index)
+                    .and_then(Option::as_ref)
+                    .ok_or(ExecutionFault::Integrity)?;
+                let current_owner = record_field(record, fields.owner_field)
+                    .ok_or(ExecutionFault::Integrity)?
+                    .clone();
+                let current_expiry = record_field(record, fields.expiry_field)
+                    .ok_or(ExecutionFault::Integrity)?
+                    .clone();
+                let current_fence = match record_field(record, fields.fencing_token_field) {
+                    Some(CanonicalValue::U64(value)) => *value,
+                    _ => return Err(ExecutionFault::Integrity),
+                };
+                let current_attempt = match fields.attempt_field {
+                    Some(field) => match record_field(record, field) {
+                        Some(CanonicalValue::U64(value)) => Some(*value),
+                        _ => return Err(ExecutionFault::Integrity),
+                    },
+                    None => None,
+                };
+                macro_rules! evaluate {
+                    ($expression:expr) => {{
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records: &records,
+                            roots: &roots,
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        evaluator.batch(&values).evaluate($expression)?
+                    }};
+                }
+                macro_rules! reject {
+                    ($outcome:expr) => {{
+                        let value = {
+                            let values = RuntimeValues {
+                                schema: bundle.schema(),
+                                plan,
+                                input,
+                                records: &records,
+                                roots: &roots,
+                                tx_time: context.tx_time(),
+                                service_values: context.service_values(),
+                            };
+                            let mut evaluation = evaluator.batch(&values);
+                            construct_outcome($outcome, &mut evaluation)?
+                        };
+                        return finish_declared(plan, snapshot, budget, value, vec![], vec![]);
+                    }};
+                }
+                let require_revision = |value: CanonicalValue| -> Result<bool, ExecutionFault> {
+                    match value {
+                        CanonicalValue::U64(expected) => {
+                            Ok(stored.entity_version().get() == expected)
+                        }
+                        _ => Err(ExecutionFault::Integrity),
+                    }
+                };
+                let tx_time = context.tx_time().timestamp();
+                let expiration = |duration: u64| -> Option<Timestamp> {
+                    let duration = i64::try_from(duration).ok()?;
+                    Timestamp::new(
+                        tx_time.seconds().checked_add(duration)?,
+                        tx_time.nanoseconds(),
+                    )
+                    .ok()
+                };
+                match operation {
+                    WorkflowLeaseOperation::Claim {
+                        owner,
+                        duration_seconds,
+                        expected_revision,
+                        stale,
+                        unavailable,
+                        invalid,
+                        exhausted,
+                    } => {
+                        if !require_revision(evaluate!(*expected_revision))? {
+                            reject!(stale);
+                        }
+                        let CanonicalValue::Uuid(owner) = evaluate!(*owner) else {
+                            return Err(ExecutionFault::Integrity);
+                        };
+                        let CanonicalValue::U64(duration) = evaluate!(*duration_seconds) else {
+                            return Err(ExecutionFault::Integrity);
+                        };
+                        if duration < fields.minimum_duration_seconds
+                            || duration > fields.maximum_duration_seconds
+                        {
+                            reject!(invalid);
+                        }
+                        match (&current_owner, &current_expiry) {
+                            (CanonicalValue::Null, CanonicalValue::Null) => {}
+                            (CanonicalValue::Uuid(_), CanonicalValue::Timestamp(expiry))
+                                if *expiry <= tx_time => {}
+                            (CanonicalValue::Uuid(_), CanonicalValue::Timestamp(_)) => {
+                                reject!(unavailable)
+                            }
+                            _ => return Err(ExecutionFault::Integrity),
+                        }
+                        let Some(next_fence) =
+                            current_fence.checked_add(1).filter(|value| *value != 0)
+                        else {
+                            reject!(exhausted);
+                        };
+                        let next_attempt = match current_attempt {
+                            Some(value) => match value.checked_add(1) {
+                                Some(next) => Some(next),
+                                None => reject!(exhausted),
+                            },
+                            None => None,
+                        };
+                        let Some(expiry) = expiration(duration) else {
+                            reject!(exhausted);
+                        };
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.owner_field,
+                            CanonicalValue::Uuid(owner),
+                        )?;
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.expiry_field,
+                            CanonicalValue::Timestamp(expiry),
+                        )?;
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.fencing_token_field,
+                            CanonicalValue::U64(next_fence),
+                        )?;
+                        if let (Some(field), Some(value)) = (fields.attempt_field, next_attempt) {
+                            set_working_field(
+                                bundle.schema(),
+                                plan,
+                                &mut records,
+                                *binding,
+                                field,
+                                CanonicalValue::U64(value),
+                            )?;
+                        }
+                    }
+                    WorkflowLeaseOperation::Renew {
+                        owner,
+                        fencing_token,
+                        duration_seconds,
+                        expected_revision,
+                        stale,
+                        invalid,
+                        expired,
+                        exhausted,
+                    } => {
+                        if !require_revision(evaluate!(*expected_revision))? {
+                            reject!(stale);
+                        }
+                        let owner = evaluate!(*owner);
+                        let fence = evaluate!(*fencing_token);
+                        let CanonicalValue::U64(duration) = evaluate!(*duration_seconds) else {
+                            return Err(ExecutionFault::Integrity);
+                        };
+                        if duration < fields.minimum_duration_seconds
+                            || duration > fields.maximum_duration_seconds
+                        {
+                            reject!(invalid);
+                        }
+                        if owner != current_owner || fence != CanonicalValue::U64(current_fence) {
+                            reject!(invalid);
+                        }
+                        let CanonicalValue::Timestamp(current_expiry) = current_expiry else {
+                            reject!(invalid);
+                        };
+                        if current_expiry <= tx_time {
+                            reject!(expired);
+                        }
+                        let Some(expiry) = expiration(duration) else {
+                            reject!(exhausted);
+                        };
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.expiry_field,
+                            CanonicalValue::Timestamp(expiry),
+                        )?;
+                    }
+                    WorkflowLeaseOperation::Release {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        stale,
+                        invalid,
+                    } => {
+                        if !require_revision(evaluate!(*expected_revision))? {
+                            reject!(stale);
+                        }
+                        if evaluate!(*owner) != current_owner
+                            || evaluate!(*fencing_token) != CanonicalValue::U64(current_fence)
+                        {
+                            reject!(invalid);
+                        }
+                        if !matches!(current_expiry, CanonicalValue::Timestamp(_)) {
+                            reject!(invalid);
+                        }
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.owner_field,
+                            CanonicalValue::Null,
+                        )?;
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.expiry_field,
+                            CanonicalValue::Null,
+                        )?;
+                    }
+                    WorkflowLeaseOperation::Expire {
+                        expected_revision,
+                        stale,
+                        active,
+                    } => {
+                        if !require_revision(evaluate!(*expected_revision))? {
+                            reject!(stale);
+                        }
+                        match (&current_owner, &current_expiry) {
+                            (CanonicalValue::Uuid(_), CanonicalValue::Timestamp(expiry))
+                                if *expiry <= tx_time => {}
+                            (CanonicalValue::Null, CanonicalValue::Null)
+                            | (CanonicalValue::Uuid(_), CanonicalValue::Timestamp(_)) => {
+                                reject!(active)
+                            }
+                            _ => return Err(ExecutionFault::Integrity),
+                        }
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.owner_field,
+                            CanonicalValue::Null,
+                        )?;
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            *binding,
+                            fields.expiry_field,
+                            CanonicalValue::Null,
+                        )?;
+                    }
+                    WorkflowLeaseOperation::Fence {
+                        owner,
+                        fencing_token,
+                        expected_revision,
+                        stale,
+                        invalid,
+                        expired,
+                    } => {
+                        if !require_revision(evaluate!(*expected_revision))? {
+                            reject!(stale);
+                        }
+                        if evaluate!(*owner) != current_owner
+                            || evaluate!(*fencing_token) != CanonicalValue::U64(current_fence)
+                        {
+                            reject!(invalid);
+                        }
+                        let CanonicalValue::Timestamp(expiry) = current_expiry else {
+                            reject!(invalid);
+                        };
+                        if expiry <= tx_time {
+                            reject!(expired);
+                        }
+                    }
+                }
             }
             Instruction::Return(outcome) => {
                 let outcome = {

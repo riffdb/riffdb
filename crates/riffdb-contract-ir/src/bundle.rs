@@ -22,7 +22,7 @@ use crate::format_registry::{
     projection_aggregation as aggregation_tag, projection_frontier as frontier_tag,
     record_owner as record_owner_tag, record_reference as record_tag, retry_policy as retry_tag,
     stable_id_namespace as namespace_tag, unary_operator as unary_tag,
-    value_type as value_type_tag,
+    value_type as value_type_tag, workflow_lease_operation as lease_operation_tag,
 };
 use crate::{
     AggregateKeyPlan, AggregateSchema, BinaryOperator, BindingId, BindingMode, BindingPlan,
@@ -35,22 +35,29 @@ use crate::{
     McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction, OutcomeSchema,
     ProjectionFrontierPolicy, ProjectionGroupComponentSchema, ProjectionGroupSchema,
     ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy, SchemaIr,
-    TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog, WorkflowLeaseSchema,
-    WorkflowSchema, WorkflowTransitionSchema, checked_len, validate_source_name,
+    TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog, WorkflowLeaseFields,
+    WorkflowLeaseOperation, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
+    checked_len, validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
 pub const BUNDLE_FORMAT_VERSION_V1: u32 = 1;
 /// Bundle framing for workflow and service-value executable IR.
 pub const BUNDLE_FORMAT_VERSION_V2: u32 = 2;
+/// Bundle framing for fenced workflow lease executable IR.
+pub const BUNDLE_FORMAT_VERSION_V3: u32 = 3;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
 pub const GRAMMAR_VERSION_V2: u32 = 2;
+/// Contract grammar containing closed fenced lease command effects.
+pub const GRAMMAR_VERSION_V3: u32 = 3;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
 pub const EXECUTABLE_IR_VERSION_V2: u32 = 2;
+/// Executable IR containing closed fenced lease operations.
+pub const EXECUTABLE_IR_VERSION_V3: u32 = 3;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -930,8 +937,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let requires_v2 = !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2);
-        let version = if requires_v2 {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v3) {
+            BUNDLE_FORMAT_VERSION_V3
+        } else if !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2) {
             BUNDLE_FORMAT_VERSION_V2
         } else {
             BUNDLE_FORMAT_VERSION_V1
@@ -985,9 +993,15 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V2,
                 GRAMMAR_VERSION_V2,
                 EXECUTABLE_IR_VERSION_V2
+            ) | (
+                BUNDLE_FORMAT_VERSION_V3,
+                GRAMMAR_VERSION_V3,
+                EXECUTABLE_IR_VERSION_V3
             )
-        ) || (ir_version == EXECUTABLE_IR_VERSION_V1
+        ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
+            || (ir_version < EXECUTABLE_IR_VERSION_V3
+                && commands.iter().any(CommandPlan::requires_ir_v3))
         {
             return Err(IrValidationError::UnsupportedVersion {
                 kind: "contract bundle version tuple",
@@ -1635,7 +1649,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v2() {
+    let ir_version = if plan.requires_ir_v3() {
+        EXECUTABLE_IR_VERSION_V3
+    } else if plan.requires_ir_v2() {
         EXECUTABLE_IR_VERSION_V2
     } else {
         EXECUTABLE_IR_VERSION_V1
@@ -1961,7 +1977,9 @@ fn compute_plan_root_hash(
     commands: &[CommandPlan],
     projections: &[ProjectionPlan],
 ) -> Result<ContractPlanRootHash, IrValidationError> {
-    let ir_version = if commands.iter().any(CommandPlan::requires_ir_v2) {
+    let ir_version = if commands.iter().any(CommandPlan::requires_ir_v3) {
+        EXECUTABLE_IR_VERSION_V3
+    } else if commands.iter().any(CommandPlan::requires_ir_v2) {
         EXECUTABLE_IR_VERSION_V2
     } else {
         EXECUTABLE_IR_VERSION_V1
@@ -2605,7 +2623,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v2() {
+    let ir_version = if command.requires_ir_v3() {
+        EXECUTABLE_IR_VERSION_V3
+    } else if command.requires_ir_v2() {
         EXECUTABLE_IR_VERSION_V2
     } else {
         EXECUTABLE_IR_VERSION_V1
@@ -2633,7 +2653,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v2() {
+    let ir_version = if command.requires_ir_v3() {
+        EXECUTABLE_IR_VERSION_V3
+    } else if command.requires_ir_v2() {
         EXECUTABLE_IR_VERSION_V2
     } else {
         EXECUTABLE_IR_VERSION_V1
@@ -2906,6 +2928,102 @@ fn encode_instruction(
             encode_outcome_construction(writer, stale)?;
             encode_outcome_construction(writer, illegal)
         }
+        Instruction::WorkflowLease {
+            binding,
+            fields,
+            operation,
+        } => {
+            writer.u32(binding.get())?;
+            writer.u32(fields.owner_field.get())?;
+            writer.u32(fields.expiry_field.get())?;
+            writer.u32(fields.fencing_token_field.get())?;
+            writer.bool(fields.attempt_field.is_some())?;
+            if let Some(field) = fields.attempt_field {
+                writer.u32(field.get())?;
+            }
+            writer.u64(fields.minimum_duration_seconds)?;
+            writer.u64(fields.maximum_duration_seconds)?;
+            match operation {
+                WorkflowLeaseOperation::Claim {
+                    owner,
+                    duration_seconds,
+                    expected_revision,
+                    stale,
+                    unavailable,
+                    invalid,
+                    exhausted,
+                } => {
+                    writer.u8(lease_operation_tag::CLAIM)?;
+                    for expression in [owner, duration_seconds, expected_revision] {
+                        writer.u32(expression.get())?;
+                    }
+                    for outcome in [stale, unavailable, invalid, exhausted] {
+                        encode_outcome_construction(writer, outcome)?;
+                    }
+                }
+                WorkflowLeaseOperation::Renew {
+                    owner,
+                    fencing_token,
+                    duration_seconds,
+                    expected_revision,
+                    stale,
+                    invalid,
+                    expired,
+                    exhausted,
+                } => {
+                    writer.u8(lease_operation_tag::RENEW)?;
+                    for expression in [owner, fencing_token, duration_seconds, expected_revision] {
+                        writer.u32(expression.get())?;
+                    }
+                    for outcome in [stale, invalid, expired, exhausted] {
+                        encode_outcome_construction(writer, outcome)?;
+                    }
+                }
+                WorkflowLeaseOperation::Release {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    stale,
+                    invalid,
+                } => {
+                    writer.u8(lease_operation_tag::RELEASE)?;
+                    for expression in [owner, fencing_token, expected_revision] {
+                        writer.u32(expression.get())?;
+                    }
+                    for outcome in [stale, invalid] {
+                        encode_outcome_construction(writer, outcome)?;
+                    }
+                }
+                WorkflowLeaseOperation::Expire {
+                    expected_revision,
+                    stale,
+                    active,
+                } => {
+                    writer.u8(lease_operation_tag::EXPIRE)?;
+                    writer.u32(expected_revision.get())?;
+                    for outcome in [stale, active] {
+                        encode_outcome_construction(writer, outcome)?;
+                    }
+                }
+                WorkflowLeaseOperation::Fence {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    stale,
+                    invalid,
+                    expired,
+                } => {
+                    writer.u8(lease_operation_tag::FENCE)?;
+                    for expression in [owner, fencing_token, expected_revision] {
+                        writer.u32(expression.get())?;
+                    }
+                    for outcome in [stale, invalid, expired] {
+                        encode_outcome_construction(writer, outcome)?;
+                    }
+                }
+            }
+            Ok(())
+        }
         Instruction::EmitEvent(event) => encode_event_construction(writer, event),
         Instruction::Return(outcome) => encode_outcome_construction(writer, outcome),
     }
@@ -3064,6 +3182,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V2,
             GRAMMAR_VERSION_V2,
             EXECUTABLE_IR_VERSION_V2
+        ) | (
+            BUNDLE_FORMAT_VERSION_V3,
+            GRAMMAR_VERSION_V3,
+            EXECUTABLE_IR_VERSION_V3
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4604,6 +4726,83 @@ fn decode_instruction_versioned(
                 expected_revision: ExprId::new(reader.u32()?),
                 stale: decode_outcome_construction(reader, outcomes, arena)?,
                 illegal: decode_outcome_construction(reader, outcomes, arena)?,
+            })
+        }
+        instruction_tag::WORKFLOW_LEASE if ir_version >= EXECUTABLE_IR_VERSION_V3 => {
+            let binding = BindingId::new(reader.u32()?);
+            let fields = WorkflowLeaseFields {
+                owner_field: decode_field_id(reader)?,
+                expiry_field: decode_field_id(reader)?,
+                fencing_token_field: decode_field_id(reader)?,
+                attempt_field: if reader.bool()? {
+                    Some(decode_field_id(reader)?)
+                } else {
+                    None
+                },
+                minimum_duration_seconds: reader.u64()?,
+                maximum_duration_seconds: reader.u64()?,
+            };
+            macro_rules! expression {
+                () => {
+                    ExprId::new(reader.u32()?)
+                };
+            }
+            macro_rules! outcome {
+                () => {
+                    decode_outcome_construction(reader, outcomes, arena)?
+                };
+            }
+            let operation = match reader.u8()? {
+                lease_operation_tag::CLAIM => WorkflowLeaseOperation::Claim {
+                    owner: expression!(),
+                    duration_seconds: expression!(),
+                    expected_revision: expression!(),
+                    stale: outcome!(),
+                    unavailable: outcome!(),
+                    invalid: outcome!(),
+                    exhausted: outcome!(),
+                },
+                lease_operation_tag::RENEW => WorkflowLeaseOperation::Renew {
+                    owner: expression!(),
+                    fencing_token: expression!(),
+                    duration_seconds: expression!(),
+                    expected_revision: expression!(),
+                    stale: outcome!(),
+                    invalid: outcome!(),
+                    expired: outcome!(),
+                    exhausted: outcome!(),
+                },
+                lease_operation_tag::RELEASE => WorkflowLeaseOperation::Release {
+                    owner: expression!(),
+                    fencing_token: expression!(),
+                    expected_revision: expression!(),
+                    stale: outcome!(),
+                    invalid: outcome!(),
+                },
+                lease_operation_tag::EXPIRE => WorkflowLeaseOperation::Expire {
+                    expected_revision: expression!(),
+                    stale: outcome!(),
+                    active: outcome!(),
+                },
+                lease_operation_tag::FENCE => WorkflowLeaseOperation::Fence {
+                    owner: expression!(),
+                    fencing_token: expression!(),
+                    expected_revision: expression!(),
+                    stale: outcome!(),
+                    invalid: outcome!(),
+                    expired: outcome!(),
+                },
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "workflow lease operation",
+                        tag,
+                    });
+                }
+            };
+            Ok(Instruction::WorkflowLease {
+                binding,
+                fields,
+                operation,
             })
         }
         instruction_tag::EMIT_EVENT => Ok(Instruction::EmitEvent(decode_event_construction(

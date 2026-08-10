@@ -139,6 +139,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x03` | emit event |
 | `0x04` | return |
 | `0x05` | workflow transition |
+| `0x06` | workflow lease |
 
 ### Service-owned command value
 
@@ -337,6 +338,17 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x03` | emit event | `event`: EventConstruction |
 | `0x04` | return | `outcome`: OutcomeConstruction |
 | `0x05` | workflow transition | `binding`: BindingId as u32; `state_field`: FieldId as u32; `source_states`: u32 count + EnumVariantId[]; `destination`: EnumVariantId as u32; `expected_revision`: ExprId as u32; `stale`: OutcomeConstruction; `illegal`: OutcomeConstruction |
+| `0x06` | workflow lease | `binding`: BindingId as u32; `fields`: WorkflowLeaseFields; `operation`: tagged WorkflowLeaseOperation |
+
+### WorkflowLeaseOperation
+
+| Tag | Variant | Ordered payload after tag |
+|---:|---|---|
+| `0x01` | claim | `owner`: ExprId; `duration_seconds`: ExprId; `expected_revision`: ExprId; `stale`: OutcomeConstruction; `unavailable`: OutcomeConstruction; `invalid`: OutcomeConstruction; `exhausted`: OutcomeConstruction |
+| `0x02` | renew | `owner`: ExprId; `fencing_token`: ExprId; `duration_seconds`: ExprId; `expected_revision`: ExprId; `stale`: OutcomeConstruction; `invalid`: OutcomeConstruction; `expired`: OutcomeConstruction; `exhausted`: OutcomeConstruction |
+| `0x03` | release | `owner`: ExprId; `fencing_token`: ExprId; `expected_revision`: ExprId; `stale`: OutcomeConstruction; `invalid`: OutcomeConstruction |
+| `0x04` | expire | `expected_revision`: ExprId; `stale`: OutcomeConstruction; `active`: OutcomeConstruction |
+| `0x05` | fence | `owner`: ExprId; `fencing_token`: ExprId; `expected_revision`: ExprId; `stale`: OutcomeConstruction; `invalid`: OutcomeConstruction; `expired`: OutcomeConstruction |
 
 ### CapabilityRequirement
 
@@ -438,9 +450,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `magic` | ASCII `RIFFDB-BUNDLE\0` |
-| 2 | `bundle_format_version` | u32 = 1 or 2 |
-| 3 | `grammar_version` | u32 = 1 or 2; must equal the bundle version |
-| 4 | `executable_ir_version` | u32 = 1 or 2; must equal the bundle version |
+| 2 | `bundle_format_version` | u32 = 1, 2, or 3 |
+| 3 | `grammar_version` | u32 = 1, 2, or 3; must equal the bundle version |
+| 4 | `executable_ir_version` | u32 = 1, 2, or 3; must equal the bundle version |
 | 5 | `compiler_version` | nonempty ASCII compiler semantic-version identity string, <=64 bytes |
 | 6 | `contract_lineage` | string |
 | 7 | `contract_version` | u64 |
@@ -449,7 +461,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 10 | `plan_root_hash` | 32 bytes |
 | 11 | `ledger` | LineageLedgerV1 |
 | 12 | `schema` | StructuralSchema |
-| 13 | `workflows` | IR v2 only: u32 count + WorkflowSchema[]; omitted in v1 |
+| 13 | `workflows` | IR v2+: u32 count + WorkflowSchema[]; omitted in v1 |
 | 14 | `commands` | u32 count + CommandBundleEntry[] |
 | 15 | `projections` | u32 count + ProjectionBundleEntry[] |
 | 16 | `schema_artifacts` | u32 count + GeneratedSchemaArtifact[] |
@@ -683,6 +695,17 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 6 | `minimum_duration_seconds` | nonzero u64 |
 | 7 | `maximum_duration_seconds` | u64 <= 86400 and >= minimum |
 
+### WorkflowLeaseFields
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `owner_field` | FieldId of optional UUID |
+| 2 | `expiry_field` | FieldId of optional timestamp |
+| 3 | `fencing_token_field` | FieldId of u64 |
+| 4 | `attempt_field` | optional FieldId of u64 |
+| 5 | `minimum_duration_seconds` | nonzero u64 |
+| 6 | `maximum_duration_seconds` | u64 <= 86400 and >= minimum |
+
 ### CommandBundleEntry
 
 | # | Field | Encoding |
@@ -698,7 +721,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `input` | RecordSchema |
-| 2 | `service_values` | IR v2 only: u32 count + (FieldId, optional display name, ValueType, ServiceValueKind tag)[]; omitted in v1 |
+| 2 | `service_values` | IR v2+: u32 count + (FieldId, optional display name, ValueType, ServiceValueKind tag)[]; omitted in v1 |
 | 3 | `outcomes` | u32 count + OutcomeSchema[] |
 | 4 | `success_outcome` | OutcomeId |
 | 5 | `idempotency_input` | optional FieldId |

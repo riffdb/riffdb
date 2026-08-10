@@ -882,10 +882,62 @@ fn validate_evaluated_output(
                 .bindings()
                 .iter()
                 .any(|binding| binding.failure().outcome_id() == outcome.outcome_id())
-                || plan.instructions().iter().any(|instruction| {
-                    matches!(instruction, Instruction::Require { reject, .. }
-                        if reject.outcome_id() == outcome.outcome_id())
-                }));
+                || plan
+                    .instructions()
+                    .iter()
+                    .any(|instruction| match instruction {
+                        Instruction::Require { reject, .. } => {
+                            reject.outcome_id() == outcome.outcome_id()
+                        }
+                        Instruction::WorkflowTransition { stale, illegal, .. } => [stale, illegal]
+                            .into_iter()
+                            .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                        Instruction::WorkflowLease { operation, .. } => match operation {
+                            riffdb_contract_ir::WorkflowLeaseOperation::Claim {
+                                stale,
+                                unavailable,
+                                invalid,
+                                exhausted,
+                                ..
+                            } => [stale, unavailable, invalid, exhausted]
+                                .into_iter()
+                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                            riffdb_contract_ir::WorkflowLeaseOperation::Renew {
+                                stale,
+                                invalid,
+                                expired,
+                                exhausted,
+                                ..
+                            } => [stale, invalid, expired, exhausted]
+                                .into_iter()
+                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                            riffdb_contract_ir::WorkflowLeaseOperation::Release {
+                                stale,
+                                invalid,
+                                ..
+                            } => [stale, invalid]
+                                .into_iter()
+                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                            riffdb_contract_ir::WorkflowLeaseOperation::Expire {
+                                stale,
+                                active,
+                                ..
+                            } => [stale, active]
+                                .into_iter()
+                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                            riffdb_contract_ir::WorkflowLeaseOperation::Fence {
+                                stale,
+                                invalid,
+                                expired,
+                                ..
+                            } => [stale, invalid, expired]
+                                .into_iter()
+                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                        },
+                        Instruction::SetField { .. }
+                        | Instruction::EmitEvent(_)
+                        | Instruction::Return(_) => false,
+                    }));
         if !declared_rejection || !evaluated.event_intents().is_empty() {
             return Err(CommandValidationError::integrity());
         }
@@ -903,6 +955,7 @@ fn validate_evaluated_output(
             Instruction::Require { .. }
             | Instruction::SetField { .. }
             | Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. }
             | Instruction::Return(_) => None,
         });
     let mut actual_events = evaluated.event_intents().iter();

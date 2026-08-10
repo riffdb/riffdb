@@ -754,6 +754,11 @@ fn token_identifier(token: &Token) -> Option<&str> {
         Token::From => Some("from"),
         Token::To => Some("to"),
         Token::Lease => Some("lease"),
+        Token::Claim => Some("claim"),
+        Token::Renew => Some("renew"),
+        Token::Release => Some("release"),
+        Token::Expire => Some("expire"),
+        Token::Fence => Some("fence"),
         Token::Owner => Some("owner"),
         Token::ExpiresAt => Some("expires_at"),
         Token::FencingToken => Some("fencing_token"),
@@ -766,6 +771,11 @@ fn token_identifier(token: &Token) -> Option<&str> {
         Token::Revision => Some("revision"),
         Token::Stale => Some("stale"),
         Token::Illegal => Some("illegal"),
+        Token::Unavailable => Some("unavailable"),
+        Token::Invalid => Some("invalid"),
+        Token::Exhausted => Some("exhausted"),
+        Token::Expired => Some("expired"),
+        Token::Active => Some("active"),
         _ => None,
     }
 }

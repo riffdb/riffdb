@@ -7,9 +7,70 @@ use riffdb_types::FieldId;
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::{
-    HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome, TypedContractHir,
+    HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome,
+    HirWorkflowLeaseOperation, TypedContractHir,
 };
 use crate::locality::command_expression_fingerprint;
+
+fn lease_roots(operation: &HirWorkflowLeaseOperation) -> Vec<&HirExpressionRoot> {
+    match operation {
+        HirWorkflowLeaseOperation::Claim {
+            owner,
+            duration_seconds,
+            expected_revision,
+            ..
+        } => vec![owner, duration_seconds, expected_revision],
+        HirWorkflowLeaseOperation::Renew {
+            owner,
+            fencing_token,
+            duration_seconds,
+            expected_revision,
+            ..
+        } => vec![owner, fencing_token, duration_seconds, expected_revision],
+        HirWorkflowLeaseOperation::Release {
+            owner,
+            fencing_token,
+            expected_revision,
+            ..
+        }
+        | HirWorkflowLeaseOperation::Fence {
+            owner,
+            fencing_token,
+            expected_revision,
+            ..
+        } => vec![owner, fencing_token, expected_revision],
+        HirWorkflowLeaseOperation::Expire {
+            expected_revision, ..
+        } => vec![expected_revision],
+    }
+}
+
+fn lease_outcomes(operation: &HirWorkflowLeaseOperation) -> Vec<&HirOutcome> {
+    match operation {
+        HirWorkflowLeaseOperation::Claim {
+            stale,
+            unavailable,
+            invalid,
+            exhausted,
+            ..
+        } => vec![stale, unavailable, invalid, exhausted],
+        HirWorkflowLeaseOperation::Renew {
+            stale,
+            invalid,
+            expired,
+            exhausted,
+            ..
+        } => vec![stale, invalid, expired, exhausted],
+        HirWorkflowLeaseOperation::Release { stale, invalid, .. } => vec![stale, invalid],
+        HirWorkflowLeaseOperation::Expire { stale, active, .. } => vec![stale, active],
+        HirWorkflowLeaseOperation::Fence {
+            stale,
+            invalid,
+            expired,
+            ..
+        } => vec![stale, invalid, expired],
+    }
+}
 
 #[derive(Clone, Debug)]
 struct BindingState {
@@ -181,6 +242,85 @@ fn validate_command(
                 outcomes.push(stale);
                 outcomes.push(illegal);
             }
+            HirEffect::WorkflowLease {
+                lease_span,
+                binding,
+                owner_field,
+                expiry_field,
+                fencing_token_field,
+                attempt_field,
+                operation,
+                ..
+            } => {
+                let Some(state) = states.get(binding) else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        *lease_span,
+                    ));
+                    continue;
+                };
+                let written_fields = match operation.as_ref() {
+                    HirWorkflowLeaseOperation::Claim { .. } => [
+                        Some(*owner_field),
+                        Some(*expiry_field),
+                        Some(*fencing_token_field),
+                        *attempt_field,
+                    ],
+                    HirWorkflowLeaseOperation::Renew { .. } => {
+                        [Some(*expiry_field), None, None, None]
+                    }
+                    HirWorkflowLeaseOperation::Release { .. }
+                    | HirWorkflowLeaseOperation::Expire { .. } => {
+                        [Some(*owner_field), Some(*expiry_field), None, None]
+                    }
+                    HirWorkflowLeaseOperation::Fence { .. } => [None, None, None, None],
+                };
+                if state.mode != BindingMode::Mutate
+                    || written_fields.into_iter().flatten().any(|field| {
+                        state.key_fields.contains(&field) || !written.insert((*binding, field))
+                    })
+                {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidWorkflowLease,
+                        *lease_span,
+                    ));
+                    continue;
+                }
+                for root in lease_roots(operation) {
+                    validate_create_reads(command, &states, root, diagnostics);
+                    influential_roots.push(root);
+                }
+                for outcome in lease_outcomes(operation) {
+                    validate_create_object_reads(command, &states, &outcome.fields, diagnostics);
+                    influential_roots.extend(outcome.fields.iter().map(|field| &field.value));
+                    outcomes.push(outcome);
+                }
+            }
+        }
+    }
+    for binding in command
+        .bindings
+        .iter()
+        .filter(|binding| binding.mode == BindingMode::Mutate)
+    {
+        let lease_protected = hir
+            .workflows
+            .iter()
+            .any(|workflow| workflow.entity_id == binding.entity_id && workflow.lease.is_some());
+        let has_fence = command.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                HirEffect::WorkflowLease {
+                    binding: lease_binding,
+                    ..
+                } if *lease_binding == binding.id
+            )
+        });
+        if lease_protected && !has_fence {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidWorkflowLease,
+                binding.span,
+            ));
         }
     }
     validate_create_object_reads(command, &states, &command.success.fields, diagnostics);
@@ -219,7 +359,7 @@ fn validate_unique_conflicts(
                 ..
             } => Some(((*binding, *field), value)),
             HirEffect::Emit { .. } => None,
-            HirEffect::WorkflowTransition { .. } => None,
+            HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
     for binding in command
@@ -289,7 +429,7 @@ fn validate_relationship_reads(
                 ..
             } => Some(((*binding, *field), value)),
             HirEffect::Emit { .. } => None,
-            HirEffect::WorkflowTransition { .. } => None,
+            HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -381,6 +521,7 @@ fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<Compil
             HirEffect::WorkflowTransition {
                 transition_span, ..
             } => *transition_span,
+            HirEffect::WorkflowLease { lease_span, .. } => *lease_span,
         });
     diagnostics.push(CompilerDiagnostic::new(
         CompilerDiagnosticCode::InvalidBinding,

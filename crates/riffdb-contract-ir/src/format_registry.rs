@@ -128,6 +128,14 @@ tag_registry!(instruction, "Instruction", {
     EMIT_EVENT = 0x03 => "emit event",
     RETURN = 0x04 => "return",
     WORKFLOW_TRANSITION = 0x05 => "workflow transition",
+    WORKFLOW_LEASE = 0x06 => "workflow lease",
+});
+tag_registry!(workflow_lease_operation, "Workflow lease operation", {
+    CLAIM = 0x01 => "claim",
+    RENEW = 0x02 => "renew",
+    RELEASE = 0x03 => "release",
+    EXPIRE = 0x04 => "expire",
+    FENCE = 0x05 => "fence",
 });
 tag_registry!(service_value_kind, "Service-owned command value", {
     UUID_V7 = 0x01 => "uuid v7",
@@ -459,6 +467,32 @@ pub(crate) const INSTRUCTION_VARIANTS: &[TaggedVariantLayout] = &[
         "stale" => "OutcomeConstruction",
         "illegal" => "OutcomeConstruction",
     }),
+    tagged_variant!(instruction::WORKFLOW_LEASE, "workflow lease", {
+        "binding" => "BindingId as u32",
+        "fields" => "WorkflowLeaseFields",
+        "operation" => "tagged WorkflowLeaseOperation",
+    }),
+];
+
+/// Exact `WorkflowLeaseOperation` payloads after the operation tag.
+pub(crate) const WORKFLOW_LEASE_OPERATION_VARIANTS: &[TaggedVariantLayout] = &[
+    tagged_variant!(workflow_lease_operation::CLAIM, "claim", {
+        "owner" => "ExprId", "duration_seconds" => "ExprId", "expected_revision" => "ExprId",
+        "stale" => "OutcomeConstruction", "unavailable" => "OutcomeConstruction", "invalid" => "OutcomeConstruction", "exhausted" => "OutcomeConstruction",
+    }),
+    tagged_variant!(workflow_lease_operation::RENEW, "renew", {
+        "owner" => "ExprId", "fencing_token" => "ExprId", "duration_seconds" => "ExprId", "expected_revision" => "ExprId",
+        "stale" => "OutcomeConstruction", "invalid" => "OutcomeConstruction", "expired" => "OutcomeConstruction", "exhausted" => "OutcomeConstruction",
+    }),
+    tagged_variant!(workflow_lease_operation::RELEASE, "release", {
+        "owner" => "ExprId", "fencing_token" => "ExprId", "expected_revision" => "ExprId", "stale" => "OutcomeConstruction", "invalid" => "OutcomeConstruction",
+    }),
+    tagged_variant!(workflow_lease_operation::EXPIRE, "expire", {
+        "expected_revision" => "ExprId", "stale" => "OutcomeConstruction", "active" => "OutcomeConstruction",
+    }),
+    tagged_variant!(workflow_lease_operation::FENCE, "fence", {
+        "owner" => "ExprId", "fencing_token" => "ExprId", "expected_revision" => "ExprId", "stale" => "OutcomeConstruction", "invalid" => "OutcomeConstruction", "expired" => "OutcomeConstruction",
+    }),
 ];
 
 /// Exact capability payloads after the capability-requirement tag.
@@ -527,6 +561,11 @@ pub(crate) const TAGGED_UNION_LAYOUTS: &[TaggedUnionLayout] = &[
         name: "Instruction",
         tags: instruction::REGISTRY,
         variants: INSTRUCTION_VARIANTS,
+    },
+    TaggedUnionLayout {
+        name: "WorkflowLeaseOperation",
+        tags: workflow_lease_operation::REGISTRY,
+        variants: WORKFLOW_LEASE_OPERATION_VARIANTS,
     },
     TaggedUnionLayout {
         name: "CapabilityRequirement",
@@ -893,9 +932,9 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
 
 layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "magic" => "ASCII `RIFFDB-BUNDLE\\0`",
-    "bundle_format_version" => "u32 = 1 or 2",
-    "grammar_version" => "u32 = 1 or 2; must equal the bundle version",
-    "executable_ir_version" => "u32 = 1 or 2; must equal the bundle version",
+    "bundle_format_version" => "u32 = 1, 2, or 3",
+    "grammar_version" => "u32 = 1, 2, or 3; must equal the bundle version",
+    "executable_ir_version" => "u32 = 1, 2, or 3; must equal the bundle version",
     "compiler_version" => "nonempty ASCII compiler semantic-version identity string, <=64 bytes",
     "contract_lineage" => "string",
     "contract_version" => "u64",
@@ -904,7 +943,7 @@ layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "plan_root_hash" => "32 bytes",
     "ledger" => "LineageLedgerV1",
     "schema" => "StructuralSchema",
-    "workflows" => "IR v2 only: u32 count + WorkflowSchema[]; omitted in v1",
+    "workflows" => "IR v2+: u32 count + WorkflowSchema[]; omitted in v1",
     "commands" => "u32 count + CommandBundleEntry[]",
     "projections" => "u32 count + ProjectionBundleEntry[]",
     "schema_artifacts" => "u32 count + GeneratedSchemaArtifact[]",
@@ -1063,6 +1102,14 @@ layout!(WORKFLOW_LEASE_LAYOUT, "WorkflowLeaseSchema", {
     "minimum_duration_seconds" => "nonzero u64",
     "maximum_duration_seconds" => "u64 <= 86400 and >= minimum",
 });
+layout!(WORKFLOW_LEASE_FIELDS_LAYOUT, "WorkflowLeaseFields", {
+    "owner_field" => "FieldId of optional UUID",
+    "expiry_field" => "FieldId of optional timestamp",
+    "fencing_token_field" => "FieldId of u64",
+    "attempt_field" => "optional FieldId of u64",
+    "minimum_duration_seconds" => "nonzero u64",
+    "maximum_duration_seconds" => "u64 <= 86400 and >= minimum",
+});
 layout!(COMMAND_ENTRY_LAYOUT, "CommandBundleEntry", {
     "command_id" => "CommandId",
     "name" => "string",
@@ -1072,7 +1119,7 @@ layout!(COMMAND_ENTRY_LAYOUT, "CommandBundleEntry", {
 });
 layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "input" => "RecordSchema",
-    "service_values" => "IR v2 only: u32 count + (FieldId, optional display name, ValueType, ServiceValueKind tag)[]; omitted in v1",
+    "service_values" => "IR v2+: u32 count + (FieldId, optional display name, ValueType, ServiceValueKind tag)[]; omitted in v1",
     "outcomes" => "u32 count + OutcomeSchema[]",
     "success_outcome" => "OutcomeId",
     "idempotency_input" => "optional FieldId",
@@ -1242,6 +1289,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     WORKFLOW_LAYOUT,
     WORKFLOW_TRANSITION_LAYOUT,
     WORKFLOW_LEASE_LAYOUT,
+    WORKFLOW_LEASE_FIELDS_LAYOUT,
     COMMAND_ENTRY_LAYOUT,
     COMMAND_SEMANTICS_LAYOUT,
     OUTCOME_SCHEMA_LAYOUT,
@@ -2088,7 +2136,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 48);
+        assert_eq!(FORMAT_LAYOUTS.len(), 49);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

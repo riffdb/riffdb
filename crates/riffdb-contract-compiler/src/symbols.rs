@@ -544,11 +544,41 @@ fn allocate_command_symbols(
         outcome_occurrences.push(&rejection.value);
     }
     for effect in &command.effects {
-        let riffdb_contract_syntax::ast::Effect::WorkflowTransition(transition) = &effect.value
-        else {
-            continue;
+        let rejections = match &effect.value {
+            riffdb_contract_syntax::ast::Effect::WorkflowTransition(transition) => {
+                vec![&transition.stale, &transition.illegal]
+            }
+            riffdb_contract_syntax::ast::Effect::WorkflowLease(lease) => {
+                use riffdb_contract_syntax::ast::WorkflowLeaseOperation;
+                match &lease.operation {
+                    WorkflowLeaseOperation::Claim {
+                        stale,
+                        unavailable,
+                        invalid,
+                        exhausted,
+                        ..
+                    } => vec![stale, unavailable, invalid, exhausted],
+                    WorkflowLeaseOperation::Renew {
+                        stale,
+                        invalid,
+                        expired,
+                        exhausted,
+                        ..
+                    } => vec![stale, invalid, expired, exhausted],
+                    WorkflowLeaseOperation::Release { stale, invalid, .. } => vec![stale, invalid],
+                    WorkflowLeaseOperation::Expire { stale, active, .. } => vec![stale, active],
+                    WorkflowLeaseOperation::Fence {
+                        stale,
+                        invalid,
+                        expired,
+                        ..
+                    } => vec![stale, invalid, expired],
+                }
+            }
+            riffdb_contract_syntax::ast::Effect::Set(_)
+            | riffdb_contract_syntax::ast::Effect::Emit(_) => Vec::new(),
         };
-        for rejection in [&transition.stale, &transition.illegal] {
+        for rejection in rejections {
             rejection_names
                 .entry(rejection.value.name.value.clone())
                 .or_insert(rejection.value.name.span);
