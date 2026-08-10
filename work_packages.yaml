@@ -10353,7 +10353,7 @@ work_packages:
   required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0012, ADR-0058, ADR-0059,
     ADR-0093, ADR-0095, ADR-0100, ADR-0101, ADR-0102, ADR-0104, ADR-0107]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
-    crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-command-runtime/**,
+    crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-runtime/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-proto/**,
@@ -10370,7 +10370,7 @@ work_packages:
     journal fence uncertainty, replay, crash recovery, startup integrity, backup, and migration
     compatibility evidence
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-command-runtime -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
   - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
   - cargo +1.97.0 test --test storage_recovery_matrix --all-features
   - ./scripts/generate-proto --check
@@ -10582,7 +10582,7 @@ work_packages:
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
     fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
-    crates/riffdb-command-runtime/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
+    crates/riffdb-runtime/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
@@ -10601,7 +10601,7 @@ work_packages:
   - Deterministic and crash schedules for transition, claim, expiration, stale holder, clock
     rollback/overflow, service UUID/time replay, cancellation, and same-key uncertainty
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-command-runtime --all-features
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-runtime --all-features
   - cargo +1.97.0 test -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-client-rust --all-features
   - cargo +1.97.0 test -p riffdb-testkit --test workflow_concurrency --all-features
   - ./scripts/generate-proto --check
@@ -10817,7 +10817,7 @@ work_packages:
     ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
-    crates/riffdb-service/**, crates/riffdb-command-runtime/**,
+    crates/riffdb-service/**, crates/riffdb-runtime/**,
     crates/riffdb-query-executor/**, crates/riffdb-projection/**,
     crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
