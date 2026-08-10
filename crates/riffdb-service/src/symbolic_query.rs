@@ -271,7 +271,7 @@ impl SymbolicQueryIdentity {
     }
 
     /// Test-only identity for golden conversion fixtures.
-    #[cfg(feature = "test-fixtures")]
+    #[cfg(any(test, feature = "test-fixtures"))]
     #[doc(hidden)]
     pub fn from_parts_for_test(
         lineage: ContractLineage,
@@ -1057,7 +1057,7 @@ impl SymbolicResultRecord {
     }
 
     /// Test-only constructor for golden conversion fixtures.
-    #[cfg(feature = "test-fixtures")]
+    #[cfg(any(test, feature = "test-fixtures"))]
     #[doc(hidden)]
     pub fn from_shared_for_test(
         entity: Arc<str>,
@@ -1236,7 +1236,7 @@ impl ExecuteSymbolicQueryResult {
     }
 
     /// Test-only constructor for golden conversion fixtures and enum-map sharing tests.
-    #[cfg(feature = "test-fixtures")]
+    #[cfg(any(test, feature = "test-fixtures"))]
     #[doc(hidden)]
     pub fn from_parts_for_test(
         identity: SymbolicQueryIdentity,

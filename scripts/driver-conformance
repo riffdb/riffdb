@@ -266,7 +266,7 @@ RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     >"$work_root/python-revoked.json"
 for language in rust go typescript python; do
     jq -e '.schema == "riffdb.driver-conformance-fault/v1"
-           and .fault == "revocation" and .code == "RDB-AUTH-0214"' \
+           and .fault == "revocation" and .code == "RDB-AUTH-0215"' \
         "$work_root/$language-revoked.json" >/dev/null
 done
 

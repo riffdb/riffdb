@@ -25,7 +25,7 @@ try {
     } catch (error) {
       if (error instanceof DriverApplicationError) code = error.details.code;
     }
-    if (code !== "RDB-AUTH-0214") throw new Error("TypeScript revocation error lost semantic details");
+    if (code !== "RDB-AUTH-0215") throw new Error("TypeScript revocation error lost semantic details");
     console.log(JSON.stringify({ schema: "riffdb.driver-conformance-fault/v1", fault: "revocation", code }));
     process.exitCode = 0;
   } else {

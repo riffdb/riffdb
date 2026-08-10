@@ -29,6 +29,13 @@ The message and remediation text are selected from a closed registry. The
 complete v1 registry is frozen in
 `fixtures/application-errors/registry-v1.tsv`.
 
+`RDB-AUTH-0215` means the presented credential reciprocally matched a retained
+capability that has been irreversibly revoked. Generated clients can therefore
+distinguish replacement/role-rebinding work from an ordinary `RDB-AUTH-0214`
+policy denial. Unknown, malformed, expired, or boundary-mismatched credentials
+remain the generic authentication/authorization class; the revoked code is not
+an oracle for credentials that did not establish an exact retained match.
+
 ## Safety boundary
 
 An application error may contain:

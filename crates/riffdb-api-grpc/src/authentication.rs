@@ -18,6 +18,8 @@ pub const AUTHORIZATION_METADATA_KEY: &str = "authorization";
 pub const BOOTSTRAP_TOKEN_METADATA_KEY: &str = "riffdb-bootstrap-token-bin";
 /// Static details-free message for failed credential authentication.
 pub const UNAUTHENTICATED_MESSAGE: &str = "authentication failed";
+/// Static safe message returned only for a reciprocally matched revoked token.
+pub const CAPABILITY_REVOKED_MESSAGE: &str = "capability is revoked";
 
 /// Extracts exactly one normal bearer credential and delegates authentication.
 ///
@@ -121,6 +123,9 @@ pub fn prepare_loopback_bootstrap_token(
 fn authentication_failure(failure: AuthenticationFailure) -> Status {
     match failure {
         AuthenticationFailure::Unauthenticated => unauthenticated(),
+        AuthenticationFailure::CapabilityRevoked => {
+            Status::new(Code::PermissionDenied, CAPABILITY_REVOKED_MESSAGE)
+        }
         AuthenticationFailure::Internal => Status::internal(EMERGENCY_INTERNAL_MESSAGE),
     }
 }
@@ -158,6 +163,18 @@ mod tests {
             _context: &AuthenticationContext,
         ) -> Result<AuthenticatedPrincipal, AuthenticationFailure> {
             Err(AuthenticationFailure::Internal)
+        }
+    }
+
+    struct RevokedAuthenticator;
+
+    impl CredentialAuthenticator for RevokedAuthenticator {
+        fn authenticate(
+            &self,
+            _credential: OpaqueCredential<'_>,
+            _context: &AuthenticationContext,
+        ) -> Result<AuthenticatedPrincipal, AuthenticationFailure> {
+            Err(AuthenticationFailure::CapabilityRevoked)
         }
     }
 
@@ -232,6 +249,27 @@ mod tests {
         .expect_err("internal authentication failure must stay redacted");
         assert_eq!(status.code(), Code::Internal);
         assert_eq!(status.message(), crate::EMERGENCY_INTERNAL_MESSAGE);
+        assert!(status.details().is_empty());
+    }
+
+    #[test]
+    fn reciprocally_matched_revocation_has_one_closed_transport_class() {
+        const TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            AUTHORIZATION_METADATA_KEY,
+            format!("Bearer {TOKEN}")
+                .parse()
+                .expect("valid ASCII metadata value"),
+        );
+        let status = authenticate_normal_request(
+            &metadata,
+            &RevokedAuthenticator,
+            &test_authentication_context(),
+        )
+        .expect_err("revoked capability must fail");
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert_eq!(status.message(), CAPABILITY_REVOKED_MESSAGE);
         assert!(status.details().is_empty());
     }
 

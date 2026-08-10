@@ -80,7 +80,11 @@ pub fn status_from_application_boundary(
 ) -> Status {
     let error = match status.code() {
         Code::InvalidArgument => context.invalid_request(),
-        Code::Unauthenticated | Code::PermissionDenied => context.authorization_denied(),
+        Code::Unauthenticated => context.authorization_denied(),
+        // `normal_invocation` reserves PermissionDenied for the auth-owned,
+        // reciprocally matched revoked-token class. Policy denials occur after
+        // admission and arrive here through `ServiceFailure` instead.
+        Code::PermissionDenied => context.capability_revoked(),
         Code::Unavailable => context.unavailable(),
         // Emergency containment has no real incident identity and remains
         // details-free instead of fabricating application context.
@@ -207,6 +211,19 @@ mod tests {
         assert_eq!(status.code(), Code::PermissionDenied);
         assert_eq!(status.message(), error.safe_message());
         assert_eq!(decode_application_error(status.details()), Ok(error));
+    }
+
+    #[test]
+    fn application_boundary_preserves_the_revoked_authentication_class() {
+        let context =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
+        let status = status_from_application_boundary(
+            Status::permission_denied(crate::CAPABILITY_REVOKED_MESSAGE),
+            &context,
+        );
+        let error = decode_application_error(status.details()).expect("application error");
+        assert_eq!(error.code(), ApplicationErrorCode::CapabilityRevoked);
+        assert_eq!(error.operation(), ApplicationOperation::ExecuteQuery);
     }
 
     #[test]

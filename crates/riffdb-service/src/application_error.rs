@@ -105,6 +105,17 @@ impl ApplicationErrorContextBuilder {
         )
     }
 
+    /// Builds a rejection for a reciprocally matched but revoked capability.
+    #[must_use]
+    pub fn capability_revoked(&self) -> ApplicationError {
+        ApplicationError::new(
+            ApplicationErrorCode::CapabilityRevoked,
+            self.operation,
+            self.context.clone(),
+            None,
+        )
+    }
+
     /// Builds a pre-service readiness rejection.
     #[must_use]
     pub fn unavailable(&self) -> ApplicationError {
@@ -154,6 +165,17 @@ mod tests {
         assert!(!rendered.contains("field_id"));
         assert!(!rendered.contains("capability"));
         assert!(!rendered.contains("principal"));
+    }
+
+    #[test]
+    fn matched_revocation_retains_symbolic_context_and_closed_fix() {
+        let builder =
+            ApplicationErrorContextBuilder::new(ApplicationOperation::ExecuteQuery, request_id())
+                .with_operation_symbol("TicketPage".to_owned());
+        let error = builder.capability_revoked();
+        assert_eq!(error.code(), ApplicationErrorCode::CapabilityRevoked);
+        assert_eq!(error.context().operation_symbol(), Some("TicketPage"));
+        assert_eq!(error.fixes(), &[ApplicationFixCode::BindApplicationRole]);
     }
 
     #[test]

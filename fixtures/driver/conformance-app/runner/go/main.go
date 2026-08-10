@@ -74,7 +74,7 @@ func run() error {
 	if os.Getenv("RIFFDB_CONFORMANCE_EXPECT_REVOKED") == "1" {
 		_, err = client.ItemPage(ctx, generated.ItemPageParams{ItemId: "018f0f8b-7c6d-7e31-8a4f-000000000102"}, riffdb.Options{})
 		var applicationError *riffdb.ApplicationError
-		if !errors.As(err, &applicationError) || applicationError.Details.Code != "RDB-AUTH-0214" {
+		if !errors.As(err, &applicationError) || applicationError.Details.Code != "RDB-AUTH-0215" {
 			return fmt.Errorf("Go revocation error lost semantic details: %w", err)
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]string{

@@ -129,7 +129,8 @@ TypeScript, and Python each create and replay a command, perform a
 read-after-commit query, and observe the same typed idempotency-reuse failure
 against one verified-TLS daemon, database, contract, and symbolic role. The
 same gate revokes that role and proves the retained host no longer supplies
-authority. Local installed-artifact cells cover bounded cancellation,
+authority. Every language observes the same typed `RDB-AUTH-0215` capability
+revocation rather than a generic authorization denial. Local installed-artifact cells cover bounded cancellation,
 uncertainty, malformed frames, reactive cursor/lease handling, and shutdown.
 
 Run the complete proof with:
