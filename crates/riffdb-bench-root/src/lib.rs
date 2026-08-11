@@ -932,12 +932,12 @@ mod tests {
     #[test]
     fn ram_backed_without_allow_tmpfs_is_hard_error() {
         // Fabricated medium path: resolve real /tmp (tmpfs on this host) without allow.
-        let under_tmp = std::env::temp_dir().join(format!(
-            "riffdb-bench-root-ram-gate-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&under_tmp);
+        // The base must stay the ambient temp_dir: its storage medium is the subject.
+        let guard = tempfile::Builder::new()
+            .prefix("riffdb-bench-root-ram-gate-")
+            .tempdir_in(std::env::temp_dir())
+            .expect("create ram-gate guard directory");
+        let under_tmp = guard.path().join("root");
         let err = BenchRoot::resolve(BenchRootOptions {
             harness: "unit",
             cli_override: Some(under_tmp.clone()),
@@ -976,7 +976,6 @@ mod tests {
             }
             Err(other) => panic!("unexpected error: {other}"),
         }
-        let _ = fs::remove_dir_all(&under_tmp);
     }
 
     #[test]
@@ -1002,20 +1001,19 @@ mod tests {
 
     #[test]
     fn sweep_refuses_outside_perf_db() {
-        let hostile = std::env::temp_dir().join(format!(
-            "riffdb-bench-root-hostile-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&hostile);
-        fs::create_dir_all(&hostile).expect("hostile root");
+        // The refusal subject is a real directory outside any perf-db root, so
+        // the base must stay the ambient temp_dir.
+        let guard = tempfile::Builder::new()
+            .prefix("riffdb-bench-root-hostile-")
+            .tempdir_in(std::env::temp_dir())
+            .expect("create hostile root");
+        let hostile = guard.path().to_path_buf();
         let err = sweep_stale_path(&hostile).expect_err("must refuse");
         assert!(
             matches!(err, BenchRootError::SweepRefused { .. }),
             "unexpected {err}"
         );
         assert!(err.to_string().contains("perf-db"));
-        let _ = fs::remove_dir_all(&hostile);
     }
 
     #[test]

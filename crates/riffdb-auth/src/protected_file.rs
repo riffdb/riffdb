@@ -603,27 +603,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn live_linux_loader_reads_private_file_and_rejects_final_symlink() {
-        use std::fs;
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, symlink};
-        use std::sync::atomic::{AtomicU64, Ordering};
 
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-        let root = loop {
-            let suffix = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let candidate = std::env::temp_dir().join(format!(
-                "riffdb-protected-file-{}-{suffix}",
-                std::process::id()
-            ));
-            match fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => panic!("create isolated test directory: {error}"),
-            }
-        };
-        let path = root.join("secret");
-        let link = root.join("secret-link");
+        let root = tempfile::TempDir::with_prefix("riffdb-protected-file-")
+            .expect("create isolated test directory");
+        let path = root.path().join("secret");
+        let link = root.path().join("secret-link");
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -640,7 +626,5 @@ mod tests {
             read_protected_file(&link, 6).err(),
             Some(ProtectedFileError::PathNotRegularFile)
         );
-
-        fs::remove_dir_all(root).expect("remove isolated test directory");
     }
 }

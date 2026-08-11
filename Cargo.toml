@@ -66,3 +66,9 @@ await_holding_lock = "deny"
 [workspace.dependencies]
 pyo3 = { version = "=0.29.0", default-features = false, features = ["extension-module", "abi3-py313"] }
 pyo3-async-runtimes = { version = "=0.29.0", default-features = false, features = ["tokio-runtime"] }
+# Test-only temp-directory lifecycle guard (dev-dependency everywhere).
+# Already in Cargo.lock transitively via prost-build and tonic-prost-build
+# (riffdb-proto dev-deps); pinned exact per house style. default-features
+# off drops tempfile's `getrandom` feature, whose only effect is re-seeding
+# the name generator after repeated collisions — irrelevant for scratch dirs.
+tempfile = { version = "=3.24.0", default-features = false }

@@ -28,21 +28,33 @@ use riffdb_types::{
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
-struct TestPath(PathBuf);
+/// Whole-directory scope: `.0` is the database path inside a per-test
+/// directory removed on `Drop` — pass, fail, or panic — so the database and
+/// every side file it grows (journal, checkpoint, spare, marker, …) are
+/// covered without a hand-maintained file list.
+struct TestPath(
+    PathBuf,
+    // Held only so `Drop` removes the whole scope.
+    #[allow(dead_code)] ScopeDir,
+);
 
 impl TestPath {
     fn new() -> Self {
-        Self(PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-            "riffdb-service-audit-recovery-{}-{}.redb",
-            std::process::id(),
-            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-        )))
+        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+            "riffdb-service-audit-recovery-{}-{ordinal}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test scope directory");
+        Self(dir.join("db.redb"), ScopeDir(dir))
     }
 }
 
-impl Drop for TestPath {
+struct ScopeDir(PathBuf);
+
+impl Drop for ScopeDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

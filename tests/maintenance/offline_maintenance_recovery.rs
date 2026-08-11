@@ -9,10 +9,9 @@ use std::future::Future;
 use std::io::{self, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -1101,43 +1100,31 @@ fn test_failure(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::other(message.into()))
 }
 
+/// Whole-directory scope backed by the canonical testkit guard: removed on
+/// `Drop` — pass, fail, or panic — with a dead-pid sweep for directories
+/// orphaned by a killed harness. `RIFFDB_KEEP_WP155_TEST_DIRECTORY` still
+/// retains the directory for evidence flows.
 struct TemporaryDirectory {
-    path: PathBuf,
+    scratch: riffdb_testkit::scratch::ScratchDir,
 }
 
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-        for _ in 0..1_024 {
-            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-wp155-maintenance-{}-{ordinal}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique WP-155 test directory",
-        ))
+        riffdb_testkit::scratch::ScratchDir::new("wp155-maintenance")
+            .map(|scratch| Self { scratch })
     }
 
     fn path(&self) -> &Path {
-        &self.path
+        self.scratch.path()
     }
 }
 
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
         if std::env::var_os("RIFFDB_KEEP_WP155_TEST_DIRECTORY").is_some() {
-            return;
+            // Disarm the inner guard so the evidence directory survives.
+            self.scratch.keep();
         }
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
 

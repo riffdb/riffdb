@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 use std::num::{NonZeroU16, NonZeroU64};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use riffdb_catalog::{ValidatedContractBundle, resolve_executable_plan, validate_catalog_history};
 use riffdb_commit::{
@@ -43,6 +43,7 @@ use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore, Red
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
+use riffdb_testkit::scratch::ScratchDir;
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, Audience, CanonicalList, CanonicalRecord, CanonicalValue,
     CapabilityGrantV1, CapabilityId, CapabilityPermissionV1, CapabilityPermissionsV1,
@@ -147,7 +148,6 @@ const CALLER_KEY: &str = "command-semantics-idempotency-key";
 const ORGANIZATION_ID: [u8; 16] = [0x31; 16];
 const FISCAL_YEAR: i64 = 2026;
 const ENVIRONMENT: &str = "integration";
-static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
 struct StartedCommandAuditInput {
     request_id: RequestId,
@@ -242,6 +242,7 @@ pub(crate) struct BudgetDatabase {
     checked_bundle: ValidatedContractBundle,
     target_entity_type: EntityTypeId,
     approved_amount_field: FieldId,
+    _scratch: ScratchDir,
 }
 
 pub(crate) struct UniqueUserDatabase {
@@ -249,27 +250,22 @@ pub(crate) struct UniqueUserDatabase {
     checked_bundle: ValidatedContractBundle,
     user_entity_type: EntityTypeId,
     email_field: FieldId,
+    _scratch: ScratchDir,
 }
 
 pub(crate) struct BulkRowsDatabase {
     path: PathBuf,
     checked_bundle: ValidatedContractBundle,
     row_entity_type: EntityTypeId,
-    remove_on_drop: bool,
+    _scratch: Option<ScratchDir>,
 }
 
 impl BulkRowsDatabase {
     pub(crate) fn create(label: &str) -> Self {
-        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("test clock after Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-bulk-recovery-{label}-{}-{ordinal}-{nonce}.redb",
-            std::process::id()
-        ));
-        let database = Self::from_path(path, true);
+        let scratch = ScratchDir::new(&format!("bulk-recovery-{label}"))
+            .expect("create bulk recovery scratch directory");
+        let path = scratch.join("db.redb");
+        let database = Self::from_path(path, Some(scratch));
         let mut store = RedbStore::open(&database.path).expect("create redb bulk database");
         store
             .initialize_database(database_id())
@@ -299,10 +295,10 @@ impl BulkRowsDatabase {
     }
 
     pub(crate) fn attach(path: &Path) -> Self {
-        Self::from_path(path.to_path_buf(), false)
+        Self::from_path(path.to_path_buf(), None)
     }
 
-    fn from_path(path: PathBuf, remove_on_drop: bool) -> Self {
+    fn from_path(path: PathBuf, scratch: Option<ScratchDir>) -> Self {
         let compiled =
             compile_contract_source(BULK_ROWS_SOURCE).expect("bulk recovery contract compiles");
         let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
@@ -319,7 +315,7 @@ impl BulkRowsDatabase {
             path,
             checked_bundle,
             row_entity_type,
-            remove_on_drop,
+            _scratch: scratch,
         }
     }
 
@@ -621,23 +617,11 @@ fn canonical_uuid_text(seed: u8) -> String {
     )
 }
 
-impl Drop for BulkRowsDatabase {
-    fn drop(&mut self) {
-        if self.remove_on_drop {
-            let _ = std::fs::remove_file(&self.path);
-            let journal = self.path.with_extension("redb.journal");
-            let _ = std::fs::remove_file(journal);
-        }
-    }
-}
-
 impl UniqueUserDatabase {
     pub(crate) fn create(label: &str) -> Self {
-        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-command-unique-{label}-{}-{ordinal}.redb",
-            std::process::id()
-        ));
+        let scratch = ScratchDir::new(&format!("command-unique-{label}"))
+            .expect("create unique-user scratch directory");
+        let path = scratch.join("db.redb");
         let compiled = compile_contract_source(UNIQUE_SOURCE).expect("unique contract compiles");
         let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
             .expect("unique bundle passes catalog validation");
@@ -685,6 +669,7 @@ impl UniqueUserDatabase {
             checked_bundle,
             user_entity_type,
             email_field,
+            _scratch: scratch,
         }
     }
 
@@ -1057,19 +1042,11 @@ impl UniqueUserDatabase {
     }
 }
 
-impl Drop for UniqueUserDatabase {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 impl BudgetDatabase {
     pub(crate) fn create(label: &str) -> Self {
-        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-command-semantics-{label}-{}-{ordinal}.redb",
-            std::process::id()
-        ));
+        let scratch = ScratchDir::new(&format!("command-semantics-{label}"))
+            .expect("create command-semantics scratch directory");
+        let path = scratch.join("db.redb");
         let compiled = compile_contract_source(BUDGET_SOURCE).expect("budget contract compiles");
         let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
             .expect("budget bundle passes catalog validation");
@@ -1117,6 +1094,7 @@ impl BudgetDatabase {
             checked_bundle,
             target_entity_type,
             approved_amount_field,
+            _scratch: scratch,
         }
     }
 
@@ -1272,12 +1250,6 @@ impl BudgetDatabase {
             key.finish().expect("budget entity key"),
         )
         .expect("Budget entity target")
-    }
-}
-
-impl Drop for BudgetDatabase {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 

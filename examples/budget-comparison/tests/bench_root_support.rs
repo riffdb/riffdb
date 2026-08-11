@@ -67,6 +67,13 @@ mod tests {
         // process temp (tmpfs on this host) with allow_tmpfs=false. Setting
         // ROOT env is not required for resolve when cli_override is set; the
         // contract under test is that allow is NEVER implied by a path choice.
+        //
+        // TESTHYG deferred: the ambient base is the subject under test, but
+        // the dir leaks on panic between creation and the trailing cleanup.
+        // The workspace-wide fix wraps such probes in a tempfile scope; this
+        // example is a separate cargo workspace whose lock carries tempfile
+        // 3.27.0 (not the main workspace's =3.24.0 pin), so the dev-dep and
+        // pin choice need maintainer review before converting.
         let under_tmp = std::env::temp_dir().join(format!(
             "budget-bench-root-gate-{}-{}",
             std::process::id(),

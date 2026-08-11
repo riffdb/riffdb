@@ -1714,7 +1714,6 @@ const fn corrupt() -> StorageError {
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use redb::ReadableTableMetadata;
     use riffdb_contract_compiler::compile_contract_source;
@@ -1739,23 +1738,19 @@ mod tests {
     use crate::layout::{COMMITS, EVENTS, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER};
     use crate::store::RedbStore;
 
-    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
-
-    struct TestDatabasePath(PathBuf);
+    /// Whole-directory scope: the database and every side file it grows live
+    /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
+    /// fail, or panic.
+    struct TestDatabasePath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
-            let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-            Self(crate::test_path::root().join(format!(
-                "riffdb-redb-derived-{label}-{}-{ordinal}.redb",
-                std::process::id()
-            )))
-        }
-    }
-
-    impl Drop for TestDatabasePath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            let scope = crate::test_path::ScopedDirectory::new(label);
+            Self(scope.join("db.redb"), scope)
         }
     }
 

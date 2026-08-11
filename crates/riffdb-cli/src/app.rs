@@ -9738,10 +9738,11 @@ mod tests {
         };
         let mut bytes = serde_json::to_vec(&document).expect("canonical receipt JSON");
         bytes.push(b'\n');
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-installation-seed-receipts-{}.json",
-            std::process::id()
-        ));
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-seed-receipts-").expect("scratch directory");
+        let path = scratch
+            .path()
+            .join("riffdb-installation-seed-receipts.json");
         fs::write(&path, &bytes).expect("write receipt");
 
         let receipts = read_installation_seed_receipts(&path, &plan).expect("exact receipts");
@@ -9767,7 +9768,6 @@ mod tests {
         wrong_plan_bytes.push(b'\n');
         fs::write(&path, wrong_plan_bytes).expect("write wrong-plan receipt");
         assert!(read_installation_seed_receipts(&path, &plan).is_err());
-        fs::remove_file(path).expect("remove receipt");
     }
 
     #[test]
@@ -9799,13 +9799,12 @@ mod tests {
 
     #[test]
     fn storage_preflight_failure_keeps_unknown_current_and_exact_binary_typed() {
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-cli-format-preflight-corrupt-{}.redb",
-            std::process::id()
-        ));
+        let scratch = tempfile::TempDir::with_prefix("riffdb-cli-format-preflight-corrupt-")
+            .expect("scratch directory");
+        let path = scratch
+            .path()
+            .join("riffdb-cli-format-preflight-corrupt.redb");
         let marker = riffdb_storage_redb::durable_format_marker_path(&path);
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(&marker);
         fs::write(&path, b"retained-database").expect("write retained database placeholder");
         fs::write(&marker, b"corrupt-marker").expect("write corrupt marker");
 
@@ -9837,8 +9836,6 @@ mod tests {
             fs::read(&marker).expect("re-read marker"),
             b"corrupt-marker"
         );
-        fs::remove_file(marker).expect("remove marker fixture");
-        fs::remove_file(path).expect("remove database fixture");
     }
 
     #[test]
@@ -9907,11 +9904,9 @@ mod tests {
 
     #[test]
     fn exact_installation_plan_matches_every_locked_local_artifact_and_role() {
-        let directory = std::env::temp_dir().join(format!(
-            "riffdb-cli-installation-plan-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
+        let parent = tempfile::TempDir::with_prefix("riffdb-cli-installation-plan-")
+            .expect("scratch directory");
+        let directory = parent.path().join("app");
         crate::scaffold::create_application(
             "installation-app",
             crate::scaffold::ScaffoldLanguage::Rust,
@@ -10030,7 +10025,6 @@ mod tests {
         .expect("installation context");
         assert_eq!(prepared.plan.identity(), plan.identity());
         assert_eq!(prepared.credential_successor, Some(successor));
-        fs::remove_dir_all(directory).expect("installation fixture cleanup");
     }
 
     #[test]
@@ -10059,10 +10053,8 @@ mod tests {
     #[test]
     fn application_json_accepts_inline_at_file_legacy_path_and_stdin_sources() {
         let directory =
-            std::env::temp_dir().join(format!("riffdb-cli-natural-json-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("fixture directory");
-        let path = directory.join("input.json");
+            tempfile::TempDir::with_prefix("riffdb-cli-natural-json-").expect("scratch directory");
+        let path = directory.path().join("input.json");
         fs::write(&path, br#"{"priority":2}"#).expect("fixture input");
 
         let inline: serde_json::Value = read_json(
@@ -10090,7 +10082,6 @@ mod tests {
         assert_eq!(at_file, inline);
         assert_eq!(legacy_path, inline);
         assert_eq!(stdin, inline);
-        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]
@@ -10192,15 +10183,11 @@ mod tests {
 
     #[test]
     fn deployment_state_is_private_exact_and_database_bound() {
-        let directory = std::env::temp_dir().join(format!(
-            "riffdb-cli-deployment-state-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("fixture directory");
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-deployment-state-")
+            .expect("scratch directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private fixture directory");
-        let path = directory.join("deployment-state.json");
+        let path = directory.path().join("deployment-state.json");
         let lock_hash = "ab".repeat(32);
         let mut state =
             load_deployment_state(&path, "ea", &lock_hash).expect("new exact deployment state");
@@ -10279,34 +10266,33 @@ mod tests {
         assert!(legacy.reactive_modules_deployed.is_empty());
         assert!(legacy.reactive_module_identities.is_empty());
         assert!(legacy.credential_rotation.is_none());
-        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]
     fn plan_bound_credential_destinations_have_disjoint_private_state_roots() {
-        let directory = std::env::temp_dir().join(format!(
-            "riffdb-cli-installation-destinations-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("fixture directory");
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-installation-destinations-")
+            .expect("scratch directory");
 
-        let reader = prepare_deployment_root(&directory, "ea", Some("reader-runtime"))
+        let reader = prepare_deployment_root(directory.path(), "ea", Some("reader-runtime"))
             .expect("reader destination");
-        let writer = prepare_deployment_root(&directory, "ea", Some("writer-runtime"))
+        let writer = prepare_deployment_root(directory.path(), "ea", Some("writer-runtime"))
             .expect("writer destination");
         let unbound =
-            prepare_deployment_root(&directory, "ea", None).expect("unbound deployment root");
+            prepare_deployment_root(directory.path(), "ea", None).expect("unbound deployment root");
 
         assert_eq!(
             reader,
-            directory.join(".riffdb/deployments/ea/reader-runtime")
+            directory
+                .path()
+                .join(".riffdb/deployments/ea/reader-runtime")
         );
         assert_eq!(
             writer,
-            directory.join(".riffdb/deployments/ea/writer-runtime")
+            directory
+                .path()
+                .join(".riffdb/deployments/ea/writer-runtime")
         );
-        assert_eq!(unbound, directory.join(".riffdb/deployments/ea"));
+        assert_eq!(unbound, directory.path().join(".riffdb/deployments/ea"));
         assert_ne!(reader, writer);
         for root in [&reader, &writer, &unbound] {
             assert_eq!(
@@ -10318,8 +10304,6 @@ mod tests {
                 0o700
             );
         }
-
-        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]
@@ -10357,27 +10341,29 @@ mod tests {
 
     #[test]
     fn generated_application_configs_retain_an_absolute_credential_path() {
-        let directory = std::env::temp_dir().join(format!(
-            "riffdb-cli-application-config-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("fixture directory");
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-application-config-")
+            .expect("scratch directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private fixture directory");
 
         let relative = Path::new(".riffdb/deployments/ea/application.credential");
-        persist_application_configs(&directory, &test_config(), relative, "riffdb-grpc-loopback")
-            .expect("application configs");
+        persist_application_configs(
+            directory.path(),
+            &test_config(),
+            relative,
+            "riffdb-grpc-loopback",
+        )
+        .expect("application configs");
         let expected = std::env::current_dir()
             .expect("current directory")
             .join(relative);
-        let client = fs::read_to_string(directory.join("client.toml")).expect("client config");
+        let client =
+            fs::read_to_string(directory.path().join("client.toml")).expect("client config");
         assert!(client.contains(&format!(
             "credential_file = {}\n",
             serde_json::to_string(expected.to_str().expect("UTF-8 path")).expect("quoted path")
         )));
-        let mcp = fs::read_to_string(directory.join("mcp.toml")).expect("MCP config");
+        let mcp = fs::read_to_string(directory.path().join("mcp.toml")).expect("MCP config");
         assert!(mcp.contains("expected_audience = \"riffdb-grpc-loopback\"\n"));
 
         let mut remote = test_config();
@@ -10386,7 +10372,7 @@ mod tests {
             riffdb_config::TlsClientConfig::new(
                 riffdb_config::CanonicalHttpsEndpoint::parse(&remote.endpoint)
                     .expect("HTTPS endpoint"),
-                riffdb_config::ProtectedFilePath::new(directory.join("trust.pem"))
+                riffdb_config::ProtectedFilePath::new(directory.path().join("trust.pem"))
                     .expect("trust path"),
                 riffdb_config::TlsServerIdentity::parse("127.0.0.1").expect("server identity"),
                 Duration::from_secs(5),
@@ -10396,17 +10382,22 @@ mod tests {
             )
             .expect("TLS client config"),
         );
-        persist_application_configs(&directory, &remote, relative, "riffdb-application")
+        persist_application_configs(directory.path(), &remote, relative, "riffdb-application")
             .expect("remote application configs");
-        let client = fs::read_to_string(directory.join("client.toml")).expect("client config");
+        let client =
+            fs::read_to_string(directory.path().join("client.toml")).expect("client config");
         assert!(client.contains(&format!(
             "tls_trust_root = {}\n",
-            serde_json::to_string(directory.join("trust.pem").to_str().expect("UTF-8 path"))
-                .expect("quoted path")
+            serde_json::to_string(
+                directory
+                    .path()
+                    .join("trust.pem")
+                    .to_str()
+                    .expect("UTF-8 path")
+            )
+            .expect("quoted path")
         )));
         assert!(client.contains("tls_server_name = \"127.0.0.1\"\n"));
-
-        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]
@@ -10423,14 +10414,13 @@ mod tests {
 
     #[test]
     fn dev_script_resolution_prefers_installation_then_workspace_then_source() {
-        let directory =
-            std::env::temp_dir().join(format!("riffdb-cli-dev-resolution-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        let application = directory.join("application");
-        let executable = directory.join("installation/bin/riffdb");
-        let installed = directory.join("installation/bin/riffdb-dev");
-        let manifest = directory.join("source/crates/riffdb-cli");
-        let source = directory.join("source/scripts/riffdb-dev");
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-dev-resolution-")
+            .expect("scratch directory");
+        let application = directory.path().join("application");
+        let executable = directory.path().join("installation/bin/riffdb");
+        let installed = directory.path().join("installation/bin/riffdb-dev");
+        let manifest = directory.path().join("source/crates/riffdb-cli");
+        let source = directory.path().join("source/scripts/riffdb-dev");
         fs::create_dir_all(application.join("scripts")).expect("application scripts");
         fs::create_dir_all(executable.parent().expect("executable parent"))
             .expect("installation bin");
@@ -10453,13 +10443,12 @@ mod tests {
             resolve_dev_script(&application, Some(&executable), &manifest),
             Some(installed)
         );
-        fs::remove_file(directory.join("installation/bin/riffdb-dev"))
+        fs::remove_file(directory.path().join("installation/bin/riffdb-dev"))
             .expect("remove installed workflow");
         assert_eq!(
             resolve_dev_script(&application, Some(&executable), &manifest),
             Some(workspace)
         );
-        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     fn assert_terminal_omits(terminal: Terminal, needle: &[u8], mode: crate::cli::OutputMode) {
@@ -10848,9 +10837,9 @@ mod tests {
         assert_local_code(invalid_credential, "credential_invalid");
         assert_listener_unused(&listener);
 
-        let directory =
-            std::env::temp_dir().join(format!("riffdb-cli-preflight-role-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
+        let parent = tempfile::TempDir::with_prefix("riffdb-cli-preflight-role-")
+            .expect("scratch directory");
+        let directory = parent.path().join("app");
         crate::scaffold::create_application(
             "preflight-app",
             crate::scaffold::ScaffoldLanguage::Rust,
@@ -10925,7 +10914,6 @@ mod tests {
             "installation_plan_local_identity_mismatch",
         );
         assert_listener_unused(&listener);
-        fs::remove_dir_all(directory).expect("preflight fixture cleanup");
     }
 
     #[test]
@@ -10981,10 +10969,8 @@ mod tests {
         }
 
         let directory =
-            std::env::temp_dir().join(format!("riffdb-cli-app-canary-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir(&directory).expect("temporary directory");
-        let runner = directory.join("runner");
+            tempfile::TempDir::with_prefix("riffdb-cli-app-canary-").expect("scratch directory");
+        let runner = directory.path().join("runner");
         fs::write(
             &runner,
             format!(
@@ -11023,7 +11009,6 @@ mod tests {
                 mode,
             );
         }
-        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     #[test]
@@ -11330,9 +11315,9 @@ mod tests {
 
     #[test]
     fn widened_successor_role_compiles_from_the_pinned_parent_aware_bundle() {
-        let directory =
-            std::env::temp_dir().join(format!("riffdb-cli-successor-role-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
+        let parent = tempfile::TempDir::with_prefix("riffdb-cli-successor-role-")
+            .expect("scratch directory");
+        let directory = parent.path().join("app");
         crate::scaffold::create_application(
             "safe-app",
             crate::scaffold::ScaffoldLanguage::Rust,
@@ -11387,7 +11372,6 @@ mod tests {
         )
         .expect("standalone role paths discover the same successor lock");
         assert_eq!(exact_role.identity(), role.identity());
-        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]

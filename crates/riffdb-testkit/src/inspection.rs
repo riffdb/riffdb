@@ -1169,9 +1169,9 @@ mod tests {
 
     #[test]
     fn missing_database_is_not_initialized_by_inspection() {
-        let path =
-            std::env::temp_dir().join(format!("riffdb-missing-inspection-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let scratch = crate::scratch::ScratchDir::new("missing-inspection")
+            .expect("create missing-inspection scratch directory");
+        let path = scratch.join("missing.redb");
         let digest_key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key"));
         let inputs = StartupValidationInputs::new(
             riffdb_types::Timestamp::new(1, 0).expect("timestamp"),

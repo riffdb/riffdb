@@ -10,7 +10,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -782,38 +781,18 @@ fn drain(mut reader: impl Read) -> io::Result<usize> {
 }
 
 struct TemporaryDirectory {
-    path: PathBuf,
+    directory: tempfile::TempDir,
 }
 
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        for _ in 0..1_024 {
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-wp150-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "temporary directory",
-        ))
+        Ok(Self {
+            directory: tempfile::TempDir::with_prefix("riffdb-wp150-")?,
+        })
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        self.directory.path()
     }
 }
 

@@ -93,7 +93,6 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::{
         ApplicationInstallationCampaignRepository, ApplicationInstallationCampaignWriteResultV1,
@@ -106,23 +105,19 @@ mod tests {
 
     use crate::store::{RedbDormantPorts, RedbStore};
 
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-
-    struct TestPath(PathBuf);
+    /// Whole-directory scope: the database and every side file it grows live
+    /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
+    /// fail, or panic.
+    struct TestPath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestPath {
         fn new() -> Self {
-            Self(crate::test_path::root().join(format!(
-                "riffdb-redb-installation-{}-{}.redb",
-                std::process::id(),
-                NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-            )))
-        }
-    }
-
-    impl Drop for TestPath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            let scope = crate::test_path::ScopedDirectory::new("installation");
+            Self(scope.join("db.redb"), scope)
         }
     }
 
