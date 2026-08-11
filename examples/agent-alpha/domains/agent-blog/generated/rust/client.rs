@@ -461,6 +461,16 @@ pub struct Tag {
     pub created_at: TimestampValue,
 }
 
+fn encode_tag_entity(value: &Tag) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.tag_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_tag_entity(value: v1::Value) -> Result<Tag, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Tag {
@@ -484,6 +494,21 @@ pub struct Post {
     pub author_id: String,
     pub updated_at: TimestampValue,
     pub published_at: TimestampValue,
+}
+
+fn encode_post_entity(value: &Post) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.body))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.slug))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_string(Clone::clone(&value.title))) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_enum(Clone::clone(&value.status))) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.post_id)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+        v1::ValueField { field_id: Some(7), name: String::new(), value: Some(wire_uuid(&value.author_id)?) },
+        v1::ValueField { field_id: Some(8), name: String::new(), value: Some(wire_timestamp(&value.updated_at)?) },
+        v1::ValueField { field_id: Some(9), name: String::new(), value: Some(wire_timestamp(&value.published_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_post_entity(value: v1::Value) -> Result<Post, GeneratedCommandError> {
@@ -510,6 +535,15 @@ pub struct Site {
     pub created_at: TimestampValue,
 }
 
+fn encode_site_entity(value: &Site) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_site_entity(value: v1::Value) -> Result<Site, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Site {
@@ -527,6 +561,16 @@ pub struct Author {
     pub author_id: String,
     pub created_at: TimestampValue,
     pub display_name: String,
+}
+
+fn encode_author_entity(value: &Author) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.author_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_string(Clone::clone(&value.display_name))) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_author_entity(value: v1::Value) -> Result<Author, GeneratedCommandError> {
@@ -552,6 +596,19 @@ pub struct Comment {
     pub created_at: TimestampValue,
 }
 
+fn encode_comment_entity(value: &Comment) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.body))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_enum(Clone::clone(&value.status))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.post_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.author_id)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.comment_id)?) },
+        v1::ValueField { field_id: Some(7), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_comment_entity(value: v1::Value) -> Result<Comment, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Comment {
@@ -575,6 +632,16 @@ pub struct PostTag {
     pub created_at: TimestampValue,
 }
 
+fn encode_post_tag_entity(value: &PostTag) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_uuid(&value.tag_id)?) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.post_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_post_tag_entity(value: v1::Value) -> Result<PostTag, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = PostTag {
@@ -592,6 +659,15 @@ pub struct PostSlug {
     pub slug: String,
     pub post_id: String,
     pub site_id: String,
+}
+
+fn encode_post_slug_entity(value: &PostSlug) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.slug))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.post_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.site_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_post_slug_entity(value: v1::Value) -> Result<PostSlug, GeneratedCommandError> {
@@ -639,6 +715,7 @@ impl GeneratedCommand for AttachTagInput {
     type Outcome = AttachTagOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("tag_id", wire_uuid(&self.tag_id)?),
             wire_named_field("post_id", wire_uuid(&self.post_id)?),
@@ -724,6 +801,7 @@ impl GeneratedCommand for CreateAuthorInput {
     type Outcome = CreateAuthorOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("site_id", wire_uuid(&self.site_id)?),
             wire_named_field("author_id", wire_uuid(&self.author_id)?),
@@ -808,6 +886,7 @@ impl GeneratedCommand for CreateCommentInput {
     type Outcome = CreateCommentOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("body", wire_string(Clone::clone(&self.body))),
             wire_named_field("status", wire_enum(Clone::clone(&self.status))),
@@ -903,6 +982,7 @@ impl GeneratedCommand for CreatePostInput {
     type Outcome = CreatePostOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("body", wire_string(Clone::clone(&self.body))),
             wire_named_field("slug", wire_string(Clone::clone(&self.slug))),
@@ -995,6 +1075,7 @@ impl GeneratedCommand for CreatePostRouteInput {
     type Outcome = CreatePostRouteOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("slug", wire_string(Clone::clone(&self.slug))),
             wire_named_field("post_id", wire_uuid(&self.post_id)?),
@@ -1074,6 +1155,7 @@ impl GeneratedCommand for CreateSiteInput {
     type Outcome = CreateSiteOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
             wire_named_field("site_id", wire_uuid(&self.site_id)?),
@@ -1143,6 +1225,7 @@ impl GeneratedCommand for CreateTagInput {
     type Outcome = CreateTagOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
             wire_named_field("tag_id", wire_uuid(&self.tag_id)?),

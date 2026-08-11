@@ -644,10 +644,24 @@ pub fn generate_mcp_commands(
                 .fields()
                 .iter()
                 .map(|field| {
-                    (
-                        field.name().to_owned(),
-                        mcp_contract_type_schema(field.value_type(), contract),
-                    )
+                    let mut schema = mcp_contract_type_schema(field.value_type(), contract);
+                    if let Some(expansion) = command
+                        .collection_expansion()
+                        .filter(|expansion| expansion.input_field() == field.id())
+                    {
+                        let object = schema
+                            .as_object_mut()
+                            .expect("validated collection input has an object schema");
+                        object.insert(
+                            "minItems".to_owned(),
+                            Value::from(expansion.minimum_elements()),
+                        );
+                        object.insert(
+                            "maxItems".to_owned(),
+                            Value::from(expansion.maximum_elements()),
+                        );
+                    }
+                    (field.name().to_owned(), schema)
                 })
                 .collect::<Map<_, _>>();
             let input_required = command
@@ -1604,6 +1618,31 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
         writeln!(output, "}}\n").expect("string");
         writeln!(
             output,
+            "fn encode_{}_entity(value: &{}) -> Result<v1::Value, GeneratedCommandError> {{\n    let fields = vec![",
+            snake(entity.name()),
+            entity.name(),
+        )
+        .expect("string");
+        for field in entity.record().fields() {
+            let expression = rust_encode_wire_expr(
+                field.value_type(),
+                &format!("&value.{}", rust_identifier(field.name())),
+                contract,
+            );
+            writeln!(
+                output,
+                "        v1::ValueField {{ field_id: Some({}), name: String::new(), value: Some({expression}) }},",
+                field.id().get(),
+            )
+            .expect("string");
+        }
+        writeln!(
+            output,
+            "    ];\n    Ok(v1::Value {{ kind: Some(WireKind::RecordValue(v1::ValueRecord {{ fields }})) }})\n}}\n"
+        )
+        .expect("string");
+        writeln!(
+            output,
             "fn decode_{}_entity(value: v1::Value) -> Result<{}, GeneratedCommandError> {{\n\
              \x20   let mut fields = wire_record_fields(value)?;\n    let entity = {} {{",
             snake(entity.name()),
@@ -1697,9 +1736,29 @@ fn emit_rust_generated_command_impl(
         output,
         "impl GeneratedCommand for {input_name} {{\n    type Outcome = {name}Outcome;\n\
          \n    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {{\n\
-         \x20       let fields = vec!["
+         "
     )
     .expect("string");
+    if let Some(expansion) = command.collection_expansion() {
+        let field = command
+            .input()
+            .record()
+            .field(expansion.input_field())
+            .expect("validated collection input field");
+        let field = rust_identifier(field.name());
+        let lower_bound = if expansion.minimum_elements() == 1 {
+            format!("self.{field}.is_empty()")
+        } else {
+            format!("self.{field}.len() < {}", expansion.minimum_elements())
+        };
+        writeln!(
+            output,
+            "        if {lower_bound} || self.{field}.len() > {maximum} {{ return Err(GeneratedCommandError::InvalidInputShape); }}",
+            maximum = expansion.maximum_elements(),
+        )
+        .expect("string");
+    }
+    writeln!(output, "        let fields = vec![").expect("string");
     for field in command.input().record().fields() {
         let expression = rust_encode_wire_expr(
             field.value_type(),
@@ -1735,10 +1794,19 @@ fn emit_rust_generated_command_impl(
         )
         .expect("string");
     }
+    let fields_mutability = if command
+        .outcomes()
+        .iter()
+        .any(|outcome| !outcome.payload().fields().is_empty())
+    {
+        "mut "
+    } else {
+        ""
+    };
     writeln!(
         output,
         "\n    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {{\n\
-         \x20       let mut fields = wire_outcome_fields(response, &{}_PLAN_HASH)?;\n        match response.outcome_type.as_str() {{",
+         \x20       let {fields_mutability}fields = wire_outcome_fields(response, &{}_PLAN_HASH)?;\n        match response.outcome_type.as_str() {{",
         screaming_snake(name)
     )
     .expect("string");
@@ -1747,7 +1815,7 @@ fn emit_rust_generated_command_impl(
         if outcome.payload().fields().is_empty() {
             writeln!(
                 output,
-                "            \"{}\" => Ok(Self::Outcome::{variant}),",
+                "            \"{}\" => if fields.is_empty() {{ Ok(Self::Outcome::{variant}) }} else {{ Err(GeneratedCommandError::InvalidOutcomeShape) }},",
                 outcome.name()
             )
             .expect("string");
@@ -1969,21 +2037,36 @@ fn rust_encode_wire_expr(
         );
     }
     if let Some((inner, _)) = value_type.list_parts() {
+        let item = rust_encode_wire_expr(inner, "value", contract);
+        let mapper = match item.strip_suffix('?') {
+            Some(result) => match result.strip_suffix("(value)") {
+                Some(function)
+                    if function.starts_with("encode_") && function.ends_with("_entity") =>
+                {
+                    function.to_owned()
+                }
+                _ => format!("|value| {result}"),
+            },
+            None => format!("|value| Ok({item})"),
+        };
+        let iterable = access.strip_prefix('&').unwrap_or(access);
         return format!(
-            "v1::Value {{ kind: Some(WireKind::ListValue(v1::ValueList {{ values: {access}.iter().map(|value| Ok({})).collect::<Result<Vec<_>, GeneratedCommandError>>()? }})) }}",
-            rust_encode_wire_expr(inner, "value", contract)
+            "v1::Value {{ kind: Some(WireKind::ListValue(v1::ValueList {{ values: ({iterable}).iter().map({mapper}).collect::<Result<Vec<_>, GeneratedCommandError>>()? }})) }}"
         );
     }
+    let copied = access
+        .strip_prefix('&')
+        .map_or_else(|| format!("*({access})"), ToOwned::to_owned);
     match value_type.tag() {
-        ValueTypeTag::Bool => format!("wire_bool(*({access}))"),
-        ValueTypeTag::I64 => format!("wire_i64(*({access}))"),
-        ValueTypeTag::U64 => format!("wire_u64(*({access}))"),
+        ValueTypeTag::Bool => format!("wire_bool({copied})"),
+        ValueTypeTag::I64 => format!("wire_i64({copied})"),
+        ValueTypeTag::U64 => format!("wire_u64({copied})"),
         ValueTypeTag::Decimal => format!("wire_decimal({access})"),
         ValueTypeTag::Money => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
         ValueTypeTag::String => format!("wire_string(Clone::clone({access}))"),
         ValueTypeTag::Bytes => format!("wire_bytes(Clone::clone({access}))"),
         ValueTypeTag::Timestamp => format!("wire_timestamp({access})?"),
-        ValueTypeTag::Date => format!("wire_date(*({access}))"),
+        ValueTypeTag::Date => format!("wire_date({copied})"),
         ValueTypeTag::Uuid => format!("wire_uuid({access})?"),
         ValueTypeTag::Enum => format!("wire_enum(Clone::clone({access}))"),
         ValueTypeTag::Record => match value_type.record_ref() {
@@ -2090,7 +2173,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     emit_typescript_application_errors(&mut output);
     writeln!(
         output,
-        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"cursor\" | \"limit\" }}\n  | {{ readonly kind: \"decimal\"; readonly precision?: number; readonly scale?: number }}\n  | {{ readonly kind: \"money\"; readonly precision?: number; readonly scale?: number; readonly currency?: string }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly maximum?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
+        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"cursor\" | \"limit\" }}\n  | {{ readonly kind: \"decimal\"; readonly precision?: number; readonly scale?: number }}\n  | {{ readonly kind: \"money\"; readonly precision?: number; readonly scale?: number; readonly currency?: string }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
          export interface DriverOperationIdentity {{ readonly name: string; readonly inputSchemaHash: string; }}\n\
          export interface NamedQueryRequest<P, R> {{ readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; \
          readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; \
@@ -2262,7 +2345,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             .idempotency_input()
             .and_then(|id| command.input().record().field(id))
             .map_or("idempotency_key", |field| field.name());
-        let input_schema = ts_contract_record_schema(
+        let mut input_schema = ts_contract_record_schema(
             command
                 .input()
                 .record()
@@ -2272,6 +2355,33 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             contract,
             false,
         );
+        if let Some(expansion) = command.collection_expansion() {
+            let field = command
+                .input()
+                .record()
+                .field(expansion.input_field())
+                .expect("validated collection input field");
+            let fields = input_schema
+                .get_mut("fields")
+                .and_then(Value::as_array_mut)
+                .expect("generated command input record schema");
+            let field_schema = fields
+                .iter_mut()
+                .find(|candidate| {
+                    candidate.get("name") == Some(&Value::String(field.name().to_owned()))
+                })
+                .and_then(|candidate| candidate.get_mut("schema"))
+                .and_then(Value::as_object_mut)
+                .expect("generated collection input schema");
+            field_schema.insert(
+                "minimum".to_owned(),
+                Value::from(expansion.minimum_elements()),
+            );
+            field_schema.insert(
+                "maximum".to_owned(),
+                Value::from(expansion.maximum_elements()),
+            );
+        }
         let outcome_schemas =
             Value::Object(
                 command

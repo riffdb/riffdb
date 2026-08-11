@@ -1,8 +1,8 @@
 # Bounded Collection Commands
 
-> Alpha surface: grammar, executable IR v5, and atomic runtime execution are implemented.
-> Collection commands use the ordinary symbolic command service. Generated Rust, TypeScript,
-> and Python collection facades remain unavailable until the binding rollout is complete.
+> Alpha surface: grammar, executable IR v5, atomic runtime execution, and generated Rust, Go,
+> TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
+> symbolic command service; they do not introduce a generic transaction API.
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
@@ -54,3 +54,40 @@ Duplicate collection keys reject the whole command. All expanded effects, the ty
 events, provenance, idempotency record, and commit record are one atomic command result. A crash
 or retry can expose only the complete persisted result or complete absence; an element-level
 partial result is not part of the protocol.
+
+## Client and CLI preflight
+
+Generated Rust, Go, TypeScript, and Python methods carry the compiler's exact inclusive list
+minimum and maximum. They reject an out-of-range collection before invoking the transport. The
+generated MCP JSON Schema carries the same `minItems` and `maxItems`. Canonical command encoding
+also enforces the fixed document-byte ceiling before a request is sent; no client silently splits
+one atomic collection command into smaller writes.
+
+The CLI accepts inline JSON, `@file`, a file path, or `-` for stdin. Nested collection elements are
+ordinary symbolic JSON records; scalar tags remain explicit where JSON has no lossless native
+form:
+
+```json
+{
+  "request_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000001"},
+  "tuples": [{
+    "store_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000002"},
+    "tuple_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000003"},
+    "object": "document:roadmap",
+    "relation": "viewer",
+    "subject": "user:agent"
+  }]
+}
+```
+
+Pass the exact application source to make the CLI load its checked lock and reject the compiled
+collection count before connecting:
+
+```bash
+riffdb command run WriteTuples \
+  --application riffdb.application.json \
+  --input @write-tuples.json
+```
+
+Without `--application`, local byte and structural bounds still apply and the server remains the
+authoritative fail-closed validator, but the ad-hoc CLI cannot know a command-specific list range.

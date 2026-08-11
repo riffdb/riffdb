@@ -1,0 +1,108 @@
+#![forbid(unsafe_code)]
+
+//! WP-562: generated clients preserve compiler-owned collection bounds.
+
+use riffdb_contract_compiler::compile_contract_source;
+use riffdb_query_module::{
+    NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    generate_go_application_client, generate_mcp_commands, generate_python_application_client,
+    generate_rust_application_client, generate_typescript_application_client,
+};
+
+const CONTRACT: &str = include_str!("../../../fixtures/contracts/bulk/openfga-tuples.riff");
+const QUERY: &str = r#"
+query GetTuple(
+    $store_id: Tuple.store_id,
+    $tuple_id: Tuple.tuple_id,
+) {
+    one tuple from Tuple
+        where store_id == $store_id
+            && tuple_id == $tuple_id
+        else NotFound
+
+    return Found {
+        tuple: tuple { store_id tuple_id object relation subject }
+    }
+
+    outcomes Found | NotFound
+}
+"#;
+
+fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
+    let contract = compile_contract_source(CONTRACT).expect("bulk contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("openfga_bulk").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![NamedQuerySource::new("GetTuple", QUERY).expect("query source")],
+    )
+    .expect("module candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("query module");
+    (contract, module)
+}
+
+#[test]
+fn generated_collection_surfaces_preflight_the_exact_compiled_bounds() {
+    let (contract, module) = application();
+    let command = contract
+        .commands()
+        .iter()
+        .find(|command| command.name() == "WriteTuples")
+        .expect("command");
+    let expansion = command.collection_expansion().expect("collection plan");
+    assert_eq!(expansion.minimum_elements(), 1);
+    assert_eq!(expansion.maximum_elements(), 128);
+
+    let rust = generate_rust_application_client(&module, &contract, &[]);
+    assert!(rust.contains("self.tuples.is_empty() || self.tuples.len() > 128"));
+    assert!(rust.contains("GeneratedCommandError::InvalidInputShape"));
+
+    let go = generate_go_application_client(&module, &contract, &[]);
+    assert!(go.contains("len(input.Tuples) < 1 || len(input.Tuples) > 128"));
+    assert!(go.contains("invalid bounded collection length for WriteTuples.tuples"));
+
+    let typescript = generate_typescript_application_client(&module, &contract, &[]);
+    assert!(typescript.contains(r#""kind":"list""#));
+    assert!(typescript.contains(r#""minimum":1"#));
+    assert!(typescript.contains(r#""maximum":128"#));
+
+    let python =
+        generate_python_application_client(&module, &contract, &[]).expect("Python client");
+    assert!(python.contains("if not 1 <= len(input.tuples) <= 128:"));
+    assert!(python.contains("invalid bounded collection length for WriteTuples.tuples"));
+
+    let command_tool = generate_mcp_commands(&module, &contract)
+        .expect("MCP commands")
+        .into_iter()
+        .find(|tool| tool.operation_name == "WriteTuples")
+        .expect("WriteTuples tool");
+    let schema: serde_json::Value =
+        serde_json::from_str(&command_tool.input_schema).expect("input schema");
+    assert_eq!(schema["properties"]["tuples"]["minItems"], 1);
+    assert_eq!(schema["properties"]["tuples"]["maxItems"], 128);
+}
+
+#[test]
+fn generated_collection_surfaces_expose_no_generic_write_escape_hatch() {
+    let (contract, module) = application();
+    let generated = [
+        generate_rust_application_client(&module, &contract, &[]),
+        generate_go_application_client(&module, &contract, &[]),
+        generate_typescript_application_client(&module, &contract, &[]),
+        generate_python_application_client(&module, &contract, &[]).expect("Python client"),
+    ];
+    for client in generated {
+        let lowered = client.to_ascii_lowercase();
+        for forbidden in [
+            "begin_transaction",
+            "raw_mutation",
+            "delete_entity",
+            "scan_index",
+            "entity_type_id",
+        ] {
+            assert!(
+                !lowered.contains(forbidden),
+                "generated application client exposed {forbidden}"
+            );
+        }
+    }
+}

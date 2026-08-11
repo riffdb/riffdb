@@ -111,6 +111,11 @@ name = "driver_conformance_remote_client"
 path = "../../tests/driver_conformance_remote_client.rs"
 test = false
 
+[[example]]
+name = "adapter_bulk_remote_client"
+path = "../../tests/adapter_bulk_remote_client.rs"
+test = false
+
 [[test]]
 name = "operational_queries"
 path = "../../tests/operational_queries.rs"

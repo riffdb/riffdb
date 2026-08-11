@@ -337,7 +337,41 @@ fn emit_command_methods(
             .unwrap();
         }
         output.push_str("} }\n");
-        writeln!(output, "func decode{name}Outcome(value riffdb.Value) ({name}Outcome, error) {{ fields, err := riffdb.RecordFields(value); if err != nil {{ return nil, err }}; outcomeValue, err := requiredField(fields, \"outcome\"); if err != nil {{ return nil, err }}; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil {{ return nil, err }}; var raw riffdb.Value; switch outcome {{").unwrap();
+        let collection_validation = if let Some(expansion) = command.collection_expansion() {
+            let field = command
+                .input()
+                .record()
+                .field(expansion.input_field())
+                .expect("validated collection input field");
+            writeln!(
+                output,
+                "func validate{name}Input(input {name}Input) error {{ if len(input.{field}) < {minimum} || len(input.{field}) > {maximum} {{ return errors.New({message:?}) }}; return nil }}",
+                field = go_public(field.name()),
+                minimum = expansion.minimum_elements(),
+                maximum = expansion.maximum_elements(),
+                message = format!(
+                    "invalid bounded collection length for {}.{}",
+                    command.name(),
+                    field.name()
+                ),
+            )
+            .unwrap();
+            format!(
+                "if err := validate{name}Input(input); err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; "
+            )
+        } else {
+            String::new()
+        };
+        let raw_declaration = if command
+            .outcomes()
+            .iter()
+            .any(|outcome| !outcome.payload().fields().is_empty())
+        {
+            " var raw riffdb.Value;"
+        } else {
+            ""
+        };
+        writeln!(output, "func decode{name}Outcome(value riffdb.Value) ({name}Outcome, error) {{ fields, err := riffdb.RecordFields(value); if err != nil {{ return nil, err }}; outcomeValue, err := requiredField(fields, \"outcome\"); if err != nil {{ return nil, err }}; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil {{ return nil, err }};{raw_declaration} switch outcome {{").unwrap();
         for outcome in command.outcomes() {
             let outcome_name = format!("{name}{}", go_public(outcome.name()));
             writeln!(
@@ -382,7 +416,7 @@ fn emit_command_methods(
         } else {
             ", WorkflowRevisions: workflowRevisions".to_owned()
         };
-        writeln!(output, "func (client *Client) {name}(ctx context.Context, input {name}Input) (CommandResult[{name}Outcome], error) {{ response, err := client.session.Invoke(ctx, {name}Operation, encode{name}Input(input), riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; outcome, err := decode{name}Outcome(response.Value); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; {revision_call}return CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}").unwrap();
+        writeln!(output, "func (client *Client) {name}(ctx context.Context, input {name}Input) (CommandResult[{name}Outcome], error) {{ {collection_validation}response, err := client.session.Invoke(ctx, {name}Operation, encode{name}Input(input), riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; outcome, err := decode{name}Outcome(response.Value); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; {revision_call}return CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}").unwrap();
         let batch_revision_call = if workflow_revisions.is_empty() {
             String::new()
         } else {
@@ -395,7 +429,14 @@ fn emit_command_methods(
         } else {
             ", WorkflowRevisions: workflowRevisions".to_owned()
         };
-        writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; {batch_revision_call}converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI{batch_revision_field}}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
+        let batch_collection_validation = if command.collection_expansion().is_some() {
+            format!(
+                "if err := validate{name}Input(input); err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; "
+            )
+        } else {
+            String::new()
+        };
+        writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ {batch_collection_validation}encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; {batch_revision_call}converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI{batch_revision_field}}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
     }
 }
 

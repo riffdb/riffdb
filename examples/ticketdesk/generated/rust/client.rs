@@ -1357,6 +1357,16 @@ pub struct Label {
     pub organization_id: String,
 }
 
+fn encode_label_entity(value: &Label) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.label_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_label_entity(value: v1::Value) -> Result<Label, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Label {
@@ -1380,6 +1390,21 @@ pub struct Ticket {
     pub assignee_id: String,
     pub reporter_id: String,
     pub organization_id: String,
+}
+
+fn encode_ticket_entity(value: &Ticket) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.title))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_enum(Clone::clone(&value.status))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.ticket_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.project_id)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_timestamp(&value.updated_at)?) },
+        v1::ValueField { field_id: Some(7), name: String::new(), value: Some(wire_uuid(&value.assignee_id)?) },
+        v1::ValueField { field_id: Some(8), name: String::new(), value: Some(wire_uuid(&value.reporter_id)?) },
+        v1::ValueField { field_id: Some(9), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_ticket_entity(value: v1::Value) -> Result<Ticket, GeneratedCommandError> {
@@ -1408,6 +1433,17 @@ pub struct AppUser {
     pub organization_id: String,
 }
 
+fn encode_app_user_entity(value: &AppUser) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.email))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.user_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_string(Clone::clone(&value.display_name))) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_app_user_entity(value: v1::Value) -> Result<AppUser, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = AppUser {
@@ -1429,6 +1465,18 @@ pub struct Comment {
     pub comment_id: String,
     pub created_at: TimestampValue,
     pub organization_id: String,
+}
+
+fn encode_comment_entity(value: &Comment) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.body))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.author_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.ticket_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.comment_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_comment_entity(value: v1::Value) -> Result<Comment, GeneratedCommandError> {
@@ -1453,6 +1501,16 @@ pub struct Project {
     pub organization_id: String,
 }
 
+fn encode_project_entity(value: &Project) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.project_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_project_entity(value: v1::Value) -> Result<Project, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Project {
@@ -1471,6 +1529,16 @@ pub struct TicketLabel {
     pub ticket_id: String,
     pub created_at: TimestampValue,
     pub organization_id: String,
+}
+
+fn encode_ticket_label_entity(value: &TicketLabel) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_uuid(&value.label_id)?) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.ticket_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_ticket_label_entity(value: v1::Value) -> Result<TicketLabel, GeneratedCommandError> {
@@ -1492,6 +1560,15 @@ pub struct Organization {
     pub organization_id: String,
 }
 
+fn encode_organization_entity(value: &Organization) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_organization_entity(value: v1::Value) -> Result<Organization, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Organization {
@@ -1510,6 +1587,17 @@ pub struct ProjectMember {
     pub created_at: TimestampValue,
     pub project_id: String,
     pub organization_id: String,
+}
+
+fn encode_project_member_entity(value: &ProjectMember) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.role))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.user_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.project_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_project_member_entity(value: v1::Value) -> Result<ProjectMember, GeneratedCommandError> {
@@ -1560,6 +1648,7 @@ impl GeneratedCommand for AddProjectMemberInput {
     type Outcome = AddProjectMemberOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("role", wire_string(Clone::clone(&self.role))),
             wire_named_field("user_id", wire_uuid(&self.user_id)?),
@@ -1651,6 +1740,7 @@ impl GeneratedCommand for AttachLabelInput {
     type Outcome = AttachLabelOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("label_id", wire_uuid(&self.label_id)?),
             wire_named_field("ticket_id", wire_uuid(&self.ticket_id)?),
@@ -1747,6 +1837,7 @@ impl GeneratedCommand for CloseTicketWithCommentInput {
     type Outcome = CloseTicketWithCommentOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("body", wire_string(Clone::clone(&self.body))),
             wire_named_field("author_id", wire_uuid(&self.author_id)?),
@@ -1847,6 +1938,7 @@ impl GeneratedCommand for CreateCommentInput {
     type Outcome = CreateCommentOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("body", wire_string(Clone::clone(&self.body))),
             wire_named_field("author_id", wire_uuid(&self.author_id)?),
@@ -1933,6 +2025,7 @@ impl GeneratedCommand for CreateLabelInput {
     type Outcome = CreateLabelOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
             wire_named_field("label_id", wire_uuid(&self.label_id)?),
@@ -2005,6 +2098,7 @@ impl GeneratedCommand for CreateOrganizationInput {
     type Outcome = CreateOrganizationOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
             wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
@@ -2074,6 +2168,7 @@ impl GeneratedCommand for CreateProjectInput {
     type Outcome = CreateProjectOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
             wire_named_field("project_id", wire_uuid(&self.project_id)?),
@@ -2163,6 +2258,7 @@ impl GeneratedCommand for CreateTicketInput {
     type Outcome = CreateTicketOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("title", wire_string(Clone::clone(&self.title))),
             wire_named_field("status", wire_enum(Clone::clone(&self.status))),
@@ -2259,6 +2355,7 @@ impl GeneratedCommand for CreateUserInput {
     type Outcome = CreateUserOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("email", wire_string(Clone::clone(&self.email))),
             wire_named_field("user_id", wire_uuid(&self.user_id)?),
@@ -2361,6 +2458,7 @@ impl GeneratedCommand for OpenTicketWithLabelsInput {
     type Outcome = OpenTicketWithLabelsOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("title", wire_string(Clone::clone(&self.title))),
             wire_named_field("label_a", wire_uuid(&self.label_a)?),
@@ -2478,6 +2576,7 @@ impl GeneratedCommand for SwapMemberRolesInput {
     type Outcome = SwapMemberRolesOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("role_a", wire_string(Clone::clone(&self.role_a))),
             wire_named_field("role_b", wire_string(Clone::clone(&self.role_b))),

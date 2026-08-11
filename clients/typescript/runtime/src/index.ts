@@ -23,7 +23,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "enum"; readonly typeId?: number; readonly variants?: Readonly<Record<string, number>> }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 
 /** One exact fixed-point value accepted by generated decimal fields. */
@@ -1202,7 +1202,9 @@ function encodeDriverValue(value: unknown, schema: ApplicationValueSchema): Driv
     return value === null || value === undefined ? { type: "null" } : encodeDriverValue(value, schema.value);
   }
   if (schema.kind === "list") {
-    if (!Array.isArray(value) || value.length > (schema.maximum ?? 4_096)) {
+    if (!Array.isArray(value)
+        || value.length < (schema.minimum ?? 0)
+        || value.length > (schema.maximum ?? 4_096)) {
       throw new Error("invalid generated RiffDB list input");
     }
     return { type: "list", value: value.map((item) => encodeDriverValue(item, schema.value)) };
@@ -1300,7 +1302,11 @@ function decodeDriverCommandResult<I, R>(
 function decodeDriverValue(value: DriverValue, schema: ApplicationValueSchema): unknown {
   if (schema.kind === "optional") return value.type === "null" ? null : decodeDriverValue(value, schema.value);
   if (schema.kind === "list") {
-    if (value.type !== "list" || value.value.length > (schema.maximum ?? 4_096)) throw new Error("invalid RiffDB driver list result");
+    if (value.type !== "list"
+        || value.value.length < (schema.minimum ?? 0)
+        || value.value.length > (schema.maximum ?? 4_096)) {
+      throw new Error("invalid RiffDB driver list result");
+    }
     return value.value.map((item) => decodeDriverValue(item, schema.value));
   }
   if (schema.kind === "record") {
@@ -1458,7 +1464,9 @@ function encodeValue(value: unknown, schema: ApplicationValueSchema): unknown {
     return value === null || value === undefined ? null : encodeValue(value, schema.value);
   }
   if (schema.kind === "list") {
-    if (!Array.isArray(value) || (schema.maximum !== undefined && value.length > schema.maximum)) {
+    if (!Array.isArray(value)
+        || (schema.minimum !== undefined && value.length < schema.minimum)
+        || (schema.maximum !== undefined && value.length > schema.maximum)) {
       throw new Error("invalid generated application input");
     }
     return value.map((item) => encodeValue(item, schema.value));
@@ -1666,7 +1674,9 @@ function decodeDecimal(input: Record<string, unknown>): {
 function decodePlain(value: unknown, schema: ApplicationValueSchema): unknown {
   if (schema.kind === "optional") return value === null ? null : decodePlain(value, schema.value);
   if (schema.kind === "list") {
-    if (!Array.isArray(value) || (schema.maximum !== undefined && value.length > schema.maximum)) return fail();
+    if (!Array.isArray(value)
+        || (schema.minimum !== undefined && value.length < schema.minimum)
+        || (schema.maximum !== undefined && value.length > schema.maximum)) return fail();
     return value.map((item) => decodePlain(item, schema.value));
   }
   if (schema.kind === "record") {

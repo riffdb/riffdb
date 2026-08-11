@@ -585,6 +585,9 @@ pub(crate) enum CommandCommand {
         error_outcomes: Vec<String>,
         #[arg(long)]
         progress: bool,
+        /// Exact application source used to preflight compiled collection bounds.
+        #[arg(long, value_name = "RIFFDB.APPLICATION.JSON")]
+        application: Option<OsString>,
     },
     Run {
         #[arg(value_name = "COMMAND_NAME")]
@@ -593,6 +596,9 @@ pub(crate) enum CommandCommand {
         input: OsString,
         #[arg(long, value_name = "VERSION")]
         expected_version: Option<String>,
+        /// Exact application source used to preflight compiled collection bounds.
+        #[arg(long, value_name = "RIFFDB.APPLICATION.JSON")]
+        application: Option<OsString>,
     },
     Execute {
         #[arg(value_name = "COMMAND_NAME")]
@@ -1769,6 +1775,8 @@ mod tests {
             "--error-outcome",
             "InvalidInput",
             "--progress",
+            "--application",
+            "riffdb.application.json",
         ])
         .expect("symbolic batch");
         assert!(matches!(
@@ -1778,9 +1786,12 @@ mod tests {
                     command_name,
                     concurrency,
                     progress: true,
+                    application: Some(application),
                     ..
                 }
-            } if command_name == "CreateTicket" && concurrency == "16"
+            } if command_name == "CreateTicket"
+                && concurrency == "16"
+                && application == "riffdb.application.json"
         ));
         assert!(
             Cli::try_parse_from([

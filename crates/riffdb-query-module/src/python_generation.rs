@@ -1008,9 +1008,28 @@ fn emit_client(
         let async_token = if asynchronous { "async " } else { "" };
         let workflow_revisions = workflow_revision_bindings(command);
         let success_outcome = workflow_success_outcome_name(command);
+        let collection_validation = command.collection_expansion().map(|expansion| {
+            let field = command
+                .input()
+                .record()
+                .field(expansion.input_field())
+                .expect("validated collection input field");
+            format!(
+                "        if not {minimum} <= len(input.{field}) <= {maximum}:\n            raise ValueError({message:?})\n",
+                minimum = expansion.minimum_elements(),
+                maximum = expansion.maximum_elements(),
+                field = python_identifier(field.name()),
+                message = format!(
+                    "invalid bounded collection length for {}.{}",
+                    command.name(),
+                    field.name()
+                ),
+            )
+        });
         writeln!(
             output,
-            "    {async_token}def {method}(self, input: {name}Input) -> TypedCommandResult[{name}Outcome]:\n        raw = {await_token}self._transport._execute_command(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            command_name={wire_name:?}, plan_hash={constant}_PLAN_HASH,\n            input=encode_record(input), attempts=self._command_attempts,\n        )\n        outcomes = {{",
+            "    {async_token}def {method}(self, input: {name}Input) -> TypedCommandResult[{name}Outcome]:\n{collection_validation}        raw = {await_token}self._transport._execute_command(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            command_name={wire_name:?}, plan_hash={constant}_PLAN_HASH,\n            input=encode_record(input), attempts=self._command_attempts,\n        )\n        outcomes = {{",
+            collection_validation = collection_validation.as_deref().unwrap_or(""),
             constant = screaming_snake(wire_name)
         )
         .expect("String writes cannot fail");
@@ -1058,9 +1077,18 @@ fn emit_client(
             output.push_str("        ))\n\n");
         }
         let batch_await = if asynchronous { "await " } else { "" };
+        let batch_collection_validation =
+            collection_validation
+                .as_deref()
+                .map_or_else(String::new, |validation| {
+                    let nested = validation
+                        .replace("        if ", "            if ")
+                        .replace("\n            raise", "\n                raise");
+                    format!("        for input in inputs:\n{nested}")
+                });
         writeln!(
             output,
-            "    {async_token}def {method}_batch(\n        self, inputs: Sequence[{name}Input], options: CommandBatchOptions,\n        progress: Callable[[CommandBatchProgress], None] | None = None,\n    ) -> CommandBatchResult[{name}Outcome]:\n        return {batch_await}self._transport._command_batch(inputs, options, self.{method}, progress)\n"
+            "    {async_token}def {method}_batch(\n        self, inputs: Sequence[{name}Input], options: CommandBatchOptions,\n        progress: Callable[[CommandBatchProgress], None] | None = None,\n    ) -> CommandBatchResult[{name}Outcome]:\n{batch_collection_validation}        return {batch_await}self._transport._command_batch(inputs, options, self.{method}, progress)\n"
         )
         .expect("String writes cannot fail");
     }

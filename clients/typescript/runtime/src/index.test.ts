@@ -6,6 +6,34 @@ import test from "node:test";
 
 import { CliApplicationTransport, exactDecimal, exactMoney } from "./index.js";
 
+test("generated collection schemas reject counts before transport", async () => {
+  const transport = new CliApplicationTransport({
+    riffdbPath: "/does-not-exist/riffdb",
+    endpoint: "http://127.0.0.1:7443",
+    credentialFile: "/does-not-exist/credential",
+  });
+  await assert.rejects(
+    transport.executeCommand({
+      contractLineage: "BulkContract",
+      contractVersion: 1,
+      commandName: "WriteTuples",
+      planHash: "a".repeat(64),
+      input: { request_id: "01900000-0000-7000-8000-000000000001", tuples: [] },
+      idempotencyKey: "01900000-0000-7000-8000-000000000001",
+      inputSchema: {
+        kind: "record",
+        fields: [
+          { name: "request_id", schema: { kind: "uuid" } },
+          { name: "tuples", schema: { kind: "list", minimum: 1, maximum: 128, value: { kind: "record", fields: [] } } },
+        ],
+      },
+      outcomeSchemas: { Written: { kind: "record", fields: [] } },
+      decodeError: () => new Error("unexpected application error"),
+    }, 1),
+    /invalid generated application input/,
+  );
+});
+
 test("exact decimal helpers remove handwritten coefficient encoding", () => {
   assert.deepEqual(exactMoney("USD", "25.00"), {
     currency: "USD",

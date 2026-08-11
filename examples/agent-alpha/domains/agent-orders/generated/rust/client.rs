@@ -484,6 +484,15 @@ pub struct Store {
     pub created_at: TimestampValue,
 }
 
+fn encode_store_entity(value: &Store) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_store_entity(value: v1::Value) -> Result<Store, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Store {
@@ -504,6 +513,19 @@ pub struct Product {
     pub created_at: TimestampValue,
     pub product_id: String,
     pub unit_price: DecimalValue,
+}
+
+fn encode_product_entity(value: &Product) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.sku))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_bool(value.active)) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.product_id)?) },
+        v1::ValueField { field_id: Some(7), name: String::new(), value: Some(wire_decimal(&value.unit_price)) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_product_entity(value: v1::Value) -> Result<Product, GeneratedCommandError> {
@@ -529,6 +551,16 @@ pub struct Customer {
     pub display_name: String,
 }
 
+fn encode_customer_entity(value: &Customer) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.customer_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_string(Clone::clone(&value.display_name))) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_customer_entity(value: v1::Value) -> Result<Customer, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Customer {
@@ -548,6 +580,17 @@ pub struct Inventory {
     pub available: i64,
     pub product_id: String,
     pub updated_at: TimestampValue,
+}
+
+fn encode_inventory_entity(value: &Inventory) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_i64(value.reserved)) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_i64(value.available)) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.product_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_timestamp(&value.updated_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_inventory_entity(value: v1::Value) -> Result<Inventory, GeneratedCommandError> {
@@ -573,6 +616,18 @@ pub struct OrderLine {
     pub unit_price: DecimalValue,
 }
 
+fn encode_order_line_entity(value: &OrderLine) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_uuid(&value.order_id)?) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_i64(value.quantity)) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.product_id)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_decimal(&value.unit_price)) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_order_line_entity(value: v1::Value) -> Result<OrderLine, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = OrderLine {
@@ -595,6 +650,18 @@ pub struct PurchaseOrder {
     pub created_at: TimestampValue,
     pub updated_at: TimestampValue,
     pub customer_id: String,
+}
+
+fn encode_purchase_order_entity(value: &PurchaseOrder) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_enum(Clone::clone(&value.status))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.order_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_timestamp(&value.updated_at)?) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.customer_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
 
 fn decode_purchase_order_entity(value: v1::Value) -> Result<PurchaseOrder, GeneratedCommandError> {
@@ -650,9 +717,10 @@ impl GeneratedCommand for AddOrderLineInput {
     type Outcome = AddOrderLineOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("order_id", wire_uuid(&self.order_id)?),
-            wire_named_field("quantity", wire_i64(*(&self.quantity))),
+            wire_named_field("quantity", wire_i64(self.quantity)),
             wire_named_field("store_id", wire_uuid(&self.store_id)?),
             wire_named_field("product_id", wire_uuid(&self.product_id)?),
             wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
@@ -743,6 +811,7 @@ impl GeneratedCommand for CreateCustomerInput {
     type Outcome = CreateCustomerOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("store_id", wire_uuid(&self.store_id)?),
             wire_named_field("customer_id", wire_uuid(&self.customer_id)?),
@@ -824,9 +893,10 @@ impl GeneratedCommand for CreateInventoryInput {
     type Outcome = CreateInventoryOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("store_id", wire_uuid(&self.store_id)?),
-            wire_named_field("available", wire_i64(*(&self.available))),
+            wire_named_field("available", wire_i64(self.available)),
             wire_named_field("product_id", wire_uuid(&self.product_id)?),
             wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
         ];
@@ -908,6 +978,7 @@ impl GeneratedCommand for CreateOrderInput {
     type Outcome = CreateOrderOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("order_id", wire_uuid(&self.order_id)?),
             wire_named_field("store_id", wire_uuid(&self.store_id)?),
@@ -987,6 +1058,7 @@ impl GeneratedCommand for CreateProductInput {
     type Outcome = CreateProductOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("sku", wire_string(Clone::clone(&self.sku))),
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
@@ -1061,6 +1133,7 @@ impl GeneratedCommand for CreateStoreInput {
     type Outcome = CreateStoreOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("name", wire_string(Clone::clone(&self.name))),
             wire_named_field("store_id", wire_uuid(&self.store_id)?),
@@ -1152,9 +1225,10 @@ impl GeneratedCommand for ReserveInventoryInput {
     type Outcome = ReserveInventoryOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("order_id", wire_uuid(&self.order_id)?),
-            wire_named_field("quantity", wire_i64(*(&self.quantity))),
+            wire_named_field("quantity", wire_i64(self.quantity)),
             wire_named_field("store_id", wire_uuid(&self.store_id)?),
             wire_named_field("product_id", wire_uuid(&self.product_id)?),
             wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),

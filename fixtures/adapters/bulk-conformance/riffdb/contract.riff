@@ -1,0 +1,178 @@
+contract AdapterBulkConformance version 1 {
+  entity FgaTuple {
+    key (store_id: uuid, tuple_id: uuid)
+    field object: string<256>
+    field relation: string<64>
+    field subject: string<256>
+  }
+
+  entity Metric {
+    key (experiment_id: uuid, metric_id: uuid)
+    field name: string<128>
+    field value_micros: i64
+    field step: i64
+  }
+
+  entity Document {
+    key (site_id: uuid, document_id: uuid)
+    field title: string<256>
+  }
+
+  entity DocumentRevision {
+    key (site_id: uuid, document_id: uuid, revision_id: uuid)
+    field body: string<4096>
+  }
+
+  entity DocumentGraphInput {
+    key (site_id: uuid, document_id: uuid, revision_id: uuid)
+    field title: string<256>
+    field body: string<4096>
+  }
+
+  entity Pipeline {
+    key (organization_id: uuid, pipeline_id: uuid)
+    field name: string<128>
+  }
+
+  entity PipelineStep {
+    key (organization_id: uuid, pipeline_id: uuid, step_id: uuid)
+    field run_text: string<1024>
+  }
+
+  entity PipelineGraphInput {
+    key (organization_id: uuid, pipeline_id: uuid, step_id: uuid)
+    field name: string<128>
+    field run_text: string<1024>
+  }
+
+  entity RestrictParent {
+    key (tenant_id: uuid, parent_id: uuid)
+    delete_policy restrict RestrictChild.by_restrict_parent
+  }
+
+  entity RestrictChild {
+    key (tenant_id: uuid, parent_id: uuid, child_id: uuid)
+    index by_restrict_parent (tenant_id, parent_id)
+    reference restrict_parent (tenant_id, parent_id) -> RestrictParent(tenant_id, parent_id)
+  }
+
+  aggregate FgaTuples {
+    root FgaTuple
+    partition_by store_id
+    conflict_key (store_id, tuple_id)
+  }
+
+  aggregate Metrics {
+    root Metric
+    partition_by experiment_id
+    conflict_key (experiment_id, metric_id)
+  }
+
+  aggregate Documents {
+    root Document
+    child DocumentRevision
+    child DocumentGraphInput
+    partition_by site_id
+    conflict_key (site_id, document_id)
+  }
+
+  aggregate Pipelines {
+    root Pipeline
+    child PipelineStep
+    child PipelineGraphInput
+    partition_by organization_id
+    conflict_key (organization_id, pipeline_id)
+  }
+
+  aggregate RestrictOwned {
+    root RestrictParent
+    child RestrictChild
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+
+  bulk command WriteTuples {
+    input request_id: uuid
+    input tuples: list<FgaTuple, 1..128>
+    idempotency_key request_id
+    for tuple in tuples {
+      create FgaTuple(tuple.store_id, tuple.tuple_id) as stored else TupleAlreadyExists {}
+      set stored.object = tuple.object
+      set stored.relation = tuple.relation
+      set stored.subject = tuple.subject
+    }
+    return TuplesWritten {}
+  }
+
+  bulk command LogMetrics {
+    input request_id: uuid
+    input metrics: list<Metric, 1..128>
+    idempotency_key request_id
+    for metric in metrics {
+      create Metric(metric.experiment_id, metric.metric_id) as stored else MetricAlreadyExists {}
+      set stored.name = metric.name
+      set stored.value_micros = metric.value_micros
+      set stored.step = metric.step
+    }
+    return MetricsLogged {}
+  }
+
+  bulk command CreateDocumentGraphs {
+    input request_id: uuid
+    input documents: list<DocumentGraphInput, 1..64>
+    idempotency_key request_id
+    for document in documents {
+      create Document(document.site_id, document.document_id) as stored else DocumentAlreadyExists {}
+      create DocumentRevision(document.site_id, document.document_id, document.revision_id) as revision else RevisionAlreadyExists {}
+      set stored.title = document.title
+      set revision.body = document.body
+    }
+    return DocumentGraphsCreated {}
+  }
+
+  bulk command CreatePipelinesWithSteps {
+    input request_id: uuid
+    input pipelines: list<PipelineGraphInput, 1..64>
+    idempotency_key request_id
+    for pipeline in pipelines {
+      create Pipeline(pipeline.organization_id, pipeline.pipeline_id) as stored else PipelineAlreadyExists {}
+      create PipelineStep(pipeline.organization_id, pipeline.pipeline_id, pipeline.step_id) as step else StepAlreadyExists {}
+      set stored.name = pipeline.name
+      set step.run_text = pipeline.run_text
+    }
+    return PipelinesCreated {}
+  }
+
+  bulk command CreateRestrictParents {
+    input request_id: uuid
+    input parents: list<RestrictParent, 1..8>
+    idempotency_key request_id
+    for parent in parents {
+      create RestrictParent(parent.tenant_id, parent.parent_id) as stored else ParentAlreadyExists {}
+    }
+    return RestrictParentsCreated {}
+  }
+
+  bulk command CreateRestrictChildren {
+    input request_id: uuid
+    input children: list<RestrictChild, 1..8>
+    idempotency_key request_id
+    for child_input in children {
+      read RestrictParent(child_input.tenant_id, child_input.parent_id) as parent
+        else RestrictParentRequired {}
+      create RestrictChild(child_input.tenant_id, child_input.parent_id, child_input.child_id) as stored else ChildAlreadyExists {}
+    }
+    return RestrictChildrenCreated {}
+  }
+
+  bulk command DeleteRestrictParents {
+    input request_id: uuid
+    input tenant_id: uuid
+    input parent_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for parent_id in parent_ids {
+      delete RestrictParent(tenant_id, parent_id) as parent else ParentMissing {}
+    }
+    return RestrictParentsDeleted {}
+  }
+}

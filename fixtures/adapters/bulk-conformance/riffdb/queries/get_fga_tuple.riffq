@@ -1,0 +1,21 @@
+query GetFgaTuple(
+    $store_id: FgaTuple.store_id,
+    $tuple_id: FgaTuple.tuple_id,
+) {
+    one tuple from FgaTuple
+        where store_id == $store_id
+            && tuple_id == $tuple_id
+        else TupleNotFound
+
+    return TupleFound {
+        tuple: tuple {
+            store_id
+            tuple_id
+            object
+            relation
+            subject
+        }
+    }
+
+    outcomes TupleFound | TupleNotFound
+}

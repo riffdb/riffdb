@@ -42,8 +42,9 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::batch::{
-    BatchError, BatchOptions, BatchReport, MAX_BATCH_CONCURRENCY, MAX_BATCH_SOURCE_BYTES,
-    execute as execute_batch, parse_source as parse_batch_source,
+    BatchError, BatchOptions, BatchReport, CollectionInputConstraint, MAX_BATCH_CONCURRENCY,
+    MAX_BATCH_SOURCE_BYTES, execute as execute_batch, parse_source as parse_batch_source,
+    parse_source_with_constraint as parse_batch_source_with_constraint,
 };
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
@@ -4673,6 +4674,47 @@ async fn contract_command(
     }
 }
 
+fn collection_input_constraint(
+    application: Option<&std::ffi::OsStr>,
+    command_name: &str,
+    identity: CommandIdentity,
+) -> Result<Option<CollectionInputConstraint>, Terminal> {
+    let Some(application) = application else {
+        return Ok(None);
+    };
+    let locked = load_locked_application(Path::new(application), None).map_err(|error| {
+        error.diagnostics().map_or_else(
+            || {
+                local_error(
+                    identity,
+                    "application_lock_inexact",
+                    "application source, lock, and generated artifacts are not exact",
+                )
+            },
+            |diagnostics| authoring_error(identity, diagnostics),
+        )
+    })?;
+    let command = locked
+        .contract()
+        .commands()
+        .iter()
+        .find(|candidate| candidate.name() == command_name)
+        .ok_or_else(|| invalid_input(identity))?;
+    let Some(expansion) = command.collection_expansion() else {
+        return Ok(None);
+    };
+    let field = command
+        .input()
+        .record()
+        .field(expansion.input_field())
+        .ok_or_else(|| invalid_input(identity))?;
+    Ok(Some(CollectionInputConstraint {
+        field: field.name().to_owned(),
+        minimum: expansion.minimum_elements(),
+        maximum: expansion.maximum_elements(),
+    }))
+}
+
 async fn command_command(
     command: CommandCommand,
     config: &EffectiveConfig,
@@ -4689,6 +4731,7 @@ async fn command_command(
             checkpoint,
             error_outcomes,
             progress,
+            application,
         } => {
             let expected_version = match expected_version
                 .as_deref()
@@ -4706,11 +4749,20 @@ async fn command_command(
                 Ok(source) => source,
                 Err(error) => return input_terminal(CommandIdentity::CommandBatch, error),
             };
-            let source = match parse_batch_source(
+            let collection_constraint = match collection_input_constraint(
+                application.as_deref(),
+                &command_name,
+                CommandIdentity::CommandBatch,
+            ) {
+                Ok(value) => value,
+                Err(terminal) => return terminal,
+            };
+            let source = match parse_batch_source_with_constraint(
                 &source,
                 &command_name,
                 expected_version,
                 &idempotency_field,
+                collection_constraint.as_ref(),
             ) {
                 Ok(source) => source,
                 Err(error) => return batch_error_terminal(error),
@@ -4752,13 +4804,31 @@ async fn command_command(
             command_name,
             input,
             expected_version,
+            application,
         } => {
             let application_command_name = command_name.clone();
-            let input = match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin)
-                .and_then(|input| natural_command_record(input).map_err(|()| InputError::Invalid))
+            let natural_input =
+                match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin) {
+                    Ok(input) => input,
+                    Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
+                };
+            let collection_constraint = match collection_input_constraint(
+                application.as_deref(),
+                &command_name,
+                CommandIdentity::CommandRun,
+            ) {
+                Ok(value) => value,
+                Err(terminal) => return terminal,
+            };
+            if collection_constraint
+                .as_ref()
+                .is_some_and(|constraint| !constraint.validate(&natural_input))
             {
+                return invalid_input(CommandIdentity::CommandRun);
+            }
+            let input = match natural_command_record(natural_input) {
                 Ok(input) => input,
-                Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
+                Err(()) => return input_terminal(CommandIdentity::CommandRun, InputError::Invalid),
             };
             let expected_version = match expected_version
                 .as_deref()
@@ -8489,13 +8559,35 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
                     .filter(|value| *value <= 999_999_999)
                     .ok_or(())?;
                 Kind::TimestampValue(v1::Timestamp { seconds, nanos })
-            } else {
+            } else if tagged.keys().any(|name| name.starts_with('$')) {
                 return Err(());
+            } else {
+                natural_record_kind(tagged)?
             }
         }
-        serde_json::Value::Object(_) => return Err(()),
+        serde_json::Value::Object(values) => natural_record_kind(values)?,
     };
     Ok(v1::Value { kind: Some(kind) })
+}
+
+fn natural_record_kind(
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<v1::value::Kind, ()> {
+    let mut fields = values
+        .into_iter()
+        .map(|(name, value)| {
+            if name.is_empty() || name.starts_with('$') {
+                return Err(());
+            }
+            Ok(v1::ValueField {
+                field_id: None,
+                name,
+                value: Some(natural_query_value(value)?),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    fields.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(v1::value::Kind::RecordValue(v1::ValueRecord { fields }))
 }
 
 fn natural_decimal(value: serde_json::Value) -> Result<v1::Decimal, ()> {
@@ -10378,6 +10470,36 @@ mod tests {
         ] {
             assert!(natural_query_value(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn natural_collection_inputs_accept_nested_symbolic_records() {
+        let input = serde_json::json!({
+            "request_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000001"},
+            "tuples": [{
+                "store_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000002"},
+                "tuple_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000003"},
+                "relation": "viewer"
+            }]
+        });
+        let record = natural_command_record(input.as_object().expect("record").clone())
+            .expect("nested natural records");
+        let Some(v1::value::Kind::RecordValue(record)) = record.kind else {
+            panic!("record value");
+        };
+        let tuples = record
+            .fields
+            .iter()
+            .find(|field| field.name == "tuples")
+            .and_then(|field| field.value.as_ref())
+            .and_then(|value| value.kind.as_ref());
+        assert!(
+            matches!(tuples, Some(v1::value::Kind::ListValue(values)) if matches!(
+                values.values[0].kind,
+                Some(v1::value::Kind::RecordValue(_))
+            ))
+        );
+        assert!(natural_query_value(serde_json::json!({"$unknown": "value"})).is_err());
     }
 
     #[derive(Default)]
