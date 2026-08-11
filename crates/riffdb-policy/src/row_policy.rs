@@ -1,6 +1,6 @@
 //! Shared, deny-by-default evaluation of compiler-owned row-policy plans.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use riffdb_auth::PrincipalFactBindingV1;
@@ -10,8 +10,8 @@ use riffdb_contract_ir::{
 };
 use riffdb_types::{
     ActorKind, CanonicalRecord, CanonicalValue, CanonicalValueHash, CapabilityId,
-    CapabilityRowPolicyOperationV1, EntityTypeId, IndexId, PartitionKey, encode_canonical_record,
-    hash_canonical_value,
+    CapabilityRowPolicyOperationV1, EntityKey, EntityTypeId, IndexId, PartitionKey,
+    encode_canonical_record, hash_canonical_value,
 };
 
 use crate::{
@@ -28,6 +28,110 @@ pub enum QueryRowPolicyContextErrorV1 {
     MissingReadBinding,
     /// A compiler-declared local relationship schema is unavailable.
     InvalidRelationshipPlan,
+    /// A projected candidate set was malformed, incomplete, or exceeded its fixed ceiling.
+    InvalidProjectedCandidateSet,
+}
+
+/// Fixed server-owned ceiling for one projected row-policy admission pass.
+///
+/// This is deliberately independent of caller-visible scan budgets: hidden
+/// rows cannot consume or alter that budget, while authoritative admission
+/// itself remains bounded.
+pub const MAX_PROJECTED_POLICY_CANDIDATES_V1: usize = 100_000;
+
+/// One authoritative observation for a projection candidate.
+///
+/// Construction is hidden from public application surfaces. First-party
+/// storage adapters create observations while one authoritative read snapshot
+/// remains open. `None` represents a projection key whose current row no
+/// longer exists and is therefore denied.
+#[doc(hidden)]
+pub struct ProjectedPolicyCandidateObservationV1 {
+    key: EntityKey,
+    current: Option<(CanonicalRecord, Vec<bool>)>,
+}
+
+impl ProjectedPolicyCandidateObservationV1 {
+    /// Records one missing current row (deny).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn missing(key: EntityKey) -> Self {
+        Self { key, current: None }
+    }
+
+    /// Records one current row and its exact indexed-relationship evidence.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn current(key: EntityKey, row: CanonicalRecord, relationship_exists: Vec<bool>) -> Self {
+        Self {
+            key,
+            current: Some((row, relationship_exists)),
+        }
+    }
+}
+
+/// Move-only proof that one complete projected candidate set was evaluated by
+/// the current compiled row policy.
+///
+/// The proof carries no row values and has no public constructor. It is bound
+/// to one entity and the exact ordered candidate set, so a stale, partial, or
+/// caller-fabricated allow list cannot be substituted at the columnar boundary.
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedProjectedRowAdmissionV1 {
+    entity: EntityTypeId,
+    candidates: BTreeSet<EntityKey>,
+    admitted: BTreeSet<EntityKey>,
+}
+
+impl std::fmt::Debug for AuthorizedProjectedRowAdmissionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedProjectedRowAdmissionV1")
+            .field("entity", &self.entity)
+            .field("candidate_count", &self.candidates.len())
+            .field("admitted_count", &self.admitted.len())
+            .finish()
+    }
+}
+
+impl AuthorizedProjectedRowAdmissionV1 {
+    /// Constructs an exact admission proof for cross-crate semantic tests.
+    ///
+    /// Shipped code cannot enable this constructor.
+    #[cfg(feature = "test-fixtures")]
+    #[doc(hidden)]
+    pub fn test_fixture(
+        entity: EntityTypeId,
+        candidates: Vec<EntityKey>,
+        admitted: Vec<EntityKey>,
+    ) -> Option<Self> {
+        let candidates = candidates.into_iter().collect::<BTreeSet<_>>();
+        let admitted = admitted.into_iter().collect::<BTreeSet<_>>();
+        (candidates.len() <= MAX_PROJECTED_POLICY_CANDIDATES_V1
+            && candidates
+                .iter()
+                .all(|candidate| candidate.entity_type_id() == entity)
+            && admitted.is_subset(&candidates))
+        .then_some(Self {
+            entity,
+            candidates,
+            admitted,
+        })
+    }
+
+    /// Whether the proof is bound to `entity` and the complete candidate set.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn covers(&self, entity: EntityTypeId, candidates: &BTreeSet<EntityKey>) -> bool {
+        self.entity == entity && &self.candidates == candidates
+    }
+
+    /// Whether one covered key was admitted.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn admits(&self, key: &EntityKey) -> bool {
+        self.admitted.contains(key)
+    }
 }
 
 /// Failure to reconstruct compiler-owned policy authority for a command.
@@ -399,6 +503,46 @@ impl AuthorizedQueryRowPolicyContextV1 {
             &evidence,
         )
         .is_allowed()
+    }
+
+    /// Evaluates a complete authoritative observation set for one projected
+    /// entity and returns an opaque candidate-bound admission proof.
+    ///
+    /// Observations must be in strict canonical-key order, contain every
+    /// candidate exactly once, and remain under the fixed server ceiling.
+    /// First-party storage adapters call this only while their authoritative
+    /// read snapshot remains open.
+    #[doc(hidden)]
+    pub fn authorize_projected_candidates(
+        &self,
+        entity: EntityTypeId,
+        observations: Vec<ProjectedPolicyCandidateObservationV1>,
+    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryRowPolicyContextErrorV1> {
+        if observations.len() > MAX_PROJECTED_POLICY_CANDIDATES_V1 {
+            return Err(QueryRowPolicyContextErrorV1::InvalidProjectedCandidateSet);
+        }
+        let mut candidates = BTreeSet::new();
+        let mut admitted = BTreeSet::new();
+        let mut prior: Option<&EntityKey> = None;
+        for observation in &observations {
+            if observation.key.entity_type_id() != entity
+                || prior.is_some_and(|prior| prior >= &observation.key)
+            {
+                return Err(QueryRowPolicyContextErrorV1::InvalidProjectedCandidateSet);
+            }
+            prior = Some(&observation.key);
+            candidates.insert(observation.key.clone());
+            if let Some((row, evidence)) = &observation.current
+                && self.allows(entity, row, evidence)
+            {
+                admitted.insert(observation.key.clone());
+            }
+        }
+        Ok(AuthorizedProjectedRowAdmissionV1 {
+            entity,
+            candidates,
+            admitted,
+        })
     }
 }
 

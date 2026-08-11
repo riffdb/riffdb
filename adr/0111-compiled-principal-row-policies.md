@@ -109,6 +109,41 @@ Policy is revalidated before protected release. Revocation or narrowing closes
 a stream and removes previously visible live-query values before further
 delivery, following the existing authorization-change contract.
 
+### Amendment 1: native projection admission and event-policy anchors (2026-08-11)
+
+Native projected reads MUST NOT lower row policy into caller-visible predicates
+or filter a shaped projection result. For a protected projected operation the
+service derives the complete candidate-key set from exactly one organization
+partition and one immutable projection snapshot. A first-party authoritative
+adapter then reloads every candidate's current entity row and all bounded,
+indexed relationship evidence in one authoritative read snapshot, evaluates
+the selected V4 policy, and returns an opaque admission proof bound to the
+entity and complete candidate set. The projection engine verifies that binding
+and applies admission before request predicates, scan-budget accounting,
+limits, cursors, grouping, aggregates, full-text/vector statistics, scoring,
+ranking, and snippets. No transport, SDK, application request, or service
+caller can supply or alter an allow set.
+
+Candidate admission has a fixed server-owned ceiling. Exceeding it returns the
+same typed bounded-query refusal class as other projection capacity failures;
+it never returns a partial or post-filtered result. Hidden rows do not consume
+the caller-visible scan budget, affect group cardinality, rank, result count,
+or cursor identity. A missing authoritative row, relationship observation,
+policy binding, complete candidate coverage, or valid canonical entity key
+denies or fails closed before projection execution. Projection definitions may
+retain only their declared exposure envelope; principal-specific policy facts
+and decisions are never persisted in the derived plane or frozen into a
+physical plan.
+
+Durable event streams require an explicit compiler-owned event-policy anchor.
+An event declaration or subscription must name the protected source entity and
+the canonical key projection needed to evaluate its selected policy, or name a
+separately accepted event policy. RiffDB MUST NOT infer authority from payload
+field names such as `organization_id`, `ticket_id`, or `owner_id`. Protected
+standalone event consumption therefore remains fail-closed until that anchor,
+its retention/replay semantics, and current-row-missing behavior are frozen by
+an accepted amendment and implemented by WP-572.
+
 ### Writes prove current-row and successor-row authority
 
 Commands declare whether their row policy protects `create`, `read-current`,

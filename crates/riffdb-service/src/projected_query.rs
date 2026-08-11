@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use riffdb_columnar::{
     AggregateOp, ColumnPredicate, ColumnarQueryRequest, DefinitionFingerprint, DegradedReason,
-    GroupBySpec, OrderSpec, QueryBudget, QueryError, QueryRow, QueryRows, RebuildingReason,
-    SortDirection, query_snapshot,
+    GroupBySpec, OrderSpec, OrgKey, QueryBudget, QueryError, QueryRow, QueryRows, RebuildingReason,
+    SortDirection, query_snapshot, query_snapshot_with_policy_admission,
 };
 
 pub use riffdb_columnar::{
@@ -28,12 +28,14 @@ use riffdb_errors::{
     ValidationPath,
 };
 use riffdb_policy::{
-    ApplicationQueryAccessRequirement, ApplicationQueryTarget, OperationRequest,
-    OperationTenantScope,
+    ApplicationQueryAccessRequirement, ApplicationQueryTarget, AuthorizedQueryRowPolicyContextV1,
+    MAX_PROJECTED_POLICY_CANDIDATES_V1, OperationRequest, OperationTenantScope,
+    resolve_authorized_query_row_policy_context,
 };
 use riffdb_types::{
-    CanonicalValue, CommitToken, FieldId, FreshnessPolicy, FrontierPosition, ProjectionFrontier,
-    QueryCostVectorV1, QueryPlanHash, RequestId, ServiceOperationV1, hash_query_plan,
+    CanonicalValue, CommitToken, EntityKey, FieldId, FreshnessPolicy, FrontierPosition,
+    ProjectionFrontier, QueryCostVectorV1, QueryPlanHash, RequestId, ServiceOperationV1,
+    hash_query_plan,
 };
 
 use crate::columnar_notification::ColumnarWake;
@@ -547,11 +549,14 @@ async fn execute_projected_query(
         .await?;
 
     // Read safe point 2 (pre-execute).
-    begun
+    let execution_authorization = begun
         .reauthorize_read(service, &context)
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
 
     // The declared row bound must bound what the caller actually receives.
     // The engine ignores `limit` on the grouped path (it returns before the
@@ -574,26 +579,24 @@ async fn execute_projected_query(
         FreshnessPolicy::Available => {
             serve_available(
                 service,
-                &context,
-                &begun,
                 columnar.as_ref(),
                 request.projection_name(),
                 &definition,
                 entity,
                 &engine_request,
+                row_policy.as_ref(),
             )
             .await
         }
         FreshnessPolicy::Bounded { max_lag_sequences } => {
             serve_bounded(
                 service,
-                &context,
-                &begun,
                 columnar.as_ref(),
                 request.projection_name(),
                 &definition,
                 entity,
                 &engine_request,
+                row_policy.as_ref(),
                 *max_lag_sequences,
             )
             .await
@@ -608,6 +611,7 @@ async fn execute_projected_query(
                 &definition,
                 entity,
                 &engine_request,
+                row_policy.as_ref(),
                 token,
                 *max_wait,
             )
@@ -629,13 +633,12 @@ async fn execute_projected_query(
 #[allow(clippy::too_many_arguments)]
 async fn serve_available(
     service: &RiffDbServiceInner,
-    context: &RequestContext,
-    begun: &crate::orchestration::BegunInvocation,
     columnar: &dyn crate::ColumnarProjectionPort,
     projection_name: &str,
     definition: &riffdb_columnar::RegisteredDefinition,
     entity: &riffdb_contract_ir::EntitySchema,
     engine_request: &ColumnarQueryRequest,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
     let observation = observe_projection(columnar, projection_name)?;
     if let Some(result) = lifecycle_outcome(&observation) {
@@ -643,11 +646,10 @@ async fn serve_available(
     }
     query_ready(
         service,
-        context,
-        begun,
         definition,
         entity,
         engine_request,
+        row_policy,
         &observation,
     )
 }
@@ -655,13 +657,12 @@ async fn serve_available(
 #[allow(clippy::too_many_arguments)]
 async fn serve_bounded(
     service: &RiffDbServiceInner,
-    context: &RequestContext,
-    begun: &crate::orchestration::BegunInvocation,
     columnar: &dyn crate::ColumnarProjectionPort,
     projection_name: &str,
     definition: &riffdb_columnar::RegisteredDefinition,
     entity: &riffdb_contract_ir::EntitySchema,
     engine_request: &ColumnarQueryRequest,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     max_lag_sequences: u64,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
     let observation = observe_projection(columnar, projection_name)?;
@@ -690,11 +691,10 @@ async fn serve_bounded(
     }
     query_ready(
         service,
-        context,
-        begun,
         definition,
         entity,
         engine_request,
+        row_policy,
         &observation,
     )
 }
@@ -715,6 +715,7 @@ async fn serve_causal(
     definition: &riffdb_columnar::RegisteredDefinition,
     entity: &riffdb_contract_ir::EntitySchema,
     engine_request: &ColumnarQueryRequest,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     token: &CommitToken,
     max_wait: Duration,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
@@ -760,11 +761,10 @@ async fn serve_causal(
             drop(registration);
             return query_ready(
                 service,
-                context,
-                begun,
                 definition,
                 entity,
                 engine_request,
+                row_policy,
                 &observation,
             );
         }
@@ -806,11 +806,10 @@ async fn serve_causal(
     if observation.published_frontier().satisfies(token) {
         return query_ready(
             service,
-            context,
-            begun,
             definition,
             entity,
             engine_request,
+            row_policy,
             &observation,
         );
     }
@@ -882,11 +881,10 @@ fn lifecycle_outcome(observation: &ColumnarObservation) -> Option<ExecuteProject
 
 fn query_ready(
     service: &RiffDbServiceInner,
-    _context: &RequestContext,
-    _begun: &crate::orchestration::BegunInvocation,
     definition: &riffdb_columnar::RegisteredDefinition,
     entity: &riffdb_contract_ir::EntitySchema,
     engine_request: &ColumnarQueryRequest,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     observation: &ColumnarObservation,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
     if !observation.has_published() {
@@ -897,8 +895,54 @@ fn query_ready(
     }
     // Snapshot Arc was taken under the port; never hold an engine lock here.
     let snapshot = observation.snapshot_arc();
-    let result = query_snapshot(definition, snapshot.as_ref(), engine_request)
-        .map_err(|error| map_query_error(service, error))?;
+    let result = match row_policy {
+        Some(policy) => {
+            let org = OrgKey::from_value(&engine_request.org_scope)
+                .map_err(|_| map_query_error(service, QueryError::InvalidOrgScope))?;
+            let merged = snapshot
+                .merged_org_bounded(&org, MAX_PROJECTED_POLICY_CANDIDATES_V1)
+                .ok_or_else(|| {
+                    application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::QueryUnavailable,
+                    )
+                })?;
+            let candidates = merged
+                .keys()
+                .map(|key| {
+                    EntityKey::from_bytes(key.as_bytes().to_vec()).map_err(|_| {
+                        service.internal_failure(
+                            ServiceOperationV1::ExecuteProjectedQuery,
+                            InternalDefect::LowerIntegrity,
+                        )
+                    })
+                })
+                .collect::<ServiceResult<Vec<_>>>()?;
+            let executor = service.providers.query_executor.as_ref().ok_or_else(|| {
+                service.internal_failure(
+                    ServiceOperationV1::ExecuteProjectedQuery,
+                    InternalDefect::LowerIntegrity,
+                )
+            })?;
+            let admission = executor
+                .authorize_projected_candidates(definition.entity_type_id(), &candidates, policy)
+                .map_err(|error| {
+                    crate::symbolic_query::execution_failure(
+                        service,
+                        ServiceOperationV1::ExecuteProjectedQuery,
+                        error,
+                    )
+                })?;
+            query_snapshot_with_policy_admission(
+                definition,
+                snapshot.as_ref(),
+                engine_request,
+                &admission,
+            )
+        }
+        None => query_snapshot(definition, snapshot.as_ref(), engine_request),
+    }
+    .map_err(|error| map_query_error(service, error))?;
     let frontier = observation.published_frontier().clone();
     let head = observation.head().clone();
     let commit_token = match frontier.position() {
@@ -1007,10 +1051,11 @@ fn map_query_error(service: &RiffDbServiceInner, error: QueryError) -> ServiceFa
                 ApplicationErrorCode::QueryUnavailable,
             )
         }
-        QueryError::PrimaryKeyDecode => service.internal_failure(
-            ServiceOperationV1::ExecuteProjectedQuery,
-            InternalDefect::LowerIntegrity,
-        ),
+        QueryError::PrimaryKeyDecode | QueryError::PolicyAdmissionMismatch => service
+            .internal_failure(
+                ServiceOperationV1::ExecuteProjectedQuery,
+                InternalDefect::LowerIntegrity,
+            ),
     }
 }
 

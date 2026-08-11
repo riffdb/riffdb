@@ -539,10 +539,7 @@ fn evaluate(
     // consumes the transaction-current policy authority before disclosure or
     // at the final commit safe point.
     if current.grant.internal_row_policy().is_some()
-        && matches!(
-            request.operation(),
-            ServiceOperationV1::ExecuteProjectedQuery | ServiceOperationV1::ConsumeEventStream
-        )
+        && matches!(request.operation(), ServiceOperationV1::ConsumeEventStream)
     {
         return Err(PolicyCode::MissingPermission);
     }
@@ -1027,6 +1024,18 @@ mod tests {
             &OperationRequest::execute_ad_hoc_query(application_query_target()),
         );
         assert!(allowed_to_service.is_ok());
+        let allowed_to_projection = evaluate(
+            &principal,
+            &current,
+            database_id(),
+            &environment,
+            timestamp(15),
+            &OperationRequest::execute_projected_query(application_query_target()),
+        );
+        assert!(
+            allowed_to_projection.is_ok(),
+            "protected projections proceed only because WP-572 now consumes their row-policy proof"
+        );
         let allowed_to_commit = evaluate(
             &principal,
             &current,

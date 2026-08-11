@@ -7,7 +7,11 @@ use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use riffdb_policy::{AuthorizedIndexedRelationshipLookupV1, AuthorizedQueryRowPolicyContextV1};
+use riffdb_policy::{
+    AuthorizedIndexedRelationshipLookupV1, AuthorizedProjectedRowAdmissionV1,
+    AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CANDIDATES_V1,
+    ProjectedPolicyCandidateObservationV1,
+};
 use riffdb_query_executor::{
     BoundPredicate, MAX_QUERY_SCANNED_ROWS, QueryBackendFault, QueryContinuation,
     QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryNearestPage,
@@ -19,7 +23,7 @@ use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
-use riffdb_types::{CanonicalValue, FieldId, IndexEntryKey};
+use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
 
 use crate::codec::{decode_entity_record_v1, decode_index_entry_v2, decode_index_epoch_v1};
 use crate::error::storage_error;
@@ -185,6 +189,61 @@ impl QueryExecutionPort for RedbOperationalPorts {
                 )
             })
             .collect()
+    }
+
+    fn authorize_projected_candidates(
+        &self,
+        entity: EntityTypeId,
+        candidates: &[EntityKey],
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
+        if candidates.len() > MAX_PROJECTED_POLICY_CANDIDATES_V1 {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Entities);
+        let mut indexes_opened = false;
+        let mut observations = Vec::with_capacity(candidates.len());
+        for key in candidates {
+            let target = EntityTarget::new(entity, key.clone())
+                .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+            let Some(encoded) = transaction
+                .read_value(JournalTable::Entities, encode_entity_key(key))
+                .map_err(map_storage_query_error)?
+            else {
+                observations.push(ProjectedPolicyCandidateObservationV1::missing(key.clone()));
+                continue;
+            };
+            let record = decode_entity_record_v1(&encoded)
+                .map_err(map_storage_query_error)?
+                .into_parts()
+                .0;
+            if record.target() != &target {
+                return Err(QueryExecutionError::BackendIntegrity);
+            }
+            let lookups = policy
+                .relationship_lookups(entity, record.fields())
+                .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+            if !lookups.is_empty() && !indexes_opened {
+                note_query_table_open(QueryTableKind::Indexes);
+                indexes_opened = true;
+            }
+            let evidence = lookups
+                .iter()
+                .map(|lookup| authoritative_indexed_relationship_exists(&transaction, lookup))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_storage_query_error)?;
+            observations.push(ProjectedPolicyCandidateObservationV1::current(
+                key.clone(),
+                record.fields().clone(),
+                evidence,
+            ));
+        }
+        policy
+            .authorize_projected_candidates(entity, observations)
+            .map_err(|_| QueryExecutionError::BackendIntegrity)
     }
 
     fn execute_operational_query_page(
@@ -656,6 +715,31 @@ fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     upper[position] = upper[position].saturating_add(1);
     upper.truncate(position + 1);
     Some(upper)
+}
+
+fn authoritative_indexed_relationship_exists(
+    transaction: &RedbReadAccess,
+    lookup: &AuthorizedIndexedRelationshipLookupV1,
+) -> Result<bool, StorageError> {
+    let upper = exclusive_prefix_end(lookup.index_prefix()).ok_or_else(invariant)?;
+    let maximum = usize::try_from(MAX_QUERY_SCANNED_ROWS)
+        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+    let rows = transaction.read_range(
+        JournalTable::SecondaryIndexes,
+        lookup.index_prefix(),
+        &upper,
+        maximum,
+    )?;
+    if rows.len() == maximum {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    for row in rows {
+        let (_, entry) = decode_current_index_entry(row)?;
+        if entry.partition_key() == lookup.partition() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalValue, StorageError> {

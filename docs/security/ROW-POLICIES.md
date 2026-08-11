@@ -60,10 +60,21 @@ then invoke the ordinary compiled-command service. They cannot submit an
 evaluated mutation or bypass the transaction-current command policy verifier;
 a denied current or successor row commits nothing.
 
-Projections outside RiffQL, naked event streams, and export remain deliberately
-closed for V4 credentials until their respective WP-572 safe points consume the
-same authority. Do not implement a temporary middleware filter or weaken this
-refusal.
+Native projected queries now derive the complete candidate-key set from one
+organization partition and one immutable projection snapshot. The configured
+authoritative adapter reloads every current row and bounded indexed
+relationship observation in one read snapshot, evaluates the same V4 policy,
+and returns a move-only admission proof bound to the entity and exact candidate
+set. The columnar engine verifies that proof and excludes denied rows before
+request predicates, scan charging, limits, grouping, aggregates, or ranking.
+The operation refuses a candidate set above the fixed 100,000-row admission
+ceiling; it never post-filters or returns a partial aggregate.
+
+Naked event streams and export remain deliberately closed for V4 credentials
+until their respective WP-572 safe points consume the same authority. Event
+policy cannot be guessed from payload field names: a later accepted contract
+surface must bind an event to an explicit source-entity/key or event policy.
+Do not implement a temporary middleware filter or weaken this refusal.
 Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
 not silently drop an unknown fact or substitute a default value. A role whose
 selected policy reads `principal.id` also rejects a principal that is not
@@ -164,8 +175,8 @@ installation-only V3 remain byte-exact. V4 is selected only for a checked
 row-policy extension, and its decoder rejects missing extensions, noncanonical
 fact or binding order, duplicate entity selection, unknown operation tags, and
 role-identity substitution. Current authorization reconstructs facts only from
-the transaction-current retained record. Authoritative RiffQL, compiled
-commands, live named RiffQL watches, contextual RiffQL hydration, and contextual
-reactions through compiled commands are the enabled protected surfaces; other
-protected surfaces remain unavailable until their shared policy and final-safe-
-point enforcement lands.
+the transaction-current retained record. Authoritative RiffQL, native projected
+queries, compiled commands, live named RiffQL watches, contextual RiffQL
+hydration, and contextual reactions through compiled commands are the enabled
+protected surfaces; other protected surfaces remain unavailable until their
+shared policy and final-safe-point enforcement lands.

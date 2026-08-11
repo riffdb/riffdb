@@ -11,12 +11,14 @@ default = []
 
 [dependencies]
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]
 rand = { version = "0.8.7", default-features = false, features = ["std", "std_rng"] }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
 
 [lints]

@@ -135,6 +135,21 @@ impl ColumnarSnapshot {
     /// Merged live rows for one org at this snapshot.
     #[must_use]
     pub fn merged_org(&self, org: &OrgKey) -> BTreeMap<PrimaryKeyBytes, MergedRow> {
+        self.merged_org_bounded(org, usize::MAX)
+            .expect("usize::MAX cannot be exceeded by an in-memory map")
+    }
+
+    /// Merged live rows for one org, refusing as soon as the retained key set
+    /// exceeds a server-owned admission ceiling.
+    ///
+    /// This avoids materializing an unbounded candidate vector merely to
+    /// discover that protected authoritative admission cannot proceed.
+    #[must_use]
+    pub fn merged_org_bounded(
+        &self,
+        org: &OrgKey,
+        maximum: usize,
+    ) -> Option<BTreeMap<PrimaryKeyBytes, MergedRow>> {
         let mut merged: BTreeMap<PrimaryKeyBytes, MergedRow> = BTreeMap::new();
 
         // Segments oldest → newest so later segments overwrite.
@@ -150,6 +165,9 @@ impl ColumnarSnapshot {
                         cells: row.cells.clone(),
                     },
                 );
+                if merged.len() > maximum {
+                    return None;
+                }
             }
         }
 
@@ -174,11 +192,14 @@ impl ColumnarSnapshot {
                             cells: row.cells.clone(),
                         },
                     );
+                    if merged.len() > maximum {
+                        return None;
+                    }
                 }
             }
         }
 
-        merged
+        Some(merged)
     }
 }
 
