@@ -559,8 +559,7 @@ impl Decoder<'_> {
                     components.push(f32::from_be_bytes(self.read_array()?));
                 }
                 Ok(CanonicalValue::Vector(
-                    CanonicalVector::new(components)
-                        .expect("dimension already validated"),
+                    CanonicalVector::new(components).expect("dimension already validated"),
                 ))
             }
             tag => Err(CanonicalCodecError::UnknownTag { tag }),

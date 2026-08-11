@@ -88,17 +88,11 @@ pub(crate) fn resolve_declared_types(
                                         .get(&(entity_id, vector_field.name.value.clone()))
                                         .copied()
                                 }),
-                            ) {
-                                if let Ok(dim) = vector_field.dimension.value.parse::<u32>() {
-                                    if let Some(dimension) =
-                                        riffdb_types::VectorDimension::new(dim)
-                                    {
-                                        entity_fields.insert(
-                                            (entity_id, field_id),
-                                            ValueType::vector(dimension),
-                                        );
-                                    }
-                                }
+                            ) && let Ok(dim) = vector_field.dimension.value.parse::<u32>()
+                                && let Some(dimension) = riffdb_types::VectorDimension::new(dim)
+                            {
+                                entity_fields
+                                    .insert((entity_id, field_id), ValueType::vector(dimension));
                             }
                         }
                     }

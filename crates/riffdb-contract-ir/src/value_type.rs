@@ -421,7 +421,9 @@ impl ValueType {
                 (dim.get() as usize)
                     .checked_mul(4)
                     .and_then(|bytes| bytes.checked_add(6))
-                    .ok_or(IrValidationError::SizeOverflow { kind: "vector type" })?
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "vector type",
+                    })?
             }
         };
         Ok(Some(value))

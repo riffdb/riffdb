@@ -102,10 +102,10 @@ name = "remote_deployment_rotation"
 path = "../../tests/remote_deployment_rotation.rs"
 harness = false
 
-[[test]]
+[[example]]
 name = "driver_conformance_remote_client"
 path = "../../tests/driver_conformance_remote_client.rs"
-harness = false
+test = false
 
 [[test]]
 name = "operational_queries"

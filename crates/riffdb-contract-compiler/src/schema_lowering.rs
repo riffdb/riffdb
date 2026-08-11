@@ -892,7 +892,10 @@ contract Docs version 1 {
             riffdb_contract_ir::ValueTypeTag::Vector
         );
         assert_eq!(
-            embedding_field.value_type().vector_dimension().map(|d| d.get()),
+            embedding_field
+                .value_type()
+                .vector_dimension()
+                .map(|d| d.get()),
             Some(1536)
         );
     }

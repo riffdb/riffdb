@@ -227,7 +227,10 @@ impl EmbeddingMetadata {
 
     /// Creates validated embedding metadata.
     #[must_use]
-    pub fn new(model_identity: impl Into<String>, model_version: impl Into<String>) -> Option<Self> {
+    pub fn new(
+        model_identity: impl Into<String>,
+        model_version: impl Into<String>,
+    ) -> Option<Self> {
         let model_identity = model_identity.into();
         let model_version = model_version.into();
         if model_identity.is_empty()

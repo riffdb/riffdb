@@ -167,7 +167,7 @@ fi
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
 export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
-cargo +1.97.0 test --quiet -p riffdb-testkit --test driver_conformance_remote_client \
+cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
     >"$work_root/rust.json"
 
 socket="$work_root/riffdb-driver.sock"
@@ -255,7 +255,7 @@ RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
     go -C fixtures/driver/conformance-app run ./runner/go >"$work_root/go-revoked.json"
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-    cargo +1.97.0 test --quiet -p riffdb-testkit --test driver_conformance_remote_client \
+    cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
     >"$work_root/rust-revoked.json"
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     node fixtures/driver/conformance-app/runner/typescript.mjs \
