@@ -11,6 +11,7 @@ mod migration;
 mod mutation;
 mod operation;
 mod provenance;
+mod row_policy;
 mod telemetry;
 
 pub use authorizer::*;
@@ -22,4 +23,5 @@ pub use migration::*;
 pub use mutation::*;
 pub use operation::*;
 pub use provenance::*;
+pub use row_policy::*;
 pub use telemetry::*;
