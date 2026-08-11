@@ -57,6 +57,12 @@ pub(crate) enum Token {
     Reference,
     #[token("vector_field")]
     VectorField,
+    #[token("delete_policy")]
+    DeletePolicy,
+    #[token("no_inbound")]
+    NoInbound,
+    #[token("restrict")]
+    Restrict,
     #[token("cosine")]
     Cosine,
     #[token("euclidean")]
@@ -281,6 +287,8 @@ pub(crate) enum Token {
     #[token("+")]
     Plus,
 
+    #[regex(r"[0-9]+\.\.[0-9]+", owned_range)]
+    UIntRange((String, String)),
     #[regex(r"[0-9]+\.[0-9]+", owned_slice)]
     FixedDecimalLiteral(String),
     #[regex(r"[0-9]+", owned_slice)]
@@ -440,6 +448,14 @@ fn bounded_source_span(source: &str) -> Span {
 
 fn owned_slice(lexer: &mut Lexer<'_, Token>) -> String {
     lexer.slice().to_owned()
+}
+
+fn owned_range(lexer: &mut Lexer<'_, Token>) -> (String, String) {
+    let (minimum, maximum) = lexer
+        .slice()
+        .split_once("..")
+        .expect("range token always contains one delimiter");
+    (minimum.to_owned(), maximum.to_owned())
 }
 
 fn bounded_identifier(lexer: &mut Lexer<'_, Token>) -> Result<String, LexingError> {

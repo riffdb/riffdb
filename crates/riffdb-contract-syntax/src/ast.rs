@@ -201,6 +201,22 @@ pub enum EntityItem {
     Reference(ReferenceDeclaration),
     /// A declared vector field for nearest-neighbor search.
     VectorField(VectorFieldDeclaration),
+    /// The only compiler-owned policy under which current state may be deleted.
+    DeletePolicy(DeletePolicyDeclaration),
+}
+
+/// A closed checked-deletion policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeletePolicyDeclaration {
+    /// The compiler must prove that no declared relationship targets this entity.
+    NoInbound,
+    /// One exact reverse index must prove that no current inbound row exists.
+    Restrict {
+        /// Entity containing the inbound relationship and reverse index.
+        source_entity: Spanned<String>,
+        /// Exact declared reverse-reference index.
+        index: Spanned<String>,
+    },
 }
 
 /// The typed fields forming an entity key.
@@ -403,6 +419,8 @@ pub enum TypeExpression {
     List {
         /// The unresolved element type.
         element: Box<Spanned<TypeExpression>>,
+        /// Optional inclusive minimum item count. Absence preserves legacy `0..maximum`.
+        minimum: Option<Spanned<String>>,
         /// The unsigned maximum-item-count lexeme.
         maximum: Spanned<String>,
     },

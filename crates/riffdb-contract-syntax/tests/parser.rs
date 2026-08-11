@@ -2,8 +2,8 @@
 
 use proptest::prelude::*;
 use riffdb_contract_syntax::ast::{
-    BinaryOperator, Binding, CommandKind, Declaration, Effect, EntityItem, Expression, Literal,
-    RowPolicyExpression, RowPolicyOperation, ServiceValueKind,
+    BinaryOperator, Binding, CommandKind, Declaration, DeletePolicyDeclaration, Effect, EntityItem,
+    Expression, Literal, RowPolicyExpression, RowPolicyOperation, ServiceValueKind, TypeExpression,
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
@@ -31,7 +31,7 @@ contract BulkSurface version 1 {
   }
   bulk command ReplaceItems {
     input tenant_id: uuid
-    input item_ids: list<uuid, 256>
+    input item_ids: list<uuid, 1..256>
     idempotency_key tenant_id
     for item_id in item_ids {
       delete Item(tenant_id, item_id) as item else Missing { item_id: item_id }
@@ -55,6 +55,82 @@ contract BulkSurface version 1 {
     assert_eq!(
         iteration.span.start() as usize,
         source.find("for item_id").expect("iteration source")
+    );
+    let TypeExpression::List {
+        minimum, maximum, ..
+    } = &command.inputs[1].value.field.ty.value
+    else {
+        panic!("second input must be the bounded collection");
+    };
+    assert_eq!(
+        minimum.as_ref().map(|value| value.value.as_str()),
+        Some("1")
+    );
+    assert_eq!(maximum.value, "256");
+}
+
+#[test]
+fn parses_closed_delete_policies_and_rejects_nested_collection_expansion() {
+    let source = r#"
+contract DeletePolicies version 1 {
+  entity Parent {
+    key (tenant_id: uuid, parent_id: uuid)
+    delete_policy no_inbound
+  }
+  entity Referenced {
+    key (tenant_id: uuid, referenced_id: uuid)
+    delete_policy restrict Child.by_referenced
+  }
+  entity Child {
+    key (tenant_id: uuid, child_id: uuid)
+    field referenced_id: uuid
+    index by_referenced (tenant_id, referenced_id)
+  }
+}
+"#;
+    let document = parse_contract(source).expect("closed delete policies parse");
+    let Declaration::Entity(parent) = &document.contract.value.declarations[0].value else {
+        panic!("first declaration must be Parent");
+    };
+    assert!(matches!(
+        parent.items[1].value,
+        EntityItem::DeletePolicy(DeletePolicyDeclaration::NoInbound)
+    ));
+    let Declaration::Entity(referenced) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be Referenced");
+    };
+    let EntityItem::DeletePolicy(DeletePolicyDeclaration::Restrict {
+        source_entity,
+        index,
+    }) = &referenced.items[1].value
+    else {
+        panic!("second entity must carry restrict policy");
+    };
+    assert_eq!(source_entity.value, "Child");
+    assert_eq!(index.value, "by_referenced");
+
+    let nested = r#"
+contract NestedBulk version 1 {
+  entity Row { key (tenant_id: uuid, row_id: uuid) }
+  bulk command Invalid {
+    input tenant_id: uuid
+    input row_ids: list<uuid, 1..8>
+    idempotency_key tenant_id
+    for row_id in row_ids {
+      for nested_id in row_ids {
+        delete Row(tenant_id, nested_id) as row else Missing {}
+      }
+    }
+    return Done {}
+  }
+}
+"#;
+    let error = parse_contract(nested).expect_err("nested expansion is not grammar");
+    assert!(
+        error
+            .as_slice()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == SyntaxDiagnosticCode::UnexpectedToken)
     );
 }
 

@@ -576,7 +576,8 @@ fn lower_entities(
                 EntityItem::Invariant(_)
                 | EntityItem::Index(_)
                 | EntityItem::Unique(_)
-                | EntityItem::Reference(_) => {}
+                | EntityItem::Reference(_)
+                | EntityItem::DeletePolicy(_) => {}
                 EntityItem::VectorField(vector_field) => {
                     let field_id = symbols
                         .entity_fields
@@ -770,7 +771,10 @@ fn lower_entities(
                         target_fields,
                     });
                 }
-                EntityItem::Key(_) | EntityItem::Field(_) | EntityItem::VectorField(_) => {}
+                EntityItem::Key(_)
+                | EntityItem::Field(_)
+                | EntityItem::VectorField(_)
+                | EntityItem::DeletePolicy(_) => {}
             }
         }
         // Validate vector field declarations.
