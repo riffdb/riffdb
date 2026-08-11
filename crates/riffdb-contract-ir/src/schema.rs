@@ -1048,6 +1048,11 @@ pub struct SchemaIr {
     vector_field_specs: Vec<VectorFieldSpecV1>,
 }
 
+/// Maximum source fields on one vector field spec. Shared with the bundle
+/// decoder's length preflight so the constructor and the durable decode path
+/// cannot drift (previously a bare `1_024` duplicated in both places).
+pub(crate) const MAX_VECTOR_SOURCE_FIELDS: usize = 1_024;
+
 /// Search configuration for one contract-declared vector field
 /// (ADR-0091 / WP-591): the distance metric, the source fields whose edits
 /// make the embedding stale, and the declared staleness SLO.
@@ -1082,7 +1087,11 @@ impl VectorFieldSpecV1 {
                 kind: "vector spec source fields",
             });
         }
-        checked_len("vector spec source fields", source_fields.len(), 1_024)?;
+        checked_len(
+            "vector spec source fields",
+            source_fields.len(),
+            MAX_VECTOR_SOURCE_FIELDS,
+        )?;
         if source_fields.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(IrValidationError::NonCanonicalOrder {
                 kind: "vector spec source fields",
@@ -1094,10 +1103,14 @@ impl VectorFieldSpecV1 {
             });
         }
         if staleness_slo_secs == 0 {
-            return Err(IrValidationError::LimitExceeded {
+            // A floor violation reported as a floor violation — the previous
+            // `LimitExceeded { actual: 0, maximum: u64::MAX as usize }`
+            // rendered as "0 exceeds maximum 18446744073709551615" and
+            // truncated on 32-bit targets.
+            return Err(IrValidationError::BelowMinimum {
                 kind: "vector spec staleness SLO",
                 actual: 0,
-                maximum: u64::MAX as usize,
+                minimum: 1,
             });
         }
         Ok(Self {

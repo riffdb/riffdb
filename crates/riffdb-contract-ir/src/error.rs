@@ -23,6 +23,16 @@ pub enum IrValidationError {
         /// Immutable maximum.
         maximum: usize,
     },
+    /// A numeric declaration is below its required minimum (a floor
+    /// violation, reported as such rather than as a ceiling violation).
+    BelowMinimum {
+        /// Bounded declaration.
+        kind: &'static str,
+        /// Observed value.
+        actual: u64,
+        /// Required minimum.
+        minimum: u64,
+    },
     /// A required collection was empty.
     Empty {
         /// Required value or collection.
@@ -123,6 +133,11 @@ impl fmt::Display for IrValidationError {
                 actual,
                 maximum,
             } => write!(formatter, "{kind} has size {actual}; maximum is {maximum}"),
+            Self::BelowMinimum {
+                kind,
+                actual,
+                minimum,
+            } => write!(formatter, "{kind} is {actual}; minimum is {minimum}"),
             Self::Empty { kind } => write!(formatter, "{kind} must not be empty"),
             Self::InvalidName { kind } => write!(formatter, "invalid {kind} name"),
             Self::NonCanonicalOrder { kind } => {

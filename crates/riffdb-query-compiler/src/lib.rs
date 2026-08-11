@@ -1681,19 +1681,24 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
         return Ok(1);
     }
     // A nearest binding declares K instead of `take` (the parser rejects
-    // combining them); K is the binding's explicit bound (VEC-010).
+    // combining them); K is the binding's explicit bound (VEC-010). The
+    // ceiling here is the resolver's page-take ceiling (499), not
+    // MAX_QUERY_ROWS: the resolver already refuses K = 500, so allowing it
+    // here would leave two layers holding different beliefs about the same
+    // bound (fail-closed but incoherent). For every compilable K (1..=499)
+    // the two filters agree, so no plan cost changes.
     if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
         return match &nearest.k.value {
             Expression::Literal(Literal::Unsigned(value)) => value.parse::<u64>().ok(),
             _ => None,
         }
-        .filter(|value| (1..=MAX_QUERY_ROWS).contains(value))
+        .filter(|value| (1..=riffdb_query_ir::max_query_page_take()).contains(value))
         .ok_or_else(|| {
             one(
                 PlannerDiagnosticCode::Unbounded,
                 nearest.k.span,
                 vec![binding.name.value.as_str().to_owned()],
-                "binding bound exceeds the service row ceiling",
+                "nearest k must be a positive literal within the 499 page bound",
                 None,
             )
         });
