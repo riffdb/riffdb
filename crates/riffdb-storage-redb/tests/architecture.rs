@@ -24,6 +24,26 @@ fn rust_sources() -> String {
     paths.into_iter().map(read).collect::<Vec<_>>().join("\n")
 }
 
+fn collect_rust_sources(path: &Path, sources: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push(path.to_owned());
+        }
+        return;
+    }
+    if !path.is_dir() {
+        return;
+    }
+    let mut entries = fs::read_dir(path)
+        .expect("read architecture source directory")
+        .map(|entry| entry.expect("architecture source entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for entry in entries {
+        collect_rust_sources(&entry, sources);
+    }
+}
+
 fn production_source(path: impl AsRef<Path>) -> String {
     read(path)
         .split("\n#[cfg(test)]\nmod tests")
@@ -34,6 +54,31 @@ fn production_source(path: impl AsRef<Path>) -> String {
 
 fn without_whitespace(source: &str) -> String {
     source.split_whitespace().collect()
+}
+
+#[test]
+fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_directory() {
+    let mut paths = Vec::new();
+    for relative in [
+        "src",
+        "tests",
+        "benches",
+        "../../tests/storage_recovery",
+        "../../tests/service_audit_recovery",
+    ] {
+        collect_rust_sources(&crate_root().join(relative), &mut paths);
+    }
+    for path in paths {
+        if path == crate_root().join("tests/architecture.rs") {
+            continue;
+        }
+        let source = read(&path);
+        assert!(
+            !source.contains("std::env::temp_dir()") && !source.contains("env::temp_dir()"),
+            "production-sized redb tests must allocate below target/riffdb-test-data, not the ambient temp directory: {}",
+            path.display()
+        );
+    }
 }
 
 #[test]

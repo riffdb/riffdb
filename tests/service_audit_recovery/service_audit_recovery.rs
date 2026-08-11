@@ -32,7 +32,7 @@ struct TestPath(PathBuf);
 
 impl TestPath {
     fn new() -> Self {
-        Self(std::env::temp_dir().join(format!(
+        Self(PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "riffdb-service-audit-recovery-{}-{}.redb",
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)

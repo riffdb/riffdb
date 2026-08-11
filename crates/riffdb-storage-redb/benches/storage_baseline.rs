@@ -254,7 +254,7 @@ struct TempRoot(PathBuf);
 
 impl TempRoot {
     fn new() -> Result<Self, String> {
-        let path = env::temp_dir().join(format!(
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "riffdb-storage-benchmark-{}-{}",
             std::process::id(),
             NEXT_TEMP_ROOT.fetch_add(1, Ordering::Relaxed)

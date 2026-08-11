@@ -68,11 +68,10 @@ struct ConsumerDatabase {
 
 impl ConsumerDatabase {
     fn create(label: &str) -> Self {
-        let root = std::env::current_dir()
-            .expect("current directory")
-            .join("target")
-            .join("wp417-consumer-tests");
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wp417-consumer-tests");
         std::fs::create_dir_all(&root).expect("create WP-417 test root");
+        let root = std::fs::canonicalize(root).expect("canonicalize WP-417 test root");
         let path = root.join(format!(
             "{label}-{}-{}.redb",
             std::process::id(),

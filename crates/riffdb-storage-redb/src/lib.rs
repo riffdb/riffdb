@@ -40,6 +40,8 @@ mod retention;
 mod shared_ports;
 mod startup;
 mod store;
+#[cfg(test)]
+mod test_path;
 mod transient;
 mod validated_prefix;
 

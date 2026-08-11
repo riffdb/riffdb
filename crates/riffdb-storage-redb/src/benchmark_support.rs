@@ -2918,13 +2918,29 @@ mod tests {
         assert!(after.iter().any(|table| table.leaf_pages() > 0));
     }
 
-    fn tempfile_dir() -> std::path::PathBuf {
+    struct TestDirectory(std::path::PathBuf);
+
+    impl std::ops::Deref for TestDirectory {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tempfile_dir() -> TestDirectory {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("riffdb-bench-support-{stamp}"));
+        let path = crate::test_path::root().join(format!("riffdb-bench-support-{stamp}"));
         std::fs::create_dir_all(&path).expect("mkdir");
-        path
+        TestDirectory(path)
     }
 }

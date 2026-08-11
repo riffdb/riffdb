@@ -125,7 +125,7 @@ struct TestDatabasePath(PathBuf);
 impl TestDatabasePath {
     fn new(label: &str) -> Self {
         let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        Self(std::env::temp_dir().join(format!(
+        Self(PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "riffdb-storage-recovery-{label}-{}-{ordinal}.redb",
             std::process::id()
         )))
@@ -4843,7 +4843,7 @@ fn retention_backup_of_pruned_database_restores_and_validates() {
     let status = maintenance.prune_to(1).expect("prune");
     assert_eq!(status.watermark_sequence, 1);
 
-    let root = std::env::temp_dir().join(format!(
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "riffdb-retention-backup-{}-{}",
         std::process::id(),
         NEXT_PATH.fetch_add(1, Ordering::Relaxed)

@@ -112,7 +112,7 @@ mod tests {
 
     impl TestPath {
         fn new() -> Self {
-            Self(std::env::temp_dir().join(format!(
+            Self(crate::test_path::root().join(format!(
                 "riffdb-redb-installation-{}-{}.redb",
                 std::process::id(),
                 NEXT_PATH.fetch_add(1, Ordering::Relaxed)

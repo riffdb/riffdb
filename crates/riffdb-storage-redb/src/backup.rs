@@ -1977,7 +1977,7 @@ mod tests {
     impl TestRoot {
         fn new(label: &str) -> Self {
             let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
+            let path = crate::test_path::root().join(format!(
                 "riffdb-redb-backup-{label}-{}-{ordinal}",
                 std::process::id()
             ));
@@ -2602,7 +2602,7 @@ mod tests {
 
     #[test]
     fn read_history_incarnation_absent_vs_unreadable() {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_path::root().join(format!(
             "riffdb-history-read-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -2638,7 +2638,7 @@ mod tests {
 
     #[test]
     fn stamp_history_incarnation_is_idempotent() {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_path::root().join(format!(
             "riffdb-history-stamp-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

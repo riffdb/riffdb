@@ -7062,7 +7062,7 @@ contract RedbMigration version 1 {
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
             let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-            Self(std::env::temp_dir().join(format!(
+            Self(crate::test_path::root().join(format!(
                 "riffdb-redb-startup-{label}-{}-{ordinal}.redb",
                 std::process::id()
             )))
