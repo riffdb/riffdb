@@ -970,6 +970,7 @@ fn application_installation_wire_never_confuses_partial_with_installed() {
         request_id: uuid_v7(),
         campaign_id: uuid_v7(),
         canonical_plan: canonical_plan.clone(),
+        external_completion: None,
     };
     let running = v1::ApplicationInstallationObservation {
         campaign_id: request.campaign_id.clone(),
@@ -1019,6 +1020,94 @@ fn application_installation_wire_never_confuses_partial_with_installed() {
 }
 
 #[test]
+fn installation_external_completion_is_closed_bounded_and_canonical() {
+    use v1::application_installation_external_completion::Completion;
+
+    let mut request = v1::StartApplicationInstallationRequest {
+        request_id: uuid_v7(),
+        campaign_id: uuid_v7(),
+        canonical_plan: b"bounded-plan".to_vec(),
+        external_completion: Some(v1::ApplicationInstallationExternalCompletion {
+            completion: Some(Completion::DriverProof(
+                v1::ApplicationInstallationDriverProof {
+                    drivers: vec![
+                        v1::ApplicationInstallationDriver::Rust as i32,
+                        v1::ApplicationInstallationDriver::Typescript as i32,
+                    ],
+                },
+            )),
+        }),
+    };
+    validate_public_message(&request).expect("canonical exact driver proof");
+    decode_public_message::<v1::StartApplicationInstallationRequest>(&request.encode_to_vec())
+        .expect("canonical proof survives structural preflight");
+
+    request.external_completion = Some(v1::ApplicationInstallationExternalCompletion {
+        completion: Some(Completion::DriverProof(
+            v1::ApplicationInstallationDriverProof {
+                drivers: vec![
+                    v1::ApplicationInstallationDriver::Rust as i32,
+                    v1::ApplicationInstallationDriver::Rust as i32,
+                ],
+            },
+        )),
+    });
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::NonCanonical)
+    );
+
+    request.external_completion =
+        Some(v1::ApplicationInstallationExternalCompletion { completion: None });
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::MissingRequiredField)
+    );
+
+    let seed = v1::ApplicationInstallationSeedReceipt {
+        name: "seed-001".to_owned(),
+        content_hash: vec![0x51; 32],
+        succeeded: 3,
+        replayed: 2,
+    };
+    request.external_completion = Some(v1::ApplicationInstallationExternalCompletion {
+        completion: Some(Completion::SeedReceipts(
+            v1::ApplicationInstallationSeedReceipts {
+                seeds: vec![seed.clone()],
+            },
+        )),
+    });
+    validate_public_message(&request).expect("bounded seed receipt");
+
+    let mut overflowing = seed.clone();
+    overflowing.succeeded = u64::MAX;
+    overflowing.replayed = 1;
+    request.external_completion = Some(v1::ApplicationInstallationExternalCompletion {
+        completion: Some(Completion::SeedReceipts(
+            v1::ApplicationInstallationSeedReceipts {
+                seeds: vec![overflowing],
+            },
+        )),
+    });
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::InvalidIdentity)
+    );
+
+    request.external_completion = Some(v1::ApplicationInstallationExternalCompletion {
+        completion: Some(Completion::SeedReceipts(
+            v1::ApplicationInstallationSeedReceipts {
+                seeds: vec![seed; 257],
+            },
+        )),
+    });
+    assert_eq!(
+        decode_public_message::<v1::StartApplicationInstallationRequest>(&request.encode_to_vec()),
+        Err(PublicWireError::PreflightLimitExceeded)
+    );
+}
+
+#[test]
 fn terminal_installation_receipt_and_poll_identity_are_content_addressed() {
     let canonical_plan = b"bounded-plan".to_vec();
     let canonical_receipt = b"redacted-terminal-receipt".to_vec();
@@ -1027,6 +1116,7 @@ fn terminal_installation_receipt_and_poll_identity_are_content_addressed() {
         request_id: uuid_v7(),
         campaign_id: campaign_id.clone(),
         canonical_plan: canonical_plan.clone(),
+        external_completion: None,
     };
     let response = v1::StartApplicationInstallationResponse {
         observation: Some(v1::ApplicationInstallationObservation {

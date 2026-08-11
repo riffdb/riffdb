@@ -583,6 +583,47 @@ pub struct ApplicationInstallationObservation {
     pub receipt_hash: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationInstallationDriverProof {
+    #[prost(enumeration = "ApplicationInstallationDriver", repeated, tag = "1")]
+    pub drivers: ::prost::alloc::vec::Vec<i32>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationInstallationSeedReceipt {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub content_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub succeeded: u64,
+    #[prost(uint64, tag = "4")]
+    pub replayed: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplicationInstallationSeedReceipts {
+    #[prost(message, repeated, tag = "1")]
+    pub seeds: ::prost::alloc::vec::Vec<ApplicationInstallationSeedReceipt>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplicationInstallationExternalCompletion {
+    #[prost(
+        oneof = "application_installation_external_completion::Completion",
+        tags = "1, 2"
+    )]
+    pub completion: ::core::option::Option<
+        application_installation_external_completion::Completion,
+    >,
+}
+/// Nested message and enum types in `ApplicationInstallationExternalCompletion`.
+pub mod application_installation_external_completion {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Completion {
+        #[prost(message, tag = "1")]
+        DriverProof(super::ApplicationInstallationDriverProof),
+        #[prost(message, tag = "2")]
+        SeedReceipts(super::ApplicationInstallationSeedReceipts),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StartApplicationInstallationRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
@@ -590,6 +631,10 @@ pub struct StartApplicationInstallationRequest {
     pub campaign_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub canonical_plan: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub external_completion: ::core::option::Option<
+        ApplicationInstallationExternalCompletion,
+    >,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartApplicationInstallationResponse {
@@ -1754,6 +1799,41 @@ impl ApplicationInstallationNextAction {
                 Some(Self::SealReceipt)
             }
             "APPLICATION_INSTALLATION_NEXT_ACTION_NONE" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationInstallationDriver {
+    Unspecified = 0,
+    Rust = 1,
+    Typescript = 2,
+    Go = 3,
+    Python = 4,
+}
+impl ApplicationInstallationDriver {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED",
+            Self::Rust => "APPLICATION_INSTALLATION_DRIVER_RUST",
+            Self::Typescript => "APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT",
+            Self::Go => "APPLICATION_INSTALLATION_DRIVER_GO",
+            Self::Python => "APPLICATION_INSTALLATION_DRIVER_PYTHON",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_INSTALLATION_DRIVER_RUST" => Some(Self::Rust),
+            "APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT" => Some(Self::Typescript),
+            "APPLICATION_INSTALLATION_DRIVER_GO" => Some(Self::Go),
+            "APPLICATION_INSTALLATION_DRIVER_PYTHON" => Some(Self::Python),
             _ => None,
         }
     }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use riffdb_application::{
     ApplicationInstallationObservation, ApplicationInstallationPlan,
-    ApplicationInstallationReceipt, InstallationCampaignPhase,
+    ApplicationInstallationReceipt, InstallationCampaignPhase, InstallationStageEvidence,
 };
 use riffdb_policy::AuthorizedApplicationInstallation;
 use riffdb_types::{
@@ -21,6 +21,7 @@ use crate::{
 pub struct StartApplicationInstallationRequest {
     campaign_id: ApplicationInstallationCampaignId,
     plan: Arc<ApplicationInstallationPlan>,
+    external_completion: Option<InstallationStageEvidence>,
 }
 
 impl StartApplicationInstallationRequest {
@@ -33,7 +34,28 @@ impl StartApplicationInstallationRequest {
         Self {
             campaign_id,
             plan: Arc::new(plan),
+            external_completion: None,
         }
+    }
+
+    /// Attaches the only two controller-observed stage completions.
+    ///
+    /// Remote state stages remain server-observed. This method accepts only
+    /// exact driver-proof or seed-receipt evidence declared by the immutable
+    /// plan and rejects every other stage before service admission.
+    pub fn with_external_completion(
+        mut self,
+        completion: InstallationStageEvidence,
+    ) -> Result<Self, ServiceDtoError> {
+        if !matches!(
+            completion,
+            InstallationStageEvidence::DriverProof(_) | InstallationStageEvidence::Seeds(_)
+        ) || completion.validate_for(self.plan.as_ref()).is_err()
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        self.external_completion = Some(completion);
+        Ok(self)
     }
 
     /// Caller-stable campaign identity.
@@ -48,7 +70,17 @@ impl StartApplicationInstallationRequest {
         self.plan.as_ref()
     }
 
+    /// Exact externally observed completion, when this resume carries one.
+    #[must_use]
+    pub const fn external_completion(&self) -> Option<&InstallationStageEvidence> {
+        self.external_completion.as_ref()
+    }
+
     /// Consumes the request without cloning the complete plan.
+    ///
+    /// This compatibility decomposition intentionally omits an attached
+    /// external completion. Installation coordinators that support external
+    /// stage evidence must use [`Self::into_parts_with_external_completion`].
     #[must_use]
     pub fn into_parts(
         self,
@@ -57,6 +89,18 @@ impl StartApplicationInstallationRequest {
         Arc<ApplicationInstallationPlan>,
     ) {
         (self.campaign_id, self.plan)
+    }
+
+    /// Consumes the request, including exact externally observed completion.
+    #[must_use]
+    pub fn into_parts_with_external_completion(
+        self,
+    ) -> (
+        ApplicationInstallationCampaignId,
+        Arc<ApplicationInstallationPlan>,
+        Option<InstallationStageEvidence>,
+    ) {
+        (self.campaign_id, self.plan, self.external_completion)
     }
 }
 

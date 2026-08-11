@@ -270,6 +270,18 @@ impl InstallationStageEvidence {
             Self::Receipt(_) => InstallationStage::Receipt,
         }
     }
+
+    /// Validates that this evidence is the exact value declared by a plan.
+    ///
+    /// This validates identity and bounded shape only. Remote contract,
+    /// module, role, and capability evidence is still observed by the server;
+    /// callers cannot use this method to authorize or assert those stages.
+    pub fn validate_for(
+        &self,
+        plan: &ApplicationInstallationPlan,
+    ) -> Result<(), InstallationCampaignError> {
+        validate_stage_evidence(plan, self)
+    }
 }
 
 /// Closed safe failure observed while executing the current stage.

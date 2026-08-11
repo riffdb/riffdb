@@ -1167,6 +1167,11 @@ messages
   riffdb.v1.AffectedEntity fields=2
     1 entity_key optional bytes
     2 entity_version optional uint64
+  riffdb.v1.ApplicationInstallationDriverProof fields=1
+    1 drivers repeated .riffdb.v1.ApplicationInstallationDriver
+  riffdb.v1.ApplicationInstallationExternalCompletion fields=2
+    1 driver_proof optional .riffdb.v1.ApplicationInstallationDriverProof oneof=completion
+    2 seed_receipts optional .riffdb.v1.ApplicationInstallationSeedReceipts oneof=completion
   riffdb.v1.ApplicationInstallationFailure fields=3
     1 stage optional .riffdb.v1.ApplicationInstallationStage
     2 code optional .riffdb.v1.ApplicationInstallationFailureCode
@@ -1181,6 +1186,13 @@ messages
     7 next_action optional .riffdb.v1.ApplicationInstallationNextAction
     8 failure optional .riffdb.v1.ApplicationInstallationFailure
     9 receipt_hash optional bytes
+  riffdb.v1.ApplicationInstallationSeedReceipt fields=4
+    1 name optional string
+    2 content_hash optional bytes
+    3 succeeded optional uint64
+    4 replayed optional uint64
+  riffdb.v1.ApplicationInstallationSeedReceipts fields=1
+    1 seeds repeated .riffdb.v1.ApplicationInstallationSeedReceipt
   riffdb.v1.ApplyContractMigrationRequest fields=6
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -2118,10 +2130,11 @@ messages
   riffdb.v1.SourceSpan fields=2
     1 start optional uint32
     2 end optional uint32
-  riffdb.v1.StartApplicationInstallationRequest fields=3
+  riffdb.v1.StartApplicationInstallationRequest fields=4
     1 request_id optional bytes
     2 campaign_id optional bytes
     3 canonical_plan optional bytes
+    4 external_completion optional .riffdb.v1.ApplicationInstallationExternalCompletion
   riffdb.v1.StartApplicationInstallationResponse fields=2
     1 observation optional .riffdb.v1.ApplicationInstallationObservation
     2 canonical_receipt optional bytes
@@ -2530,6 +2543,12 @@ enums
     1 ACTOR_KIND_HUMAN
     2 ACTOR_KIND_AGENT
     3 ACTOR_KIND_SERVICE
+  riffdb.v1.ApplicationInstallationDriver values=5
+    0 APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_DRIVER_RUST
+    2 APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT
+    3 APPLICATION_INSTALLATION_DRIVER_GO
+    4 APPLICATION_INSTALLATION_DRIVER_PYTHON
   riffdb.v1.ApplicationInstallationFailureCode values=10
     0 APPLICATION_INSTALLATION_FAILURE_CODE_UNSPECIFIED
     1 APPLICATION_INSTALLATION_FAILURE_CODE_LOCAL_ARTIFACT_MISMATCH
