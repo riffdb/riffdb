@@ -18,6 +18,8 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_ACTIONS = 32
 MAX_ARGUMENTS = 64
 MAX_SAMPLES = 10000
+MAX_ACTION_RESULT_BYTES = 64 * 1024
+ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
 REQUIRED_LIFECYCLES = {
     "journal_recycle",
@@ -68,6 +70,16 @@ def load_actions(candidate: Path) -> dict[str, Any]:
             fail("worker entry must be an object")
         languages.add(worker.get("language"))
         command(worker.get("command"), "worker command")
+        if type(worker.get("seed")) is not int or worker["seed"] < 0:
+            fail("worker seed is invalid")
+        if type(worker.get("clients")) is not int or not 1 <= worker["clients"] <= 128:
+            fail("worker client count is invalid")
+        if type(worker.get("maximum_operations_per_second")) is not int or not 1 <= worker["maximum_operations_per_second"] <= 100_000:
+            fail("worker operation rate is invalid")
+        if not isinstance(worker.get("tenants"), list) or not 2 <= len(worker["tenants"]) <= 32:
+            fail("worker tenant inventory is invalid")
+        if not isinstance(worker.get("coverage"), list):
+            fail("worker workload coverage is absent")
     if languages != REQUIRED_LANGUAGES:
         fail("action manifest must declare Rust, Go, TypeScript, and Python")
     lifecycles = value.get("lifecycles")
@@ -79,10 +91,21 @@ def load_actions(candidate: Path) -> dict[str, Any]:
         command(item.get("command"), "lifecycle command")
         if type(item.get("interval_seconds")) is not int or not 1 <= item["interval_seconds"] <= 86400:
             fail("lifecycle interval is invalid")
+        if type(item.get("initial_delay_seconds")) is not int or not 0 <= item["initial_delay_seconds"] <= 86400:
+            fail("lifecycle initial delay is invalid")
     command(value.get("sampler", {}).get("command"), "sampler command")
     command(value.get("conformance", {}).get("command"), "conformance command")
-    if set(value.get("fault_coverage", [])) != REQUIRED_FAULTS:
-        fail("fault schedule coverage is incomplete")
+    faults = value.get("faults")
+    if not isinstance(faults, list) or len(faults) != len(REQUIRED_FAULTS):
+        fail("fault actions are absent or unbounded")
+    if {item.get("name") for item in faults if isinstance(item, dict)} != REQUIRED_FAULTS:
+        fail("fault action inventory is incomplete")
+    for item in faults:
+        command(item.get("command"), "fault command")
+        if type(item.get("interval_seconds")) is not int or not 1 <= item["interval_seconds"] <= 86400:
+            fail("fault interval is invalid")
+        if type(item.get("initial_delay_seconds")) is not int or not 0 <= item["initial_delay_seconds"] <= 86400:
+            fail("fault initial delay is invalid")
     for section in ("sampler", "conformance"):
         interval = value[section].get("interval_seconds")
         if type(interval) is not int or not 1 <= interval <= 86400:
@@ -108,7 +131,81 @@ def run_checked(argv: list[str], root: Path, environment: dict[str, str]) -> sub
     )
 
 
+def parse_action_result(output: str, kind: str, name: str) -> dict[str, Any]:
+    if not 0 < len(output.encode()) <= MAX_ACTION_RESULT_BYTES:
+        fail(f"{kind} {name} result is absent or exceeds its byte bound")
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as error:
+        fail(f"{kind} {name} result is not JSON: {error}")
+    expected = {
+        "schema",
+        "kind",
+        "name",
+        "status",
+        "evidence_sha256",
+        "frontier_before",
+        "frontier_after",
+        "recovered",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        fail(f"{kind} {name} result has an invalid shape")
+    digest = value.get("evidence_sha256")
+    try:
+        valid_digest = isinstance(digest, str) and len(digest) == 64 and int(digest, 16) >= 0
+    except ValueError:
+        valid_digest = False
+    if not valid_digest:
+        fail(f"{kind} {name} result has an invalid evidence digest")
+    before = value.get("frontier_before")
+    after = value.get("frontier_after")
+    if (
+        value.get("schema") != ACTION_RESULT_SCHEMA
+        or value.get("kind") != kind
+        or value.get("name") != name
+        or value.get("status") != "passed"
+        or type(before) is not int
+        or type(after) is not int
+        or before < 0
+        or after < before
+        or value.get("recovered") is not True
+        or (kind == "lifecycle" and after == before)
+    ):
+        fail(f"{kind} {name} did not prove advancement and recovery")
+    return value
+
+
+def self_test() -> None:
+    valid = json.dumps(
+        {
+            "schema": ACTION_RESULT_SCHEMA,
+            "kind": "lifecycle",
+            "name": "checkpoint",
+            "status": "passed",
+            "evidence_sha256": "a" * 64,
+            "frontier_before": 7,
+            "frontier_after": 8,
+            "recovered": True,
+        }
+    )
+    parse_action_result(valid, "lifecycle", "checkpoint")
+    invalid = json.loads(valid)
+    invalid["frontier_after"] = invalid["frontier_before"]
+    try:
+        parse_action_result(json.dumps(invalid), "lifecycle", "checkpoint")
+    except ValueError:
+        print("nonadvancing_lifecycle_result: rejected")
+    else:
+        fail("nonadvancing lifecycle result passed")
+    print("bounded_action_result: passed")
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return 0
+    if len(sys.argv) != 1:
+        fail("usage: alpha-endurance-controller [--self-test]")
     action_path = os.environ.get("RIFFDB_ENDURANCE_ACTION_MANIFEST")
     if not action_path:
         fail("RIFFDB_ENDURANCE_ACTION_MANIFEST must select a reviewed closed action manifest")
@@ -117,21 +214,37 @@ def main() -> int:
         fail("controller duration is outside the closed 1..168 hour range")
     raw_receipt = Path(os.environ["RIFFDB_ENDURANCE_RAW_RECEIPT"]).resolve()
     action_manifest = load_actions(Path(action_path).resolve())
+    expected_action_digest = os.environ.get("RIFFDB_ENDURANCE_ACTION_MANIFEST_SHA256")
+    if expected_action_digest != canonical_digest(action_manifest):
+        fail("action manifest differs from the outer validator identity")
     root = Path(__file__).resolve().parent.parent
     environment = os.environ.copy()
     started = time.monotonic()
     deadline = started + duration
     workers: list[tuple[str, subprocess.Popen[bytes]]] = []
     lifecycle_counts = {name: 0 for name in sorted(REQUIRED_LIFECYCLES)}
+    fault_counts = {name: 0 for name in sorted(REQUIRED_FAULTS)}
     errors: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    action_results: list[dict[str, Any]] = []
     conformance_checkpoints = 0
 
     for worker in action_manifest["workers"]:
+        worker_environment = environment.copy()
+        worker_environment.update(
+            {
+                "RIFFDB_ENDURANCE_LANGUAGE": worker["language"],
+                "RIFFDB_ENDURANCE_SEED": str(worker["seed"]),
+                "RIFFDB_ENDURANCE_CLIENTS": str(worker["clients"]),
+                "RIFFDB_ENDURANCE_MAXIMUM_OPERATIONS_PER_SECOND": str(worker["maximum_operations_per_second"]),
+                "RIFFDB_ENDURANCE_TENANTS_JSON": json.dumps(worker["tenants"], separators=(",", ":")),
+                "RIFFDB_ENDURANCE_WORKLOAD_COVERAGE_JSON": json.dumps(worker["coverage"], separators=(",", ":")),
+            }
+        )
         process = subprocess.Popen(
             command(worker["command"], "worker command"),
             cwd=root,
-            env=environment,
+            env=worker_environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -140,7 +253,8 @@ def main() -> int:
 
     next_sample = started
     next_conformance = started
-    lifecycle_due = {item["name"]: started for item in action_manifest["lifecycles"]}
+    lifecycle_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["lifecycles"]}
+    fault_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["faults"]}
     try:
         while time.monotonic() < deadline:
             now = time.monotonic()
@@ -181,8 +295,20 @@ def main() -> int:
                     errors.append({"code": "lifecycle_failed", "lifecycle": item["name"], "status": result.returncode})
                     deadline = now
                     break
+                action_results.append(parse_action_result(result.stdout, "lifecycle", item["name"]))
                 lifecycle_counts[item["name"]] += 1
                 lifecycle_due[item["name"]] = now + item["interval_seconds"]
+            for item in action_manifest["faults"]:
+                if now < fault_due[item["name"]]:
+                    continue
+                result = run_checked(command(item["command"], "fault command"), root, environment)
+                if result.returncode != 0:
+                    errors.append({"code": "fault_failed", "fault": item["name"], "status": result.returncode})
+                    deadline = now
+                    break
+                action_results.append(parse_action_result(result.stdout, "fault", item["name"]))
+                fault_counts[item["name"]] += 1
+                fault_due[item["name"]] = now + item["interval_seconds"]
             time.sleep(min(1.0, max(0.01, deadline - time.monotonic())))
     finally:
         for _, process in workers:
@@ -208,12 +334,16 @@ def main() -> int:
         "release_artifact_sha256": os.environ.get("RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256", ""),
         "languages_completed": sorted(REQUIRED_LANGUAGES) if not errors else [],
         "workload_coverage": action_manifest.get("workload_coverage", []),
-        "faults_exercised": action_manifest.get("fault_coverage", []),
+        "fault_counts": fault_counts,
         "lifecycle_counts": lifecycle_counts,
+        "action_results": action_results,
         "conformance": {"all_passed": not any(item["code"] == "conformance_failed" for item in errors), "checkpoints": conformance_checkpoints},
         "unsupported_storage_unavailable": sum(1 for item in errors if item["code"] == "storage_unavailable"),
         "errors": errors,
-        "process_inventory": {"arguments_included": False, "maximum_processes": 64},
+        "process_inventory": {
+            "arguments_included": False,
+            "maximum_processes": max((int(item.get("process_count", 0)) for item in observations), default=0),
+        },
         "observations": observations,
     }
     raw_receipt.parent.mkdir(parents=True, exist_ok=True)

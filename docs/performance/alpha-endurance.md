@@ -15,6 +15,13 @@ shell, so the action manifest cannot inject an arbitrary command line through
 quoting or interpolation. Fault controls belong to the external orchestrator;
 they are never added to the production application protocol.
 
+The checked manifest fixes the client count, total rate ceiling, deterministic
+seed for each language, tenant inventory, hot and cold key cardinalities, and
+operation weights. An action manifest cannot override those values: each
+worker repeats them alongside its exact command, and the outer harness rejects
+drift before starting the controller. The outer harness also hashes the exact
+action manifest and rejects a raw receipt that is not bound to that hash.
+
 ## Fast regression gate
 
 Run this during ordinary development:
@@ -53,14 +60,24 @@ export RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256='<sha256 of the installed releas
 The action manifest schema is `riffdb.alpha-endurance-actions/v1`. It contains:
 
 - exactly four long-lived worker commands, one for each supported language;
+- the fixed seed, client count, per-worker rate ceiling, tenants, and complete
+  workload coverage for each worker;
 - one bounded sampler command that prints a single JSON resource observation;
 - one periodic conformance command;
-- exactly one scheduled command for each required lifecycle; and
-- the complete workload and external fault-coverage lists.
+- exactly one staggered scheduled command for each required lifecycle; and
+- exactly one staggered orchestrator command for every required crash or
+  network fault.
 
 Each command is a nonempty JSON string array. Secrets remain in protected
 environment/configuration files and must not appear in the manifest, process
 inventory, observations, or receipt.
+
+Every lifecycle and fault command must print one bounded
+`riffdb.alpha-endurance-action-result/v1` JSON object. It names the exact
+action, contains only an evidence SHA-256 and numeric before/after frontiers,
+and confirms recovery. Lifecycle actions must advance their frontier. The
+controller retains these safe action results and derives the counters from
+them; a successful process exit alone is not lifecycle evidence.
 
 The controller writes an untrusted raw receipt. The outer harness adds separate
 preflight and postflight host inventories, binds the receipt to the canonical
@@ -75,12 +92,16 @@ observations. A passing receipt proves:
 
 - requested wall time was completed on an idle inventoried host;
 - all four language workers remained active;
+- every language, workload class, and tenant made measured operation progress;
 - every required lifecycle reached its minimum and its durable frontier moved;
+- every required external fault actually ran its minimum number of times;
 - operation and transport-attempt counts reconcile, including declared
   retries;
 - latency, throughput, errors, queues, consumers, projections, retention,
   checkpoint, journal, database, backup, RSS, and allocator observations are
   present;
+- the maximum process count is taken from resource samples rather than a
+  controller constant, and matches the bounded process inventory;
 - memory and file growth fit declared fixed plus retained-data bounds;
 - lifecycle cost does not show repeated superlinear history growth; and
 - no unsupported `storage_unavailable`, conformance failure, silent loss,
