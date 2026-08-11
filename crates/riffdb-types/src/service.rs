@@ -105,11 +105,15 @@ pub enum ServiceOperationV1 {
     ExecuteContextualReaction,
     /// Read one opaque reactive wakeup generation.
     GetReactiveWakeup,
+    /// Start or resume one exact application installation campaign.
+    StartApplicationInstallation,
+    /// Observe one exact application installation campaign.
+    GetApplicationInstallation,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 48] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -156,6 +160,8 @@ impl ServiceOperationV1 {
         Self::GetContextualSubscriptionStatus,
         Self::ExecuteContextualReaction,
         Self::GetReactiveWakeup,
+        Self::StartApplicationInstallation,
+        Self::GetApplicationInstallation,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -208,6 +214,8 @@ impl ServiceOperationV1 {
             Self::GetContextualSubscriptionStatus => 0x2c,
             Self::ExecuteContextualReaction => 0x2d,
             Self::GetReactiveWakeup => 0x2e,
+            Self::StartApplicationInstallation => 0x2f,
+            Self::GetApplicationInstallation => 0x30,
         }
     }
 
@@ -261,6 +269,8 @@ impl ServiceOperationV1 {
             0x2c => Some(Self::GetContextualSubscriptionStatus),
             0x2d => Some(Self::ExecuteContextualReaction),
             0x2e => Some(Self::GetReactiveWakeup),
+            0x2f => Some(Self::StartApplicationInstallation),
+            0x30 => Some(Self::GetApplicationInstallation),
             _ => None,
         }
     }
@@ -695,7 +705,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x2e).collect();
+        let expected: Vec<u8> = (0x01..=0x30).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -714,7 +724,11 @@ mod tests {
             ServiceOperationV1::from_tag(0x2e),
             Some(ServiceOperationV1::GetReactiveWakeup)
         );
-        assert_eq!(ServiceOperationV1::from_tag(0x2f), None);
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x30),
+            Some(ServiceOperationV1::GetApplicationInstallation)
+        );
+        assert_eq!(ServiceOperationV1::from_tag(0x31), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

@@ -122,7 +122,7 @@ pub struct ReactiveOperationPermission {
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -190,6 +190,8 @@ pub mod capability_permission {
         WatchNamedQuery(super::ReactiveOperationPermission),
         #[prost(message, tag = "30")]
         ConsumeContextualSubscription(super::ReactiveOperationPermission),
+        #[prost(string, tag = "31")]
+        InstallApplication(::prost::alloc::string::String),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -550,6 +552,74 @@ pub mod get_contract_migration_operation_response {
         Found(super::ContractMigrationOperation),
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationInstallationFailure {
+    #[prost(enumeration = "ApplicationInstallationStage", tag = "1")]
+    pub stage: i32,
+    #[prost(enumeration = "ApplicationInstallationFailureCode", tag = "2")]
+    pub code: i32,
+    #[prost(enumeration = "ApplicationInstallationNextAction", tag = "3")]
+    pub next_action: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationInstallationObservation {
+    #[prost(bytes = "vec", tag = "1")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub plan_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(enumeration = "ApplicationInstallationPhase", tag = "4")]
+    pub phase: i32,
+    #[prost(enumeration = "ApplicationInstallationStage", repeated, tag = "5")]
+    pub completed_stages: ::prost::alloc::vec::Vec<i32>,
+    #[prost(enumeration = "ApplicationInstallationStage", tag = "6")]
+    pub next_stage: i32,
+    #[prost(enumeration = "ApplicationInstallationNextAction", tag = "7")]
+    pub next_action: i32,
+    #[prost(message, optional, tag = "8")]
+    pub failure: ::core::option::Option<ApplicationInstallationFailure>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub receipt_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartApplicationInstallationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub canonical_plan: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartApplicationInstallationResponse {
+    #[prost(message, optional, tag = "1")]
+    pub observation: ::core::option::Option<ApplicationInstallationObservation>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub canonical_receipt: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationInstallationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationInstallationResponse {
+    #[prost(oneof = "get_application_installation_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<get_application_installation_response::Result>,
+}
+/// Nested message and enum types in `GetApplicationInstallationResponse`.
+pub mod get_application_installation_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::StartApplicationInstallationResponse),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PreBootstrapLifecycle {
@@ -754,6 +824,7 @@ pub enum CapabilityPermissionKind {
     SeekEventStreamConsumer = 28,
     WatchNamedQuery = 29,
     ConsumeContextualSubscription = 30,
+    InstallApplication = 31,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -803,6 +874,7 @@ impl CapabilityPermissionKind {
             Self::ConsumeContextualSubscription => {
                 "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION"
             }
+            Self::InstallApplication => "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -868,6 +940,9 @@ impl CapabilityPermissionKind {
             "CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY" => Some(Self::WatchNamedQuery),
             "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION" => {
                 Some(Self::ConsumeContextualSubscription)
+            }
+            "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION" => {
+                Some(Self::InstallApplication)
             }
             _ => None,
         }
@@ -1418,6 +1493,267 @@ impl ContractMigrationFailureClass {
             "CONTRACT_MIGRATION_FAILURE_CLASS_ROLLBACK_FAILED" => {
                 Some(Self::RollbackFailed)
             }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationInstallationStage {
+    Unspecified = 0,
+    Preflight = 1,
+    Contract = 2,
+    Migration = 3,
+    QueryModules = 4,
+    ReactiveModules = 5,
+    Roles = 6,
+    Credentials = 7,
+    DriverProof = 8,
+    Seeds = 9,
+    Receipt = 10,
+}
+impl ApplicationInstallationStage {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_INSTALLATION_STAGE_UNSPECIFIED",
+            Self::Preflight => "APPLICATION_INSTALLATION_STAGE_PREFLIGHT",
+            Self::Contract => "APPLICATION_INSTALLATION_STAGE_CONTRACT",
+            Self::Migration => "APPLICATION_INSTALLATION_STAGE_MIGRATION",
+            Self::QueryModules => "APPLICATION_INSTALLATION_STAGE_QUERY_MODULES",
+            Self::ReactiveModules => "APPLICATION_INSTALLATION_STAGE_REACTIVE_MODULES",
+            Self::Roles => "APPLICATION_INSTALLATION_STAGE_ROLES",
+            Self::Credentials => "APPLICATION_INSTALLATION_STAGE_CREDENTIALS",
+            Self::DriverProof => "APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF",
+            Self::Seeds => "APPLICATION_INSTALLATION_STAGE_SEEDS",
+            Self::Receipt => "APPLICATION_INSTALLATION_STAGE_RECEIPT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_INSTALLATION_STAGE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_INSTALLATION_STAGE_PREFLIGHT" => Some(Self::Preflight),
+            "APPLICATION_INSTALLATION_STAGE_CONTRACT" => Some(Self::Contract),
+            "APPLICATION_INSTALLATION_STAGE_MIGRATION" => Some(Self::Migration),
+            "APPLICATION_INSTALLATION_STAGE_QUERY_MODULES" => Some(Self::QueryModules),
+            "APPLICATION_INSTALLATION_STAGE_REACTIVE_MODULES" => {
+                Some(Self::ReactiveModules)
+            }
+            "APPLICATION_INSTALLATION_STAGE_ROLES" => Some(Self::Roles),
+            "APPLICATION_INSTALLATION_STAGE_CREDENTIALS" => Some(Self::Credentials),
+            "APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF" => Some(Self::DriverProof),
+            "APPLICATION_INSTALLATION_STAGE_SEEDS" => Some(Self::Seeds),
+            "APPLICATION_INSTALLATION_STAGE_RECEIPT" => Some(Self::Receipt),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationInstallationPhase {
+    Unspecified = 0,
+    Running = 1,
+    Partial = 2,
+    Installed = 3,
+}
+impl ApplicationInstallationPhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_INSTALLATION_PHASE_UNSPECIFIED",
+            Self::Running => "APPLICATION_INSTALLATION_PHASE_RUNNING",
+            Self::Partial => "APPLICATION_INSTALLATION_PHASE_PARTIAL",
+            Self::Installed => "APPLICATION_INSTALLATION_PHASE_INSTALLED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_INSTALLATION_PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_INSTALLATION_PHASE_RUNNING" => Some(Self::Running),
+            "APPLICATION_INSTALLATION_PHASE_PARTIAL" => Some(Self::Partial),
+            "APPLICATION_INSTALLATION_PHASE_INSTALLED" => Some(Self::Installed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationInstallationFailureCode {
+    Unspecified = 0,
+    LocalArtifactMismatch = 1,
+    RemoteIdentityMismatch = 2,
+    MigrationGateRequired = 3,
+    RoleWideningApprovalRequired = 4,
+    CredentialDestinationOccupied = 5,
+    DriverProofFailed = 6,
+    SeedPartial = 7,
+    AuthorizationDenied = 8,
+    ServiceUnavailable = 9,
+}
+impl ApplicationInstallationFailureCode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_INSTALLATION_FAILURE_CODE_UNSPECIFIED",
+            Self::LocalArtifactMismatch => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_LOCAL_ARTIFACT_MISMATCH"
+            }
+            Self::RemoteIdentityMismatch => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_REMOTE_IDENTITY_MISMATCH"
+            }
+            Self::MigrationGateRequired => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_MIGRATION_GATE_REQUIRED"
+            }
+            Self::RoleWideningApprovalRequired => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_ROLE_WIDENING_APPROVAL_REQUIRED"
+            }
+            Self::CredentialDestinationOccupied => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_CREDENTIAL_DESTINATION_OCCUPIED"
+            }
+            Self::DriverProofFailed => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_DRIVER_PROOF_FAILED"
+            }
+            Self::SeedPartial => "APPLICATION_INSTALLATION_FAILURE_CODE_SEED_PARTIAL",
+            Self::AuthorizationDenied => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_AUTHORIZATION_DENIED"
+            }
+            Self::ServiceUnavailable => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_INSTALLATION_FAILURE_CODE_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_LOCAL_ARTIFACT_MISMATCH" => {
+                Some(Self::LocalArtifactMismatch)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_REMOTE_IDENTITY_MISMATCH" => {
+                Some(Self::RemoteIdentityMismatch)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_MIGRATION_GATE_REQUIRED" => {
+                Some(Self::MigrationGateRequired)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_ROLE_WIDENING_APPROVAL_REQUIRED" => {
+                Some(Self::RoleWideningApprovalRequired)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_CREDENTIAL_DESTINATION_OCCUPIED" => {
+                Some(Self::CredentialDestinationOccupied)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_DRIVER_PROOF_FAILED" => {
+                Some(Self::DriverProofFailed)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_SEED_PARTIAL" => {
+                Some(Self::SeedPartial)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_AUTHORIZATION_DENIED" => {
+                Some(Self::AuthorizationDenied)
+            }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE" => {
+                Some(Self::ServiceUnavailable)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationInstallationNextAction {
+    Unspecified = 0,
+    ValidateLocalArtifacts = 1,
+    DeployContract = 2,
+    ApplyMigration = 3,
+    DeployQueryModules = 4,
+    DeployReactiveModules = 5,
+    ReconcileRoles = 6,
+    RotateCredentials = 7,
+    ProveDrivers = 8,
+    RunSeeds = 9,
+    SealReceipt = 10,
+    None = 11,
+}
+impl ApplicationInstallationNextAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_INSTALLATION_NEXT_ACTION_UNSPECIFIED",
+            Self::ValidateLocalArtifacts => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_VALIDATE_LOCAL_ARTIFACTS"
+            }
+            Self::DeployContract => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_CONTRACT"
+            }
+            Self::ApplyMigration => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_APPLY_MIGRATION"
+            }
+            Self::DeployQueryModules => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_QUERY_MODULES"
+            }
+            Self::DeployReactiveModules => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_REACTIVE_MODULES"
+            }
+            Self::ReconcileRoles => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_RECONCILE_ROLES"
+            }
+            Self::RotateCredentials => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_ROTATE_CREDENTIALS"
+            }
+            Self::ProveDrivers => "APPLICATION_INSTALLATION_NEXT_ACTION_PROVE_DRIVERS",
+            Self::RunSeeds => "APPLICATION_INSTALLATION_NEXT_ACTION_RUN_SEEDS",
+            Self::SealReceipt => "APPLICATION_INSTALLATION_NEXT_ACTION_SEAL_RECEIPT",
+            Self::None => "APPLICATION_INSTALLATION_NEXT_ACTION_NONE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_INSTALLATION_NEXT_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_INSTALLATION_NEXT_ACTION_VALIDATE_LOCAL_ARTIFACTS" => {
+                Some(Self::ValidateLocalArtifacts)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_CONTRACT" => {
+                Some(Self::DeployContract)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_APPLY_MIGRATION" => {
+                Some(Self::ApplyMigration)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_QUERY_MODULES" => {
+                Some(Self::DeployQueryModules)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_REACTIVE_MODULES" => {
+                Some(Self::DeployReactiveModules)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_RECONCILE_ROLES" => {
+                Some(Self::ReconcileRoles)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_ROTATE_CREDENTIALS" => {
+                Some(Self::RotateCredentials)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_PROVE_DRIVERS" => {
+                Some(Self::ProveDrivers)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_RUN_SEEDS" => Some(Self::RunSeeds),
+            "APPLICATION_INSTALLATION_NEXT_ACTION_SEAL_RECEIPT" => {
+                Some(Self::SealReceipt)
+            }
+            "APPLICATION_INSTALLATION_NEXT_ACTION_NONE" => Some(Self::None),
             _ => None,
         }
     }

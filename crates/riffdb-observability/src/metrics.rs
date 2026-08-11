@@ -1587,6 +1587,8 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::GetContextualSubscriptionStatus => "get_contextual_subscription_status",
         ServiceOperationV1::ExecuteContextualReaction => "execute_contextual_reaction",
         ServiceOperationV1::GetReactiveWakeup => "get_reactive_wakeup",
+        ServiceOperationV1::StartApplicationInstallation => "start_application_installation",
+        ServiceOperationV1::GetApplicationInstallation => "get_application_installation",
     }
 }
 

@@ -8,14 +8,16 @@ use riffdb_proto::{
     PublicWireError, app::v1 as app_v1, application_error_to_proto, decode_public_message, v1,
     validate_contract_validation_exchange, validate_create_capability_exchange,
     validate_create_offline_backup_exchange, validate_execute_command_batch_exchange,
-    validate_explain_command_exchange, validate_get_offline_maintenance_operation_exchange,
-    validate_public_message, validate_query_projection_exchange,
-    validate_restore_offline_backup_exchange, validate_scan_commits_exchange,
-    validate_scan_index_exchange,
+    validate_explain_command_exchange, validate_get_application_installation_exchange,
+    validate_get_offline_maintenance_operation_exchange, validate_public_message,
+    validate_query_projection_exchange, validate_restore_offline_backup_exchange,
+    validate_scan_commits_exchange, validate_scan_index_exchange,
+    validate_start_application_installation_exchange,
 };
 use riffdb_types::{
     BackupNameV1, OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation,
-    hash_schema, offline_maintenance_input_hash,
+    hash_application_installation_plan, hash_application_installation_receipt, hash_schema,
+    offline_maintenance_input_hash,
 };
 
 fn uuid_v7() -> Vec<u8> {
@@ -958,6 +960,121 @@ fn index_scan_fence_is_closed_and_preserves_before_first() {
             v1::index_scan_fence::Position::AppliedEpoch(0),
         ))),
         Err(PublicWireError::InvalidIdentity)
+    );
+}
+
+#[test]
+fn application_installation_wire_never_confuses_partial_with_installed() {
+    let canonical_plan = br#"{"schema":"riffdb.application-installation-plan/v1"}"#.to_vec();
+    let request = v1::StartApplicationInstallationRequest {
+        request_id: uuid_v7(),
+        campaign_id: uuid_v7(),
+        canonical_plan: canonical_plan.clone(),
+    };
+    let running = v1::ApplicationInstallationObservation {
+        campaign_id: request.campaign_id.clone(),
+        plan_hash: hash_application_installation_plan(&canonical_plan)
+            .as_bytes()
+            .to_vec(),
+        contract_lineage: "Ea".to_owned(),
+        phase: v1::ApplicationInstallationPhase::Running as i32,
+        completed_stages: Vec::new(),
+        next_stage: v1::ApplicationInstallationStage::Preflight as i32,
+        next_action: v1::ApplicationInstallationNextAction::ValidateLocalArtifacts as i32,
+        failure: None,
+        receipt_hash: Vec::new(),
+    };
+    let running_response = v1::StartApplicationInstallationResponse {
+        observation: Some(running.clone()),
+        canonical_receipt: Vec::new(),
+    };
+    validate_start_application_installation_exchange(&request, &running_response)
+        .expect("running campaign is structurally exact");
+
+    let mut partial = running;
+    partial.phase = v1::ApplicationInstallationPhase::Partial as i32;
+    partial.failure = Some(v1::ApplicationInstallationFailure {
+        stage: v1::ApplicationInstallationStage::Preflight as i32,
+        code: v1::ApplicationInstallationFailureCode::LocalArtifactMismatch as i32,
+        next_action: v1::ApplicationInstallationNextAction::ValidateLocalArtifacts as i32,
+    });
+    validate_public_message(&v1::StartApplicationInstallationResponse {
+        observation: Some(partial.clone()),
+        canonical_receipt: Vec::new(),
+    })
+    .expect("typed partial campaign remains observable");
+
+    partial.phase = v1::ApplicationInstallationPhase::Installed as i32;
+    partial.next_stage = v1::ApplicationInstallationStage::Unspecified as i32;
+    partial.next_action = v1::ApplicationInstallationNextAction::None as i32;
+    partial.failure = None;
+    partial.receipt_hash = vec![0x11; 32];
+    assert_eq!(
+        validate_public_message(&v1::StartApplicationInstallationResponse {
+            observation: Some(partial),
+            canonical_receipt: b"receipt".to_vec(),
+        }),
+        Err(PublicWireError::InconsistentFields)
+    );
+}
+
+#[test]
+fn terminal_installation_receipt_and_poll_identity_are_content_addressed() {
+    let canonical_plan = b"bounded-plan".to_vec();
+    let canonical_receipt = b"redacted-terminal-receipt".to_vec();
+    let campaign_id = uuid_v7();
+    let start = v1::StartApplicationInstallationRequest {
+        request_id: uuid_v7(),
+        campaign_id: campaign_id.clone(),
+        canonical_plan: canonical_plan.clone(),
+    };
+    let response = v1::StartApplicationInstallationResponse {
+        observation: Some(v1::ApplicationInstallationObservation {
+            campaign_id: campaign_id.clone(),
+            plan_hash: hash_application_installation_plan(&canonical_plan)
+                .as_bytes()
+                .to_vec(),
+            contract_lineage: "Ea".to_owned(),
+            phase: v1::ApplicationInstallationPhase::Installed as i32,
+            completed_stages: (1..=10).collect(),
+            next_stage: v1::ApplicationInstallationStage::Unspecified as i32,
+            next_action: v1::ApplicationInstallationNextAction::None as i32,
+            failure: None,
+            receipt_hash: hash_application_installation_receipt(&canonical_receipt)
+                .as_bytes()
+                .to_vec(),
+        }),
+        canonical_receipt: canonical_receipt.clone(),
+    };
+    validate_start_application_installation_exchange(&start, &response)
+        .expect("terminal response binds plan and receipt");
+
+    let poll = v1::GetApplicationInstallationRequest {
+        request_id: uuid_v7(),
+        campaign_id: campaign_id.clone(),
+    };
+    let found = v1::GetApplicationInstallationResponse {
+        result: Some(v1::get_application_installation_response::Result::Found(
+            response.clone(),
+        )),
+    };
+    validate_get_application_installation_exchange(&poll, &found)
+        .expect("poll echoes the exact campaign");
+
+    let mut wrong_poll = poll;
+    let mut other = uuid_v7();
+    other[15] ^= 1;
+    wrong_poll.campaign_id = other;
+    assert_eq!(
+        validate_get_application_installation_exchange(&wrong_poll, &found),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    let mut tampered = response;
+    tampered.canonical_receipt = b"another-receipt".to_vec();
+    assert_eq!(
+        validate_public_message(&tampered),
+        Err(PublicWireError::InconsistentFields)
     );
 }
 

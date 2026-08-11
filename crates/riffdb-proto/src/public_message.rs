@@ -7,13 +7,15 @@ use std::fmt;
 use prost::Message;
 use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
-    AgentSessionId, Audience, BackupNameV1, CapabilityId, ContractMigrationOperationId, EntityKey,
-    EventConsumerName, IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES,
-    MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
-    MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, MAX_COMMAND_CONFLICT_KEYS_V1,
-    MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES,
-    MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, OfflineMaintenanceOperationId,
-    PartitionKey, ProvenanceId, RequestId, Timestamp, hash_schema, offline_maintenance_input_hash,
+    AgentSessionId, ApplicationInstallationCampaignId, Audience, BackupNameV1, CapabilityId,
+    ContractMigrationOperationId, EntityKey, EventConsumerName, IndexEntryKey, MAX_ACTOR_ID_BYTES,
+    MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS,
+    MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
+    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
+    MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
+    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, Timestamp,
+    hash_application_installation_plan, hash_application_installation_receipt, hash_schema,
+    offline_maintenance_input_hash,
 };
 
 use crate::command::validate_provenance_uri;
@@ -25,6 +27,8 @@ use crate::wire::{self, Cursor, PreflightError};
 pub const MAX_PUBLIC_REQUEST_BYTES: usize = 1_048_576;
 /// Exact maximum encoded size of one artifact-carrying migration request.
 pub const MAX_CONTRACT_MIGRATION_REQUEST_BYTES: usize = 32 * 1_024 * 1_024;
+/// Exact maximum encoded size of one canonical application installation request.
+pub const MAX_APPLICATION_INSTALLATION_REQUEST_BYTES: usize = 4 * 1_024 * 1_024 + 128;
 /// Exact maximum encoded size of one public unary response or stream item.
 pub const MAX_PUBLIC_RESPONSE_BYTES: usize = 4_194_304;
 
@@ -322,6 +326,47 @@ pub fn validate_get_contract_migration_operation_exchange(
         && operation.operation_id != request.operation_id
     {
         return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates installation start identity and content-addressed plan/receipt relations.
+pub fn validate_start_application_installation_exchange(
+    request: &v1::StartApplicationInstallationRequest,
+    response: &v1::StartApplicationInstallationResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let observation = response
+        .observation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if observation.campaign_id != request.campaign_id
+        || observation.plan_hash.as_slice()
+            != hash_application_installation_plan(&request.canonical_plan).as_bytes()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates installation observation identity without expanding an absent campaign.
+pub fn validate_get_application_installation_exchange(
+    request: &v1::GetApplicationInstallationRequest,
+    response: &v1::GetApplicationInstallationResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::get_application_installation_response::Result::Found(found)) =
+        response.result.as_ref()
+    {
+        let observation = found
+            .observation
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?;
+        if observation.campaign_id != request.campaign_id {
+            return Err(PublicWireError::InconsistentFields);
+        }
     }
     Ok(())
 }
@@ -2557,6 +2602,9 @@ fn permission_key(
             value.reactive_module_hash.as_slice(),
             value.operation_name.as_str(),
         ),
+        v1::capability_permission::Permission::InstallApplication(lineage) => {
+            (31, lineage.as_str(), 0, &[], "")
+        }
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
@@ -2574,7 +2622,7 @@ fn permission_key(
     if key.0 == 25 && key.3.len() != 32 {
         return Err(PublicWireError::InvalidIdentity);
     }
-    if key.0 == 26 && !valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES) {
+    if matches!(key.0, 26 | 31) && !valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES) {
         return Err(PublicWireError::InvalidIdentity);
     }
     if matches!(key.0, 27..=30)
@@ -3467,6 +3515,164 @@ fn validate_get_contract_migration_operation_response(
         v1::get_contract_migration_operation_response::Result::NotFound(_) => Ok(()),
         v1::get_contract_migration_operation_response::Result::Found(operation) => {
             validate_contract_migration_operation(operation)
+        }
+    }
+}
+
+fn application_installation_campaign_id(bytes: &[u8]) -> Result<(), PublicWireError> {
+    let bytes: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    ApplicationInstallationCampaignId::from_bytes(bytes)
+        .map(|_| ())
+        .map_err(|_| PublicWireError::InvalidIdentity)
+}
+
+fn validate_application_installation_failure(
+    failure: &v1::ApplicationInstallationFailure,
+) -> Result<(), PublicWireError> {
+    let stage = v1::ApplicationInstallationStage::try_from(failure.stage)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let code = v1::ApplicationInstallationFailureCode::try_from(failure.code)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let action = v1::ApplicationInstallationNextAction::try_from(failure.next_action)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if stage == v1::ApplicationInstallationStage::Unspecified
+        || code == v1::ApplicationInstallationFailureCode::Unspecified
+        || matches!(
+            action,
+            v1::ApplicationInstallationNextAction::Unspecified
+                | v1::ApplicationInstallationNextAction::None
+        )
+    {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    Ok(())
+}
+
+fn validate_application_installation_observation(
+    observation: &v1::ApplicationInstallationObservation,
+) -> Result<(), PublicWireError> {
+    application_installation_campaign_id(&observation.campaign_id)?;
+    hash(&observation.plan_hash)?;
+    if !valid_bounded_text(&observation.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || observation.completed_stages.len() > 10
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    for (index, stage) in observation.completed_stages.iter().enumerate() {
+        if *stage != i32::try_from(index + 1).map_err(|_| PublicWireError::TooManyItems)? {
+            return Err(PublicWireError::NonCanonical);
+        }
+    }
+    let phase = v1::ApplicationInstallationPhase::try_from(observation.phase)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let next_stage = v1::ApplicationInstallationStage::try_from(observation.next_stage)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let next_action = v1::ApplicationInstallationNextAction::try_from(observation.next_action)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if phase == v1::ApplicationInstallationPhase::Unspecified
+        || next_action == v1::ApplicationInstallationNextAction::Unspecified
+    {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    let expected_next = i32::try_from(observation.completed_stages.len() + 1)
+        .map_err(|_| PublicWireError::TooManyItems)?;
+    match phase {
+        v1::ApplicationInstallationPhase::Running => {
+            if observation.failure.is_some()
+                || !observation.receipt_hash.is_empty()
+                || observation.completed_stages.len() >= 10
+                || observation.next_stage != expected_next
+                || next_stage == v1::ApplicationInstallationStage::Unspecified
+                || next_action == v1::ApplicationInstallationNextAction::None
+            {
+                return Err(PublicWireError::InconsistentFields);
+            }
+        }
+        v1::ApplicationInstallationPhase::Partial => {
+            let failure = observation
+                .failure
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?;
+            validate_application_installation_failure(failure)?;
+            if !observation.receipt_hash.is_empty()
+                || observation.completed_stages.len() >= 10
+                || observation.next_stage != expected_next
+                || failure.stage != observation.next_stage
+                || failure.next_action != observation.next_action
+                || next_action == v1::ApplicationInstallationNextAction::None
+            {
+                return Err(PublicWireError::InconsistentFields);
+            }
+        }
+        v1::ApplicationInstallationPhase::Installed => {
+            if observation.completed_stages.len() != 10
+                || next_stage != v1::ApplicationInstallationStage::Unspecified
+                || next_action != v1::ApplicationInstallationNextAction::None
+                || observation.failure.is_some()
+            {
+                return Err(PublicWireError::InconsistentFields);
+            }
+            hash(&observation.receipt_hash)?;
+        }
+        v1::ApplicationInstallationPhase::Unspecified => {
+            return Err(PublicWireError::InvalidEnum);
+        }
+    }
+    Ok(())
+}
+
+fn validate_start_application_installation_request(
+    request: &v1::StartApplicationInstallationRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_installation_campaign_id(&request.campaign_id)?;
+    if request.canonical_plan.is_empty() || request.canonical_plan.len() > 4 * 1_024 * 1_024 {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    Ok(())
+}
+
+fn validate_start_application_installation_response(
+    response: &v1::StartApplicationInstallationResponse,
+) -> Result<(), PublicWireError> {
+    let observation = response
+        .observation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    validate_application_installation_observation(observation)?;
+    let installed = observation.phase == v1::ApplicationInstallationPhase::Installed as i32;
+    if installed != !response.canonical_receipt.is_empty() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    if installed
+        && observation.receipt_hash.as_slice()
+            != hash_application_installation_receipt(&response.canonical_receipt).as_bytes()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_get_application_installation_request(
+    request: &v1::GetApplicationInstallationRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_installation_campaign_id(&request.campaign_id)
+}
+
+fn validate_get_application_installation_response(
+    response: &v1::GetApplicationInstallationResponse,
+) -> Result<(), PublicWireError> {
+    match response
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::get_application_installation_response::Result::NotFound(_) => Ok(()),
+        v1::get_application_installation_response::Result::Found(found) => {
+            validate_start_application_installation_response(found)
         }
     }
 }
@@ -6422,6 +6628,62 @@ fn preflight_get_contract_migration_operation_response(
     )
 }
 
+fn preflight_application_installation_failure(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+
+fn preflight_application_installation_observation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        9,
+        &[5],
+        &[],
+        &[NestedRule {
+            field: 8,
+            preflight: preflight_application_installation_failure,
+        }],
+        &[RepeatedRule {
+            field: 5,
+            maximum: 10,
+            wire: RepeatedWire::PackableVarint,
+        }],
+    )
+}
+
+fn preflight_start_application_installation_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_application_installation_observation,
+        }],
+        &[],
+    )
+}
+
+fn preflight_get_application_installation_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_start_application_installation_response,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_generated_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -8495,6 +8757,42 @@ impl_public_message!(
     &[&[1, 2]],
     preflight_get_contract_migration_operation_response,
     validate_get_contract_migration_operation_response
+);
+impl_public_message!(
+    v1::StartApplicationInstallationRequest,
+    MAX_APPLICATION_INSTALLATION_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_noop,
+    validate_start_application_installation_request
+);
+impl_public_message!(
+    v1::StartApplicationInstallationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_start_application_installation_response,
+    validate_start_application_installation_response
+);
+impl_public_message!(
+    v1::GetApplicationInstallationRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_application_installation_request
+);
+impl_public_message!(
+    v1::GetApplicationInstallationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_get_application_installation_response,
+    validate_get_application_installation_response
 );
 
 impl_public_message!(

@@ -1426,9 +1426,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 137 || enum_count != 18 {
+    if message_count != 138 || enum_count != 18 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 133 semantic messages plus StoredEnvelope and 18 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 138 messages and 18 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }

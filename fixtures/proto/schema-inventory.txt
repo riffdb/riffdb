@@ -426,6 +426,9 @@ messages
     4 field_visibility repeated .riffdb.storage.v1.EntityFieldVisibilityV1
     5 max_scan_rows optional uint32
     6 approval_required repeated .riffdb.storage.v1.CapabilityPermissionKindV1
+  riffdb.storage.v1.CapabilityInstallationGrantExtensionV1 fields=2
+    1 contract_lineages repeated string
+    2 approval_required optional bool
   riffdb.storage.v1.CapabilityLifecycleV1 fields=2
     1 active optional .riffdb.storage.v1.UnitV1 oneof=state
     2 revoked optional .riffdb.storage.v1.RevokedCapabilityV1 oneof=state
@@ -458,9 +461,10 @@ messages
     12 creation_request_id optional bytes
     13 grant optional .riffdb.storage.v1.CapabilityGrantV1
     14 lifecycle optional .riffdb.storage.v1.CapabilityLifecycleV1
-  riffdb.storage.v1.CapabilityRecordV2 fields=2
+  riffdb.storage.v1.CapabilityRecordV2 fields=3
     1 base optional .riffdb.storage.v1.CapabilityRecordV1
     2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
   riffdb.storage.v1.CapabilityTokenDigestV1 fields=3
     1 digest_scheme optional uint32
     2 digest_key_id optional uint32
@@ -1157,6 +1161,20 @@ messages
   riffdb.v1.AffectedEntity fields=2
     1 entity_key optional bytes
     2 entity_version optional uint64
+  riffdb.v1.ApplicationInstallationFailure fields=3
+    1 stage optional .riffdb.v1.ApplicationInstallationStage
+    2 code optional .riffdb.v1.ApplicationInstallationFailureCode
+    3 next_action optional .riffdb.v1.ApplicationInstallationNextAction
+  riffdb.v1.ApplicationInstallationObservation fields=9
+    1 campaign_id optional bytes
+    2 plan_hash optional bytes
+    3 contract_lineage optional string
+    4 phase optional .riffdb.v1.ApplicationInstallationPhase
+    5 completed_stages repeated .riffdb.v1.ApplicationInstallationStage
+    6 next_stage optional .riffdb.v1.ApplicationInstallationStage
+    7 next_action optional .riffdb.v1.ApplicationInstallationNextAction
+    8 failure optional .riffdb.v1.ApplicationInstallationFailure
+    9 receipt_hash optional bytes
   riffdb.v1.ApplyContractMigrationRequest fields=6
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -1205,7 +1223,7 @@ messages
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
-  riffdb.v1.CapabilityPermission fields=30
+  riffdb.v1.CapabilityPermission fields=31
     1 validate_contract optional .riffdb.v1.Unit oneof=permission
     2 read_contract optional .riffdb.v1.Unit oneof=permission
     3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
@@ -1236,6 +1254,7 @@ messages
     28 seek_event_stream_consumer optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     29 watch_named_query optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     30 consume_contextual_subscription optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    31 install_application optional string oneof=permission
   riffdb.v1.CapabilityTransition fields=2
     1 identity optional .riffdb.v1.CapabilityIdentity
     2 administration_sequence optional uint64
@@ -1665,6 +1684,12 @@ messages
     1 absent optional .riffdb.v1.Unit oneof=result
     2 present optional .riffdb.v1.ContractDescriptor oneof=result
     3 database_alias optional string
+  riffdb.v1.GetApplicationInstallationRequest fields=2
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+  riffdb.v1.GetApplicationInstallationResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.StartApplicationInstallationResponse oneof=result
   riffdb.v1.GetCommitRequest fields=3
     1 request_id optional bytes
     2 commit_sequence optional uint64
@@ -2087,6 +2112,13 @@ messages
   riffdb.v1.SourceSpan fields=2
     1 start optional uint32
     2 end optional uint32
+  riffdb.v1.StartApplicationInstallationRequest fields=3
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+    3 canonical_plan optional bytes
+  riffdb.v1.StartApplicationInstallationResponse fields=2
+    1 observation optional .riffdb.v1.ApplicationInstallationObservation
+    2 canonical_receipt optional bytes
   riffdb.v1.StatsRequest fields=1
     1 request_id optional bytes
   riffdb.v1.StatsResponse fields=6
@@ -2492,11 +2524,52 @@ enums
     1 ACTOR_KIND_HUMAN
     2 ACTOR_KIND_AGENT
     3 ACTOR_KIND_SERVICE
+  riffdb.v1.ApplicationInstallationFailureCode values=10
+    0 APPLICATION_INSTALLATION_FAILURE_CODE_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_FAILURE_CODE_LOCAL_ARTIFACT_MISMATCH
+    2 APPLICATION_INSTALLATION_FAILURE_CODE_REMOTE_IDENTITY_MISMATCH
+    3 APPLICATION_INSTALLATION_FAILURE_CODE_MIGRATION_GATE_REQUIRED
+    4 APPLICATION_INSTALLATION_FAILURE_CODE_ROLE_WIDENING_APPROVAL_REQUIRED
+    5 APPLICATION_INSTALLATION_FAILURE_CODE_CREDENTIAL_DESTINATION_OCCUPIED
+    6 APPLICATION_INSTALLATION_FAILURE_CODE_DRIVER_PROOF_FAILED
+    7 APPLICATION_INSTALLATION_FAILURE_CODE_SEED_PARTIAL
+    8 APPLICATION_INSTALLATION_FAILURE_CODE_AUTHORIZATION_DENIED
+    9 APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE
+  riffdb.v1.ApplicationInstallationNextAction values=12
+    0 APPLICATION_INSTALLATION_NEXT_ACTION_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_NEXT_ACTION_VALIDATE_LOCAL_ARTIFACTS
+    2 APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_CONTRACT
+    3 APPLICATION_INSTALLATION_NEXT_ACTION_APPLY_MIGRATION
+    4 APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_QUERY_MODULES
+    5 APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_REACTIVE_MODULES
+    6 APPLICATION_INSTALLATION_NEXT_ACTION_RECONCILE_ROLES
+    7 APPLICATION_INSTALLATION_NEXT_ACTION_ROTATE_CREDENTIALS
+    8 APPLICATION_INSTALLATION_NEXT_ACTION_PROVE_DRIVERS
+    9 APPLICATION_INSTALLATION_NEXT_ACTION_RUN_SEEDS
+    10 APPLICATION_INSTALLATION_NEXT_ACTION_SEAL_RECEIPT
+    11 APPLICATION_INSTALLATION_NEXT_ACTION_NONE
+  riffdb.v1.ApplicationInstallationPhase values=4
+    0 APPLICATION_INSTALLATION_PHASE_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_PHASE_RUNNING
+    2 APPLICATION_INSTALLATION_PHASE_PARTIAL
+    3 APPLICATION_INSTALLATION_PHASE_INSTALLED
+  riffdb.v1.ApplicationInstallationStage values=11
+    0 APPLICATION_INSTALLATION_STAGE_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_STAGE_PREFLIGHT
+    2 APPLICATION_INSTALLATION_STAGE_CONTRACT
+    3 APPLICATION_INSTALLATION_STAGE_MIGRATION
+    4 APPLICATION_INSTALLATION_STAGE_QUERY_MODULES
+    5 APPLICATION_INSTALLATION_STAGE_REACTIVE_MODULES
+    6 APPLICATION_INSTALLATION_STAGE_ROLES
+    7 APPLICATION_INSTALLATION_STAGE_CREDENTIALS
+    8 APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF
+    9 APPLICATION_INSTALLATION_STAGE_SEEDS
+    10 APPLICATION_INSTALLATION_STAGE_RECEIPT
   riffdb.v1.CapabilityCreateMode values=3
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
     2 CAPABILITY_CREATE_MODE_BOOTSTRAP
-  riffdb.v1.CapabilityPermissionKind values=31
+  riffdb.v1.CapabilityPermissionKind values=32
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -2528,6 +2601,7 @@ enums
     28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
     29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
     30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
+    31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
   riffdb.v1.CommandDurability values=3
     0 COMMAND_DURABILITY_UNSPECIFIED
     1 COMMAND_DURABILITY_SYNCHRONOUS
