@@ -7028,8 +7028,6 @@ mod tests {
 
     use super::*;
 
-    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
-
     const REDB_MIGRATION_CONTRACT: &str = r#"
 contract RedbMigration version 1 {
   entity Row {
@@ -7057,21 +7055,15 @@ contract RedbMigration version 1 {
         })
     }
 
-    struct TestDatabasePath(PathBuf);
+    /// Whole-directory scope: the database and every side file it grows live
+    /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
+    /// fail, or panic.
+    struct TestDatabasePath(PathBuf, crate::test_path::ScopedDirectory);
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
-            let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-            Self(crate::test_path::root().join(format!(
-                "riffdb-redb-startup-{label}-{}-{ordinal}.redb",
-                std::process::id()
-            )))
-        }
-    }
-
-    impl Drop for TestDatabasePath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            let scope = crate::test_path::ScopedDirectory::new(label);
+            Self(scope.join("db.redb"), scope)
         }
     }
 
