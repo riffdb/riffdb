@@ -34,6 +34,46 @@ riffdb --config operator.toml application installation \
   --campaign-id 018f2f85-3c20-7a31-8f11-112233445566
 ```
 
+After every plan-declared driver has performed its exact generated-client or
+driver-host identity handshake, resume the current `driver_proof` stage with
+the complete plan-ordered set:
+
+```bash
+riffdb --config operator.toml application install \
+  --plan installation-plan.json \
+  --campaign-id 018f2f85-3c20-7a31-8f11-112233445566 \
+  --driver-proof rust \
+  --driver-proof typescript
+```
+
+This flag is an explicit installation-authority attestation. It does not run
+the driver and must not be supplied before the controller has checked the
+driver's deployed identity. A subset, duplicate, reordered value, undeclared
+driver, or proof submitted at another stage fails closed.
+
+After nonempty seed batches have run through ordinary compiled commands, the
+controller can submit one canonical receipt document:
+
+```json
+{"schema":"riffdb.application-installation-seed-receipts/v1","plan_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","seeds":[{"name":"initial-data","content_hash":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789","succeeded":5,"replayed":2}]}
+```
+
+The document is compact canonical JSON followed by one newline. `plan_hash`
+must identify the submitted installation plan; seed rows must have the exact
+plan order, names, lowercase content hashes, and item totals. It contains no
+command inputs, idempotency keys, credentials, or host paths. Submit it only at
+the current `seeds` stage:
+
+```bash
+riffdb --config operator.toml application install \
+  --plan installation-plan.json \
+  --campaign-id 018f2f85-3c20-7a31-8f11-112233445566 \
+  --seed-receipts seed-receipts.json
+```
+
+`--driver-proof` and `--seed-receipts` are mutually exclusive because one
+resume request can complete only the one exact current external stage.
+
 Machine output names only symbolic stages, the plan hash, lineage, phase,
 next action, typed safe failure, and a redacted terminal receipt. It never
 returns bearer credentials, host paths, seed values, numeric schema IDs, or
@@ -64,7 +104,7 @@ remains a symbolic next action, and conflicting identity becomes a typed
 partial campaign. This makes resuming existing deployment operations safe
 without accepting caller-asserted remote identities.
 
-The Rust operator SDK can resume the exact current `driver_proof` stage with
+The CLI and Rust operator SDK can resume the exact current `driver_proof` stage with
 `StartApplicationInstallation::with_driver_proof` and the exact current
 `seeds` stage with `with_seed_receipts`. Both forms are checked against the
 immutable plan before transport and again at service admission. They cannot
@@ -81,7 +121,7 @@ seed execution into a privileged bulk-write path.
 
 The existing `application deploy`, migration, role, credential, driver, and
 seed operations remain the available executors. The current CLI `application
-install` command starts and observes the campaign but does not yet compose
-those executors or submit driver/seed evidence automatically. Until that
-controller composition lands, do not interpret a `running` campaign as a
-completed application deployment.
+install` command starts, observes, and accepts exact driver/seed completion,
+but does not yet invoke those executors automatically. Until that controller
+composition lands, do not interpret a `running` campaign as a completed
+application deployment.
