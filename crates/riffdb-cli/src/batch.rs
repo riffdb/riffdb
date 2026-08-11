@@ -947,8 +947,9 @@ mod tests {
             "idempotency_key",
         )
         .expect("source");
-        let id = generate_agent_session_id().expect("test ID");
-        let path = std::env::temp_dir().join(format!("riffdb-batch-{id}.json"));
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-batch-").expect("scratch directory");
+        let path = scratch.path().join("riffdb-batch.json");
         let mut options = options();
         options.checkpoint_path = Some(path.clone());
         let mut checkpoint = new_checkpoint(&source, &options).expect("checkpoint");
@@ -1005,6 +1006,5 @@ mod tests {
             load_or_create_checkpoint(&source, &options),
             Err(BatchError::CheckpointInvalid)
         ));
-        fs::remove_file(path).expect("remove exact test receipt");
     }
 }
