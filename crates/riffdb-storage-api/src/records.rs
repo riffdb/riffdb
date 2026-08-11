@@ -487,10 +487,27 @@ impl fmt::Display for IndexEpochAdvanceError {
 impl Error for IndexEpochAdvanceError {}
 
 /// One committed entity change, including its exact expected prior state.
+///
+/// Deletes retain the checked predecessor only in the in-flight atomic graph.
+/// The predecessor is never published as current state: durable command
+/// capsules carry the resulting [`crate::CommittedEntityTransitionV1`] and
+/// commit records reference only live post-images.
 #[derive(Clone, Eq, PartialEq)]
-pub struct CommittedEntityMutationV1 {
-    expected: ExpectedEntityState,
-    post_image: StoredEntityRecordV1,
+pub enum CommittedEntityMutationV1 {
+    /// A create or replacement with one complete materialized post-image.
+    Put {
+        /// Exact observation required before applying the post-image.
+        expected: ExpectedEntityState,
+        /// Complete authoritative post-image.
+        post_image: StoredEntityRecordV1,
+    },
+    /// A checked removal of one exact materialized predecessor.
+    Delete {
+        /// Exact live version required before deletion.
+        expected_version: EntityVersion,
+        /// Complete checked predecessor used for reciprocity and hashing.
+        prior_image: StoredEntityRecordV1,
+    },
 }
 
 impl CommittedEntityMutationV1 {
@@ -508,30 +525,88 @@ impl CommittedEntityMutationV1 {
         if post_image.entity_version() != required {
             return Err(StorageValueError::IdentityMismatch);
         }
-        Ok(Self {
+        Ok(Self::Put {
             expected,
             post_image,
+        })
+    }
+
+    /// Constructs one checked deletion from its exact materialized predecessor.
+    pub fn delete(
+        expected_version: EntityVersion,
+        prior_image: StoredEntityRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        if prior_image.entity_version() != expected_version {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self::Delete {
+            expected_version,
+            prior_image,
         })
     }
 
     /// Returns the exact required prior observation.
     #[must_use]
     pub const fn expected(&self) -> ExpectedEntityState {
-        self.expected
+        match self {
+            Self::Put { expected, .. } => *expected,
+            Self::Delete {
+                expected_version, ..
+            } => ExpectedEntityState::Present(*expected_version),
+        }
     }
 
-    /// Borrows the complete committed post-image.
+    /// Borrows the exact affected entity target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        match self {
+            Self::Put { post_image, .. } => post_image.target(),
+            Self::Delete { prior_image, .. } => prior_image.target(),
+        }
+    }
+
+    /// Borrows the complete checked mutation image.
+    ///
+    /// For a delete this is the checked predecessor, not a materialized
+    /// post-delete row. Callers that publish state must branch on the variant
+    /// or use [`Self::live_post_image`].
     #[must_use]
     pub const fn post_image(&self) -> &StoredEntityRecordV1 {
-        &self.post_image
+        self.checked_image()
+    }
+
+    /// Borrows the committed post-image only when current state remains live.
+    #[must_use]
+    pub const fn live_post_image(&self) -> Option<&StoredEntityRecordV1> {
+        match self {
+            Self::Put { post_image, .. } => Some(post_image),
+            Self::Delete { .. } => None,
+        }
+    }
+
+    /// Borrows the complete checked image carried by the atomic graph.
+    ///
+    /// This is the post-image for a put and the predecessor for a delete.
+    #[must_use]
+    pub const fn checked_image(&self) -> &StoredEntityRecordV1 {
+        match self {
+            Self::Put { post_image, .. } => post_image,
+            Self::Delete { prior_image, .. } => prior_image,
+        }
+    }
+
+    /// Returns whether this mutation removes current materialized state.
+    #[must_use]
+    pub const fn is_delete(&self) -> bool {
+        matches!(self, Self::Delete { .. })
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         committed_entity_semantic_bytes_from_len(
-            self.expected,
-            self.post_image.target(),
-            self.post_image.schema_binding(),
-            self.post_image.fields_encoded_len(),
+            self.expected(),
+            self.target(),
+            self.checked_image().schema_binding(),
+            self.checked_image().fields_encoded_len(),
         )
     }
 }
@@ -877,7 +952,20 @@ impl CommittedEntityReferenceV2 {
 
     /// Derives a reference from one staged committed mutation.
     pub fn from_mutation(mutation: &CommittedEntityMutationV1) -> Result<Self, StorageValueError> {
-        Self::from_post_image(mutation.post_image())
+        let post_image = mutation
+            .live_post_image()
+            .ok_or(StorageValueError::InvalidShape)?;
+        Self::from_post_image(post_image)
+    }
+
+    /// Derives a reference when a mutation leaves a live post-image.
+    pub fn from_live_mutation(
+        mutation: &CommittedEntityMutationV1,
+    ) -> Result<Option<Self>, StorageValueError> {
+        mutation
+            .live_post_image()
+            .map(Self::from_post_image)
+            .transpose()
     }
 
     /// Returns the exact prior state implied by this committed version.
@@ -1149,6 +1237,14 @@ impl AffectedEntityV1 {
     #[must_use]
     pub fn from_record(record: &StoredEntityRecordV1) -> Self {
         Self::from_stored_parts(record.target().clone(), record.entity_version())
+    }
+
+    /// Constructs an affected-entity link from one complete checked mutation.
+    ///
+    /// A delete records the exact predecessor version removed by the command.
+    #[must_use]
+    pub fn from_mutation(mutation: &CommittedEntityMutationV1) -> Self {
+        Self::from_record(mutation.checked_image())
     }
 
     /// Borrows the affected entity target.
@@ -2175,6 +2271,16 @@ impl AtomicCommandRecordSet {
         let presequence_charge = write_plan.charge();
         let sequence = commit.commit_sequence();
         let events = commit.events();
+        let mut retained_references = commit.entity_references().iter();
+        let mut entity_references_match = true;
+        for mutation in &entities {
+            match CommittedEntityReferenceV2::from_live_mutation(mutation)? {
+                Some(reference) if retained_references.next() == Some(&reference) => {}
+                Some(_) => entity_references_match = false,
+                None => {}
+            }
+        }
+        entity_references_match &= retained_references.next().is_none();
         if sequence != assignment.assigned()
             || assignment.next_allocator() != expected_next_allocator(sequence)
             || expected_pending.identity() != stored_outcome.identity()
@@ -2189,21 +2295,16 @@ impl AtomicCommandRecordSet {
             || expected_pending.partition_key() != stored_outcome.partition_key()
             || hash_partition_key(expected_pending.partition_key().as_bytes())
                 != stored_outcome.partition_hash()
-            || entities.len() != commit.entity_references().len()
-            || entities.iter().enumerate().any(|(index, mutation)| {
-                let Ok(reference) = CommittedEntityReferenceV2::from_mutation(mutation) else {
-                    return true;
-                };
-                reference != commit.entity_references()[index]
-                    || mutation.post_image().written_by_contract()
-                        != commit.plan().contract_version()
+            || !entity_references_match
+            || entities.iter().any(|mutation| {
+                mutation.checked_image().written_by_contract() != commit.plan().contract_version()
                     || !mutation
-                        .post_image()
+                        .checked_image()
                         .schema_binding()
                         .matches_plan(commit.plan())
                     || commit
                         .read_dependencies()
-                        .expected_entity_state(mutation.post_image().target())
+                        .expected_entity_state(mutation.target())
                         != Some(mutation.expected())
             })
             || stored_outcome.commit_sequence() != sequence
@@ -2275,9 +2376,7 @@ impl AtomicCommandRecordSet {
                 .affected_entities()
                 .iter()
                 .zip(&entities)
-                .any(|(affected, mutation)| {
-                    affected != &AffectedEntityV1::from_record(mutation.post_image())
-                })
+                .any(|(affected, mutation)| affected != &AffectedEntityV1::from_mutation(mutation))
             || provenance.event_ids().len() != events.len()
             || provenance
                 .event_ids()
@@ -2462,8 +2561,7 @@ fn validate_committed_mutations(
         return Err(StorageValueError::LimitExceeded);
     }
     if mutations.windows(2).any(|pair| {
-        pair[0].post_image().target().canonical_target_key()
-            >= pair[1].post_image().target().canonical_target_key()
+        pair[0].target().canonical_target_key() >= pair[1].target().canonical_target_key()
     }) {
         return Err(StorageValueError::NonCanonicalOrder);
     }
@@ -2503,12 +2601,23 @@ fn validate_intent_entity_derivation(
             } => ExpectedEntityState::Present(*expected_version),
         };
         let intent_post_image = intent_mutation.post_image();
-        let committed_post_image = committed_mutation.post_image();
+        let committed_image = committed_mutation.checked_image();
+        let kinds_match = matches!(
+            (intent_mutation, committed_mutation),
+            (
+                EntityMutation::Create(_) | EntityMutation::Replace { .. },
+                CommittedEntityMutationV1::Put { .. }
+            ) | (
+                EntityMutation::Delete { .. },
+                CommittedEntityMutationV1::Delete { .. }
+            )
+        );
         if committed_mutation.expected() != expected
-            || committed_post_image.target() != intent_post_image.target()
-            || committed_post_image.written_by_contract() != intent_post_image.written_by_contract()
-            || committed_post_image.fields() != intent_post_image.fields()
-            || !committed_post_image
+            || !kinds_match
+            || committed_image.target() != intent_post_image.target()
+            || committed_image.written_by_contract() != intent_post_image.written_by_contract()
+            || committed_image.fields() != intent_post_image.fields()
+            || !committed_image
                 .schema_binding()
                 .matches_plan(evaluated.plan())
         {
@@ -2905,7 +3014,11 @@ fn projected_atomic_semantic_breakdown(
         pending.actor(),
         intent.conflict_hashes(),
         &stored_dependencies,
-        evaluated.mutations().iter().map(EntityMutation::target),
+        evaluated
+            .mutations()
+            .iter()
+            .filter(|mutation| !mutation.is_delete())
+            .map(EntityMutation::target),
         evaluated
             .event_intents()
             .iter()
@@ -3283,7 +3396,7 @@ mod tests {
         )?;
         let affected = mutations
             .iter()
-            .map(|item| AffectedEntityV1::from_record(item.post_image()))
+            .map(AffectedEntityV1::from_mutation)
             .collect();
         let provenance = StoredProvenanceRecordV1::new(
             provenance_id,

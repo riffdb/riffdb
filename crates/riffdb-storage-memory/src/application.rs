@@ -1634,16 +1634,24 @@ fn apply_entities(
 ) -> Result<(), StorageError> {
     let sequence = records.assignment().assigned();
     for mutation in records.entities() {
-        let target = mutation.post_image().target();
+        let target = mutation.target();
         let entity_position =
             unique_binary_search_by(&overlay.entities, |row| row.target().cmp(target))?;
         let commit_position =
             unique_binary_search_by(&overlay.entity_commits, |row| row.target.cmp(target))?;
-        match (mutation.expected(), entity_position, commit_position) {
-            (ExpectedEntityState::Absent, Err(entity_index), Err(commit_index)) => {
-                overlay
-                    .entities
-                    .insert(entity_index, mutation.post_image().clone());
+        match (
+            mutation.live_post_image(),
+            mutation.expected(),
+            entity_position,
+            commit_position,
+        ) {
+            (
+                Some(post_image),
+                ExpectedEntityState::Absent,
+                Err(entity_index),
+                Err(commit_index),
+            ) => {
+                overlay.entities.insert(entity_index, post_image.clone());
                 overlay.entity_commits.insert(
                     commit_index,
                     EntityCommitIndexRow {
@@ -1652,22 +1660,39 @@ fn apply_entities(
                     },
                 );
             }
-            (ExpectedEntityState::Present(expected), Ok(entity_index), Ok(commit_index))
-                if overlay.entities[entity_index].entity_version() == expected =>
+            (
+                Some(post_image),
+                ExpectedEntityState::Present(expected),
+                Ok(entity_index),
+                Ok(commit_index),
+            ) if overlay.entities[entity_index].entity_version() == expected => {
+                let old =
+                    HistoricalPersistedKeyEvidenceV1::from_entity(&overlay.entities[entity_index]);
+                remove_persisted_evidence(&mut overlay.historical_persisted_keys, &old)?;
+                overlay.entities[entity_index] = post_image.clone();
+                overlay.entity_commits[commit_index].commit_sequence = sequence;
+            }
+            (None, ExpectedEntityState::Present(expected), Ok(entity_index), Ok(commit_index))
+                if overlay.entities[entity_index].entity_version() == expected
+                    && &overlay.entities[entity_index] == mutation.checked_image() =>
             {
                 let old =
                     HistoricalPersistedKeyEvidenceV1::from_entity(&overlay.entities[entity_index]);
                 remove_persisted_evidence(&mut overlay.historical_persisted_keys, &old)?;
-                overlay.entities[entity_index] = mutation.post_image().clone();
-                overlay.entity_commits[commit_index].commit_sequence = sequence;
+                overlay.entities.remove(entity_index);
+                overlay.entity_commits.remove(commit_index);
+                continue;
             }
-            (ExpectedEntityState::Absent | ExpectedEntityState::Present(_), _, _) => {
+            (_, ExpectedEntityState::Absent | ExpectedEntityState::Present(_), _, _) => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
+        let post_image = mutation
+            .live_post_image()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         insert_persisted_evidence(
             &mut overlay.historical_persisted_keys,
-            HistoricalPersistedKeyEvidenceV1::from_entity(mutation.post_image()),
+            HistoricalPersistedKeyEvidenceV1::from_entity(post_image),
         )?;
     }
     Ok(())
@@ -2491,6 +2516,41 @@ mod tests {
         prior_epoch: IndexEpochPosition,
         provenance_suffix: u8,
     ) -> CommandFixture {
+        command_fixture_with_delete(
+            sequence_value,
+            suffix,
+            prior_entity,
+            prior_epoch,
+            provenance_suffix,
+            false,
+        )
+    }
+
+    fn delete_command_fixture(
+        sequence_value: u64,
+        suffix: u8,
+        prior_entity: StoredEntityRecordV1,
+        prior_epoch: IndexEpochPosition,
+        provenance_suffix: u8,
+    ) -> CommandFixture {
+        command_fixture_with_delete(
+            sequence_value,
+            suffix,
+            Some(prior_entity),
+            prior_epoch,
+            provenance_suffix,
+            true,
+        )
+    }
+
+    fn command_fixture_with_delete(
+        sequence_value: u64,
+        suffix: u8,
+        prior_entity: Option<StoredEntityRecordV1>,
+        prior_epoch: IndexEpochPosition,
+        provenance_suffix: u8,
+        delete: bool,
+    ) -> CommandFixture {
         let plan = plan();
         let sequence = CommitSequence::new(sequence_value).expect("sequence");
         let (target, index_key, range) = target_and_index();
@@ -2555,13 +2615,26 @@ mod tests {
             record(u64::from(suffix)),
         )
         .expect("post image");
-        let runtime_mutation = prior_entity.as_ref().map_or_else(
-            || EntityMutation::Create(post.clone()),
-            |prior| EntityMutation::Replace {
+        let runtime_mutation = if delete {
+            let prior = prior_entity.as_ref().expect("delete predecessor");
+            EntityMutation::Delete {
                 expected_version: prior.entity_version(),
-                post_image: post.clone(),
-            },
-        );
+                prior_image: EntityPostImage::new(
+                    target.clone(),
+                    plan.contract_version(),
+                    prior.fields().clone(),
+                )
+                .expect("checked delete predecessor"),
+            }
+        } else {
+            prior_entity.as_ref().map_or_else(
+                || EntityMutation::Create(post.clone()),
+                |prior| EntityMutation::Replace {
+                    expected_version: prior.entity_version(),
+                    post_image: post.clone(),
+                },
+            )
+        };
         let event_intent = EventIntent::new(
             EventTypeId::new(1).expect("event type"),
             record(u64::from(suffix)),
@@ -2599,21 +2672,38 @@ mod tests {
         let version = prior_entity
             .as_ref()
             .map_or(EntityVersion::first(), |record| {
-                record
-                    .entity_version()
-                    .checked_next()
-                    .expect("next version")
+                if delete {
+                    record.entity_version()
+                } else {
+                    record
+                        .entity_version()
+                        .checked_next()
+                        .expect("next version")
+                }
             });
         let entity = StoredEntityRecordV1::new(
             target.clone(),
             version,
             plan.contract_version(),
             DurableKeySchemaBindingV1::from_plan(&plan),
-            record(u64::from(suffix)),
+            if delete {
+                prior_entity
+                    .as_ref()
+                    .expect("delete predecessor")
+                    .fields()
+                    .clone()
+            } else {
+                record(u64::from(suffix))
+            },
         )
         .expect("entity record");
-        let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(expected, entity)
-            .expect("entity mutation");
+        let mutation = if delete {
+            riffdb_storage_api::CommittedEntityMutationV1::delete(version, entity)
+                .expect("delete mutation")
+        } else {
+            riffdb_storage_api::CommittedEntityMutationV1::new(expected, entity)
+                .expect("entity mutation")
+        };
         let index_record = StoredIndexEntryV2::new(
             index_key.clone(),
             DurableKeySchemaBindingV1::from_plan(&plan),
@@ -2647,7 +2737,11 @@ mod tests {
             &intent,
             affected_targets.clone(),
             affected_current,
-            vec![IndexEntryMutationV1::Put(index_record)],
+            vec![if delete {
+                IndexEntryMutationV1::Delete(index_key.clone())
+            } else {
+                IndexEntryMutationV1::Put(index_record)
+            }],
             vec![advance],
             encoded,
         )
@@ -2694,7 +2788,7 @@ mod tests {
             partition_hash,
             Vec::new(),
             outcome.outcome_id(),
-            vec![AffectedEntityV1::from_record(mutations[0].post_image())],
+            vec![AffectedEntityV1::from_mutation(&mutations[0])],
             vec![event_id],
             StoredAdmittedProvenanceClaimsV1::default(),
         )
@@ -2712,9 +2806,12 @@ mod tests {
                 .expect("stored dependencies"),
             mutations
                 .iter()
-                .map(riffdb_storage_api::CommittedEntityReferenceV2::from_mutation)
+                .map(riffdb_storage_api::CommittedEntityReferenceV2::from_live_mutation)
                 .collect::<Result<Vec<_>, _>>()
-                .expect("entity references"),
+                .expect("entity references")
+                .into_iter()
+                .flatten()
+                .collect(),
             vec![event.clone()],
             outcome,
             provenance_id,
@@ -2950,6 +3047,51 @@ mod tests {
             AdmissionLookupResultV1::Found(state)
                 if *state == StoredAdmissionStateV1::StoredOutcome(
                     fixture.records.stored_outcome().clone()
+                )
+        ));
+    }
+
+    #[test]
+    fn checked_delete_removes_current_entity_and_replays_one_outcome() {
+        let ports = operational_ports(bundle());
+        let mut model = AuthoritativeCommandModel::new();
+        let create = command_fixture(1, 1, None, IndexEpochPosition::BeforeFirst, 0x41);
+        let created_entity = create.records.entities()[0].post_image().clone();
+        let created_epoch = IndexEpochPosition::Value(create.records.index_epochs()[0].next());
+        admit(&ports, &mut model, &create);
+        stage_empty(&ports, &create)
+            .commit(DurabilityMode::Memory)
+            .expect("create commit");
+        assert!(
+            ports
+                .read_entity(&create.target)
+                .expect("read created entity")
+                .is_some()
+        );
+
+        let delete = delete_command_fixture(2, 2, created_entity, created_epoch, 0x42);
+        admit(&ports, &mut model, &delete);
+        let committed = stage_empty(&ports, &delete)
+            .commit(DurabilityMode::Memory)
+            .expect("delete commit");
+
+        assert_eq!(
+            committed.outcomes(),
+            std::slice::from_ref(delete.records.stored_outcome())
+        );
+        assert!(
+            ports
+                .read_entity(&delete.target)
+                .expect("read deleted entity")
+                .is_none()
+        );
+        assert!(matches!(
+            ports
+                .lookup_admission(delete.admission.lookup_candidates().clone())
+                .expect("delete replay"),
+            AdmissionLookupResultV1::Found(state)
+                if *state == StoredAdmissionStateV1::StoredOutcome(
+                    delete.records.stored_outcome().clone()
                 )
         ));
     }

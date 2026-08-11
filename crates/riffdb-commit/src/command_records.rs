@@ -974,7 +974,7 @@ fn build_atomic_command_record_set(
     .with_service_values(pending.service_values().clone())?;
     let affected_entities = entities
         .iter()
-        .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))
+        .map(AffectedEntityV1::from_mutation)
         .collect();
     let provenance = StoredProvenanceRecordV1::new_with_causation(
         intent.provenance_id(),
@@ -995,8 +995,11 @@ fn build_atomic_command_record_set(
     )?;
     let entity_references = entities
         .iter()
-        .map(CommittedEntityReferenceV2::from_mutation)
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(CommittedEntityReferenceV2::from_live_mutation)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     let commit = StoredCommitRecordV1::new(
         sequence,
         pending.admission_request_id(),
@@ -1039,9 +1042,12 @@ fn committed_entity(
                 .checked_next()
                 .ok_or_else(CommandRecordGraphError::internal_defect)?,
         ),
-        EntityMutation::Delete { .. } => {
-            return Err(CommandRecordGraphError::internal_defect());
-        }
+        EntityMutation::Delete {
+            expected_version, ..
+        } => (
+            ExpectedEntityState::Present(*expected_version),
+            *expected_version,
+        ),
     };
     let post_image = mutation.post_image();
     let stored = StoredEntityRecordV1::from_checked_post_image(
@@ -1049,7 +1055,13 @@ fn committed_entity(
         entity_version,
         schema_binding.clone(),
     )?;
-    CommittedEntityMutationV1::new(expected, stored).map_err(CommandRecordGraphError::from)
+    match mutation {
+        EntityMutation::Delete { .. } => CommittedEntityMutationV1::delete(entity_version, stored),
+        EntityMutation::Create(_) | EntityMutation::Replace { .. } => {
+            CommittedEntityMutationV1::new(expected, stored)
+        }
+    }
+    .map_err(CommandRecordGraphError::from)
 }
 
 #[cfg(test)]
@@ -1063,8 +1075,8 @@ mod tests {
         ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, IndexEntryMutationV1,
         IndexEpochAdvanceV1, IndexEpochPosition, PartitionIndexTarget, PreEvaluationCommitContext,
         ReadSnapshot, SnapshotRequest, StoredAdmittedProvenanceClaimsV1, StoredCommandCausationV1,
-        StoredIndexEntryV2, StoredPendingAdmissionV1, command_write_set_upper_bound_v1,
-        encode_atomic_command_record_set_v1,
+        StoredEntityRecordV1, StoredIndexEntryV2, StoredPendingAdmissionV1,
+        command_write_set_upper_bound_v1, encode_atomic_command_record_set_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
@@ -1446,6 +1458,55 @@ mod tests {
         );
         assert_eq!(records.index_epochs()[0].next(), IndexEpoch::first());
         encode_atomic_command_record_set_v1(&records).expect("canonical graph encoding");
+    }
+
+    #[test]
+    fn checked_delete_graph_has_no_live_reference_or_entity_envelope() {
+        let entity_target = target(29);
+        let version = EntityVersion::new(4).expect("prior version");
+        let fields = record(12, 77);
+        let prior = StoredEntityRecordV1::new(
+            entity_target.clone(),
+            version,
+            plan().contract_version(),
+            DurableKeySchemaBindingV1::from_plan(&plan()),
+            fields.clone(),
+        )
+        .expect("stored predecessor");
+        let predecessor =
+            EntityPostImage::new(entity_target.clone(), plan().contract_version(), fields)
+                .expect("checked predecessor");
+        let fixture = fixture(
+            vec![EntityObservation::Present(prior)],
+            vec![EntityMutation::Delete {
+                expected_version: version,
+                prior_image: predecessor,
+            }],
+            Vec::new(),
+            false,
+        );
+
+        let records = build_record_graph_for_test(
+            fixture.assignment,
+            fixture.write_plan,
+            DurabilityMode::Sync,
+        )
+        .expect("complete delete graph");
+
+        assert_eq!(records.entities().len(), 1);
+        assert!(records.entities()[0].is_delete());
+        assert_eq!(
+            records.entities()[0].expected(),
+            ExpectedEntityState::Present(version)
+        );
+        assert!(records.commit().entity_references().is_empty());
+        assert_eq!(records.provenance().affected_entities().len(), 1);
+        assert_eq!(
+            records.provenance().affected_entities()[0].entity_version(),
+            version
+        );
+        let encoded = encode_atomic_command_record_set_v1(&records).expect("encoded delete graph");
+        assert_eq!(encoded.entities(), &[None]);
     }
 
     #[test]

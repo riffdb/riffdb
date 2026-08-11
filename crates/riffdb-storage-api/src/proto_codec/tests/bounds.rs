@@ -67,6 +67,7 @@ fn encoded_atomic_graph_charges_exact_bytes_and_fits_its_reservation() {
         encoded
             .entities()
             .iter()
+            .flatten()
             .map(|value| value.as_bytes().len())
             .sum::<usize>()
     );

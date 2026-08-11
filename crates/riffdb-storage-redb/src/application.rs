@@ -1570,7 +1570,7 @@ fn stage_application_allocator(
 fn apply_entities(
     access: &RedbWriteAccess,
     records: &AtomicCommandRecordSet,
-    encoded: Vec<riffdb_storage_api::CanonicalStoredEnvelopeV1>,
+    encoded: Vec<Option<riffdb_storage_api::CanonicalStoredEnvelopeV1>>,
     observations: &mut BTreeMap<EntityTarget, EntityObservation>,
 ) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
     if records.entities().is_empty() {
@@ -1578,11 +1578,17 @@ fn apply_entities(
     }
     let mut transitions = Vec::with_capacity(records.entities().len());
     for (ordinal, (mutation, bytes)) in records.entities().iter().zip(encoded).enumerate() {
-        let key = encode_entity_key(mutation.post_image().target().key());
+        let target = mutation.target();
+        let key = encode_entity_key(target.key());
         let observation = observations
-            .get(mutation.post_image().target())
+            .get(target)
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         if observation.expected_state() != mutation.expected() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if mutation.is_delete()
+            && !matches!(observation, EntityObservation::Present(record) if record == mutation.checked_image())
+        {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let stored_head = access
@@ -1601,8 +1607,7 @@ fn apply_entities(
                     value_hash: riffdb_storage_api::derive_entity_record_hash_v1(record)
                         .map_err(invariant_value)?,
                 };
-                if head.target() != mutation.post_image().target() || head.state() != expected_state
-                {
+                if head.target() != target || head.state() != expected_state {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
                 (
@@ -1613,15 +1618,18 @@ fn apply_entities(
             }
             _ => return Err(storage_error(StorageErrorKind::CorruptData)),
         };
-        let next_state = EntityChainStateV1::Live {
-            version: mutation.post_image().entity_version(),
-            value_hash: riffdb_storage_api::derive_entity_record_hash_v1(mutation.post_image())
-                .map_err(invariant_value)?,
+        let next_state = match mutation.live_post_image() {
+            Some(post_image) => EntityChainStateV1::Live {
+                version: post_image.entity_version(),
+                value_hash: riffdb_storage_api::derive_entity_record_hash_v1(post_image)
+                    .map_err(invariant_value)?,
+            },
+            None => EntityChainStateV1::Deleted,
         };
         let transition = CommittedEntityTransitionV1::new(
             records.assignment().assigned(),
             u32::try_from(ordinal).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-            mutation.post_image().target().clone(),
+            target.clone(),
             prior_state,
             prior_revision,
             prior_hash,
@@ -1643,16 +1651,23 @@ fn apply_entities(
         if replaced_head.is_some() != (prior_revision != 0) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let prior =
-            access.put_command_value(JournalTable::Entities, key.to_vec(), bytes.into_bytes())?;
+        let prior = match bytes {
+            Some(bytes) => access.put_command_value(
+                JournalTable::Entities,
+                key.to_vec(),
+                bytes.into_bytes(),
+            )?,
+            None => access.delete_command_value(JournalTable::Entities, key.to_vec())?,
+        };
         let expected_presence = matches!(mutation.expected(), ExpectedEntityState::Present(_));
         if prior.is_some() != expected_presence {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        observations.insert(
-            mutation.post_image().target().clone(),
-            EntityObservation::Present(mutation.post_image().clone()),
-        );
+        let next_observation = match mutation.live_post_image() {
+            Some(post_image) => EntityObservation::Present(post_image.clone()),
+            None => EntityObservation::Absent(target.clone()),
+        };
+        observations.insert(target.clone(), next_observation);
         transitions.push(transition);
     }
     Ok(transitions)
