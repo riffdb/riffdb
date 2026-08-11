@@ -13,7 +13,6 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use riffdb_auth::bootstrap_secret::{
@@ -42,6 +41,7 @@ use riffdb_testkit::http2_gate::Http2ResponseGate;
 use riffdb_testkit::inspection::{DurableInspection, DurableInspectionRequest, inspect_redb};
 use riffdb_testkit::model::budget_projection_schema;
 use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
+use riffdb_testkit::scratch::ScratchDir;
 use riffdb_types::{
     CommitSequence, DatabaseAlias, DigestKeyId, EntityKey, EntityKeyBuilder, EntityTypeId, EventId,
     FrontierPosition, RequestId, Timestamp,
@@ -1628,38 +1628,18 @@ fn write_protected_file(path: &Path, document: &[u8]) -> io::Result<()> {
 }
 
 struct TemporaryDirectory {
-    path: PathBuf,
+    scratch: ScratchDir,
 }
 
 impl TemporaryDirectory {
     fn new(label: &str) -> io::Result<Self> {
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-        for _ in 0..1_024 {
-            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-wp190-{label}-{}-{ordinal}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique WP-190 test directory",
-        ))
+        Ok(Self {
+            scratch: ScratchDir::new(&format!("wp190-{label}"))?,
+        })
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        self.scratch.path()
     }
 }
 

@@ -125,7 +125,11 @@ contract StorageRecovery version 1 {
 /// side file it grows (journal, checkpoint, spare, durable-format marker, …)
 /// — on `Drop`, pass, fail, or panic. Cleanup no longer depends on a
 /// hand-maintained side-file list.
-struct TestDatabasePath(PathBuf, ScratchScope);
+struct TestDatabasePath(
+    PathBuf,
+    // Held only so `Drop` removes the whole scope.
+    #[allow(dead_code)] ScratchScope,
+);
 
 impl TestDatabasePath {
     fn new(label: &str) -> Self {

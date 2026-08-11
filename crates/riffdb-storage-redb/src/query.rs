@@ -699,7 +699,6 @@ const fn corrupt() -> StorageError {
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_contract_compiler::compile_contract_source;
     use riffdb_query_compiler::compile_query;
@@ -753,7 +752,11 @@ query ProjectMembers(
     /// Whole-directory scope: the database and every side file it grows live
     /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
     /// fail, or panic.
-    struct TestPath(PathBuf, crate::test_path::ScopedDirectory);
+    struct TestPath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestPath {
         fn new() -> Self {

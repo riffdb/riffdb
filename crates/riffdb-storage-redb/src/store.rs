@@ -6363,7 +6363,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU16;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::{
         DurableKeySchemaBindingV1, IndexRangePrefixBuilder, LegacyStoredIndexEpochV1,
@@ -6551,7 +6550,11 @@ mod tests {
     /// (journal, checkpoint, spare, durable-format marker, …) live in one
     /// [`crate::test_path::ScopedDirectory`] removed on drop — pass, fail, or
     /// panic — so cleanup never depends on a hand-maintained file list.
-    struct TestDatabasePath(PathBuf, crate::test_path::ScopedDirectory);
+    struct TestDatabasePath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {

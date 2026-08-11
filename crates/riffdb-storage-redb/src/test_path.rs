@@ -48,7 +48,10 @@ impl ScopedDirectory {
         let root = root();
         sweep_stale_scopes(&root);
         let ordinal = NEXT_SCOPE.fetch_add(1, Ordering::Relaxed);
-        let path = root.join(format!("{SCOPE_PREFIX}{label}-{}-{ordinal}", std::process::id()));
+        let path = root.join(format!(
+            "{SCOPE_PREFIX}{label}-{}-{ordinal}",
+            std::process::id()
+        ));
         fs::create_dir(&path).expect("create unit test scope directory");
         Self(path)
     }

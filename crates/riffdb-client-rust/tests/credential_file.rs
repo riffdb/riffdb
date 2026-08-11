@@ -5,41 +5,25 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::fs::{self, OpenOptions};
-    use std::io::{self, Write};
+    use std::io::Write;
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_client_rust::{
         BearerCredential, BearerCredentialFileError, load_protected_bearer_credential,
     };
 
     const TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
-    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
-    struct TestDirectory(PathBuf);
+    /// Field 1 is held only for its whole-directory cleanup on `Drop`.
+    struct TestDirectory(PathBuf, #[allow(dead_code)] tempfile::TempDir);
 
     impl TestDirectory {
         fn create() -> Self {
-            loop {
-                let suffix = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-                let candidate = std::env::temp_dir().join(format!(
-                    "riffdb-client-credential-{}-{suffix}",
-                    std::process::id()
-                ));
-                match fs::create_dir(&candidate) {
-                    Ok(()) => return Self(candidate),
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(error) => panic!("create isolated test directory: {error}"),
-                }
-            }
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let directory = tempfile::TempDir::with_prefix("riffdb-client-credential-")
+                .expect("create isolated test directory");
+            Self(directory.path().to_path_buf(), directory)
         }
     }
 

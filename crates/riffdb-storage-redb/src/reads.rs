@@ -798,7 +798,11 @@ mod tests {
     /// Whole-directory scope: the database and every side file it grows live
     /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
     /// fail, or panic.
-    struct TestDatabasePath(PathBuf, crate::test_path::ScopedDirectory);
+    struct TestDatabasePath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {

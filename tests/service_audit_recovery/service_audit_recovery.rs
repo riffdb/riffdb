@@ -32,7 +32,11 @@ static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 /// directory removed on `Drop` — pass, fail, or panic — so the database and
 /// every side file it grows (journal, checkpoint, spare, marker, …) are
 /// covered without a hand-maintained file list.
-struct TestPath(PathBuf, ScopeDir);
+struct TestPath(
+    PathBuf,
+    // Held only so `Drop` removes the whole scope.
+    #[allow(dead_code)] ScopeDir,
+);
 
 impl TestPath {
     fn new() -> Self {
