@@ -6382,8 +6382,6 @@ mod tests {
 
     use super::*;
 
-    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
-
     fn pin_predecessor_registry(
         transaction: &redb::WriteTransaction,
         predecessor: &riffdb_storage_api::CanonicalStoredEnvelopeV1,
@@ -6549,29 +6547,16 @@ mod tests {
         );
     }
 
-    struct TestDatabasePath(PathBuf);
+    /// Whole-directory scope: the database and every side file it grows
+    /// (journal, checkpoint, spare, durable-format marker, …) live in one
+    /// [`crate::test_path::ScopedDirectory`] removed on drop — pass, fail, or
+    /// panic — so cleanup never depends on a hand-maintained file list.
+    struct TestDatabasePath(PathBuf, crate::test_path::ScopedDirectory);
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
-            let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-            let invocation = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test clock after Unix epoch")
-                .as_nanos();
-            Self(crate::test_path::root().join(format!(
-                "riffdb-redb-{label}-{}-{invocation}-{ordinal}.redb",
-                std::process::id()
-            )))
-        }
-    }
-
-    impl Drop for TestDatabasePath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-            let _ = std::fs::remove_file(crate::durable_format_marker_path(&self.0));
-            let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
-            let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
-            let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
+            let scope = crate::test_path::ScopedDirectory::new(label);
+            Self(scope.join("db.redb"), scope)
         }
     }
 

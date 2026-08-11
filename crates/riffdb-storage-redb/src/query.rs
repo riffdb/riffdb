@@ -750,23 +750,15 @@ query ProjectMembers(
     outcomes Found
 }
 "#;
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-
-    struct TestPath(PathBuf);
+    /// Whole-directory scope: the database and every side file it grows live
+    /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
+    /// fail, or panic.
+    struct TestPath(PathBuf, crate::test_path::ScopedDirectory);
 
     impl TestPath {
         fn new() -> Self {
-            Self(crate::test_path::root().join(format!(
-                "riffdb-redb-query-{}-{}.redb",
-                std::process::id(),
-                NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-            )))
-        }
-    }
-
-    impl Drop for TestPath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            let scope = crate::test_path::ScopedDirectory::new("query");
+            Self(scope.join("db.redb"), scope)
         }
     }
 
