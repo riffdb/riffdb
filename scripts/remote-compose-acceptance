@@ -19,7 +19,7 @@ fail() {
     exit 1
 }
 
-for tool in docker jq openssl ruby; do
+for tool in cmp docker jq openssl ruby sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -89,6 +89,11 @@ trap cleanup EXIT
 cp "$workspace/release/container/"{riffdbd,liveness,application,operator}.toml "$runtime_root/"
 sed "s#public_endpoint = .*#public_endpoint = \"https://127.0.0.1:$proxy_port\"#" \
     "$runtime_root/riffdbd.toml" >"$work_root/riffdbd.toml.next"
+if [[ "$backup_restore" == true ]]; then
+    sed 's/environment = "container-alpha"/environment = "development"/' \
+        "$work_root/riffdbd.toml.next" >"$work_root/riffdbd.toml.acceptance"
+    mv "$work_root/riffdbd.toml.acceptance" "$work_root/riffdbd.toml.next"
+fi
 mv "$work_root/riffdbd.toml.next" "$runtime_root/riffdbd.toml"
 chmod 0600 "$runtime_root/"*.toml
 printf '%s\n' \
@@ -277,11 +282,47 @@ fi
 
 if [[ "$backup_restore" == true ]]; then
     # Offline maintenance is intentionally unavailable while the database is
-    # still in DeploymentRequired. Publish one complete active catalog before
-    # proving the remote disaster boundary.
-    "$cli" --config "$work_root/bootstrap-client.toml" contract deploy \
-        "$workspace/contracts/examples/budget.riff" \
-        >"$work_root/contract-deploy.jsonl"
+    # still in DeploymentRequired. Deploy and seed the release-owned corpus
+    # whose one bounded application covers all four alpha adapter shapes.
+    cp -R "$workspace/fixtures/adapters/operational-conformance" \
+        "$work_root/adapter-application"
+    (
+        cd "$work_root/adapter-application"
+        "$cli" --config "$work_root/bootstrap-client.toml" application deploy \
+            riffdb.application.json --lock riffdb.application.lock.json \
+            --provision-role AdapterOperationalApplication --lifetime-seconds 3600 \
+            >"$work_root/adapter-deploy.jsonl"
+    )
+    adapter_deployment="$work_root/adapter-application/.riffdb/deployments/default"
+    adapter_credential_name="$(jq -r '
+        if (.role.credential_file // "") == "" then
+            "application.credential"
+        else
+            .role.credential_file
+        end
+    ' "$adapter_deployment/deployment-state.json")"
+    if [[ "$adapter_credential_name" == /* ]]; then
+        adapter_credential="$adapter_credential_name"
+    else
+        adapter_credential="$adapter_deployment/$adapter_credential_name"
+    fi
+    [[ -f "$adapter_credential" ]] || fail "adapter application credential was not provisioned"
+    RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$proxy_port" \
+    RIFFDB_CONFORMANCE_TRUST_ROOT="$runtime_root/riffdb-ca.pem" \
+    RIFFDB_CONFORMANCE_CREDENTIAL="$adapter_credential" \
+        cargo +1.97.0 run --quiet -p riffdb-testkit \
+            --example adapter_operational_remote_client -- \
+            >"$work_root/adapter-before.json"
+    jq -e '
+        .schema == "riffdb.adapter-operational-observation/v1"
+        and .adapters == ["mlflow", "openfga", "payload", "woodpecker"]
+        and .catalog_preflight == true
+        and .optional_filters == true
+        and .stable_cursor == true
+        and .null_predicate == true
+        and .binary_prefix == true
+        and .exact_aggregates == true
+    ' "$work_root/adapter-before.json" >/dev/null
     printf 'remote-compose phase=backup-create\n' >&2
     if ! operator_cli backup create alpha-disaster >"$work_root/backup-start.jsonl"; then
         jq -e '.ok == false and .error.type == "uncertain" and .error.recovery_action == "poll_maintenance_operation"' \
@@ -335,8 +376,45 @@ if [[ "$backup_restore" == true ]]; then
     if "$cli" --config "$work_root/post-backup.toml" server health >/dev/null 2>&1; then
         fail "post-backup authority survived destructive restore"
     fi
-    [[ -f "$runtime_root/backups/alpha-disaster/manifest.riffdb" ]] \
+    RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$proxy_port" \
+    RIFFDB_CONFORMANCE_TRUST_ROOT="$runtime_root/riffdb-ca.pem" \
+    RIFFDB_CONFORMANCE_CREDENTIAL="$adapter_credential" \
+        cargo +1.97.0 run --quiet -p riffdb-testkit \
+            --example adapter_operational_remote_client -- \
+            >"$work_root/adapter-after.json"
+    cmp -s "$work_root/adapter-before.json" "$work_root/adapter-after.json" \
+        || fail "restored four-domain adapter observations diverged from the backup frontier"
+    backup_manifest="$runtime_root/backups/alpha-disaster/manifest.riffdb"
+    [[ -f "$backup_manifest" ]] \
         || fail "verified backup manifest is absent"
+    receipt_root="${RIFFDB_DISASTER_RECEIPT_ROOT:-$workspace/target/adapter-disaster-recovery}"
+    mkdir -p "$receipt_root"
+    receipt_path="$receipt_root/$backup_operation_id.json"
+    jq -n \
+        --arg backupOperationId "$backup_operation_id" \
+        --arg restoreOperationId "$restore_operation_id" \
+        --arg backupInputHash "$(jq -er '.result.input_hash' "$work_root/backup-status.jsonl")" \
+        --arg restoreInputHash "$(jq -er '.result.input_hash' "$work_root/restore-status.jsonl")" \
+        --arg backupManifestSha256 "$(sha256sum "$backup_manifest" | cut -d' ' -f1)" \
+        --arg adapterObservationSha256 "$(sha256sum "$work_root/adapter-after.json" | cut -d' ' -f1)" \
+        --arg contractBundleHash "$(jq -er '.contract.bundle_hash' "$work_root/adapter-application/riffdb.application.lock.json")" \
+        --arg expectedDestroyedCapability "01900000-0000-7000-8000-000000000003" \
+        '{
+            schema: "riffdb.adapter-disaster-receipt/v1",
+            adapters: ["mlflow", "openfga", "payload", "woodpecker"],
+            backup_operation_id: $backupOperationId,
+            restore_operation_id: $restoreOperationId,
+            backup_input_hash: $backupInputHash,
+            restore_input_hash: $restoreInputHash,
+            backup_manifest_sha256: $backupManifestSha256,
+            frontier_binding: {kind: "verified_backup_manifest", sha256: $backupManifestSha256},
+            contract_bundle_hash: $contractBundleHash,
+            expected_destroyed_suffix: {capability_id: $expectedDestroyedCapability},
+            startup_validation: "succeeded",
+            adapter_observation_sha256: $adapterObservationSha256,
+            secrets_included: false
+        }' >"$receipt_path"
+    printf 'remote-compose disaster-receipt=%s\n' "$receipt_path" >&2
 fi
 
 cleanup
