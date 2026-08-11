@@ -3936,7 +3936,11 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
                     tag: metric_tag,
                 },
             )?;
-            let source_count = decode_len(reader, "vector spec source fields", 1_024)?;
+            let source_count = decode_len(
+                reader,
+                "vector spec source fields",
+                crate::schema::MAX_VECTOR_SOURCE_FIELDS,
+            )?;
             let mut source_fields = Vec::with_capacity(source_count);
             for _ in 0..source_count {
                 source_fields.push(decode_field_id(reader)?);
