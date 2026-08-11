@@ -1224,6 +1224,7 @@ fn bootstrap_request(
             }],
             max_scan_rows: 100,
             approval_required: Vec::new(),
+            row_policy: None,
         }),
     })
 }

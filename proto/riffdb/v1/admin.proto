@@ -212,6 +212,32 @@ message EntityFieldVisibility {
   repeated uint32 field_ids = 3;
 }
 
+enum CapabilityRowPolicyOperation {
+  CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED = 0;
+  CAPABILITY_ROW_POLICY_OPERATION_READ = 1;
+  CAPABILITY_ROW_POLICY_OPERATION_CREATE = 2;
+  CAPABILITY_ROW_POLICY_OPERATION_UPDATE = 3;
+  CAPABILITY_ROW_POLICY_OPERATION_DELETE = 4;
+}
+
+message CapabilityPrincipalFact {
+  string name = 1;
+  Value value = 2;
+}
+
+message CapabilityRowPolicyBinding {
+  string contract_lineage = 1;
+  string policy_name = 2;
+  uint32 entity_type_id = 3;
+  repeated CapabilityRowPolicyOperation operations = 4;
+}
+
+message CapabilityRowPolicyGrant {
+  bytes application_role_hash = 1;
+  repeated CapabilityPrincipalFact principal_facts = 2;
+  repeated CapabilityRowPolicyBinding policies = 3;
+}
+
 message CapabilityGrant {
   TenantScope tenant_scope = 1;
   PartitionScope partition_scope = 2;
@@ -219,6 +245,7 @@ message CapabilityGrant {
   repeated EntityFieldVisibility field_visibility = 4;
   uint32 max_scan_rows = 5;
   repeated CapabilityPermissionKind approval_required = 6;
+  CapabilityRowPolicyGrant row_policy = 7;
 }
 
 message CreateCapabilityRequest {

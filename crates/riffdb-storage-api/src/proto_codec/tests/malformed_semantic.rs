@@ -242,6 +242,99 @@ fn capability_v3_installation_extension_is_required_and_canonical() {
 }
 
 #[test]
+fn capability_v4_row_policy_extension_is_required_canonical_and_role_bound() {
+    const CAPABILITY_V4: &str = "riffdb.storage.v1.CapabilityRecordV4";
+    let value = sample::capability_record_with_row_policy_authority();
+    let canonical = encode_capability_record_v1(&value).expect("row-policy capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV4>(canonical.as_bytes());
+
+    let mut missing = message.clone();
+    missing.row_policy = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V4,
+        &missing,
+    )));
+
+    let mut empty_bindings = message.clone();
+    empty_bindings
+        .row_policy
+        .as_mut()
+        .expect("row-policy extension")
+        .policies
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V4,
+        &empty_bindings,
+    )));
+
+    let mut empty_facts = message.clone();
+    empty_facts
+        .row_policy
+        .as_mut()
+        .expect("row-policy extension")
+        .canonical_principal_facts
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&raw_envelope(
+        CAPABILITY_V4,
+        empty_facts.encode_to_vec(),
+    )));
+
+    let mut wrong_role = message.clone();
+    wrong_role
+        .row_policy
+        .as_mut()
+        .expect("row-policy extension")
+        .application_role_hash = vec![0x77; 32];
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V4,
+        &wrong_role,
+    )));
+
+    let mut duplicate = message.clone();
+    let binding = duplicate
+        .row_policy
+        .as_ref()
+        .expect("row-policy extension")
+        .policies[0]
+        .clone();
+    duplicate
+        .row_policy
+        .as_mut()
+        .expect("row-policy extension")
+        .policies
+        .push(binding);
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V4,
+        &duplicate,
+    )));
+
+    let mut unordered_operations = message.clone();
+    unordered_operations
+        .row_policy
+        .as_mut()
+        .expect("row-policy extension")
+        .policies[0]
+        .operations
+        .reverse();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V4,
+        &unordered_operations,
+    )));
+
+    let mut unknown_operation = message;
+    unknown_operation
+        .row_policy
+        .as_mut()
+        .expect("row-policy extension")
+        .policies[0]
+        .operations[0] = 99;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V4,
+        &unknown_operation,
+    )));
+}
+
+#[test]
 fn interim_installation_payload_under_v2_compact_identity_is_recovered_exactly() {
     const CAPABILITY_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
     let expected = sample::capability_record_with_installation_authority();

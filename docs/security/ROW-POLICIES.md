@@ -13,13 +13,16 @@ successor state; and issues a move-only proof bound to the exact capability
 revision and row hashes. The same evaluator filters rows before limits and
 aggregates, and its final-safe-point recheck rejects capability or row drift.
 
-Protected operations are still deliberately unavailable while role compilation
-withholds their ordinary permission. Enabling them requires the reviewed
-versioned durable capability successor that persists principal facts and exact
-policy selection, followed by wiring the evaluator through every application
-surface. Do not add fields to the schema-hash-bound V1 capability envelope,
-implement a temporary middleware filter, or weaken the expected authorization
-refusal.
+Protected operations are still deliberately unavailable from the ordinary
+unbound role grant. Capability Record V4 now persists the exact application
+role, canonical principal facts, selected policy per protected entity, and
+closed operation classes. Trusted role provisioning type-checks the complete
+fact set before returning the otherwise-withheld operation permissions in that
+V4 grant. Cross-surface execution remains closed until the rest of WP-572 wires
+the shared evaluator before shaping and into the final commit safe point. Do
+not implement a temporary middleware filter or weaken this refusal.
+Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
+not silently drop an unknown fact or substitute a default value.
 
 ## Contract declarations
 
@@ -111,7 +114,11 @@ an equal scalar, or reduce a set-valued fact to a subset. Adding or changing a
 scalar fact, adding a set member, changing a tenant, widening an audience, or
 extending expiry is rejected.
 
-The remaining WP-572 durable increment will persist these facts in a versioned
-successor capability record and revalidate the exact capability revision before
-protected release and commit. Until that successor and the cross-surface wiring
-land, no protected application operation is executable.
+Capability Record V4 is an additive successor: V1, migration-only V2, and
+installation-only V3 remain byte-exact. V4 is selected only for a checked
+row-policy extension, and its decoder rejects missing extensions, noncanonical
+fact or binding order, duplicate entity selection, unknown operation tags, and
+role-identity substitution. Current authorization reconstructs facts only from
+the transaction-current retained record. Until the remaining cross-surface
+wiring and final-safe-point recheck land, no protected application operation is
+executable through the default role-binding path.
