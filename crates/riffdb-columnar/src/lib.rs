@@ -83,8 +83,9 @@ pub use outcome::{
     frontier_lag_sequences, lagging_for,
 };
 pub use query::{
-    AggregateOp, AggregateValue, ColumnPredicate, ColumnarQueryRequest, GroupBySpec, OrderSpec,
-    QueryBudget, QueryError, QueryResult, QueryRow, QueryRows, SortDirection, query_snapshot,
+    AggregateOp, AggregateValue, ColumnPredicate, ColumnarQueryRequest, GroupBySpec,
+    NearestQueryRequest, NearestQueryResult, NearestResultRow, OrderSpec, QueryBudget, QueryError,
+    QueryResult, QueryRow, QueryRows, SortDirection, nearest_query_snapshot, query_snapshot,
 };
 pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,

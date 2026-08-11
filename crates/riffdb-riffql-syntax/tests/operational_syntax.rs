@@ -203,3 +203,115 @@ fn visit(expression: &Expression, visitor: &mut impl FnMut(&Expression)) {
         Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => {}
     }
 }
+
+// ─── WP-593: nearest() clause syntax ───
+
+#[test]
+fn nearest_clause_parses_on_many_binding() {
+    let source = r#"query Similar($org: OrgId, $query_vec: Embedding) {
+    many results from Document
+        where org_id == $org
+        nearest(embedding, $query_vec, 10)
+    return Found { results: results { doc_id, title } }
+    outcomes Found
+}"#;
+    let document = parse_query(source).expect("nearest parse");
+    assert_eq!(document.body.bindings.len(), 1);
+    let binding = &document.body.bindings[0];
+    assert!(
+        binding.nearest.is_some(),
+        "nearest clause should be present"
+    );
+    let nearest = binding.nearest.as_ref().unwrap();
+    assert_eq!(nearest.field.value.as_str(), "embedding");
+    assert_eq!(nearest.vector.value.as_str(), "query_vec");
+    match &nearest.k.value {
+        Expression::Literal(riffdb_riffql_syntax::Literal::Unsigned(k)) => {
+            assert_eq!(k, "10");
+        }
+        other => panic!("expected unsigned literal for k, got {other:?}"),
+    }
+    // nearest replaces order+take, so both should be empty/absent
+    assert!(binding.order.is_empty());
+    assert!(binding.take.is_none());
+}
+
+#[test]
+fn nearest_clause_round_trips_through_formatter() {
+    let source = r#"query Similar($org: OrgId, $query_vec: Embedding) {
+    many results from Document
+        where org_id == $org
+        nearest(embedding, $query_vec, 10)
+    return Found { results: results { doc_id, title } }
+    outcomes Found
+}"#;
+    let first = parse_query(source).expect("parse");
+    let formatted = format_query(&first);
+    let second = parse_query(&formatted).expect("reparse");
+    assert_eq!(
+        format_query(&second),
+        formatted,
+        "formatter is not idempotent"
+    );
+}
+
+#[test]
+fn nearest_clause_rejected_on_one_binding() {
+    let source = r#"{
+    one result from Document
+        where doc_id == $doc_id
+        nearest(embedding, $query_vec, 10)
+        else NotFound
+    return Found { result: result { doc_id } }
+    outcomes Found | NotFound
+}"#;
+    let error = parse_query(source).expect_err("should reject");
+    assert!(
+        error
+            .as_slice()
+            .iter()
+            .any(|d| d.code() == DiagnosticCode::UnsupportedForm),
+        "expected UnsupportedForm diagnostic"
+    );
+}
+
+#[test]
+fn nearest_clause_rejects_order_by() {
+    let source = r#"{
+    many results from Document
+        where org_id == $org
+        order by doc_id asc
+        take 10
+        nearest(embedding, $query_vec, 10)
+    return Found { results: results { doc_id } }
+    outcomes Found
+}"#;
+    let error = parse_query(source).expect_err("should reject order+nearest");
+    assert!(
+        error
+            .as_slice()
+            .iter()
+            .any(|d| d.code() == DiagnosticCode::UnsupportedForm),
+        "expected UnsupportedForm diagnostic"
+    );
+}
+
+#[test]
+fn nearest_is_reserved_word() {
+    // Using 'nearest' as an identifier should fail
+    let source = r#"{
+    one nearest from Document
+        where doc_id == $doc_id
+        else NotFound
+    return Found { nearest: nearest { doc_id } }
+    outcomes Found | NotFound
+}"#;
+    let error = parse_query(source).expect_err("nearest as identifier should fail");
+    assert!(
+        error
+            .as_slice()
+            .iter()
+            .any(|d| { d.code() == DiagnosticCode::UnexpectedToken }),
+        "expected reserved word rejection"
+    );
+}
