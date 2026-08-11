@@ -2208,6 +2208,7 @@ dependencies = [
  "riffdb-catalog",
  "riffdb-cli",
  "riffdb-client-rust",
+ "riffdb-columnar",
  "riffdb-commit",
  "riffdb-config",
  "riffdb-contract-compiler",
