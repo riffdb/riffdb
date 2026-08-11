@@ -119,6 +119,15 @@ impl RegisteredDefinition {
                 field_id: definition.org_scope_field,
             });
         }
+        if org_field.value_type().tag() == ValueTypeTag::Vector {
+            // Vectors are stored as entity field values, not as org-scope
+            // keys: a 16 KiB partition key with bitwise ordering is neither
+            // a tenant identifier nor safely comparable.
+            return Err(DefinitionError::UnsupportedColumnType {
+                field_id: definition.org_scope_field,
+                tag: ValueTypeTag::Vector,
+            });
+        }
         if !is_supported_column_type(org_field.value_type()) {
             return Err(DefinitionError::UnsupportedColumnType {
                 field_id: definition.org_scope_field,

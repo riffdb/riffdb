@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_query_executor::{
     BoundPredicate, MAX_QUERY_SCANNED_ROWS, QueryBackendFault, QueryContinuation,
-    QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryOwnedSnapshot,
-    QueryParameters, QueryReadView, QueryRow, QueryScanPage, execute_in_snapshot,
-    execute_page_in_snapshot, validate_query_execution_group,
+    QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryNearestPage,
+    QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
+    execute_in_snapshot, execute_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -438,7 +438,7 @@ impl QueryReadView for RedbQueryView<'_> {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error> {
+    ) -> Result<QueryNearestPage, Self::Error> {
         // Row-store does not support vector nearest-neighbor search (ADR-0091).
         // Nearest queries must be routed through the columnar projection engine.
         Err(invariant())

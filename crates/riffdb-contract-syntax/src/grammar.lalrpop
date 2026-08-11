@@ -189,14 +189,17 @@ EntityItem: Spanned<EntityItem> = {
         }), lo, hi),
     <lo:@L> "vector_field" <name:Identifier> "(" <dimension:UnsignedInteger> ","
         <metric:VectorMetric> "," "(" <source_fields:IdentifierList> ")" ","
-        "staleness_slo" <staleness_slo:UnsignedInteger> ")" <hi:@R>
-        => parser::spanned(EntityItem::VectorField(VectorFieldDeclaration {
+        <slo_keyword:Identifier> <staleness_slo:UnsignedInteger> ")" <hi:@R>
+        =>? parser::grammar_result(parser::vector_field_item(
             name,
             dimension,
             metric,
             source_fields,
+            slo_keyword,
             staleness_slo,
-        }), lo, hi),
+            lo,
+            hi,
+        )),
     <lo:@L> "delete_policy" "no_inbound" <hi:@R>
         => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::NoInbound), lo, hi),
     <lo:@L> "delete_policy" "restrict" <source_entity:Identifier> "." <index:Identifier> <hi:@R>
@@ -220,13 +223,12 @@ TextKeyProfile: Spanned<TextKeyProfile> = {
         => parser::spanned(TextKeyProfile::UnicodeFoldV1, lo, hi),
 };
 
+// Contextual: the metric names and `staleness_slo` are ordinary identifiers
+// everywhere except inside a vector_field declaration, so `field cosine: ...`
+// stays valid (the WP-591 hard keywords broke that additively-claimed
+// compatibility).
 VectorMetric: Spanned<VectorMetricKeyword> = {
-    <lo:@L> "cosine" <hi:@R>
-        => parser::spanned(VectorMetricKeyword::Cosine, lo, hi),
-    <lo:@L> "euclidean" <hi:@R>
-        => parser::spanned(VectorMetricKeyword::Euclidean, lo, hi),
-    <lo:@L> "dot_product" <hi:@R>
-        => parser::spanned(VectorMetricKeyword::DotProduct, lo, hi),
+    <metric:Identifier> =>? parser::grammar_result(parser::vector_metric(metric)),
 };
 
 EventDeclaration: EventDeclaration = {
@@ -807,10 +809,6 @@ extern {
         "delete_policy" => Token::DeletePolicy,
         "no_inbound" => Token::NoInbound,
         "restrict" => Token::Restrict,
-        "cosine" => Token::Cosine,
-        "euclidean" => Token::Euclidean,
-        "dot_product" => Token::DotProduct,
-        "staleness_slo" => Token::StalenessSlo,
         "event" => Token::Event,
         "enum" => Token::Enum,
         "aggregate" => Token::Aggregate,

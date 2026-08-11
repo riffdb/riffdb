@@ -1598,6 +1598,20 @@ fn rust_decode_application_expr(
     }
 }
 
+/// Wire-model fields of an entity record. Vector fields are excluded from
+/// generated application clients until the wire protocol carries a distinct
+/// vector variant (VEC-002 ingress, deferred): generating a panic or a
+/// silently punned encoding are both banned, and a field no client can move
+/// is worse absent than lying.
+fn wire_model_fields(
+    record: &riffdb_contract_ir::RecordSchema,
+) -> impl Iterator<Item = &riffdb_contract_ir::FieldSchema> {
+    record
+        .fields()
+        .iter()
+        .filter(|field| field.value_type().tag() != ValueTypeTag::Vector)
+}
+
 fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
     for entity in contract.schema().entities() {
         writeln!(
@@ -1606,7 +1620,7 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
             entity.name()
         )
         .expect("string");
-        for field in entity.record().fields() {
+        for field in wire_model_fields(entity.record()) {
             writeln!(
                 output,
                 "    pub {}: {},",
@@ -1623,7 +1637,7 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
             entity.name(),
         )
         .expect("string");
-        for field in entity.record().fields() {
+        for field in wire_model_fields(entity.record()) {
             let expression = rust_encode_wire_expr(
                 field.value_type(),
                 &format!("&value.{}", rust_identifier(field.name())),
@@ -1650,7 +1664,7 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
             entity.name(),
         )
         .expect("string");
-        for field in entity.record().fields() {
+        for field in wire_model_fields(entity.record()) {
             let expression = rust_decode_wire_expr(
                 field.value_type(),
                 &format!("take_wire_field(&mut fields, {})?", field.id().get()),
@@ -2079,7 +2093,10 @@ fn rust_encode_wire_expr(
             }
             _ => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => {
+        // Vector fields are excluded from generated models; a future call is a
+        // typed input-shape error in the generated client, never a panic.
+        ValueTypeTag::Vector => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
+        ValueTypeTag::Optional | ValueTypeTag::List => {
             unreachable!("handled above")
         }
     }
@@ -2127,7 +2144,10 @@ fn rust_decode_wire_expr(
             }
             _ => "return Err(GeneratedCommandError::InvalidOutcomeShape)".to_owned(),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => {
+        // Vector fields are excluded from generated models; a future call is a
+        // typed outcome-shape error in the generated client, never a panic.
+        ValueTypeTag::Vector => "return Err(GeneratedCommandError::InvalidOutcomeShape)".to_owned(),
+        ValueTypeTag::Optional | ValueTypeTag::List => {
             unreachable!("handled above")
         }
     }
@@ -3423,10 +3443,7 @@ fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -
                     .entity(*entity_id)
                     .expect("validated record entity");
                 return ts_contract_record_schema(
-                    entity
-                        .record()
-                        .fields()
-                        .iter()
+                    wire_model_fields(entity.record())
                         .map(|field| (field.name(), field.id().get(), field.value_type())),
                     contract,
                     true,
@@ -3434,7 +3451,10 @@ fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -
             }
             "string"
         }
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => {
+        // Vector fields are excluded from generated models; emit an explicit
+        // kind rather than panicking if one ever reaches a schema.
+        ValueTypeTag::Vector => "vector",
+        ValueTypeTag::Optional | ValueTypeTag::List => {
             unreachable!("handled above")
         }
     };

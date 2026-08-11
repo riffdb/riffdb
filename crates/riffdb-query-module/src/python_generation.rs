@@ -386,6 +386,10 @@ pub fn generate_python_client(
                 .record()
                 .fields()
                 .iter()
+                // Vector fields are excluded from generated client models
+                // until the wire protocol carries a distinct vector variant
+                // (VEC-002 ingress, deferred).
+                .filter(|field| field.value_type().tag() != ValueTypeTag::Vector)
                 .map(|field| (field.name(), field.value_type())),
             contract,
         );
@@ -1240,7 +1244,10 @@ fn python_contract_type(value_type: &ValueType, contract: &ContractBundle) -> St
             _ => "str".to_owned(),
         },
         ValueTypeTag::String => "str".to_owned(),
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => {
+        // Vector fields are excluded from generated models; an honest Python
+        // annotation is still emitted rather than panicking the generator.
+        ValueTypeTag::Vector => "tuple[float, ...]".to_owned(),
+        ValueTypeTag::Optional | ValueTypeTag::List => {
             unreachable!("handled above")
         }
     }

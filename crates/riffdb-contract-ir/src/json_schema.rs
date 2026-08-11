@@ -21,6 +21,14 @@ use crate::{
 /// Immutable JSON Schema dialect used by generated artifacts.
 pub const JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
+/// Description carried by the generated vector schema node.
+///
+/// The exact-match size preflight and the rendered node must agree byte for
+/// byte, so both read this one constant (the hardcoded preflight size this
+/// replaces under-counted and made every vector-bearing contract fail
+/// compilation with `HashMismatch`).
+const JSON_VECTOR_DESCRIPTION: &str = "f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components";
+
 /// Maximum canonical bytes in one generated schema artifact.
 pub const MAX_JSON_SCHEMA_ARTIFACT_BYTES: usize = 1024 * 1024;
 
@@ -728,10 +736,11 @@ fn type_node_size(
                 object_entries: 4,
             })
         }
-        JsonSchemaValueConstruction::Vector => Ok(SchemaNodeSize {
-            bytes: 80,
-            object_entries: 3,
-        }),
+        JsonSchemaValueConstruction::Vector => object_size([
+            ("description", string_value_size(JSON_VECTOR_DESCRIPTION)?),
+            ("format", string_value_size("byte")?),
+            ("type", string_value_size("string")?),
+        ]),
     }
 }
 
@@ -918,9 +927,7 @@ fn type_node(value_type: &ValueType, schema: &SchemaIr) -> Result<Json, IrValida
         JsonSchemaValueConstruction::Vector => Json::object([
             (
                 "description",
-                Json::String(
-                    "f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components".to_owned(),
-                ),
+                Json::String(JSON_VECTOR_DESCRIPTION.to_owned()),
             ),
             ("format", Json::String("byte".to_owned())),
             ("type", Json::String("string".to_owned())),

@@ -991,6 +991,13 @@ fn map_query_error(service: &RiffDbServiceInner, error: QueryError) -> ServiceFa
             ValidationCode::TypeMismatch,
             ApplicationErrorCode::QueryInvalid,
         ),
+        // A query vector (or stored cell) whose dimension disagrees with the
+        // contract-declared vector dimension: the caller supplied a value of
+        // the wrong shape for the declared type.
+        QueryError::VectorDimensionMismatch { .. } => application_validation_failure(
+            ValidationCode::TypeMismatch,
+            ApplicationErrorCode::QueryInvalid,
+        ),
         QueryError::ScanBudgetExceeded { .. } | QueryError::GroupCardinalityExceeded { .. } => {
             application_validation_failure(
                 ValidationCode::InvalidValue,

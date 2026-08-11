@@ -395,6 +395,14 @@ impl<'a> Resolver<'a> {
                 .as_ref()
                 .map(|take| self.page_bound(&take.limit.value, take.limit.span))
                 .transpose()?;
+            // A nearest binding declares K instead of `take` (the parser
+            // rejects combining them); K is that binding's checked page bound
+            // (VEC-010: the query declares K), subject to the same page-take
+            // ceiling as any other bounded many binding.
+            let take = match (take, binding.nearest.as_ref()) {
+                (None, Some(nearest)) => Some(self.page_bound(&nearest.k.value, nearest.k.span)?),
+                (take, _) => take,
+            };
             self.bindings.insert(
                 name.to_owned(),
                 ResolvedBinding {

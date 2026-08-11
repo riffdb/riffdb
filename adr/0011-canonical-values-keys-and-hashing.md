@@ -8,7 +8,8 @@
   keyed hashing, ADR-0005 for the versioned idempotency key, ADR-0017 for
   projection keys and apply hashing, and ADR-0018 for UUIDv7 assembly and
   production-source ownership; ADR-0051 adds the typed
-  `riffdb.query-plan/v1` unkeyed domain
+  `riffdb.query-plan/v1` unkeyed domain; ADR-0091 adds canonical value tag
+  `0x0e` (vector) per the amendment section at the end of this document
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
 The human maintainer accepted this exact text, including the foundational
@@ -322,3 +323,30 @@ sequence/ordinal graph and crash-recovery validation end to end.
 
 Exact acceptance, including the algorithm/domain registry and decimal bounds, is
 required before WP-010 publishes types or golden fixtures.
+
+## Amendment: canonical value tag `0x0e` (vector), recorded 2026-08-11
+
+ADR-0091 (native vector search projections, as amended) introduced
+`CanonicalValue::Vector` with canonical tag `0x0e`. The encoding landed in
+WP-591 (05eab14) without the amendment this registry requires; this section
+records it explicitly so the registry and the code agree. Pending maintainer
+ratification, flagged in the WP-591 fix-round report.
+
+| Tag | Value |
+|---|---|
+| `0x0e` | vector |
+
+Vector payload is a `u32` big-endian dimension in `1..=4096`, followed by
+exactly `dimension` IEEE 754 binary32 components, each as 4 big-endian bytes.
+This is the sanctioned narrow exception to the no-floating-point rule for
+canonical values: vector components are opaque embedding coordinates, never
+business decimals.
+
+Canonical form is enforced at every construction path (constructor and
+decoder): components MUST be finite (NaN and infinities are rejected as typed
+errors) and negative zero is canonicalized to positive zero before any
+equality, ordering, hashing, or encoding observes the value. Consequently
+equal vectors have equal canonical bytes and equal durable digests, and NaN
+payload bit patterns never reach durable bytes. The golden fixtures in
+`crates/riffdb-types/tests/canonical_golden.rs` pin the `0x0e` row alongside
+the initial registry.
