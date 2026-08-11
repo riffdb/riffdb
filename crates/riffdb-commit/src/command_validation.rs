@@ -1061,7 +1061,8 @@ fn prove_mutation_coverage(
                 },
                 EntityObservation::Present(record),
             ) if *expected_version == record.entity_version() => {}
-            (BindingMode::Read, _, _) | (BindingMode::Create | BindingMode::Mutate, _, _) => {
+            (BindingMode::Read, _, _)
+            | (BindingMode::Create | BindingMode::Mutate | BindingMode::Delete, _, _) => {
                 return Err(CommandValidationError::integrity());
             }
         }
@@ -1191,6 +1192,7 @@ fn assemble_transaction_current_values(
                     .post_image()
                     .fields()
             }
+            BindingMode::Delete => return Err(CommandValidationError::integrity()),
         };
         bindings.push(PositionedBindingRecord {
             id: binding.id(),
@@ -1347,7 +1349,10 @@ fn validate_post_image_and_project(
                 return Err(CommandValidationError::integrity());
             }
         }
-        (BindingMode::Read | BindingMode::Create | BindingMode::Mutate, _) => {
+        (
+            BindingMode::Read | BindingMode::Create | BindingMode::Mutate | BindingMode::Delete,
+            _,
+        ) => {
             return Err(CommandValidationError::integrity());
         }
     }

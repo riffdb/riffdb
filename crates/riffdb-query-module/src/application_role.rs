@@ -431,6 +431,7 @@ fn compile_application_role_inner(
                 BindingMode::Read => RowPolicyOperationV1::Read,
                 BindingMode::Mutate => RowPolicyOperationV1::Update,
                 BindingMode::Create => RowPolicyOperationV1::Create,
+                BindingMode::Delete => RowPolicyOperationV1::Delete,
             };
             require_policy_operation(
                 contract,

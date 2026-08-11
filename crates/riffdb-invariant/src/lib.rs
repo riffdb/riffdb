@@ -56,6 +56,16 @@ pub trait ExpressionValueSource {
         None
     }
 
+    /// Resolves the current submitted element in one compiler-owned collection expansion.
+    fn collection_element(&self) -> Option<CanonicalValue> {
+        None
+    }
+
+    /// Resolves one stable field of the current record-valued collection element.
+    fn collection_element_field(&self, _field: FieldId) -> Option<CanonicalValue> {
+        None
+    }
+
     /// Resolves one complete bound entity record.
     fn complete_binding(&self, _binding: BindingId) -> Option<CanonicalValue> {
         None
@@ -197,6 +207,8 @@ impl<'arena> ExpressionEvaluator<'arena> {
             ExpressionKind::Constant(value) => Some(value),
             ExpressionKind::InputField(field) => values.input_field(field),
             ExpressionKind::ServiceValue(field) => values.service_value(field),
+            ExpressionKind::CollectionElement => values.collection_element(),
+            ExpressionKind::CollectionElementField(field) => values.collection_element_field(field),
             ExpressionKind::CompleteBinding(binding) => values.complete_binding(binding),
             ExpressionKind::BoundField { binding, field } => values.bound_field(binding, field),
             ExpressionKind::SchemaField { entity_type, field } => {

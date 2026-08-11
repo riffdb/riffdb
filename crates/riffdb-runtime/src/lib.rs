@@ -194,6 +194,7 @@ pub fn execute_command(
     let mut records = Vec::with_capacity(plan.bindings().len());
     for (binding, observation) in plan.bindings().iter().zip(snapshot.bindings()) {
         match (binding.mode(), observation) {
+            (BindingMode::Delete, _) => return Err(ExecutionFault::Integrity),
             (BindingMode::Read | BindingMode::Mutate, EntityObservation::Absent(_))
             | (BindingMode::Create, EntityObservation::Present(_)) => {
                 let values = RuntimeValues {

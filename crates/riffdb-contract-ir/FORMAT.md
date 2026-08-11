@@ -89,6 +89,8 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x0a` | binary |
 | `0x0b` | root-validation field |
 | `0x0c` | service-owned command value |
+| `0x0d` | collection element |
+| `0x0e` | collection element field |
 
 ### Unary operator
 
@@ -331,6 +333,8 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x0a` | binary | `result_type`: ValueType tag plus exact selected payload; `operator`: Binary operator tag as u8; `left`: ExprId as u32; `right`: ExprId as u32 |
 | `0x0b` | root-validation field | `result_type`: ValueType tag plus exact selected payload; `read`: RootValidationReadId as u32; `field`: FieldId as u32 |
 | `0x0c` | service-owned command value | `result_type`: ValueType tag plus exact selected payload; `field`: FieldId as u32 |
+| `0x0d` | collection element | `result_type`: ValueType tag plus exact selected payload |
+| `0x0e` | collection element field | `result_type`: ValueType tag plus exact selected payload; `field`: FieldId as u32 |
 
 ### Instruction
 

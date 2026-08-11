@@ -744,6 +744,12 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                         "service-owned command value",
                         vec!["result_type", "field"],
                     ),
+                    (0x0d, "collection element", vec!["result_type"]),
+                    (
+                        0x0e,
+                        "collection element field",
+                        vec!["result_type", "field"],
+                    ),
                 ],
             ),
             (
