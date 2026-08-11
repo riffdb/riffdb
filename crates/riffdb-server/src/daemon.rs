@@ -4814,15 +4814,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_local_socket_is_published_exactly_and_removed_by_its_owner() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-local-socket-test-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).expect("create protected socket directory");
+        // MAX_LOCAL_SOCKET_PATH_BYTES (100) bounds the whole socket path, so
+        // the scope keeps a short basename by construction (`riffdb-sock-`
+        // plus tempfile's suffix); an unusually long TMPDIR can still exceed
+        // the limit, which is the config contract under test, not an
+        // artifact of this scope. The scope removes the directory on drop —
+        // pass, fail, or panic — while the trailing `fs::remove_dir`
+        // assertion below still proves the listener left it empty.
+        let scope =
+            tempfile::TempDir::with_prefix("riffdb-sock-").expect("create socket directory");
+        let root = scope.path().to_path_buf();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("protect socket directory");
         let socket_path = root.join("application.sock");
@@ -4877,15 +4878,12 @@ mod tests {
             TlsClientConfig, TlsServerIdentity,
         };
 
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-direct-tls-test-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).expect("create TLS test directory");
+        // Whole-directory scope removed on drop — pass, fail, or panic; the
+        // trailing remove_file/remove_dir assertions still prove the test
+        // created exactly the files it removed.
+        let scope = tempfile::TempDir::with_prefix("riffdb-direct-tls-test-")
+            .expect("create TLS test directory");
+        let root = scope.path().to_path_buf();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("protect TLS test directory");
         let certificate = root.join("server.pem");
@@ -5043,15 +5041,12 @@ mod tests {
             CanonicalHttpsEndpoint, DirectTlsListenerConfig, ProtectedFilePath, ServerTlsFiles,
         };
 
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-tls-reload-test-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).expect("create TLS reload root");
+        // Whole-directory scope removed on drop — pass, fail, or panic; the
+        // trailing remove_file/remove_dir assertions still prove the test
+        // created exactly the files it removed.
+        let scope = tempfile::TempDir::with_prefix("riffdb-tls-reload-test-")
+            .expect("create TLS reload root");
+        let root = scope.path().to_path_buf();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect root");
         let certificate = root.join("server.pem");
         let private_key = root.join("server.key");

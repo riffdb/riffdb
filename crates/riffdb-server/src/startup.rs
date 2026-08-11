@@ -608,7 +608,7 @@ fn validate_retained_join(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use riffdb_storage_api::{
         ActiveCatalogPointerV1, CapabilityBootstrapMarkerV1, DormantPortBundle,
@@ -623,8 +623,6 @@ mod tests {
     };
 
     use super::*;
-
-    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
 
     fn database_id(seed: u8) -> DatabaseId {
         DatabaseId::from_unix_milliseconds_and_random(u64::from(seed), [seed; 10])
@@ -645,12 +643,14 @@ mod tests {
         )
     }
 
-    fn temporary_database_path() -> std::path::PathBuf {
-        let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "riffdb-server-startup-{}-{ordinal}.redb",
-            std::process::id()
-        ))
+    /// Whole-directory scope plus the database path inside it; dropping the
+    /// scope removes the database and every side file it grows (journal,
+    /// checkpoint, spare, durable-format marker, …) on pass, fail, or panic.
+    fn temporary_database_scope() -> (tempfile::TempDir, std::path::PathBuf) {
+        let scope = tempfile::TempDir::with_prefix("riffdb-server-startup-")
+            .expect("create startup test scope directory");
+        let path = scope.path().join("db.redb");
+        (scope, path)
     }
 
     fn bootstrap_marker(database_id: DatabaseId) -> CapabilityBootstrapMarkerV1 {
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn empty_database_initializes_and_reopen_never_samples_candidate_source() {
-        let path = temporary_database_path();
+        let (_scope, path) = temporary_database_scope();
         let installed = database_id(1);
         let discarded = database_id(2);
         let calls = AtomicUsize::new(0);
@@ -727,14 +727,18 @@ mod tests {
         assert_eq!(reopened.database_id(), installed);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         drop(reopened);
-        std::fs::remove_file(riffdb_storage_redb::durable_format_marker_path(&path))
-            .expect("remove test format marker");
-        std::fs::remove_file(path).expect("remove test database");
+        // Explicit form of what the deleted cleanup used to observe by
+        // accident (remove_file on an absent marker errored): a successful
+        // startup publishes the durable-format marker beside the database.
+        assert!(
+            riffdb_storage_redb::durable_format_marker_path(&path).exists(),
+            "successful startup must publish the durable-format marker"
+        );
     }
 
     #[test]
     fn predecessor_format_refuses_before_open_with_one_exact_action() {
-        let path = temporary_database_path();
+        let (_scope, path) = temporary_database_scope();
         let original = b"pre-manifest database bytes remain untouched";
         std::fs::write(&path, original).expect("write predecessor placeholder");
 
@@ -773,8 +777,6 @@ mod tests {
         assert!(rendered.contains("backup_required=true"));
         assert!(rendered.contains("next: riffdb storage upgrade"));
         assert!(rendered.ends_with("no data was changed"));
-
-        std::fs::remove_file(path).expect("remove predecessor placeholder");
     }
 
     struct FakeDormantPorts;

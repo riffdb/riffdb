@@ -16,5 +16,8 @@ riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", defaul
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

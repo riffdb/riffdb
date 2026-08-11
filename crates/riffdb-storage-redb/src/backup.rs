@@ -2602,16 +2602,7 @@ mod tests {
 
     #[test]
     fn read_history_incarnation_absent_vs_unreadable() {
-        let root = crate::test_path::root().join(format!(
-            "riffdb-history-read-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
+        let root = crate::test_path::ScopedDirectory::new("history-read");
         let db_path = root.join("database.redb");
 
         // Absent file → open fails (not silently 0).
@@ -2633,21 +2624,11 @@ mod tests {
             read_history_incarnation(&db_path).is_err(),
             "corrupt target must not be treated as incarnation 0"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn stamp_history_incarnation_is_idempotent() {
-        let root = crate::test_path::root().join(format!(
-            "riffdb-history-stamp-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
+        let root = crate::test_path::ScopedDirectory::new("history-stamp");
         let db_path = root.join("database.redb");
         let mut store = crate::RedbStore::open(&db_path).expect("open");
         store
@@ -2659,6 +2640,5 @@ mod tests {
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
         stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

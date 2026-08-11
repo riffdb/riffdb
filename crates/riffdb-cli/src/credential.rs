@@ -479,8 +479,9 @@ mod tests {
 
     #[test]
     fn retained_file_is_exclusive_and_never_overwritten() {
-        let path = std::env::temp_dir().join(format!("riffdb-cli-retain-{}", std::process::id()));
-        let _ = fs::remove_file(&path);
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-retain-").expect("scratch directory");
+        let path = scratch.path().join("riffdb-cli-retain");
         retain_bytes(&path, b"first").expect("first");
         assert_eq!(
             fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
@@ -491,7 +492,6 @@ mod tests {
             Err(CredentialError::Retention)
         );
         assert_eq!(fs::read(&path).expect("read"), b"first");
-        fs::remove_file(path).expect("cleanup");
     }
 
     #[test]
@@ -555,9 +555,9 @@ mod tests {
 
     #[test]
     fn containing_directory_handle_must_refer_to_a_directory() {
-        let path =
-            std::env::temp_dir().join(format!("riffdb-cli-parent-file-{}", std::process::id()));
-        let _ = fs::remove_file(&path);
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-parent-file-").expect("scratch directory");
+        let path = scratch.path().join("riffdb-cli-parent-file");
         fs::write(&path, b"not a directory").expect("regular file");
         let mut retention = SystemRetention::default();
         assert_eq!(
@@ -565,7 +565,6 @@ mod tests {
             Err(CredentialError::Retention)
         );
         assert!(retention.directory.is_none());
-        fs::remove_file(path).expect("cleanup");
     }
 
     #[test]

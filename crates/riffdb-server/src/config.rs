@@ -1083,11 +1083,8 @@ impl Error for ServerConfigError {}
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-
-    static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
     #[derive(Default)]
     struct TestEnvironment(BTreeMap<String, OsString>);
@@ -1105,27 +1102,27 @@ mod tests {
         }
     }
 
-    struct TestRoot(PathBuf);
+    /// Whole-directory scope: `.0` is the root path inside a
+    /// [`tempfile::TempDir`] removed on drop — pass, fail, or panic.
+    struct TestRoot(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope (field-scoped allow so
+        // the protection survives if this file's `#![allow(dead_code)]` is
+        // ever narrowed).
+        #[allow(dead_code)] tempfile::TempDir,
+    );
 
     impl TestRoot {
         fn new() -> Self {
-            let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir()
-                .join(format!("riffdb-server-config-{}-{id}", std::process::id()));
-            fs::create_dir_all(&path).expect("create config test root");
-            Self(path)
+            let scope = tempfile::TempDir::with_prefix("riffdb-server-config-")
+                .expect("create config test root");
+            Self(scope.path().to_path_buf(), scope)
         }
 
         fn write(&self, contents: &[u8]) -> PathBuf {
             let path = self.0.join("riffdb.toml");
             fs::write(&path, contents).expect("write config");
             path
-        }
-    }
-
-    impl Drop for TestRoot {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
 

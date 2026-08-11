@@ -120,31 +120,131 @@ contract StorageRecovery version 1 {
 }
 "#;
 
-struct TestDatabasePath(PathBuf);
+/// Whole-directory scope for one test's database: `.0` is the database path
+/// inside a [`ScratchScope`] that removes the directory — database plus every
+/// side file it grows (journal, checkpoint, spare, durable-format marker, …)
+/// — on `Drop`, pass, fail, or panic. Cleanup no longer depends on a
+/// hand-maintained side-file list.
+struct TestDatabasePath(
+    PathBuf,
+    // Held only so `Drop` removes the whole scope.
+    #[allow(dead_code)] ScratchScope,
+);
 
 impl TestDatabasePath {
     fn new(label: &str) -> Self {
-        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        Self(PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-            "riffdb-storage-recovery-{label}-{}-{ordinal}.redb",
-            std::process::id()
-        )))
+        let scope = ScratchScope::new(label);
+        Self(scope.path().join("db.redb"), scope)
     }
 }
 
-impl Drop for TestDatabasePath {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-        let mut journal = self.0.as_os_str().to_os_string();
-        journal.push(".riffjournal");
-        let _ = std::fs::remove_file(PathBuf::from(journal));
-        let mut checkpoint = self.0.as_os_str().to_os_string();
-        checkpoint.push(".riffjournal.checkpoint");
-        let _ = std::fs::remove_file(PathBuf::from(checkpoint));
-        let mut spare = self.0.as_os_str().to_os_string();
-        spare.push(".riffjournal.next");
-        let _ = std::fs::remove_file(PathBuf::from(spare));
+/// Crash-harness scratch directory under `CARGO_TARGET_TMPDIR`.
+///
+/// Children armed to `SIGABRT` write only under paths the parent hands them,
+/// so this parent-scope guard covers their artifacts too. A killed *parent*
+/// skips `Drop`; its directories embed the parent pid and are swept by the
+/// next run (dead pid, or older than 24 hours as a pid-reuse belt),
+/// mirroring `riffdb-bench-root::sweep_stale` and
+/// `riffdb_testkit::scratch::ScratchDir`, which this harness cannot import
+/// because riffdb-testkit depends on riffdb-storage-redb.
+struct ScratchScope(PathBuf);
+
+const SCRATCH_SCOPE_PREFIX: &str = "riffdb-storage-recovery-";
+
+impl ScratchScope {
+    fn new(label: &str) -> Self {
+        static SWEEP_ONCE: OnceLock<()> = OnceLock::new();
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        if root.exists() {
+            SWEEP_ONCE.get_or_init(|| sweep_dead_scratch_scopes(&root));
+        } else {
+            std::fs::create_dir_all(&root).expect("create scratch root");
+        }
+        // create_dir (not create_dir_all) plus retry: after pid reuse a
+        // stale scope carrying our pid survives the sweep, and silently
+        // inheriting its database and journals would make a *recovery* test
+        // non-hermetic. Terminates because the ordinal is monotonic.
+        loop {
+            let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "{SCRATCH_SCOPE_PREFIX}{label}-{}-{ordinal}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("create test scope directory: {error}"),
+            }
+        }
     }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchScope {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Removes scope directories whose embedded pid is dead or whose mtime is
+/// older than 24 hours. Best-effort: failures only lose hygiene, never tests.
+fn sweep_dead_scratch_scopes(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    let max_age = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(pid) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(SCRATCH_SCOPE_PREFIX))
+            .and_then(extract_scope_pid)
+        else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        let pid_dead = !Path::new("/proc").join(pid.to_string()).exists();
+        let too_old = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|mtime| now.duration_since(mtime).ok())
+            .is_some_and(|age| age > max_age);
+        if pid_dead || too_old {
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => eprintln!(
+                    "storage_recovery_matrix: swept stale scope {} \
+                     (pid_dead={pid_dead} too_old={too_old})",
+                    path.display()
+                ),
+                Err(error) => eprintln!(
+                    "storage_recovery_matrix: failed to sweep {}: {error}",
+                    path.display()
+                ),
+            }
+        }
+    }
+}
+
+/// Strict `…-<pid>-<ordinal>` tail parse; anything else is not ours to sweep.
+fn extract_scope_pid(tail: &str) -> Option<u32> {
+    let mut parts = tail.rsplit('-');
+    let ordinal = parts.next()?;
+    let pid = parts.next()?;
+    if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
 }
 
 fn database_id() -> DatabaseId {
@@ -4843,14 +4943,8 @@ fn retention_backup_of_pruned_database_restores_and_validates() {
     let status = maintenance.prune_to(1).expect("prune");
     assert_eq!(status.watermark_sequence, 1);
 
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "riffdb-retention-backup-{}-{}",
-        std::process::id(),
-        NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("backup root");
-    let backup_dir = root.join("backup");
+    let root = ScratchScope::new("retention-backup");
+    let backup_dir = root.path().join("backup");
     let build = BackupBuildMetadataV1::new(
         "0.1.0",
         "0123456789abcdef",
@@ -4863,7 +4957,7 @@ fn retention_backup_of_pruned_database_restores_and_validates() {
     let manifest = backup.create_offline_backup(&build).expect("backup");
     assert_eq!(manifest.retention_watermark_sequence(), Some(1));
 
-    let restore_dir = root.join("restored");
+    let restore_dir = root.path().join("restored");
     std::fs::create_dir_all(&restore_dir).expect("restore dir");
     let mut restore = riffdb_storage_redb::RedbOfflineRestore::bind(&backup_dir, &restore_dir);
     let result = restore
@@ -4882,7 +4976,6 @@ fn retention_backup_of_pruned_database_restores_and_validates() {
         .expect("restored status");
     assert_eq!(restored_status.watermark_sequence, 1);
     assert_eq!(restored_status.tombstone_count, 1);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 // ===========================================================================

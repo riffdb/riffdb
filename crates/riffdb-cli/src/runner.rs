@@ -393,12 +393,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
 
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
     static SYSTEM_CHILD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -453,8 +452,8 @@ mod tests {
             .lock()
             .expect("system child test lock");
         let directory = temporary_directory();
-        let runner = directory.join("riffdb runner; false");
-        let credential = directory.join("credential");
+        let runner = directory.path().join("riffdb runner; false");
+        let credential = directory.path().join("credential");
         let expected = expected_success(BudgetCase::Sequential);
         let script = format!(
             concat!(
@@ -489,7 +488,6 @@ mod tests {
             &credential,
         );
         assert_eq!(result, Ok(()));
-        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     #[test]
@@ -498,7 +496,7 @@ mod tests {
             .lock()
             .expect("system child test lock");
         let directory = temporary_directory();
-        let credential = directory.join("credential");
+        let credential = directory.path().join("credential");
         let cases = [
             (
                 "checked-failure",
@@ -536,7 +534,7 @@ mod tests {
         ];
 
         for (name, script, expected) in cases {
-            let runner = write_executable_runner(&directory, name, &script);
+            let runner = write_executable_runner(directory.path(), name, &script);
             let result = run_budget_with(
                 &SystemLauncher::default(),
                 &mut YieldDeadline::after(1_000_000_000),
@@ -548,8 +546,11 @@ mod tests {
             assert_eq!(result, Err(expected), "{name}");
         }
 
-        let runner =
-            write_executable_runner(&directory, "deadline", "#!/bin/sh\nwhile :; do :; done\n");
+        let runner = write_executable_runner(
+            directory.path(),
+            "deadline",
+            "#!/bin/sh\nwhile :; do :; done\n",
+        );
         let observation = Arc::new(SystemProcessObservation::default());
         let result = run_budget_with(
             &SystemLauncher::observed(Arc::clone(&observation)),
@@ -563,8 +564,6 @@ mod tests {
         assert!(observation.kill_called.load(Ordering::SeqCst));
         assert!(observation.kill_succeeded.load(Ordering::SeqCst));
         assert!(observation.reap_succeeded.load(Ordering::SeqCst));
-
-        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     #[test]
@@ -849,15 +848,8 @@ mod tests {
         }
     }
 
-    fn temporary_directory() -> PathBuf {
-        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-cli-runner-{}-{ordinal}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir(&path).expect("temporary directory");
-        path
+    fn temporary_directory() -> tempfile::TempDir {
+        tempfile::TempDir::with_prefix("riffdb-cli-runner-").expect("scratch directory")
     }
 
     fn write_executable_runner(directory: &Path, name: &str, script: &str) -> PathBuf {

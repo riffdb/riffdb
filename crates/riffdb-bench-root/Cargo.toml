@@ -10,5 +10,8 @@ description = "Shared real-disk placement, leak sweep, and device baseline for R
 [dependencies]
 rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

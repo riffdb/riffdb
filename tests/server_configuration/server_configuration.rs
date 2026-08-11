@@ -10,7 +10,6 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -18,8 +17,6 @@ const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const IDEMPOTENCY_KEYS: &[u8] = b"riffdb-idempotency-digest-keys-v1\n1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
-
-static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -442,27 +439,19 @@ impl ProcessPaths {
     }
 }
 
-struct TestRoot(PathBuf);
+/// Whole-directory scope backed by the canonical testkit guard: removed on
+/// `Drop` — pass, fail, or panic — with a dead-pid sweep for directories
+/// orphaned by a killed harness.
+struct TestRoot(riffdb_testkit::scratch::ScratchDir);
 
 impl TestRoot {
     fn new(label: &str) -> TestResult<Self> {
-        let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-server-config-{label}-{}-{id}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path)?;
-        Ok(Self(path))
+        let scratch = riffdb_testkit::scratch::ScratchDir::new(&format!("server-config-{label}"))?;
+        Ok(Self(scratch))
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TestRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.0.path()
     }
 }
 

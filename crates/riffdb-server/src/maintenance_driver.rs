@@ -1511,16 +1511,8 @@ mod tests {
     fn target_bump_absent_readable_and_unreadable_fallback_order() {
         use riffdb_storage_api::DatabaseInitializationPort;
 
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-driver-bump-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
+        let scope = tempfile::TempDir::with_prefix("riffdb-driver-bump-").expect("root");
+        let root = scope.path();
         let absent = root.join("missing.redb");
         assert_eq!(
             target_history_incarnation_for_bump(&absent, None, 7, None),
@@ -1557,7 +1549,6 @@ mod tests {
         assert!(
             metrics.value(riffdb_observability::MetricKey::UnprovenCorruptTargetHistoryBump) >= 1
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1573,18 +1564,9 @@ mod tests {
             OfflineMaintenanceReplacementConfirmation, offline_maintenance_input_hash,
         };
 
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-ensure-noop-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
-        let database = root.join("database.redb");
-        let backup_root = root.join("backups");
+        let scope = tempfile::TempDir::with_prefix("riffdb-ensure-noop-").expect("root");
+        let database = scope.path().join("database.redb");
+        let backup_root = scope.path().join("backups");
         let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open");
         let database_id = DatabaseId::from_unix_milliseconds_and_random(2, [0x22; 10]).expect("id");
         store.initialize_database(database_id).expect("init");
@@ -1639,7 +1621,6 @@ mod tests {
         ensure_published_incarnation_on_receipt(&mut storage, &mut receipt, None, Some(50), None)
             .expect("ensure");
         assert_eq!(receipt.published_history_incarnation(), Some(6));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1655,18 +1636,9 @@ mod tests {
             OfflineMaintenanceReplacementConfirmation, offline_maintenance_input_hash,
         };
 
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-ensure-recompute-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
-        let database = root.join("database.redb");
-        let backup_root = root.join("backups");
+        let scope = tempfile::TempDir::with_prefix("riffdb-ensure-recompute-").expect("root");
+        let database = scope.path().join("database.redb");
+        let backup_root = scope.path().join("backups");
         let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open");
         let database_id = DatabaseId::from_unix_milliseconds_and_random(2, [0x23; 10]).expect("id");
         store.initialize_database(database_id).expect("init");
@@ -1729,7 +1701,6 @@ mod tests {
             Some(8),
             "pre-fence receipt + staged-7 must recompute 8, not 1"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// One real, sealed, pre-fence restore ready for the driver.
@@ -1741,7 +1712,9 @@ mod tests {
     /// pre-fence shape). Only staged authentication and authorization are
     /// skipped, because they own no part of the incarnation decision.
     struct StagedRestoreFixture {
-        root: std::path::PathBuf,
+        /// Whole-directory scope owning every fixture artifact; removed on
+        /// drop — pass, fail, or panic.
+        root: tempfile::TempDir,
         database: std::path::PathBuf,
         storage: RedbMaintenanceStorage,
         lifecycle: MaintenanceLifecycle,
@@ -1810,18 +1783,12 @@ mod tests {
         use riffdb_storage_api::DatabaseInitializationPort;
         use riffdb_types::{BackupNameV1, DatabaseId, offline_maintenance_input_hash};
 
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-driver-restore-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
-        let database = root.join("database.redb");
-        let backup_root = root.join("backups");
+        let root = tempfile::Builder::new()
+            .prefix(&format!("riffdb-driver-restore-{label}-"))
+            .tempdir()
+            .expect("root");
+        let database = root.path().join("database.redb");
+        let backup_root = root.path().join("backups");
         let database_id =
             DatabaseId::from_unix_milliseconds_and_random(2, [seed; 10]).expect("database ID");
         let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open source");
@@ -1961,7 +1928,7 @@ mod tests {
     #[test]
     fn run_restore_over_an_absent_target_publishes_staged_seven_as_eight() {
         let StagedRestoreFixture {
-            root,
+            root: _root,
             database,
             mut storage,
             lifecycle,
@@ -1997,13 +1964,12 @@ mod tests {
             receipt.current_phase(),
             OfflineMaintenanceReceiptPhaseV1::Succeeded
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn run_restore_over_an_unreadable_target_prefers_retained_metadata_evidence() {
         let StagedRestoreFixture {
-            root,
+            root: _root,
             database,
             mut storage,
             lifecycle,
@@ -2040,6 +2006,5 @@ mod tests {
             receipt.current_phase(),
             OfflineMaintenanceReceiptPhaseV1::Succeeded
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

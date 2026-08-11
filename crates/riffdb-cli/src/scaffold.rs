@@ -2578,15 +2578,9 @@ mod tests {
 
     #[test]
     fn v4_application_generation_uses_the_symbolic_lock_rules() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-v4-generate-dispatch-test-{}",
-            std::process::id()
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
-        fs::create_dir(&base).expect("test directory");
-        let source_path = base.join("riffdb.application.json");
+        let base = tempfile::TempDir::with_prefix("riffdb-v4-generate-dispatch-test-")
+            .expect("scratch directory");
+        let source_path = base.path().join("riffdb.application.json");
         fs::write(
             &source_path,
             br#"{"schema":"riffdb.application-source/v4"}"#,
@@ -2601,7 +2595,6 @@ mod tests {
             generate_application(&source_path, true, None),
             Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound
         ));
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
@@ -2614,13 +2607,9 @@ mod tests {
 
     #[test]
     fn v2_migration_preview_is_pure_and_write_changes_only_source() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-application-migrate-test-{}",
-            std::process::id()
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-application-migrate-test-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("migrate-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
         let lock_path = base.join(DEFAULT_LOCK_PATH);
@@ -2676,18 +2665,13 @@ mod tests {
         assert_eq!(fs::read(&source_path).expect("migrated source"), preview);
         assert_eq!(fs::read(&lock_path).expect("unchanged lock"), original_lock);
         assert!(!base.join("generated/python/client.py").exists());
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn python_name_collision_reports_the_offending_contract_span() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-python-collision-test-{}",
-            std::process::id()
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-python-collision-test-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("collision-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
         let contract_path = base.join("riffdb/contract.riff");
@@ -2718,7 +2702,6 @@ mod tests {
             diagnostic.symbol_path(),
             &["enum", "Collision", "variant", "foo_bar"]
         );
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
@@ -2757,17 +2740,10 @@ mod tests {
 
     #[test]
     fn scaffold_is_deterministic_and_compiled() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-new-test-{}-{}",
-            std::process::id(),
-            "deterministic"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
-        fs::create_dir(&base).expect("test directory");
-        let first = base.join("first");
-        let second = base.join("second");
+        let base = tempfile::TempDir::with_prefix("riffdb-new-test-deterministic-")
+            .expect("scratch directory");
+        let first = base.path().join("first");
+        let second = base.path().join("second");
         create_application("order-desk", ScaffoldLanguage::Rust, &first).expect("first");
         create_application("order-desk", ScaffoldLanguage::Rust, &second).expect("second");
         for relative in [
@@ -2814,16 +2790,13 @@ mod tests {
                 | ScaffoldError::Authoring(_))
         ));
         assert!(create_application("order-desk", ScaffoldLanguage::Rust, &first).is_err());
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn go_scaffold_is_exact_offline_and_application_only() {
-        let base =
-            std::env::temp_dir().join(format!("riffdb-new-test-{}-{}", std::process::id(), "go"));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-new-test-go-").expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("order-desk", ScaffoldLanguage::Go, &base).expect("Go scaffold");
         let source = ApplicationSourceManifest::decode_canonical(
             &fs::read(base.join("riffdb.application.json")).expect("source"),
@@ -2861,19 +2834,13 @@ mod tests {
         }
         check_application_lock(&base.join("riffdb.application.json"), None)
             .expect("exact Go scaffold");
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn scaffold_accepts_an_existing_empty_directory() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-new-test-{}-{}",
-            std::process::id(),
-            "existing-empty"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-new-test-existing-empty-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         fs::create_dir(&base).expect("existing empty directory");
 
         create_application("order-desk", ScaffoldLanguage::Rust, &base)
@@ -2881,7 +2848,6 @@ mod tests {
 
         check_application_lock(&base.join("riffdb.application.json"), None)
             .expect("complete exact application");
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
@@ -2901,17 +2867,10 @@ mod tests {
 
     #[test]
     fn scaffold_rejects_files_and_nonempty_directories_without_changes() {
-        let parent = std::env::temp_dir().join(format!(
-            "riffdb-new-test-{}-{}",
-            std::process::id(),
-            "occupied"
-        ));
-        if parent.exists() {
-            fs::remove_dir_all(&parent).expect("remove prior test directory");
-        }
-        fs::create_dir(&parent).expect("test parent");
-        let file = parent.join("file");
-        let nonempty = parent.join("nonempty");
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-new-test-occupied-").expect("scratch directory");
+        let file = parent.path().join("file");
+        let nonempty = parent.path().join("nonempty");
         fs::write(&file, b"retain file\n").expect("fixture file");
         fs::create_dir(&nonempty).expect("fixture directory");
         fs::write(nonempty.join("retain.txt"), b"retain directory\n").expect("fixture entry");
@@ -2923,7 +2882,6 @@ mod tests {
             fs::read(nonempty.join("retain.txt")).expect("retained entry"),
             b"retain directory\n"
         );
-        fs::remove_dir_all(parent).expect("cleanup");
     }
 
     #[cfg(unix)]
@@ -2931,17 +2889,10 @@ mod tests {
     fn scaffold_rejects_a_destination_symlink_without_touching_its_target() {
         use std::os::unix::fs::symlink;
 
-        let parent = std::env::temp_dir().join(format!(
-            "riffdb-new-test-{}-{}",
-            std::process::id(),
-            "destination-symlink"
-        ));
-        if parent.exists() {
-            fs::remove_dir_all(&parent).expect("remove prior test directory");
-        }
-        fs::create_dir(&parent).expect("test parent");
-        let target = parent.join("target");
-        let destination = parent.join("destination");
+        let parent = tempfile::TempDir::with_prefix("riffdb-new-test-destination-symlink-")
+            .expect("scratch directory");
+        let target = parent.path().join("target");
+        let destination = parent.path().join("destination");
         fs::create_dir(&target).expect("target");
         symlink(&target, &destination).expect("destination symlink");
 
@@ -2953,19 +2904,13 @@ mod tests {
                 .is_none()
         );
         fs::remove_file(destination).expect("remove symlink");
-        fs::remove_dir_all(parent).expect("cleanup");
     }
 
     #[test]
     fn application_check_is_read_only_and_lock_check_detects_artifact_drift() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-lock-test-{}-{}",
-            std::process::id(),
-            "read-only"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-lock-test-read-only-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("safe-app", ScaffoldLanguage::Typescript, &base).expect("scaffold");
         let source = base.join("riffdb.application.json");
         let generated = base.join("generated/typescript/client.ts");
@@ -3028,19 +2973,13 @@ mod tests {
                 seed_input_count: 0
             }
         );
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn successor_lock_uses_the_parent_aware_bundle_for_check_and_deploy_identity() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-lock-test-{}-{}",
-            std::process::id(),
-            "successor-identity"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-lock-test-successor-identity-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
         let contract_path = base.join("riffdb/contract.riff");
@@ -3147,19 +3086,13 @@ mod tests {
                 .as_str(),
             "RDB-AL008"
         );
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn v4_lock_pins_and_plans_an_exact_direct_parent_migration() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-lock-test-{}-{}",
-            std::process::id(),
-            "migration-v4"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-lock-test-migration-v4-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
         let contract_path = base.join("riffdb/contract.riff");
@@ -3264,19 +3197,13 @@ mod tests {
         )
         .expect("change migration source");
         assert!(check_application_lock(&source_path, None).is_err());
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn application_check_preserves_contract_diagnostic_code_path_and_span() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-diagnostic-test-{}-{}",
-            std::process::id(),
-            "contract"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-diagnostic-test-contract-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         fs::remove_file(base.join(DEFAULT_LOCK_PATH)).expect("source-only diagnostic check");
         fs::write(
@@ -3307,19 +3234,13 @@ mod tests {
         );
         assert!(!json.contains("SECRET_VALUE"));
         assert!(!json.contains("contract SafeApp"));
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
     fn application_check_rejects_a_role_whose_complete_scan_budget_is_unsafe() {
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-role-budget-test-{}-{}",
-            std::process::id(),
-            "complete-scan"
-        ));
-        if base.exists() {
-            fs::remove_dir_all(&base).expect("remove prior test directory");
-        }
+        let parent = tempfile::TempDir::with_prefix("riffdb-role-budget-test-complete-scan-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         fs::remove_file(base.join(DEFAULT_LOCK_PATH)).expect("source-only role check");
         fs::write(
@@ -3399,7 +3320,6 @@ mod tests {
             diagnostics.render_human().expect("human"),
             include_str!("../../../fixtures/application-diagnostics/role-budget-v1.txt")
         );
-        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[cfg(unix)]
@@ -3407,21 +3327,10 @@ mod tests {
     fn locked_generation_rejects_symlink_output_parents() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!(
-            "riffdb-lock-test-{}-{}",
-            std::process::id(),
-            "symlink"
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "riffdb-lock-outside-{}-{}",
-            std::process::id(),
-            "symlink"
-        ));
-        for path in [&base, &outside] {
-            if path.exists() {
-                fs::remove_dir_all(path).expect("remove prior test directory");
-            }
-        }
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-lock-test-symlink-").expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        let outside = parent.path().join("outside");
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         fs::create_dir(&outside).expect("outside");
         fs::remove_dir_all(base.join("generated")).expect("remove generated");
@@ -3437,8 +3346,16 @@ mod tests {
                 .next()
                 .is_none()
         );
-        fs::remove_file(base.join("generated")).expect("remove symlink");
-        fs::remove_dir_all(base).expect("cleanup");
-        fs::remove_dir_all(outside).expect("cleanup outside");
+        // Explicit form of what the deleted cleanup used to observe by
+        // accident (remove_file on a directory errors with EISDIR): the
+        // generator must refuse without unlinking the symlink or replacing
+        // it with a real directory.
+        assert!(
+            fs::symlink_metadata(base.join("generated"))
+                .expect("generated entry survives the refusal")
+                .file_type()
+                .is_symlink(),
+            "the rejected output parent must still be a symlink"
+        );
     }
 }

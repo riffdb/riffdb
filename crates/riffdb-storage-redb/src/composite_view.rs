@@ -773,7 +773,6 @@ fn invalid_shape<E>(_: E) -> StorageValueError {
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use redb::{Durability, ReadableDatabase};
     use riffdb_storage_api::{
@@ -790,32 +789,21 @@ mod tests {
     use crate::layout::{AUDIT_BY_REQUEST, META, META_ADMINISTRATION_SEQUENCE};
     use crate::store::{RedbOperationalPorts, RedbStore};
 
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-
-    struct TestDatabasePath(PathBuf);
+    /// Whole-directory scope: the database and every side file it grows
+    /// (journal, checkpoint, spare, durable-format marker, …) live in one
+    /// [`crate::test_path::ScopedDirectory`] removed on drop — pass, fail, or
+    /// panic — so cleanup never depends on a hand-maintained file list. This
+    /// retires the stale `target/wp487-composite-view` marker-leak class.
+    struct TestDatabasePath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {
-            let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("target")
-                .join("wp487-composite-view")
-                .join(format!("{label}-{}-{ordinal}.redb", std::process::id()));
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("create test directory");
-            }
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDatabasePath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-            let _ = std::fs::remove_file(crate::durable_format_marker_path(&self.0));
-            let _ = std::fs::remove_file(crate::journal::journal_path(&self.0));
-            let _ = std::fs::remove_file(crate::journal::checkpoint_journal_path(&self.0));
-            let _ = std::fs::remove_file(crate::journal::spare_journal_path(&self.0));
+            let scope = crate::test_path::ScopedDirectory::new(label);
+            Self(scope.join("db.redb"), scope)
         }
     }
 

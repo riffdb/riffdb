@@ -334,13 +334,10 @@ pub(crate) fn validate_endpoint(endpoint: &str) -> Result<(), ConfigError> {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use clap::Parser;
 
     use super::*;
-
-    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Default)]
     struct TestEnvironment(BTreeMap<String, OsString>);
@@ -385,7 +382,7 @@ mod tests {
 
     #[test]
     fn database_precedence_and_canonical_validation_are_exact() {
-        let path = temporary_file(
+        let (_scratch, path) = temporary_file(
             "database-precedence",
             b"[client]\ndatabase = \"document_db\"\n",
         );
@@ -422,7 +419,7 @@ mod tests {
 
     #[test]
     fn every_configuration_source_obeys_fieldwise_precedence() {
-        let path = temporary_file(
+        let (_scratch, path) = temporary_file(
             "precedence",
             concat!(
                 "[client]\n",
@@ -490,16 +487,15 @@ mod tests {
             from_flags.credential_file,
             Some(PathBuf::from("/flag-token"))
         );
-        fs::remove_file(path).expect("cleanup");
     }
 
     #[test]
     fn config_flag_wins_over_environment_config_without_discovery_or_fallback() {
-        let environment_document = temporary_file(
+        let (_environment_scratch, environment_document) = temporary_file(
             "environment-config",
             b"[client]\nendpoint = \"http://127.0.0.1:7001\"\n",
         );
-        let flag_document = temporary_file(
+        let (_flag_scratch, flag_document) = temporary_file(
             "flag-config",
             b"[client]\nendpoint = \"http://127.0.0.1:7002\"\n",
         );
@@ -520,14 +516,11 @@ mod tests {
             resolve(&missing, &environment).is_err(),
             "a selected invalid flag path must not fall through to RIFFDB_CONFIG"
         );
-
-        fs::remove_file(environment_document).expect("cleanup");
-        fs::remove_file(flag_document).expect("cleanup");
     }
 
     #[test]
     fn invalid_higher_precedence_fields_never_fall_through() {
-        let document = temporary_file(
+        let (_scratch, document) = temporary_file(
             "valid-lower-precedence",
             concat!(
                 "[client]\n",
@@ -592,8 +585,6 @@ mod tests {
         let flag_output = resolve(&health_cli(&["--output", "json"]), &invalid_lower_output)
             .expect("valid flag output must ignore lower-precedence invalid output");
         assert_eq!(flag_output.output, OutputMode::Json);
-
-        fs::remove_file(document).expect("cleanup");
     }
 
     #[test]
@@ -619,7 +610,7 @@ mod tests {
             OutputMode::Json
         );
 
-        let document = temporary_file(
+        let (_scratch, document) = temporary_file(
             "json-invalid-endpoint",
             b"[client]\noutput = \"json\"\nendpoint = \"bad\"\n",
         );
@@ -641,7 +632,6 @@ mod tests {
                 .output(),
             OutputMode::Human
         );
-        fs::remove_file(document).expect("cleanup");
     }
 
     #[test]
@@ -652,11 +642,11 @@ mod tests {
         exact.resize(MAX_CONFIG_BYTES - 1, b'x');
         exact.push(b'\n');
         assert_eq!(exact.len(), MAX_CONFIG_BYTES);
-        let exact_path = temporary_file("exact", &exact);
+        let (_exact_scratch, exact_path) = temporary_file("exact", &exact);
         assert!(read_document(&exact_path).is_ok());
 
         exact.push(b'\n');
-        let excess_path = temporary_file("excess", &exact);
+        let (_excess_scratch, excess_path) = temporary_file("excess", &exact);
         assert_eq!(
             read_document(&excess_path).unwrap_err(),
             ConfigError::Invalid
@@ -672,20 +662,16 @@ mod tests {
             ("wrong-type", "[client]\nmax_attempts = \"3\"\n"),
             ("trailing", "[client]\noutput = \"json\"\nnot toml"),
         ] {
-            let path = temporary_file(name, document.as_bytes());
+            let (_scratch, path) = temporary_file(name, document.as_bytes());
             assert_eq!(
                 read_document(&path).unwrap_err(),
                 ConfigError::Invalid,
                 "{name}"
             );
-            fs::remove_file(path).expect("cleanup");
         }
 
-        let empty_path = temporary_file("empty", b"");
+        let (_empty_scratch, empty_path) = temporary_file("empty", b"");
         assert!(read_document(&empty_path).is_ok());
-        fs::remove_file(exact_path).expect("cleanup");
-        fs::remove_file(excess_path).expect("cleanup");
-        fs::remove_file(empty_path).expect("cleanup");
     }
 
     #[test]
@@ -696,7 +682,7 @@ mod tests {
             .insert("RIFFDB_CONFIG".into(), "/definitely/missing".into());
         assert!(resolve(&health_cli(&[]), &environment).is_err());
 
-        let valid = temporary_file("valid", b"[client]\nmax_attempts = 2\n");
+        let (_scratch, valid) = temporary_file("valid", b"[client]\nmax_attempts = 2\n");
         let valid_text = valid.to_str().expect("UTF-8 path");
         environment
             .0
@@ -716,7 +702,6 @@ mod tests {
                 .max_attempts,
             2
         );
-        fs::remove_file(valid).expect("cleanup");
     }
 
     #[test]
@@ -761,9 +746,9 @@ mod tests {
 
     #[test]
     fn verified_tls_configuration_is_complete_or_rejected() {
-        let trust = temporary_file("tls-root", b"test trust root");
+        let (_trust_scratch, trust) = temporary_file("tls-root", b"test trust root");
         let trust_text = trust.to_str().expect("UTF-8 test path");
-        let complete = temporary_file(
+        let (_complete_scratch, complete) = temporary_file(
             "tls-complete",
             format!(
                 "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_trust_root = {trust_text:?}\ntls_server_name = \"127.0.0.1\"\n"
@@ -804,16 +789,13 @@ mod tests {
                 ),
             ),
         ] {
-            let path = temporary_file(label, document.as_bytes());
+            let (_scratch, path) = temporary_file(label, document.as_bytes());
             let mut environment = TestEnvironment::default();
             environment
                 .0
                 .insert("RIFFDB_CONFIG".into(), path.as_os_str().to_owned());
             assert!(resolve(&health_cli(&[]), &environment).is_err(), "{label}");
-            fs::remove_file(path).expect("cleanup invalid TLS config");
         }
-        fs::remove_file(complete).expect("cleanup config");
-        fs::remove_file(trust).expect("cleanup trust root");
     }
 
     #[test]
@@ -831,14 +813,11 @@ mod tests {
         assert!(resolve(&health_cli(&[]), &environment).is_err());
     }
 
-    fn temporary_file(label: &str, bytes: &[u8]) -> PathBuf {
-        let ordinal = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-cli-config-{}-{ordinal}-{label}",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
+    fn temporary_file(label: &str, bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-config-").expect("scratch directory");
+        let path = scratch.path().join(label);
         fs::write(&path, bytes).expect("temporary config");
-        path
+        (scratch, path)
     }
 }
