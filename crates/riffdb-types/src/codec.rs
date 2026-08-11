@@ -572,11 +572,22 @@ impl Decoder<'_> {
                     }
                     components.push(component);
                 }
+                // Unreachable today (dimension and every component were
+                // validated above), but if either check ever drifts the
+                // constructor's error must keep its meaning instead of
+                // mislabeling a component fault as a dimension fault.
                 CanonicalVector::new(components)
                     .map(CanonicalValue::Vector)
-                    .map_err(|_| CanonicalCodecError::VectorDimensionOutOfRange {
-                        actual: dimension,
-                        maximum: crate::MAX_VECTOR_DIMENSION,
+                    .map_err(|error| match error {
+                        crate::CanonicalVectorError::DimensionOutOfRange { .. } => {
+                            CanonicalCodecError::VectorDimensionOutOfRange {
+                                actual: dimension,
+                                maximum: crate::MAX_VECTOR_DIMENSION,
+                            }
+                        }
+                        crate::CanonicalVectorError::NonFiniteComponent { index } => {
+                            CanonicalCodecError::NonCanonicalVectorComponent { index }
+                        }
                     })
             }
             tag => Err(CanonicalCodecError::UnknownTag { tag }),

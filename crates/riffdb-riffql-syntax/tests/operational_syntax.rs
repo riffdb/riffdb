@@ -296,22 +296,45 @@ fn nearest_clause_rejects_order_by() {
     );
 }
 
+/// `nearest` is a contextual word, not a reserved one: the contract language
+/// does not reserve it, so a contract may legally declare
+/// `field nearest: ...` — reserving it in RiffQL made that field unnameable
+/// in any query. As an identifier it parses everywhere an identifier is
+/// legal (binding name, field path, selection, outcome field).
 #[test]
-fn nearest_is_reserved_word() {
-    // Using 'nearest' as an identifier should fail
-    let source = r#"{
+fn nearest_is_usable_as_an_identifier() {
+    let source = r#"query NearestField($doc_id: Document.doc_id, $nearest: Document.nearest) {
     one nearest from Document
-        where doc_id == $doc_id
+        where doc_id == $doc_id && nearest == $nearest
         else NotFound
-    return Found { nearest: nearest { doc_id } }
+    return Found { nearest: nearest { doc_id nearest } }
     outcomes Found | NotFound
 }"#;
-    let error = parse_query(source).expect_err("nearest as identifier should fail");
-    assert!(
-        error
-            .as_slice()
-            .iter()
-            .any(|d| { d.code() == DiagnosticCode::UnexpectedToken }),
-        "expected reserved word rejection"
-    );
+    let document = parse_query(source).expect("nearest is a legal identifier");
+    assert_eq!(document.body.bindings.len(), 1);
+    assert_eq!(document.body.bindings[0].name.value.as_str(), "nearest");
+    assert!(document.body.bindings[0].nearest.is_none());
+}
+
+/// The contextual reading is unambiguous even when a field named `nearest`
+/// and the `nearest(...)` clause appear in the SAME binding: the predicate
+/// consumes the identifier, and the clause position still parses.
+#[test]
+fn nearest_field_and_nearest_clause_coexist_in_one_binding() {
+    let source = r#"query Similar($org: Document.org_id, $n: Document.nearest, $query_vec: Document.embedding) {
+    many results from Document
+        where org_id == $org && nearest == $n
+        nearest(embedding, $query_vec, 10)
+    return Found { results: results { title } }
+    outcomes Found
+}"#;
+    let document = parse_query(source).expect("contextual nearest parses");
+    let binding = &document.body.bindings[0];
+    let clause = binding.nearest.as_ref().expect("nearest clause recognized");
+    assert_eq!(clause.field.value.as_str(), "embedding");
+
+    // And the formatter round-trips the contextual word.
+    let formatted = format_query(&document);
+    let reparsed = parse_query(&formatted).expect("reparse");
+    assert_eq!(format_query(&reparsed), formatted);
 }

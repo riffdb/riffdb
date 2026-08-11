@@ -273,6 +273,14 @@ struct ResolvedAggregateSelection {
     maximum_groups: PageBound,
 }
 
+/// Which source clause supplied a page bound, so its diagnostics name the
+/// construct the author actually wrote (`take 500` versus `nearest(.., 500)`).
+#[derive(Clone, Copy)]
+enum PageBoundClause {
+    Take,
+    NearestK,
+}
+
 struct Resolver<'a> {
     catalog: &'a SymbolicCatalog,
     parameters: BTreeMap<String, NamedTypeSchema>,
@@ -393,14 +401,20 @@ impl<'a> Resolver<'a> {
             let take = binding
                 .take
                 .as_ref()
-                .map(|take| self.page_bound(&take.limit.value, take.limit.span))
+                .map(|take| {
+                    self.page_bound(&take.limit.value, take.limit.span, PageBoundClause::Take)
+                })
                 .transpose()?;
             // A nearest binding declares K instead of `take` (the parser
             // rejects combining them); K is that binding's checked page bound
             // (VEC-010: the query declares K), subject to the same page-take
             // ceiling as any other bounded many binding.
             let take = match (take, binding.nearest.as_ref()) {
-                (None, Some(nearest)) => Some(self.page_bound(&nearest.k.value, nearest.k.span)?),
+                (None, Some(nearest)) => Some(self.page_bound(
+                    &nearest.k.value,
+                    nearest.k.span,
+                    PageBoundClause::NearestK,
+                )?),
                 (take, _) => take,
             };
             self.bindings.insert(
@@ -1252,25 +1266,36 @@ impl<'a> Resolver<'a> {
         &self,
         expression: &Expression,
         span: Span,
+        clause: PageBoundClause,
     ) -> Result<PageBound, QueryDiagnostics> {
         match expression {
             Expression::Literal(Literal::Unsigned(value)) => {
                 let parsed = value.parse::<u64>().ok().filter(|value| *value > 0);
                 match parsed {
                     Some(take) if page_take_within_scan_bound(take) => Ok(PageBound::Literal(take)),
+                    // Bound is max_query_page_take() (= 499): the bound plus
+                    // one probe row must stay within MAX_QUERY_SCANNED_ROWS
+                    // (500). The continuation-probe rationale is take's; a
+                    // nearest K inherits the same ceiling but mints no
+                    // continuation, so its message names the shared ceiling
+                    // instead.
                     Some(_) => Err(self.diagnostic(
                         QueryDiagnosticCode::ArtifactLimit,
                         span,
                         Vec::new(),
-                        // Bound is max_query_page_take() (= 499): take + continuation probe
-                        // must stay within MAX_QUERY_SCANNED_ROWS (500).
-                        "static take exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                        match clause {
+                            PageBoundClause::Take => "static take exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                            PageBoundClause::NearestK => "nearest k exceeds the maximum page bound of 499 (K is the binding's checked page bound and shares the take ceiling)",
+                        },
                     )),
                     None => Err(self.diagnostic(
                         QueryDiagnosticCode::InvalidType,
                         span,
                         Vec::new(),
-                        "take literal is not a positive u64",
+                        match clause {
+                            PageBoundClause::Take => "take literal is not a positive u64",
+                            PageBoundClause::NearestK => "nearest k literal is not a positive u64",
+                        },
                     )),
                 }
             }
@@ -1286,7 +1311,10 @@ impl<'a> Resolver<'a> {
                 QueryDiagnosticCode::InvalidType,
                 span,
                 Vec::new(),
-                "take parameter must have type Limit",
+                match clause {
+                    PageBoundClause::Take => "take parameter must have type Limit",
+                    PageBoundClause::NearestK => "nearest k parameter must have type Limit",
+                },
             )),
         }
     }

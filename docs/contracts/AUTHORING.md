@@ -8,20 +8,26 @@ used as field or declaration identifiers:
 
 ```text
 active aggregate allow approval as attempts binary_utf8_v1 bool bytes capability
-child claim command conflict_key contract cosine count create date decimal
-default delete dot_product duration_seconds else emit entity enum euclidean event
+child claim command conflict_key contract count create date decimal
+default delete duration_seconds else emit entity enum event
 exhausted exists expire expired expires_at fact false fence fencing_token field
 from frontier i64 idempotency_key illegal import in include index input invalid
 invariant is key lease list measure module money mutate not null on optional
 owner partition_by policy presence principal projection query read reference
 release renew require return revision root row service set source stale
-staleness_slo state state_machine string sum text_key timestamp to
+state state_machine string sum text_key timestamp to
 transaction_time transactionally_ordered transition true u64 unavailable
 unicode_fold_v1 unique update uuid uuid_v7 vector_field version when where workflow
 ```
 
 For example, use `origin`, `origin_label`, or `source_label` instead of the
 reserved field name `source`.
+
+The vector search words `cosine`, `euclidean`, `dot_product`, and
+`staleness_slo` are contextual, not reserved: they are meaningful only inside
+a `vector_field` declaration and remain usable as ordinary field and
+declaration identifiers everywhere else. The same is true of `nearest` in
+RiffQL — a contract field named `nearest` stays queryable.
 
 Names are unique in their semantic namespace, not globally across an entire
 contract. Enum variants belong to their enum, command outcomes belong to their
@@ -55,6 +61,35 @@ bytes; it is case-sensitive and performs no Unicode normalization. The
 build. Adding or changing either encoding changes durable index identity and
 requires the contract migration/rebuild path; RiffDB never silently changes a
 text profile during a software upgrade.
+
+## Vector fields (alpha)
+
+An entity may declare one or more fixed-dimension embedding fields:
+
+```riff
+entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    vector_field embedding(1536, cosine, (title, body), staleness_slo 60)
+}
+```
+
+The declaration carries the search configuration into the compiled contract
+bundle, where it is part of the contract's durable identity:
+
+- The dimension is a positive integer of at most 4,096.
+- The metric is exactly one of `cosine`, `euclidean`, or `dot_product`.
+- The source fields name 1 to 1,024 distinct existing fields on the same
+  entity — the fields whose edits make a stored embedding stale. A repeated
+  name or the vector field itself is a compile error at its span.
+- `staleness_slo` is a positive whole number of seconds. The health-signal
+  trigger semantics for this SLO are an open SPEC clarification; declaring
+  the value is supported, acting on it is not yet implemented.
+
+Vector values themselves cannot yet be written or read through the typed wire
+surfaces, and `nearest()` execution stops at the storage boundary — see
+[Known Limitations](../known-limitations.md).
 
 ## Revision-checked workflow transitions
 

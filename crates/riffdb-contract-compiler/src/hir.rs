@@ -916,7 +916,22 @@ fn lower_entities(
                 let mut source_fields = Vec::new();
                 for source_field in &vector_field.source_fields {
                     match field_scope.get(&source_field.value) {
-                        Some((field_id, _)) => source_fields.push(*field_id),
+                        Some((field_id, _)) => {
+                            // A repeated source field is a diagnostic, never a
+                            // silent dedup: `(title, title)` previously became
+                            // `(title)` with no report, and the dedup made
+                            // `VectorFieldSpecV1::new`'s sorted-unique check
+                            // unreachable from the compiler.
+                            if source_fields.contains(field_id) {
+                                valid = false;
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::DuplicateName,
+                                    source_field.span,
+                                ));
+                            } else {
+                                source_fields.push(*field_id);
+                            }
+                        }
                         None => {
                             valid = false;
                             diagnostics.push(CompilerDiagnostic::new(
@@ -927,11 +942,21 @@ fn lower_entities(
                     }
                 }
                 source_fields.sort_unstable();
-                source_fields.dedup();
                 let field_id = symbols
                     .entity_fields
                     .get(&(id, vector_field.name.value.clone()))
                     .copied();
+                // An unresolvable vector-field name with no other diagnostic
+                // previously DROPPED the whole spec silently: the contract
+                // compiled and its metric, source fields, and SLO vanished
+                // from the bundle (the S8 defect's failure mode re-entering
+                // through a different door). Report it instead.
+                if valid && field_id.is_none() {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        vector_field.name.span,
+                    ));
+                }
                 if let (true, Some(field_id)) = (valid, field_id) {
                     vector_fields.push(HirVectorField {
                         field_id,

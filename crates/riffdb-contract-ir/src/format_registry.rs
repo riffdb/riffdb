@@ -2255,6 +2255,14 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
+        // MERGE TRIPWIRE — keep this a bare literal, never derive it from the
+        // list. Two branches that each add one layout both rewrite the same
+        // count (e.g. 58 -> 59); git merges the identical edit cleanly while
+        // the list gains BOTH entries, and this assertion is what reds the
+        // semantically-wrong clean merge. Deriving the count from the list
+        // (or a witness list both sides also append to) would make that
+        // merge pass silently. Re-run this test after any merge touching the
+        // registry.
         assert_eq!(FORMAT_LAYOUTS.len(), 59);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);

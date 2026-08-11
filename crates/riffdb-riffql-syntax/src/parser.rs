@@ -961,6 +961,14 @@ fn expression_uses_operational_syntax(expression: &Expression) -> bool {
     }
 }
 
+// `nearest` is deliberately NOT reserved: the contract language does not
+// reserve it, so a contract may legally declare `field nearest: ...`, and
+// reserving it here made that field unnameable in any query. The clause
+// position is unambiguous — `take_word("nearest")` fires only after the
+// binding's predicate/order/take clauses are complete, and a finished
+// expression cannot be extended by a bare identifier — so `nearest` is a
+// contextual word, exactly like the contract lexer treats `cosine`,
+// `euclidean`, `dot_product`, and `staleness_slo`.
 fn reserved(value: &str) -> bool {
     matches!(
         value,
@@ -982,7 +990,6 @@ fn reserved(value: &str) -> bool {
             | "in"
             | "when"
             | "exists"
-            | "nearest"
             | "is"
             | "not"
             | "prefix"

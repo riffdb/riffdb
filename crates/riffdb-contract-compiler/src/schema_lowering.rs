@@ -129,6 +129,7 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                     vector_field.source_fields.clone(),
                     vector_field.staleness_slo_secs,
                 )
+                .map(|spec| (spec, vector_field.span))
                 .map_err(|_| {
                     CompilerDiagnostics::single(CompilerDiagnostic::new(
                         CompilerDiagnosticCode::InvalidType,
@@ -138,6 +139,19 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // Probe each spec individually so a schema-validation failure carries the
+    // offending `vector_field`'s span, not the whole-contract span (the same
+    // per-item probe the delete-policy path above uses).
+    for (spec, span) in &vector_field_specs {
+        base.clone()
+            .with_vector_field_specs(vec![spec.clone()])
+            .map_err(|_| {
+                CompilerDiagnostics::single(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidType,
+                    *span,
+                ))
+            })?;
+    }
     let schema = if delete_policies.is_empty() {
         base
     } else {
@@ -155,8 +169,15 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
         )
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?
     };
+    // Cross-spec failures (duplicate specs for one field) have no single
+    // offending declaration; only those fall back to the contract span.
     schema
-        .with_vector_field_specs(vector_field_specs)
+        .with_vector_field_specs(
+            vector_field_specs
+                .into_iter()
+                .map(|(spec, _)| spec)
+                .collect(),
+        )
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
 }
 
@@ -1079,6 +1100,44 @@ contract Invalid version 1 {
 "#,
             CompilerDiagnosticCode::UnknownName,
             "nonexistent",
+        );
+    }
+
+    /// A repeated source field is a diagnostic at the DUPLICATE occurrence's
+    /// span, with the first occurrence as the related span. The gate is
+    /// symbol allocation (`validate_unique_spanned_names`), which has
+    /// rejected this since WP-591 — so the HIR-level `dedup()` this fix
+    /// round replaced with a diagnostic was dead masking, not a reachable
+    /// silent mutation. This test pins the gate, which previously had no
+    /// vector-source-field coverage at all.
+    #[test]
+    fn vector_field_rejects_duplicate_source_fields_at_the_duplicate_span() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (doc_id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    vector_field embedding(1536, cosine, (title, body, title), staleness_slo 60)
+  }
+}
+"#;
+        let document = parse_contract(source).expect("syntax");
+        let diagnostics = allocate_genesis_symbols(&document)
+            .expect_err("a duplicate source field must be rejected at symbol allocation");
+        // The diagnostic points at the SECOND `title` (the last occurrence
+        // in the source), with the first occurrence related.
+        let duplicate_start = source.rfind("title").expect("duplicate present");
+        let expected = Span::new(duplicate_start, duplicate_start + "title".len()).expect("span");
+        let first_start = source.find("(title").expect("first occurrence present") + 1;
+        let related = Span::new(first_start, first_start + "title".len()).expect("span");
+        assert!(
+            diagnostics.as_slice().iter().any(|diagnostic| {
+                diagnostic.code() == CompilerDiagnosticCode::DuplicateName
+                    && diagnostic.primary_span() == expected
+                    && diagnostic.related_span() == Some(related)
+            }),
+            "expected DuplicateName at {expected:?} related {related:?}; found {diagnostics:?}"
         );
     }
 }
