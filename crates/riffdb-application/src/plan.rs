@@ -117,7 +117,7 @@ impl InstallationTarget {
 }
 
 /// Candidate contract identity pinned by the exact lock.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct InstallationContract {
     version: ContractVersion,
     bundle_hash: ContractBundleHash,
@@ -673,7 +673,7 @@ pub enum InstallationFeature {
 }
 
 impl InstallationFeature {
-    const fn tag(self) -> &'static str {
+    pub(crate) const fn tag(self) -> &'static str {
         match self {
             Self::RemoteTls => "remote_tls",
             Self::BulkCommands => "bulk_commands",
@@ -685,7 +685,7 @@ impl InstallationFeature {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "remote_tls" => Self::RemoteTls,
             "bulk_commands" => Self::BulkCommands,
@@ -1044,11 +1044,15 @@ fn validate_and_sort(
             InstallationPlanErrorKind::IdentityMismatch,
         ));
     }
-    if input.adapter_manifest_hash.is_some()
-        != input
-            .artifacts
-            .iter()
-            .any(|artifact| artifact.kind == InstallationArtifactKind::AdapterManifest)
+    let adapter_artifact = input
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == InstallationArtifactKind::AdapterManifest);
+    if input.adapter_manifest_hash.is_some() != adapter_artifact.is_some()
+        || input.adapter_manifest_hash.is_some_and(|manifest_hash| {
+            adapter_artifact
+                .is_none_or(|artifact| artifact.content_hash.as_bytes() != manifest_hash.as_bytes())
+        })
     {
         return Err(InstallationPlanError::new(
             InstallationPlanErrorKind::IdentityMismatch,

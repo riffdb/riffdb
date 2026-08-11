@@ -26,6 +26,7 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
+    ApplicationConformance,
     ApplicationLock,
     ApplicationInstall,
     ApplicationInstallation,
@@ -93,6 +94,7 @@ pub(crate) enum CommandIdentity {
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::ApplicationConformance => "application.conformance",
             Self::ApplicationLock => "application.lock",
             Self::ApplicationInstall => "application.install",
             Self::ApplicationInstallation => "application.installation",

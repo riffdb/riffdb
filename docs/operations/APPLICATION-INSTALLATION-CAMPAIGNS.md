@@ -151,6 +151,39 @@ credentials, seed values, host paths, or hidden schema. Accepted v1 receipts
 and campaign states remain readable; resuming one preserves its original
 receipt identity instead of silently rotating it.
 
+## Adapter conformance manifests
+
+An adapter may bind a canonical
+`riffdb.adapter-conformance-manifest/v1` document to the installation plan.
+The document names one exact application manifest and lock, contract lineage,
+generated artifacts, symbolic roles and operations, first-party driver/runtime
+and platform identities, bounded conformance probes, feature dispositions, and
+empty/populated evolution cases. It is declarative data: executable hooks,
+shell commands, numeric storage IDs, caller-defined permissions, version
+ranges, and silent fallback behavior are not fields in the schema.
+
+Validate a manifest and its exact installation-plan binding before any remote
+installation mutation:
+
+```bash
+riffdb application conformance adapter.conformance.json \
+  --plan installation-plan.json
+```
+
+The command accepts only canonical encodings. When a plan carries an
+`adapter_manifest_hash`, it must also contain the corresponding
+`adapter_manifest` artifact content hash. Deployment preflight checks that
+artifact alongside every generated application artifact; omitting or
+substituting either identity fails closed. The installed receipt records the
+same manifest digest, but never bearer credentials, probe values, or host
+paths.
+
+The current command validates the bounded document and exact plan identity. It
+does not execute adapter tests supplied by the document; conformance probes are
+first-party symbolic operation identities and expected observation digests,
+not executable extension points. The release-owned adapter acceptance runner
+executes those operations through public clients.
+
 ## Current POC limit
 
 On every start or resume, the server now reconciles the campaign against its
