@@ -132,6 +132,20 @@ pub struct ScheduledRun {
     pub lease_expires_at: Option<TimestampValue>,
 }
 
+fn encode_scheduled_run_entity(value: &ScheduledRun) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_enum(Clone::clone(&value.state))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_timestamp(&value.due_at)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.run_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_u64(value.lease_fence)) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(match &value.lease_owner.as_ref() { Some(value) => wire_uuid(value)?, None => wire_null() }) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_u64(value.lease_attempts)) },
+        v1::ValueField { field_id: Some(7), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+        v1::ValueField { field_id: Some(8), name: String::new(), value: Some(match &value.lease_expires_at.as_ref() { Some(value) => wire_timestamp(value)?, None => wire_null() }) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_scheduled_run_entity(value: v1::Value) -> Result<ScheduledRun, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = ScheduledRun {
@@ -139,10 +153,10 @@ fn decode_scheduled_run_entity(value: v1::Value) -> Result<ScheduledRun, Generat
         due_at: decode_wire_timestamp(take_wire_field(&mut fields, 2)?)?,
         run_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
         lease_fence: decode_wire_u64(take_wire_field(&mut fields, 4)?)?,
-        lease_owner: decode_wire_optional(take_wire_field(&mut fields, 5)?, |value| Ok(decode_wire_uuid(value)?))?,
+        lease_owner: decode_wire_optional(take_wire_field(&mut fields, 5)?, decode_wire_uuid)?,
         lease_attempts: decode_wire_u64(take_wire_field(&mut fields, 6)?)?,
         organization_id: decode_wire_uuid(take_wire_field(&mut fields, 7)?)?,
-        lease_expires_at: decode_wire_optional(take_wire_field(&mut fields, 8)?, |value| Ok(decode_wire_timestamp(value)?))?,
+        lease_expires_at: decode_wire_optional(take_wire_field(&mut fields, 8)?, decode_wire_timestamp)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -181,13 +195,14 @@ impl GeneratedCommand for ClaimRunInput {
     type Outcome = ClaimRunOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("run_id", wire_uuid(&self.run_id)?),
-            wire_named_field("duration", wire_u64(*(&self.duration))),
+            wire_named_field("duration", wire_u64(self.duration)),
             wire_named_field("owner_id", wire_uuid(&self.owner_id)?),
             wire_named_field("request_key", wire_string(Clone::clone(&self.request_key))),
             wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
-            wire_named_field("expected_revision", wire_u64(*(&self.expected_revision))),
+            wire_named_field("expected_revision", wire_u64(self.expected_revision)),
         ];
         IdempotentCommand::new("ClaimRun", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
     }
@@ -205,7 +220,7 @@ impl GeneratedCommand for ClaimRunInput {
     fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
         let mut fields = wire_outcome_fields(response, &CLAIM_RUN_PLAN_HASH)?;
         match response.outcome_type.as_str() {
-            "ClaimStale" => Ok(Self::Outcome::ClaimStale),
+            "ClaimStale" => if fields.is_empty() { Ok(Self::Outcome::ClaimStale) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "RunClaimed" => {
                 let outcome = Self::Outcome::RunClaimed {
                     run: decode_scheduled_run_entity(take_wire_field(&mut fields, 1)?)?,
@@ -213,10 +228,10 @@ impl GeneratedCommand for ClaimRunInput {
                 if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
                 Ok(outcome)
             },
-            "RunMissing" => Ok(Self::Outcome::RunMissing),
-            "ClaimInvalid" => Ok(Self::Outcome::ClaimInvalid),
-            "ClaimExhausted" => Ok(Self::Outcome::ClaimExhausted),
-            "ClaimUnavailable" => Ok(Self::Outcome::ClaimUnavailable),
+            "RunMissing" => if fields.is_empty() { Ok(Self::Outcome::RunMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "ClaimInvalid" => if fields.is_empty() { Ok(Self::Outcome::ClaimInvalid) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "ClaimExhausted" => if fields.is_empty() { Ok(Self::Outcome::ClaimExhausted) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "ClaimUnavailable" => if fields.is_empty() { Ok(Self::Outcome::ClaimUnavailable) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -264,13 +279,14 @@ impl GeneratedCommand for CompleteRunInput {
     type Outcome = CompleteRunOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("run_id", wire_uuid(&self.run_id)?),
             wire_named_field("owner_id", wire_uuid(&self.owner_id)?),
             wire_named_field("request_key", wire_string(Clone::clone(&self.request_key))),
-            wire_named_field("fencing_token", wire_u64(*(&self.fencing_token))),
+            wire_named_field("fencing_token", wire_u64(self.fencing_token)),
             wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
-            wire_named_field("expected_revision", wire_u64(*(&self.expected_revision))),
+            wire_named_field("expected_revision", wire_u64(self.expected_revision)),
         ];
         IdempotentCommand::new("CompleteRun", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
     }
@@ -288,10 +304,10 @@ impl GeneratedCommand for CompleteRunInput {
     fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
         let mut fields = wire_outcome_fields(response, &COMPLETE_RUN_PLAN_HASH)?;
         match response.outcome_type.as_str() {
-            "FenceStale" => Ok(Self::Outcome::FenceStale),
-            "RunMissing" => Ok(Self::Outcome::RunMissing),
-            "FenceExpired" => Ok(Self::Outcome::FenceExpired),
-            "FenceInvalid" => Ok(Self::Outcome::FenceInvalid),
+            "FenceStale" => if fields.is_empty() { Ok(Self::Outcome::FenceStale) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "RunMissing" => if fields.is_empty() { Ok(Self::Outcome::RunMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "FenceExpired" => if fields.is_empty() { Ok(Self::Outcome::FenceExpired) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "FenceInvalid" => if fields.is_empty() { Ok(Self::Outcome::FenceInvalid) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "RunCompleted" => {
                 let outcome = Self::Outcome::RunCompleted {
                     run: decode_scheduled_run_entity(take_wire_field(&mut fields, 1)?)?,
@@ -299,8 +315,8 @@ impl GeneratedCommand for CompleteRunInput {
                 if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
                 Ok(outcome)
             },
-            "CompleteStale" => Ok(Self::Outcome::CompleteStale),
-            "CompleteIllegal" => Ok(Self::Outcome::CompleteIllegal),
+            "CompleteStale" => if fields.is_empty() { Ok(Self::Outcome::CompleteStale) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "CompleteIllegal" => if fields.is_empty() { Ok(Self::Outcome::CompleteIllegal) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -342,13 +358,14 @@ impl GeneratedCommand for ReleaseRunInput {
     type Outcome = ReleaseRunOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("run_id", wire_uuid(&self.run_id)?),
             wire_named_field("owner_id", wire_uuid(&self.owner_id)?),
             wire_named_field("request_key", wire_string(Clone::clone(&self.request_key))),
-            wire_named_field("fencing_token", wire_u64(*(&self.fencing_token))),
+            wire_named_field("fencing_token", wire_u64(self.fencing_token)),
             wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
-            wire_named_field("expected_revision", wire_u64(*(&self.expected_revision))),
+            wire_named_field("expected_revision", wire_u64(self.expected_revision)),
         ];
         IdempotentCommand::new("ReleaseRun", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
     }
@@ -366,7 +383,7 @@ impl GeneratedCommand for ReleaseRunInput {
     fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
         let mut fields = wire_outcome_fields(response, &RELEASE_RUN_PLAN_HASH)?;
         match response.outcome_type.as_str() {
-            "RunMissing" => Ok(Self::Outcome::RunMissing),
+            "RunMissing" => if fields.is_empty() { Ok(Self::Outcome::RunMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "RunReleased" => {
                 let outcome = Self::Outcome::RunReleased {
                     run: decode_scheduled_run_entity(take_wire_field(&mut fields, 1)?)?,
@@ -374,8 +391,8 @@ impl GeneratedCommand for ReleaseRunInput {
                 if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
                 Ok(outcome)
             },
-            "ReleaseStale" => Ok(Self::Outcome::ReleaseStale),
-            "ReleaseInvalid" => Ok(Self::Outcome::ReleaseInvalid),
+            "ReleaseStale" => if fields.is_empty() { Ok(Self::Outcome::ReleaseStale) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "ReleaseInvalid" => if fields.is_empty() { Ok(Self::Outcome::ReleaseInvalid) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
