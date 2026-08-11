@@ -828,6 +828,26 @@ fn secret_reveal_call_sites_are_exactly_enumerated() {
     }
 }
 
+/// Scanning an index that embeds a secret-classified field releases the
+/// field's canonical bytes inside every IndexEntryKey, so the scan policy
+/// request must join the embedded secrets to the requested set (ADR-0118) —
+/// removing that union reds here before the authorizer ever sees the scan.
+#[test]
+fn index_scans_treat_embedded_secret_fields_as_projections() {
+    let scan = QUERY_SOURCE
+        .split_once("OperationRequest::scan_index(")
+        .expect("scan_index policy request exists")
+        .0;
+    assert!(
+        scan.contains("for field in index.fields()"),
+        "the scan policy request must derive from the index's embedded fields"
+    );
+    assert!(
+        scan.contains("secret_fields.binary_search(field).is_ok()"),
+        "embedded secret fields must join the requested set"
+    );
+}
+
 /// Audit targets and provenance summaries are value-free by construction
 /// (ADR-0118): the audit module must never grow field-value carriage —
 /// identities and closed enums only.
@@ -849,11 +869,11 @@ fn audit_and_provenance_summaries_carry_no_field_values() {
 #[test]
 fn mcp_record_renderings_consume_withheld_secret_fields() {
     assert!(
-        MCP_BACKEND_SOURCE.contains("entity.redacted_fields(),"),
+        MCP_BACKEND_SOURCE.contains("entity.redacted_fields()"),
         "entity rendering must pass the withheld-field list"
     );
     assert!(
-        MCP_BACKEND_SOURCE.contains("row.redacted_fields(),"),
+        MCP_BACKEND_SOURCE.contains("row.redacted_fields()"),
         "index-row rendering must pass the withheld-field list"
     );
 }

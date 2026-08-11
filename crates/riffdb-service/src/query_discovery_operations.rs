@@ -528,13 +528,25 @@ async fn scan_index(
         page_request.limit(),
     )
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    // An index whose fields include a secret-classified field embeds that
+    // field's canonical bytes in every released IndexEntryKey, so scanning
+    // it IS a projection of the value (ADR-0118): the embedded secrets join
+    // the requested set and the authorizer denies the scan without the
+    // grant's dedicated secret naming. Uniqueness enforcement and exact
+    // probes run in the commit path and never consult visibility.
+    let mut policy_fields = request.fields().as_slice().to_vec();
+    for field in index.fields() {
+        if secret_fields.binary_search(field).is_ok() && !policy_fields.contains(field) {
+            policy_fields.push(*field);
+        }
+    }
     let policy_request = OperationRequest::scan_index(
         lineage.clone(),
         version,
         index.id(),
         entity.id(),
         OperationTenantScope::global_only(),
-        request.fields().as_slice().to_vec(),
+        policy_fields,
         page_request.limit().get(),
     )
     .and_then(|request| request.with_secret_classified_fields(secret_fields.clone()))
