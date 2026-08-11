@@ -79,11 +79,53 @@ and confirms recovery. Lifecycle actions must advance their frontier. The
 controller retains these safe action results and derives the counters from
 them; a successful process exit alone is not lifecycle evidence.
 
+The periodic conformance command likewise prints one bounded
+`riffdb.alpha-endurance-conformance-result/v1` object. It must prove all four
+adapter domains, current row-policy probes, exact data reconciliation, zero
+silent loss, and a content digest. The controller retains every result. Exit
+status alone cannot assert conformance or policy correctness.
+
 The controller writes an untrusted raw receipt. The outer harness adds separate
 preflight and postflight host inventories, binds the receipt to the canonical
 workload manifest, exact action manifest, and release digest, and validates it
 before publishing the requested output. A failed or interrupted run remains an artifact for diagnosis but
 cannot be relabeled as passing.
+
+The release gate revalidates the retained 72-hour receipt independently:
+
+```bash
+./scripts/alpha-endurance \
+  --verify-release-receipt release/evidence/alpha-endurance-v1.json
+```
+
+This stricter mode requires all four adapter domains, green policy and data
+reconciliation, and content-addressed references to the exact durable-format,
+export/reimport, destructive-recovery, and adapter-conformance evidence. Each
+referenced file must be a bounded, non-symlink file below its closed release
+prefix, match its declared SHA-256, and carry the expected receipt schema. The
+environment and complete observation array are also bound by canonical digest.
+Merely copying a 72-hour raw controller receipt into `release/evidence` cannot
+pass release verification.
+
+Release evidence is attached with a checked path inventory rather than by
+hand-editing the raw receipt:
+
+```bash
+./scripts/alpha-endurance \
+  --bind-release-receipt target/alpha-endurance/run/raw-receipt-v1.json \
+  --release-evidence-inventory release/evidence/alpha-endurance-inventory-v1.json \
+  --output release/evidence/alpha-endurance-v1.json
+```
+
+The inventory uses schema
+`riffdb.alpha-endurance-release-inventory/v1`, fixes the durable-format path to
+`release/durable-format-manifest-v1.json`, and supplies export/reimport,
+disaster-recovery, and conformance receipt paths for exactly `openfga`,
+`mlflow`, `payload`, and `woodpecker`. The binder derives all hashes itself,
+validates each referenced schema, adds canonical environment and observation
+digests, re-runs full 72-hour validation, and publishes through an atomic
+same-directory replacement. Paths outside the closed release prefixes or
+through symlinks are rejected.
 
 ## Receipt guarantees
 

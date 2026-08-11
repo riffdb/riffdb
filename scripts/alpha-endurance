@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -19,8 +20,10 @@ from typing import Any
 RECEIPT_SCHEMA = "riffdb.alpha-endurance-receipt/v1"
 MANIFEST_SCHEMA = "riffdb.alpha-endurance-manifest/v1"
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
+CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
 MAX_JSON_BYTES = 4 * 1024 * 1024
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
+REQUIRED_DOMAINS = {"openfga", "mlflow", "payload", "woodpecker"}
 REQUIRED_WORKLOADS = {
     "reads",
     "writes",
@@ -85,18 +88,28 @@ class EvidenceError(ValueError):
         self.code = code
 
 
-def read_json(candidate: Path) -> dict[str, Any]:
-    size = candidate.stat().st_size
-    if size <= 0 or size > MAX_JSON_BYTES:
+def read_json_with_digest(candidate: Path) -> tuple[dict[str, Any], str]:
+    try:
+        with candidate.open("rb") as source:
+            encoded = source.read(MAX_JSON_BYTES + 1)
+    except OSError as error:
+        raise EvidenceError("invalid_json_input", "JSON input cannot be read") from error
+    if not encoded or len(encoded) > MAX_JSON_BYTES:
         raise EvidenceError("invalid_receipt_size", "JSON input exceeds its closed byte bound")
-    with candidate.open(encoding="utf-8") as source:
-        value = json.load(source)
+    try:
+        value = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise EvidenceError("invalid_json_input", "JSON input is not canonical UTF-8 JSON") from error
     if not isinstance(value, dict):
         raise EvidenceError("invalid_receipt_shape", "JSON root must be an object")
-    return value
+    return value, hashlib.sha256(encoded).hexdigest()
 
 
-def canonical_digest(value: dict[str, Any]) -> str:
+def read_json(candidate: Path) -> dict[str, Any]:
+    return read_json_with_digest(candidate)[0]
+
+
+def canonical_digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -106,6 +119,10 @@ def require(condition: bool, code: str, detail: str) -> None:
         raise EvidenceError(code, detail)
 
 
+def exact_names(value: Any, expected: set[str]) -> bool:
+    return isinstance(value, list) and len(value) == len(expected) and all(isinstance(item, str) for item in value) and set(value) == expected
+
+
 def integer(value: Any, code: str, name: str) -> int:
     require(type(value) is int, code, f"{name} must be an integer")
     return int(value)
@@ -113,9 +130,9 @@ def integer(value: Any, code: str, name: str) -> int:
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
     require(manifest.get("schema") == MANIFEST_SCHEMA, "invalid_manifest", "wrong manifest schema")
-    require(set(manifest.get("languages", [])) == REQUIRED_LANGUAGES, "missing_language", "all four language clients are required")
+    require(exact_names(manifest.get("languages"), REQUIRED_LANGUAGES), "missing_language", "all four language clients are required")
     workload = manifest.get("workload", {})
-    require(set(workload.get("coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "workload coverage is incomplete")
+    require(exact_names(workload.get("coverage"), REQUIRED_WORKLOADS), "missing_workload", "workload coverage is incomplete")
     require(workload.get("mode") == "closed" and workload.get("bounded_rate") is True, "invalid_manifest", "workload must be closed and rate bounded")
     require(1 <= integer(workload.get("clients_per_language"), "invalid_manifest", "clients_per_language") <= 128, "invalid_manifest", "client count is invalid")
     require(1 <= integer(workload.get("maximum_total_operations_per_second"), "invalid_manifest", "maximum_total_operations_per_second") <= 100_000, "invalid_manifest", "operation rate is invalid")
@@ -170,7 +187,7 @@ def validate_actions(actions: dict[str, Any], manifest: dict[str, Any]) -> None:
         require(rate >= 1, "invalid_actions", "worker rate must be positive")
         total_rate += rate
         require(worker.get("tenants") == manifest["workload"]["tenants"], "invalid_actions", "worker tenants differ from the closed workload")
-        require(set(worker.get("coverage", [])) == REQUIRED_WORKLOADS, "invalid_actions", "worker coverage is incomplete")
+        require(exact_names(worker.get("coverage"), REQUIRED_WORKLOADS), "invalid_actions", "worker coverage is incomplete")
     require(languages == REQUIRED_LANGUAGES, "invalid_actions", "all language workers are required")
     require(total_rate <= manifest["workload"]["maximum_total_operations_per_second"], "invalid_actions", "worker rates exceed the closed workload bound")
     for section, required in (("lifecycles", REQUIRED_LIFECYCLES), ("faults", REQUIRED_FAULTS)):
@@ -188,7 +205,7 @@ def validate_actions(actions: dict[str, Any], manifest: dict[str, Any]) -> None:
         argv = item.get("command")
         require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", f"{section} command is not a bounded argv")
         require(1 <= integer(item.get("interval_seconds"), "invalid_actions", f"{section}.interval_seconds") <= 86400, "invalid_actions", f"{section} interval is invalid")
-    require(set(actions.get("workload_coverage", [])) == REQUIRED_WORKLOADS, "invalid_actions", "action workload coverage is incomplete")
+    require(exact_names(actions.get("workload_coverage"), REQUIRED_WORKLOADS), "invalid_actions", "action workload coverage is incomplete")
 
 
 def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
@@ -302,8 +319,8 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
     require(receipt.get("manifest_sha256") == canonical_digest(manifest), "manifest_mismatch", "receipt is not bound to the selected manifest")
     require(HEX_256.fullmatch(str(receipt.get("action_manifest_sha256", ""))) is not None, "manifest_mismatch", "action manifest digest is absent")
     require(HEX_256.fullmatch(str(receipt.get("release_artifact_sha256", ""))) is not None, "artifact_mismatch", "release artifact digest is absent")
-    require(set(receipt.get("languages_completed", [])) == REQUIRED_LANGUAGES, "missing_language", "not every language completed")
-    require(set(receipt.get("workload_coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "receipt workload coverage is incomplete")
+    require(exact_names(receipt.get("languages_completed"), REQUIRED_LANGUAGES), "missing_language", "not every language completed")
+    require(exact_names(receipt.get("workload_coverage"), REQUIRED_WORKLOADS), "missing_workload", "receipt workload coverage is incomplete")
     fault_counts = receipt.get("fault_counts", {})
     require(set(fault_counts) == REQUIRED_FAULTS, "missing_fault", "fault count inventory is incomplete")
     for name, policy in manifest["faults"].items():
@@ -334,8 +351,24 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
             require(kind == "fault" and name in observed_faults, "invalid_receipt", "action result name is unknown")
             observed_faults[name] += 1
     require(observed_lifecycles == counts and observed_faults == fault_counts, "invalid_receipt", "action result inventory differs from counters")
-    require(receipt.get("conformance", {}).get("all_passed") is True, "conformance_failed", "periodic conformance did not remain green")
-    require(integer(receipt.get("conformance", {}).get("checkpoints"), "invalid_receipt", "conformance.checkpoints") >= integer(manifest["bounds"]["minimum_conformance_checkpoints"], "invalid_manifest", "minimum_conformance_checkpoints"), "conformance_failed", "too few conformance checkpoints completed")
+    conformance = receipt.get("conformance", {})
+    require(conformance.get("all_passed") is True, "conformance_failed", "periodic conformance did not remain green")
+    conformance_count = integer(conformance.get("checkpoints"), "invalid_receipt", "conformance.checkpoints")
+    require(conformance_count >= integer(manifest["bounds"]["minimum_conformance_checkpoints"], "invalid_manifest", "minimum_conformance_checkpoints"), "conformance_failed", "too few conformance checkpoints completed")
+    conformance_results = conformance.get("results")
+    require(isinstance(conformance_results, list) and len(conformance_results) == conformance_count and len(conformance_results) <= manifest["bounds"]["maximum_observations"], "conformance_failed", "conformance result inventory is absent or unbounded")
+    expected_conformance_fields = {"schema", "status", "domains", "policy_probes_passed", "data_reconciliation_passed", "silent_loss", "evidence_sha256"}
+    for result in conformance_results:
+        require(isinstance(result, dict) and set(result) == expected_conformance_fields, "conformance_failed", "conformance result has an invalid shape")
+        require(result.get("schema") == CONFORMANCE_RESULT_SCHEMA and result.get("status") == "passed", "conformance_failed", "conformance result did not pass")
+        require(exact_names(result.get("domains"), REQUIRED_DOMAINS), "missing_domain", "conformance result omitted an adapter domain")
+        require(result.get("policy_probes_passed") is True, "policy_mismatch", "conformance policy probes failed")
+        require(result.get("data_reconciliation_passed") is True and integer(result.get("silent_loss"), "invalid_receipt", "silent_loss") == 0, "data_loss", "conformance reconciliation found loss")
+        require(HEX_256.fullmatch(str(result.get("evidence_sha256", ""))) is not None, "conformance_failed", "conformance evidence digest is invalid")
+    require(exact_names(receipt.get("domains_completed"), REQUIRED_DOMAINS), "missing_domain", "not every adapter domain completed")
+    require(receipt.get("policy_probes", {}).get("all_passed") is True, "policy_mismatch", "periodic policy probes did not remain green")
+    reconciliation = receipt.get("data_reconciliation", {})
+    require(reconciliation.get("all_passed") is True and integer(reconciliation.get("silent_loss"), "invalid_receipt", "silent_loss") == 0, "data_loss", "endurance reconciliation found loss or drift")
     require(receipt.get("unsupported_storage_unavailable", 0) == 0, "storage_unavailable", "unsupported storage-unavailable result observed")
     require(receipt.get("errors", []) == [], "runtime_error", "endurance run contains public failures")
     inventory = receipt.get("process_inventory", {})
@@ -344,6 +377,87 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
     observed_processes = max(integer(sample["process_count"], "invalid_observation", "process_count") for sample in observations)
     require(inventory.get("arguments_included") is False and integer(inventory.get("maximum_processes"), "invalid_receipt", "maximum_processes") == observed_processes and observed_processes <= integer(manifest["bounds"]["maximum_processes"], "invalid_manifest", "maximum_processes"), "unbounded_inventory", "process inventory is unbounded, inaccurate, or contains arguments")
     validate_growth(observations, manifest)
+
+
+def resolve_release_candidate(relative: Any, root: Path, prefix: str) -> Path:
+    require(isinstance(relative, str) and relative.startswith(prefix) and ".." not in Path(relative).parts, "release_binding_invalid", "release evidence path is outside its closed prefix")
+    candidate = root / relative
+    require(candidate.is_file() and not candidate.is_symlink(), "release_binding_missing", f"release evidence is absent: {relative}")
+    prefix_root = (root / prefix.rstrip("/")).resolve()
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(prefix_root)
+    except ValueError as error:
+        raise EvidenceError("release_binding_invalid", "release evidence resolves outside its closed prefix") from error
+    require(resolved == candidate.absolute(), "release_binding_invalid", "release evidence path traverses a symlink")
+    return candidate
+
+
+def validate_release_reference(reference: Any, root: Path, prefix: str, expected_schema: str, required_domain: str | None = None) -> None:
+    require(isinstance(reference, dict) and set(reference) == {"path", "sha256"}, "release_binding_invalid", "release evidence reference has an invalid shape")
+    relative = reference.get("path")
+    candidate = resolve_release_candidate(relative, root, prefix)
+    document, actual_digest = read_json_with_digest(candidate)
+    expected = reference.get("sha256")
+    require(HEX_256.fullmatch(str(expected)) is not None and actual_digest == expected, "release_binding_mismatch", f"release evidence digest differs: {relative}")
+    require(document.get("schema") == expected_schema, "release_binding_invalid", f"release evidence has the wrong schema: {relative}")
+    if required_domain is not None:
+        adapters = document.get("adapters", [])
+        require(document.get("adapter") == required_domain or (isinstance(adapters, list) and required_domain in adapters), "release_binding_invalid", f"release evidence does not cover {required_domain}: {relative}")
+
+
+def materialize_release_reference(relative: Any, root: Path, prefix: str, expected_schema: str, required_domain: str | None = None) -> dict[str, str]:
+    candidate = resolve_release_candidate(relative, root, prefix)
+    document, digest = read_json_with_digest(candidate)
+    reference = {"path": relative, "sha256": digest}
+    require(document.get("schema") == expected_schema, "release_binding_invalid", f"release evidence has the wrong schema: {relative}")
+    if required_domain is not None:
+        adapters = document.get("adapters", [])
+        require(document.get("adapter") == required_domain or (isinstance(adapters, list) and required_domain in adapters), "release_binding_invalid", f"release evidence does not cover {required_domain}: {relative}")
+    return reference
+
+
+def validate_release_receipt(receipt: dict[str, Any], manifest: dict[str, Any], root: Path) -> None:
+    validate_receipt(receipt, manifest, 72)
+    bindings = receipt.get("release_bindings")
+    require(isinstance(bindings, dict) and bindings.get("schema") == "riffdb.alpha-endurance-release-bindings/v1", "release_binding_invalid", "release bindings are absent")
+    require(bindings.get("environment_sha256") == canonical_digest(receipt["host_validity"]), "release_binding_mismatch", "environment binding differs from host inventory")
+    require(bindings.get("observations_sha256") == canonical_digest(receipt["observations"]), "release_binding_mismatch", "observation binding differs from retained samples")
+    validate_release_reference(bindings.get("durable_format"), root, "release/", "riffdb.durable-format-manifest/v1")
+    adapters = bindings.get("adapters")
+    require(isinstance(adapters, dict) and set(adapters) == REQUIRED_DOMAINS, "release_binding_invalid", "adapter release bindings are incomplete")
+    for domain, evidence in adapters.items():
+        require(isinstance(evidence, dict) and set(evidence) == {"export_reimport", "disaster_recovery", "conformance"}, "release_binding_invalid", f"{domain} evidence classes are incomplete")
+        validate_release_reference(evidence["export_reimport"], root, "release/evidence/", "riffdb.adapter-export-reimport-receipt/v1", domain)
+        validate_release_reference(evidence["disaster_recovery"], root, "release/evidence/", "riffdb.adapter-disaster-receipt/v1", domain)
+        validate_release_reference(evidence["conformance"], root, "release/evidence/", "riffdb.adapter-conformance-observation/v1", domain)
+
+
+def bind_release_receipt(receipt: dict[str, Any], inventory: dict[str, Any], manifest: dict[str, Any], root: Path) -> dict[str, Any]:
+    validate_receipt(receipt, manifest, 72)
+    require(inventory.get("schema") == "riffdb.alpha-endurance-release-inventory/v1", "release_binding_invalid", "release evidence inventory has the wrong schema")
+    require(set(inventory) == {"schema", "durable_format", "adapters"}, "release_binding_invalid", "release evidence inventory has an invalid shape")
+    require(inventory.get("durable_format") == "release/durable-format-manifest-v1.json", "release_binding_invalid", "durable-format evidence path is not canonical")
+    adapters = inventory.get("adapters")
+    require(isinstance(adapters, dict) and set(adapters) == REQUIRED_DOMAINS, "release_binding_invalid", "release evidence inventory omits an adapter")
+    bound_adapters: dict[str, Any] = {}
+    for domain, evidence in adapters.items():
+        require(isinstance(evidence, dict) and set(evidence) == {"export_reimport", "disaster_recovery", "conformance"}, "release_binding_invalid", f"{domain} evidence inventory is incomplete")
+        bound_adapters[domain] = {
+            "export_reimport": materialize_release_reference(evidence["export_reimport"], root, "release/evidence/", "riffdb.adapter-export-reimport-receipt/v1", domain),
+            "disaster_recovery": materialize_release_reference(evidence["disaster_recovery"], root, "release/evidence/", "riffdb.adapter-disaster-receipt/v1", domain),
+            "conformance": materialize_release_reference(evidence["conformance"], root, "release/evidence/", "riffdb.adapter-conformance-observation/v1", domain),
+        }
+    bound = copy.deepcopy(receipt)
+    bound["release_bindings"] = {
+        "schema": "riffdb.alpha-endurance-release-bindings/v1",
+        "environment_sha256": canonical_digest(receipt["host_validity"]),
+        "observations_sha256": canonical_digest(receipt["observations"]),
+        "durable_format": materialize_release_reference(inventory["durable_format"], root, "release/", "riffdb.durable-format-manifest/v1"),
+        "adapters": bound_adapters,
+    }
+    validate_release_receipt(bound, manifest, root)
+    return bound
 
 
 def base_manifest() -> dict[str, Any]:
@@ -464,6 +578,18 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
                         "recovered": True,
                     }
                 )
+    conformance_results = [
+        {
+            "schema": CONFORMANCE_RESULT_SCHEMA,
+            "status": "passed",
+            "domains": sorted(REQUIRED_DOMAINS),
+            "policy_probes_passed": True,
+            "data_reconciliation_passed": True,
+            "silent_loss": 0,
+            "evidence_sha256": hashlib.sha256(f"conformance:{ordinal}".encode()).hexdigest(),
+        }
+        for ordinal in range(4)
+    ]
     return {
         "schema": RECEIPT_SCHEMA,
         "status": "passed",
@@ -478,7 +604,10 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
         "fault_counts": fault_counts,
         "lifecycle_counts": lifecycle_counts,
         "action_results": action_results,
-        "conformance": {"all_passed": True, "checkpoints": 4},
+        "conformance": {"all_passed": True, "checkpoints": 4, "results": conformance_results},
+        "domains_completed": sorted(REQUIRED_DOMAINS),
+        "policy_probes": {"all_passed": True},
+        "data_reconciliation": {"all_passed": True, "silent_loss": 0},
         "unsupported_storage_unavailable": 0,
         "errors": [],
         "process_inventory": {"arguments_included": False, "maximum_processes": 24},
@@ -559,6 +688,9 @@ def self_test() -> None:
         ("forged_action_result", "invalid_receipt", lambda value: value["action_results"][0].update(evidence_sha256="not-a-digest")),
         ("inaccurate_process_inventory", "unbounded_inventory", lambda value: value["process_inventory"].update(maximum_processes=25)),
         ("too_few_conformance_checks", "conformance_failed", lambda value: value["conformance"].update(checkpoints=1)),
+        ("missing_domain", "missing_domain", lambda value: value["domains_completed"].pop()),
+        ("policy_mismatch", "policy_mismatch", lambda value: value["policy_probes"].update(all_passed=False)),
+        ("data_loss", "data_loss", lambda value: value["data_reconciliation"].update(silent_loss=1)),
         ("resource_leak", "resource_leak", lambda value: value["observations"][-1].update(rss_bytes=999_000_000)),
         ("quadratic_lifecycle", "quadratic_lifecycle", lambda value: value["observations"][-1].update(lifecycle_seconds=1000)),
         ("queue_growth", "queue_growth", lambda value: value["observations"][-1].update(writer_queue_depth=513)),
@@ -573,6 +705,64 @@ def self_test() -> None:
         mutate(candidate)
         expect_rejection(name, candidate, manifest, code)
     validate_receipt(valid, manifest, 1)
+    release_candidate = base_receipt(manifest, 72)
+    try:
+        validate_release_receipt(release_candidate, manifest, Path(__file__).resolve().parent.parent)
+    except EvidenceError as error:
+        if error.code != "release_binding_invalid":
+            raise
+        print("release_evidence_omission: rejected")
+    else:
+        raise AssertionError("unbound release receipt passed")
+    task_tmp_root = Path(os.environ.get("RIFFDB_TMP_ROOT", Path.home() / "tmp"))
+    task_tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="riffdb-endurance-release-", dir=task_tmp_root) as temporary:
+        release_root = Path(temporary)
+        evidence_root = release_root / "release/evidence"
+        evidence_root.mkdir(parents=True)
+
+        def write_fixture(relative: str, schema: str, domain: str | None = None) -> None:
+            candidate = release_root / relative
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            document = {"schema": schema}
+            if domain is not None:
+                document["adapter"] = domain
+            with candidate.open("w", encoding="utf-8") as destination:
+                json.dump(document, destination, sort_keys=True)
+                destination.write("\n")
+
+        write_fixture("release/durable-format-manifest-v1.json", "riffdb.durable-format-manifest/v1")
+        inventory_adapters = {}
+        for domain in sorted(REQUIRED_DOMAINS):
+            export_path = f"release/evidence/{domain}-export.json"
+            disaster_path = f"release/evidence/{domain}-disaster.json"
+            conformance_path = f"release/evidence/{domain}-conformance.json"
+            write_fixture(export_path, "riffdb.adapter-export-reimport-receipt/v1", domain)
+            write_fixture(disaster_path, "riffdb.adapter-disaster-receipt/v1", domain)
+            write_fixture(conformance_path, "riffdb.adapter-conformance-observation/v1", domain)
+            inventory_adapters[domain] = {
+                "export_reimport": export_path,
+                "disaster_recovery": disaster_path,
+                "conformance": conformance_path,
+            }
+        inventory = {
+            "schema": "riffdb.alpha-endurance-release-inventory/v1",
+            "durable_format": "release/durable-format-manifest-v1.json",
+            "adapters": inventory_adapters,
+        }
+        bound = bind_release_receipt(release_candidate, inventory, manifest, release_root)
+        validate_release_receipt(bound, manifest, release_root)
+        forged = copy.deepcopy(bound)
+        forged["release_bindings"]["adapters"]["payload"]["conformance"]["sha256"] = "0" * 64
+        try:
+            validate_release_receipt(forged, manifest, release_root)
+        except EvidenceError as error:
+            if error.code != "release_binding_mismatch":
+                raise
+            print("forged_release_binding: rejected")
+        else:
+            raise AssertionError("forged release binding passed")
+    print("bound_release_receipt: passed")
     print("valid_complete_run: passed")
 
 
@@ -636,6 +826,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--validate-receipt")
+    parser.add_argument("--verify-release-receipt")
+    parser.add_argument("--bind-release-receipt")
+    parser.add_argument("--release-evidence-inventory")
     parser.add_argument("--manifest", default="fixtures/endurance/alpha-manifest-v1.json")
     parser.add_argument("--duration-hours", type=int)
     parser.add_argument("--all-domains", action="store_true")
@@ -654,6 +847,33 @@ def main() -> int:
 
     manifest = read_json(Path(arguments.manifest))
     validate_manifest(manifest)
+    if arguments.bind_release_receipt:
+        require(arguments.release_evidence_inventory is not None and arguments.duration_hours is None and not arguments.validate_receipt and not arguments.verify_release_receipt, "invalid_invocation", "release binding requires one raw receipt and evidence inventory")
+        root = Path(__file__).resolve().parent.parent
+        bound = bind_release_receipt(
+            read_json(Path(arguments.bind_release_receipt)),
+            read_json(Path(arguments.release_evidence_inventory)),
+            manifest,
+            root,
+        )
+        output = Path(arguments.output).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pending = output.with_name(f".{output.name}.{os.getpid()}.pending")
+        try:
+            with pending.open("x", encoding="utf-8") as destination:
+                json.dump(bound, destination, sort_keys=True, indent=2)
+                destination.write("\n")
+            os.replace(pending, output)
+        finally:
+            if pending.exists():
+                pending.unlink()
+        print(f"alpha endurance release receipt: {output}")
+        return 0
+    if arguments.verify_release_receipt:
+        require(arguments.duration_hours is None and not arguments.validate_receipt, "invalid_invocation", "release verification fixes the duration at 72 hours")
+        validate_release_receipt(read_json(Path(arguments.verify_release_receipt)), manifest, Path(__file__).resolve().parent.parent)
+        print("alpha endurance release receipt: passed")
+        return 0
     if arguments.validate_receipt:
         require(arguments.duration_hours is not None, "invalid_invocation", "receipt validation requires --duration-hours")
         validate_receipt(read_json(Path(arguments.validate_receipt)), manifest, arguments.duration_hours)

@@ -20,7 +20,9 @@ MAX_ARGUMENTS = 64
 MAX_SAMPLES = 10000
 MAX_ACTION_RESULT_BYTES = 64 * 1024
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
+CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
+REQUIRED_DOMAINS = {"openfga", "mlflow", "payload", "woodpecker"}
 REQUIRED_LIFECYCLES = {
     "journal_recycle",
     "checkpoint",
@@ -52,6 +54,10 @@ def command(value: Any, name: str) -> list[str]:
     if not all(isinstance(part, str) and part and "\x00" not in part for part in value):
         fail(f"{name} contains an invalid argument")
     return value
+
+
+def exact_names(value: Any, expected: set[str]) -> bool:
+    return isinstance(value, list) and len(value) == len(expected) and all(isinstance(item, str) for item in value) and set(value) == expected
 
 
 def load_actions(candidate: Path) -> dict[str, Any]:
@@ -175,6 +181,42 @@ def parse_action_result(output: str, kind: str, name: str) -> dict[str, Any]:
     return value
 
 
+def parse_conformance_result(output: str) -> dict[str, Any]:
+    if not 0 < len(output.encode()) <= MAX_ACTION_RESULT_BYTES:
+        fail("conformance result is absent or exceeds its byte bound")
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as error:
+        fail(f"conformance result is not JSON: {error}")
+    expected = {
+        "schema",
+        "status",
+        "domains",
+        "policy_probes_passed",
+        "data_reconciliation_passed",
+        "silent_loss",
+        "evidence_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        fail("conformance result has an invalid shape")
+    digest = value.get("evidence_sha256")
+    try:
+        valid_digest = isinstance(digest, str) and len(digest) == 64 and int(digest, 16) >= 0
+    except ValueError:
+        valid_digest = False
+    if (
+        value.get("schema") != CONFORMANCE_RESULT_SCHEMA
+        or value.get("status") != "passed"
+        or not exact_names(value.get("domains"), REQUIRED_DOMAINS)
+        or value.get("policy_probes_passed") is not True
+        or value.get("data_reconciliation_passed") is not True
+        or value.get("silent_loss") != 0
+        or not valid_digest
+    ):
+        fail("conformance result did not prove domain, policy, and data parity")
+    return value
+
+
 def self_test() -> None:
     valid = json.dumps(
         {
@@ -198,6 +240,27 @@ def self_test() -> None:
     else:
         fail("nonadvancing lifecycle result passed")
     print("bounded_action_result: passed")
+    conformance = json.dumps(
+        {
+            "schema": CONFORMANCE_RESULT_SCHEMA,
+            "status": "passed",
+            "domains": sorted(REQUIRED_DOMAINS),
+            "policy_probes_passed": True,
+            "data_reconciliation_passed": True,
+            "silent_loss": 0,
+            "evidence_sha256": "b" * 64,
+        }
+    )
+    parse_conformance_result(conformance)
+    invalid_conformance = json.loads(conformance)
+    invalid_conformance["silent_loss"] = 1
+    try:
+        parse_conformance_result(json.dumps(invalid_conformance))
+    except ValueError:
+        print("silent_loss_conformance: rejected")
+    else:
+        fail("silent-loss conformance result passed")
+    print("bounded_conformance_result: passed")
 
 
 def main() -> int:
@@ -228,6 +291,7 @@ def main() -> int:
     observations: list[dict[str, Any]] = []
     action_results: list[dict[str, Any]] = []
     conformance_checkpoints = 0
+    conformance_results: list[dict[str, Any]] = []
 
     for worker in action_manifest["workers"]:
         worker_environment = environment.copy()
@@ -285,6 +349,7 @@ def main() -> int:
                 if result.returncode != 0:
                     errors.append({"code": "conformance_failed", "status": result.returncode})
                     break
+                conformance_results.append(parse_conformance_result(result.stdout))
                 conformance_checkpoints += 1
                 next_conformance = now + action_manifest["conformance"]["interval_seconds"]
             for item in action_manifest["lifecycles"]:
@@ -337,7 +402,17 @@ def main() -> int:
         "fault_counts": fault_counts,
         "lifecycle_counts": lifecycle_counts,
         "action_results": action_results,
-        "conformance": {"all_passed": not any(item["code"] == "conformance_failed" for item in errors), "checkpoints": conformance_checkpoints},
+        "conformance": {
+            "all_passed": not any(item["code"] == "conformance_failed" for item in errors),
+            "checkpoints": conformance_checkpoints,
+            "results": conformance_results,
+        },
+        "domains_completed": sorted(REQUIRED_DOMAINS) if conformance_results and not errors else [],
+        "policy_probes": {"all_passed": bool(conformance_results) and not errors},
+        "data_reconciliation": {
+            "all_passed": bool(conformance_results) and not errors,
+            "silent_loss": 0,
+        },
         "unsupported_storage_unavailable": sum(1 for item in errors if item["code"] == "storage_unavailable"),
         "errors": errors,
         "process_inventory": {

@@ -48,6 +48,9 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     assert!(stdout.contains("forged_action_result: rejected"));
     assert!(stdout.contains("inaccurate_process_inventory: rejected"));
     assert!(stdout.contains("too_few_conformance_checks: rejected"));
+    assert!(stdout.contains("missing_domain: rejected"));
+    assert!(stdout.contains("policy_mismatch: rejected"));
+    assert!(stdout.contains("data_loss: rejected"));
     assert!(stdout.contains("resource_leak: rejected"));
     assert!(stdout.contains("quadratic_lifecycle: rejected"));
     assert!(stdout.contains("queue_growth: rejected"));
@@ -56,6 +59,9 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     assert!(stdout.contains("starvation: rejected"));
     assert!(stdout.contains("storage_unavailable: rejected"));
     assert!(stdout.contains("conformance_failure: rejected"));
+    assert!(stdout.contains("release_evidence_omission: rejected"));
+    assert!(stdout.contains("forged_release_binding: rejected"));
+    assert!(stdout.contains("bound_release_receipt: passed"));
     assert!(stdout.contains("valid_complete_run: passed"));
 }
 
@@ -78,4 +84,6 @@ fn controller_rejects_unreceipted_lifecycle_success() {
     let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
     assert!(stdout.contains("nonadvancing_lifecycle_result: rejected"));
     assert!(stdout.contains("bounded_action_result: passed"));
+    assert!(stdout.contains("silent_loss_conformance: rejected"));
+    assert!(stdout.contains("bounded_conformance_result: passed"));
 }
