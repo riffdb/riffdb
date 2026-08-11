@@ -12,12 +12,18 @@ use riffdb_types::{
     MAX_STRING_BYTES, Money, Timestamp, decode_canonical_value, encode_canonical_value,
 };
 
-/// Finite components across magnitudes, including exact zero. Construction
-/// canonicalizes -0.0, so the generated vector is always in canonical form.
+/// Finite components across magnitudes, including exact zero and subnormals.
+/// Construction canonicalizes -0.0, so the generated vector is always in
+/// canonical form.
 fn finite_component() -> BoxedStrategy<f32> {
     prop_oneof![
         Just(0.0_f32),
         Just(-0.0_f32),
+        // Subnormals (positive and negative): denormals are accepted as
+        // canonical, so the trait-square property must cover them.
+        Just(f32::from_bits(1)),
+        any::<u32>().prop_map(|bits| f32::from_bits(bits % 0x0080_0000)),
+        any::<u32>().prop_map(|bits| -f32::from_bits(bits % 0x0080_0000)),
         -1.0e30_f32..1.0e30_f32,
         -1.0_f32..1.0_f32,
     ]
@@ -128,10 +134,19 @@ proptest! {
     /// canonical domain, equality, ordering, hashing, and durable bytes must
     /// all agree — `a == b` iff `cmp == Equal` iff equal hashes iff equal
     /// encoded documents.
+    ///
+    /// `right` is DERIVED from `left` half the time (an equal pair via clone,
+    /// possibly re-canonicalized through zero-sign flips) rather than drawn
+    /// independently: two independent draws are essentially never equal, so
+    /// the equal-pair arms of the biconditionals — the positive direction of
+    /// hash and byte agreement — previously never executed. Measured over the
+    /// shipped strategy, the `if equal` branch ran on 0 of 256 cases.
     #[test]
     fn vector_equality_ordering_hash_and_digest_agree(
         left in canonical_vector(),
-        right in canonical_vector(),
+        independent in canonical_vector(),
+        derive_equal in any::<bool>(),
+        flip_zero_signs in any::<bool>(),
     ) {
         use std::hash::{Hash, Hasher};
         let hash_of = |vector: &CanonicalVector| {
@@ -143,7 +158,31 @@ proptest! {
         prop_assert_eq!(&left, &left.clone());
         prop_assert_eq!(left.cmp(&left.clone()), std::cmp::Ordering::Equal);
 
+        let right = if derive_equal {
+            // An equal pair, optionally rebuilt through the constructor with
+            // every zero's sign flipped: canonicalization makes the results
+            // equal AND bit-identical, so the positive hash/byte legs run.
+            if flip_zero_signs {
+                CanonicalVector::new(
+                    left.components()
+                        .iter()
+                        .map(|component| if *component == 0.0 { -0.0 } else { *component })
+                        .collect(),
+                )
+                .expect("canonical components stay canonical")
+            } else {
+                left.clone()
+            }
+        } else {
+            independent
+        };
+
         let equal = left == right;
+        // The derived pair really is equal: the positive hash/byte legs
+        // below run on roughly half of all cases, never on none.
+        if derive_equal {
+            prop_assert!(equal, "derived pair must compare equal");
+        }
         prop_assert_eq!(equal, left.cmp(&right) == std::cmp::Ordering::Equal);
         if equal {
             prop_assert_eq!(hash_of(&left), hash_of(&right));
@@ -153,6 +192,56 @@ proptest! {
         let right_bytes =
             encode_canonical_value(&CanonicalValue::Vector(right)).expect("bounded");
         prop_assert_eq!(equal, left_bytes == right_bytes);
+    }
+}
+
+/// The canonical-form predicate exists twice — the constructor canonicalizes
+/// (`CanonicalVector::new`) and the strict decoder rejects (`codec.rs`) —
+/// and nothing but this test forces the two to stay coupled. The invariant:
+/// the decoder accepts a component bit pattern IF AND ONLY IF the
+/// constructor preserves that exact bit pattern. If either side drifts
+/// (constructor accepts a new pattern the decoder rejects, or the decoder
+/// admits bytes the constructor would rewrite), decode/encode stops being an
+/// isomorphism and this test reds.
+#[test]
+fn decoder_acceptance_coincides_with_constructor_bit_preservation() {
+    let probes: [(u32, &str); 12] = [
+        (0x7FC0_0000, "quiet NaN"),
+        (0x7FA0_0000, "signaling NaN"),
+        (0xFFC0_0000, "negative NaN"),
+        (0x7F80_0000, "+infinity"),
+        (0xFF80_0000, "-infinity"),
+        (0x8000_0000, "-0.0"),
+        (0x0000_0000, "+0.0"),
+        (0x3F80_0000, "1.0"),
+        (0x0000_0001, "min positive subnormal"),
+        (0x807F_FFFF, "max negative subnormal"),
+        (0x7F7F_FFFF, "f32::MAX"),
+        (0xFF7F_FFFF, "f32::MIN"),
+    ];
+    for (bits, label) in probes {
+        // Craft the exact durable bytes: version, vector tag 0x0e,
+        // dimension 1, one big-endian component.
+        let mut bytes = vec![0x01, 0x0e, 0, 0, 0, 1];
+        bytes.extend_from_slice(&bits.to_be_bytes());
+        let decoded = decode_canonical_value(&bytes);
+
+        let constructor_preserves_bits = CanonicalVector::new(vec![f32::from_bits(bits)])
+            .is_ok_and(|vector| vector.components()[0].to_bits() == bits);
+
+        assert_eq!(
+            decoded.is_ok(),
+            constructor_preserves_bits,
+            "{label}: decoder acceptance must coincide with the constructor \
+             preserving the bit pattern (decoded = {decoded:?})"
+        );
+        if let Ok(CanonicalValue::Vector(vector)) = &decoded {
+            assert_eq!(
+                vector.components()[0].to_bits(),
+                bits,
+                "{label}: accepted bytes must decode bit-identically"
+            );
+        }
     }
 }
 
