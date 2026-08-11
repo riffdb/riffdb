@@ -246,3 +246,16 @@ rank, aggregate, cursor, or observable work class.
 
 Exact acceptance is required before row-policy grammar, capability attributes,
 policy IR, role identity, query/mutation authorization, or adapter claims change.
+
+### Amendment 2: alpha acceptance adapter swap — Better Auth replaces Payload (2026-08-11)
+
+- **Status:** Proposed
+
+The maintainer rescoped the alpha adapter set: Better Auth replaces Payload
+as the row-policy acceptance workload, and Payload's shape moves to the
+post-alpha list. This record's Payload references remain as motivating
+context; the binding acceptance evidence becomes Better Auth per-principal
+row policies (a principal reads only its own sessions, accounts, and
+verification state; administrative visibility is an explicit grant) and the
+existing MLflow experiment/run permission acceptance, in every generated
+language. No policy semantics change; only the acceptance workload does.

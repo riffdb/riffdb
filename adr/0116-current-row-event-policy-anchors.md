@@ -206,8 +206,9 @@ protection, or expose hidden-candidate cardinality.
   missing rows, revocation, role rotation, seek/replay, lease expiry, and crash.
 - Inference tests prove hidden events affect no visible item limit, inflight
   count, notification, result count, event identity, or cursor contents.
-- TicketDesk, Payload, MLflow, and Woodpecker contextual/event acceptance under
-  the same pure row-policy evaluator.
+- TicketDesk, Better Auth, MLflow, and Woodpecker contextual/event acceptance
+  under the same pure row-policy evaluator (Payload deferred post-alpha;
+  maintainer scope decision 2026-08-11).
 
 ## Acceptance
 
