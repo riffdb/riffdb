@@ -1,4 +1,4 @@
-//! Source-oriented syntax tree for contract grammar version 3.
+//! Source-oriented syntax tree for contract grammar version 4.
 
 pub use crate::span::{Span, Spanned};
 
@@ -37,6 +37,97 @@ pub enum Declaration {
     Workflow(WorkflowDeclaration),
     /// An event-derived projection declaration.
     Projection(ProjectionDeclaration),
+    /// One compiler-visible principal fact schema.
+    PrincipalFact(PrincipalFactDeclaration),
+    /// One closed principal-aware entity row policy.
+    RowPolicy(RowPolicyDeclaration),
+}
+
+/// One bounded current-capability fact available to row policies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrincipalFactDeclaration {
+    /// Symbolic fact name.
+    pub name: Spanned<String>,
+    /// Closed scalar or bounded-list public value type.
+    pub ty: Spanned<TypeExpression>,
+}
+
+/// One named row policy attached to one entity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RowPolicyDeclaration {
+    /// Policy symbol.
+    pub name: Spanned<String>,
+    /// Protected entity symbol.
+    pub entity: Spanned<String>,
+    /// Nonempty closed operation rules.
+    pub rules: Vec<Spanned<RowPolicyRule>>,
+}
+
+/// One operation-specific allow rule. Absence is deny.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RowPolicyRule {
+    /// Protected operation class.
+    pub operation: Spanned<RowPolicyOperation>,
+    /// Closed boolean predicate.
+    pub expression: Spanned<RowPolicyExpression>,
+}
+
+/// Closed alpha row-policy operation classes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowPolicyOperation {
+    /// Read one current row.
+    Read,
+    /// Create one proposed row.
+    Create,
+    /// Update one current row to one proposed row.
+    Update,
+    /// Delete one current row.
+    Delete,
+}
+
+/// Source-oriented expression accepted only inside a row policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RowPolicyExpression {
+    /// A literal lexeme.
+    Literal(Spanned<Literal>),
+    /// A row, principal, or principal-fact path.
+    Path(Spanned<Path>),
+    /// A parenthesized policy expression.
+    Parenthesized(Box<Spanned<RowPolicyExpression>>),
+    /// Boolean negation.
+    Not(Box<Spanned<RowPolicyExpression>>),
+    /// A closed comparison or boolean operation.
+    Binary {
+        /// Left operand.
+        left: Box<Spanned<RowPolicyExpression>>,
+        /// Closed operator.
+        operator: Spanned<BinaryOperator>,
+        /// Right operand.
+        right: Box<Spanned<RowPolicyExpression>>,
+    },
+    /// Membership in one compiler-declared bounded principal-fact list.
+    In {
+        /// Candidate scalar.
+        needle: Box<Spanned<RowPolicyExpression>>,
+        /// Bounded fact-list path.
+        haystack: Box<Spanned<RowPolicyExpression>>,
+    },
+    /// Explicit null/existence test over one optional value.
+    IsNull {
+        /// Tested value.
+        value: Box<Spanned<RowPolicyExpression>>,
+        /// `true` for `is not null`.
+        negated: bool,
+    },
+    /// One compiler-resolved indexed partition-local relationship probe.
+    Exists {
+        /// Related entity symbol.
+        entity: Spanned<String>,
+        /// Exact declared index symbol.
+        index: Spanned<String>,
+        /// Complete index arguments.
+        arguments: Vec<Spanned<RowPolicyExpression>>,
+    },
 }
 
 /// One compiler-visible workflow over one aggregate-owned entity.

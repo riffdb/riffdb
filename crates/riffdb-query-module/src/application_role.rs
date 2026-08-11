@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU16;
 
-use riffdb_contract_ir::ContractBundle;
+use riffdb_contract_ir::{
+    BindingMode, ContractBundle, RowPolicyExpressionNodeV1, RowPolicyOperationV1, RowPolicyPlanV1,
+    RowPolicyValueSourceV1,
+};
 use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
     ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1, CapabilityPermissionKindV1,
@@ -18,6 +21,7 @@ use crate::{ApplicationManifest, ManifestRole, ManifestTenantScope, QueryModule}
 const ROLE_MAGIC: &[u8] = b"RIFFDB-APPLICATION-ROLE\0";
 const ROLE_FORMAT_VERSION_V1: u32 = 1;
 const ROLE_FORMAT_VERSION_V2: u32 = 2;
+const ROLE_FORMAT_VERSION_V3: u32 = 3;
 const MAX_ROLE_BYTES: usize = 1024 * 1024;
 
 /// Symbolic operation kind exposed by a compiled application role.
@@ -40,6 +44,55 @@ pub enum ApplicationRoleOperationKind {
 pub struct ApplicationRoleOperation {
     kind: ApplicationRoleOperationKind,
     name: String,
+}
+
+/// One safe name-only row-policy description attached to a compiled role.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationRolePolicy {
+    name: String,
+    entity: String,
+    operations: Vec<RowPolicyOperationV1>,
+}
+
+impl ApplicationRolePolicy {
+    /// Symbolic policy name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Symbolic protected entity name.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Closed operation rules present in the policy.
+    #[must_use]
+    pub fn operations(&self) -> &[RowPolicyOperationV1] {
+        &self.operations
+    }
+}
+
+/// One safe compiler-visible principal-fact requirement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationRoleFactSchema {
+    name: String,
+    value_type: String,
+}
+
+impl ApplicationRoleFactSchema {
+    /// Symbolic fact name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Symbolic public type spelling without stable numeric IDs.
+    #[must_use]
+    pub fn value_type(&self) -> &str {
+        &self.value_type
+    }
 }
 
 impl ApplicationRoleOperation {
@@ -70,6 +123,8 @@ pub struct CompiledApplicationRole {
     module_hashes: Vec<QueryModuleHash>,
     reactive_module_hashes: Vec<ReactiveModuleHash>,
     operations: Vec<ApplicationRoleOperation>,
+    row_policies: Vec<ApplicationRolePolicy>,
+    principal_fact_schemas: Vec<ApplicationRoleFactSchema>,
     identity: ApplicationRoleHash,
     grant: CapabilityGrantV1,
 }
@@ -140,6 +195,18 @@ impl CompiledApplicationRole {
         &self.operations
     }
 
+    /// Safe symbolic row-policy catalog for this exact role.
+    #[must_use]
+    pub fn row_policies(&self) -> &[ApplicationRolePolicy] {
+        &self.row_policies
+    }
+
+    /// Safe required principal-fact schemas. Actual capability facts remain hidden.
+    #[must_use]
+    pub fn principal_fact_schemas(&self) -> &[ApplicationRoleFactSchema] {
+        &self.principal_fact_schemas
+    }
+
     /// Domain-separated role identity covering all public and private requirements.
     #[must_use]
     pub const fn identity(&self) -> ApplicationRoleHash {
@@ -167,6 +234,10 @@ pub enum ApplicationRoleErrorKind {
     ModuleMismatch,
     /// The role names an unknown compiled command or query.
     UnknownOperation,
+    /// A named policy is absent, duplicated by entity, or unavailable to this role schema.
+    UnknownPolicy,
+    /// One protected operation has no selected policy rule.
+    PolicyCoverage,
     /// A compiler-owned authority or cost bound cannot be represented safely.
     RequirementLimit,
 }
@@ -206,6 +277,12 @@ impl fmt::Display for ApplicationRoleError {
             }
             ApplicationRoleErrorKind::UnknownOperation => {
                 "application role names an operation absent from the exact compiled application"
+            }
+            ApplicationRoleErrorKind::UnknownPolicy => {
+                "application role names an unavailable or ambiguous row policy"
+            }
+            ApplicationRoleErrorKind::PolicyCoverage => {
+                "application role row policy does not cover a protected operation"
             }
             ApplicationRoleErrorKind::RequirementLimit => {
                 "application role derived authority exceeds a hard safety bound"
@@ -264,6 +341,8 @@ fn compile_application_role_inner(
     let environment = Environment::new(role.environment())
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     let module_by_query = validate_modules(manifest, contract, modules)?;
+    let (selected_policies, row_policies, principal_fact_schemas) =
+        compile_role_policies(manifest, role, contract)?;
 
     let lineage = contract.lineage().clone();
     // ADR-0056 makes contract-description access a compiler-derived part of
@@ -287,11 +366,7 @@ fn compile_application_role_inner(
             .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
         let operation_name = QueryOperationName::new(query_name.clone())
             .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
-        permissions.push(CapabilityPermissionV1::ExecuteNamedQuery(
-            lineage.clone(),
-            module.identity(),
-            operation_name,
-        ));
+        let mut requires_row_policy = false;
         maximum_rows = maximum_rows.max(query.plan().cost().scanned_index_rows());
         for access in query.plan().authorization() {
             let entity = contract
@@ -302,6 +377,17 @@ fn compile_application_role_inner(
                 .ok_or_else(|| {
                     ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
                 })?;
+            require_policy_operation(
+                contract,
+                &selected_policies,
+                entity.id(),
+                RowPolicyOperationV1::Read,
+            )?;
+            requires_row_policy |= contract
+                .row_policies()
+                .policies()
+                .iter()
+                .any(|policy| policy.entity() == entity.id());
             let primary = entity
                 .primary_key_fields()
                 .iter()
@@ -315,6 +401,18 @@ fn compile_application_role_inner(
                     .filter(|field| !primary.contains(field)),
             );
         }
+        // WP-570 freezes the symbolic policy proof and identities. Until
+        // WP-572 installs the shared transaction-current evaluator, granting
+        // the ordinary operation permission would allow the existing runtime
+        // to execute without the policy. Withhold it so partial rollout is a
+        // closed authorization failure, never an application-side check.
+        if !requires_row_policy {
+            permissions.push(CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage.clone(),
+                module.identity(),
+                operation_name,
+            ));
+        }
         operations.push(ApplicationRoleOperation {
             kind: ApplicationRoleOperationKind::Query,
             name: query_name.clone(),
@@ -327,10 +425,31 @@ fn compile_application_role_inner(
             .iter()
             .find(|command| command.name() == command_name)
             .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
-        permissions.push(CapabilityPermissionV1::InvokeCommand(
-            lineage.clone(),
-            command.command_id(),
-        ));
+        let mut requires_row_policy = false;
+        for binding in command.bindings() {
+            let operation = match binding.mode() {
+                BindingMode::Read => RowPolicyOperationV1::Read,
+                BindingMode::Mutate => RowPolicyOperationV1::Update,
+                BindingMode::Create => RowPolicyOperationV1::Create,
+            };
+            require_policy_operation(
+                contract,
+                &selected_policies,
+                binding.entity_type(),
+                operation,
+            )?;
+            requires_row_policy |= contract
+                .row_policies()
+                .policies()
+                .iter()
+                .any(|policy| policy.entity() == binding.entity_type());
+        }
+        if !requires_row_policy {
+            permissions.push(CapabilityPermissionV1::InvokeCommand(
+                lineage.clone(),
+                command.command_id(),
+            ));
+        }
         operations.push(ApplicationRoleOperation {
             kind: ApplicationRoleOperationKind::Command,
             name: command_name.clone(),
@@ -402,7 +521,12 @@ fn compile_application_role_inner(
                     unreachable!("reactive loop kind")
                 }
             };
-            permissions.push(permission);
+            // Reactive plans can disclose or hydrate protected rows. WP-572
+            // owns their shared pre-shape enforcement, so a policy-bearing
+            // contract cannot receive reactive execution authority early.
+            if contract.row_policies().is_empty() {
+                permissions.push(permission);
+            }
             operations.push(ApplicationRoleOperation {
                 kind: expected_kind,
                 name: name.clone(),
@@ -462,6 +586,8 @@ fn compile_application_role_inner(
         &module_hashes,
         &reactive_module_hashes,
         &operations,
+        &row_policies,
+        &principal_fact_schemas,
         &base_grant,
     )?;
     let identity = hash_application_role(&canonical);
@@ -489,9 +615,150 @@ fn compile_application_role_inner(
         module_hashes,
         reactive_module_hashes,
         operations,
+        row_policies,
+        principal_fact_schemas,
         identity,
         grant,
     })
+}
+
+type SelectedPolicyMap<'a> = BTreeMap<riffdb_types::EntityTypeId, &'a RowPolicyPlanV1>;
+
+fn compile_role_policies<'a>(
+    manifest: &ApplicationManifest,
+    role: &ManifestRole,
+    contract: &'a ContractBundle,
+) -> Result<
+    (
+        SelectedPolicyMap<'a>,
+        Vec<ApplicationRolePolicy>,
+        Vec<ApplicationRoleFactSchema>,
+    ),
+    ApplicationRoleError,
+> {
+    let catalog = contract.row_policies();
+    if manifest.schema() != crate::APPLICATION_MANIFEST_SCHEMA_V4 {
+        if !catalog.is_empty() {
+            return Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::ContractMismatch,
+            ));
+        }
+        return Ok((BTreeMap::new(), Vec::new(), Vec::new()));
+    }
+
+    let mut selected = BTreeMap::new();
+    let mut descriptions = Vec::with_capacity(role.row_policies().len());
+    let mut fact_names = BTreeSet::new();
+    for name in role.row_policies() {
+        let policy = catalog
+            .policies()
+            .iter()
+            .find(|policy| policy.name() == name)
+            .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownPolicy))?;
+        if selected.insert(policy.entity(), policy).is_some() {
+            return Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::UnknownPolicy,
+            ));
+        }
+        collect_policy_fact_names(policy, &mut fact_names);
+        let entity = contract
+            .schema()
+            .entity(policy.entity())
+            .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch))?;
+        descriptions.push(ApplicationRolePolicy {
+            name: policy.name().to_owned(),
+            entity: entity.name().to_owned(),
+            operations: policy.rules().iter().map(|rule| rule.operation()).collect(),
+        });
+    }
+    descriptions.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let facts_by_name = catalog
+        .facts()
+        .iter()
+        .map(|fact| (fact.name(), fact))
+        .collect::<BTreeMap<_, _>>();
+    let principal_fact_schemas = fact_names
+        .into_iter()
+        .map(|name| {
+            let fact = facts_by_name.get(name.as_str()).ok_or_else(|| {
+                ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
+            })?;
+            Ok(ApplicationRoleFactSchema {
+                name,
+                value_type: render_fact_type(fact, contract)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApplicationRoleError>>()?;
+    Ok((selected, descriptions, principal_fact_schemas))
+}
+
+fn collect_policy_fact_names(policy: &RowPolicyPlanV1, names: &mut BTreeSet<String>) {
+    for rule in policy.rules() {
+        for node in rule.nodes() {
+            match node {
+                RowPolicyExpressionNodeV1::Operand(operand) => {
+                    collect_operand_fact_name(operand.source(), names);
+                }
+                RowPolicyExpressionNodeV1::IndexedExists { arguments, .. } => {
+                    for argument in arguments {
+                        collect_operand_fact_name(argument.source(), names);
+                    }
+                }
+                RowPolicyExpressionNodeV1::Equal { .. }
+                | RowPolicyExpressionNodeV1::NotEqual { .. }
+                | RowPolicyExpressionNodeV1::Not { .. }
+                | RowPolicyExpressionNodeV1::And { .. }
+                | RowPolicyExpressionNodeV1::Or { .. }
+                | RowPolicyExpressionNodeV1::In { .. }
+                | RowPolicyExpressionNodeV1::IsNull { .. } => {}
+            }
+        }
+    }
+}
+
+fn collect_operand_fact_name(source: &RowPolicyValueSourceV1, names: &mut BTreeSet<String>) {
+    if let RowPolicyValueSourceV1::PrincipalFact(name) = source {
+        names.insert(name.clone());
+    }
+}
+
+fn require_policy_operation(
+    contract: &ContractBundle,
+    selected: &SelectedPolicyMap<'_>,
+    entity: riffdb_types::EntityTypeId,
+    operation: RowPolicyOperationV1,
+) -> Result<(), ApplicationRoleError> {
+    let protected = contract
+        .row_policies()
+        .policies()
+        .iter()
+        .any(|policy| policy.entity() == entity);
+    if !protected {
+        return Ok(());
+    }
+    let policy = selected
+        .get(&entity)
+        .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::PolicyCoverage))?;
+    if policy
+        .rules()
+        .iter()
+        .any(|rule| rule.operation() == operation)
+    {
+        Ok(())
+    } else {
+        Err(ApplicationRoleError::new(
+            ApplicationRoleErrorKind::PolicyCoverage,
+        ))
+    }
+}
+
+fn render_fact_type(
+    fact: &riffdb_contract_ir::PrincipalFactSchemaV1,
+    contract: &ContractBundle,
+) -> Result<String, ApplicationRoleError> {
+    fact.public_type_name(contract.schema())
+        .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch))
 }
 
 fn validate_reactive_modules<'a>(
@@ -621,12 +888,16 @@ fn encode_role(
     module_hashes: &[QueryModuleHash],
     reactive_module_hashes: &[ReactiveModuleHash],
     operations: &[ApplicationRoleOperation],
+    row_policies: &[ApplicationRolePolicy],
+    principal_fact_schemas: &[ApplicationRoleFactSchema],
     grant: &CapabilityGrantV1,
 ) -> Result<Vec<u8>, ApplicationRoleError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(ROLE_MAGIC);
     bytes.extend_from_slice(
-        &(if reactive_module_hashes.is_empty() {
+        &(if manifest.schema() == crate::APPLICATION_MANIFEST_SCHEMA_V4 {
+            ROLE_FORMAT_VERSION_V3
+        } else if reactive_module_hashes.is_empty() {
             ROLE_FORMAT_VERSION_V1
         } else {
             ROLE_FORMAT_VERSION_V2
@@ -656,6 +927,22 @@ fn encode_role(
         bytes.push(operation_kind_tag(operation.kind));
         write_text(&mut bytes, operation.name())?;
     }
+    if manifest.schema() == crate::APPLICATION_MANIFEST_SCHEMA_V4 {
+        write_count(&mut bytes, row_policies.len())?;
+        for policy in row_policies {
+            write_text(&mut bytes, policy.name())?;
+            write_text(&mut bytes, policy.entity())?;
+            write_count(&mut bytes, policy.operations().len())?;
+            for operation in policy.operations() {
+                bytes.push(row_policy_operation_tag(*operation));
+            }
+        }
+        write_count(&mut bytes, principal_fact_schemas.len())?;
+        for fact in principal_fact_schemas {
+            write_text(&mut bytes, fact.name())?;
+            write_text(&mut bytes, fact.value_type())?;
+        }
+    }
     for permission in grant.permissions().as_slice() {
         write_bytes(&mut bytes, &permission.canonical_key())?;
     }
@@ -672,6 +959,15 @@ fn encode_role(
         ));
     }
     Ok(bytes)
+}
+
+const fn row_policy_operation_tag(operation: RowPolicyOperationV1) -> u8 {
+    match operation {
+        RowPolicyOperationV1::Read => 1,
+        RowPolicyOperationV1::Create => 2,
+        RowPolicyOperationV1::Update => 3,
+        RowPolicyOperationV1::Delete => 4,
+    }
 }
 
 const fn operation_kind_tag(kind: ApplicationRoleOperationKind) -> u8 {

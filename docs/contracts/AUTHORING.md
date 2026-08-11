@@ -7,12 +7,17 @@ The following lowercase words are reserved by the contract lexer and cannot be
 used as field or declaration identifiers:
 
 ```text
-aggregate approval as bool bytes capability child command conflict_key
-contract count create date decimal default else emit entity enum event false
-field frontier i64 idempotency_key import include index input invariant key
-list measure module money mutate null optional partition_by projection query
-read reference require return root set source state state_machine string sum
-timestamp transactionally_ordered transition true u64 unique uuid version where
+active aggregate allow approval as attempts binary_utf8_v1 bool bytes capability
+child claim command conflict_key contract cosine count create date decimal
+default delete dot_product duration_seconds else emit entity enum euclidean event
+exhausted exists expire expired expires_at fact false fence fencing_token field
+from frontier i64 idempotency_key illegal import in include index input invalid
+invariant is key lease list measure module money mutate not null on optional
+owner partition_by policy presence principal projection query read reference
+release renew require return revision root row service set source stale
+staleness_slo state state_machine string sum text_key timestamp to
+transaction_time transactionally_ordered transition true u64 unavailable
+unicode_fold_v1 unique update uuid uuid_v7 vector_field version when where workflow
 ```
 
 For example, use `origin`, `origin_label`, or `source_label` instead of the

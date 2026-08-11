@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use riffdb_contract_ir::{
-    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeySchema, ValueType,
+    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeySchema, RowPolicyOperationV1,
+    ValueType,
 };
 use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId};
 
@@ -222,6 +223,55 @@ pub struct EnumSymbol {
     variants: BTreeMap<String, EnumVariantId>,
 }
 
+/// Safe symbolic row-policy description. Executable bytecode remains private.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RowPolicySymbol {
+    name: String,
+    entity: String,
+    operations: Vec<RowPolicyOperationV1>,
+}
+
+impl RowPolicySymbol {
+    /// Symbolic policy name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Symbolic protected entity name.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Closed operation classes defined by this policy.
+    #[must_use]
+    pub fn operations(&self) -> &[RowPolicyOperationV1] {
+        &self.operations
+    }
+}
+
+/// Safe compiler-visible principal-fact schema without a capability value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrincipalFactSymbol {
+    name: String,
+    value_type: String,
+}
+
+impl PrincipalFactSymbol {
+    /// Symbolic fact name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Symbolic public type spelling without stable numeric IDs.
+    #[must_use]
+    pub fn value_type(&self) -> &str {
+        &self.value_type
+    }
+}
+
 impl EnumSymbol {
     /// Exact enum source name.
     #[must_use]
@@ -255,6 +305,8 @@ pub struct SymbolicCatalog {
     identity: ExactContractIdentity,
     entities: BTreeMap<String, EntitySymbol>,
     enums: BTreeMap<String, EnumSymbol>,
+    row_policies: BTreeMap<String, RowPolicySymbol>,
+    principal_facts: BTreeMap<String, PrincipalFactSymbol>,
 }
 
 impl SymbolicCatalog {
@@ -421,6 +473,36 @@ impl SymbolicCatalog {
                 return Err(invariant("duplicate exact-contract enum"));
             }
         }
+        let mut row_policies = BTreeMap::new();
+        for policy in bundle.row_policies().policies() {
+            let entity = bundle
+                .schema()
+                .entity(policy.entity())
+                .ok_or_else(|| invariant("row policy entity is absent"))?;
+            let symbol = RowPolicySymbol {
+                name: policy.name().to_owned(),
+                entity: entity.name().to_owned(),
+                operations: policy.rules().iter().map(|rule| rule.operation()).collect(),
+            };
+            if row_policies.insert(symbol.name.clone(), symbol).is_some() {
+                return Err(invariant("duplicate exact-contract row policy"));
+            }
+        }
+        let mut principal_facts = BTreeMap::new();
+        for fact in bundle.row_policies().facts() {
+            let symbol = PrincipalFactSymbol {
+                name: fact.name().to_owned(),
+                value_type: fact
+                    .public_type_name(bundle.schema())
+                    .map_err(|_| invariant("principal fact type is invalid"))?,
+            };
+            if principal_facts
+                .insert(symbol.name.clone(), symbol)
+                .is_some()
+            {
+                return Err(invariant("duplicate exact-contract principal fact"));
+            }
+        }
         Ok(Self {
             identity: ExactContractIdentity::new(
                 bundle.lineage().clone(),
@@ -429,6 +511,8 @@ impl SymbolicCatalog {
             ),
             entities,
             enums,
+            row_policies,
+            principal_facts,
         })
     }
 
@@ -460,6 +544,30 @@ impl SymbolicCatalog {
     #[must_use]
     pub fn enums(&self) -> impl ExactSizeIterator<Item = &EnumSymbol> {
         self.enums.values()
+    }
+
+    /// Resolves one visible symbolic row-policy name.
+    #[must_use]
+    pub fn row_policy(&self, name: &str) -> Option<&RowPolicySymbol> {
+        self.row_policies.get(name)
+    }
+
+    /// Safe row-policy descriptions in exact source-name order.
+    #[must_use]
+    pub fn row_policies(&self) -> impl ExactSizeIterator<Item = &RowPolicySymbol> {
+        self.row_policies.values()
+    }
+
+    /// Resolves one compiler-visible principal-fact schema.
+    #[must_use]
+    pub fn principal_fact(&self, name: &str) -> Option<&PrincipalFactSymbol> {
+        self.principal_facts.get(name)
+    }
+
+    /// Principal-fact schemas in exact source-name order. Values never enter the catalog.
+    #[must_use]
+    pub fn principal_facts(&self) -> impl ExactSizeIterator<Item = &PrincipalFactSymbol> {
+        self.principal_facts.values()
     }
 
     pub(crate) fn enum_name(&self, id: EnumTypeId) -> Option<&str> {

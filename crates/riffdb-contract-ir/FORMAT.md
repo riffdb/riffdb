@@ -452,9 +452,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `magic` | ASCII `RIFFDB-BUNDLE\0` |
-| 2 | `bundle_format_version` | u32 = 1, 2, or 3 |
-| 3 | `grammar_version` | u32 = 1, 2, or 3; must equal the bundle version |
-| 4 | `executable_ir_version` | u32 = 1, 2, or 3; must equal the bundle version |
+| 2 | `bundle_format_version` | u32 = 1, 2, 3, or 4 |
+| 3 | `grammar_version` | u32 = 1, 2, 3, or 4; must equal the bundle version |
+| 4 | `executable_ir_version` | u32 = 1, 2, 3, or 4; must equal the bundle version |
 | 5 | `compiler_version` | nonempty ASCII compiler semantic-version identity string, <=64 bytes |
 | 6 | `contract_lineage` | string |
 | 7 | `contract_version` | u64 |
@@ -464,11 +464,12 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 11 | `ledger` | LineageLedgerV1 |
 | 12 | `schema` | StructuralSchema |
 | 13 | `workflows` | IR v2+: u32 count + WorkflowSchema[]; omitted in v1 |
-| 14 | `commands` | u32 count + CommandBundleEntry[] |
-| 15 | `projections` | u32 count + ProjectionBundleEntry[] |
-| 16 | `schema_artifacts` | u32 count + GeneratedSchemaArtifact[] |
-| 17 | `mcp_names` | McpCommandNameRegistryV2 |
-| 18 | `compatibility` | CompatibilityReport |
+| 14 | `row_policies` | IR v4+: RowPolicyCatalogV1; omitted in v1-v3 |
+| 15 | `commands` | u32 count + CommandBundleEntry[] |
+| 16 | `projections` | u32 count + ProjectionBundleEntry[] |
+| 17 | `schema_artifacts` | u32 count + GeneratedSchemaArtifact[] |
+| 18 | `mcp_names` | McpCommandNameRegistryV2 |
+| 19 | `compatibility` | CompatibilityReport |
 
 ### ParentBundleRef
 
@@ -876,6 +877,51 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 1 | `value_type` | ValueType |
 | 2 | `enum_variants` | u32 count + EnumVariantId[] |
 | 3 | `maximum_framed_bytes` | u32 |
+
+### RowPolicyCatalogV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `version` | u32 = 1 |
+| 2 | `facts` | u32 count + PrincipalFactSchemaV1[] in symbolic-name order |
+| 3 | `policies` | u32 count + RowPolicyPlanV1[] in symbolic-name order |
+
+### PrincipalFactSchemaV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `value_type` | scalar ValueType or list<scalar, maximum <= 64> |
+
+### RowPolicyPlanV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `entity` | EntityTypeId |
+| 3 | `rules` | u32 count + RowPolicyRuleV1[] in operation-tag order |
+
+### RowPolicyRuleV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `operation` | row-policy operation tag |
+| 2 | `root` | u32 topologically ordered node index |
+| 3 | `nodes` | u32 count + RowPolicyExpressionNodeV1[] |
+
+### RowPolicyExpressionNodeV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `tag` | closed row-policy expression tag |
+| 2 | `payload` | exact selected operand, node references, or indexed-exists payload |
+
+### RowPolicyOperandV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `source` | closed row-field/principal-id/principal-kind/principal-fact/constant tag and payload |
+| 2 | `value_type` | ValueType |
 
 ### GeneratedSchemaArtifact
 

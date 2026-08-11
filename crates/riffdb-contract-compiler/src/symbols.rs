@@ -102,6 +102,8 @@ fn allocate_symbols(
     let mut command_names = NameCollector::default();
     let mut projection_names = NameCollector::default();
     let mut workflow_names = NameCollector::default();
+    let mut principal_fact_names = NameCollector::default();
+    let mut row_policy_names = NameCollector::default();
 
     for declaration in &contract.declarations {
         match &declaration.value {
@@ -119,6 +121,12 @@ fn allocate_symbols(
             }
             Declaration::Projection(projection) => {
                 projection_names.insert(&projection.name, &mut diagnostics)
+            }
+            Declaration::PrincipalFact(fact) => {
+                principal_fact_names.insert(&fact.name, &mut diagnostics)
+            }
+            Declaration::RowPolicy(policy) => {
+                row_policy_names.insert(&policy.name, &mut diagnostics)
             }
         }
     }
@@ -364,7 +372,9 @@ fn allocate_symbols(
                         projection_measures.insert((projection_id, name), id);
                     });
             }
-            Declaration::Workflow(_) => {}
+            Declaration::Workflow(_)
+            | Declaration::PrincipalFact(_)
+            | Declaration::RowPolicy(_) => {}
         }
     }
 

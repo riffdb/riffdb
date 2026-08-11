@@ -990,6 +990,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-application"
+version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "riffdb-catalog"
 version = "0.1.0"
 dependencies = [
@@ -1007,6 +1016,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "riffdb-api-grpc",
+ "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
@@ -1109,6 +1119,7 @@ dependencies = [
 name = "riffdb-query-executor"
 version = "0.1.0"
 dependencies = [
+ "riffdb-contract-ir",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",

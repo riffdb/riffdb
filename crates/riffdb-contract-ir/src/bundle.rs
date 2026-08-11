@@ -24,6 +24,9 @@ use crate::format_registry::{
     stable_id_namespace as namespace_tag, unary_operator as unary_tag,
     value_type as value_type_tag, workflow_lease_operation as lease_operation_tag,
 };
+use crate::row_policy::{
+    decode_catalog as decode_row_policy_catalog, encode_catalog as encode_row_policy_catalog,
+};
 use crate::{
     AggregateKeyPlan, AggregateSchema, BinaryOperator, BindingId, BindingMode, BindingPlan,
     CapabilityRequirement, CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode,
@@ -34,10 +37,10 @@ use crate::{
     KeyComponentSchema, KeyPurpose, KeySchema, LocalityPlan, McpCommandNameEntryV2,
     McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction, OutcomeSchema,
     ProjectionFrontierPolicy, ProjectionGroupComponentSchema, ProjectionGroupSchema,
-    ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy, SchemaIr,
-    TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog, WorkflowLeaseFields,
-    WorkflowLeaseOperation, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
-    checked_len, validate_source_name,
+    ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy,
+    RowPolicyCatalogV1, SchemaIr, TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag,
+    WorkflowCatalog, WorkflowLeaseFields, WorkflowLeaseOperation, WorkflowLeaseSchema,
+    WorkflowSchema, WorkflowTransitionSchema, checked_len, validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
@@ -46,18 +49,24 @@ pub const BUNDLE_FORMAT_VERSION_V1: u32 = 1;
 pub const BUNDLE_FORMAT_VERSION_V2: u32 = 2;
 /// Bundle framing for fenced workflow lease executable IR.
 pub const BUNDLE_FORMAT_VERSION_V3: u32 = 3;
+/// Bundle framing containing compiled principal-aware row policies.
+pub const BUNDLE_FORMAT_VERSION_V4: u32 = 4;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
 pub const GRAMMAR_VERSION_V2: u32 = 2;
 /// Contract grammar containing closed fenced lease command effects.
 pub const GRAMMAR_VERSION_V3: u32 = 3;
+/// Contract grammar containing principal facts and closed row policies.
+pub const GRAMMAR_VERSION_V4: u32 = 4;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
 pub const EXECUTABLE_IR_VERSION_V2: u32 = 2;
 /// Executable IR containing closed fenced lease operations.
 pub const EXECUTABLE_IR_VERSION_V3: u32 = 3;
+/// Executable IR containing the compiled row-policy catalog.
+pub const EXECUTABLE_IR_VERSION_V4: u32 = 4;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -877,6 +886,7 @@ pub struct ContractBundle {
     ledger: LineageLedgerV1,
     schema: SchemaIr,
     workflows: WorkflowCatalog,
+    row_policies: RowPolicyCatalogV1,
     commands: Vec<CommandPlan>,
     projections: Vec<ProjectionPlan>,
     schema_artifacts: Vec<GeneratedSchemaArtifact>,
@@ -937,7 +947,45 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v3) {
+        Self::new_with_workflows_and_row_policies(
+            compiler_version,
+            lineage,
+            contract_version,
+            parent,
+            source_hash,
+            ledger,
+            schema,
+            workflows,
+            RowPolicyCatalogV1::empty(),
+            commands,
+            projections,
+            schema_artifacts,
+            mcp_command_names,
+            compatibility,
+        )
+    }
+
+    /// Creates a bundle containing workflows and the complete row-policy catalog.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_workflows_and_row_policies(
+        compiler_version: impl Into<String>,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        parent: Option<ParentBundleRef>,
+        source_hash: SourceHash,
+        ledger: LineageLedgerV1,
+        schema: SchemaIr,
+        workflows: Vec<WorkflowSchema>,
+        row_policies: RowPolicyCatalogV1,
+        commands: Vec<CommandPlan>,
+        projections: Vec<ProjectionPlan>,
+        schema_artifacts: Vec<GeneratedSchemaArtifact>,
+        mcp_command_names: McpCommandNameRegistryV2,
+        compatibility: CompatibilityReport,
+    ) -> Result<Self, IrValidationError> {
+        let version = if !row_policies.is_empty() {
+            BUNDLE_FORMAT_VERSION_V4
+        } else if commands.iter().any(CommandPlan::requires_ir_v3) {
             BUNDLE_FORMAT_VERSION_V3
         } else if !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2) {
             BUNDLE_FORMAT_VERSION_V2
@@ -956,6 +1004,7 @@ impl ContractBundle {
             ledger,
             schema,
             workflows,
+            row_policies,
             commands,
             projections,
             schema_artifacts,
@@ -977,6 +1026,7 @@ impl ContractBundle {
         ledger: LineageLedgerV1,
         schema: SchemaIr,
         workflows: Vec<WorkflowSchema>,
+        row_policies: RowPolicyCatalogV1,
         mut commands: Vec<CommandPlan>,
         mut projections: Vec<ProjectionPlan>,
         mut schema_artifacts: Vec<GeneratedSchemaArtifact>,
@@ -997,11 +1047,16 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V3,
                 GRAMMAR_VERSION_V3,
                 EXECUTABLE_IR_VERSION_V3
+            ) | (
+                BUNDLE_FORMAT_VERSION_V4,
+                GRAMMAR_VERSION_V4,
+                EXECUTABLE_IR_VERSION_V4
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
             || (ir_version < EXECUTABLE_IR_VERSION_V3
                 && commands.iter().any(CommandPlan::requires_ir_v3))
+            || (ir_version < EXECUTABLE_IR_VERSION_V4 && !row_policies.is_empty())
         {
             return Err(IrValidationError::UnsupportedVersion {
                 kind: "contract bundle version tuple",
@@ -1077,6 +1132,7 @@ impl ContractBundle {
         let plan_root_hash = compute_plan_root_hash_versioned(
             &schema,
             &workflows,
+            &row_policies,
             &commands,
             &projections,
             ir_version,
@@ -1094,6 +1150,7 @@ impl ContractBundle {
             ledger,
             schema,
             workflows,
+            row_policies,
             commands,
             projections,
             schema_artifacts,
@@ -1117,6 +1174,12 @@ impl ContractBundle {
     #[must_use]
     pub const fn format_version(&self) -> u32 {
         self.format_version
+    }
+
+    /// Complete compiler-owned row-policy catalog.
+    #[must_use]
+    pub const fn row_policies(&self) -> &RowPolicyCatalogV1 {
+        &self.row_policies
     }
     /// Grammar version.
     #[must_use]
@@ -1985,12 +2048,20 @@ fn compute_plan_root_hash(
         EXECUTABLE_IR_VERSION_V1
     };
     let workflows = WorkflowCatalog::new(Vec::new(), schema)?;
-    compute_plan_root_hash_versioned(schema, &workflows, commands, projections, ir_version)
+    compute_plan_root_hash_versioned(
+        schema,
+        &workflows,
+        &RowPolicyCatalogV1::empty(),
+        commands,
+        projections,
+        ir_version,
+    )
 }
 
 fn compute_plan_root_hash_versioned(
     schema: &SchemaIr,
     workflows: &WorkflowCatalog,
+    row_policies: &RowPolicyCatalogV1,
     commands: &[CommandPlan],
     projections: &[ProjectionPlan],
     ir_version: u32,
@@ -2008,6 +2079,9 @@ fn compute_plan_root_hash_versioned(
     writer.raw(structural_hash.as_bytes())?;
     if ir_version >= EXECUTABLE_IR_VERSION_V2 {
         encode_workflows(&mut writer, workflows)?;
+    }
+    if ir_version >= EXECUTABLE_IR_VERSION_V4 {
+        writer.bytes(&row_policies.canonical_bytes()?)?;
     }
     writer.u32(commands.len() as u32)?;
     for command in commands {
@@ -2169,6 +2243,9 @@ fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> 
     encode_schema(&mut writer, &bundle.schema)?;
     if bundle.ir_version >= EXECUTABLE_IR_VERSION_V2 {
         encode_workflows(&mut writer, &bundle.workflows)?;
+    }
+    if bundle.ir_version >= EXECUTABLE_IR_VERSION_V4 {
+        encode_row_policy_catalog(&mut writer, &bundle.row_policies)?;
     }
     writer.u32(bundle.commands.len() as u32)?;
     for command in &bundle.commands {
@@ -2498,7 +2575,10 @@ fn encode_record_ref(writer: &mut Writer, record: &RecordTypeRef) -> Result<(), 
     }
 }
 
-fn encode_value_type(writer: &mut Writer, value_type: &ValueType) -> Result<(), IrValidationError> {
+pub(crate) fn encode_value_type(
+    writer: &mut Writer,
+    value_type: &ValueType,
+) -> Result<(), IrValidationError> {
     writer.u8(value_type.tag() as u8)?;
     match value_type.tag() {
         ValueTypeTag::Decimal => {
@@ -3186,6 +3266,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V3,
             GRAMMAR_VERSION_V3,
             EXECUTABLE_IR_VERSION_V3
+        ) | (
+            BUNDLE_FORMAT_VERSION_V4,
+            GRAMMAR_VERSION_V4,
+            EXECUTABLE_IR_VERSION_V4
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -3223,6 +3307,11 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
     } else {
         WorkflowCatalog::new(Vec::new(), &schema)?
     };
+    let row_policies = if ir_version >= EXECUTABLE_IR_VERSION_V4 {
+        decode_row_policy_catalog(&mut reader, &schema)?
+    } else {
+        RowPolicyCatalogV1::empty()
+    };
     let commands = decode_commands(&mut reader, &lineage, &schema, ir_version)?;
     let projections = decode_projections(&mut reader, &schema)?;
     let schema_artifacts = decode_schema_artifacts(&mut reader, &schema, &commands, &projections)?;
@@ -3242,6 +3331,7 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
         ledger,
         schema,
         workflows.workflows().to_vec(),
+        row_policies,
         commands,
         projections,
         schema_artifacts,
@@ -3845,7 +3935,7 @@ fn decode_record_ref(reader: &mut Reader<'_>) -> Result<RecordTypeRef, IrValidat
     }
 }
 
-fn decode_value_type(
+pub(crate) fn decode_value_type(
     reader: &mut Reader<'_>,
     depth: usize,
 ) -> Result<ValueType, IrValidationError> {

@@ -15,23 +15,24 @@ mod reactive_module;
 
 pub use application_manifest::{
     APPLICATION_MANIFEST_SCHEMA_V1, APPLICATION_MANIFEST_SCHEMA_V2, APPLICATION_MANIFEST_SCHEMA_V3,
-    ApplicationManifest, ApplicationManifestSourceMap, MAX_APPLICATION_MANIFEST_BYTES,
-    ManifestContract, ManifestError, ManifestErrorKind, ManifestGenerationTargets,
-    ManifestQueryModule, ManifestQuerySource, ManifestReactiveModule, ManifestRole, ManifestSpan,
-    ManifestTenantScope,
+    APPLICATION_MANIFEST_SCHEMA_V4, ApplicationManifest, ApplicationManifestSourceMap,
+    MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError, ManifestErrorKind,
+    ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource, ManifestReactiveModule,
+    ManifestRole, ManifestSpan, ManifestTenantScope,
 };
 pub use application_role::{
-    ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleOperation,
-    ApplicationRoleOperationKind, CompiledApplicationRole, compile_application_role,
-    compile_application_role_v2,
+    ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleFactSchema,
+    ApplicationRoleOperation, ApplicationRoleOperationKind, ApplicationRolePolicy,
+    CompiledApplicationRole, compile_application_role, compile_application_role_v2,
 };
 pub use application_source::{
     APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
-    APPLICATION_SOURCE_SCHEMA_V4, APPLICATION_SOURCE_SCHEMA_V5, ApplicationSourceContract,
-    ApplicationSourceError, ApplicationSourceErrorKind, ApplicationSourceGeneration,
-    ApplicationSourceManifest, ApplicationSourceMigration, ApplicationSourceQuery,
-    ApplicationSourceQueryModule, ApplicationSourceReactiveModule, ApplicationSourceRole,
-    ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
+    APPLICATION_SOURCE_SCHEMA_V4, APPLICATION_SOURCE_SCHEMA_V5, APPLICATION_SOURCE_SCHEMA_V6,
+    ApplicationSourceContract, ApplicationSourceError, ApplicationSourceErrorKind,
+    ApplicationSourceGeneration, ApplicationSourceManifest, ApplicationSourceMigration,
+    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceReactiveModule,
+    ApplicationSourceRole, ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS,
+    MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, McpToolGenerationError,
@@ -1032,7 +1033,8 @@ impl<'a> Reader<'a> {
 pub use application_lock::{
     APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_LOCK_SCHEMA_V3,
     APPLICATION_LOCK_SCHEMA_V4, APPLICATION_LOCK_SCHEMA_V5, APPLICATION_LOCK_SCHEMA_V6,
-    APPLICATION_ROLE_DEFINITION_FORMAT_V1, APPLICATION_ROLE_DEFINITION_FORMAT_V2, ApplicationLock,
+    APPLICATION_LOCK_SCHEMA_V7, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
+    APPLICATION_ROLE_DEFINITION_FORMAT_V2, APPLICATION_ROLE_DEFINITION_FORMAT_V3, ApplicationLock,
     ApplicationLockError, ApplicationLockErrorKind, ApplicationMigrationLockInput,
     CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
     LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,

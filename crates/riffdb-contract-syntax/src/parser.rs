@@ -210,6 +210,198 @@ fn bounded_expression(
     })
 }
 
+/// Temporary bounded parser value for the closed row-policy expression grammar.
+pub(crate) struct ParsedRowPolicyExpression {
+    syntax: Spanned<RowPolicyExpression>,
+    depth: usize,
+    nodes: usize,
+}
+
+impl ParsedRowPolicyExpression {
+    pub(crate) fn into_syntax(self) -> Spanned<RowPolicyExpression> {
+        self.syntax
+    }
+}
+
+pub(crate) fn row_policy_literal(literal: Spanned<Literal>) -> ParsedRowPolicyExpression {
+    let outer = literal.span;
+    ParsedRowPolicyExpression {
+        syntax: Spanned::new(RowPolicyExpression::Literal(literal), outer),
+        depth: 0,
+        nodes: 2,
+    }
+}
+
+pub(crate) fn row_policy_path(path: Spanned<Path>) -> ParsedRowPolicyExpression {
+    let outer = path.span;
+    let nodes = path.value.segments.len().saturating_add(2);
+    ParsedRowPolicyExpression {
+        syntax: Spanned::new(RowPolicyExpression::Path(path), outer),
+        depth: 0,
+        nodes,
+    }
+}
+
+pub(crate) fn row_policy_parenthesized(
+    expression: ParsedRowPolicyExpression,
+    outer: Span,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    bounded_row_policy_expression(
+        Spanned::new(
+            RowPolicyExpression::Parenthesized(Box::new(expression.syntax)),
+            outer,
+        ),
+        expression.depth.saturating_add(1),
+        expression.nodes.saturating_add(1),
+    )
+}
+
+pub(crate) fn row_policy_not(
+    expression: ParsedRowPolicyExpression,
+    outer: Span,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    bounded_row_policy_expression(
+        Spanned::new(RowPolicyExpression::Not(Box::new(expression.syntax)), outer),
+        expression.depth.saturating_add(1),
+        expression.nodes.saturating_add(1),
+    )
+}
+
+pub(crate) fn row_policy_binary(
+    left: ParsedRowPolicyExpression,
+    operator: Spanned<BinaryOperator>,
+    right: ParsedRowPolicyExpression,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    let outer = left.syntax.span.cover(right.syntax.span);
+    let depth = left.depth.max(right.depth).saturating_add(1);
+    let nodes = left.nodes.saturating_add(right.nodes).saturating_add(2);
+    bounded_row_policy_expression(
+        Spanned::new(
+            RowPolicyExpression::Binary {
+                left: Box::new(left.syntax),
+                operator,
+                right: Box::new(right.syntax),
+            },
+            outer,
+        ),
+        depth,
+        nodes,
+    )
+}
+
+pub(crate) fn row_policy_binary_chain(
+    mut left: ParsedRowPolicyExpression,
+    rest: Vec<(Spanned<BinaryOperator>, ParsedRowPolicyExpression)>,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    for (operator, right) in rest {
+        left = row_policy_binary(left, operator, right)?;
+    }
+    Ok(left)
+}
+
+pub(crate) fn row_policy_in(
+    needle: ParsedRowPolicyExpression,
+    haystack: ParsedRowPolicyExpression,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    let outer = needle.syntax.span.cover(haystack.syntax.span);
+    let depth = needle.depth.max(haystack.depth).saturating_add(1);
+    let nodes = needle
+        .nodes
+        .saturating_add(haystack.nodes)
+        .saturating_add(1);
+    bounded_row_policy_expression(
+        Spanned::new(
+            RowPolicyExpression::In {
+                needle: Box::new(needle.syntax),
+                haystack: Box::new(haystack.syntax),
+            },
+            outer,
+        ),
+        depth,
+        nodes,
+    )
+}
+
+pub(crate) fn row_policy_is_null(
+    value: ParsedRowPolicyExpression,
+    negated: bool,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    let outer = value.syntax.span;
+    bounded_row_policy_expression(
+        Spanned::new(
+            RowPolicyExpression::IsNull {
+                value: Box::new(value.syntax),
+                negated,
+            },
+            outer,
+        ),
+        value.depth.saturating_add(1),
+        value.nodes.saturating_add(1),
+    )
+}
+
+pub(crate) fn row_policy_exists(
+    entity: Spanned<String>,
+    index: Spanned<String>,
+    arguments: Vec<ParsedRowPolicyExpression>,
+    outer: Span,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    if arguments.is_empty() || arguments.len() > MAX_LIST_ITEMS {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::CollectionLimit,
+            outer,
+        ));
+    }
+    let depth = arguments
+        .iter()
+        .map(|argument| argument.depth)
+        .max()
+        .unwrap_or_default()
+        .saturating_add(1);
+    let nodes = arguments.iter().fold(3_usize, |total, argument| {
+        total.saturating_add(argument.nodes)
+    });
+    bounded_row_policy_expression(
+        Spanned::new(
+            RowPolicyExpression::Exists {
+                entity,
+                index,
+                arguments: arguments
+                    .into_iter()
+                    .map(ParsedRowPolicyExpression::into_syntax)
+                    .collect(),
+            },
+            outer,
+        ),
+        depth,
+        nodes,
+    )
+}
+
+fn bounded_row_policy_expression(
+    syntax: Spanned<RowPolicyExpression>,
+    depth: usize,
+    nodes: usize,
+) -> Result<ParsedRowPolicyExpression, SyntaxDiagnostic> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::NestingLimit,
+            syntax.span,
+        ));
+    }
+    if nodes > MAX_AST_NODES {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::NodeLimit,
+            syntax.span,
+        ));
+    }
+    Ok(ParsedRowPolicyExpression {
+        syntax,
+        depth,
+        nodes,
+    })
+}
+
 fn map_parse_error(error: GrammarError, source_end: usize) -> SyntaxDiagnostic {
     match error {
         ParseError::InvalidToken { location } => {
@@ -246,6 +438,8 @@ enum DeclarationKind {
     Aggregate,
     Command,
     Projection,
+    PrincipalFact,
+    RowPolicy,
 }
 
 impl DeclarationKind {
@@ -257,6 +451,8 @@ impl DeclarationKind {
             Token::Aggregate => Some(Self::Aggregate),
             Token::Command => Some(Self::Command),
             Token::Projection => Some(Self::Projection),
+            Token::Principal => Some(Self::PrincipalFact),
+            Token::Row => Some(Self::RowPolicy),
             _ => None,
         }
     }
@@ -299,6 +495,8 @@ impl DeclarationKind {
                 token,
                 Token::Source | Token::Where | Token::Key | Token::Measure | Token::Frontier
             ),
+            Self::PrincipalFact => false,
+            Self::RowPolicy => matches!(token, Token::Allow),
         }
     }
 }
@@ -739,6 +937,22 @@ impl NodeCounter {
                 self.add(1, declaration.span)?;
                 self.projection(projection, declaration.span)?;
             }
+            Declaration::PrincipalFact(fact) => {
+                self.add(1, declaration.span)?;
+                self.name(&fact.name)?;
+                self.type_expression(&fact.ty)?;
+            }
+            Declaration::RowPolicy(policy) => {
+                self.add(1, declaration.span)?;
+                self.name(&policy.name)?;
+                self.name(&policy.entity)?;
+                self.collection(policy.rules.len(), MAX_DECLARATION_ITEMS, declaration.span)?;
+                for rule in &policy.rules {
+                    self.add(2, rule.span)?;
+                    self.add(1, rule.value.operation.span)?;
+                    self.row_policy_expression(&rule.value.expression)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1037,6 +1251,47 @@ impl NodeCounter {
             self.name(segment)?;
         }
         Ok(())
+    }
+
+    fn row_policy_expression(
+        &mut self,
+        expression: &Spanned<RowPolicyExpression>,
+    ) -> Result<(), SyntaxDiagnostic> {
+        self.add(2, expression.span)?;
+        match &expression.value {
+            RowPolicyExpression::Literal(literal) => self.add(2, literal.span),
+            RowPolicyExpression::Path(path) => self.path(path),
+            RowPolicyExpression::Parenthesized(inner) | RowPolicyExpression::Not(inner) => {
+                self.row_policy_expression(inner)
+            }
+            RowPolicyExpression::Binary {
+                left,
+                operator,
+                right,
+            } => {
+                self.row_policy_expression(left)?;
+                self.add(2, operator.span)?;
+                self.row_policy_expression(right)
+            }
+            RowPolicyExpression::In { needle, haystack } => {
+                self.row_policy_expression(needle)?;
+                self.row_policy_expression(haystack)
+            }
+            RowPolicyExpression::IsNull { value, .. } => self.row_policy_expression(value),
+            RowPolicyExpression::Exists {
+                entity,
+                index,
+                arguments,
+            } => {
+                self.name(entity)?;
+                self.name(index)?;
+                self.collection(arguments.len(), MAX_LIST_ITEMS, expression.span)?;
+                for argument in arguments {
+                    self.row_policy_expression(argument)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn names(&mut self, names: &[Spanned<String>], span: Span) -> Result<(), SyntaxDiagnostic> {

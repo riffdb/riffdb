@@ -11,7 +11,10 @@ mod reactive;
 mod resolver;
 mod schema;
 
-pub use catalog::{EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, SymbolicCatalog};
+pub use catalog::{
+    EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, PrincipalFactSymbol, RowPolicySymbol,
+    SymbolicCatalog,
+};
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
 };

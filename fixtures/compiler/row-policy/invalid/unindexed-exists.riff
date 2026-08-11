@@ -1,0 +1,24 @@
+contract UnindexedPolicy version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+  }
+
+  entity DocumentGrant {
+    key (organization_id: uuid, document_id: uuid, subject_id: uuid)
+  }
+
+  aggregate Documents {
+    root Document
+    child DocumentGrant
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+
+  row policy DocumentAccess on Document {
+    allow read when exists DocumentGrant.by_document_subject(
+      organization_id,
+      document_id,
+      principal.id,
+    )
+  }
+}

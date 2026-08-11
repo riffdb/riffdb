@@ -9,6 +9,7 @@ mod authenticator;
 mod current;
 mod digest_keys;
 mod entropy;
+mod principal_facts;
 mod protected_file;
 mod token;
 
@@ -16,4 +17,5 @@ pub use authenticator::*;
 pub use current::*;
 pub use digest_keys::*;
 pub use entropy::*;
+pub use principal_facts::*;
 pub use token::*;

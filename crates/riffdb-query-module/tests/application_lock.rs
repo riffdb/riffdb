@@ -231,6 +231,174 @@ fn v3_lock_pins_the_exact_canonical_contract_bundle_artifact() {
 }
 
 #[test]
+fn v7_lock_pins_symbolic_row_policy_receipts_and_rejects_omission() {
+    let contract = compile_contract_source(include_str!(
+        "../../../fixtures/compiler/row-policy/valid/document-access.riff"
+    ))
+    .expect("policy contract");
+    let query = r#"
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+    return Found { document: document { document_id owner_id team_id visibility } }
+    outcomes Found | NotFound
+}
+"#;
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("policy_surface").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("GetDocument", query).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("module");
+    let source_text = |policies: &str| {
+        format!(
+            r#"{{
+  "application": "policy-surface",
+  "contract": {{"lineage": "PolicySurface", "source": "contract.riff", "version": 1}},
+  "generation": {{"go": "generated/go/client.go", "mcp": "generated/mcp/tools.json", "python": "generated/python/client.py", "rust": "generated/rust/client.rs", "typescript": "generated/typescript/client.ts"}},
+  "migrations": [],
+  "query_modules": [{{"name": "policy_surface", "queries": [{{"name": "GetDocument", "source": "queries/get_document.riffq"}}], "version": 1}}],
+  "reactive_modules": [],
+  "roles": [{{"agent_subscriptions": [], "commands": [], "environment": "development", "event_streams": [], "name": "DocumentReader", "queries": ["GetDocument"], "row_policies": {policies}, "tenant_scope": "global", "watch_queries": []}}],
+  "schema": "riffdb.application-source/v6",
+  "seed_inputs": []
+}}"#
+        )
+    };
+    let source =
+        ApplicationSourceManifest::parse(&source_text("[\"DocumentAccess\"]")).expect("source");
+    let manifest = source
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("manifest");
+    let artifacts = [
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::ContractBundle,
+            riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+            contract.canonical_bytes(),
+        )
+        .expect("bundle"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Rust,
+            source.generation().rust(),
+            b"rust",
+        )
+        .expect("rust"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::TypeScript,
+            source.generation().typescript(),
+            b"typescript",
+        )
+        .expect("typescript"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Python,
+            source.generation().python().expect("Python path"),
+            b"python",
+        )
+        .expect("python"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Go,
+            source.generation().go().expect("Go path"),
+            b"go",
+        )
+        .expect("go"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Mcp,
+            source.generation().mcp(),
+            b"mcp",
+        )
+        .expect("mcp"),
+    ];
+    let lock = ApplicationLock::compile_v7(
+        &source,
+        &manifest,
+        &contract,
+        std::slice::from_ref(&module),
+        &[],
+        &artifacts,
+        &[],
+    )
+    .expect("V7 lock");
+    let text = std::str::from_utf8(lock.canonical_bytes()).expect("UTF-8");
+
+    assert_eq!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
+    );
+    assert!(text.contains(r#""application_role_definition":3"#));
+    assert!(text.contains(r#""name":"DocumentAccess""#));
+    assert!(text.contains(r#""entity":"Document""#));
+    assert!(text.contains(r#""operations":["read","create","update","delete"]"#));
+    assert!(!text.contains("team_ids"));
+    assert_eq!(
+        ApplicationLock::decode_canonical(lock.canonical_bytes()).expect("round trip"),
+        lock
+    );
+
+    let omitted_source = ApplicationSourceManifest::parse(&source_text("[]")).expect("source");
+    let omitted_manifest = omitted_source
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("manifest");
+    assert_eq!(
+        ApplicationLock::compile_v7(
+            &omitted_source,
+            &omitted_manifest,
+            &contract,
+            std::slice::from_ref(&module),
+            &[],
+            &artifacts,
+            &[],
+        )
+        .expect_err("protected query cannot omit the policy")
+        .kind(),
+        ApplicationLockErrorKind::IdentityMismatch
+    );
+}
+
+#[test]
+fn checked_row_policy_rotation_fixtures_decode_as_one_current_identity_family() {
+    let source = ApplicationSourceManifest::decode_canonical(include_bytes!(
+        "../../../fixtures/application-manifests/policy-surface-v6.json"
+    ))
+    .expect("source V6 fixture");
+    let manifest = riffdb_query_module::ApplicationManifest::decode_canonical(include_bytes!(
+        "../../../fixtures/application-manifests/policy-surface-exact-v4.json"
+    ))
+    .expect("manifest V4 fixture");
+    let lock = ApplicationLock::decode_canonical(include_bytes!(
+        "../../../fixtures/application-locks/policy-surface-v7.json"
+    ))
+    .expect("lock V7 fixture");
+
+    assert_eq!(
+        source.schema(),
+        riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6
+    );
+    assert_eq!(
+        manifest.schema(),
+        riffdb_query_module::APPLICATION_MANIFEST_SCHEMA_V4
+    );
+    assert_eq!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
+    );
+    assert_eq!(lock.source_hash(), source.identity());
+    assert_eq!(lock.manifest_hash(), manifest.identity());
+    let text = std::str::from_utf8(lock.canonical_bytes()).expect("UTF-8");
+    assert!(text.contains(r#""name":"DocumentAccess""#));
+    assert!(text.contains(r#""application_role_definition":3"#));
+    assert!(!text.contains("team_ids"));
+}
+
+#[test]
 fn v2_lock_requires_exact_python_artifact_and_v1_rejects_it() {
     let v2_source_text = SOURCE
         .replace("application-source/v1", "application-source/v2")

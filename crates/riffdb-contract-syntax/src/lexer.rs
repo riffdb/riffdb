@@ -1,4 +1,4 @@
-//! Bounded lexical analysis for contract grammar version 3.
+//! Bounded lexical analysis for contract grammar version 4.
 
 use logos::{Lexer, Logos};
 
@@ -9,7 +9,7 @@ use crate::limits::{MAX_IDENTIFIER_BYTES, MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, M
 /// A token paired with its half-open UTF-8 byte span.
 pub(crate) type SpannedToken = Spanned<Token>;
 
-/// Reserved syntax which is deliberately absent from grammar version 3.
+/// Reserved syntax which is deliberately absent from grammar version 4.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DeferredKeyword {
     Module,
@@ -22,7 +22,7 @@ pub(crate) enum DeferredKeyword {
     Default,
 }
 
-/// The complete external token set for contract grammar version 3.
+/// The complete external token set for contract grammar version 4.
 #[derive(Clone, Debug, Eq, Hash, Logos, PartialEq)]
 #[allow(clippy::enum_variant_names)] // `fencing_token` is the accepted external keyword.
 #[logos(error = LexingError)]
@@ -175,6 +175,30 @@ pub(crate) enum Token {
     Emit,
     #[token("return")]
     Return,
+    #[token("principal")]
+    Principal,
+    #[token("fact")]
+    Fact,
+    #[token("row")]
+    Row,
+    #[token("policy")]
+    Policy,
+    #[token("allow")]
+    Allow,
+    #[token("when")]
+    When,
+    #[token("update")]
+    Update,
+    #[token("delete")]
+    Delete,
+    #[token("in")]
+    In,
+    #[token("is")]
+    Is,
+    #[token("not")]
+    Not,
+    #[token("exists")]
+    Exists,
 
     #[token("bool")]
     Bool,
