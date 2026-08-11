@@ -107,8 +107,8 @@ through normal typed commands, not outbox intents.
 
 | Obligation | Location | Notes |
 |---|---|---|
-| Grammar extension | `crates/riffdb-contract-syntax/src/` | Parser for query expressions |
-| Query plan compilation | `crates/riffdb-query-planner/` or `riffdb-contract-compiler/` | Plan generation from parsed queries |
+| Grammar extension | `crates/riffdb-riffql-syntax/src/` | The RiffQL query parser (contract-syntax parses contracts, not queries) |
+| Query plan compilation | `crates/riffdb-query-compiler/` + `crates/riffdb-query-ir/` | Plan generation from parsed queries (no riffdb-query-planner crate exists) |
 | Budget enforcement | ADR-0087 surface | Nearest-neighbor falls under ad-hoc grammar governance |
 
 **Vectors obligation:** VEC-006 adds `nearest(field, $vector, k)` to this
