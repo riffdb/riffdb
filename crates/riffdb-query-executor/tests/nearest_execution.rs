@@ -434,6 +434,7 @@ impl QueryReadView for TwoStepView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         Err(())
     }
@@ -442,6 +443,7 @@ impl QueryReadView for TwoStepView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         Err(())
     }
@@ -452,6 +454,7 @@ impl QueryReadView for TwoStepView {
         _predicates: &[BoundPredicate],
         _limit: u64,
         _after: Option<&[u8]>,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         QueryScanPage::reported(vec![result_row()], 1, self.scan_scanned, 1, None).ok_or(())
     }
@@ -461,6 +464,7 @@ impl QueryReadView for TwoStepView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         Ok(QueryNearestPage {
             rows: vec![result_row()],
