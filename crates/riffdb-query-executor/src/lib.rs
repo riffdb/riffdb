@@ -820,6 +820,20 @@ pub trait QueryExecutionPort: Send + Sync {
         requests: &[QueryExecutionRequest<'_>],
     ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError>;
 
+    /// Executes one bounded hydration group with row policy applied in the
+    /// same authoritative read view before any result is shaped.
+    ///
+    /// The default denies so an adapter that implements only the historical
+    /// unprotected group operation cannot accidentally release protected
+    /// contextual data.
+    fn execute_policy_query_group(
+        &self,
+        _requests: &[QueryExecutionRequest<'_>],
+        _policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
+    }
+
     /// Executes one compiler-produced program against one checked parameter set.
     fn execute_query(
         &self,

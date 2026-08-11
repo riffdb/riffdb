@@ -64,6 +64,34 @@ impl QueryExecutionPort for MemoryOperationalPorts {
         .map_err(map_storage_query_error)?
     }
 
+    fn execute_policy_query_group(
+        &self,
+        requests: &[QueryExecutionRequest<'_>],
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        validate_query_execution_group(requests)?;
+        self.read(|state| {
+            Ok(requests
+                .iter()
+                .map(|request| {
+                    let mut view = MemoryQueryView {
+                        state,
+                        program: request.program(),
+                        parameters: request.parameters(),
+                    };
+                    execute_policy_page_in_snapshot(
+                        request.program(),
+                        request.parameters(),
+                        None,
+                        &mut view,
+                        policy,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>())
+        })
+        .map_err(map_storage_query_error)?
+    }
+
     fn execute_operational_query_page(
         &self,
         program: &QueryAccessProgramV1,
@@ -627,8 +655,8 @@ mod tests {
     };
     use riffdb_query_compiler::compile_query;
     use riffdb_query_executor::{
-        QueryContinuation, QueryParameters, QueryResultValue, execute_in_snapshot,
-        execute_page_in_snapshot, execute_policy_page_in_snapshot,
+        QueryContinuation, QueryExecutionRequest, QueryParameters, QueryResultValue,
+        execute_in_snapshot, execute_page_in_snapshot, execute_policy_page_in_snapshot,
     };
     use riffdb_query_ir::SymbolicCatalog;
     use riffdb_riffql_syntax::parse_query;
@@ -643,6 +671,8 @@ mod tests {
     };
 
     use super::*;
+    use crate::startup::MemoryDormantPorts;
+    use crate::store::MemoryStore;
 
     const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
     const POINT_QUERY: &str = r#"
@@ -948,6 +978,33 @@ query ProjectMembers(
                     && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
         ));
         assert!(filtered.continuation().is_none());
+
+        let ports = MemoryDormantPorts {
+            store: MemoryStore::new(),
+        }
+        .into_operational();
+        let access = ports.acquire().expect("memory write access");
+        access
+            .write(|stored| {
+                *stored = state;
+                Ok(())
+            })
+            .expect("install query state");
+        drop(access);
+        let requests = [
+            QueryExecutionRequest::new(&program, &parameters),
+            QueryExecutionRequest::new(&program, &parameters),
+        ];
+        let grouped = ports
+            .execute_policy_query_group(&requests, &policy)
+            .expect("policy-protected group");
+        assert_eq!(grouped.len(), 2);
+        assert!(grouped.iter().all(|snapshot| matches!(
+            snapshot.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1
+                    && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
+        )));
     }
 
     #[test]

@@ -150,6 +150,43 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .collect()
     }
 
+    fn execute_policy_query_group(
+        &self,
+        requests: &[QueryExecutionRequest<'_>],
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        validate_query_execution_group(requests)?;
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        requests
+            .iter()
+            .map(|request| {
+                let mut view = RedbQueryView {
+                    transaction: &transaction,
+                    entities_touched: false,
+                    indexes_touched: false,
+                    epochs_touched: false,
+                    head,
+                    program: request.program(),
+                    parameters: request.parameters(),
+                };
+                execute_policy_page_in_snapshot(
+                    request.program(),
+                    request.parameters(),
+                    None,
+                    &mut view,
+                    policy,
+                )
+            })
+            .collect()
+    }
+
     fn execute_operational_query_page(
         &self,
         program: &QueryAccessProgramV1,

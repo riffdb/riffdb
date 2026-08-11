@@ -45,10 +45,20 @@ ACL-only relationship changes, so a narrowing emits removals or a reset before
 the next value is delivered. Capability changes close the watch instead of
 reusing its prior authority.
 
-Projections outside RiffQL, event/contextual subscriptions, reactions, and
-export remain deliberately closed for V4 credentials until their respective
-WP-572 safe points consume the same authority. Do not implement a temporary
-middleware filter or weaken this refusal.
+Contextual subscriptions now execute every declared hydration for one work item
+inside one shared authoritative snapshot through a policy-aware grouped-query
+port. The service derives the protected entity union only from the exact
+deployed reactive and query modules, resolves it against the current V4
+subscription authorization, and reauthorizes both before hydration and before
+release. An adapter that implements only the older unprotected grouped-query
+port fails closed. The selected immutable event envelope remains governed by
+the exact partition-local subscription permission; row policy is applied to
+every entity source used to build its contextual state.
+
+Projections outside RiffQL, naked event streams, contextual reaction helpers,
+and export remain deliberately closed for V4 credentials until their
+respective WP-572 safe points consume the same authority. Do not implement a
+temporary middleware filter or weaken this refusal.
 Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
 not silently drop an unknown fact or substitute a default value. A role whose
 selected policy reads `principal.id` also rejects a principal that is not
@@ -150,6 +160,6 @@ row-policy extension, and its decoder rejects missing extensions, noncanonical
 fact or binding order, duplicate entity selection, unknown operation tags, and
 role-identity substitution. Current authorization reconstructs facts only from
 the transaction-current retained record. Authoritative RiffQL, compiled
-commands, and live named RiffQL watches are the enabled protected surfaces;
-other protected surfaces remain unavailable until their shared policy and
-final-safe-point enforcement lands.
+commands, live named RiffQL watches, and contextual RiffQL hydration are the
+enabled protected surfaces; other protected surfaces remain unavailable until
+their shared policy and final-safe-point enforcement lands.

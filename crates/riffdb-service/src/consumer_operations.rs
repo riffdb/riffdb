@@ -11,6 +11,7 @@ use riffdb_errors::PublicError;
 use riffdb_policy::{
     AuditClass, AuthorizedOperation, CommandExecutionClass, Decision, EventConsumerOperationTarget,
     OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
+    resolve_authorized_contextual_row_policy_context,
 };
 use riffdb_query_executor::{QueryExecutionRequest, QueryOwnedSnapshot};
 use riffdb_types::{
@@ -1473,10 +1474,13 @@ async fn finalize_consumer_delivery(
     operation: ServiceOperationV1,
 ) -> ServiceResult<ConsumerDispatchResult> {
     if operation == ServiceOperationV1::ConsumeContextualSubscription {
+        let authorization = begun.reauthorize(service, context).await?;
+        ensure_consumer_authorization(service, &authorization, operation, prepared)?;
         let result = hydrate_contextual_delivery(
             service,
             context,
             prepared,
+            &authorization,
             consumed,
             status,
             wait_timed_out,
@@ -1502,6 +1506,7 @@ async fn hydrate_contextual_delivery(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     prepared: &PreparedConsumer,
+    authorization: &AuthorizedOperation,
     consumed: Vec<ConsumedEvent>,
     status: EventConsumerStatus,
     wait_timed_out: bool,
@@ -1575,6 +1580,24 @@ async fn hydrate_contextual_delivery(
         })?;
         compiled_hydrations.push((hydration, program));
     }
+    let mut hydration_entities = compiled_hydrations
+        .iter()
+        .flat_map(|(_, program)| program.steps())
+        .map(riffdb_query_ir::QueryAccessStep::internal_entity_id)
+        .collect::<Vec<_>>();
+    hydration_entities.sort_unstable();
+    hydration_entities.dedup();
+    let row_policy = resolve_authorized_contextual_row_policy_context(
+        authorization,
+        prepared.catalog.bundle().bundle(),
+        &hydration_entities,
+    )
+    .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ConsumeContextualSubscription,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
     let executor = service.providers.query_executor.as_ref().ok_or_else(|| {
         service.internal_failure(
             ServiceOperationV1::ConsumeContextualSubscription,
@@ -1620,7 +1643,11 @@ async fn hydrate_contextual_delivery(
                 QueryExecutionRequest::new(program.as_ref(), parameters)
             })
             .collect::<Vec<_>>();
-        let snapshots = executor.execute_query_group(&requests).map_err(|_| {
+        let snapshots = match row_policy.as_ref() {
+            Some(policy) => executor.execute_policy_query_group(&requests, policy),
+            None => executor.execute_query_group(&requests),
+        }
+        .map_err(|_| {
             service.internal_failure(
                 ServiceOperationV1::ConsumeContextualSubscription,
                 InternalDefect::ProofMismatch,
