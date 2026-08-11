@@ -236,7 +236,7 @@
       "artifact_hashes": [
         "e3ac10e86a759f9e948d2ddc362cc12ab2838938928d60a7fa3c413215b26e75",
         "fed741c96d0ec2f50c1554c300d508048c5f2ac24131d19a410fd9577ace0ef9",
-        "eb9b1086a7ce61b95474e0a311fe6ee95c2ba26e3f27a2948a18852bd1be7abe",
+        "e665eeae6548abd55e15d6123bf0b9219dab45558d709a898fff58230fbd033a",
         "5a626675981c285294584492c45e567fb8edbca4816744161a362ac207c2e312",
         "976bc8d284d740ba91eabfa1cd3435d512ed4a8da2efdf3ba4c201eba8fdb51c",
         "cc65f0f8074bab4f8088c9ad3c701744d95e0a8d3eadc7daf1edaac1bd9d1b34",
@@ -244,7 +244,7 @@
         "f8ba6ccab9fc250752e66e874218f087c954d7f845877624bcdb600f163c3106"
       ],
       "contract_bundle_hash": "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de",
-      "lock_hash": "5b8f6e7074a057fca891856726ed5a103eefa4007b4f360d3a2afa579bc315de",
+      "lock_hash": "3f041ee360c5f685d1c2f9410233bef707efd16d5f670e9215e3a9390db2f376",
       "manifest_hash": "53f75ee7aaa5695912588f28d6119cd0ac9f86b9cc1628fac17d4bdf508f1d34",
       "module_hashes": [
         "4b7d345da5723cf41bf543b0526d25d454fc85cc4c05a934d28715527fdeeb2f"

@@ -10630,7 +10630,7 @@ work_packages:
     CON-008, EVT-005, EVT-006, ID-004, REC-001, REC-002, SAFE-001, SAFE-007,
     WF-011, WF-012, WF-013, WF-014]
   required_adrs: [ADR-0049, ADR-0055, ADR-0056, ADR-0080, ADR-0106, ADR-0109]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, crates/riffdb-types/**,
+  allowed_paths: [Cargo.lock, Cargo.toml, SPEC.md, work_packages.yaml, crates/riffdb-types/**,
     crates/riffdb-query-module/**, crates/riffdb-catalog/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-scheduler/**, crates/riffdb-client-rust/**,
     crates/riffdb-driver-host/**, crates/riffdb-server/**, crates/riffdb-cli/**,

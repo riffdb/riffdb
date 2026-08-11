@@ -1,0 +1,40 @@
+{
+  "schema": "riffdb.application-source/v5",
+  "application": "mlflow-scheduler",
+  "contract": {
+    "source": "contract.riff",
+    "lineage": "MlflowScheduler",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "mlflow_scheduler",
+      "version": 1,
+      "queries": [
+        { "name": "DueRun", "source": "queries/due_run.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "name": "MlflowSchedulerWorker",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["DueRun"],
+      "commands": ["ClaimRun", "CompleteRun", "ReleaseRun"],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": []
+    }
+  ],
+  "seed_inputs": []
+}

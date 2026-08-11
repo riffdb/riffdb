@@ -1,0 +1,667 @@
+{
+  "application_manifest_hash": "622f9b226fb3914de367262434616c601283dd61eb7e8ab44cc7b8c28a568c8b",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "bafe504ea3f5d2969397def1bf3ca76be785ca655d1481ce16ce5d484dad03c1",
+      "description": "Execute the exact ClaimRun compiled command from contract MlflowScheduler.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "duration": {
+            "type": "integer"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_key": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "duration",
+          "owner_id",
+          "request_key",
+          "organization_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "name": "mlflow_scheduler_claim_run",
+      "operation_name": "ClaimRun",
+      "plan_hash": "4664b92d065345af657315f573aabdc4bb54ca6a99c4ef2e8a44ff94234769a0",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ClaimStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunClaimed",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "due_at": {
+                    "type": "string"
+                  },
+                  "lease_attempts": {
+                    "type": "integer"
+                  },
+                  "lease_expires_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lease_fence": {
+                    "type": "integer"
+                  },
+                  "lease_owner": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "due_at",
+                  "run_id",
+                  "lease_fence",
+                  "lease_owner",
+                  "lease_attempts",
+                  "organization_id",
+                  "lease_expires_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ClaimInvalid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ClaimExhausted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ClaimUnavailable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ClaimRun"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "bafe504ea3f5d2969397def1bf3ca76be785ca655d1481ce16ce5d484dad03c1",
+      "description": "Execute the exact CompleteRun compiled command from contract MlflowScheduler.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "fencing_token": {
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_key": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "owner_id",
+          "request_key",
+          "fencing_token",
+          "organization_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "name": "mlflow_scheduler_complete_run",
+      "operation_name": "CompleteRun",
+      "plan_hash": "99f9711ec973cd40b42c065ff01dce4c1b548b3a74344af45cbe75d7d567f50a",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "FenceStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "FenceExpired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "FenceInvalid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunCompleted",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "due_at": {
+                    "type": "string"
+                  },
+                  "lease_attempts": {
+                    "type": "integer"
+                  },
+                  "lease_expires_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lease_fence": {
+                    "type": "integer"
+                  },
+                  "lease_owner": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "due_at",
+                  "run_id",
+                  "lease_fence",
+                  "lease_owner",
+                  "lease_attempts",
+                  "organization_id",
+                  "lease_expires_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "CompleteStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "CompleteIllegal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CompleteRun"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "bafe504ea3f5d2969397def1bf3ca76be785ca655d1481ce16ce5d484dad03c1",
+      "description": "Execute the exact ReleaseRun compiled command from contract MlflowScheduler.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "fencing_token": {
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_key": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "owner_id",
+          "request_key",
+          "fencing_token",
+          "organization_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "name": "mlflow_scheduler_release_run",
+      "operation_name": "ReleaseRun",
+      "plan_hash": "7e8e7af0567376ba19784069e41c8613a4de5cd3174d58cc2cd4d3de02832522",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunReleased",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "due_at": {
+                    "type": "string"
+                  },
+                  "lease_attempts": {
+                    "type": "integer"
+                  },
+                  "lease_expires_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lease_fence": {
+                    "type": "integer"
+                  },
+                  "lease_owner": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "due_at",
+                  "run_id",
+                  "lease_fence",
+                  "lease_owner",
+                  "lease_attempts",
+                  "organization_id",
+                  "lease_expires_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ReleaseStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ReleaseInvalid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ReleaseRun"
+    }
+  ],
+  "reactive_tools": [],
+  "schema": "riffdb-generated-application-operations/v2",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact DueRun named query from immutable module mlflow_scheduler.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b419b9dfa26731372722f208915a50870b02d4bdb782ca4503b0554ca215e4c1",
+      "name": "mlflow_scheduler_due_run",
+      "operation_name": "DueRun",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "due_at": {
+                    "type": "string"
+                  },
+                  "lease_attempts": {
+                    "type": "string"
+                  },
+                  "lease_expires_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lease_fence": {
+                    "type": "string"
+                  },
+                  "lease_owner": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "run_id",
+                  "state",
+                  "due_at",
+                  "lease_owner",
+                  "lease_expires_at",
+                  "lease_fence",
+                  "lease_attempts"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "run"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run DueRun"
+    }
+  ]
+}

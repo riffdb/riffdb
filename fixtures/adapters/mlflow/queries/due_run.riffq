@@ -1,0 +1,24 @@
+query DueRun(
+    $organization_id: ScheduledRun.organization_id,
+    $run_id: ScheduledRun.run_id,
+) {
+    one run from ScheduledRun
+        where organization_id == $organization_id
+          && run_id == $run_id
+        else Missing
+
+    return Found {
+        run: run {
+            organization_id
+            run_id
+            state
+            due_at
+            lease_owner
+            lease_expires_at
+            lease_fence
+            lease_attempts
+        }
+    }
+
+    outcomes Found | Missing
+}

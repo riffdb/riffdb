@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" != "--all-languages" || $# -ne 1 ]]; then
+    echo "usage: ./scripts/adapter-workflow-acceptance --all-languages" >&2
+    exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+for tool in cargo go jq mypy node python3; do
+    command -v "$tool" >/dev/null || {
+        echo "adapter workflow acceptance requires $tool" >&2
+        exit 1
+    }
+done
+
+typescript_compiler="$repo_root/clients/typescript/runtime/node_modules/.bin/tsc"
+if [[ ! -x "$typescript_compiler" ]]; then
+    echo "adapter workflow acceptance requires the checked TypeScript runtime toolchain" >&2
+    exit 1
+fi
+
+scratch_parent="${HOME:?HOME is required}/tmp"
+mkdir -p "$scratch_parent"
+work_root="$(mktemp -d "$scratch_parent/riffdb-adapter-workflows.XXXXXX")"
+case "$work_root" in
+    "$scratch_parent"/riffdb-adapter-workflows.*) ;;
+    *) echo "refusing unexpected scratch path: $work_root" >&2; exit 1 ;;
+esac
+trap 'rm -rf "$work_root"' EXIT
+
+cargo +1.97.0 test -p riffdb-query-module \
+    --test workflow_application_generation --all-features --quiet
+
+for adapter in mlflow woodpecker; do
+    root="$repo_root/fixtures/adapters/$adapter"
+    cargo +1.97.0 run --quiet -p riffdb-cli --bin riffdb -- \
+        application check "$root/riffdb.application.json" --output json >/dev/null
+
+    case "$adapter" in
+        mlflow)
+            jq -e '
+              .roles == [{
+                name: "MlflowSchedulerWorker",
+                environment: "development",
+                tenant_scope: "global",
+                queries: ["DueRun"],
+                commands: ["ClaimRun", "CompleteRun", "ReleaseRun"],
+                event_streams: [],
+                watch_queries: [],
+                agent_subscriptions: []
+              }]
+            ' "$root/riffdb.application.json" >/dev/null
+            success="RunClaimed"
+            ;;
+        woodpecker)
+            jq -e '
+              .roles == [{
+                name: "WoodpeckerSchedulerWorker",
+                environment: "development",
+                tenant_scope: "global",
+                queries: [],
+                commands: ["ClaimPipeline", "StartPipeline", "ReleasePipeline"],
+                event_streams: ["PipelineTransitions"],
+                watch_queries: [],
+                agent_subscriptions: []
+              }]
+            ' "$root/riffdb.application.json" >/dev/null
+            success="PipelineStarted"
+            ;;
+    esac
+
+    jq -e '
+      .schema == "riffdb.application-lock/v6"
+      and (.roles | length) == 1
+      and (.roles[0].definition_hash | length) == 64
+    ' "$root/riffdb.application.lock.json" >/dev/null
+
+    rust="$root/generated/rust/client.rs"
+    go_source="$root/generated/go/client.go"
+    typescript="$root/generated/typescript/client.ts"
+    python="$root/generated/python/client.py"
+    rg -q 'workflow_successor_revisions' "$rust"
+    rg -q 'WorkflowRevisions' "$go_source"
+    rg -q 'workflowRevisions' "$typescript"
+    rg -q '_with_workflow_revisions' "$python"
+    rg -q "$success" "$rust" "$go_source" "$typescript" "$python"
+
+    go_root="$work_root/$adapter-go"
+    mkdir -p "$go_root"
+    cp "$go_source" "$go_root/client.go"
+    printf '%s\n' \
+        "module riffdb.dev/adapter-$adapter" \
+        "" \
+        "go 1.24" \
+        "" \
+        "require riffdb.dev/application v0.0.0" \
+        "" \
+        "replace riffdb.dev/application => $repo_root/clients/go/runtime" \
+        >"$go_root/go.mod"
+    GOCACHE="$work_root/go-cache" GOMODCACHE="$work_root/go-mod-cache" \
+        go test -C "$go_root" ./...
+
+    "$typescript_compiler" --strict --target ES2022 --module NodeNext \
+        --moduleResolution NodeNext --noEmit "$typescript"
+    PYTHONPYCACHEPREFIX="$work_root/python-cache" python3 -m py_compile "$python"
+    MYPYPATH="$repo_root/clients/python/runtime/src" \
+        mypy --strict --cache-dir "$work_root/mypy-cache" "$python"
+done
+
+echo "Workflow adapters are exact, least-authority, crash-tested, and typed in Rust, Go, TypeScript, and Python."

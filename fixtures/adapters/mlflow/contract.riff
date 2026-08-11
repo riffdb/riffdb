@@ -1,0 +1,83 @@
+contract MlflowScheduler version 1 {
+  enum RunState { Pending, Complete }
+
+  entity ScheduledRun {
+    key (organization_id: uuid, run_id: uuid)
+    field state: RunState
+    field due_at: timestamp
+    field lease_owner: optional<uuid>
+    field lease_expires_at: optional<timestamp>
+    field lease_fence: u64
+    field lease_attempts: u64
+  }
+
+  aggregate ScheduledRuns {
+    root ScheduledRun
+    partition_by organization_id
+    conflict_key (organization_id, run_id)
+  }
+
+  workflow RunLifecycle {
+    entity ScheduledRun
+    state state
+    transition CompleteRunState from (Pending) to Complete
+    lease scheduler {
+      owner lease_owner
+      expires_at lease_expires_at
+      fencing_token lease_fence
+      attempts lease_attempts
+      duration_seconds (5, 900)
+    }
+  }
+
+  command ClaimRun {
+    input request_key: string<128>
+    input organization_id: uuid
+    input run_id: uuid
+    input owner_id: uuid
+    input duration: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate ScheduledRun(organization_id, run_id) as run else RunMissing {}
+    lease claim scheduler on run owner owner_id duration_seconds duration revision expected_revision
+      stale ClaimStale {}
+      unavailable ClaimUnavailable {}
+      invalid ClaimInvalid {}
+      exhausted ClaimExhausted {}
+    return RunClaimed { run: run }
+  }
+
+  command CompleteRun {
+    input request_key: string<128>
+    input organization_id: uuid
+    input run_id: uuid
+    input owner_id: uuid
+    input fencing_token: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate ScheduledRun(organization_id, run_id) as run else RunMissing {}
+    transition CompleteRunState on run revision expected_revision
+      stale CompleteStale {}
+      illegal CompleteIllegal {}
+    lease fence scheduler on run owner owner_id fencing_token fencing_token revision expected_revision
+      stale FenceStale {}
+      invalid FenceInvalid {}
+      expired FenceExpired {}
+    return RunCompleted { run: run }
+  }
+
+  command ReleaseRun {
+    input request_key: string<128>
+    input organization_id: uuid
+    input run_id: uuid
+    input owner_id: uuid
+    input fencing_token: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate ScheduledRun(organization_id, run_id) as run else RunMissing {}
+    lease release scheduler on run owner owner_id fencing_token fencing_token revision expected_revision
+      stale ReleaseStale {}
+      invalid ReleaseInvalid {}
+    return RunReleased { run: run }
+  }
+}

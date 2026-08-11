@@ -14,7 +14,7 @@ use crate::{
     GeneratedArtifactHash, MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash,
     PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash,
     QueryParameterHash, QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash,
-    ReactiveSourceHash, SchemaHash, SourceHash,
+    ReactiveSourceHash, ScheduledAttemptHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -100,11 +100,13 @@ pub enum HashDomain {
     ContextualReaction,
     /// Opaque MCP reactive-resource wakeup generation.
     ReactiveWakeup,
+    /// One bounded scheduled workflow attempt.
+    ScheduledAttempt,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -142,6 +144,7 @@ impl HashDomain {
         Self::CommandBatch,
         Self::ContextualReaction,
         Self::ReactiveWakeup,
+        Self::ScheduledAttempt,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -184,6 +187,7 @@ impl HashDomain {
             Self::CommandBatch => "riffdb.command-batch/v1",
             Self::ContextualReaction => "riffdb.contextual-reaction/v1",
             Self::ReactiveWakeup => "riffdb.reactive-wakeup/v1",
+            Self::ScheduledAttempt => "riffdb.scheduled-attempt/v1",
         }
     }
 }
@@ -407,6 +411,12 @@ typed_hash_function!(
     hash_event_consumer_identity,
     EventConsumerIdentity,
     EventConsumerIdentityHash
+);
+typed_hash_function!(
+    /// Hashes one canonical bounded scheduled workflow attempt.
+    hash_scheduled_attempt,
+    ScheduledAttempt,
+    ScheduledAttemptHash
 );
 typed_hash_function!(
     /// Hashes one canonical application manifest in its immutable v1 domain.

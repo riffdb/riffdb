@@ -1,0 +1,24 @@
+query GetPipeline(
+    $organization_id: ScheduledPipeline.organization_id,
+    $pipeline_id: ScheduledPipeline.pipeline_id,
+) {
+    one pipeline from ScheduledPipeline
+        where organization_id == $organization_id
+          && pipeline_id == $pipeline_id
+        else Missing
+
+    return Found {
+        pipeline: pipeline {
+            organization_id
+            pipeline_id
+            state
+            due_at
+            lease_owner
+            lease_expires_at
+            lease_fence
+            lease_attempts
+        }
+    }
+
+    outcomes Found | Missing
+}

@@ -21,6 +21,7 @@ serde_json = { version = "=1.0.150", default-features = false, features = ["std"
 sha2 = { version = "=0.11.0", default-features = false }
 
 [dev-dependencies]
+riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
 
 [[example]]

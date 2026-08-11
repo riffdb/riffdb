@@ -353,6 +353,10 @@ hash_id!(
     EventConsumerIdentityHash
 );
 hash_id!(
+    /// Stable identity of one bounded scheduled workflow attempt.
+    ScheduledAttemptHash
+);
+hash_id!(
     /// The identity of one canonical application manifest.
     ApplicationManifestHash
 );
