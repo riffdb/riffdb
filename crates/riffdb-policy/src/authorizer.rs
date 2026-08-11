@@ -539,7 +539,7 @@ fn evaluate(
     // consumes the transaction-current policy authority before disclosure or
     // at the final commit safe point.
     if current.grant.internal_row_policy().is_some()
-        && matches!(request.operation(), ServiceOperationV1::ConsumeEventStream)
+        && unanchored_event_policy_surface(request.operation())
     {
         return Err(PolicyCode::MissingPermission);
     }
@@ -618,6 +618,30 @@ fn evaluate(
         request.audit_obligation(),
         request.output_classification(),
     ))
+}
+
+/// Event payload, availability, consumer position, and causal reactions all
+/// require the same compiler-owned current-row anchor. Until the event release
+/// path consumes that proof, a V4 row-policy grant must not reach any surface
+/// that can disclose or act on an event. Keeping this inventory together makes
+/// the staged denial cover contextual subscriptions as well as plain streams.
+const fn unanchored_event_policy_surface(operation: ServiceOperationV1) -> bool {
+    matches!(
+        operation,
+        ServiceOperationV1::ReplayEvents
+            | ServiceOperationV1::TailEvents
+            | ServiceOperationV1::ConsumeEventStream
+            | ServiceOperationV1::AcknowledgeEventStream
+            | ServiceOperationV1::NegativeAcknowledgeEventStream
+            | ServiceOperationV1::SeekEventStreamConsumer
+            | ServiceOperationV1::GetEventStreamConsumerStatus
+            | ServiceOperationV1::ConsumeContextualSubscription
+            | ServiceOperationV1::AcknowledgeContextualSubscription
+            | ServiceOperationV1::NegativeAcknowledgeContextualSubscription
+            | ServiceOperationV1::GetContextualSubscriptionStatus
+            | ServiceOperationV1::ExecuteContextualReaction
+            | ServiceOperationV1::GetReactiveWakeup
+    )
 }
 
 fn application_query_accesses_visible(
@@ -958,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_row_policy_authority_reaches_query_and_command_consumers() {
+    fn persisted_row_policy_authority_reaches_safe_surfaces_but_not_unanchored_events() {
         let role = ApplicationRoleHash::from_bytes([0x44; 32]);
         let reactive_module = ReactiveModuleHash::from_bytes([0x45; 32]);
         let reactive_operation = ReactiveOperationName::new("DocumentWatch").expect("operation");
@@ -1077,7 +1101,7 @@ mod tests {
             OperationTenantScope::global_only(),
             partition(),
         );
-        let allowed_to_contextual = evaluate(
+        let unanchored_contextual = evaluate(
             &principal,
             &current,
             database_id(),
@@ -1088,8 +1112,12 @@ mod tests {
                 NonZeroU16::new(4).expect("rows"),
             ),
         );
-        assert!(allowed_to_contextual.is_ok());
-        let allowed_to_react = evaluate(
+        assert_eq!(
+            unanchored_contextual,
+            Err(PolicyCode::MissingPermission),
+            "a contextual trigger cannot be released before its compiler-owned event policy anchor is checked"
+        );
+        let unanchored_reaction = evaluate(
             &principal,
             &current,
             database_id(),
@@ -1097,7 +1125,38 @@ mod tests {
             timestamp(15),
             &OperationRequest::execute_contextual_reaction(contextual_target),
         );
-        assert!(allowed_to_react.is_ok());
+        assert_eq!(
+            unanchored_reaction,
+            Err(PolicyCode::MissingPermission),
+            "a lease acquired before row-policy activation cannot authorize an unanchored reaction"
+        );
+    }
+
+    #[test]
+    fn unanchored_event_policy_surface_inventory_is_exact() {
+        let denied = [
+            ServiceOperationV1::ReplayEvents,
+            ServiceOperationV1::TailEvents,
+            ServiceOperationV1::ConsumeEventStream,
+            ServiceOperationV1::AcknowledgeEventStream,
+            ServiceOperationV1::NegativeAcknowledgeEventStream,
+            ServiceOperationV1::SeekEventStreamConsumer,
+            ServiceOperationV1::GetEventStreamConsumerStatus,
+            ServiceOperationV1::ConsumeContextualSubscription,
+            ServiceOperationV1::AcknowledgeContextualSubscription,
+            ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
+            ServiceOperationV1::GetContextualSubscriptionStatus,
+            ServiceOperationV1::ExecuteContextualReaction,
+            ServiceOperationV1::GetReactiveWakeup,
+        ];
+
+        for operation in ServiceOperationV1::ALL {
+            assert_eq!(
+                unanchored_event_policy_surface(operation),
+                denied.contains(&operation),
+                "staged event-policy inventory drifted for {operation:?}"
+            );
+        }
     }
 
     #[test]
