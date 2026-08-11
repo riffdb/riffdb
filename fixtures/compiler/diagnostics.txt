@@ -625,7 +625,7 @@ kind=semantic
 count=1
 diagnostic.0.code=RDB-C044
 diagnostic.0.message=the collection or delete command plan is unavailable in this compiler
-diagnostic.0.primary=266..360
+diagnostic.0.primary=290..358
 diagnostic.0.related=none
 diagnostic.0.help=use a compiler with the ADR-0107 bounded collection and delete plan format enabled
 
