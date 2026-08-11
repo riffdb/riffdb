@@ -18,6 +18,7 @@ from typing import Any
 
 RECEIPT_SCHEMA = "riffdb.alpha-endurance-receipt/v1"
 MANIFEST_SCHEMA = "riffdb.alpha-endurance-manifest/v1"
+ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 MAX_JSON_BYTES = 4 * 1024 * 1024
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
 REQUIRED_WORKLOADS = {
@@ -70,6 +71,8 @@ REQUIRED_RESOURCES = {
     "consumer_checkpoint",
     "projection_frontier",
     "error_count",
+    "restart_count",
+    "process_count",
 }
 HEX_256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -111,17 +114,81 @@ def integer(value: Any, code: str, name: str) -> int:
 def validate_manifest(manifest: dict[str, Any]) -> None:
     require(manifest.get("schema") == MANIFEST_SCHEMA, "invalid_manifest", "wrong manifest schema")
     require(set(manifest.get("languages", [])) == REQUIRED_LANGUAGES, "missing_language", "all four language clients are required")
-    require(set(manifest.get("workload", {}).get("coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "workload coverage is incomplete")
+    workload = manifest.get("workload", {})
+    require(set(workload.get("coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "workload coverage is incomplete")
+    require(workload.get("mode") == "closed" and workload.get("bounded_rate") is True, "invalid_manifest", "workload must be closed and rate bounded")
+    require(1 <= integer(workload.get("clients_per_language"), "invalid_manifest", "clients_per_language") <= 128, "invalid_manifest", "client count is invalid")
+    require(1 <= integer(workload.get("maximum_total_operations_per_second"), "invalid_manifest", "maximum_total_operations_per_second") <= 100_000, "invalid_manifest", "operation rate is invalid")
+    tenants = workload.get("tenants")
+    require(isinstance(tenants, list) and 2 <= len(tenants) <= 32 and len(set(tenants)) == len(tenants), "invalid_manifest", "tenant inventory is invalid")
+    require(all(isinstance(item, str) and 1 <= len(item.encode()) <= 128 for item in tenants), "invalid_manifest", "tenant name is invalid")
+    seeds = workload.get("seeds")
+    require(isinstance(seeds, dict) and set(seeds) == REQUIRED_LANGUAGES, "invalid_manifest", "language seeds are incomplete")
+    require(all(type(value) is int and 0 <= value <= 2**63 - 1 for value in seeds.values()), "invalid_manifest", "language seed is invalid")
+    require(1 <= integer(workload.get("hot_key_count"), "invalid_manifest", "hot_key_count") <= 10_000, "invalid_manifest", "hot key count is invalid")
+    require(integer(workload.get("cold_key_count"), "invalid_manifest", "cold_key_count") >= integer(workload.get("hot_key_count"), "invalid_manifest", "hot_key_count"), "invalid_manifest", "cold key count must cover hot keys")
+    weights = workload.get("operation_weights")
+    required_operations = {"reads", "writes", "workflows", "events", "live_queries"}
+    require(isinstance(weights, dict) and set(weights) == required_operations, "invalid_manifest", "operation weights are incomplete")
+    require(all(type(value) is int and value > 0 for value in weights.values()) and sum(weights.values()) == 100, "invalid_manifest", "operation weights must be positive and total 100")
     lifecycle = manifest.get("lifecycles", {})
     require(set(lifecycle) == REQUIRED_LIFECYCLES, "missing_lifecycle", "lifecycle manifest is incomplete")
     for name, policy in lifecycle.items():
         require(isinstance(policy, dict), "invalid_manifest", f"{name} policy must be an object")
         require(integer(policy.get("minimum_count"), "invalid_manifest", f"{name}.minimum_count") >= 1, "invalid_manifest", f"{name} minimum must be positive")
+    faults = manifest.get("faults", {})
+    require(set(faults) == REQUIRED_FAULTS, "missing_fault", "fault manifest is incomplete")
+    for name, policy in faults.items():
+        require(isinstance(policy, dict), "invalid_manifest", f"{name} fault policy must be an object")
+        require(integer(policy.get("minimum_count"), "invalid_manifest", f"{name}.minimum_count") >= 1, "invalid_manifest", f"{name} minimum must be positive")
     bounds = manifest.get("bounds", {})
     require(1 <= integer(bounds.get("maximum_observations"), "invalid_manifest", "maximum_observations") <= 100_000, "invalid_manifest", "observation bound is invalid")
     require(1 <= integer(bounds.get("maximum_diagnostic_bytes"), "invalid_manifest", "maximum_diagnostic_bytes") <= MAX_JSON_BYTES, "invalid_manifest", "diagnostic bound is invalid")
+    require(1 <= integer(bounds.get("maximum_processes"), "invalid_manifest", "maximum_processes") <= 512, "invalid_manifest", "process bound is invalid")
+    require(integer(bounds.get("minimum_conformance_checkpoints"), "invalid_manifest", "minimum_conformance_checkpoints") >= 2, "invalid_manifest", "conformance checkpoint minimum is invalid")
+    require(1 <= integer(bounds.get("maximum_action_results"), "invalid_manifest", "maximum_action_results") <= 10_000, "invalid_manifest", "action-result bound is invalid")
     require(manifest.get("fault_controls") == "orchestrator_only", "unsafe_fault_surface", "fault controls cannot enter production interfaces")
     require(manifest.get("application_surface") == "public_named_operations_only", "unsafe_application_surface", "endurance clients must use public named operations")
+
+
+def validate_actions(actions: dict[str, Any], manifest: dict[str, Any]) -> None:
+    require(actions.get("schema") == "riffdb.alpha-endurance-actions/v1", "invalid_actions", "wrong action manifest schema")
+    workers = actions.get("workers")
+    require(isinstance(workers, list) and len(workers) == len(REQUIRED_LANGUAGES), "invalid_actions", "one worker per language is required")
+    languages: set[str] = set()
+    total_rate = 0
+    for worker in workers:
+        require(isinstance(worker, dict), "invalid_actions", "worker must be an object")
+        language = worker.get("language")
+        require(language in REQUIRED_LANGUAGES and language not in languages, "invalid_actions", "worker language is missing or duplicated")
+        languages.add(language)
+        argv = worker.get("command")
+        require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", "worker command is not a bounded argv")
+        require(integer(worker.get("seed"), "invalid_actions", "worker.seed") == manifest["workload"]["seeds"][language], "invalid_actions", "worker seed differs from the closed workload")
+        require(integer(worker.get("clients"), "invalid_actions", "worker.clients") == manifest["workload"]["clients_per_language"], "invalid_actions", "worker client count differs from the closed workload")
+        rate = integer(worker.get("maximum_operations_per_second"), "invalid_actions", "worker.maximum_operations_per_second")
+        require(rate >= 1, "invalid_actions", "worker rate must be positive")
+        total_rate += rate
+        require(worker.get("tenants") == manifest["workload"]["tenants"], "invalid_actions", "worker tenants differ from the closed workload")
+        require(set(worker.get("coverage", [])) == REQUIRED_WORKLOADS, "invalid_actions", "worker coverage is incomplete")
+    require(languages == REQUIRED_LANGUAGES, "invalid_actions", "all language workers are required")
+    require(total_rate <= manifest["workload"]["maximum_total_operations_per_second"], "invalid_actions", "worker rates exceed the closed workload bound")
+    for section, required in (("lifecycles", REQUIRED_LIFECYCLES), ("faults", REQUIRED_FAULTS)):
+        items = actions.get(section)
+        require(isinstance(items, list) and len(items) == len(required), "invalid_actions", f"{section} inventory is incomplete")
+        require({item.get("name") for item in items if isinstance(item, dict)} == required, "invalid_actions", f"{section} inventory is incomplete")
+        for item in items:
+            argv = item.get("command")
+            require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", f"{section} command is not a bounded argv")
+            require(1 <= integer(item.get("interval_seconds"), "invalid_actions", f"{section}.interval_seconds") <= 86400, "invalid_actions", f"{section} interval is invalid")
+            require(0 <= integer(item.get("initial_delay_seconds"), "invalid_actions", f"{section}.initial_delay_seconds") <= 86400, "invalid_actions", f"{section} initial delay is invalid")
+    for section in ("sampler", "conformance"):
+        item = actions.get(section)
+        require(isinstance(item, dict), "invalid_actions", f"{section} is absent")
+        argv = item.get("command")
+        require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", f"{section} command is not a bounded argv")
+        require(1 <= integer(item.get("interval_seconds"), "invalid_actions", f"{section}.interval_seconds") <= 86400, "invalid_actions", f"{section} interval is invalid")
+    require(set(actions.get("workload_coverage", [])) == REQUIRED_WORKLOADS, "invalid_actions", "action workload coverage is incomplete")
 
 
 def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
@@ -131,12 +198,33 @@ def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]
     prior_elapsed = -1
     prior_ops = -1
     prior_generation = -1
+    prior_language = {name: -1 for name in REQUIRED_LANGUAGES}
+    prior_workload = {name: -1 for name in REQUIRED_WORKLOADS}
+    prior_tenant = {name: -1 for name in manifest["workload"]["tenants"]}
     for sample in observations:
         require(set(sample) >= REQUIRED_RESOURCES | {"elapsed_seconds", "modeled_retained_bytes", "lifecycle_seconds"}, "missing_resource", "resource observation is incomplete")
         elapsed = integer(sample["elapsed_seconds"], "invalid_observation", "elapsed_seconds")
         logical = integer(sample["logical_operations"], "invalid_observation", "logical_operations")
         generation = integer(sample["journal_generation"], "invalid_observation", "journal_generation")
         require(elapsed > prior_elapsed and logical >= prior_ops and generation >= prior_generation, "nonmonotonic_observation", "frontiers and time must be monotonic")
+        language_operations = sample.get("language_operations")
+        workload_operations = sample.get("workload_operations")
+        tenant_operations = sample.get("tenant_operations")
+        require(isinstance(language_operations, dict) and set(language_operations) == REQUIRED_LANGUAGES, "missing_resource", "per-language progress is incomplete")
+        require(isinstance(workload_operations, dict) and set(workload_operations) == REQUIRED_WORKLOADS, "missing_resource", "per-workload progress is incomplete")
+        require(isinstance(tenant_operations, dict) and set(tenant_operations) == set(prior_tenant), "missing_resource", "per-tenant progress is incomplete")
+        for name in REQUIRED_LANGUAGES:
+            current = integer(language_operations[name], "invalid_observation", f"language_operations.{name}")
+            require(current >= prior_language[name], "nonmonotonic_observation", "language progress must be monotonic")
+            prior_language[name] = current
+        for name in REQUIRED_WORKLOADS:
+            current = integer(workload_operations[name], "invalid_observation", f"workload_operations.{name}")
+            require(current >= prior_workload[name], "nonmonotonic_observation", "workload progress must be monotonic")
+            prior_workload[name] = current
+        for name in prior_tenant:
+            current = integer(tenant_operations[name], "invalid_observation", f"tenant_operations.{name}")
+            require(current >= prior_tenant[name], "nonmonotonic_observation", "tenant progress must be monotonic")
+            prior_tenant[name] = current
         prior_elapsed, prior_ops, prior_generation = elapsed, logical, generation
 
     require(
@@ -173,6 +261,10 @@ def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]
             stalled = 0
 
     first, last = observations[0], observations[-1]
+    require(all(last["language_operations"][name] > first["language_operations"][name] for name in REQUIRED_LANGUAGES), "missing_language", "every language must make measured progress")
+    require(all(last["workload_operations"][name] > first["workload_operations"][name] for name in REQUIRED_WORKLOADS), "missing_workload", "every workload class must make measured progress")
+    require(all(last["tenant_operations"][name] > first["tenant_operations"][name] for name in manifest["workload"]["tenants"]), "missing_workload", "every tenant must make measured progress")
+    require(integer(last["restart_count"], "invalid_observation", "restart_count") > integer(first["restart_count"], "invalid_observation", "restart_count"), "missing_lifecycle", "restart observations did not advance")
     modeled_growth = max(0, integer(last["modeled_retained_bytes"], "invalid_observation", "modeled_retained_bytes") - integer(first["modeled_retained_bytes"], "invalid_observation", "modeled_retained_bytes"))
     growth = manifest["growth_limits"]
     for metric in ("rss_bytes", "allocator_bytes", "database_bytes", "journal_bytes", "backup_bytes"):
@@ -212,17 +304,46 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
     require(HEX_256.fullmatch(str(receipt.get("release_artifact_sha256", ""))) is not None, "artifact_mismatch", "release artifact digest is absent")
     require(set(receipt.get("languages_completed", [])) == REQUIRED_LANGUAGES, "missing_language", "not every language completed")
     require(set(receipt.get("workload_coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "receipt workload coverage is incomplete")
-    require(set(receipt.get("faults_exercised", [])) == REQUIRED_FAULTS, "missing_fault", "fault schedule coverage is incomplete")
+    fault_counts = receipt.get("fault_counts", {})
+    require(set(fault_counts) == REQUIRED_FAULTS, "missing_fault", "fault count inventory is incomplete")
+    for name, policy in manifest["faults"].items():
+        require(integer(fault_counts[name], "invalid_receipt", f"fault_counts.{name}") >= integer(policy["minimum_count"], "invalid_manifest", f"{name}.minimum_count"), "missing_fault", f"{name} did not reach its minimum")
     counts = receipt.get("lifecycle_counts", {})
     require(set(counts) == REQUIRED_LIFECYCLES, "missing_lifecycle", "receipt lifecycle inventory is incomplete")
     for name, policy in manifest["lifecycles"].items():
         require(integer(counts[name], "invalid_receipt", f"lifecycle_counts.{name}") >= integer(policy["minimum_count"], "invalid_manifest", f"{name}.minimum_count"), "missing_lifecycle", f"{name} did not reach its minimum")
+    action_results = receipt.get("action_results")
+    require(isinstance(action_results, list) and len(action_results) <= integer(manifest["bounds"]["maximum_action_results"], "invalid_manifest", "maximum_action_results"), "invalid_receipt", "action results are absent or unbounded")
+    require(len(action_results) == sum(counts.values()) + sum(fault_counts.values()), "invalid_receipt", "action result count does not match executed actions")
+    observed_lifecycles = {name: 0 for name in REQUIRED_LIFECYCLES}
+    observed_faults = {name: 0 for name in REQUIRED_FAULTS}
+    expected_result_fields = {"schema", "kind", "name", "status", "evidence_sha256", "frontier_before", "frontier_after", "recovered"}
+    for result in action_results:
+        require(isinstance(result, dict) and set(result) == expected_result_fields, "invalid_receipt", "action result has an invalid shape")
+        kind = result.get("kind")
+        name = result.get("name")
+        require(result.get("schema") == ACTION_RESULT_SCHEMA and result.get("status") == "passed" and result.get("recovered") is True, "invalid_receipt", "action result did not prove recovery")
+        require(HEX_256.fullmatch(str(result.get("evidence_sha256", ""))) is not None, "invalid_receipt", "action result evidence digest is invalid")
+        before = integer(result.get("frontier_before"), "invalid_receipt", "frontier_before")
+        after = integer(result.get("frontier_after"), "invalid_receipt", "frontier_after")
+        require(before >= 0 and after >= before, "invalid_receipt", "action result frontier regressed")
+        if kind == "lifecycle":
+            require(name in observed_lifecycles and after > before, "invalid_receipt", "lifecycle result did not advance")
+            observed_lifecycles[name] += 1
+        else:
+            require(kind == "fault" and name in observed_faults, "invalid_receipt", "action result name is unknown")
+            observed_faults[name] += 1
+    require(observed_lifecycles == counts and observed_faults == fault_counts, "invalid_receipt", "action result inventory differs from counters")
     require(receipt.get("conformance", {}).get("all_passed") is True, "conformance_failed", "periodic conformance did not remain green")
+    require(integer(receipt.get("conformance", {}).get("checkpoints"), "invalid_receipt", "conformance.checkpoints") >= integer(manifest["bounds"]["minimum_conformance_checkpoints"], "invalid_manifest", "minimum_conformance_checkpoints"), "conformance_failed", "too few conformance checkpoints completed")
     require(receipt.get("unsupported_storage_unavailable", 0) == 0, "storage_unavailable", "unsupported storage-unavailable result observed")
     require(receipt.get("errors", []) == [], "runtime_error", "endurance run contains public failures")
     inventory = receipt.get("process_inventory", {})
-    require(inventory.get("arguments_included") is False and integer(inventory.get("maximum_processes"), "invalid_receipt", "maximum_processes") <= 128, "unbounded_inventory", "process inventory is unbounded or contains arguments")
-    validate_growth(receipt.get("observations", []), manifest)
+    observations = receipt.get("observations", [])
+    require(isinstance(observations, list) and len(observations) >= 2, "insufficient_observations", "at least two resource observations are required")
+    observed_processes = max(integer(sample["process_count"], "invalid_observation", "process_count") for sample in observations)
+    require(inventory.get("arguments_included") is False and integer(inventory.get("maximum_processes"), "invalid_receipt", "maximum_processes") == observed_processes and observed_processes <= integer(manifest["bounds"]["maximum_processes"], "invalid_manifest", "maximum_processes"), "unbounded_inventory", "process inventory is unbounded, inaccurate, or contains arguments")
+    validate_growth(observations, manifest)
 
 
 def base_manifest() -> dict[str, Any]:
@@ -243,9 +364,21 @@ def base_manifest() -> dict[str, Any]:
     return {
         "schema": MANIFEST_SCHEMA,
         "languages": sorted(REQUIRED_LANGUAGES),
-        "workload": {"coverage": sorted(REQUIRED_WORKLOADS), "mode": "closed", "bounded_rate": True},
+        "workload": {
+            "coverage": sorted(REQUIRED_WORKLOADS),
+            "mode": "closed",
+            "bounded_rate": True,
+            "clients_per_language": 4,
+            "maximum_total_operations_per_second": 4096,
+            "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
+            "seeds": {"go": 2002, "python": 4004, "rust": 1001, "typescript": 3003},
+            "hot_key_count": 16,
+            "cold_key_count": 4096,
+            "operation_weights": {"reads": 35, "writes": 25, "workflows": 10, "events": 10, "live_queries": 20},
+        },
         "lifecycles": lifecycle,
-        "bounds": {"maximum_observations": 10000, "maximum_diagnostic_bytes": 1048576},
+        "faults": {name: {"minimum_count": 2} for name in sorted(REQUIRED_FAULTS)},
+        "bounds": {"maximum_observations": 10000, "maximum_diagnostic_bytes": 1048576, "maximum_processes": 128, "minimum_conformance_checkpoints": 2, "maximum_action_results": 10000},
         "growth_limits": growth_limits,
         "fault_controls": "orchestrator_only",
         "application_surface": "public_named_operations_only",
@@ -278,6 +411,11 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
         "consumer_checkpoint": 0,
         "projection_frontier": 0,
         "error_count": 0,
+        "restart_count": 0,
+        "process_count": 24,
+        "language_operations": {name: 10 for name in sorted(REQUIRED_LANGUAGES)},
+        "workload_operations": {name: 5 for name in sorted(REQUIRED_WORKLOADS)},
+        "tenant_operations": {name: 5 for name in manifest["workload"]["tenants"]},
     }
     final = copy.deepcopy(sample)
     final.update(
@@ -300,10 +438,32 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
             "latency_p99_us": 5000,
             "throughput_ops_per_second": 900,
             "checkpoint_count": 4,
+            "restart_count": 3,
             "consumer_checkpoint": 9000,
             "projection_frontier": 9000,
+            "language_operations": {name: 1000 for name in sorted(REQUIRED_LANGUAGES)},
+            "workload_operations": {name: 500 for name in sorted(REQUIRED_WORKLOADS)},
+            "tenant_operations": {name: 500 for name in manifest["workload"]["tenants"]},
         }
     )
+    lifecycle_counts = {name: 2 for name in sorted(REQUIRED_LIFECYCLES)}
+    fault_counts = {name: 2 for name in sorted(REQUIRED_FAULTS)}
+    action_results = []
+    for kind, counts in (("lifecycle", lifecycle_counts), ("fault", fault_counts)):
+        for name, count in counts.items():
+            for ordinal in range(count):
+                action_results.append(
+                    {
+                        "schema": ACTION_RESULT_SCHEMA,
+                        "kind": kind,
+                        "name": name,
+                        "status": "passed",
+                        "evidence_sha256": hashlib.sha256(f"{kind}:{name}:{ordinal}".encode()).hexdigest(),
+                        "frontier_before": ordinal,
+                        "frontier_after": ordinal + 1 if kind == "lifecycle" else ordinal,
+                        "recovered": True,
+                    }
+                )
     return {
         "schema": RECEIPT_SCHEMA,
         "status": "passed",
@@ -315,13 +475,45 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
         "host_validity": {"preflight": {"valid": True}, "postflight": {"valid": True}},
         "languages_completed": sorted(REQUIRED_LANGUAGES),
         "workload_coverage": sorted(REQUIRED_WORKLOADS),
-        "faults_exercised": sorted(REQUIRED_FAULTS),
-        "lifecycle_counts": {name: 2 for name in sorted(REQUIRED_LIFECYCLES)},
+        "fault_counts": fault_counts,
+        "lifecycle_counts": lifecycle_counts,
+        "action_results": action_results,
         "conformance": {"all_passed": True, "checkpoints": 4},
         "unsupported_storage_unavailable": 0,
         "errors": [],
-        "process_inventory": {"arguments_included": False, "maximum_processes": 64},
+        "process_inventory": {"arguments_included": False, "maximum_processes": 24},
         "observations": [sample, final],
+    }
+
+
+def base_actions(manifest: dict[str, Any]) -> dict[str, Any]:
+    workers = []
+    for language in sorted(REQUIRED_LANGUAGES):
+        workers.append(
+            {
+                "language": language,
+                "command": ["scripts/endurance-worker", "--language", language],
+                "seed": manifest["workload"]["seeds"][language],
+                "clients": manifest["workload"]["clients_per_language"],
+                "maximum_operations_per_second": 1024,
+                "tenants": manifest["workload"]["tenants"],
+                "coverage": sorted(REQUIRED_WORKLOADS),
+            }
+        )
+    return {
+        "schema": "riffdb.alpha-endurance-actions/v1",
+        "workers": workers,
+        "sampler": {"command": ["scripts/endurance-sample"], "interval_seconds": 30},
+        "conformance": {"command": ["scripts/endurance-conformance"], "interval_seconds": 300},
+        "lifecycles": [
+            {"name": name, "command": ["scripts/endurance-lifecycle", name], "interval_seconds": 600, "initial_delay_seconds": 30 + ordinal * 15}
+            for ordinal, name in enumerate(sorted(REQUIRED_LIFECYCLES))
+        ],
+        "faults": [
+            {"name": name, "command": ["scripts/endurance-fault", name], "interval_seconds": 900, "initial_delay_seconds": 300 + ordinal * 30}
+            for ordinal, name in enumerate(sorted(REQUIRED_FAULTS))
+        ],
+        "workload_coverage": sorted(REQUIRED_WORKLOADS),
     }
 
 
@@ -340,12 +532,33 @@ def self_test() -> None:
     checked_manifest = read_json(Path(__file__).resolve().parent.parent / "fixtures/endurance/alpha-manifest-v1.json")
     validate_manifest(checked_manifest)
     manifest = base_manifest()
+    actions = base_actions(manifest)
+    validate_actions(actions, manifest)
+    invalid_actions = copy.deepcopy(actions)
+    invalid_actions["workers"][0]["seed"] += 1
+    try:
+        validate_actions(invalid_actions, manifest)
+    except EvidenceError as error:
+        if error.code != "invalid_actions":
+            raise
+        print("action_manifest_drift: rejected")
+    else:
+        raise AssertionError("drifted action manifest passed")
     valid = base_receipt(manifest)
     cases: list[tuple[str, str, Any]] = [
         ("invalid_structure", "invalid_receipt", lambda value: value.update(schema="riffdb.invalid/v1")),
         ("short_duration", "short_duration", lambda value: value.update(measured_duration_seconds=3599)),
         ("host_interference", "host_interference", lambda value: value["host_validity"]["postflight"].update(valid=False)),
         ("missing_lifecycle", "missing_lifecycle", lambda value: value["lifecycle_counts"].update(restart=0)),
+        ("missing_fault", "missing_fault", lambda value: value["fault_counts"].update(process_kill=0)),
+        ("missing_language_progress", "missing_language", lambda value: value["observations"][-1]["language_operations"].update(rust=10)),
+        ("missing_workload_progress", "missing_workload", lambda value: value["observations"][-1]["workload_operations"].update(events=5)),
+        ("missing_tenant_progress", "missing_workload", lambda value: value["observations"][-1]["tenant_operations"].update(tenant_alpha=5)),
+        ("missing_restart_observation", "missing_lifecycle", lambda value: value["observations"][-1].update(restart_count=0)),
+        ("unreceipted_action", "invalid_receipt", lambda value: value["action_results"].pop()),
+        ("forged_action_result", "invalid_receipt", lambda value: value["action_results"][0].update(evidence_sha256="not-a-digest")),
+        ("inaccurate_process_inventory", "unbounded_inventory", lambda value: value["process_inventory"].update(maximum_processes=25)),
+        ("too_few_conformance_checks", "conformance_failed", lambda value: value["conformance"].update(checkpoints=1)),
         ("resource_leak", "resource_leak", lambda value: value["observations"][-1].update(rss_bytes=999_000_000)),
         ("quadratic_lifecycle", "quadratic_lifecycle", lambda value: value["observations"][-1].update(lifecycle_seconds=1000)),
         ("queue_growth", "queue_growth", lambda value: value["observations"][-1].update(writer_queue_depth=513)),
@@ -368,6 +581,13 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
     require(isinstance(controller, dict), "invalid_manifest", "real runs require a closed controller")
     command = controller.get("command")
     require(isinstance(command, list) and command and all(isinstance(part, str) and part for part in command), "invalid_manifest", "controller command must be a nonempty argv array")
+    action_environment = controller.get("action_manifest_environment")
+    require(isinstance(action_environment, str) and action_environment, "invalid_manifest", "controller action-manifest environment is absent")
+    action_path = os.environ.get(action_environment)
+    require(action_path is not None, "invalid_invocation", f"{action_environment} must select a reviewed action manifest")
+    actions = read_json(Path(action_path).resolve())
+    validate_actions(actions, manifest)
+    action_digest = canonical_digest(actions)
     root = Path(__file__).resolve().parent.parent
     artifact_root = Path(arguments.artifact_root).resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -387,6 +607,7 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
             "RIFFDB_ENDURANCE_ARTIFACT_ROOT": str(artifact_root),
             "RIFFDB_ENDURANCE_RAW_RECEIPT": str(raw_receipt),
             "RIFFDB_ENDURANCE_MANIFEST_SHA256": canonical_digest(manifest),
+            "RIFFDB_ENDURANCE_ACTION_MANIFEST_SHA256": action_digest,
         }
     )
     started = time.monotonic()
@@ -396,6 +617,7 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
         post = subprocess.run([str(root / "scripts/app-baseline-host-validity")], cwd=root, stdout=output, check=False)
     require(status == 0 and raw_receipt.is_file(), "controller_failed", "endurance controller failed or omitted its receipt")
     receipt = read_json(raw_receipt)
+    require(receipt.get("action_manifest_sha256") == action_digest, "manifest_mismatch", "controller receipt is not bound to the reviewed action manifest")
     receipt["measured_duration_seconds"] = elapsed
     receipt["host_validity"] = {"preflight": read_json(preflight), "postflight": read_json(postflight)}
     if arguments.require_idle_host:

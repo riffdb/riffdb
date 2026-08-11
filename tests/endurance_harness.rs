@@ -34,10 +34,20 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
+    assert!(stdout.contains("action_manifest_drift: rejected"));
     assert!(stdout.contains("short_duration: rejected"));
     assert!(stdout.contains("invalid_structure: rejected"));
     assert!(stdout.contains("host_interference: rejected"));
     assert!(stdout.contains("missing_lifecycle: rejected"));
+    assert!(stdout.contains("missing_fault: rejected"));
+    assert!(stdout.contains("missing_language_progress: rejected"));
+    assert!(stdout.contains("missing_workload_progress: rejected"));
+    assert!(stdout.contains("missing_tenant_progress: rejected"));
+    assert!(stdout.contains("missing_restart_observation: rejected"));
+    assert!(stdout.contains("unreceipted_action: rejected"));
+    assert!(stdout.contains("forged_action_result: rejected"));
+    assert!(stdout.contains("inaccurate_process_inventory: rejected"));
+    assert!(stdout.contains("too_few_conformance_checks: rejected"));
     assert!(stdout.contains("resource_leak: rejected"));
     assert!(stdout.contains("quadratic_lifecycle: rejected"));
     assert!(stdout.contains("queue_growth: rejected"));
@@ -47,4 +57,25 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     assert!(stdout.contains("storage_unavailable: rejected"));
     assert!(stdout.contains("conformance_failure: rejected"));
     assert!(stdout.contains("valid_complete_run: passed"));
+}
+
+#[test]
+fn controller_rejects_unreceipted_lifecycle_success() {
+    let root = repository_root();
+    let output = Command::new(root.join("scripts/alpha-endurance-controller"))
+        .arg("--self-test")
+        .current_dir(&root)
+        .env("RIFFDB_TMP_ROOT", task_temporary_root())
+        .output()
+        .expect("alpha-endurance controller self-test must launch");
+
+    assert!(
+        output.status.success(),
+        "controller self-test failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
+    assert!(stdout.contains("nonadvancing_lifecycle_result: rejected"));
+    assert!(stdout.contains("bounded_action_result: passed"));
 }

@@ -6,6 +6,19 @@
   "workload": {
     "mode": "closed",
     "bounded_rate": true,
+    "clients_per_language": 4,
+    "maximum_total_operations_per_second": 4096,
+    "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
+    "seeds": {"go": 2002, "python": 4004, "rust": 1001, "typescript": 3003},
+    "hot_key_count": 16,
+    "cold_key_count": 4096,
+    "operation_weights": {
+      "reads": 35,
+      "writes": 25,
+      "workflows": 10,
+      "events": 10,
+      "live_queries": 20
+    },
     "coverage": [
       "cold_keys",
       "events",
@@ -29,9 +42,19 @@
     "restart": {"minimum_count": 2},
     "retention": {"minimum_count": 2}
   },
+  "faults": {
+    "checkpoint_crash": {"minimum_count": 2},
+    "consumer_after_command_before_ack": {"minimum_count": 2},
+    "journal_recycle_crash": {"minimum_count": 2},
+    "network_interrupt": {"minimum_count": 2},
+    "process_kill": {"minimum_count": 2}
+  },
   "bounds": {
     "maximum_observations": 10000,
-    "maximum_diagnostic_bytes": 1048576
+    "maximum_diagnostic_bytes": 1048576,
+    "maximum_processes": 128,
+    "minimum_conformance_checkpoints": 2,
+    "maximum_action_results": 10000
   },
   "growth_limits": {
     "rss_bytes": {"fixed_bytes": 67108864, "modeled_multiplier_milli": 2000},
