@@ -1,0 +1,108 @@
+contract AdapterOperationalConformance version 1 {
+  entity FgaTuple {
+    key (store_id: uuid, tuple_id: uuid)
+    field object: string<256>
+    field relation: string<64>
+    field subject: string<256>
+    index all_tuples (store_id, tuple_id)
+    index by_relation (store_id, relation, tuple_id)
+  }
+
+  entity Metric {
+    key (experiment_id: uuid, metric_id: uuid)
+    field name: string<128>
+    field value_micros: i64
+    field step: i64
+    index all_metrics (experiment_id, metric_id)
+  }
+
+  entity Document {
+    key (site_id: uuid, document_id: uuid)
+    field title: string<256>
+    field published_at: optional<timestamp>
+    index by_title (site_id, title, document_id) text_key(title, binary_utf8_v1)
+    index by_published (site_id, published_at, document_id) presence(published_at)
+  }
+
+  entity Pipeline {
+    key (organization_id: uuid, pipeline_id: uuid)
+    field name: string<128>
+    field state: string<32>
+    index all_pipelines (organization_id, pipeline_id)
+    index by_state (organization_id, state, pipeline_id)
+  }
+
+  aggregate FgaTuples {
+    root FgaTuple
+    partition_by store_id
+    conflict_key (store_id, tuple_id)
+  }
+
+  aggregate Metrics {
+    root Metric
+    partition_by experiment_id
+    conflict_key (experiment_id, metric_id)
+  }
+
+  aggregate Documents {
+    root Document
+    partition_by site_id
+    conflict_key (site_id, document_id)
+  }
+
+  aggregate Pipelines {
+    root Pipeline
+    partition_by organization_id
+    conflict_key (organization_id, pipeline_id)
+  }
+
+  bulk command WriteTuples {
+    input request_id: uuid
+    input tuples: list<FgaTuple, 1..32>
+    idempotency_key request_id
+    for tuple in tuples {
+      create FgaTuple(tuple.store_id, tuple.tuple_id) as stored else TupleAlreadyExists {}
+      set stored.object = tuple.object
+      set stored.relation = tuple.relation
+      set stored.subject = tuple.subject
+    }
+    return TuplesWritten {}
+  }
+
+  bulk command LogMetrics {
+    input request_id: uuid
+    input metrics: list<Metric, 1..32>
+    idempotency_key request_id
+    for metric in metrics {
+      create Metric(metric.experiment_id, metric.metric_id) as stored else MetricAlreadyExists {}
+      set stored.name = metric.name
+      set stored.value_micros = metric.value_micros
+      set stored.step = metric.step
+    }
+    return MetricsLogged {}
+  }
+
+  bulk command CreateDocuments {
+    input request_id: uuid
+    input documents: list<Document, 1..32>
+    idempotency_key request_id
+    for document in documents {
+      create Document(document.site_id, document.document_id) as stored else DocumentAlreadyExists {}
+      set stored.title = document.title
+      set stored.published_at = document.published_at
+    }
+    return DocumentsCreated {}
+  }
+
+  bulk command CreatePipelines {
+    input request_id: uuid
+    input pipelines: list<Pipeline, 1..32>
+    idempotency_key request_id
+    for pipeline in pipelines {
+      create Pipeline(pipeline.organization_id, pipeline.pipeline_id) as stored else PipelineAlreadyExists {}
+      set stored.name = pipeline.name
+      set stored.state = pipeline.state
+    }
+    return PipelinesCreated {}
+  }
+}

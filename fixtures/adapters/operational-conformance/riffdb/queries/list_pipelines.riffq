@@ -1,0 +1,17 @@
+query ListPipelines(
+    $organization_id: Pipeline.organization_id,
+    $state: Pipeline.state?,
+    $after: Cursor?,
+) {
+    many pipelines from Pipeline
+        where organization_id == $organization_id
+          && when $state { state == $state }
+        order by pipeline_id asc
+        take 25 after $after
+
+    return Found {
+        pipelines: pipelines { pipeline_id name state }
+    }
+
+    outcomes Found
+}

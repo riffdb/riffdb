@@ -1,0 +1,17 @@
+query SearchDocuments(
+    $site_id: Document.site_id,
+    $title_prefix: Document.title,
+    $after: Cursor?,
+) {
+    many documents from Document
+        where site_id == $site_id
+          && title prefix $title_prefix
+        order by title asc, document_id asc
+        take 25 after $after
+
+    return Found {
+        documents: documents { document_id title published_at }
+    }
+
+    outcomes Found
+}

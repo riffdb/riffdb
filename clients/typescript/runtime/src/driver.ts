@@ -36,7 +36,7 @@ export interface DriverTimestamp {
 export interface DriverDecimal {
   readonly coefficient: string;
   readonly scale: number;
-  readonly precision?: number;
+  readonly precision?: number | null;
 }
 
 export interface DriverMoney {
@@ -703,7 +703,7 @@ function validateDecimal(value: unknown): void {
   const decimal = exactObject(value);
   boundedString(decimal.coefficient, 1_366);
   boundedInteger(decimal.scale, 0, 4_294_967_295);
-  if (decimal.precision !== undefined) boundedInteger(decimal.precision, 1, 4_294_967_295);
+  if (decimal.precision !== undefined && decimal.precision !== null) boundedInteger(decimal.precision, 1, 4_294_967_295);
 }
 
 function signedTwosComplement(value: bigint): Uint8Array {

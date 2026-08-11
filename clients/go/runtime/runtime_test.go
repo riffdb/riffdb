@@ -97,6 +97,33 @@ func TestBoundaryContainsNoRemoteTransport(t *testing.T) {
 	}
 }
 
+func TestSchemaBoundDecimalAcceptsMissingWirePrecision(t *testing.T) {
+	decimal, err := DecimalValueWithSchema(Value{
+		Type: "decimal",
+		Value: Decimal{
+			Coefficient: "ASw=",
+			Scale:       0,
+		},
+	}, 39, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decimal.Precision != 39 || decimal.Scale != 0 {
+		t.Fatalf("schema identity was not restored: %#v", decimal)
+	}
+	wrong := uint32(38)
+	if _, err = DecimalValueWithSchema(Value{
+		Type: "decimal",
+		Value: Decimal{
+			Coefficient: "ASw=",
+			Scale:       0,
+			Precision:   &wrong,
+		},
+	}, 39, 0); err == nil {
+		t.Fatal("conflicting wire precision was accepted")
+	}
+}
+
 type fixture struct {
 	path        string
 	listener    net.Listener

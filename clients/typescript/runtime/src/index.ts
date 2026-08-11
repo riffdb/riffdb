@@ -1340,8 +1340,10 @@ function decodeDriverValue(value: DriverValue, schema: ApplicationValueSchema): 
   throw new Error("RiffDB driver result does not match the generated schema");
 }
 
-function decodeDriverDecimal(value: { readonly coefficient: string; readonly scale: number; readonly precision?: number }, schema: { readonly precision?: number; readonly scale?: number }): ExactDecimalValue {
-  if (schema.precision === undefined || schema.scale === undefined || value.precision !== schema.precision || value.scale !== schema.scale) throw new Error("RiffDB driver decimal does not match its schema");
+function decodeDriverDecimal(value: { readonly coefficient: string; readonly scale: number; readonly precision?: number | null }, schema: { readonly precision?: number; readonly scale?: number }): ExactDecimalValue {
+  if (schema.precision === undefined || schema.scale === undefined
+      || (value.precision !== undefined && value.precision !== null && value.precision !== schema.precision)
+      || value.scale !== schema.scale) throw new Error("RiffDB driver decimal does not match its schema");
   const coefficient = Uint8Array.from(Buffer.from(value.coefficient, "base64"));
   if (coefficient.byteLength < 1 || coefficient.byteLength > 16) throw new Error("RiffDB driver decimal coefficient is invalid");
   return { coefficientTwosComplement: coefficient, precision: schema.precision, scale: schema.scale };

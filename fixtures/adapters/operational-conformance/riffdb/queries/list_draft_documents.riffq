@@ -1,0 +1,13 @@
+query ListDraftDocuments($site_id: Document.site_id) {
+    many documents from Document
+        where site_id == $site_id
+          && published_at is null
+        order by document_id asc
+        take 25
+
+    return Found {
+        documents: documents { document_id title published_at }
+    }
+
+    outcomes Found
+}
