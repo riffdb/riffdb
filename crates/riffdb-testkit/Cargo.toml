@@ -27,7 +27,10 @@ riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = fal
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-config = { path = "../riffdb-config", version = "0.1.0", default-features = false }
+riffdb-conflict = { path = "../riffdb-conflict", version = "0.1.0", default-features = false }
 riffdb-driver-host = { path = "../riffdb-driver-host", version = "0.1.0", default-features = false }
+riffdb-idempotency = { path = "../riffdb-idempotency", version = "0.1.0", default-features = false }
+riffdb-policy = { path = "../riffdb-policy", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
@@ -123,6 +126,10 @@ path = "../../tests/application_installation.rs"
 [[test]]
 name = "scheduler_recovery"
 path = "../../tests/scheduler_recovery.rs"
+
+[[test]]
+name = "bulk_command_recovery"
+path = "../../tests/bulk_command_recovery.rs"
 
 [lints]
 workspace = true

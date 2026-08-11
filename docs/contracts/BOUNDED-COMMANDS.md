@@ -1,7 +1,8 @@
 # Bounded Collection Commands
 
-> Compiler preview: grammar and executable IR v5 are implemented. Public command execution is
-> not available until the atomic collection runtime work is complete.
+> Alpha surface: grammar, executable IR v5, and atomic runtime execution are implemented.
+> Collection commands use the ordinary symbolic command service. Generated Rust, TypeScript,
+> and Python collection facades remain unavailable until the binding rollout is complete.
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
@@ -49,6 +50,7 @@ unique key is also rejected in the current compiler because its release conflict
 input-computable. Use a new command/contract shape; do not work around the rejection with a raw
 storage operation.
 
-Duplicate collection keys reject the whole command. Once runtime support lands, all expanded
-effects, the typed outcome, events, provenance, idempotency record, and commit record will be one
-atomic command result.
+Duplicate collection keys reject the whole command. All expanded effects, the typed outcome,
+events, provenance, idempotency record, and commit record are one atomic command result. A crash
+or retry can expose only the complete persisted result or complete absence; an element-level
+partial result is not part of the protocol.

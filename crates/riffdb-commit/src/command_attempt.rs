@@ -15,6 +15,7 @@ use riffdb_catalog::{
 };
 use riffdb_conflict::{CancellationToken, ConflictError, ConflictManager, MutationLease};
 use riffdb_contract_ir::BindingMode;
+use riffdb_invariant::derive_input_command_facts;
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
@@ -40,6 +41,7 @@ pub(crate) struct PendingCommandAttempts {
     commit_context: PreEvaluationCommitContext,
     raw_conflict_keys: Vec<ConflictKey>,
     snapshot_request: SnapshotRequest,
+    binding_modes: Vec<BindingMode>,
     lookup_candidates: IdempotencyLookupCandidatesV1,
     #[allow(dead_code)] // Retained for redaction-safe per-invocation coordinator telemetry.
     invocation_request_id: RequestId,
@@ -76,12 +78,31 @@ impl PendingCommandAttempts {
         if lookup_candidates != retained_lookup_candidates {
             return Err(CommandAttemptError::Integrity);
         }
+        let input_facts =
+            derive_input_command_facts(resolved_plan.plan(), normalized_input.clone())
+                .map_err(|_| CommandAttemptError::Integrity)?;
+        if input_facts.binding_plan_indices().len() != snapshot_request.binding_targets().len() {
+            return Err(CommandAttemptError::Integrity);
+        }
+        let binding_modes = input_facts
+            .binding_plan_indices()
+            .iter()
+            .map(|index| {
+                resolved_plan
+                    .plan()
+                    .bindings()
+                    .get(*index as usize)
+                    .map(|binding| binding.mode())
+                    .ok_or(CommandAttemptError::Integrity)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             resolved_plan,
             normalized_input,
             commit_context,
             raw_conflict_keys,
             snapshot_request,
+            binding_modes,
             lookup_candidates,
             invocation_request_id,
             deadline,
@@ -106,12 +127,10 @@ impl PendingCommandAttempts {
     pub(crate) fn binding_accesses(
         &self,
     ) -> impl Iterator<Item = (BindingMode, &riffdb_storage_api::EntityTarget)> {
-        self.resolved_plan
-            .plan()
-            .bindings()
+        self.binding_modes
             .iter()
             .zip(self.snapshot_request.binding_targets())
-            .map(|(binding, target)| (binding.mode(), target))
+            .map(|(mode, target)| (*mode, target))
     }
 
     pub(crate) fn root_validation_targets(&self) -> &[riffdb_storage_api::EntityTarget] {
@@ -1084,7 +1103,7 @@ fn finish_acquired_evaluation(
     let materialization = state
         .resolved_plan
         .clone()
-        .materialize_command_snapshot(raw_snapshot)
+        .materialize_command_snapshot_for_input(&state.normalized_input, raw_snapshot)
         .map_err(|_| CommandAttemptError::Integrity)?;
     let snapshot = match materialization {
         CommandSnapshotMaterialization::Ready(snapshot) => snapshot,
@@ -1753,6 +1772,11 @@ contract AttemptMaterialization version {version} {{
         let lookup_candidates =
             IdempotencyLookupCandidatesV1::new(vec![commit_context.pending().identity().clone()])
                 .expect("singleton lookup");
+        let binding_modes = facts
+            .binding_plan_indices()
+            .iter()
+            .map(|index| resolved_plan.plan().bindings()[*index as usize].mode())
+            .collect();
 
         PendingCommandAttempts {
             resolved_plan,
@@ -1760,6 +1784,7 @@ contract AttemptMaterialization version {version} {{
             commit_context,
             raw_conflict_keys,
             snapshot_request,
+            binding_modes,
             lookup_candidates,
             invocation_request_id: request_id(2),
             deadline: future_deadline(),
@@ -1880,6 +1905,11 @@ contract AttemptMaterialization version {version} {{
         let resolved_plan =
             crate::test_support::resolve_genesis_plan(&bundle, commit_context.pending().plan())
                 .expect("exact checked plan");
+        let binding_modes = facts
+            .binding_plan_indices()
+            .iter()
+            .map(|index| resolved_plan.plan().bindings()[*index as usize].mode())
+            .collect();
 
         (
             PendingCommandAttempts {
@@ -1888,6 +1918,7 @@ contract AttemptMaterialization version {version} {{
                 commit_context,
                 raw_conflict_keys,
                 snapshot_request,
+                binding_modes,
                 lookup_candidates,
                 invocation_request_id: request_id(2),
                 deadline: future_deadline(),

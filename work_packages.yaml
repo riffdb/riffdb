@@ -10355,11 +10355,12 @@ work_packages:
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
     crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
     crates/riffdb-catalog/**, crates/riffdb-runtime/**,
-    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-idempotency/**,
+    crates/riffdb-service/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-proto/**,
     crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
-    crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-observability/**, crates/riffdb-testkit/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Sealed runtime collection execution with precharged bounds and no storage iterator/callback/raw
     transaction handle crossing the semantic port

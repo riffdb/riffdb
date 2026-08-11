@@ -320,6 +320,30 @@ fn declared_key_field_shape_and_provider_failures_are_safe() {
 }
 
 #[test]
+fn canonical_uuid_idempotency_field_matches_the_public_caller_key() {
+    let provider = FixedProvider::new(&[1]);
+    let bytes = [0xa1; 16];
+    let canonical = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1";
+    let checked_key = IdempotencyKey::new(canonical).expect("canonical UUID caller key");
+    let input = CanonicalRecord::new(vec![
+        (field(2), CanonicalValue::U64(1)),
+        (field(7), CanonicalValue::Uuid(bytes)),
+    ])
+    .expect("canonical UUID input");
+
+    let prepared = prepare_command_idempotency(&scope(), &input, field(7), &checked_key, &provider)
+        .expect("UUID idempotency input prepares");
+    assert_eq!(prepared.lookup_candidates().as_slice().len(), 1);
+
+    let noncanonical = IdempotencyKey::new("A1A1A1A1-A1A1-A1A1-A1A1-A1A1A1A1A1A1")
+        .expect("bounded alternate UUID spelling");
+    assert!(matches!(
+        prepare_command_idempotency(&scope(), &input, field(7), &noncanonical, &provider),
+        Err(IdempotencyPreparationError::IdempotencyKeyMismatch)
+    ));
+}
+
+#[test]
 fn every_identity_scope_component_separates_lookup() {
     let provider = FixedProvider::new(&[1]);
     let base = prepare(&scope(), "retry-a", 42, &provider).expect("base preparation");

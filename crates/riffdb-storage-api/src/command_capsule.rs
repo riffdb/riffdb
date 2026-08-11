@@ -34,16 +34,18 @@ impl StoredCommandCapsuleV1 {
     ) -> Result<Self, StorageValueError> {
         let sequence = commit.commit_sequence();
         let provenance_id = commit.provenance_id();
-        let affected_entities_match = provenance.affected_entities().len()
-            == commit.entity_references().len()
-            && provenance
-                .affected_entities()
-                .iter()
-                .zip(commit.entity_references())
-                .all(|(affected, reference)| {
-                    affected.target() == reference.target()
-                        && affected.entity_version() == reference.entity_version()
-                });
+        // A live post-image reference exists only for a put. Provenance also
+        // retains deletes, so the live references must be an exact ordered
+        // subsequence of the affected targets. The V2 constructor below joins
+        // every affected target to its exact entity transition and therefore
+        // proves the otherwise post-image-free delete members.
+        let mut affected_entities = provenance.affected_entities().iter();
+        let affected_entities_match = commit.entity_references().iter().all(|reference| {
+            affected_entities.any(|affected| {
+                affected.target() == reference.target()
+                    && affected.entity_version() == reference.entity_version()
+            })
+        });
         let event_ids_match = provenance.event_ids().len() == commit.events().len()
             && provenance
                 .event_ids()

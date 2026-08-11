@@ -4,10 +4,10 @@
 
 use std::collections::BTreeMap;
 use std::num::{NonZeroU16, NonZeroU64};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use riffdb_catalog::{ValidatedContractBundle, resolve_executable_plan, validate_catalog_history};
 use riffdb_commit::{
@@ -44,12 +44,13 @@ use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, ApprovalId, Audience, CanonicalRecord, CanonicalValue, CapabilityGrantV1,
-    CapabilityId, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence, ContractLineage,
-    DatabaseId, Decimal, DecimalSpec, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
-    Environment, FieldId, IdempotencyKey, PartitionKey, PartitionScopeV1, ProvenanceId, RequestId,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
-    ServiceOperationV1, TenantScope, Timestamp,
+    ActorId, ActorKind, ApprovalId, Audience, CanonicalList, CanonicalRecord, CanonicalValue,
+    CapabilityGrantV1, CapabilityId, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CommitSequence, ContractLineage, DatabaseId, Decimal, DecimalSpec, DigestKeyId,
+    EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, FieldId, IdempotencyKey,
+    PartitionKey, PartitionScopeV1, ProvenanceId, RequestId, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantScope, Timestamp,
 };
 
 const BUDGET_SOURCE: &str = include_str!("../../contracts/examples/budget.riff");
@@ -100,6 +101,44 @@ contract UniqueUsers version 1 {
       else UserMissing { user_id: user_id }
     set user.email = email
     return Changed { user: user }
+  }
+}
+"#;
+const BULK_ROWS_SOURCE: &str = r#"
+contract BulkRowsRecovery version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    field value: i64
+    delete_policy no_inbound
+  }
+  event RowWritten { row_id: uuid value: i64 }
+  event RowDeleted { row_id: uuid }
+  aggregate Rows {
+    root Row
+    partition_by tenant_id
+    conflict_key (tenant_id, row_id)
+  }
+  bulk command PutRows {
+    input request_id: uuid
+    input rows: list<Row, 1..8>
+    idempotency_key request_id
+    for row in rows {
+      create Row(row.tenant_id, row.row_id) as stored else Exists {}
+      set stored.value = row.value
+      emit RowWritten { row_id: row.row_id, value: stored.value }
+    }
+    return Written {}
+  }
+  bulk command DeleteRows {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for row_id in row_ids {
+      delete Row(tenant_id, row_id) as stored else Missing {}
+      emit RowDeleted { row_id: row_id }
+    }
+    return Deleted {}
   }
 }
 "#;
@@ -210,6 +249,386 @@ pub(crate) struct UniqueUserDatabase {
     checked_bundle: ValidatedContractBundle,
     user_entity_type: EntityTypeId,
     email_field: FieldId,
+}
+
+pub(crate) struct BulkRowsDatabase {
+    path: PathBuf,
+    checked_bundle: ValidatedContractBundle,
+    row_entity_type: EntityTypeId,
+    remove_on_drop: bool,
+}
+
+impl BulkRowsDatabase {
+    pub(crate) fn create(label: &str) -> Self {
+        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("test clock after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "riffdb-bulk-recovery-{label}-{}-{ordinal}-{nonce}.redb",
+            std::process::id()
+        ));
+        let database = Self::from_path(path, true);
+        let mut store = RedbStore::open(&database.path).expect("create redb bulk database");
+        store
+            .initialize_database(database_id())
+            .expect("initialize bulk database");
+        let mut ports = open_operational(store);
+        let stored_bundle = database
+            .checked_bundle
+            .to_stored()
+            .expect("stored checked bulk bundle");
+        let activation = ports
+            .activate_catalog(&CatalogActivationIntentV1::new(
+                None,
+                stored_bundle.clone(),
+                request_id(0x91),
+                catalog_principal(),
+                timestamp(1_700_000_000),
+                None,
+            ))
+            .expect("activate checked bulk bundle");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { active, .. }
+                if active == ActiveCatalogPointerV1::from_bundle(&stored_bundle)
+        ));
+        drop(ports);
+        database
+    }
+
+    pub(crate) fn attach(path: &Path) -> Self {
+        Self::from_path(path.to_path_buf(), false)
+    }
+
+    fn from_path(path: PathBuf, remove_on_drop: bool) -> Self {
+        let compiled =
+            compile_contract_source(BULK_ROWS_SOURCE).expect("bulk recovery contract compiles");
+        let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("bulk recovery bundle passes catalog validation");
+        let row_entity_type = checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Row")
+            .expect("Row entity schema")
+            .id();
+        Self {
+            path,
+            checked_bundle,
+            row_entity_type,
+            remove_on_drop,
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn open(&self) -> RedbOperationalPorts {
+        open_operational(RedbStore::open(&self.path).expect("reopen bulk database"))
+    }
+
+    pub(crate) fn open_with_controller(
+        &self,
+        controller: RedbTestController,
+    ) -> RedbOperationalPorts {
+        open_operational(
+            RedbStore::open_with_test_controller(&self.path, controller)
+                .expect("reopen bulk database with test controller"),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_put(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("PutRows");
+        let row_schema = self
+            .checked_bundle
+            .bundle()
+            .schema()
+            .entity(self.row_entity_type)
+            .expect("Row schema")
+            .record();
+        let rows = row_ids
+            .iter()
+            .enumerate()
+            .map(|(ordinal, row_id)| {
+                CanonicalValue::Record(input_record(
+                    row_schema,
+                    [
+                        ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                        ("row_id", CanonicalValue::Uuid(*row_id)),
+                        (
+                            "value",
+                            CanonicalValue::I64(
+                                i64::try_from(ordinal + 1).expect("bounded row ordinal"),
+                            ),
+                        ),
+                    ],
+                ))
+            })
+            .collect::<Vec<_>>();
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                (
+                    "rows",
+                    CanonicalValue::List(CanonicalList::new(rows).expect("bounded row list")),
+                ),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_delete(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("DeleteRows");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                (
+                    "row_ids",
+                    CanonicalValue::List(
+                        CanonicalList::new(
+                            row_ids.iter().copied().map(CanonicalValue::Uuid).collect(),
+                        )
+                        .expect("bounded row-id list"),
+                    ),
+                ),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    fn prepare_command(
+        &self,
+        ports: &RedbOperationalPorts,
+        plan: &CommandPlan,
+        input: CanonicalRecord,
+        caller_key_text: &str,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let reference = ExecutablePlanRef::new(
+            self.checked_bundle.lineage().clone(),
+            self.checked_bundle.contract_version(),
+            self.checked_bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let resolved =
+            resolve_executable_plan(ports, &reference).expect("deployed bulk command resolves");
+        let facts = derive_input_command_facts(plan, input.clone())
+            .expect("checked bulk command input facts");
+        let caller_key = IdempotencyKey::new(caller_key_text).expect("bounded caller key");
+        let scope = CommandIdempotencyScopeV1::new(
+            database_id(),
+            environment(),
+            TenantScope::Global,
+            ActorId::new(PRINCIPAL).expect("bounded principal"),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+        );
+        let lookup =
+            prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(digest_seed))
+                .expect("prepare bulk caller-key lookup");
+        let idempotency = IdempotencyInspectionExecutor::new(ports)
+            .inspect(lookup)
+            .expect("inspect bulk idempotency state")
+            .confirm_input(
+                &input,
+                plan.idempotency_input()
+                    .expect("bulk command idempotency input"),
+                &caller_key,
+            )
+            .expect("confirm bulk command input")
+            .bind_selected_plan(reference)
+            .expect("bind bulk command plan");
+        let authorization = authorize_command(
+            plan,
+            self.checked_bundle.lineage().clone(),
+            facts.partition_key().clone(),
+        );
+        let post_evaluation_authorization = authorize_command(
+            plan,
+            self.checked_bundle.lineage().clone(),
+            facts.partition_key().clone(),
+        );
+        let (control, _cancellation) = CommandRequestControl::new(
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .expect("representable bulk command deadline"),
+        );
+        CommandExecutionPreparation::new(
+            database_id(),
+            &environment(),
+            resolved,
+            input,
+            idempotency,
+            facts,
+            authorization,
+            request_id(admission_request_seed),
+            ServiceIngressKindV1::Grpc,
+            control,
+        )
+        .expect("join exact bulk command preparation proofs")
+        .with_audited_lifecycle(Box::new(StartedCommandAuditInput::new(request_id(
+            admission_request_seed,
+        ))))
+        .expect("attach exact bulk audit lifecycle")
+        .with_post_evaluation_authorizer(Box::new(FixedPostEvaluationCommandAuthorizer::new(
+            post_evaluation_authorization,
+        )))
+        .expect("attach exact bulk post-evaluation authorization")
+    }
+
+    pub(crate) fn assert_rows_present(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        expected: bool,
+    ) {
+        for row_id in row_ids {
+            assert_eq!(
+                ports
+                    .read_entity(&self.row_target(*row_id))
+                    .expect("read bulk row")
+                    .is_some(),
+                expected,
+                "all collection elements must share one atomic visibility state"
+            );
+        }
+    }
+
+    pub(crate) fn assert_commit_graph(
+        &self,
+        ports: &RedbOperationalPorts,
+        outcome: &riffdb_storage_api::StoredOutcomeV1,
+        event_count: usize,
+    ) {
+        assert_eq!(
+            ports
+                .read_stored_outcome(outcome.identity())
+                .expect("read bulk stored outcome"),
+            Some(outcome.clone())
+        );
+        let commit = ports
+            .read_commit(outcome.commit_sequence())
+            .expect("read bulk commit")
+            .expect("bulk commit exists");
+        assert_eq!(commit.declared_outcome(), outcome.declared_outcome());
+        assert_eq!(commit.provenance_id(), outcome.provenance_id());
+        assert_eq!(commit.events().len(), event_count);
+        for event in commit.events() {
+            assert_eq!(
+                ports
+                    .read_durable_event(event.event_id())
+                    .expect("read bulk durable event"),
+                Some(event.clone())
+            );
+        }
+        assert!(
+            ports
+                .read_provenance(outcome.provenance_id())
+                .expect("read bulk provenance")
+                .is_some()
+        );
+    }
+
+    fn command_plan(&self, name: &str) -> &CommandPlan {
+        self.checked_bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == name)
+            .unwrap_or_else(|| panic!("{name} command plan"))
+    }
+
+    fn row_target(&self, row_id: [u8; 16]) -> riffdb_storage_api::EntityTarget {
+        let mut key = EntityKeyBuilder::new(self.row_entity_type);
+        key.push_uuid(&ORGANIZATION_ID)
+            .expect("tenant key component");
+        key.push_uuid(&row_id).expect("row key component");
+        riffdb_storage_api::EntityTarget::new(
+            self.row_entity_type,
+            key.finish().expect("row entity key"),
+        )
+        .expect("Row entity target")
+    }
+}
+
+fn canonical_uuid_text(seed: u8) -> String {
+    let bytes = uuid_bytes(seed);
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
+impl Drop for BulkRowsDatabase {
+    fn drop(&mut self) {
+        if self.remove_on_drop {
+            let _ = std::fs::remove_file(&self.path);
+            let journal = self.path.with_extension("redb.journal");
+            let _ = std::fs::remove_file(journal);
+        }
+    }
 }
 
 impl UniqueUserDatabase {
@@ -1160,7 +1579,10 @@ fn complete_structural_open(
             .expect("read structural evidence")
         {
             StructuralEvidencePage::Page { findings, next, .. } => {
-                assert!(findings.is_empty(), "valid fixture has no findings");
+                assert!(
+                    findings.is_empty(),
+                    "valid fixture has no findings: {findings:?}"
+                );
                 structural_cursor = next;
             }
             StructuralEvidencePage::ExactEnd(end) => break end,

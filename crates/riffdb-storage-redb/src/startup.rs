@@ -1769,7 +1769,14 @@ impl RedbStructuralEvidenceSession {
         if self.entity_chains.is_some() {
             return Ok(());
         }
-        let entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let live_entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
+        let chain_head_count = transaction
+            .open_table(crate::layout::ENTITY_CHAIN_HEADS)
+            .map_err(table_error)?
+            .len()
+            .map_err(precommit_storage_error)?;
+        let entity_identity_count = live_entity_count.max(chain_head_count);
         // Under a verified checkpoint the genesis COMMITS walk is replaced by
         // seeding from the fingerprint-verified (target, version) map at S and
         // advancing across the suffix only. The seed map is consumed exactly
@@ -1781,8 +1788,11 @@ impl RedbStructuralEvidenceSession {
             )),
             None => None,
         };
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        self.entity_chains = Some(build_entity_chains(transaction, entity_count, seed)?);
+        self.entity_chains = Some(build_entity_chains(
+            transaction,
+            entity_identity_count,
+            seed,
+        )?);
         Ok(())
     }
 
@@ -5279,8 +5289,11 @@ fn commit_graph_is_reciprocal(
             return Ok(false);
         }
     }
+    // Legacy rows have no transition chain and therefore retain the historical
+    // current-row cross-link. Delete-capable format activation rewrites command
+    // authority to V2 capsules before a checked delete can become executable.
     for reference in commit.entity_references() {
-        if !current_entity_covers_reference(transaction, reference)? {
+        if !current_entity_covers_legacy_reference(transaction, reference)? {
             return Ok(false);
         }
     }
@@ -5299,11 +5312,6 @@ fn command_capsule_graph_is_reciprocal(
     {
         if command.base() != capsule {
             return Ok(false);
-        }
-        for reference in capsule.commit().entity_references() {
-            if !current_entity_covers_reference(transaction, reference)? {
-                return Ok(false);
-            }
         }
         return Ok(true);
     }
@@ -5355,15 +5363,10 @@ fn command_capsule_graph_is_reciprocal(
             return Ok(false);
         }
     }
-    for reference in capsule.commit().entity_references() {
-        if !current_entity_covers_reference(transaction, reference)? {
-            return Ok(false);
-        }
-    }
     Ok(true)
 }
 
-fn current_entity_covers_reference(
+fn current_entity_covers_legacy_reference(
     transaction: &ReadTransaction,
     reference: &riffdb_storage_api::CommittedEntityReferenceV2,
 ) -> Result<bool, StorageError> {
@@ -5376,6 +5379,76 @@ fn current_entity_covers_reference(
     Ok(matches!(current, Ok(Some(record))
         if record.target() == reference.target()
             && record.entity_version() >= reference.entity_version()))
+}
+
+enum EntityHistoryMembers {
+    References(Vec<riffdb_storage_api::CommittedEntityReferenceV2>),
+    Transitions(Vec<riffdb_storage_api::CommittedEntityTransitionV1>),
+}
+
+fn entity_history_members_in_physical_row<E>(
+    encoded: &[u8],
+    events: &E,
+    physical_sequence: CommitSequence,
+) -> Result<Vec<(CommitSequence, EntityHistoryMembers)>, StorageError>
+where
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    match riffdb_storage_api::decode_command_segment_v1(encoded) {
+        Ok(segment) => {
+            let segment = segment.into_parts().0;
+            if segment.first_commit_sequence() != physical_sequence {
+                return Err(corrupt());
+            }
+            return Ok(segment
+                .commands()
+                .iter()
+                .map(|command| {
+                    let members = if command.entity_transitions().is_empty() {
+                        EntityHistoryMembers::References(
+                            command.base().commit().entity_references().to_vec(),
+                        )
+                    } else {
+                        EntityHistoryMembers::Transitions(command.entity_transitions().to_vec())
+                    };
+                    (command.commit_sequence(), members)
+                })
+                .collect());
+        }
+        Err(error)
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(crate::error::codec_error(error)),
+    }
+    match riffdb_storage_api::decode_command_capsule_v2(encoded) {
+        Ok(capsule) => {
+            let capsule = capsule.into_parts().0;
+            if capsule.commit_sequence() != physical_sequence {
+                return Err(corrupt());
+            }
+            let members = if capsule.entity_transitions().is_empty() {
+                EntityHistoryMembers::References(
+                    capsule.base().commit().entity_references().to_vec(),
+                )
+            } else {
+                EntityHistoryMembers::Transitions(capsule.entity_transitions().to_vec())
+            };
+            return Ok(vec![(capsule.commit_sequence(), members)]);
+        }
+        Err(error)
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(crate::error::codec_error(error)),
+    }
+    commits_in_physical_row(encoded, events, physical_sequence).map(|commits| {
+        commits
+            .into_iter()
+            .map(|commit| {
+                (
+                    commit.value().commit_sequence(),
+                    EntityHistoryMembers::References(commit.value().entity_references().to_vec()),
+                )
+            })
+            .collect()
+    })
 }
 
 /// Builds entity continuity chains from one forward COMMITS pass.
@@ -5402,6 +5475,10 @@ fn build_entity_chains(
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
         std::collections::BTreeMap::new();
+    let mut transition_heads = std::collections::BTreeMap::<
+        riffdb_storage_api::EntityTarget,
+        riffdb_storage_api::EntityChainHeadV1,
+    >::new();
     let mut orphan_targets = Vec::new();
     let mut overflow = false;
     let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
@@ -5443,30 +5520,43 @@ fn build_entity_chains(
         };
         // Decode failures are covered by inspect_commit_row (MalformedRecord /
         // CrossLinkMismatch). Continue so sibling entities still validate.
-        let commit_references =
-            match commits_in_physical_row(value.value(), &events, physical_sequence) {
-                Ok(commits) => commits
-                    .into_iter()
-                    .map(|commit| {
-                        (
-                            commit.value().commit_sequence(),
-                            commit.value().entity_references().to_vec(),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
+        let histories =
+            match entity_history_members_in_physical_row(value.value(), &events, physical_sequence)
+            {
+                Ok(histories) => histories,
                 Err(_) => {
                     let Ok(references) =
                         decoded(codec::decode_commit_entity_references(value.value()))
                     else {
                         continue;
                     };
-                    vec![(physical_sequence, references)]
+                    vec![(
+                        physical_sequence,
+                        EntityHistoryMembers::References(references),
+                    )]
                 }
             };
-        for (commit_sequence, references) in commit_references {
+        for (commit_sequence, members) in histories {
             if commit_sequence.get() <= walk_after {
                 continue;
             }
+            if let EntityHistoryMembers::Transitions(transitions) = members {
+                apply_entity_transitions_to_startup_chains(
+                    &mut chains,
+                    &mut transition_heads,
+                    &mut orphan_targets,
+                    &mut overflow,
+                    entity_count_usize,
+                    walk_after.max(pruned_floor),
+                    pruned_floor > 0 && pruned_floor >= walk_after,
+                    commit_sequence,
+                    &transitions,
+                )?;
+                continue;
+            }
+            let EntityHistoryMembers::References(references) = members else {
+                unreachable!("transition members continue above")
+            };
             let mut seen_in_commit = std::collections::BTreeSet::new();
             for reference in references {
                 let target_key = reference.target().clone();
@@ -5548,6 +5638,7 @@ fn build_entity_chains(
             }
         }
     }
+    validate_transition_chain_heads(transaction, &mut chains, &transition_heads)?;
     Ok(EntityChainState {
         chains,
         migrations,
@@ -5556,6 +5647,173 @@ fn build_entity_chains(
         orphans_queued: false,
         pruned_floor,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_entity_transitions_to_startup_chains(
+    chains: &mut std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    heads: &mut std::collections::BTreeMap<
+        riffdb_storage_api::EntityTarget,
+        riffdb_storage_api::EntityChainHeadV1,
+    >,
+    orphan_targets: &mut Vec<riffdb_storage_api::EntityTarget>,
+    overflow: &mut bool,
+    capacity: usize,
+    retained_boundary_sequence: u64,
+    retention_boundary_can_seed: bool,
+    commit_sequence: CommitSequence,
+    transitions: &[riffdb_storage_api::CommittedEntityTransitionV1],
+) -> Result<(), StorageError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for transition in transitions {
+        let target = transition.target().clone();
+        if transition.command_sequence() != commit_sequence || !seen.insert(target.clone()) {
+            if let Some(chain) = chains.get_mut(&target) {
+                chain.intact = false;
+            } else {
+                record_orphan_target(orphan_targets, overflow, target);
+            }
+            continue;
+        }
+        let next_head = if let Some(prior) = heads.get(&target) {
+            prior.apply(transition)
+        } else if transition.prior_state() == riffdb_storage_api::EntityChainStateV1::NeverExisted {
+            riffdb_storage_api::EntityChainHeadV1::from_genesis(transition)
+        } else {
+            let prior_matches_chain = chains.get(&target).is_some_and(|chain| {
+                matches!(
+                    transition.prior_state(),
+                    riffdb_storage_api::EntityChainStateV1::Live { version, value_hash }
+                        if chain.version == version
+                            && chain.hash.is_none_or(|hash| hash == value_hash)
+                )
+            });
+            // ADR-0100 requires an explicit durable boundary to anchor a
+            // predecessor omitted from retained history. A verified-prefix
+            // checkpoint and the offline-retention watermark both provide
+            // that boundary. Never guess it from the first successor sequence.
+            let predecessor_sequence = CommitSequence::new(retained_boundary_sequence);
+            match (
+                prior_matches_chain || retention_boundary_can_seed,
+                predecessor_sequence,
+                transition.prior_transition_hash(),
+            ) {
+                (true, Some(predecessor_sequence), Some(prior_hash)) => {
+                    riffdb_storage_api::EntityChainHeadV1::from_stored_parts(
+                        target.clone(),
+                        transition.prior_chain_revision(),
+                        transition.prior_state(),
+                        predecessor_sequence,
+                        prior_hash,
+                    )
+                    .and_then(|prior| prior.apply(transition))
+                }
+                _ => Err(riffdb_storage_api::StorageValueError::IdentityMismatch),
+            }
+        };
+        let Ok(next_head) = next_head else {
+            if let Some(chain) = chains.get_mut(&target) {
+                chain.intact = false;
+            } else {
+                record_orphan_target(orphan_targets, overflow, target);
+            }
+            continue;
+        };
+        let (version, hash) = match transition.next_state() {
+            riffdb_storage_api::EntityChainStateV1::Live {
+                version,
+                value_hash,
+            } => (version, Some(value_hash)),
+            riffdb_storage_api::EntityChainStateV1::Deleted => match transition.prior_state() {
+                riffdb_storage_api::EntityChainStateV1::Live { version, .. } => (version, None),
+                riffdb_storage_api::EntityChainStateV1::Deleted
+                | riffdb_storage_api::EntityChainStateV1::NeverExisted => {
+                    if let Some(chain) = chains.get_mut(&target) {
+                        chain.intact = false;
+                    } else {
+                        record_orphan_target(orphan_targets, overflow, target);
+                    }
+                    continue;
+                }
+            },
+            riffdb_storage_api::EntityChainStateV1::NeverExisted => {
+                if let Some(chain) = chains.get_mut(&target) {
+                    chain.intact = false;
+                } else {
+                    record_orphan_target(orphan_targets, overflow, target);
+                }
+                continue;
+            }
+        };
+        if let Some(chain) = chains.get_mut(&target) {
+            chain.version = version;
+            chain.hash = hash;
+            chain.expected_bundle = None;
+            chain.seeded = false;
+        } else if chains.len() < capacity {
+            chains.insert(
+                target.clone(),
+                EntityChain {
+                    version,
+                    hash,
+                    expected_bundle: None,
+                    migration_cursor: 0,
+                    intact: true,
+                    consumed: false,
+                    seeded: false,
+                },
+            );
+        } else {
+            record_orphan_target(orphan_targets, overflow, target);
+            continue;
+        }
+        heads.insert(target, next_head);
+    }
+    Ok(())
+}
+
+fn validate_transition_chain_heads(
+    transaction: &ReadTransaction,
+    chains: &mut std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    expected_heads: &std::collections::BTreeMap<
+        riffdb_storage_api::EntityTarget,
+        riffdb_storage_api::EntityChainHeadV1,
+    >,
+) -> Result<(), StorageError> {
+    let stored_heads = transaction
+        .open_table(crate::layout::ENTITY_CHAIN_HEADS)
+        .map_err(table_error)?;
+    let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+    for (target, expected) in expected_heads {
+        let key = keys::encode_entity_key(target.key());
+        let actual = stored_heads
+            .get(key)
+            .map_err(precommit_storage_error)?
+            .map(|encoded| riffdb_storage_api::decode_entity_chain_head_v1(encoded.value()))
+            .transpose();
+        let exact = matches!(actual, Ok(Some(ref decoded)) if decoded.value() == expected);
+        let current_presence_matches = match expected.state() {
+            riffdb_storage_api::EntityChainStateV1::Live { .. } => true,
+            riffdb_storage_api::EntityChainStateV1::Deleted => entities
+                .get(key)
+                .map_err(precommit_storage_error)?
+                .is_none(),
+            riffdb_storage_api::EntityChainStateV1::NeverExisted => false,
+        };
+        let Some(chain) = chains.get_mut(target) else {
+            continue;
+        };
+        chain.intact &= exact && current_presence_matches;
+        if exact
+            && current_presence_matches
+            && expected.state() == riffdb_storage_api::EntityChainStateV1::Deleted
+        {
+            // A checked deleted head is the exact current-state witness; no
+            // ENTITIES row should consume this historical identity.
+            chain.consumed = true;
+        }
+    }
+    Ok(())
 }
 
 fn load_entity_migration_evidence(
@@ -5821,15 +6079,15 @@ fn provenance_matches(
         && provenance.outcome_id() == commit.declared_outcome().outcome_id()
         && provenance.admitted_claims() == outcome.admitted_claims()
         && provenance.event_ids() == commit.outbox_event_ids()
-        && provenance.affected_entities().len() == commit.entity_references().len()
-        && provenance
-            .affected_entities()
-            .iter()
-            .zip(commit.entity_references())
-            .all(|(affected, reference)| {
-                affected.target() == reference.target()
-                    && affected.entity_version() == reference.entity_version()
+        && {
+            let mut affected = provenance.affected_entities().iter();
+            commit.entity_references().iter().all(|reference| {
+                affected.any(|item| {
+                    item.target() == reference.target()
+                        && item.entity_version() == reference.entity_version()
+                })
             })
+        }
 }
 
 fn idempotency_digest_is_readable(
