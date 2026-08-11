@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 2 || "$1" != "--all-domains" || "$2" != "--remote" ]]; then
+    echo "usage: ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote" >&2
+    exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$repo_root"
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+
+for tool in cargo jq; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "adapter disaster recovery acceptance requires $tool" >&2
+        exit 1
+    }
+done
+
+./scripts/generate-adapter-conformance-fixtures --check
+cargo +1.97.0 build --quiet --release -p riffdb-cli --bin riffdb
+
+for domain in openfga mlflow payload woodpecker; do
+    root="fixtures/adapters/conformance/$domain"
+    for plan in empty-install-plan upgrade-plan; do
+        target/release/riffdb application conformance \
+            "$root/adapter.conformance.json" --plan "$root/$plan.json" --output json \
+            | jq -e --arg domain "$domain" '
+                .ok == true
+                and .command == "application.conformance"
+                and .result.adapter == $domain
+                and .result.feature_claims == 7
+                and .result.evolution_cases == 2
+                and (.result.manifest_hash | test("^[0-9a-f]{64}$"))
+                and (.result.installation_plan_hash | test("^[0-9a-f]{64}$"))
+            ' >/dev/null
+    done
+done
+
+./scripts/remote-compose-acceptance --backup-restore
+
+echo "OpenFGA, MLflow, Payload, and Woodpecker passed remote destructive backup/restore reconciliation."

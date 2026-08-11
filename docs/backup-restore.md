@@ -68,18 +68,31 @@ the same public maintenance API used by operators:
 ./scripts/remote-compose-acceptance --backup-restore
 ```
 
-The drill creates and polls a backup from the separate operator container,
-creates a post-backup authority record, stops the database container, empties
-only its freshly allocated test data root, starts an empty replacement, and
-restores the backup through the public TLS endpoint. It then proves that the
-backed-up operator and application authorities work and that the post-backup
-authority disappeared. The operator container receives no database or backup
-mount and never supplies a server filesystem path.
+The drill deploys and seeds the release-owned four-domain adapter corpus,
+creates and polls a backup from the separate operator container, creates a
+post-backup authority record, stops the database container, empties only its
+freshly allocated test data root, starts an empty replacement, and restores the
+backup through the public TLS endpoint. It then reruns the generated OpenFGA,
+MLflow, Payload, and Woodpecker observations, proves that the backed-up operator
+and application authorities work, and proves that the post-backup authority
+disappeared. The operator container receives no database or backup mount and
+never supplies a server filesystem path.
 
-This command proves the generic remote physical recovery boundary. The
-adapter-specific WP-576 gate additionally has to rerun each adapter's
-conformance manifest against restored state; the generic drill alone is not
-the Deployable Application Alpha disaster receipt.
+The complete adapter gate also validates each domain's immutable conformance
+manifest and installation/evolution plans before running that destructive
+corpus:
+
+```bash
+./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
+```
+
+The drill writes a secret-free JSON receipt beneath
+`target/adapter-disaster-recovery/`. The receipt binds both maintenance
+operation identities and input hashes, the verified backup-manifest checksum,
+the destroyed post-backup suffix, the exact contract bundle, startup
+validation, and the reconciled adapter-observation digest. The backup manifest
+is the frontier-bearing durable artifact; the receipt binds its checksum rather
+than decoding storage-format bytes in application or operator code.
 
 An existing named backup is never silently replaced.
 
