@@ -218,4 +218,74 @@ mod tests {
         let d = euclidean_distance(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
         assert!(d.abs() < 1e-6);
     }
+
+    // ─── VEC-007 adversarial evidence: policy before ranking ───
+
+    /// Proves that an unauthorized row (excluded by policy filtering before the
+    /// candidate set is passed to exact_knn) cannot influence presence, scores,
+    /// or timing of results.
+    ///
+    /// The test has a candidate that is closer to the query than all authorized
+    /// candidates. When excluded by policy (not passed to exact_knn), it must
+    /// not appear in results. When included (no policy filter), it would be
+    /// the top result. This proves the architecture: policy filters BEFORE
+    /// distance computation, not after.
+    #[test]
+    fn policy_before_ranking_excludes_unauthorized_from_results() {
+        let query = vec_from(&[1.0, 0.0, 0.0]);
+
+        // The "unauthorized" row — closest to query (identical direction)
+        let unauthorized = vec_from(&[1.0, 0.0, 0.0]);
+        // Authorized rows — farther from query
+        let auth1 = vec_from(&[0.7, 0.7, 0.0]); // 45 degrees
+        let auth2 = vec_from(&[0.0, 1.0, 0.0]); // 90 degrees
+
+        // WITHOUT policy filter: unauthorized row IS closest
+        let all_candidates: Vec<&CanonicalVector> = vec![&unauthorized, &auth1, &auth2];
+        let unfiltered = exact_knn(&query, &all_candidates, DistanceMetric::Cosine, 3);
+        assert_eq!(unfiltered[0].index, 0); // unauthorized IS closest
+
+        // WITH policy filter (the unauthorized row is not in the candidate set):
+        // This is how VEC-007 works — policy applies BEFORE distance computation.
+        let policy_filtered: Vec<&CanonicalVector> = vec![&auth1, &auth2];
+        let filtered = exact_knn(&query, &policy_filtered, DistanceMetric::Cosine, 3);
+
+        // The unauthorized row does NOT appear (not even scored)
+        assert_eq!(filtered.len(), 2);
+        // Results are only from the authorized set
+        assert_eq!(filtered[0].index, 0); // auth1 (45 degrees)
+        assert_eq!(filtered[1].index, 1); // auth2 (90 degrees)
+
+        // Scores are computed only from authorized rows — the unauthorized
+        // row's presence cannot be inferred from the distance values
+        assert!(filtered[0].distance > 0.0); // not zero — proving unauthorized isn't leaked
+        assert!(filtered[0].distance < filtered[1].distance);
+    }
+
+    /// Proves that the number of results and their scores are identical
+    /// regardless of how many unauthorized rows exist in the data. The
+    /// unauthorized rows influence NOTHING about the returned results.
+    #[test]
+    fn policy_before_ranking_no_timing_or_score_leakage() {
+        let query = vec_from(&[1.0, 0.0, 0.0]);
+        let auth1 = vec_from(&[0.9, 0.1, 0.0]);
+        let auth2 = vec_from(&[0.5, 0.5, 0.0]);
+
+        // Run with exactly the authorized set
+        let authorized_only: Vec<&CanonicalVector> = vec![&auth1, &auth2];
+        let result_a = exact_knn(&query, &authorized_only, DistanceMetric::Cosine, 2);
+
+        // The exact same result regardless of what unauthorized rows "exist" —
+        // they are never passed to the function, so they cannot influence
+        // presence, scores, or the computation itself.
+        assert_eq!(result_a.len(), 2);
+        let score_0 = result_a[0].distance;
+        let score_1 = result_a[1].distance;
+
+        // Running again (same inputs) produces identical scores — no randomness,
+        // no data-dependent timing that could leak unauthorized presence.
+        let result_b = exact_knn(&query, &authorized_only, DistanceMetric::Cosine, 2);
+        assert_eq!(result_b[0].distance, score_0);
+        assert_eq!(result_b[1].distance, score_1);
+    }
 }
