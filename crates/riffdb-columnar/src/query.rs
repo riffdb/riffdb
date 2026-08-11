@@ -258,6 +258,12 @@ pub enum QueryError {
         /// The observed dimension.
         actual: u32,
     },
+    /// A nearest query names a projected field that exists but is not
+    /// vector-typed (previously mislabeled as `UnknownField`).
+    NotAVectorField {
+        /// Field id.
+        field_id: FieldId,
+    },
 }
 
 impl fmt::Display for QueryError {
@@ -295,6 +301,9 @@ impl fmt::Display for QueryError {
                     "vector dimension {actual} does not match the declared dimension {expected}"
                 )
             }
+            Self::NotAVectorField { field_id } => {
+                write!(f, "field {} is not vector-typed", field_id.get())
+            }
         }
     }
 }
@@ -329,6 +338,13 @@ pub struct NearestQueryRequest {
     /// A row failing any predicate never enters the candidate set: it is
     /// not scored, not ranked, and cannot influence distances, ordering, or
     /// the result count.
+    ///
+    /// The guarantee is conditional on the caller: an EMPTY vector is valid
+    /// and means "no filtering". The engine enforces that supplied
+    /// predicates filter before ranking; it cannot know whether the RIGHT
+    /// predicates were supplied. Binding compiled row policies into this set
+    /// is the caller's obligation (WP-572 runtime evaluator; recorded in
+    /// WP-593's deferred entry).
     pub predicates: Vec<ColumnPredicate>,
     /// Scan budget.
     pub budget: QueryBudget,
@@ -355,6 +371,13 @@ pub struct NearestQueryResult {
     pub projected_fields: Vec<FieldId>,
     /// Matching rows ordered by distance ascending (closest first).
     pub rows: Vec<NearestResultRow>,
+    /// Rows examined while scanning the org partition — every merged row
+    /// visited, including rows the predicates excluded, and never rows from
+    /// other organizations. This is the honest scan-work count an executor
+    /// adapter must report as `QueryNearestPage::scanned_rows` for fuel
+    /// accounting (ADR-0087); without it the adapter would have to fabricate
+    /// the number the executor demands.
+    pub scanned_rows: u64,
 }
 
 /// Executes a nearest-neighbor query against a published snapshot.
@@ -385,7 +408,7 @@ pub fn nearest_query_snapshot(
     let declared_dimension = definition.projected_types()[vector_field_index]
         .vector_dimension()
         .map(riffdb_types::VectorDimension::get)
-        .ok_or(QueryError::UnknownField {
+        .ok_or(QueryError::NotAVectorField {
             field_id: request.vector_field,
         })?;
     if request.query_vector.dimension() != declared_dimension {
@@ -471,6 +494,7 @@ pub fn nearest_query_snapshot(
         primary_key_fields,
         projected_fields,
         rows,
+        scanned_rows: scanned as u64,
     })
 }
 
