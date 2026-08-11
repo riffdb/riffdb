@@ -11,7 +11,10 @@ use riffdb_catalog::{ActiveCatalogSnapshot, ValidatedQueryModule};
 use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
 };
-use riffdb_policy::{Decision, OperationRequest};
+use riffdb_policy::{
+    AuthorizedApplicationQuery, AuthorizedQueryRowPolicyContextV1, Decision, OperationRequest,
+    resolve_authorized_query_row_policy_context,
+};
 use riffdb_query_executor::{
     BoundLiveQueryDependency, QueryExecutionError, bind_live_query_dependencies,
 };
@@ -272,6 +275,7 @@ struct PreparedLiveQuery {
     dependencies: Vec<BoundLiveQueryDependency>,
     live_plan: LiveQueryPlanV1,
     policy_request: OperationRequest,
+    row_policy_protected: bool,
 }
 
 impl PreparedLiveQuery {
@@ -300,6 +304,19 @@ impl PreparedLiveQuery {
     }
 
     fn commit_is_relevant(&self, commit: &AuthoritativeCommitSnapshot) -> bool {
+        if row_policy_partition_might_be_affected(
+            self.row_policy_protected,
+            self.dependencies
+                .iter()
+                .map(BoundLiveQueryDependency::partition_hash),
+            commit.partition_hash(),
+        ) {
+            // A policy can depend on a local relationship entity that is not
+            // part of the query's ordinary result dependencies. Re-executing
+            // on every same-partition commit ensures an ACL-only mutation can
+            // remove a previously visible value before another delivery.
+            return true;
+        }
         self.dependencies.iter().any(|dependency| {
             dependency.partition_hash() == commit.partition_hash()
                 && commit.affected_entities().iter().any(|affected| {
@@ -310,6 +327,17 @@ impl PreparedLiveQuery {
                 })
         })
     }
+}
+
+fn row_policy_partition_might_be_affected(
+    protected: bool,
+    dependency_partitions: impl IntoIterator<Item = PartitionKeyHash>,
+    commit_partition: PartitionKeyHash,
+) -> bool {
+    protected
+        && dependency_partitions
+            .into_iter()
+            .any(|partition| partition == commit_partition)
 }
 
 struct ServiceLiveQuerySubscription {
@@ -568,6 +596,9 @@ impl ServiceLiveQuerySubscription {
         let authorization = self
             .authorize_application_query()
             .ok_or(LiveQueryTerminalReason::AuthorizationChanged)?;
+        let row_policy = self
+            .resolve_row_policy(&authorization)
+            .map_err(|_| LiveQueryTerminalReason::IntegrityFailure)?;
         let executor = self
             .service
             .providers
@@ -581,7 +612,7 @@ impl ServiceLiveQuerySubscription {
             &[],
             &self.prepared.parameters,
             None,
-            None,
+            row_policy.as_ref(),
         )
         .map_err(map_live_execution)?;
         if snapshot.continuation().is_some() || snapshot.continuation_binding().is_some() {
@@ -625,7 +656,19 @@ impl ServiceLiveQuerySubscription {
     }
 
     fn authorized_now(&self) -> bool {
-        self.authorize_application_query().is_some()
+        self.authorize_application_query()
+            .is_some_and(|authorization| self.resolve_row_policy(&authorization).is_ok())
+    }
+
+    fn resolve_row_policy(
+        &self,
+        authorization: &AuthorizedApplicationQuery,
+    ) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, ()> {
+        resolve_authorized_query_row_policy_context(
+            authorization,
+            self.prepared.catalog.bundle().bundle(),
+        )
+        .map_err(|_| ())
     }
 
     fn acknowledge(&mut self, sequence: CommitSequence) -> bool {
@@ -692,6 +735,11 @@ async fn establish_live_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy = resolve_authorized_query_row_policy_context(
+        &authorization,
+        prepared.catalog.bundle().bundle(),
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     let executor = service
         .providers
         .query_executor
@@ -704,7 +752,7 @@ async fn establish_live_query(
         &[],
         &prepared.parameters,
         None,
-        None,
+        row_policy.as_ref(),
     )
     .map_err(|error| execution_failure(&service, OPERATION, error))?;
     if snapshot.continuation().is_some() || snapshot.continuation_binding().is_some() {
@@ -908,6 +956,15 @@ async fn prepare_live_query(
         target,
     )
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy_protected = program.steps().iter().any(|step| {
+        catalog
+            .bundle()
+            .bundle()
+            .row_policies()
+            .policies()
+            .iter()
+            .any(|policy| policy.entity() == step.internal_entity_id())
+    });
     Ok(PreparedLiveQuery {
         catalog,
         reactive_module_hash: selection.module_hash(),
@@ -921,6 +978,7 @@ async fn prepare_live_query(
         dependencies,
         live_plan,
         policy_request,
+        row_policy_protected,
     })
 }
 
@@ -1936,6 +1994,27 @@ mod tests {
                 reason: LiveQueryResetReason::DiffLimitExceeded,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn protected_watch_reexecutes_for_any_same_partition_commit() {
+        let watched = PartitionKeyHash::from_bytes([0x31; 32]);
+        let unrelated = PartitionKeyHash::from_bytes([0x32; 32]);
+        assert!(row_policy_partition_might_be_affected(
+            true,
+            [watched],
+            watched,
+        ));
+        assert!(!row_policy_partition_might_be_affected(
+            true,
+            [watched],
+            unrelated,
+        ));
+        assert!(!row_policy_partition_might_be_affected(
+            false,
+            [watched],
+            watched,
         ));
     }
 }

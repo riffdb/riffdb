@@ -543,7 +543,6 @@ fn evaluate(
             request.operation(),
             ServiceOperationV1::ExecuteProjectedQuery
                 | ServiceOperationV1::ConsumeEventStream
-                | ServiceOperationV1::WatchNamedQuery
                 | ServiceOperationV1::ConsumeContextualSubscription
                 | ServiceOperationV1::ExecuteContextualReaction
         )
@@ -692,8 +691,9 @@ mod tests {
         CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
         ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1,
         EntityTypeId, FieldId, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
-        ProjectionPlanHash, QueryModuleHash, QueryOperationName, QueryPlanHash, RequestId,
-        RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1, TenantId,
+        ProjectionPlanHash, QueryModuleHash, QueryOperationName, QueryPlanHash, ReactiveModuleHash,
+        ReactiveOperationName, RequestId, RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1,
+        TenantId,
     };
 
     use super::*;
@@ -965,6 +965,8 @@ mod tests {
     #[test]
     fn persisted_row_policy_authority_reaches_query_and_command_consumers() {
         let role = ApplicationRoleHash::from_bytes([0x44; 32]);
+        let reactive_module = ReactiveModuleHash::from_bytes([0x45; 32]);
+        let reactive_operation = ReactiveOperationName::new("DocumentWatch").expect("operation");
         let base = grant(
             TenantScope::Global,
             PartitionScopeV1::All,
@@ -973,6 +975,11 @@ mod tests {
                     CapabilityPermissionKindV1::ExecuteAdHocQuery,
                 ),
                 CapabilityPermissionV1::InvokeCommand(lineage(), CommandId::first()),
+                CapabilityPermissionV1::WatchNamedQuery(
+                    lineage(),
+                    reactive_module,
+                    reactive_operation.clone(),
+                ),
                 CapabilityPermissionV1::ApplicationRoleIdentity(role),
             ],
             vec![
@@ -1032,6 +1039,21 @@ mod tests {
             ),
         );
         assert!(allowed_to_commit.is_ok());
+        let allowed_to_live_query = evaluate(
+            &principal,
+            &current,
+            database_id(),
+            &environment,
+            timestamp(15),
+            &OperationRequest::watch_named_query(
+                lineage(),
+                reactive_module,
+                reactive_operation,
+                application_query_target(),
+            )
+            .expect("exact watch request"),
+        );
+        assert!(allowed_to_live_query.is_ok());
     }
 
     #[test]
