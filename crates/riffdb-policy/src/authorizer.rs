@@ -543,7 +543,6 @@ fn evaluate(
             request.operation(),
             ServiceOperationV1::ExecuteProjectedQuery
                 | ServiceOperationV1::ConsumeEventStream
-                | ServiceOperationV1::ConsumeContextualSubscription
                 | ServiceOperationV1::ExecuteContextualReaction
         )
     {
@@ -690,16 +689,17 @@ mod tests {
         CapabilityPermissionsV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
         CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
         ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1,
-        EntityTypeId, FieldId, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
-        ProjectionPlanHash, QueryModuleHash, QueryOperationName, QueryPlanHash, ReactiveModuleHash,
-        ReactiveOperationName, RequestId, RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1,
-        TenantId,
+        EntityTypeId, EventConsumerName, FieldId, IndexId, PartitionKeyBuilder, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, QueryModuleHash, QueryOperationName,
+        QueryParameterHash, QueryPlanHash, ReactiveModuleHash, ReactiveOperationName, RequestId,
+        RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1, TenantId,
     };
 
     use super::*;
     use crate::{
         ApplicationQueryAccessRequirement, ApplicationQueryTarget, CommandExecutionClass,
-        ContractMigrationPolicyOperation, OperationTenantScope, PartitionConstraint,
+        ContractMigrationPolicyOperation, EventConsumerOperationTarget, OperationTenantScope,
+        PartitionConstraint,
     };
 
     struct FixedAuthorizationClock(Timestamp);
@@ -980,6 +980,11 @@ mod tests {
                     reactive_module,
                     reactive_operation.clone(),
                 ),
+                CapabilityPermissionV1::ConsumeContextualSubscription(
+                    lineage(),
+                    reactive_module,
+                    ReactiveOperationName::new("DocumentAgent").expect("operation"),
+                ),
                 CapabilityPermissionV1::ApplicationRoleIdentity(role),
             ],
             vec![
@@ -1054,6 +1059,29 @@ mod tests {
             .expect("exact watch request"),
         );
         assert!(allowed_to_live_query.is_ok());
+        let contextual_target = EventConsumerOperationTarget::new(
+            lineage(),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([6; 32]),
+            reactive_module,
+            ReactiveOperationName::new("DocumentAgent").expect("operation"),
+            QueryParameterHash::from_bytes([0x46; 32]),
+            EventConsumerName::new("agent-1").expect("consumer"),
+            OperationTenantScope::global_only(),
+            partition(),
+        );
+        let allowed_to_contextual = evaluate(
+            &principal,
+            &current,
+            database_id(),
+            &environment,
+            timestamp(15),
+            &OperationRequest::consume_contextual_subscription(
+                contextual_target,
+                NonZeroU16::new(4).expect("rows"),
+            ),
+        );
+        assert!(allowed_to_contextual.is_ok());
     }
 
     #[test]

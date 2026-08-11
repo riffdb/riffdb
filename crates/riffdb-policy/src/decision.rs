@@ -784,6 +784,17 @@ impl AuthorizedOperation {
         self.request.operation()
     }
 
+    /// Transaction-current row-policy authority carried by this exact allow.
+    ///
+    /// This remains hidden from application callers. Shared service-owned
+    /// reactive orchestration uses it only after resolving the exact compiled
+    /// reactive definition named by [`Self::request`].
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_row_policy_authority(&self) -> Option<&AuthorizedRowPolicyAuthority> {
+        self.row_policy_authority.as_ref()
+    }
+
     /// Re-issues this allow proof only when live state proves it still holds.
     ///
     /// `baseline_generation` is the capability-view generation observed

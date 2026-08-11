@@ -13,6 +13,7 @@ const MANIFEST: &str = include_str!("../Cargo.toml");
 const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operations.rs");
 const COMMAND_SOURCE: &str = include_str!("../src/command_operations.rs");
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
+const CONSUMER_SOURCE: &str = include_str!("../src/consumer_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
 const DTO_SOURCE: &str = include_str!("../src/dto.rs");
 const EVENT_SOURCE: &str = include_str!("../src/event_operations.rs");
@@ -417,6 +418,33 @@ fn event_tail_registers_its_wakeup_source_before_authoritative_catch_up() {
     assert!(operation.contains("EventReplayPosition::Continue(continuation)"));
     assert!(operation.contains("EventReplayPosition::Initial {"));
     assert!(operation.contains("after: observed_upper"));
+}
+
+#[test]
+fn contextual_hydration_cannot_fall_back_to_an_unprotected_query_group() {
+    let hydration = CONSUMER_SOURCE
+        .split_once("async fn hydrate_contextual_delivery(")
+        .expect("contextual hydration orchestration exists")
+        .1
+        .split_once("fn validate_contextual_snapshot_head(")
+        .expect("contextual hydration has a closed boundary")
+        .0;
+    assert!(hydration.contains("resolve_authorized_contextual_row_policy_context("));
+    assert!(hydration.contains("Some(policy) => executor.execute_policy_query_group("));
+    assert!(hydration.contains("None => executor.execute_query_group("));
+
+    let release = CONSUMER_SOURCE
+        .split_once("async fn finalize_consumer_delivery(")
+        .expect("consumer release orchestration exists")
+        .1
+        .split_once("async fn hydrate_contextual_delivery(")
+        .expect("consumer release has a closed boundary")
+        .0;
+    assert_eq!(
+        release.matches("begun.reauthorize(service, context)").count(),
+        2,
+        "contextual delivery must reauthorize immediately before hydration and release"
+    );
 }
 
 #[test]

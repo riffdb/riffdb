@@ -14,7 +14,10 @@ use riffdb_types::{
     hash_canonical_value,
 };
 
-use crate::{AuthorizedApplicationQuery, AuthorizedCommandExecution, AuthorizedRowPolicyAuthority};
+use crate::{
+    AuthorizedApplicationQuery, AuthorizedCommandExecution, AuthorizedOperation,
+    AuthorizedRowPolicyAuthority,
+};
 
 /// Failure to reconstruct exact compiler-owned row-policy execution authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -506,6 +509,95 @@ pub fn resolve_authorized_query_row_policy_context(
         principal: authority.internal_principal().clone(),
         policies,
     }))
+}
+
+/// Resolves one contextual hydration policy context from the exact current
+/// subscription authorization and compiler-derived hydration entity union.
+///
+/// The entity identities are supplied only by shared service orchestration
+/// after resolving the exact reactive module and operation bound into the
+/// authorization request. No transport or application request can provide
+/// this list.
+#[doc(hidden)]
+pub fn resolve_authorized_contextual_row_policy_context(
+    authorization: &AuthorizedOperation,
+    bundle: &ContractBundle,
+    entities: &[EntityTypeId],
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    let target = authorization
+        .request()
+        .contextual_subscription_target()
+        .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+    if target.lineage() != bundle.lineage()
+        || target.version() != bundle.contract_version()
+        || target.bundle_hash() != bundle.bundle_hash()
+        || entities.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return Ok(None);
+    };
+    let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
+
+fn resolve_read_policies(
+    authority: &AuthorizedRowPolicyAuthority,
+    bundle: &ContractBundle,
+    entities: impl IntoIterator<Item = EntityTypeId>,
+) -> Result<BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>, QueryRowPolicyContextErrorV1> {
+    let grant = authority.internal_grant();
+    let mut policies = BTreeMap::new();
+    for entity in entities {
+        let protected = bundle
+            .row_policies()
+            .policies()
+            .iter()
+            .any(|policy| policy.entity() == entity);
+        let binding = grant.bindings().iter().find(|binding| {
+            binding.lineage() == bundle.lineage() && binding.entity_type() == entity
+        });
+        let Some(binding) = binding else {
+            if protected {
+                return Err(QueryRowPolicyContextErrorV1::MissingReadBinding);
+            }
+            continue;
+        };
+        if !binding
+            .operations()
+            .contains(&CapabilityRowPolicyOperationV1::Read)
+        {
+            return Err(QueryRowPolicyContextErrorV1::MissingReadBinding);
+        }
+        let policy = bundle
+            .row_policies()
+            .policies()
+            .iter()
+            .find(|policy| {
+                policy.name() == binding.policy_name().as_str() && policy.entity() == entity
+            })
+            .cloned()
+            .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+        let relationships = relationship_plans(bundle, &policy)
+            .map_err(|_| QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+        if policies
+            .insert(
+                entity,
+                AuthorizedEntityPolicyV1 {
+                    policy,
+                    relationships,
+                },
+            )
+            .is_some()
+        {
+            return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+        }
+    }
+    Ok(policies)
 }
 
 /// Resolves exact command policy authority from a fresh authorization proof.
