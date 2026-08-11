@@ -149,6 +149,7 @@ impl QueryReadView for NearestView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         Err(())
     }
@@ -157,6 +158,7 @@ impl QueryReadView for NearestView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         Err(())
     }
@@ -167,6 +169,7 @@ impl QueryReadView for NearestView {
         _predicates: &[BoundPredicate],
         _limit: u64,
         _after: Option<&[u8]>,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         Err(())
     }
@@ -176,6 +179,7 @@ impl QueryReadView for NearestView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         self.reported_calls += 1;
         Ok(QueryNearestPage {

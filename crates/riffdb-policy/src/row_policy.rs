@@ -1,16 +1,363 @@
 //! Shared, deny-by-default evaluation of compiler-owned row-policy plans.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_contract_ir::{
-    RowPolicyExpressionNodeV1, RowPolicyOperandV1, RowPolicyOperationV1, RowPolicyPlanV1,
-    RowPolicyValueSourceV1,
+    ContractBundle, KeySchema, RowPolicyExpressionNodeV1, RowPolicyOperandV1, RowPolicyOperationV1,
+    RowPolicyPlanV1, RowPolicyValueSourceV1,
 };
 use riffdb_types::{
-    ActorKind, CanonicalRecord, CanonicalValue, CanonicalValueHash, CapabilityId, EntityTypeId,
-    IndexId, encode_canonical_record, hash_canonical_value,
+    ActorKind, CanonicalRecord, CanonicalValue, CanonicalValueHash, CapabilityId,
+    CapabilityRowPolicyOperationV1, EntityTypeId, IndexId, PartitionKey, encode_canonical_record,
+    hash_canonical_value,
 };
+
+use crate::AuthorizedApplicationQuery;
+
+/// Failure to reconstruct exact compiler-owned row-policy execution authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryRowPolicyContextErrorV1 {
+    /// The current capability extension and active contract do not agree.
+    StaleOrInconsistentAuthority,
+    /// A protected query access has no exact read binding.
+    MissingReadBinding,
+    /// A compiler-declared local relationship schema is unavailable.
+    InvalidRelationshipPlan,
+}
+
+/// One exact local index lookup derived from policy IR and trusted row/fact values.
+///
+/// Callers may only receive this value from [`AuthorizedQueryRowPolicyContextV1`].
+/// No public request can choose its target, partition, index, or key bytes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthorizedIndexedRelationshipLookupV1 {
+    target_entity: EntityTypeId,
+    index_id: IndexId,
+    partition: PartitionKey,
+    index_prefix: Vec<u8>,
+}
+
+impl AuthorizedIndexedRelationshipLookupV1 {
+    /// Compiler-selected target entity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn target_entity(&self) -> EntityTypeId {
+        self.target_entity
+    }
+
+    /// Compiler-selected target index.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+
+    /// Exact partition derived from compiler-checked leading arguments.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition(&self) -> &PartitionKey {
+        &self.partition
+    }
+
+    /// Complete index-value prefix derived from trusted operands.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn index_prefix(&self) -> &[u8] {
+        &self.index_prefix
+    }
+}
+
+impl std::fmt::Debug for AuthorizedIndexedRelationshipLookupV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedIndexedRelationshipLookupV1")
+            .field("target_entity", &self.target_entity)
+            .field("index_id", &self.index_id)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct AuthorizedRelationshipPlanV1 {
+    target_entity: EntityTypeId,
+    index_id: IndexId,
+    index_schema: KeySchema,
+    partition_schema: KeySchema,
+    partition_width: usize,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct AuthorizedEntityPolicyV1 {
+    policy: RowPolicyPlanV1,
+    relationships: BTreeMap<(EntityTypeId, IndexId), AuthorizedRelationshipPlanV1>,
+}
+
+/// Move-only transaction-current policy context for one authorized query.
+///
+/// Construction consumes only an [`AuthorizedApplicationQuery`] plus its exact
+/// active contract. Principal facts and policy selection remain private and
+/// cannot be supplied by an application request.
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedQueryRowPolicyContextV1 {
+    principal: PrincipalFactBindingV1,
+    policies: BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>,
+}
+
+impl std::fmt::Debug for AuthorizedQueryRowPolicyContextV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedQueryRowPolicyContextV1")
+            .field(
+                "protected_entities",
+                &self.policies.keys().collect::<Vec<_>>(),
+            )
+            .field("principal_facts", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl AuthorizedQueryRowPolicyContextV1 {
+    /// Constructs a no-relationship context for cross-crate semantic tests.
+    ///
+    /// Shipped code cannot enable this constructor. Relationship-bearing plans
+    /// are rejected so tests cannot accidentally exercise weaker evidence.
+    #[cfg(feature = "test-fixtures")]
+    #[doc(hidden)]
+    pub fn test_fixture(
+        principal: PrincipalFactBindingV1,
+        policies: Vec<RowPolicyPlanV1>,
+    ) -> Result<Self, QueryRowPolicyContextErrorV1> {
+        let mut selected = BTreeMap::new();
+        for policy in policies {
+            if policy.rules().iter().any(|rule| {
+                rule.nodes()
+                    .iter()
+                    .any(|node| matches!(node, RowPolicyExpressionNodeV1::IndexedExists { .. }))
+            }) || selected
+                .insert(
+                    policy.entity(),
+                    AuthorizedEntityPolicyV1 {
+                        policy,
+                        relationships: BTreeMap::new(),
+                    },
+                )
+                .is_some()
+            {
+                return Err(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan);
+            }
+        }
+        Ok(Self {
+            principal,
+            policies: selected,
+        })
+    }
+
+    /// Whether this exact query access is protected by a selected row policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn protects(&self, entity: EntityTypeId) -> bool {
+        self.policies.contains_key(&entity)
+    }
+
+    /// Derives the complete bounded relationship lookups required for a row.
+    #[doc(hidden)]
+    pub fn relationship_lookups(
+        &self,
+        entity: EntityTypeId,
+        row: &CanonicalRecord,
+    ) -> Result<Vec<AuthorizedIndexedRelationshipLookupV1>, QueryRowPolicyContextErrorV1> {
+        let Some(selected) = self.policies.get(&entity) else {
+            return Ok(Vec::new());
+        };
+        required_indexed_relationship_probes(
+            &selected.policy,
+            RowPolicyOperationV1::Read,
+            row,
+            &self.principal,
+        )
+        .map_err(|_| QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?
+        .into_iter()
+        .map(|probe| {
+            let relation = selected
+                .relationships
+                .get(&(probe.target_entity(), probe.index_id()))
+                .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let partition = relation
+                .partition_schema
+                .encode_partition(
+                    probe
+                        .arguments()
+                        .get(..relation.partition_width)
+                        .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?,
+                )
+                .map_err(|_| QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let index_prefix = relation
+                .index_schema
+                .encode_index_prefix(probe.arguments())
+                .map_err(|_| QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?
+                .as_bytes()
+                .to_vec();
+            Ok(AuthorizedIndexedRelationshipLookupV1 {
+                target_entity: relation.target_entity,
+                index_id: relation.index_id,
+                partition,
+                index_prefix,
+            })
+        })
+        .collect()
+    }
+
+    /// Applies the exact selected read policy to one authoritative row and the
+    /// relationship observations requested by [`Self::relationship_lookups`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn allows(
+        &self,
+        entity: EntityTypeId,
+        row: &CanonicalRecord,
+        relationship_exists: &[bool],
+    ) -> bool {
+        let Some(selected) = self.policies.get(&entity) else {
+            return true;
+        };
+        let Ok(probes) = required_indexed_relationship_probes(
+            &selected.policy,
+            RowPolicyOperationV1::Read,
+            row,
+            &self.principal,
+        ) else {
+            return false;
+        };
+        if probes.len() != relationship_exists.len() {
+            return false;
+        }
+        let evidence = probes
+            .into_iter()
+            .zip(relationship_exists)
+            .map(|(probe, exists)| probe.into_evidence(*exists))
+            .collect::<Vec<_>>();
+        evaluate_row_policy(
+            &selected.policy,
+            RowPolicyOperationV1::Read,
+            row,
+            &self.principal,
+            &evidence,
+        )
+        .is_allowed()
+    }
+}
+
+/// Resolves exact query policy context from a current authorization proof.
+///
+/// `None` means the capability has no V4 row-policy authority and therefore
+/// the existing unprotected execution path remains exact.
+#[doc(hidden)]
+pub fn resolve_authorized_query_row_policy_context(
+    authorization: &AuthorizedApplicationQuery,
+    bundle: &ContractBundle,
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return Ok(None);
+    };
+    if authorization.target().lineage() != bundle.lineage()
+        || authorization.target().version() != bundle.contract_version()
+        || authorization.target().bundle_hash() != bundle.bundle_hash()
+    {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let grant = authority.internal_grant();
+    let mut policies = BTreeMap::new();
+    for access in authorization.target().accesses() {
+        let entity = access.entity_type_id();
+        let protected = bundle
+            .row_policies()
+            .policies()
+            .iter()
+            .any(|policy| policy.entity() == entity);
+        let binding = grant.bindings().iter().find(|binding| {
+            binding.lineage() == bundle.lineage() && binding.entity_type() == entity
+        });
+        let Some(binding) = binding else {
+            if protected {
+                return Err(QueryRowPolicyContextErrorV1::MissingReadBinding);
+            }
+            continue;
+        };
+        if !binding
+            .operations()
+            .contains(&CapabilityRowPolicyOperationV1::Read)
+        {
+            return Err(QueryRowPolicyContextErrorV1::MissingReadBinding);
+        }
+        let policy = bundle
+            .row_policies()
+            .policies()
+            .iter()
+            .find(|policy| {
+                policy.name() == binding.policy_name().as_str() && policy.entity() == entity
+            })
+            .cloned()
+            .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+        let mut relationships = BTreeMap::new();
+        for rule in policy
+            .rules()
+            .iter()
+            .filter(|rule| rule.operation() == RowPolicyOperationV1::Read)
+        {
+            for node in rule.nodes() {
+                let RowPolicyExpressionNodeV1::IndexedExists {
+                    target_entity,
+                    index_id,
+                    ..
+                } = node
+                else {
+                    continue;
+                };
+                let target = bundle
+                    .schema()
+                    .entity(*target_entity)
+                    .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+                let index = target
+                    .indexes()
+                    .iter()
+                    .find(|index| index.id() == *index_id)
+                    .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+                let aggregate = bundle
+                    .schema()
+                    .aggregate_for_entity(*target_entity)
+                    .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+                let root = bundle
+                    .schema()
+                    .entity(aggregate.root())
+                    .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+                relationships.insert(
+                    (*target_entity, *index_id),
+                    AuthorizedRelationshipPlanV1 {
+                        target_entity: *target_entity,
+                        index_id: *index_id,
+                        index_schema: index.key_schema().clone(),
+                        partition_schema: aggregate.keys().partition_schema().clone(),
+                        partition_width: root.primary_key_fields().len(),
+                    },
+                );
+            }
+        }
+        policies.insert(
+            entity,
+            AuthorizedEntityPolicyV1 {
+                policy,
+                relationships,
+            },
+        );
+    }
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
 
 /// One checked observation for the single indexed relationship probe allowed by policy V1.
 ///
@@ -22,6 +369,51 @@ pub struct IndexedRelationshipEvidenceV1 {
     index_id: IndexId,
     arguments: Vec<CanonicalValue>,
     exists: bool,
+}
+
+/// One exact compiler-declared relationship lookup required before evaluating
+/// a row. This is produced only from the policy IR, authoritative row, and
+/// transaction-current principal binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedRelationshipProbeV1 {
+    target_entity: EntityTypeId,
+    index_id: IndexId,
+    arguments: Vec<CanonicalValue>,
+}
+
+impl IndexedRelationshipProbeV1 {
+    /// Target entity selected by the compiled policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn target_entity(&self) -> EntityTypeId {
+        self.target_entity
+    }
+
+    /// Complete declared index selected by the compiled policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+
+    /// Exact typed arguments derived from trusted state.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn arguments(&self) -> &[CanonicalValue] {
+        &self.arguments
+    }
+
+    /// Converts one exact observation into evaluator evidence.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_evidence(self, exists: bool) -> IndexedRelationshipEvidenceV1 {
+        IndexedRelationshipEvidenceV1::new(
+            self.target_entity,
+            self.index_id,
+            self.arguments,
+            exists,
+        )
+    }
 }
 
 impl IndexedRelationshipEvidenceV1 {
@@ -155,6 +547,44 @@ impl RowPolicyDecisionV1 {
     pub const fn is_denied(&self) -> bool {
         matches!(self, Self::Deny(_))
     }
+}
+
+/// Derives the complete bounded relationship reads for one operation without
+/// accepting a caller-selected target, index, or key.
+#[doc(hidden)]
+pub fn required_indexed_relationship_probes(
+    policy: &RowPolicyPlanV1,
+    operation: RowPolicyOperationV1,
+    row: &CanonicalRecord,
+    principal: &PrincipalFactBindingV1,
+) -> Result<Vec<IndexedRelationshipProbeV1>, RowPolicyDenyReasonV1> {
+    let rule = policy
+        .rules()
+        .iter()
+        .find(|candidate| candidate.operation() == operation)
+        .ok_or(RowPolicyDenyReasonV1::MissingRule)?;
+    rule.nodes()
+        .iter()
+        .filter_map(|node| match node {
+            RowPolicyExpressionNodeV1::IndexedExists {
+                target_entity,
+                index_id,
+                arguments,
+            } => Some((target_entity, index_id, arguments)),
+            _ => None,
+        })
+        .map(|(target_entity, index_id, arguments)| {
+            let arguments = arguments
+                .iter()
+                .map(|argument| evaluate_operand(argument, row, principal))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(IndexedRelationshipProbeV1 {
+                target_entity: *target_entity,
+                index_id: *index_id,
+                arguments,
+            })
+        })
+        .collect()
 }
 
 /// Evaluates one exact row for one operation. This is the primitive used by

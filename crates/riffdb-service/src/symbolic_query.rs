@@ -29,9 +29,10 @@ use riffdb_errors::{
 };
 use riffdb_policy::{
     ApplicationCatalogQueryCandidate, ApplicationQueryAccessRequirement, ApplicationQueryTarget,
-    AuthorizedApplicationQuery, CommandToolCandidate, DiscoveryVisibility,
-    MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate, OperationRequest, OperationTenantScope,
-    OutputClassification, PartitionConstraint,
+    AuthorizedApplicationQuery, AuthorizedQueryRowPolicyContextV1, CommandToolCandidate,
+    DiscoveryVisibility, MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate, OperationRequest,
+    OperationTenantScope, OutputClassification, PartitionConstraint,
+    resolve_authorized_query_row_policy_context,
 };
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
 use riffdb_query_executor::{
@@ -2724,6 +2725,9 @@ async fn execute_compiled_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     service
         .providers
         .telemetry
@@ -2741,6 +2745,7 @@ async fn execute_compiled_query(
         OPERATION,
         |_attempt| {
             let execution_authorization = &execution_authorization;
+            let row_policy = &row_policy;
             let program = &program;
             let aggregates = &aggregates;
             let parameters = &parameters;
@@ -2760,6 +2765,7 @@ async fn execute_compiled_query(
                     aggregates,
                     parameters,
                     prior_cont,
+                    row_policy.as_ref(),
                 ) {
                     Ok(snapshot) => {
                         telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
@@ -3232,6 +3238,7 @@ pub(crate) fn execute_authorized_query_page(
     aggregates: &[riffdb_query_ir::OperationalAggregateV1],
     parameters: &QueryParameters,
     prior: Option<&QueryContinuation>,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let target = authorization.target();
     let obligations = authorization.obligations();
@@ -3248,10 +3255,16 @@ pub(crate) fn execute_authorized_query_page(
     if !exact_target {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    if aggregates.is_empty() {
-        executor.execute_query_page(program, parameters, prior)
-    } else {
-        executor.execute_operational_query_page(program, aggregates, parameters, prior)
+    match (aggregates.is_empty(), row_policy) {
+        (true, Some(policy)) => {
+            executor.execute_policy_query_page(program, parameters, prior, policy)
+        }
+        (false, Some(policy)) => executor
+            .execute_policy_operational_query_page(program, aggregates, parameters, prior, policy),
+        (true, None) => executor.execute_query_page(program, parameters, prior),
+        (false, None) => {
+            executor.execute_operational_query_page(program, aggregates, parameters, prior)
+        }
     }
 }
 
