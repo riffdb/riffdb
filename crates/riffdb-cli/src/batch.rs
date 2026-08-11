@@ -1006,5 +1006,12 @@ mod tests {
             load_or_create_checkpoint(&source, &options),
             Err(BatchError::CheckpointInvalid)
         ));
+        // Explicit form of what the deleted cleanup used to observe by
+        // accident (remove_file on an absent receipt errored): rejecting a
+        // corrupt checkpoint must not delete the operator's receipt file.
+        assert!(
+            path.exists(),
+            "the receipt must survive the CheckpointInvalid rejection"
+        );
     }
 }

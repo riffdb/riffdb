@@ -40,9 +40,10 @@ pub(crate) fn temporary_database_scope(label: &str) -> (tempfile::TempDir, PathB
 
 /// One real redb database plus the production sharing bridge over it.
 pub(crate) struct RealStorage {
-    _scope: tempfile::TempDir,
     pub(crate) storage: SharedRedbOperationalPorts,
     pub(crate) database_id: DatabaseId,
+    /// Declared last so the scope directory outlives the open database.
+    _scope: tempfile::TempDir,
 }
 
 impl RealStorage {
@@ -66,9 +67,9 @@ impl RealStorage {
         let storage = SharedRedbOperationalPorts::new(ports, None)
             .expect("build the production storage bridge");
         Self {
-            _scope: scope,
             storage,
             database_id,
+            _scope: scope,
         }
     }
 }

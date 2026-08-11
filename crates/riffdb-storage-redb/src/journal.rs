@@ -2794,31 +2794,21 @@ mod tests {
 
     use super::*;
 
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-
-    struct TestPath(PathBuf);
+    /// Whole-directory scope: `.0` and every side file it grows (journal,
+    /// checkpoint, spare, rewrite, …) live in one
+    /// [`crate::test_path::ScopedDirectory`] removed on drop — pass, fail,
+    /// or panic — so cleanup never depends on a hand-maintained file list.
+    /// This retires the stale `target/journal-tests` root.
+    struct TestPath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestPath {
         fn new(label: &str) -> Self {
-            let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/journal-tests");
-            std::fs::create_dir_all(&root).expect("create journal test root");
-            Self(root.join(format!("{label}-{}-{ordinal}.journal", std::process::id())))
-        }
-    }
-
-    impl Drop for TestPath {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-            let journal = journal_path(&self.0);
-            let _ = std::fs::remove_file(&journal);
-            let _ = std::fs::remove_file(checkpoint_journal_path(&self.0));
-            let _ = std::fs::remove_file(spare_journal_path(&self.0));
-            if let Some(file_name) = journal.file_name() {
-                let mut replacement = file_name.to_os_string();
-                replacement.push(".rewrite");
-                let _ = std::fs::remove_file(journal.with_file_name(replacement));
-            }
+            let scope = crate::test_path::ScopedDirectory::new(label);
+            Self(scope.join("db.journal"), scope)
         }
     }
 

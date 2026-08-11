@@ -816,9 +816,10 @@ impl TemporaryDirectory {
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
         if std::env::var_os("RIFFDB_WP408_KEEP_FIXTURE").is_some() {
-            eprintln!("retained WP-408 fixture at {}", self.0.path().display());
-            // Disarm the inner guard so the fixture survives.
+            // Disarm the inner guard so the fixture survives; keep() renames
+            // the directory out of sweep scope, so log the path afterwards.
             self.0.keep();
+            eprintln!("retained WP-408 fixture at {}", self.0.path().display());
         }
     }
 }

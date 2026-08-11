@@ -727,6 +727,13 @@ mod tests {
         assert_eq!(reopened.database_id(), installed);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         drop(reopened);
+        // Explicit form of what the deleted cleanup used to observe by
+        // accident (remove_file on an absent marker errored): a successful
+        // startup publishes the durable-format marker beside the database.
+        assert!(
+            riffdb_storage_redb::durable_format_marker_path(&path).exists(),
+            "successful startup must publish the durable-format marker"
+        );
     }
 
     #[test]
