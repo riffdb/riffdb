@@ -10,13 +10,13 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_contract_ir::{
-    BindingId, BindingMode, CommandPlan, ContractBundle, ExecutionClass, Instruction,
-    ObjectConstruction, RecordSchema, RootValidationReadId, SchemaIr, ValueType,
+    BindingId, BindingMode, CommandPlan, ContractBundle, DeleteCheckModeV1, ExecutionClass,
+    Instruction, ObjectConstruction, RecordSchema, RootValidationReadId, SchemaIr, ValueType,
     WorkflowLeaseOperation,
 };
 use riffdb_invariant::{
     EvaluationBatch, EvaluationError, ExpressionEvaluator, ExpressionValueSource,
-    derive_input_command_facts,
+    InputDerivedCommandFacts, derive_input_command_facts,
 };
 use riffdb_storage_api::{
     DeclaredOutcome, EntityMutation, EntityObservation, EntityPostImage, EntityTarget,
@@ -815,7 +815,7 @@ fn execute_collection_command(
     if facts.partition_key() != context.partition_key()
         || facts.binding_entity_keys().len() != snapshot.bindings().len()
         || facts.root_validation_entity_keys().len() != snapshot.root_validations().len()
-        || !snapshot.ranges().is_empty()
+        || snapshot.ranges().len() != delete_restrict_range_count(plan, &facts)?
     {
         return Err(ExecutionFault::Integrity);
     }
@@ -1159,9 +1159,11 @@ fn validate_snapshot_targets(
     context: &TransactionContext,
     evaluator: &mut ExpressionEvaluator<'_>,
 ) -> Result<(), ExecutionFault> {
+    let facts =
+        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
     if snapshot.bindings().len() != plan.bindings().len()
         || snapshot.root_validations().len() != plan.root_validation_reads().len()
-        || !snapshot.ranges().is_empty()
+        || snapshot.ranges().len() != delete_restrict_range_count(plan, &facts)?
     {
         return Err(ExecutionFault::Integrity);
     }
@@ -1207,6 +1209,31 @@ fn validate_snapshot_targets(
         }
     }
     Ok(())
+}
+
+fn delete_restrict_range_count(
+    plan: &CommandPlan,
+    facts: &InputDerivedCommandFacts,
+) -> Result<usize, ExecutionFault> {
+    let mut count = 0usize;
+    for plan_index in facts.binding_plan_indices() {
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or(ExecutionFault::Integrity)?;
+        if binding.mode() != BindingMode::Delete {
+            continue;
+        }
+        let check = plan
+            .delete_checks()
+            .iter()
+            .find(|check| check.binding() == binding.id())
+            .ok_or(ExecutionFault::Integrity)?;
+        if matches!(check.mode(), DeleteCheckModeV1::Restrict { .. }) {
+            count = count.checked_add(1).ok_or(ExecutionFault::ResourceLimit)?;
+        }
+    }
+    Ok(count)
 }
 
 fn derive_target<Values: ExpressionValueSource + ?Sized>(

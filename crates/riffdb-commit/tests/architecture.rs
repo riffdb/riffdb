@@ -433,8 +433,14 @@ fn command_validation_seals_one_exact_attempt_before_index_or_record_authority()
 
     for required in [
         "plan.execution_class() != ExecutionClass::IdempotentMutation",
-        "!request.range_targets().is_empty()",
-        "!current.ranges().is_empty()",
+        // ADR-0107 restricted deletes are the only command path allowed to
+        // carry range dependencies. Validation must independently re-derive
+        // their exact reverse-index prefixes from the sealed plan and input;
+        // accepting caller-selected ranges would create storage authority.
+        "derive_delete_restrict_ranges(resolved, &facts)",
+        "request.range_targets() != expected_ranges",
+        "current.ranges().len() != expected_ranges.len()",
+        "target != observation.target()",
         "validate_evaluated_output(",
         "validate_post_image_and_project(",
         "materialize_current_entity_record(",

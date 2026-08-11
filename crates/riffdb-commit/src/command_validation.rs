@@ -701,7 +701,17 @@ where
         drop(attempt);
         return Err(CommandValidationError::integrity());
     }
-    let decision = {
+    let restricted_delete = attempt
+        .materialized_snapshot()
+        .snapshot()
+        .ranges()
+        .iter()
+        .any(|observation| !observation.entries().is_empty());
+    let decision = if restricted_delete {
+        Ok(CheckedCommandDecision::Rejected(
+            CandidateValidationRejection::MutationPreconditionChanged,
+        ))
+    } else {
         let pending = attempt.commit_context().pending();
         validate_transaction_current_command_parts(
             attempt.resolved_plan(),
@@ -834,6 +844,8 @@ fn validate_identity_positions_and_output(
     let request = evaluated.validation_request();
     let facts = derive_input_command_facts(plan, normalized_input.clone())
         .map_err(|_| CommandValidationError::integrity())?;
+    let expected_ranges = crate::command_index::derive_delete_restrict_ranges(resolved, &facts)
+        .map_err(|_| CommandValidationError::integrity())?;
     if reference != evaluated.plan()
         || request.plan() != evaluated.plan()
         || plan.execution_class() != ExecutionClass::IdempotentMutation
@@ -844,8 +856,8 @@ fn validate_identity_positions_and_output(
         || facts.binding_entity_keys().len() != current.bindings().len()
         || facts.root_validation_entity_keys().len() != request.root_validation_targets().len()
         || facts.root_validation_entity_keys().len() != current.root_validations().len()
-        || !request.range_targets().is_empty()
-        || !current.ranges().is_empty()
+        || request.range_targets() != expected_ranges
+        || current.ranges().len() != expected_ranges.len()
     {
         return Err(CommandValidationError::integrity());
     }
