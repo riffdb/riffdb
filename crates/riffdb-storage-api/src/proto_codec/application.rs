@@ -1123,13 +1123,7 @@ pub(super) fn encode_commit_record_legacy_v1(
             partition_hash: value.partition_hash().as_bytes().to_vec(),
             conflict_hashes: hashes_to_proto(value.conflict_hashes()),
             read_dependencies: Some(dependencies_to_proto(value.read_dependencies())),
-            mutations: mutations
-                .iter()
-                .map(|value| wire::CommittedEntityMutationV1 {
-                    expected: Some(expected_to_proto(value.expected())),
-                    post_image: Some(entity_to_proto(value.post_image())),
-                })
-                .collect(),
+            mutations: legacy_mutations_to_proto(mutations)?,
             events: value.events().iter().map(event_to_proto).collect(),
             declared_outcome: Some(declared_outcome_to_proto(value.declared_outcome())),
             provenance_id: value.provenance_id().as_bytes().to_vec(),
@@ -1210,13 +1204,7 @@ pub fn encode_commit_record_v2_fixture(
             partition_hash: value.partition_hash().as_bytes().to_vec(),
             conflict_hashes: hashes_to_proto(value.conflict_hashes()),
             read_dependencies: Some(dependencies_to_proto(value.read_dependencies())),
-            mutations: mutations
-                .iter()
-                .map(|value| wire::CommittedEntityMutationV1 {
-                    expected: Some(expected_to_proto(value.expected())),
-                    post_image: Some(entity_to_proto(value.post_image())),
-                })
-                .collect(),
+            mutations: legacy_mutations_to_proto(mutations)?,
             event_references: value
                 .event_references()
                 .into_iter()
@@ -1233,6 +1221,24 @@ pub fn encode_commit_record_v2_fixture(
             durability_mode: durability_to_proto(value.durability_mode()),
         },
     )
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+fn legacy_mutations_to_proto(
+    mutations: &[CommittedEntityMutationV1],
+) -> Result<Vec<wire::CommittedEntityMutationV1>, DurableCodecError> {
+    mutations
+        .iter()
+        .map(|value| {
+            let post_image = value
+                .live_post_image()
+                .ok_or_else(DurableCodecError::invariant)?;
+            Ok(wire::CommittedEntityMutationV1 {
+                expected: Some(expected_to_proto(value.expected())),
+                post_image: Some(entity_to_proto(post_image)),
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]

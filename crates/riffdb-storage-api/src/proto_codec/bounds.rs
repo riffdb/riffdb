@@ -120,7 +120,7 @@ impl RawWriteClassBreakdownV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedAtomicCommandRecordSetV1 {
     allocator: CanonicalStoredEnvelopeV1,
-    entities: Vec<CanonicalStoredEnvelopeV1>,
+    entities: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_entries: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_epochs: Vec<CanonicalStoredEnvelopeV1>,
     outcome: CanonicalStoredEnvelopeV1,
@@ -140,7 +140,7 @@ pub struct EncodedAtomicCommandRecordSetV1 {
 /// have been allocated.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedCapsuleCommandRecordSetV1 {
-    entities: Vec<CanonicalStoredEnvelopeV1>,
+    entities: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_entries: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_epochs: Vec<CanonicalStoredEnvelopeV1>,
 }
@@ -152,7 +152,7 @@ impl EncodedCapsuleCommandRecordSetV1 {
     pub fn into_parts(
         self,
     ) -> (
-        Vec<CanonicalStoredEnvelopeV1>,
+        Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<CanonicalStoredEnvelopeV1>,
     ) {
@@ -167,9 +167,11 @@ impl EncodedAtomicCommandRecordSetV1 {
         &self.allocator
     }
 
-    /// Returns authoritative entity post-image envelopes in canonical order.
+    /// Returns entity envelopes aligned with the semantic mutation list.
+    ///
+    /// `None` is a checked deletion and therefore stores no current row.
     #[must_use]
-    pub fn entities(&self) -> &[CanonicalStoredEnvelopeV1] {
+    pub fn entities(&self) -> &[Option<CanonicalStoredEnvelopeV1>] {
         &self.entities
     }
 
@@ -240,7 +242,7 @@ impl EncodedAtomicCommandRecordSetV1 {
         self,
     ) -> (
         CanonicalStoredEnvelopeV1,
-        Vec<CanonicalStoredEnvelopeV1>,
+        Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<CanonicalStoredEnvelopeV1>,
         CanonicalStoredEnvelopeV1,
@@ -467,7 +469,12 @@ pub fn encode_atomic_command_record_set_v1(
     let entities = records
         .entities()
         .iter()
-        .map(|value| encode_entity_record_v1(value.post_image()))
+        .map(|value| {
+            value
+                .live_post_image()
+                .map(encode_entity_record_v1)
+                .transpose()
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let index_entries = records
         .index_entries()
@@ -509,7 +516,7 @@ pub fn encode_atomic_command_record_set_v1(
     let actual_charge = CommandWriteClassBreakdownV1::new(
         allocator.encoded_content_charge().get(),
         0,
-        sum_envelope_charges(&entities)?,
+        sum_optional_envelope_charges(&entities)?,
         sum_optional_envelope_charges(&index_entries)?,
         sum_envelope_charges(&index_epochs)?,
         outcome.encoded_content_charge().get(),
@@ -553,7 +560,12 @@ pub fn encode_capsule_command_record_set_v1(
     let entities = records
         .entities()
         .iter()
-        .map(|value| encode_entity_record_v1(value.post_image()))
+        .map(|value| {
+            value
+                .live_post_image()
+                .map(encode_entity_record_v1)
+                .transpose()
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let index_entries = records
         .index_entries()
@@ -569,7 +581,7 @@ pub fn encode_capsule_command_record_set_v1(
         .map(|value| encode_index_epoch_v1(value.post_image()))
         .collect::<Result<Vec<_>, _>>()?;
     let reserved = records.presequence_charge().encoded_upper_bound().classes();
-    let fits = sum_envelope_charges(&entities)? <= reserved.entities()
+    let fits = sum_optional_envelope_charges(&entities)? <= reserved.entities()
         && sum_optional_envelope_charges(&index_entries)? <= reserved.index_entries()
         && sum_envelope_charges(&index_epochs)? <= reserved.index_epochs();
     if !fits {
