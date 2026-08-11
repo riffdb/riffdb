@@ -10678,7 +10678,7 @@ work_packages:
     APE-006, APE-007, APE-008, APE-009, APE-012, APE-014]
   required_adrs: [ADR-0057, ADR-0062, ADR-0065, ADR-0066, ADR-0075, ADR-0076,
     ADR-0079, ADR-0105, ADR-0106, ADR-0110]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**,
+  allowed_paths: [Cargo.lock, Cargo.toml, SPEC.md, work_packages.yaml, adr/**, proto/**,
     fixtures/proto/**, fixtures/application-manifests/**, fixtures/application-locks/**,
     fixtures/installation/**, crates/riffdb-types/**, crates/riffdb-application/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,

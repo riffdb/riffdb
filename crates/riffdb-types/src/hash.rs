@@ -6,15 +6,17 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ApplicationLockHash, ApplicationManifestHash, ApplicationRoleDefinitionHash,
-    ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash, CanonicalValueHash,
-    CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractMigrationInputHash,
-    ContractMigrationJournalHash, ContractMigrationValidationDigest, ContractPlanRootHash,
-    DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash, EventConsumerIdentityHash, EventHash,
-    GeneratedArtifactHash, MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash,
-    PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash,
-    QueryParameterHash, QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash,
-    ReactiveSourceHash, ScheduledAttemptHash, SchemaHash, SourceHash,
+    AdapterConformanceManifestHash, ApplicationInstallationPlanHash,
+    ApplicationInstallationReceiptHash, ApplicationLockHash, ApplicationManifestHash,
+    ApplicationRoleDefinitionHash, ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash,
+    CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash,
+    ContractMigrationInputHash, ContractMigrationJournalHash, ContractMigrationValidationDigest,
+    ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash,
+    EventConsumerIdentityHash, EventHash, GeneratedArtifactHash, MigrationBundleHash,
+    MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash,
+    ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash,
+    QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
+    ScheduledAttemptHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -102,11 +104,17 @@ pub enum HashDomain {
     ReactiveWakeup,
     /// One bounded scheduled workflow attempt.
     ScheduledAttempt,
+    /// One canonical application installation plan.
+    ApplicationInstallationPlan,
+    /// One canonical terminal installation receipt.
+    ApplicationInstallationReceipt,
+    /// One canonical adapter conformance manifest.
+    AdapterConformanceManifest,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 41] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -145,6 +153,9 @@ impl HashDomain {
         Self::ContextualReaction,
         Self::ReactiveWakeup,
         Self::ScheduledAttempt,
+        Self::ApplicationInstallationPlan,
+        Self::ApplicationInstallationReceipt,
+        Self::AdapterConformanceManifest,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -188,6 +199,9 @@ impl HashDomain {
             Self::ContextualReaction => "riffdb.contextual-reaction/v1",
             Self::ReactiveWakeup => "riffdb.reactive-wakeup/v1",
             Self::ScheduledAttempt => "riffdb.scheduled-attempt/v1",
+            Self::ApplicationInstallationPlan => "riffdb.application-installation-plan/v1",
+            Self::ApplicationInstallationReceipt => "riffdb.application-installation-receipt/v1",
+            Self::AdapterConformanceManifest => "riffdb.adapter-conformance-manifest/v1",
         }
     }
 }
@@ -417,6 +431,24 @@ typed_hash_function!(
     hash_scheduled_attempt,
     ScheduledAttempt,
     ScheduledAttemptHash
+);
+typed_hash_function!(
+    /// Hashes one canonical exact application installation plan.
+    hash_application_installation_plan,
+    ApplicationInstallationPlan,
+    ApplicationInstallationPlanHash
+);
+typed_hash_function!(
+    /// Hashes one canonical terminal application installation receipt.
+    hash_application_installation_receipt,
+    ApplicationInstallationReceipt,
+    ApplicationInstallationReceiptHash
+);
+typed_hash_function!(
+    /// Hashes one canonical adapter conformance manifest.
+    hash_adapter_conformance_manifest,
+    AdapterConformanceManifest,
+    AdapterConformanceManifestHash
 );
 typed_hash_function!(
     /// Hashes one canonical application manifest in its immutable v1 domain.

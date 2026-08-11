@@ -1692,6 +1692,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-application"
+version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-auth"
 version = "0.1.0"
 dependencies = [
