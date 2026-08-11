@@ -12,8 +12,8 @@ use riffdb_query_module::{
     generate_typescript_application_client,
 };
 use riffdb_types::{
-    CanonicalValue, CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPrincipalFactV1,
-    CapabilityPrincipalFactsV1, PartitionScopeV1, TenantId, TenantScope,
+    ActorId, CanonicalValue, CapabilityPermissionKindV1, CapabilityPermissionV1,
+    CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, PartitionScopeV1, TenantId, TenantScope,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -194,7 +194,10 @@ query GetDocument(
     ])
     .expect("fact set");
     let bound = role
-        .bind_principal_facts(facts)
+        .bind_principal_facts_for(
+            &ActorId::new("00000000-0000-0000-0000-000000000007").expect("UUID principal"),
+            facts,
+        )
         .expect("trusted role binding");
     assert!(bound.internal_row_policy().is_some());
     assert!(
@@ -203,9 +206,29 @@ query GetDocument(
         })
     );
     assert_eq!(
-        role.bind_principal_facts(CapabilityPrincipalFactsV1::empty())
-            .expect_err("missing required fact must deny")
-            .kind(),
+        role.bind_principal_facts_for(
+            &ActorId::new("not-a-uuid").expect("bounded actor"),
+            CapabilityPrincipalFactsV1::empty(),
+        )
+        .expect_err("missing required fact must deny")
+        .kind(),
+        ApplicationRoleErrorKind::PrincipalFacts
+    );
+    assert_eq!(
+        role.bind_principal_facts_for(
+            &ActorId::new("not-a-uuid").expect("bounded actor"),
+            CapabilityPrincipalFactsV1::new(vec![
+                CapabilityPrincipalFactV1::new(
+                    "team_ids",
+                    CanonicalValue::list(vec![CanonicalValue::Uuid([7; 16])])
+                        .expect("bounded fact list"),
+                )
+                .expect("principal fact"),
+            ])
+            .expect("fact set"),
+        )
+        .expect_err("principal.id policy must require a canonical UUID")
+        .kind(),
         ApplicationRoleErrorKind::PrincipalFacts
     );
 
