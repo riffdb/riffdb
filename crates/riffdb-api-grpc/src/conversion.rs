@@ -3621,6 +3621,9 @@ pub fn health_result_to_proto(
                         }
                         HealthComponentKind::Projection => v1::HealthComponentKind::Projection,
                         HealthComponentKind::Outbox => v1::HealthComponentKind::Outbox,
+                        HealthComponentKind::VectorStaleness => {
+                            v1::HealthComponentKind::Projection
+                        }
                     };
                     let status = match component.status() {
                         HealthComponentStatus::Healthy => v1::HealthComponentStatus::Healthy,

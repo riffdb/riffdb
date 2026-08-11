@@ -4882,6 +4882,7 @@ fn authenticated_health_payload(
                     riffdb_service::HealthComponentKind::CommitCoordinator => "commit_coordinator",
                     riffdb_service::HealthComponentKind::Projection => "projection",
                     riffdb_service::HealthComponentKind::Outbox => "outbox",
+                    riffdb_service::HealthComponentKind::VectorStaleness => "vector_staleness",
                 },
                 status: match component.status() {
                     riffdb_service::HealthComponentStatus::Healthy => "healthy",
