@@ -3278,6 +3278,100 @@ fn validated_prefix_checkpoint_entity_fingerprint_mismatch_falls_back() {
 }
 
 #[test]
+fn delete_aware_checkpoint_rejects_each_substituted_head_summary() {
+    use riffdb_storage_api::{
+        EntityTransitionFingerprint, StoredValidatedPrefixCheckpointV2,
+        ValidatedPrefixEntityTransitionCounts,
+        proto_codec::{
+            decode_validated_prefix_checkpoint_v2, encode_validated_prefix_checkpoint_v2,
+        },
+    };
+
+    #[derive(Clone, Copy)]
+    enum Substitution {
+        LiveCount,
+        DeletedCount,
+        TransitionCount,
+        Fingerprint,
+    }
+
+    for (name, substitution) in [
+        ("live-count", Substitution::LiveCount),
+        ("deleted-count", Substitution::DeletedCount),
+        ("transition-count", Substitution::TransitionCount),
+        ("fingerprint", Substitution::Fingerprint),
+    ] {
+        let path = TestDatabasePath::new(&format!("v2-checkpoint-{name}"));
+        let _ = prepare_committed_command_database(&path.0);
+        let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write V2 checkpoint"));
+        {
+            let database = Database::create(&path.0).expect("open checkpoint fixture");
+            let txn = database.begin_write().expect("begin checkpoint mutation");
+            {
+                let mut meta = txn.open_table(META).expect("open meta");
+                let existing = meta
+                    .get(CHECKPOINT_META_KEY)
+                    .expect("read checkpoint")
+                    .expect("checkpoint present")
+                    .value()
+                    .to_vec();
+                let original = decode_validated_prefix_checkpoint_v2(&existing)
+                    .expect("decode V2 checkpoint")
+                    .into_parts()
+                    .0;
+                let mut counts = original.entity_counts();
+                let mut fingerprint = original.entity_transition_fingerprint();
+                match substitution {
+                    Substitution::LiveCount => {
+                        counts = ValidatedPrefixEntityTransitionCounts {
+                            live_entity_count: 0,
+                            deleted_entity_count: 0,
+                            entity_transition_count: counts.entity_transition_count,
+                        };
+                    }
+                    Substitution::DeletedCount => {
+                        counts = ValidatedPrefixEntityTransitionCounts {
+                            live_entity_count: 0,
+                            deleted_entity_count: 1,
+                            entity_transition_count: counts.entity_transition_count,
+                        };
+                    }
+                    Substitution::TransitionCount => {
+                        counts.entity_transition_count = counts
+                            .entity_transition_count
+                            .checked_add(1)
+                            .expect("bounded transition count");
+                    }
+                    Substitution::Fingerprint => {
+                        fingerprint = EntityTransitionFingerprint::from_bytes([0xa5; 32]);
+                    }
+                }
+                let doctored = StoredValidatedPrefixCheckpointV2::new(
+                    original.base().clone(),
+                    counts,
+                    fingerprint,
+                )
+                .expect("self-consistent but state-inexact V2 checkpoint");
+                let encoded =
+                    encode_validated_prefix_checkpoint_v2(&doctored).expect("encode checkpoint");
+                meta.insert(CHECKPOINT_META_KEY, encoded.as_bytes())
+                    .expect("replace checkpoint");
+            }
+            txn.commit().expect("commit checkpoint mutation");
+        }
+
+        let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(
+            RedbStore::open(&path.0).expect("open substituted checkpoint"),
+        );
+        assert!(!verified, "{name} substitution cannot use the fast path");
+        assert!(
+            matches!(outcome, StructuralOpenOutcome::Clean(_)),
+            "{name} substitution must fall back to a clean full validation"
+        );
+    }
+}
+
+#[test]
 fn validated_prefix_checkpoint_incarnation_mismatch_falls_back() {
     let path = TestDatabasePath::new("validated-prefix-incarnation");
     let _ = prepare_committed_command_database(&path.0);
