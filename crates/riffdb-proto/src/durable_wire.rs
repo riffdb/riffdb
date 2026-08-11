@@ -266,6 +266,17 @@ shape!(DURABLE_EVENT [
     bytes(3, MAX_DOCUMENT_BYTES),
     fixed_bytes(4, 32),
 ]);
+shape!(EVENT_POLICY_ANCHOR [
+    message(1, &SCHEMA_BINDING),
+    message(3, &ENTITY_TARGET),
+    string(4, MAX_TEXT_ID_BYTES),
+]);
+shape!(DURABLE_EVENT_V2 [
+    message(1, &EVENT_ID),
+    bytes(3, MAX_DOCUMENT_BYTES),
+    fixed_bytes(4, 32),
+    message(5, &EVENT_POLICY_ANCHOR),
+]);
 shape!(AFFECTED_ENTITY[message(1, &ENTITY_TARGET)]);
 shape!(PROVENANCE [
     fixed_bytes(1, 16),
@@ -832,7 +843,7 @@ shape!(ROOT_APPLICATION_INSTALLATION_CAMPAIGN [
     nonempty_bytes(4, 8 * 1024 * 1024),
 ]);
 
-const ROOTS: [&Shape; 76] = [
+const ROOTS: [&Shape; 77] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -920,6 +931,7 @@ const ROOTS: [&Shape; 76] = [
     &VALIDATED_PREFIX_CHECKPOINT_V2,
     &CAPABILITY_RECORD_V3,
     &CAPABILITY_RECORD_V4,
+    &DURABLE_EVENT_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

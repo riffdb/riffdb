@@ -3,10 +3,10 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
-    AdministrationSequence, ApprovalId, CanonicalRecord, CanonicalValue, CommitSequence,
-    ExecutionFailureCode, FieldId, FrontierPosition, ProjectionGeneration, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
-    TenantScope, Timestamp,
+    AdministrationSequence, ApprovalId, CanonicalRecord, CanonicalValue, CommitSequence, EventId,
+    EventTypeId, ExecutionFailureCode, FieldId, FrontierPosition, ProjectionGeneration,
+    RowPolicyName, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::{
@@ -16,12 +16,45 @@ use crate::{
     OutboxSafeErrorV1, PartitionScopeV1, ProjectionFailureCodeV1, ProjectionFailureV1,
     ProjectionGenerationPosition, ProjectionLifecycleV1, PublishedApplyModeV1,
     RevocationReasonCodeV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
-    StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredOutboxStatusV1, StoredOutcomeV1,
-    StoredProjectionControlV1, StoredServiceAuditRecordV1,
+    StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredDurableEventV2,
+    StoredEventPolicyAnchorV1, StoredOutboxStatusV1, StoredOutcomeV1, StoredProjectionControlV1,
+    StoredServiceAuditRecordV1, derive_event_hash_v2,
 };
 
 use super::super::*;
 use super::{assert_round_trip, sample};
+
+#[test]
+fn anchored_event_successor_round_trips_and_binds_authority_into_its_hash() {
+    let event_id = EventId::new(CommitSequence::first(), 0);
+    let event_type = EventTypeId::first();
+    let payload = sample::canonical_record(0x43);
+    let anchor = StoredEventPolicyAnchorV1::new(
+        crate::DurableKeySchemaBindingV1::from_plan(&sample::plan()),
+        event_type,
+        sample::entity_target(),
+        RowPolicyName::new("TicketAccess").expect("policy name"),
+    );
+    let event = StoredDurableEventV2::new(
+        event_id,
+        event_type,
+        payload.clone(),
+        derive_event_hash_v2(event_id, event_type, &payload, &anchor).expect("event hash"),
+        anchor,
+    )
+    .expect("anchored event");
+
+    assert_eq!(
+        riffdb_proto::durable::current_record_schema(EVENT_V2)
+            .expect("event V2 writable schema")
+            .record_type(),
+        <wire::StoredDurableEventV2 as riffdb_proto::durable::ReadableRecordMessage>::record_schema(
+        )
+        .record_type(),
+    );
+
+    assert_round_trip(event, encode_durable_event_v2, decode_durable_event_v2);
+}
 
 #[test]
 fn workflow_service_values_survive_pending_and_outcome_round_trips() {

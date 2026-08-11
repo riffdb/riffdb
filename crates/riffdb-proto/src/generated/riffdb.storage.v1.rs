@@ -2187,6 +2187,30 @@ pub struct StoredEnvelope {
     pub schema_hash: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredEventPolicyAnchorV1 {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<DurableKeySchemaBindingV1>,
+    #[prost(uint32, tag = "2")]
+    pub event_type_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub source: ::core::option::Option<EntityTargetV1>,
+    #[prost(string, tag = "4")]
+    pub read_policy: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredDurableEventV2 {
+    #[prost(message, optional, tag = "1")]
+    pub event_id: ::core::option::Option<EventIdV1>,
+    #[prost(uint32, tag = "2")]
+    pub event_type_id: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub canonical_payload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub event_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub policy_anchor: ::core::option::Option<StoredEventPolicyAnchorV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EventReferenceV2 {
     #[prost(message, optional, tag = "1")]
     pub event_id: ::core::option::Option<EventIdV1>,

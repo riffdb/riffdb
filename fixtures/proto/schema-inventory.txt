@@ -48,6 +48,9 @@ files
     import riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
     import riffdb/storage/v1/workflow_service_values_v3.proto
   riffdb/storage/v1/envelope.proto
+  riffdb/storage/v1/event_policy_anchor.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
   riffdb/storage/v1/event_references_v2.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
@@ -955,6 +958,12 @@ messages
     2 event_type_id optional uint32
     3 canonical_payload optional bytes
     4 event_hash optional bytes
+  riffdb.storage.v1.StoredDurableEventV2 fields=5
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_type_id optional uint32
+    3 canonical_payload optional bytes
+    4 event_hash optional bytes
+    5 policy_anchor optional .riffdb.storage.v1.StoredEventPolicyAnchorV1
   riffdb.storage.v1.StoredEntityChainHeadV1 fields=5
     1 target optional .riffdb.storage.v1.EntityTargetV1
     2 chain_revision optional uint64
@@ -991,6 +1000,11 @@ messages
     4 revision optional uint64
     5 checkpoint optional .riffdb.storage.v1.EventIdV1 proto3-optional oneof=_checkpoint
     6 sparse_resolutions repeated .riffdb.storage.v1.SparseConsumerResolutionV1
+  riffdb.storage.v1.StoredEventPolicyAnchorV1 fields=4
+    1 contract optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    2 event_type_id optional uint32
+    3 source optional .riffdb.storage.v1.EntityTargetV1
+    4 read_policy optional string
   riffdb.storage.v1.StoredEventRouteV1 fields=3
     1 event_id optional .riffdb.storage.v1.EventIdV1
     2 event_type_id optional uint32
