@@ -2269,7 +2269,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 59);
+        assert_eq!(FORMAT_LAYOUTS.len(), 60);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(
