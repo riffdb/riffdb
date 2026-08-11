@@ -160,6 +160,10 @@ pub(crate) const fn canonical_codec_storage_error(
         | CanonicalCodecError::ZeroEnumVariantId
         | CanonicalCodecError::ZeroFieldId
         | CanonicalCodecError::UnexpectedEnd
-        | CanonicalCodecError::TrailingBytes { .. } => StorageValueError::InvalidShape,
+        | CanonicalCodecError::TrailingBytes { .. }
+        | CanonicalCodecError::VectorDimensionOutOfRange { .. }
+        | CanonicalCodecError::NonCanonicalVectorComponent { .. } => {
+            StorageValueError::InvalidShape
+        }
     }
 }
