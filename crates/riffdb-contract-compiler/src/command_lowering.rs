@@ -516,11 +516,12 @@ fn lower_command(
         constructions[success_occurrence].clone(),
     ));
 
-    let execution_class = if command
-        .bindings
-        .iter()
-        .any(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
-        || !command.effects.is_empty()
+    let execution_class = if command.bindings.iter().any(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+        )
+    }) || !command.effects.is_empty()
     {
         ExecutionClass::IdempotentMutation
     } else {
@@ -783,7 +784,12 @@ fn lower_locality(
     let Some(anchor) = command
         .bindings
         .iter()
-        .find(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+        .find(|binding| {
+            matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            )
+        })
         .or_else(|| command.bindings.first())
     else {
         return (None, None);
@@ -822,7 +828,12 @@ fn lower_locality(
     let selected = command
         .bindings
         .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+        .filter(|binding| {
+            matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            )
+        })
         .collect::<Vec<_>>();
     let mut conflicts = Vec::new();
     for binding in selected {
@@ -943,11 +954,15 @@ fn lower_commit_checks(
     let accessed_fields = accessed_fields.into_iter().collect::<Vec<_>>();
 
     let mut targets = Vec::<RootValidationTarget>::new();
-    for binding in command
-        .bindings
-        .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
-    {
+    for binding in command.bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+        )
+    }) {
+        if binding.mode == BindingMode::Delete && binding.entity_id == aggregate.root {
+            continue;
+        }
         let Some((key_expressions, fingerprint)) =
             root_key_derivation(command, binding, root.key_fields.len())
         else {

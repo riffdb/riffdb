@@ -1,0 +1,25 @@
+contract MlflowMetricBulk version 1 {
+  entity Metric {
+    key (experiment_id: uuid, metric_id: uuid)
+    field name: string<128>
+    field value_micros: i64
+    field step: i64
+  }
+  aggregate Metrics {
+    root Metric
+    partition_by experiment_id
+    conflict_key (experiment_id, metric_id)
+  }
+  bulk command LogMetrics {
+    input request_id: uuid
+    input metrics: list<Metric, 1..128>
+    idempotency_key request_id
+    for metric in metrics {
+      create Metric(metric.experiment_id, metric.metric_id) as stored else Exists {}
+      set stored.name = metric.name
+      set stored.value_micros = metric.value_micros
+      set stored.step = metric.step
+    }
+    return Logged {}
+  }
+}

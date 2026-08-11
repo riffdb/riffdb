@@ -130,6 +130,10 @@ tag_registry!(delete_policy_mode, "Delete policy mode", {
     NO_INBOUND = 0x01 => "no inbound relationship",
     RESTRICT = 0x02 => "indexed restrict",
 });
+tag_registry!(delete_check_mode, "Delete check mode", {
+    NO_INBOUND = 0x01 => "no inbound relationship",
+    RESTRICT = 0x02 => "transaction-current indexed restrict",
+});
 tag_registry!(instruction, "Instruction", {
     REQUIRE = 0x01 => "require",
     SET_FIELD = 0x02 => "set field",
@@ -242,6 +246,7 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     key_purpose::REGISTRY,
     binding_mode::REGISTRY,
     delete_policy_mode::REGISTRY,
+    delete_check_mode::REGISTRY,
     instruction::REGISTRY,
     service_value_kind::REGISTRY,
     execution_class::REGISTRY,
@@ -1161,6 +1166,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "bindings" => "u32 count + BindingPlan[]",
     "root_validation_reads" => "u32 count + RootValidationReadPlan[]",
     "relationship_checks" => "u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted",
+    "delete_checks" => "IR v5+: u32 count + DeleteCheckPlanV1[]; omitted in v1-v4",
     "locality" => "LocalityPlan",
     "commit_checks" => "u32 count + CommitCheckPlan[]",
     "instructions" => "u32 count + Instruction[]",
@@ -1186,6 +1192,12 @@ layout!(RELATIONSHIP_CHECK_LAYOUT, "RelationshipCheckPlan", {
     "relationship_name" => "string",
     "source_binding" => "BindingId",
     "target_binding" => "BindingId",
+});
+layout!(DELETE_CHECK_LAYOUT, "DeleteCheckPlanV1", {
+    "binding" => "BindingId of one delete binding",
+    "mode" => "Delete check mode tag",
+    "restrict_source_entity" => "EntityTypeId only for indexed restrict",
+    "restrict_index" => "IndexId only for indexed restrict",
 });
 layout!(OUTCOME_SCHEMA_LAYOUT, "OutcomeSchema", {
     "id" => "OutcomeId",
@@ -1368,6 +1380,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     BINDING_LAYOUT,
     ROOT_READ_LAYOUT,
     RELATIONSHIP_CHECK_LAYOUT,
+    DELETE_CHECK_LAYOUT,
     LOCALITY_LAYOUT,
     CONFLICT_LAYOUT,
     COMMIT_CHECK_LAYOUT,
@@ -2232,7 +2245,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 57);
+        assert_eq!(FORMAT_LAYOUTS.len(), 58);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

@@ -6,9 +6,9 @@ use riffdb_types::{CommandId, EnumVariantId, EventTypeId, FieldId, InvariantId, 
 
 use crate::{
     BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
-    EventConstruction, ExecutionClass, ExprId, ExpressionArena, ExpressionKind, KeySchema,
-    OutcomeSchema, RelationshipCheckPlan, RootValidationReadPlan, UniqueConflictPlan,
-    WorkflowLeaseFields, WorkflowLeaseOperation,
+    DeleteCheckModeV1, DeleteCheckPlanV1, EventConstruction, ExecutionClass, ExprId,
+    ExpressionArena, ExpressionKind, KeySchema, OutcomeSchema, RelationshipCheckPlan,
+    RootValidationReadPlan, UniqueConflictPlan, WorkflowLeaseFields, WorkflowLeaseOperation,
 };
 
 /// Value-free structural explanation of one exact workflow transition.
@@ -134,6 +134,7 @@ pub struct CommandExplain {
     conflict_derivations: Vec<ConflictDerivationPlan>,
     binding_plans: Vec<BindingPlan>,
     relationship_checks: Vec<RelationshipCheckPlan>,
+    delete_checks: Vec<DeleteCheckPlanV1>,
     unique_conflicts: Vec<UniqueConflictPlan>,
     root_validation_reads: Vec<RootValidationReadPlan>,
     commit_checks: Vec<CommitCheckPlan>,
@@ -364,6 +365,7 @@ impl CommandExplain {
             conflict_derivations: plan.locality().conflict_keys().to_vec(),
             binding_plans: plan.bindings().to_vec(),
             relationship_checks: plan.relationship_checks().to_vec(),
+            delete_checks: plan.delete_checks().to_vec(),
             unique_conflicts: plan.unique_conflicts().to_vec(),
             root_validation_reads: plan.root_validation_reads().to_vec(),
             commit_checks: plan.commit_checks().to_vec(),
@@ -462,6 +464,12 @@ impl CommandExplain {
     #[must_use]
     pub fn relationship_checks(&self) -> &[RelationshipCheckPlan] {
         &self.relationship_checks
+    }
+
+    /// Checked no-inbound or transaction-current restrict dependencies for deletes.
+    #[must_use]
+    pub fn delete_checks(&self) -> &[DeleteCheckPlanV1] {
+        &self.delete_checks
     }
 
     /// Input-computable conflict keys for changed declared unique values.
@@ -594,6 +602,29 @@ impl CommandExplain {
                 check.source_binding().get(),
                 check.target_binding().get()
             );
+        }
+        for check in &self.delete_checks {
+            match check.mode() {
+                DeleteCheckModeV1::NoInbound => {
+                    let _ = writeln!(
+                        output,
+                        "delete:binding={} policy=no-inbound structurally-proved:true",
+                        check.binding().get()
+                    );
+                }
+                DeleteCheckModeV1::Restrict {
+                    source_entity,
+                    index_id,
+                } => {
+                    let _ = writeln!(
+                        output,
+                        "delete:binding={} policy=restrict source-entity={} index={} transaction-current-empty:true",
+                        check.binding().get(),
+                        source_entity.get(),
+                        index_id.get()
+                    );
+                }
+            }
         }
         for unique in &self.unique_conflicts {
             let expressions = unique
