@@ -37,27 +37,27 @@ use riffdb_storage_api::{
     DeferredCommandFence, DeferredNonEmptyCommandBatch, DeleteAwareEntityFollowerV2,
     DurabilityMode, DurableKeySchemaBindingV1, EmptyCommandBatch, EncodedChangelogFrameV1,
     EncodedChangelogFrameV2, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
-    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit,
-    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
-    ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
-    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
-    IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
-    NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
-    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
-    PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
-    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, SnapshotReader, SnapshotRequest,
-    StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
-    StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
-    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StoredServiceAuditRecordV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
-    StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
-    command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
-    decode_index_migration_row, derive_event_hash_v1, encode_administration_sequence_allocator_v1,
-    encode_index_entry_v1_fixture, encode_index_entry_v2, encode_record_registry_v2,
-    encode_service_audit_record_v2,
+    EntityPostImage, EntityReplicaBootstrapManifestV2, EntityTarget, EntityTransitionFingerprint,
+    EvaluationBudget, EventIntent, EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1,
+    EventRouteUpperFenceV1, EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState,
+    IdempotencyIdentity, IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
+    IndexEpochAdvanceV1, IndexEpochPosition, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit,
+    OutboxRepository, OutboxStatusObservationV1, OutboxStatusReadResultV1,
+    PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
+    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+    SnapshotReader, SnapshotRequest, StartupValidationInputs, StorageScanLimit,
+    StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
+    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructuralEvidenceCursor,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    ValidatedPrefixEntityTransitionCounts, command_write_set_upper_bound_v1, decode_index_entry_v1,
+    decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
+    encode_administration_sequence_allocator_v1, encode_index_entry_v1_fixture,
+    encode_index_entry_v2, encode_record_registry_v2, encode_service_audit_record_v2,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts,
@@ -5223,7 +5223,22 @@ fn v2_emitter_and_follower_resume_from_bootstrap_with_exact_entity_heads() {
     let encoded = consumer.encoded();
     assert_eq!(encoded.len(), 2);
 
-    let mut follower = DeleteAwareEntityFollowerV2::from_rotation(receipt);
+    let empty_fingerprint = EntityTransitionFingerprint::from_sorted_heads(std::iter::empty())
+        .expect("empty head fingerprint");
+    let manifest = EntityReplicaBootstrapManifestV2::new(
+        receipt,
+        predecessor,
+        receipt.v2_chain_anchor(),
+        ValidatedPrefixEntityTransitionCounts {
+            live_entity_count: 0,
+            deleted_entity_count: 0,
+            entity_transition_count: 0,
+        },
+        empty_fingerprint,
+    )
+    .expect("empty entity bootstrap manifest");
+    let mut follower = DeleteAwareEntityFollowerV2::from_bootstrap(receipt, manifest)
+        .expect("manifest belongs to rotation receipt");
     follower
         .install_bootstrap_page(Vec::new(), true)
         .expect("seal empty entity bootstrap");
