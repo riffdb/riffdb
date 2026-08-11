@@ -4974,13 +4974,10 @@ fn presented_value(value: &CanonicalValue) -> Result<McpPresentedValue, McpBacke
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         CanonicalValue::Record(record) => presented_record(record),
-        CanonicalValue::Vector(vector) => Ok(McpPresentedValue::String {
-            value: format!(
-                "vector(dim={},bytes={})",
-                vector.dimension(),
-                vector.byte_size()
-            ),
-        }),
+        // SPEC's closed MCP Value union has no vector variant and forbids
+        // display aliases; presenting a vector is refused until the union is
+        // amended (fail closed, like the sibling refusals above).
+        CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
     }
 }
 

@@ -215,14 +215,13 @@ fn canonical_value_to_proto_unchecked(value: &CanonicalValue) -> v1::Value {
                 })
                 .collect(),
         }),
-        CanonicalValue::Vector(vector) => {
-            // Encode as opaque bytes: 4-byte big-endian dimension followed by f32 components.
-            let mut bytes = Vec::with_capacity(4 + vector.dimension() as usize * 4);
-            bytes.extend_from_slice(&vector.dimension().to_be_bytes());
-            for component in vector.components() {
-                bytes.extend_from_slice(&component.to_be_bytes());
-            }
-            Kind::BytesValue(bytes)
+        CanonicalValue::Vector(_) => {
+            // No wire variant exists for vectors. Emitting the kind-less
+            // value makes the fallible public wrapper reject it as
+            // MissingKind: a typed refusal instead of the previous silent
+            // pun through bytes_value, which changed Vector into Bytes on
+            // every round trip.
+            return v1::Value { kind: None };
         }
     };
     v1::Value { kind: Some(kind) }
@@ -581,6 +580,19 @@ impl Error for ValueValidationError {}
 
 #[cfg(test)]
 mod tests {
+    /// A canonical vector has no wire variant: conversion is a typed refusal,
+    /// never a silent pun through `bytes_value` (which turned Vector into
+    /// Bytes on every round trip).
+    #[test]
+    fn vector_values_are_refused_not_punned_into_bytes() {
+        let vector = riffdb_types::CanonicalVector::new(vec![1.0_f32, 2.0]).expect("finite");
+        let value = riffdb_types::CanonicalValue::Vector(vector);
+        assert_eq!(
+            super::canonical_value_to_proto(&value),
+            Err(super::ValueValidationError::MissingKind)
+        );
+    }
+
     use super::*;
     use riffdb_types::{Date, EnumTypeId, EnumVariantId, FieldId};
 

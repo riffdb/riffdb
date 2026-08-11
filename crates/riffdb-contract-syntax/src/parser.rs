@@ -89,6 +89,58 @@ pub(crate) fn currency_type(
     Ok(Spanned::new(TypeExpression::Money { currency }, outer_span))
 }
 
+/// Maps a contextual metric identifier inside `vector_field(...)`.
+///
+/// The metric names are ordinary identifiers everywhere else in the grammar.
+pub(crate) fn vector_metric(
+    identifier: Spanned<String>,
+) -> Result<Spanned<VectorMetricKeyword>, SyntaxDiagnostic> {
+    let metric = match identifier.value.as_str() {
+        "cosine" => VectorMetricKeyword::Cosine,
+        "euclidean" => VectorMetricKeyword::Euclidean,
+        "dot_product" => VectorMetricKeyword::DotProduct,
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                identifier.span,
+            ));
+        }
+    };
+    Ok(Spanned::new(metric, identifier.span))
+}
+
+/// Builds a vector_field entity item, validating the contextual
+/// `staleness_slo` keyword position.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn vector_field_item(
+    name: Spanned<String>,
+    dimension: Spanned<String>,
+    metric: Spanned<VectorMetricKeyword>,
+    source_fields: Vec<Spanned<String>>,
+    slo_keyword: Spanned<String>,
+    staleness_slo: Spanned<String>,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<EntityItem>, SyntaxDiagnostic> {
+    if slo_keyword.value != "staleness_slo" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            slo_keyword.span,
+        ));
+    }
+    Ok(spanned(
+        EntityItem::VectorField(VectorFieldDeclaration {
+            name,
+            dimension,
+            metric,
+            source_fields,
+            staleness_slo,
+        }),
+        lo,
+        hi,
+    ))
+}
+
 /// A temporary parser value that enforces expression bounds before boxing.
 pub(crate) struct ParsedExpression {
     syntax: Spanned<Expression>,
