@@ -5,7 +5,6 @@
 //! the adapters layered on it rather than a stand-in.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_storage_api::{
     ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -17,29 +16,31 @@ use crate::identifiers::ProductionIdentifierSources;
 use crate::startup::open_redb_startup;
 use crate::storage::SharedRedbOperationalPorts;
 
-static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
-
-/// Returns a unique real-filesystem path for one test database.
+/// Returns a whole-directory scope plus a unique real-filesystem database
+/// path inside it for one test database.
 ///
 /// `CARGO_TARGET_TMPDIR` is only defined for integration-test and benchmark
 /// targets, so unit tests fall back to the platform temporary directory used
 /// by the crate's existing on-disk startup tests. Either way the database is a
-/// real file that redb opens, maps, and fsyncs.
+/// real file that redb opens, maps, and fsyncs, and the scope's `Drop`
+/// removes the database together with every side file it grows (journal,
+/// checkpoint, spare, durable-format marker, …) on pass, fail, or panic.
 #[must_use]
-pub(crate) fn temporary_database_path(label: &str) -> PathBuf {
+pub(crate) fn temporary_database_scope(label: &str) -> (tempfile::TempDir, PathBuf) {
     let base = option_env!("CARGO_TARGET_TMPDIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join(format!(
-        "riffdb-server-{label}-{}-{}.redb",
-        std::process::id(),
-        NEXT_DATABASE.fetch_add(1, Ordering::Relaxed)
-    ))
+    let scope = tempfile::Builder::new()
+        .prefix(&format!("riffdb-server-{label}-"))
+        .tempdir_in(base)
+        .expect("create test database scope directory");
+    let path = scope.path().join("db.redb");
+    (scope, path)
 }
 
 /// One real redb database plus the production sharing bridge over it.
 pub(crate) struct RealStorage {
-    path: PathBuf,
+    _scope: tempfile::TempDir,
     pub(crate) storage: SharedRedbOperationalPorts,
     pub(crate) database_id: DatabaseId,
 }
@@ -47,7 +48,7 @@ pub(crate) struct RealStorage {
 impl RealStorage {
     /// Initializes, validates, and activates a real redb database on disk.
     pub(crate) fn open(label: &str) -> Self {
-        let path = temporary_database_path(label);
+        let (scope, path) = temporary_database_scope(label);
         let digest = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key ID"));
         let inputs = StartupValidationInputs::new(
             Timestamp::new(0, 0).expect("startup timestamp"),
@@ -65,15 +66,9 @@ impl RealStorage {
         let storage = SharedRedbOperationalPorts::new(ports, None)
             .expect("build the production storage bridge");
         Self {
-            path,
+            _scope: scope,
             storage,
             database_id,
         }
-    }
-}
-
-impl Drop for RealStorage {
-    fn drop(&mut self) {
-        let _removed = std::fs::remove_file(&self.path);
     }
 }
