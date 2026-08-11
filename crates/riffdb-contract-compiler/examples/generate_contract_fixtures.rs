@@ -2767,6 +2767,18 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             )
             .to_owned(),
         ),
+        (
+            "RDB-C045-invalid-delete-policy",
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            concat!(
+                "contract InvalidDeletePolicy version 1 { ",
+                "entity Parent { key (tenant_id: uuid, parent_id: uuid) delete_policy no_inbound } ",
+                "entity Child { key (tenant_id: uuid, parent_id: uuid, child_id: uuid) ",
+                "reference parent (tenant_id, parent_id) -> Parent(tenant_id, parent_id) } ",
+                "aggregate Owned { root Parent child Child partition_by tenant_id conflict_key (tenant_id) } }",
+            )
+            .to_owned(),
+        ),
     ] {
         let error = validate_contract_source(&source).expect_err("invalid row-policy fixture");
         require_semantic_code(name, code, &error)?;

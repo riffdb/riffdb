@@ -7,9 +7,9 @@ use riffdb_contract_ir::{
 };
 use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
-    AggregateItem, Aggregation, Binding, CommandKind, Declaration, Effect, EntityItem, Expression,
-    ObjectLiteral, OutcomeExpression, Path, ServiceValueKind, TypeExpression,
-    WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
+    AggregateItem, Aggregation, Binding, CommandKind, Declaration, DeletePolicyDeclaration, Effect,
+    EntityItem, Expression, ObjectLiteral, OutcomeExpression, Path, ServiceValueKind,
+    TypeExpression, WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::{ContractDocument, Spanned};
 use riffdb_types::{
@@ -131,6 +131,26 @@ pub(crate) struct HirRelationship {
     pub(crate) target_fields: Vec<(FieldId, Span)>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HirDeletePolicy {
+    NoInbound {
+        span: Span,
+    },
+    Restrict {
+        span: Span,
+        source_entity: EntityTypeId,
+        index_id: IndexId,
+    },
+}
+
+impl HirDeletePolicy {
+    pub(crate) const fn span(self) -> Span {
+        match self {
+            Self::NoInbound { span } | Self::Restrict { span, .. } => span,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct HirEntity {
     pub(crate) id: EntityTypeId,
@@ -141,6 +161,7 @@ pub(crate) struct HirEntity {
     pub(crate) invariants: Vec<HirInvariant>,
     pub(crate) indexes: Vec<HirIndex>,
     pub(crate) relationships: Vec<HirRelationship>,
+    pub(crate) delete_policy: Option<HirDeletePolicy>,
 }
 
 impl HirEntity {
@@ -615,6 +636,7 @@ fn lower_entities(
         let mut invariants = Vec::new();
         let mut indexes = Vec::new();
         let mut relationships = Vec::new();
+        let mut delete_policy: Option<HirDeletePolicy> = None;
         for item in &source.items {
             match &item.value {
                 EntityItem::Invariant(invariant) => {
@@ -788,10 +810,54 @@ fn lower_entities(
                         target_fields,
                     });
                 }
-                EntityItem::Key(_)
-                | EntityItem::Field(_)
-                | EntityItem::VectorField(_)
-                | EntityItem::DeletePolicy(_) => {}
+                EntityItem::DeletePolicy(policy) => {
+                    if let Some(previous) = delete_policy {
+                        diagnostics.push(
+                            CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::DuplicateName,
+                                item.span,
+                            )
+                            .with_related_span(previous.span()),
+                        );
+                        continue;
+                    }
+                    delete_policy = match policy {
+                        DeletePolicyDeclaration::NoInbound => {
+                            Some(HirDeletePolicy::NoInbound { span: item.span })
+                        }
+                        DeletePolicyDeclaration::Restrict {
+                            source_entity,
+                            index,
+                        } => {
+                            let Some(source_entity_id) =
+                                symbols.entities.get(&source_entity.value).copied()
+                            else {
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::UnknownName,
+                                    source_entity.span,
+                                ));
+                                continue;
+                            };
+                            let Some(index_id) = symbols
+                                .indexes
+                                .get(&(source_entity_id, index.value.clone()))
+                                .copied()
+                            else {
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::UnknownName,
+                                    index.span,
+                                ));
+                                continue;
+                            };
+                            Some(HirDeletePolicy::Restrict {
+                                span: item.span,
+                                source_entity: source_entity_id,
+                                index_id,
+                            })
+                        }
+                    };
+                }
+                EntityItem::Key(_) | EntityItem::Field(_) | EntityItem::VectorField(_) => {}
             }
         }
         // Validate vector field declarations.
@@ -839,6 +905,7 @@ fn lower_entities(
             invariants,
             indexes,
             relationships,
+            delete_policy,
         });
     }
     result

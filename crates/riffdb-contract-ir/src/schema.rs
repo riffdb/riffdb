@@ -975,6 +975,66 @@ impl UniqueKeySchema {
     }
 }
 
+/// Closed compiler-proved policy for removing one entity's current state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeletePolicyModeV1 {
+    /// No declared relationship may target the entity.
+    NoInbound,
+    /// Every inbound relationship is covered by one exact reverse-index prefix.
+    Restrict {
+        /// Entity owning the inbound relationship fields and reverse index.
+        source_entity: EntityTypeId,
+        /// Authoritative index whose exact prefix covers every inbound reference.
+        index_id: IndexId,
+    },
+}
+
+/// One checked entity deletion policy in canonical target-entity order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeletePolicySchemaV1 {
+    target_entity: EntityTypeId,
+    mode: DeletePolicyModeV1,
+}
+
+impl DeletePolicySchemaV1 {
+    /// Declares that the compiler proved the target has no inbound relationship.
+    #[must_use]
+    pub const fn no_inbound(target_entity: EntityTypeId) -> Self {
+        Self {
+            target_entity,
+            mode: DeletePolicyModeV1::NoInbound,
+        }
+    }
+
+    /// Declares one compiler-proved reverse-index restrict policy.
+    #[must_use]
+    pub const fn restrict(
+        target_entity: EntityTypeId,
+        source_entity: EntityTypeId,
+        index_id: IndexId,
+    ) -> Self {
+        Self {
+            target_entity,
+            mode: DeletePolicyModeV1::Restrict {
+                source_entity,
+                index_id,
+            },
+        }
+    }
+
+    /// Entity whose current state may be deleted under this policy.
+    #[must_use]
+    pub const fn target_entity(&self) -> EntityTypeId {
+        self.target_entity
+    }
+
+    /// Closed deletion policy mode.
+    #[must_use]
+    pub const fn mode(&self) -> DeletePolicyModeV1 {
+        self.mode
+    }
+}
+
 /// Complete structural schema for one contract version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaIr {
@@ -984,6 +1044,7 @@ pub struct SchemaIr {
     aggregates: Vec<AggregateSchema>,
     relationships: Vec<RelationshipSchema>,
     unique_keys: Vec<UniqueKeySchema>,
+    delete_policies: Vec<DeletePolicySchemaV1>,
 }
 
 impl SchemaIr {
@@ -1010,12 +1071,34 @@ impl SchemaIr {
 
     /// Creates a checked canonical schema including every declared integrity key.
     pub fn with_integrity(
+        entities: Vec<EntitySchema>,
+        events: Vec<EventSchema>,
+        enums: Vec<EnumSchema>,
+        aggregates: Vec<AggregateSchema>,
+        relationships: Vec<RelationshipSchema>,
+        unique_keys: Vec<UniqueKeySchema>,
+    ) -> Result<Self, IrValidationError> {
+        Self::with_integrity_and_delete_policies(
+            entities,
+            events,
+            enums,
+            aggregates,
+            relationships,
+            unique_keys,
+            vec![],
+        )
+    }
+
+    /// Creates a checked canonical schema including checked deletion policies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_integrity_and_delete_policies(
         mut entities: Vec<EntitySchema>,
         mut events: Vec<EventSchema>,
         mut enums: Vec<EnumSchema>,
         mut aggregates: Vec<AggregateSchema>,
         mut relationships: Vec<RelationshipSchema>,
         mut unique_keys: Vec<UniqueKeySchema>,
+        mut delete_policies: Vec<DeletePolicySchemaV1>,
     ) -> Result<Self, IrValidationError> {
         for (kind, count) in [
             ("entities", entities.len()),
@@ -1024,6 +1107,7 @@ impl SchemaIr {
             ("aggregates", aggregates.len()),
             ("relationships", relationships.len()),
             ("unique keys", unique_keys.len()),
+            ("delete policies", delete_policies.len()),
         ] {
             checked_len(kind, count, MAX_DECLARATIONS_PER_KIND)?;
         }
@@ -1041,6 +1125,7 @@ impl SchemaIr {
                 .cmp(&right.source_entity)
                 .then_with(|| left.name.cmp(&right.name))
         });
+        delete_policies.sort_unstable_by_key(DeletePolicySchemaV1::target_entity);
         reject_adjacent_id(&entities, EntitySchema::id, "entities")?;
         reject_adjacent_id(&events, EventSchema::id, "events")?;
         reject_adjacent_id(&enums, EnumSchema::id, "enums")?;
@@ -1063,6 +1148,11 @@ impl SchemaIr {
                 kind: "duplicate unique key",
             });
         }
+        reject_adjacent_id(
+            &delete_policies,
+            DeletePolicySchemaV1::target_entity,
+            "delete policies",
+        )?;
 
         let mut global_indexes = BTreeSet::new();
         if entities
@@ -1142,6 +1232,9 @@ impl SchemaIr {
         for unique in &unique_keys {
             validate_unique_key(unique, &entity_map, &aggregates, &ownership)?;
         }
+        for policy in &delete_policies {
+            validate_delete_policy(policy, &entity_map, &relationships)?;
+        }
         for event in &events {
             let Some(partition) = event.partition() else {
                 continue;
@@ -1171,6 +1264,7 @@ impl SchemaIr {
             aggregates,
             relationships,
             unique_keys,
+            delete_policies,
         };
         result.validate_enum_references()?;
         result.validate_schema_enum_registries_and_constants()?;
@@ -1206,6 +1300,24 @@ impl SchemaIr {
     #[must_use]
     pub fn unique_keys(&self) -> &[UniqueKeySchema] {
         &self.unique_keys
+    }
+    /// Checked deletion policies in target-entity order.
+    #[must_use]
+    pub fn delete_policies(&self) -> &[DeletePolicySchemaV1] {
+        &self.delete_policies
+    }
+    /// Resolves one entity's checked deletion policy.
+    #[must_use]
+    pub fn delete_policy(&self, entity: EntityTypeId) -> Option<&DeletePolicySchemaV1> {
+        self.delete_policies
+            .binary_search_by_key(&entity, DeletePolicySchemaV1::target_entity)
+            .ok()
+            .map(|index| &self.delete_policies[index])
+    }
+    /// Whether this structural schema requires IR v5 deletion semantics.
+    #[must_use]
+    pub const fn requires_ir_v5(&self) -> bool {
+        !self.delete_policies.is_empty()
     }
     /// Resolves an entity.
     #[must_use]
@@ -1636,6 +1748,72 @@ fn validate_relationship(
     Ok(())
 }
 
+fn validate_delete_policy(
+    policy: &DeletePolicySchemaV1,
+    entities: &BTreeMap<EntityTypeId, &EntitySchema>,
+    relationships: &[RelationshipSchema],
+) -> Result<(), IrValidationError> {
+    let target =
+        entities
+            .get(&policy.target_entity)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "delete policy target entity",
+            })?;
+    let inbound = relationships
+        .iter()
+        .filter(|relationship| relationship.target_entity() == target.id())
+        .collect::<Vec<_>>();
+    match policy.mode {
+        DeletePolicyModeV1::NoInbound if inbound.is_empty() => Ok(()),
+        DeletePolicyModeV1::NoInbound => Err(IrValidationError::InvalidDependency {
+            reason: "delete no-inbound policy has a declared inbound relationship",
+        }),
+        DeletePolicyModeV1::Restrict {
+            source_entity,
+            index_id,
+        } => {
+            if inbound.is_empty() {
+                return Err(IrValidationError::InvalidDependency {
+                    reason: "delete restrict policy has no declared inbound relationship",
+                });
+            }
+            let source =
+                entities
+                    .get(&source_entity)
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "delete restrict source entity",
+                    })?;
+            let index = source
+                .indexes()
+                .iter()
+                .find(|index| index.id() == index_id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "delete restrict reverse index",
+                })?;
+            for relationship in inbound {
+                if relationship.source_entity() != source_entity
+                    || relationship.target_fields() != target.primary_key_fields()
+                    || index.fields().get(..relationship.source_fields().len())
+                        != Some(relationship.source_fields())
+                    || index
+                        .encodings()
+                        .get(..relationship.source_fields().len())
+                        .is_none_or(|encodings| {
+                            encodings
+                                .iter()
+                                .any(|encoding| *encoding != IndexFieldEncodingV1::Canonical)
+                        })
+                {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "delete restrict index does not cover every inbound relationship",
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn relationship_partition_templates_match(
     relationship: &RelationshipSchema,
@@ -1969,6 +2147,150 @@ mod tests {
     use super::*;
     use crate::{KeyComponentSchema, ValueType};
     use riffdb_types::CanonicalValue;
+
+    fn delete_policy_schema_parts() -> (
+        EntitySchema,
+        EntitySchema,
+        AggregateSchema,
+        RelationshipSchema,
+        IndexId,
+    ) {
+        let target_id = EntityTypeId::first();
+        let source_id = EntityTypeId::new(2).expect("source entity");
+        let aggregate_id = AggregateTypeId::first();
+        let target_key = FieldId::first();
+        let source_local_key = FieldId::new(2).expect("source key");
+        let component = KeyComponentSchema::new(ValueType::u64(), vec![]).expect("component");
+        let target_key_schema =
+            KeySchema::new(KeyPurpose::Entity(target_id), vec![component.clone()])
+                .expect("target key");
+        let source_key_schema = KeySchema::new(
+            KeyPurpose::Entity(source_id),
+            vec![component.clone(), component.clone()],
+        )
+        .expect("source key");
+        let reverse_index_id = IndexId::first();
+        let reverse_index = IndexSchema::new(
+            reverse_index_id,
+            "by_target",
+            vec![target_key],
+            KeySchema::index(
+                reverse_index_id,
+                source_id,
+                vec![component.clone()],
+                source_key_schema.clone(),
+            )
+            .expect("reverse index key"),
+        )
+        .expect("reverse index");
+        let target = EntitySchema::new(
+            target_id,
+            "Target",
+            RecordSchema::new(
+                RecordTypeRef::Entity(target_id),
+                vec![
+                    FieldSchema::new(target_key, "target_id", ValueType::u64())
+                        .expect("target field"),
+                ],
+            )
+            .expect("target record"),
+            vec![target_key],
+            target_key_schema,
+            vec![],
+            vec![],
+        )
+        .expect("target");
+        let source = EntitySchema::new(
+            source_id,
+            "Source",
+            RecordSchema::new(
+                RecordTypeRef::Entity(source_id),
+                vec![
+                    FieldSchema::new(target_key, "target_id", ValueType::u64())
+                        .expect("source target field"),
+                    FieldSchema::new(source_local_key, "source_id", ValueType::u64())
+                        .expect("source local field"),
+                ],
+            )
+            .expect("source record"),
+            vec![target_key, source_local_key],
+            source_key_schema,
+            vec![],
+            vec![reverse_index],
+        )
+        .expect("source");
+        let key_expressions = ExpressionArena::new(vec![(
+            ExpressionKind::SchemaField {
+                entity_type: target_id,
+                field: target_key,
+            },
+            ValueType::u64(),
+        )])
+        .expect("aggregate keys");
+        let aggregate = AggregateSchema::new(
+            aggregate_id,
+            "Owned",
+            target_id,
+            vec![source_id],
+            AggregateKeyPlan::new(
+                key_expressions,
+                ExprId::new(0),
+                vec![ExprId::new(0)],
+                KeySchema::new(KeyPurpose::Partition(aggregate_id), vec![component.clone()])
+                    .expect("partition"),
+                KeySchema::new(KeyPurpose::Conflict(aggregate_id), vec![component])
+                    .expect("conflict"),
+            )
+            .expect("aggregate keys"),
+            vec![],
+        )
+        .expect("aggregate");
+        let relationship = RelationshipSchema::new(
+            "source_target",
+            source_id,
+            vec![target_key],
+            target_id,
+            vec![target_key],
+        )
+        .expect("relationship");
+        (target, source, aggregate, relationship, reverse_index_id)
+    }
+
+    #[test]
+    fn deletion_policies_prove_no_inbound_or_one_complete_reverse_index() {
+        let (target, source, aggregate, relationship, reverse_index_id) =
+            delete_policy_schema_parts();
+        let target_id = target.id();
+        let source_id = source.id();
+
+        assert!(
+            SchemaIr::with_integrity_and_delete_policies(
+                vec![target.clone(), source.clone()],
+                vec![],
+                vec![],
+                vec![aggregate.clone()],
+                vec![relationship.clone()],
+                vec![],
+                vec![DeletePolicySchemaV1::no_inbound(target_id)],
+            )
+            .is_err(),
+            "no_inbound may not hide a declared inbound relationship"
+        );
+
+        let policy = DeletePolicySchemaV1::restrict(target_id, source_id, reverse_index_id);
+        let schema = SchemaIr::with_integrity_and_delete_policies(
+            vec![target, source],
+            vec![],
+            vec![],
+            vec![aggregate],
+            vec![relationship],
+            vec![],
+            vec![policy.clone()],
+        )
+        .expect("checked deletion policy");
+        assert_eq!(schema.delete_policy(target_id), Some(&policy));
+        assert!(schema.requires_ir_v5());
+    }
 
     #[test]
     fn records_sort_by_stable_field_id() {

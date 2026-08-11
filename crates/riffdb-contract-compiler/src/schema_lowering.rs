@@ -1,16 +1,17 @@
 //! Checked executable schema lowering from compiler-private typed HIR.
 
 use riffdb_contract_ir::{
-    AggregateKeyPlan, AggregateSchema, EntitySchema, EnumSchema, EnumVariantSchema,
-    EventPartitionSchema, EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema,
-    KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr,
-    UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
+    AggregateKeyPlan, AggregateSchema, DeletePolicySchemaV1, EntitySchema, EnumSchema,
+    EnumVariantSchema, EventPartitionSchema, EventSchema, FieldSchema, IndexSchema, InvariantPlan,
+    KeyComponentSchema, KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema,
+    SchemaIr, UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema,
+    WorkflowTransitionSchema,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
-use crate::hir::{HirEffect, HirInvariant, TypedContractHir};
+use crate::hir::{HirDeletePolicy, HirEffect, HirInvariant, TypedContractHir};
 
 /// Lowers the complete checked workflow catalog into span-free IR.
 pub(crate) fn lower_workflow_catalog(
@@ -86,18 +87,72 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     let events = lower_events(hir, &aggregates, &mut diagnostics);
     let relationships = lower_relationships(hir, &mut diagnostics);
     let unique_keys = lower_unique_keys(hir, &mut diagnostics);
+    let delete_policies = lower_delete_policies(hir);
     if !diagnostics.is_empty() {
         return Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"));
     }
-    SchemaIr::with_integrity(
-        entities,
-        events,
-        enums,
-        aggregates,
-        relationships,
-        unique_keys,
+    let base = SchemaIr::with_integrity(
+        entities.clone(),
+        events.clone(),
+        enums.clone(),
+        aggregates.clone(),
+        relationships.clone(),
+        unique_keys.clone(),
     )
-    .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
+    .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?;
+    for (policy, span) in &delete_policies {
+        SchemaIr::with_integrity_and_delete_policies(
+            entities.clone(),
+            events.clone(),
+            enums.clone(),
+            aggregates.clone(),
+            relationships.clone(),
+            unique_keys.clone(),
+            vec![policy.clone()],
+        )
+        .map_err(|_| {
+            CompilerDiagnostics::single(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                *span,
+            ))
+        })?;
+    }
+    if delete_policies.is_empty() {
+        Ok(base)
+    } else {
+        SchemaIr::with_integrity_and_delete_policies(
+            entities,
+            events,
+            enums,
+            aggregates,
+            relationships,
+            unique_keys,
+            delete_policies
+                .into_iter()
+                .map(|(policy, _)| policy)
+                .collect(),
+        )
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
+    }
+}
+
+fn lower_delete_policies(hir: &TypedContractHir) -> Vec<(DeletePolicySchemaV1, Span)> {
+    hir.entities
+        .iter()
+        .filter_map(|entity| match entity.delete_policy? {
+            HirDeletePolicy::NoInbound { span } => {
+                Some((DeletePolicySchemaV1::no_inbound(entity.id), span))
+            }
+            HirDeletePolicy::Restrict {
+                span,
+                source_entity,
+                index_id,
+            } => Some((
+                DeletePolicySchemaV1::restrict(entity.id, source_entity, index_id),
+                span,
+            )),
+        })
+        .collect()
 }
 
 pub(crate) fn validate_unique_declarations(

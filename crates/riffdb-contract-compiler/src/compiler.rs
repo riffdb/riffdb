@@ -213,21 +213,10 @@ fn compile(
 fn reject_unlowered_collection_mutations(
     document: &riffdb_contract_syntax::ContractDocument,
 ) -> Result<(), CompilationError> {
-    use riffdb_contract_syntax::ast::{Binding, Declaration, EntityItem};
+    use riffdb_contract_syntax::ast::{Binding, Declaration};
 
     let mut diagnostics = Vec::new();
     for declaration in &document.contract.value.declarations {
-        if let Declaration::Entity(entity) = &declaration.value
-            && let Some(policy) = entity
-                .items
-                .iter()
-                .find(|item| matches!(item.value, EntityItem::DeletePolicy(_)))
-        {
-            diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::UnsupportedCollectionMutation,
-                policy.span,
-            ));
-        }
         let Declaration::Command(command) = &declaration.value else {
             continue;
         };
@@ -343,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_and_delete_policy_surfaces_fail_closed_before_ir_activation() {
+    fn delete_bindings_fail_closed_until_the_complete_command_proof_is_available() {
         let bulk = r#"
 contract BulkGate version 1 {
   entity Row { key (tenant_id: uuid, row_id: uuid) }
@@ -364,19 +353,84 @@ contract BulkGate version 1 {
             CompilerDiagnosticCode::UnsupportedCollectionMutation,
             "delete Row(tenant_id, row_id) as row else Missing {}",
         );
+    }
 
-        let policy = r#"
+    #[test]
+    fn no_inbound_delete_policy_lowers_to_v5_structural_schema() {
+        let source = r#"
 contract DeletePolicyGate version 1 {
   entity Row {
     key (tenant_id: uuid, row_id: uuid)
     delete_policy no_inbound
   }
+  aggregate Rows {
+    root Row
+    partition_by tenant_id
+    conflict_key (tenant_id, row_id)
+  }
 }
 "#;
+        let bundle = compile_contract_source(source).expect("checked delete policy");
+        assert_eq!(
+            bundle.ir_version(),
+            riffdb_contract_ir::EXECUTABLE_IR_VERSION_V5
+        );
+        let row = bundle.schema().entities().first().expect("row entity");
+        assert!(bundle.schema().delete_policy(row.id()).is_some());
+    }
+
+    #[test]
+    fn restrict_delete_policy_requires_and_records_one_complete_reverse_index() {
+        let source = r#"
+contract DeleteRestrict version 1 {
+  entity Parent {
+    key (tenant_id: uuid, parent_id: uuid)
+    delete_policy restrict Child.by_parent
+  }
+  entity Child {
+    key (tenant_id: uuid, parent_id: uuid, child_id: uuid)
+    index by_parent (tenant_id, parent_id)
+    reference parent (tenant_id, parent_id) -> Parent(tenant_id, parent_id)
+  }
+  aggregate Owned {
+    root Parent
+    child Child
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("checked restrict policy");
+        let parent = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Parent")
+            .expect("parent");
+        let child = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Child")
+            .expect("child");
+        let policy = bundle.schema().delete_policy(parent.id()).expect("policy");
+        assert!(matches!(
+            policy.mode(),
+            riffdb_contract_ir::DeletePolicyModeV1::Restrict {
+                source_entity,
+                index_id,
+            } if source_entity == child.id()
+                && child.indexes().iter().any(|index| index.id() == index_id)
+        ));
+
+        let invalid = source.replace(
+            "index by_parent (tenant_id, parent_id)",
+            "index by_parent (tenant_id, child_id)",
+        );
         assert_semantic_diagnostic_at(
-            policy,
-            CompilerDiagnosticCode::UnsupportedCollectionMutation,
-            "delete_policy no_inbound",
+            &invalid,
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            "delete_policy restrict Child.by_parent",
         );
     }
 

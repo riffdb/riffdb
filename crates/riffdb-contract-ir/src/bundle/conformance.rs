@@ -259,6 +259,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "aggregates",
                 "relationships",
                 "unique_keys",
+                "delete_policies",
             ],
         ),
         (
@@ -274,6 +275,10 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         (
             "UniqueKeySchema",
             vec!["name", "source_entity", "index_id", "fields"],
+        ),
+        (
+            "DeletePolicySchemaV1",
+            vec!["target_entity", "mode", "restrict_payload"],
         ),
         (
             "EntitySchema",
@@ -568,6 +573,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("StructuralSchema", "structural schema fixture"),
         ("RelationshipSchema", "relationship compiler fixture"),
         ("UniqueKeySchema", "uniqueness compiler fixture"),
+        ("DeletePolicySchemaV1", "delete-policy schema fixture"),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
         ("EventPartitionSchema", "partitioned event fixture"),

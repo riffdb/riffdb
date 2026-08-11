@@ -77,6 +77,7 @@ pub const EXECUTABLE_IR_VERSION_V5: u32 = 5;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
+const DELETE_POLICY_SCHEMA_EXTENSION: u32 = 0xffff_fffc;
 const INDEX_FIELD_ENCODING_EXTENSION: u32 = 0xffff_fffa;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
@@ -990,7 +991,8 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v5) {
+        let version = if schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5)
+        {
             BUNDLE_FORMAT_VERSION_V5
         } else if !row_policies.is_empty() {
             BUNDLE_FORMAT_VERSION_V4
@@ -1071,7 +1073,7 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v3))
             || (ir_version < EXECUTABLE_IR_VERSION_V4 && !row_policies.is_empty())
             || (ir_version < EXECUTABLE_IR_VERSION_V5
-                && commands.iter().any(CommandPlan::requires_ir_v5))
+                && (schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5)))
         {
             return Err(IrValidationError::UnsupportedVersion {
                 kind: "contract bundle version tuple",
@@ -2426,6 +2428,26 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u32(unique.fields().len() as u32)?;
             for field in unique.fields() {
                 writer.u32(field.get())?;
+            }
+        }
+    }
+    if !schema.delete_policies().is_empty() {
+        writer.u32(DELETE_POLICY_SCHEMA_EXTENSION)?;
+        writer.u32(schema.delete_policies().len() as u32)?;
+        for policy in schema.delete_policies() {
+            writer.u32(policy.target_entity().get())?;
+            match policy.mode() {
+                crate::DeletePolicyModeV1::NoInbound => {
+                    writer.u8(crate::format_registry::delete_policy_mode::NO_INBOUND)?;
+                }
+                crate::DeletePolicyModeV1::Restrict {
+                    source_entity,
+                    index_id,
+                } => {
+                    writer.u8(crate::format_registry::delete_policy_mode::RESTRICT)?;
+                    writer.u32(source_entity.get())?;
+                    writer.u32(index_id.get())?;
+                }
             }
         }
     }
@@ -3786,13 +3808,42 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
-    SchemaIr::with_integrity(
+    let mut delete_policies = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == DELETE_POLICY_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let policy_count = decode_len(reader, "delete policies", crate::MAX_DECLARATIONS_PER_KIND)?;
+        delete_policies.reserve(policy_count);
+        for _ in 0..policy_count {
+            let target_entity = decode_entity_id(reader)?;
+            let policy = match reader.u8()? {
+                crate::format_registry::delete_policy_mode::NO_INBOUND => {
+                    crate::DeletePolicySchemaV1::no_inbound(target_entity)
+                }
+                crate::format_registry::delete_policy_mode::RESTRICT => {
+                    crate::DeletePolicySchemaV1::restrict(
+                        target_entity,
+                        decode_entity_id(reader)?,
+                        decode_index_id(reader)?,
+                    )
+                }
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "delete policy mode",
+                        tag,
+                    });
+                }
+            };
+            delete_policies.push(policy);
+        }
+    }
+    SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
         enums,
         aggregates,
         relationships,
         unique_keys,
+        delete_policies,
     )
 }
 
@@ -5401,6 +5452,94 @@ mod conformance;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn schema_with_no_inbound_delete_policy() -> SchemaIr {
+        let entity_id = EntityTypeId::first();
+        let field_id = FieldId::first();
+        let entity = EntitySchema::new(
+            entity_id,
+            "Deletable",
+            RecordSchema::new(
+                RecordTypeRef::Entity(entity_id),
+                vec![FieldSchema::new(field_id, "id", ValueType::u64()).expect("field")],
+            )
+            .expect("record"),
+            vec![field_id],
+            KeySchema::new(
+                KeyPurpose::Entity(entity_id),
+                vec![KeyComponentSchema::new(ValueType::u64(), vec![]).expect("component")],
+            )
+            .expect("key"),
+            vec![],
+            vec![],
+        )
+        .expect("entity");
+        SchemaIr::with_integrity_and_delete_policies(
+            vec![entity],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![crate::DeletePolicySchemaV1::no_inbound(entity_id)],
+        )
+        .expect("schema")
+    }
+
+    #[test]
+    fn delete_policy_schema_extension_round_trips_and_requires_v5() {
+        let schema = schema_with_no_inbound_delete_policy();
+        let mut writer = Writer::new(4_096);
+        encode_schema(&mut writer, &schema).expect("encode schema");
+        let bytes = writer.finish();
+        assert!(bytes.ends_with(&[
+            0xff,
+            0xff,
+            0xff,
+            0xfc,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1,
+            crate::format_registry::delete_policy_mode::NO_INBOUND,
+        ]));
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(decode_schema(&mut reader).expect("decode schema"), schema);
+        assert_eq!(reader.remaining(), 0);
+
+        let lineage = ContractLineage::new("DeletePolicyVersion").expect("lineage");
+        let result = ContractBundle::new_with_versions(
+            BUNDLE_FORMAT_VERSION_V1,
+            GRAMMAR_VERSION_V1,
+            EXECUTABLE_IR_VERSION_V1,
+            "0.1.0",
+            lineage.clone(),
+            ContractVersion::new(1).expect("version"),
+            None,
+            SourceHash::from_bytes([7; 32]),
+            LineageLedgerV1::genesis(vec![]).expect("ledger"),
+            schema,
+            vec![],
+            RowPolicyCatalogV1::empty(),
+            vec![],
+            vec![],
+            vec![],
+            McpCommandNameRegistryV2::new(lineage, "DeletePolicyVersion", vec![])
+                .expect("registry"),
+            CompatibilityReport::genesis(),
+        );
+        assert!(matches!(
+            result,
+            Err(IrValidationError::UnsupportedVersion {
+                kind: "contract bundle version tuple",
+                value: EXECUTABLE_IR_VERSION_V1,
+            })
+        ));
+    }
 
     fn empty_bundle() -> ContractBundle {
         let lineage = ContractLineage::new("TestContract").expect("lineage");
