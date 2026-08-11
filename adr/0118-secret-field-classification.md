@@ -1,8 +1,8 @@
 # ADR-0118: Secret Field Classification and Display-Surface Redaction
 
-- **Status:** Proposed
-- **Direction approved:** Not yet
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-11
+- **Exact text accepted:** Yes — 2026-08-11, maintainer acceptance as written
 - **Decision deadline:** Before WP-597 changes the contract grammar or any
   public error/diagnostic surface
 

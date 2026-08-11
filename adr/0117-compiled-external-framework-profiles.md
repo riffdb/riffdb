@@ -1,8 +1,8 @@
 # ADR-0117: Compiled External-Framework Profiles
 
-- **Status:** Proposed
-- **Direction approved:** Not yet
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-11
+- **Exact text accepted:** Yes — 2026-08-11, maintainer acceptance as written
 - **Decision deadline:** Before any framework-integration repository publishes
   an adapter claiming RiffDB support, and before WP-598 verifies the
   prerequisite surface

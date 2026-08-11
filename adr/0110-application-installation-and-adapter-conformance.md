@@ -206,7 +206,7 @@ format, conformance manifest, role-widening flow, or receipt is implemented.
 
 ### Amendment 1: Better Auth replaces Payload in the alpha conformance set (2026-08-11)
 
-- **Status:** Proposed
+- **Status:** Accepted — 2026-08-11, maintainer acceptance as written
 
 Maintainer scope decision: the alpha conformance adapter set is OpenFGA,
 MLflow, Better Auth, and Woodpecker. Payload's shape is retained as a named

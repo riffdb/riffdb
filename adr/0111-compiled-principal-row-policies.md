@@ -249,7 +249,7 @@ policy IR, role identity, query/mutation authorization, or adapter claims change
 
 ### Amendment 2: alpha acceptance adapter swap — Better Auth replaces Payload (2026-08-11)
 
-- **Status:** Proposed
+- **Status:** Accepted — 2026-08-11, maintainer acceptance as written
 
 The maintainer rescoped the alpha adapter set: Better Auth replaces Payload
 as the row-policy acceptance workload, and Payload's shape moves to the
