@@ -114,6 +114,10 @@ pub enum ExpressionKind {
     InputField(FieldId),
     /// Compiler-declared service-owned command value.
     ServiceValue(FieldId),
+    /// Current submitted element in the one compiler-owned collection expansion.
+    CollectionElement,
+    /// Stable field of the current record-valued collection element.
+    CollectionElementField(FieldId),
     /// Complete bound entity record.
     CompleteBinding(BindingId),
     /// Stable field of one bound entity record.
@@ -167,6 +171,10 @@ impl ExpressionKind {
             Self::Constant(_) => crate::format_registry::expression::CONSTANT,
             Self::InputField(_) => crate::format_registry::expression::INPUT_FIELD,
             Self::ServiceValue(_) => crate::format_registry::expression::SERVICE_VALUE,
+            Self::CollectionElement => crate::format_registry::expression::COLLECTION_ELEMENT,
+            Self::CollectionElementField(_) => {
+                crate::format_registry::expression::COLLECTION_ELEMENT_FIELD
+            }
             Self::CompleteBinding(_) => crate::format_registry::expression::COMPLETE_BINDING,
             Self::BoundField { .. } => crate::format_registry::expression::BOUND_FIELD,
             Self::SchemaField { .. } => crate::format_registry::expression::SCHEMA_FIELD,
@@ -332,6 +340,10 @@ impl ExpressionArena {
                 ExpressionKind::ServiceValue(field) => {
                     result.service_values.insert(*field);
                 }
+                ExpressionKind::CollectionElement => result.collection_element = true,
+                ExpressionKind::CollectionElementField(field) => {
+                    result.collection_element_fields.insert(*field);
+                }
                 ExpressionKind::CompleteBinding(binding) => {
                     result.bindings.insert(*binding);
                     result.complete_bindings.insert(*binding);
@@ -464,6 +476,8 @@ pub struct ExpressionDependencies {
     root_validation_reads: BTreeSet<RootValidationReadId>,
     root_validation_fields: BTreeSet<(RootValidationReadId, FieldId)>,
     source_event_fields: BTreeSet<FieldId>,
+    collection_element: bool,
+    collection_element_fields: BTreeSet<FieldId>,
     transaction_time: bool,
     transaction_date: bool,
 }
@@ -521,6 +535,18 @@ impl ExpressionDependencies {
     #[must_use]
     pub const fn source_event_fields(&self) -> &BTreeSet<FieldId> {
         &self.source_event_fields
+    }
+
+    /// Whether the complete current collection element is referenced.
+    #[must_use]
+    pub const fn uses_collection_element(&self) -> bool {
+        self.collection_element
+    }
+
+    /// Stable fields referenced from the current record-valued element.
+    #[must_use]
+    pub const fn collection_element_fields(&self) -> &BTreeSet<FieldId> {
+        &self.collection_element_fields
     }
 
     /// Whether `tx.time` is referenced.

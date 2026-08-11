@@ -783,7 +783,10 @@ fn derive_grammar_v1_indexes(
         let current_record = match (binding.mode(), &current.bindings()[binding_position]) {
             (BindingMode::Create, EntityObservation::Absent(_)) => None,
             (BindingMode::Mutate, EntityObservation::Present(record)) => Some(record.fields()),
-            (BindingMode::Read | BindingMode::Create | BindingMode::Mutate, _) => {
+            (
+                BindingMode::Read | BindingMode::Create | BindingMode::Mutate | BindingMode::Delete,
+                _,
+            ) => {
                 return Err(CommandIndexError::internal_defect());
             }
         };

@@ -150,6 +150,7 @@ fn locate_contract_symbol(source: &str, path: &[String]) -> Option<(u32, u32)> {
                         Some(contract_span(candidate.name.span))
                     }
                     EntityItem::Field(_)
+                    | EntityItem::DeletePolicy(_)
                     | EntityItem::Invariant(_)
                     | EntityItem::Index(_)
                     | EntityItem::Unique(_)
@@ -220,9 +221,10 @@ fn locate_contract_outcome<'a>(
         .bindings
         .iter()
         .map(|binding| match &binding.value {
-            Binding::Read(binding) | Binding::Mutate(binding) | Binding::Create(binding) => {
-                &binding.failure.value
-            }
+            Binding::Read(binding)
+            | Binding::Mutate(binding)
+            | Binding::Create(binding)
+            | Binding::Delete(binding) => &binding.failure.value,
         })
         .chain(
             command

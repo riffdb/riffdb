@@ -264,6 +264,8 @@ enum FingerprintNode {
     Constant(Vec<u8>),
     InputField(u32),
     ServiceValue(u32),
+    CollectionElement,
+    CollectionElementField(u32),
     Unary(u8, u32),
     Binary(u8, u32, u32),
     SchemaField(u32, u32),
@@ -402,6 +404,10 @@ fn fingerprint_leaf(kind: &ExpressionKind) -> FingerprintNode {
         ),
         ExpressionKind::InputField(field) => FingerprintNode::InputField(field.get()),
         ExpressionKind::ServiceValue(field) => FingerprintNode::ServiceValue(field.get()),
+        ExpressionKind::CollectionElement => FingerprintNode::CollectionElement,
+        ExpressionKind::CollectionElementField(field) => {
+            FingerprintNode::CollectionElementField(field.get())
+        }
         ExpressionKind::SchemaField { entity_type, field } => {
             FingerprintNode::SchemaField(entity_type.get(), field.get())
         }
@@ -463,6 +469,10 @@ fn encode_fingerprint_node(node: &FingerprintNode, output: &mut Vec<u8>) {
             output.extend_from_slice(&field.to_be_bytes());
         }
         FingerprintNode::ServiceValue(field) => append_tagged_u32(output, 0x0c, *field),
+        FingerprintNode::CollectionElement => output.push(0x0d),
+        FingerprintNode::CollectionElementField(field) => {
+            append_tagged_u32(output, 0x0e, *field);
+        }
     }
 }
 

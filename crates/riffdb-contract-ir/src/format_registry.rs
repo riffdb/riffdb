@@ -93,6 +93,8 @@ tag_registry!(expression, "Expression", {
     BINARY = 0x0a => "binary",
     ROOT_VALIDATION_FIELD = 0x0b => "root-validation field",
     SERVICE_VALUE = 0x0c => "service-owned command value",
+    COLLECTION_ELEMENT = 0x0d => "collection element",
+    COLLECTION_ELEMENT_FIELD = 0x0e => "collection element field",
 });
 tag_registry!(unary_operator, "Unary operator", {
     NOT = 0x01 => "not",
@@ -440,6 +442,13 @@ pub(crate) const EXPRESSION_VARIANTS: &[TaggedVariantLayout] = &[
         "field" => "FieldId as u32",
     }),
     tagged_variant!(expression::SERVICE_VALUE, "service-owned command value", {
+        "result_type" => "ValueType tag plus exact selected payload",
+        "field" => "FieldId as u32",
+    }),
+    tagged_variant!(expression::COLLECTION_ELEMENT, "collection element", {
+        "result_type" => "ValueType tag plus exact selected payload",
+    }),
+    tagged_variant!(expression::COLLECTION_ELEMENT_FIELD, "collection element field", {
         "result_type" => "ValueType tag plus exact selected payload",
         "field" => "FieldId as u32",
     }),
@@ -2195,6 +2204,8 @@ mod tests {
                 },
                 ExpressionKind::RootValidationField { read, field },
                 ExpressionKind::ServiceValue(field),
+                ExpressionKind::CollectionElement,
+                ExpressionKind::CollectionElementField(field),
             ]
             .map(|value| value.tag()),
             registry_values(expression::REGISTRY).as_slice()

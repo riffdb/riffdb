@@ -1580,6 +1580,10 @@ fn render_expression_arena(
             ExpressionKind::ServiceValue(field) => {
                 format!("service_value:{}", field.get())
             }
+            ExpressionKind::CollectionElement => "collection_element".to_owned(),
+            ExpressionKind::CollectionElementField(field) => {
+                format!("collection_element_field:{}", field.get())
+            }
             ExpressionKind::CompleteBinding(binding) => {
                 format!("complete_binding:{}", binding.get())
             }
@@ -1911,6 +1915,7 @@ fn binding_mode(mode: BindingMode) -> &'static str {
         BindingMode::Read => "read",
         BindingMode::Mutate => "mutate",
         BindingMode::Create => "create",
+        BindingMode::Delete => "delete",
     }
 }
 

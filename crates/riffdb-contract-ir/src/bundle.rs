@@ -2679,9 +2679,11 @@ pub(crate) fn encode_expression_arena(
             }
             ExpressionKind::InputField(field)
             | ExpressionKind::ServiceValue(field)
+            | ExpressionKind::CollectionElementField(field)
             | ExpressionKind::SourceEventField(field) => {
                 writer.u32(field.get())?;
             }
+            ExpressionKind::CollectionElement => {}
             ExpressionKind::CompleteBinding(binding) => writer.u32(binding.get())?,
             ExpressionKind::BoundField { binding, field } => {
                 writer.u32(binding.get())?;
@@ -4174,6 +4176,12 @@ fn decode_expression_arena_versioned(
             expression_tag::INPUT_FIELD => ExpressionKind::InputField(decode_field_id(reader)?),
             expression_tag::SERVICE_VALUE if ir_version >= EXECUTABLE_IR_VERSION_V2 => {
                 ExpressionKind::ServiceValue(decode_field_id(reader)?)
+            }
+            expression_tag::COLLECTION_ELEMENT if ir_version >= EXECUTABLE_IR_VERSION_V5 => {
+                ExpressionKind::CollectionElement
+            }
+            expression_tag::COLLECTION_ELEMENT_FIELD if ir_version >= EXECUTABLE_IR_VERSION_V5 => {
+                ExpressionKind::CollectionElementField(decode_field_id(reader)?)
             }
             expression_tag::COMPLETE_BINDING => {
                 ExpressionKind::CompleteBinding(BindingId::new(reader.u32()?))
@@ -5770,6 +5778,33 @@ mod tests {
                 .maximum_elements(),
             8
         );
+
+        let field = FieldId::first();
+        let expressions = ExpressionArena::new(vec![
+            (ExpressionKind::CollectionElement, crate::ValueType::u64()),
+            (
+                ExpressionKind::CollectionElementField(field),
+                crate::ValueType::bool(),
+            ),
+        ])
+        .expect("collection expressions");
+        let mut writer = Writer::new(64);
+        encode_expression_arena(&mut writer, &expressions).expect("encode collection expressions");
+        let bytes = writer.finish();
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(
+            decode_expression_arena_versioned(&mut reader, EXECUTABLE_IR_VERSION_V5)
+                .expect("decode IR v5 collection expressions"),
+            expressions
+        );
+        reader.finish().expect("fully consumed");
+        assert!(matches!(
+            decode_expression_arena_versioned(&mut Reader::new(&bytes), EXECUTABLE_IR_VERSION_V4),
+            Err(IrValidationError::UnknownTag {
+                kind: "expression",
+                ..
+            })
+        ));
     }
 
     #[test]

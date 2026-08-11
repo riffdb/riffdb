@@ -513,6 +513,10 @@ impl CommandExplain {
                 ExpressionKind::ServiceValue(field) => {
                     format!("service-value:{}", field.get())
                 }
+                ExpressionKind::CollectionElement => "collection-element".to_owned(),
+                ExpressionKind::CollectionElementField(field) => {
+                    format!("collection-element-field:{}", field.get())
+                }
                 ExpressionKind::CompleteBinding(binding) => {
                     format!("complete-binding:{}", binding.get())
                 }
