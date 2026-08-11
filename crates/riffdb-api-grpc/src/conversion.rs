@@ -1064,13 +1064,11 @@ fn canonical_value_into_public_unchecked(value: riffdb_types::CanonicalValue) ->
             }
             Kind::RecordValue(v1::ValueRecord { fields })
         }
-        CanonicalValue::Vector(vector) => {
-            let mut bytes = Vec::with_capacity(4 + vector.dimension() as usize * 4);
-            bytes.extend_from_slice(&vector.dimension().to_be_bytes());
-            for component in vector.components() {
-                bytes.extend_from_slice(&component.to_be_bytes());
-            }
-            Kind::BytesValue(bytes)
+        CanonicalValue::Vector(_) => {
+            // No wire variant exists for vectors; the kind-less value is
+            // rejected by the fallible wrapper's validation (MissingKind)
+            // instead of silently punning Vector into Bytes.
+            return v1::Value { kind: None };
         }
     };
     v1::Value { kind: Some(kind) }

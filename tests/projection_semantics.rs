@@ -461,3 +461,27 @@ fn nearest_query_exact_knn_is_deterministic() {
         assert_eq!(a.primary_key, b.primary_key);
     }
 }
+
+/// Vectors are entity field values, never org-scope keys: registration
+/// rejects a vector-typed org scope (S7 — the gate previously admitted it
+/// against its own comment).
+#[test]
+fn vector_org_scope_is_rejected_at_registration() {
+    let bundle = vector_bundle();
+    let title = field_id(&bundle, "Document", "title");
+    let embedding = field_id(&bundle, "Document", "embedding");
+    let error = RegisteredDefinition::register(
+        riffdb_columnar::ColumnarProjectionDefinition {
+            name: "bad_scope".into(),
+            entity_name: "Document".into(),
+            projected_fields: vec![title],
+            org_scope_field: embedding,
+        },
+        &bundle,
+    )
+    .expect_err("a vector org scope must be rejected");
+    assert!(matches!(
+        error,
+        riffdb_columnar::DefinitionError::UnsupportedColumnType { .. }
+    ));
+}

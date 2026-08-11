@@ -152,5 +152,9 @@ mod tests {
         assert_eq!(MAX_PROJECTION_APPLY_SNAPSHOT_BYTES, 16_777_216);
         assert_eq!(MAX_PROJECTION_QUERY_ROWS, 500);
         assert_eq!(MAX_PROJECTION_QUERY_CONTENT_BYTES, 4_194_304);
+        // Vector bounds live in `crate::vector` beside their types; the v1
+        // pin covers them like every other bound (previously they escaped it).
+        assert_eq!(crate::MAX_VECTOR_DIMENSION, 4_096);
+        assert_eq!(crate::EmbeddingMetadata::MAX_MODEL_STRING_LEN, 256);
     }
 }
