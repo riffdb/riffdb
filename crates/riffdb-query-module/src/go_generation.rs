@@ -129,7 +129,7 @@ fn emit_enums(output: &mut String, contract: &ContractBundle) {
 fn emit_entities(output: &mut String, contract: &ContractBundle) {
     for entity in contract.schema().entities() {
         writeln!(output, "type {} struct {{", go_public(entity.name())).unwrap();
-        for field in entity.record().fields() {
+        for field in go_wire_model_fields(entity.record()) {
             writeln!(
                 output,
                 "\t{} {}",
@@ -219,7 +219,7 @@ fn emit_entity_codecs(output: &mut String, contract: &ContractBundle) {
     for entity in contract.schema().entities() {
         let name = go_public(entity.name());
         writeln!(output, "func encode{name}(value {name}) riffdb.Value {{ return riffdb.Record(map[string]riffdb.Value{{").unwrap();
-        for field in entity.record().fields() {
+        for field in go_wire_model_fields(entity.record()) {
             writeln!(
                 output,
                 "\t\"{}\": {},",
@@ -234,7 +234,7 @@ fn emit_entity_codecs(output: &mut String, contract: &ContractBundle) {
         }
         output.push_str("}) }\n");
         writeln!(output, "func decode{name}(value riffdb.Value) ({name}, error) {{ fields, err := riffdb.RecordFields(value); if err != nil {{ return {name}{{}}, err }}; var result {name}; var raw riffdb.Value").unwrap();
-        for field in entity.record().fields() {
+        for field in go_wire_model_fields(entity.record()) {
             let public = go_public(field.name());
             writeln!(output, "raw, err = requiredField(fields, \"{}\"); if err != nil {{ return result, err }}; result.{public}, err = {}; if err != nil {{ return result, err }}", field.name(), decode_expr("raw", field.value_type(), contract)).unwrap();
         }
@@ -817,6 +817,18 @@ fn go_snake(value: &str) -> String {
     output.trim_matches('_').to_owned()
 }
 
+/// Wire-model fields of an entity record. Vector fields are excluded from
+/// generated Go clients until the wire protocol carries a distinct vector
+/// variant (VEC-002 ingress, deferred).
+fn go_wire_model_fields(
+    record: &riffdb_contract_ir::RecordSchema,
+) -> impl Iterator<Item = &riffdb_contract_ir::FieldSchema> {
+    record
+        .fields()
+        .iter()
+        .filter(|field| field.value_type().tag() != ValueTypeTag::Vector)
+}
+
 fn go_type(value: &ValueType, contract: &ContractBundle) -> String {
     if let Some(inner) = value.optional_inner() {
         return format!("*{}", go_type(inner, contract));
@@ -845,7 +857,10 @@ fn go_type(value: &ValueType, contract: &ContractBundle) -> String {
             ),
             _ => "map[string]riffdb.Value".into(),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!(),
+        // Vector fields are excluded from generated models; an honest Go model
+        // type is still emitted rather than panicking the generator.
+        ValueTypeTag::Vector => "[]float32".into(),
+        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
     }
 }
 
@@ -886,7 +901,12 @@ fn encode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
             ),
             _ => format!("riffdb.Record({value})"),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!(),
+        // Vector fields are excluded from generated models. The identifier
+        // below is intentionally undefined in the Go SDK: if a generated
+        // artifact ever contains it, the artifact fails Go compilation loudly
+        // instead of shipping punned or silently absent vector data.
+        ValueTypeTag::Vector => format!("riffdbUnsupportedVectorField({value})"),
+        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
     }
 }
 
@@ -935,7 +955,12 @@ fn decode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
             ),
             _ => format!("riffdb.RecordFields({value})"),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!(),
+        // Vector fields are excluded from generated models; a typed runtime
+        // error is generated rather than panicking the generator.
+        ValueTypeTag::Vector => format!(
+            "func() ([]float32, error) {{ _ = {value}; return nil, errors.New(\"RiffDB generated Go clients do not support vector fields yet\") }}()"
+        ),
+        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
     }
 }
 
