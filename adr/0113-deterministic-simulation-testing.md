@@ -3,6 +3,10 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** Yes — 2026-08-09, maintainer acceptance as written
+- **Amended:** 2026-08-11 — maintainer-directed repair after the
+  delete-aware entity-chain layout change moved the pinned physical crash
+  window; receipted witness rotation added without relaxing active defect
+  reproduction
 - **Decision deadline:** Satisfied — accepted before any simulation work
   package merged production-code seams
 
@@ -123,7 +127,17 @@ Phase 1 and names Phases 2 and 3 as explicit future decisions.
    byte-identical execution trace hash, pinned by a test that runs the same
    seed twice. A failure minimizes to a seed plus schedule prefix; every bug
    the simulator finds lands as a pinned seed in a regression corpus replayed
-   per-merge, with open-ended exploration running on a nightly budget.
+   per-merge, with open-ended exploration running on a nightly budget. A
+   physical crash-placement witness may move when an intentional durable-layout
+   change adds or removes engine writes. Such a finding requires a receipted
+   witness rotation: retain and continue replaying the historical coordinate,
+   annotate it with the exact causal commit and review date, append a stable
+   successor that reproduces the same exact expected territory under the
+   current layout, and keep at least one active engine-defect witness until the
+   engine pin contains the fix. A later layout change extends the forward-only
+   successor chain rather than rewriting an earlier receipt. Silently deleting
+   the old seed, accepting a green replay without a successor, or weakening an
+   expectation remains forbidden.
 7. **Corpus subsumption.** Every existing `storage_recovery_matrix` arm is
    expressible as a DST schedule; the matrix remains as process-level
    evidence, and the simulator owns exploration.
@@ -231,7 +245,11 @@ fixture data, so no redaction surface is added.
   the existing startup validation and structural inspection passes.
 - Corpus: every `RECOVERY_SCENARIOS` row tagged for the storage layer is
   reproduced as a pinned schedule; found-bug seeds accumulate as regression
-  fixtures. (As delivered by WP-583: the engine-commit crash arms carry
+  fixtures. A physical-layout witness rotation proves both sides: the
+  historical coordinate no longer reaches its exact old territory for the
+  named layout commit and a later successor chain terminates in an active
+  witness that still reproduces the pinned engine defect. (As
+  delivered by WP-583: the engine-commit crash arms carry
   pinned campaign schedules, while the migration-batch arms, the
   owner-typestate rows without a process crash point, and — until the engine
   pin advances past upstream `fd82ced` — the redb 4.1.0 file-growth crash

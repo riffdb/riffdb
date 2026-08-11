@@ -5,8 +5,13 @@
 //! recovery, a crash inside a recovery window — is pinned here with its full
 //! replay coordinates (seed, generator version, campaign config, what it
 //! caught, pin date) and replayed per merge. Entries grow append-only and are
-//! never edited to "keep passing": a replay that stops reproducing its
-//! territory is a finding.
+//! never deleted to "keep passing": a replay that stops reproducing its
+//! territory is a finding. When an intentional durable-layout change moves a
+//! physical crash window, the historical entry receives a typed rotation
+//! annotation and an active successor witness is appended. The old entry must
+//! prove that its exact territory moved, the successor must reproduce the same
+//! expected territory, and the causal layout commit remains part of the
+//! checked corpus.
 //!
 //! The inaugural entry is the campaign's first real engine catch: the redb
 //! 4.1.0 file-growth torn-crash wedge (fixed upstream in `fd82ced`,
@@ -26,7 +31,7 @@ use crate::subsumption::COMMIT_ARMS_CONFIG;
 /// Minimum evidence one completing corpus replay must reproduce. Every
 /// variant maps to a `CampaignReport` counter, so a replay that "passes"
 /// without reaching the pinned territory reds instead of rotting silently.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CorpusExpectation {
     /// At least this many seeded torn decisions across the run's recoveries.
     TornDecisionsAtLeast(u64),
@@ -63,7 +68,7 @@ impl CorpusExpectation {
 }
 
 /// What one corpus entry's replay must demonstrate.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CorpusOutcome {
     /// The campaign must complete (oracle holding at every recovery, plan
     /// exhausted, quiesced final verification green) AND reproduce the listed
@@ -94,6 +99,23 @@ pub(crate) struct CorpusEntry {
     pub pinned: &'static str,
     /// The outcome the replay must demonstrate.
     pub outcome: CorpusOutcome,
+    /// A reviewed rotation to a successor witness after an intentional
+    /// durable-layout change moved this physical crash window. This is never
+    /// a silent waiver: the historical coordinate remains replayed and its
+    /// successor must appear later in the append-only corpus; repeated layout
+    /// changes may form a forward-only chain whose terminal entry is active.
+    pub rotation: Option<CorpusWitnessRotation>,
+}
+
+/// Receipted replacement of one schedule-sensitive corpus witness.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CorpusWitnessRotation {
+    /// Later corpus entry that now reaches the same expected territory.
+    pub successor_seed: u64,
+    /// Exact RiffDB commit whose intentional layout change moved the window.
+    pub invalidated_by_commit: &'static str,
+    /// Review date (UTC).
+    pub rotated: &'static str,
 }
 
 /// The corpus. Append-only.
@@ -113,6 +135,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
                  predates it.",
         pinned: "2026-08-10",
         outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C022,
+            invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
+            rotated: "2026-08-11",
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C067,
@@ -130,6 +157,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::InitializationBoundary,
         ]),
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C000,
+            invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
+            rotated: "2026-08-11",
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C0E1,
@@ -148,6 +180,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::InFlightAdmitResolved,
         ]),
+        rotation: None,
     },
     CorpusEntry {
         seed: 0x51C2_C006,
@@ -164,8 +197,62 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::TornDecisionsAtLeast(10),
             CorpusExpectation::InFlightAdmitResolved,
         ]),
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C022,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor witness for the redb 4.1.0 file-growth \
+                 torn-crash wedge after c2bba5c added durable entity-chain \
+                 heads and moved the physical write schedule: the fifth \
+                 crash keeps a god header requiring a roughly 200704-byte \
+                 layout while the durable image is 135168 bytes, and every \
+                 subsequent open panics at page_manager.rs:231. Reproduced \
+                 identically in 12/12 runs before pinning.",
+        pinned: "2026-08-11",
+        outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C000,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor for the heavy torn-recovery territory \
+                 after c2bba5c added durable entity-chain heads and moved \
+                 the physical operation schedule: 48 torn decisions across \
+                 14 recoveries, five interrupted batches resolved absent, \
+                 four recovery-window crashes, and ten initialization \
+                 survivals with the oracle holding throughout.",
+        pinned: "2026-08-11",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::TornDecisionsAtLeast(30),
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::InitializationBoundary,
+        ]),
+        rotation: None,
     },
 ];
+
+fn outcome_holds(entry: &CorpusEntry, outcome: &CampaignOutcome) -> bool {
+    match (entry.outcome, outcome) {
+        (CorpusOutcome::Completes(expectations), CampaignOutcome::Completed(report)) => {
+            expectations
+                .iter()
+                .all(|expectation| expectation.holds(report))
+        }
+        (
+            CorpusOutcome::WedgesUntilRedbFileGrowthFix,
+            CampaignOutcome::WedgedByRedb410FileGrowth { .. },
+        ) => !REDB_PIN_CONTAINS_FD82CED,
+        (CorpusOutcome::WedgesUntilRedbFileGrowthFix, CampaignOutcome::Completed(report)) => {
+            REDB_PIN_CONTAINS_FD82CED
+                && report.final_frontier == u64::from(entry.config.generator.commands)
+        }
+        _ => false,
+    }
+}
 
 /// SIM-004: every corpus entry replays per merge and demonstrates its pinned
 /// outcome again.
@@ -175,7 +262,14 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
         !REGRESSION_CORPUS.is_empty(),
         "the corpus must retain at least the inaugural engine catch"
     );
-    for entry in REGRESSION_CORPUS {
+    for (entry_index, entry) in REGRESSION_CORPUS.iter().enumerate() {
+        assert!(
+            REGRESSION_CORPUS[..entry_index]
+                .iter()
+                .all(|prior| prior.seed != entry.seed),
+            "corpus seed {:#x} appears more than once",
+            entry.seed
+        );
         assert_eq!(
             entry.generator_version, WORKLOAD_GENERATOR_VERSION,
             "corpus entry for seed {:#x} was pinned under generator version \
@@ -184,6 +278,59 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
             entry.seed, entry.generator_version
         );
         let outcome = run_campaign_outcome(entry.seed, entry.config);
+        if let Some(rotation) = entry.rotation {
+            let Some((successor_index, successor)) = REGRESSION_CORPUS
+                .iter()
+                .enumerate()
+                .find(|(_, candidate)| candidate.seed == rotation.successor_seed)
+            else {
+                panic!(
+                    "corpus seed {:#x} rotation names absent successor {:#x}",
+                    entry.seed, rotation.successor_seed
+                );
+            };
+            assert!(
+                successor_index > entry_index,
+                "corpus seed {:#x} rotation successor {:#x} must be appended later",
+                entry.seed,
+                rotation.successor_seed
+            );
+            assert_eq!(
+                successor.outcome, entry.outcome,
+                "corpus seed {:#x} rotation successor {:#x} must preserve the exact expected territory",
+                entry.seed, rotation.successor_seed
+            );
+            assert!(
+                rotation.invalidated_by_commit.len() == 40
+                    && rotation
+                        .invalidated_by_commit
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit()),
+                "corpus seed {:#x} rotation must name an exact Git commit",
+                entry.seed
+            );
+            assert!(
+                !rotation.rotated.is_empty(),
+                "corpus seed {:#x} rotation date is required",
+                entry.seed
+            );
+            if REDB_PIN_CONTAINS_FD82CED
+                && matches!(entry.outcome, CorpusOutcome::WedgesUntilRedbFileGrowthFix)
+            {
+                assert!(
+                    outcome_holds(entry, &outcome),
+                    "historical engine-defect seed {:#x} must also recover cleanly after the redb fix: {outcome:?}",
+                    entry.seed
+                );
+            } else {
+                assert!(
+                    !outcome_holds(entry, &outcome),
+                    "historical corpus seed {:#x} still reaches its exact expected territory, so its rotation receipt is stale or unnecessary: {outcome:?}",
+                    entry.seed
+                );
+            }
+            continue;
+        }
         match entry.outcome {
             CorpusOutcome::Completes(expectations) => {
                 let CampaignOutcome::Completed(report) = outcome else {
