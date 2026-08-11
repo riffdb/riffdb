@@ -4,8 +4,9 @@ use std::fmt;
 
 use riffdb_application::{
     ApplicationInstallationCampaign, ApplicationInstallationCampaignState,
-    ApplicationInstallationPlan, InstallationCampaignPhase, InstallationStage,
-    InstallationStageEvidence,
+    ApplicationInstallationPlan, InstallationArtifactKind, InstallationCampaignPhase,
+    InstallationFailureCode, InstallationStage, InstallationStageEvidence,
+    InstalledCredentialEvidence, InstalledRoleEvidence,
 };
 use riffdb_service::{
     ApplicationInstallationCoordinatorPort, ApplicationInstallationObservationPermit,
@@ -15,10 +16,15 @@ use riffdb_service::{
     PortAdmissionError, PortFuture, RequestControl,
 };
 use riffdb_storage_api::{
-    ApplicationInstallationCampaignRepository, ApplicationInstallationCampaignWriteResultV1,
-    StorageError, StorageErrorKind, StoredApplicationInstallationCampaignV1,
+    ActiveCatalogPointerV1, ApplicationInstallationCampaignRepository,
+    ApplicationInstallationCampaignWriteResultV1, CapabilityLifecycleV1, CapabilityReader,
+    CatalogRepository, QueryModuleRepository, ReactiveModuleRepository, StorageError,
+    StorageErrorKind, StoredApplicationInstallationCampaignV1,
 };
-use riffdb_types::{ApplicationInstallationCampaignId, ContractLineage};
+use riffdb_types::{
+    ApplicationInstallationCampaignId, CapabilityPermissionV1, ContractLineage, QueryModuleHash,
+    ReactiveModuleHash,
+};
 
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
 use crate::storage::SharedRedbOperationalPorts;
@@ -120,20 +126,7 @@ fn start_or_resume(
     let (expected, mut campaign) =
         recover_campaign(retained, campaign_id, plan.as_ref(), &lineage)?;
 
-    // Compilation proves the local identities. Remote stages remain pending
-    // until their existing authoritative owners supply exact evidence.
-    if campaign.observe().next_stage() == Some(InstallationStage::Preflight) {
-        campaign
-            .complete_stage(
-                plan.as_ref(),
-                InstallationStageEvidence::Preflight {
-                    source_hash: plan.input().source_hash,
-                    lock_hash: plan.input().lock_hash,
-                    manifest_hash: plan.input().manifest_hash,
-                },
-            )
-            .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
-    }
+    advance_observed_stages(&storage, plan.as_ref(), &mut campaign)?;
 
     let replacement = encode_state(&campaign, plan.as_ref())
         .map_err(|()| ApplicationInstallationStartPortError::Integrity)?;
@@ -150,6 +143,360 @@ fn start_or_resume(
             Err(ApplicationInstallationStartPortError::OutcomeUnknown)
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StageVerification {
+    Pending,
+    Complete,
+    Failed(InstallationFailureCode),
+}
+
+fn advance_observed_stages(
+    storage: &SharedRedbOperationalPorts,
+    plan: &ApplicationInstallationPlan,
+    campaign: &mut ApplicationInstallationCampaign,
+) -> Result<(), ApplicationInstallationStartPortError> {
+    loop {
+        let observation = campaign.observe();
+        let Some(stage) = observation.next_stage() else {
+            return Ok(());
+        };
+        let evidence = match stage {
+            InstallationStage::Preflight => Some(InstallationStageEvidence::Preflight {
+                source_hash: plan.input().source_hash,
+                lock_hash: plan.input().lock_hash,
+                manifest_hash: plan.input().manifest_hash,
+            }),
+            InstallationStage::Contract => {
+                let active =
+                    CatalogRepository::read_active_catalog(storage).map_err(map_start_storage)?;
+                match classify_contract_stage(plan, active.as_ref()) {
+                    StageVerification::Pending => None,
+                    StageVerification::Complete => Some(InstallationStageEvidence::Contract {
+                        version: plan.input().contract.version(),
+                        bundle_hash: plan.input().contract.bundle_hash(),
+                    }),
+                    StageVerification::Failed(code) => {
+                        campaign
+                            .record_failure(plan, code)
+                            .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                        return Ok(());
+                    }
+                }
+            }
+            InstallationStage::Migration => match verify_migration_stage(storage, plan)? {
+                StageVerification::Pending => None,
+                StageVerification::Complete => Some(InstallationStageEvidence::Migration {
+                    migration_hash: plan
+                        .input()
+                        .migration
+                        .map(|migration| migration.migration_hash()),
+                }),
+                StageVerification::Failed(code) => {
+                    campaign
+                        .record_failure(plan, code)
+                        .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                    return Ok(());
+                }
+            },
+            InstallationStage::QueryModules => match verify_query_modules(storage, plan)? {
+                StageVerification::Pending => None,
+                StageVerification::Complete => Some(InstallationStageEvidence::QueryModules(
+                    artifacts_for(plan, InstallationArtifactKind::QueryModule),
+                )),
+                StageVerification::Failed(code) => {
+                    campaign
+                        .record_failure(plan, code)
+                        .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                    return Ok(());
+                }
+            },
+            InstallationStage::ReactiveModules => match verify_reactive_modules(storage, plan)? {
+                StageVerification::Pending => None,
+                StageVerification::Complete => Some(InstallationStageEvidence::ReactiveModules(
+                    artifacts_for(plan, InstallationArtifactKind::ReactiveModule),
+                )),
+                StageVerification::Failed(code) => {
+                    campaign
+                        .record_failure(plan, code)
+                        .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                    return Ok(());
+                }
+            },
+            InstallationStage::Roles => match verify_roles(storage, plan)? {
+                StageVerification::Pending => None,
+                StageVerification::Complete => Some(InstallationStageEvidence::Roles(
+                    plan.input()
+                        .roles
+                        .iter()
+                        .map(|role| {
+                            InstalledRoleEvidence::new(role.name().clone(), role.role_hash())
+                        })
+                        .collect(),
+                )),
+                StageVerification::Failed(code) => {
+                    campaign
+                        .record_failure(plan, code)
+                        .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                    return Ok(());
+                }
+            },
+            InstallationStage::Credentials => match verify_credentials(storage, plan)? {
+                StageVerification::Pending => None,
+                StageVerification::Complete => Some(InstallationStageEvidence::Credentials(
+                    plan.input()
+                        .credential_destinations
+                        .iter()
+                        .map(|destination| {
+                            InstalledCredentialEvidence::new(
+                                destination.name().clone(),
+                                destination.successor(),
+                            )
+                        })
+                        .collect(),
+                )),
+                StageVerification::Failed(code) => {
+                    campaign
+                        .record_failure(plan, code)
+                        .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                    return Ok(());
+                }
+            },
+            InstallationStage::DriverProof
+            | InstallationStage::Seeds
+            | InstallationStage::Receipt => None,
+        };
+        let Some(evidence) = evidence else {
+            return Ok(());
+        };
+        campaign
+            .complete_stage(plan, evidence)
+            .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+    }
+}
+
+fn classify_contract_stage(
+    plan: &ApplicationInstallationPlan,
+    active: Option<&ActiveCatalogPointerV1>,
+) -> StageVerification {
+    let input = plan.input();
+    let Some(active) = active else {
+        return StageVerification::Pending;
+    };
+    let active_is_successor = active.lineage() == input.target.lineage()
+        && active.contract_version() == input.contract.version()
+        && active.bundle_hash() == input.contract.bundle_hash();
+    if active_is_successor {
+        return StageVerification::Complete;
+    }
+    if active.lineage() != input.target.lineage() {
+        return StageVerification::Failed(InstallationFailureCode::RemoteIdentityMismatch);
+    }
+    match input.migration {
+        Some(migration)
+            if active.lineage() == input.target.lineage()
+                && active.contract_version() == migration.parent_version()
+                && active.bundle_hash() == migration.parent_bundle_hash() =>
+        {
+            // The exact candidate is pinned by the plan; the migration stage
+            // remains responsible for proving the successor cutover.
+            StageVerification::Complete
+        }
+        Some(_) => StageVerification::Failed(InstallationFailureCode::RemoteIdentityMismatch),
+        None => StageVerification::Failed(InstallationFailureCode::MigrationGateRequired),
+    }
+}
+
+fn verify_migration_stage(
+    storage: &SharedRedbOperationalPorts,
+    plan: &ApplicationInstallationPlan,
+) -> Result<StageVerification, ApplicationInstallationStartPortError> {
+    let Some(migration) = plan.input().migration else {
+        return Ok(StageVerification::Complete);
+    };
+    let active = CatalogRepository::read_active_catalog(storage).map_err(map_start_storage)?;
+    let Some(active) = active else {
+        return Ok(StageVerification::Pending);
+    };
+    if active.lineage() != plan.input().target.lineage()
+        || active.contract_version() != migration.successor_version()
+        || active.bundle_hash() != migration.successor_bundle_hash()
+    {
+        return Ok(
+            if active.contract_version() == migration.parent_version()
+                && active.bundle_hash() == migration.parent_bundle_hash()
+            {
+                StageVerification::Pending
+            } else {
+                StageVerification::Failed(InstallationFailureCode::RemoteIdentityMismatch)
+            },
+        );
+    }
+    let edge = storage
+        .contract_migration_edge(migration.parent_bundle_hash())
+        .map_err(map_start_storage)?;
+    let Some(edge) = edge else {
+        return Ok(StageVerification::Failed(
+            InstallationFailureCode::RemoteIdentityMismatch,
+        ));
+    };
+    let artifacts = edge.retirement().artifacts();
+    Ok(
+        if artifacts.parent() == migration.parent_bundle_hash()
+            && artifacts.candidate() == migration.successor_bundle_hash()
+            && artifacts.migration() == migration.migration_hash()
+        {
+            StageVerification::Complete
+        } else {
+            StageVerification::Failed(InstallationFailureCode::RemoteIdentityMismatch)
+        },
+    )
+}
+
+fn verify_query_modules(
+    storage: &SharedRedbOperationalPorts,
+    plan: &ApplicationInstallationPlan,
+) -> Result<StageVerification, ApplicationInstallationStartPortError> {
+    for artifact in artifacts_for(plan, InstallationArtifactKind::QueryModule) {
+        let hash = QueryModuleHash::from_bytes(*artifact.content_hash().as_bytes());
+        let Some(module) =
+            QueryModuleRepository::read_query_module(storage, hash).map_err(map_start_storage)?
+        else {
+            return Ok(StageVerification::Pending);
+        };
+        if module.module_name().as_str() != artifact.name().as_str()
+            || module.contract_lineage() != plan.input().target.lineage()
+            || module.contract_version() != plan.input().contract.version()
+            || module.contract_bundle_hash() != plan.input().contract.bundle_hash()
+        {
+            return Ok(StageVerification::Failed(
+                InstallationFailureCode::RemoteIdentityMismatch,
+            ));
+        }
+    }
+    Ok(StageVerification::Complete)
+}
+
+fn verify_reactive_modules(
+    storage: &SharedRedbOperationalPorts,
+    plan: &ApplicationInstallationPlan,
+) -> Result<StageVerification, ApplicationInstallationStartPortError> {
+    for artifact in artifacts_for(plan, InstallationArtifactKind::ReactiveModule) {
+        let hash = ReactiveModuleHash::from_bytes(*artifact.content_hash().as_bytes());
+        let Some(module) = ReactiveModuleRepository::read_reactive_module(storage, hash)
+            .map_err(map_start_storage)?
+        else {
+            return Ok(StageVerification::Pending);
+        };
+        if module.module_name() != artifact.name().as_str()
+            || module.contract_lineage() != plan.input().target.lineage()
+            || module.contract_version() != plan.input().contract.version()
+            || module.contract_bundle_hash() != plan.input().contract.bundle_hash()
+        {
+            return Ok(StageVerification::Failed(
+                InstallationFailureCode::RemoteIdentityMismatch,
+            ));
+        }
+    }
+    Ok(StageVerification::Complete)
+}
+
+fn verify_roles(
+    storage: &SharedRedbOperationalPorts,
+    plan: &ApplicationInstallationPlan,
+) -> Result<StageVerification, ApplicationInstallationStartPortError> {
+    for role in &plan.input().roles {
+        let destinations = plan
+            .input()
+            .credential_destinations
+            .iter()
+            .filter(|destination| destination.role() == role.name())
+            .collect::<Vec<_>>();
+        if destinations.is_empty() {
+            return Ok(StageVerification::Failed(
+                InstallationFailureCode::RemoteIdentityMismatch,
+            ));
+        }
+        for destination in destinations {
+            let Some(record) = CapabilityReader::read_capability(storage, destination.successor())
+                .map_err(map_start_storage)?
+            else {
+                return Ok(StageVerification::Pending);
+            };
+            if !matches!(record.lifecycle(), CapabilityLifecycleV1::Active)
+                || record.environment() != plan.input().target.environment()
+                || !record
+                    .grant()
+                    .permissions()
+                    .as_slice()
+                    .iter()
+                    .any(|permission| {
+                        matches!(
+                            permission,
+                            CapabilityPermissionV1::ApplicationRoleIdentity(hash)
+                                if *hash == role.role_hash()
+                        )
+                    })
+            {
+                return Ok(StageVerification::Failed(
+                    InstallationFailureCode::RemoteIdentityMismatch,
+                ));
+            }
+        }
+    }
+    Ok(StageVerification::Complete)
+}
+
+fn verify_credentials(
+    storage: &SharedRedbOperationalPorts,
+    plan: &ApplicationInstallationPlan,
+) -> Result<StageVerification, ApplicationInstallationStartPortError> {
+    for destination in &plan.input().credential_destinations {
+        let Some(record) = CapabilityReader::read_capability(storage, destination.successor())
+            .map_err(map_start_storage)?
+        else {
+            return Ok(StageVerification::Pending);
+        };
+        if !matches!(record.lifecycle(), CapabilityLifecycleV1::Active) {
+            return Ok(StageVerification::Failed(
+                InstallationFailureCode::CredentialDestinationOccupied,
+            ));
+        }
+        if record.environment() != plan.input().target.environment() {
+            return Ok(StageVerification::Failed(
+                InstallationFailureCode::RemoteIdentityMismatch,
+            ));
+        }
+        if let Some(predecessor) = destination.expected_current() {
+            let Some(predecessor) = CapabilityReader::read_capability(storage, predecessor)
+                .map_err(map_start_storage)?
+            else {
+                return Ok(StageVerification::Failed(
+                    InstallationFailureCode::CredentialDestinationOccupied,
+                ));
+            };
+            if !matches!(
+                predecessor.lifecycle(),
+                CapabilityLifecycleV1::Revoked { .. }
+            ) {
+                return Ok(StageVerification::Pending);
+            }
+        }
+    }
+    Ok(StageVerification::Complete)
+}
+
+fn artifacts_for(
+    plan: &ApplicationInstallationPlan,
+    kind: InstallationArtifactKind,
+) -> Vec<riffdb_application::InstallationArtifact> {
+    plan.input()
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind() == kind)
+        .cloned()
+        .collect()
 }
 
 fn recover_campaign(
@@ -279,6 +626,8 @@ const fn map_start_storage(error: StorageError) -> ApplicationInstallationStartP
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_storage_api::ActiveCatalogPointerV1;
+    use riffdb_types::ContractBundleHash;
 
     fn plan() -> ApplicationInstallationPlan {
         ApplicationInstallationPlan::decode_canonical(include_bytes!(
@@ -341,6 +690,33 @@ mod tests {
             )
             .expect_err("lineage substitution"),
             ApplicationInstallationStartPortError::InputMismatch
+        );
+    }
+
+    #[test]
+    fn contract_stage_distinguishes_absent_exact_and_inexact_remote_state() {
+        let plan = plan();
+        assert_eq!(
+            classify_contract_stage(&plan, None),
+            StageVerification::Pending
+        );
+        let exact = ActiveCatalogPointerV1::new(
+            plan.input().target.lineage().clone(),
+            plan.input().contract.version(),
+            plan.input().contract.bundle_hash(),
+        );
+        assert_eq!(
+            classify_contract_stage(&plan, Some(&exact)),
+            StageVerification::Complete
+        );
+        let inexact = ActiveCatalogPointerV1::new(
+            plan.input().target.lineage().clone(),
+            plan.input().contract.version(),
+            ContractBundleHash::from_bytes([0x44; 32]),
+        );
+        assert_eq!(
+            classify_contract_stage(&plan, Some(&inexact)),
+            StageVerification::Failed(InstallationFailureCode::MigrationGateRequired)
         );
     }
 }

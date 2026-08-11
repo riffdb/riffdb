@@ -56,11 +56,17 @@ durable storage encodings.
 
 ## Current POC limit
 
-The public campaign boundary currently persists and observes the compiler-
-checked preflight transition and returns `deploy_contract` as its next action.
+On every start or resume, the server now reconciles the campaign against its
+authoritative contract catalog, permanent migration edge, query/reactive
+module records, compiled-role identity permissions, and successor capability
+records. Exact already-completed remote work advances durably; absent work
+remains a symbolic next action, and conflicting identity becomes a typed
+partial campaign. This makes resuming existing deployment operations safe
+without accepting caller-asserted remote identities.
+
 The existing `application deploy`, migration, role, credential, driver, and
-seed operations remain the available executors for later stages. Automatic
-composition and verified stage advancement are still part of WP-568 and must
-land before the installation command is presented as the canonical deployment
-replacement. Until then, do not interpret a `running` campaign as a completed
-application deployment.
+seed operations remain the available executors. First-party driver proof and
+nonempty seed receipt verification are still part of WP-568, so the campaign
+stops before those stages and cannot seal a terminal receipt. Until those
+receipts and their controller composition land, do not interpret a `running`
+campaign as a completed application deployment.
