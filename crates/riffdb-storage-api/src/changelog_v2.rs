@@ -13,8 +13,8 @@ use riffdb_types::{DUAL_FRONTIER_BYTES, DatabaseId, DualFrontier, EntityTransiti
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CommittedEntityTransitionV1, CompositeTableV1, MAX_CHANGELOG_FRAME_BYTES,
-    MAX_CHANGELOG_FRAME_ENTRIES,
+    CommittedEntityTransitionV1, CompositeTableV1, EntityTransitionFingerprint,
+    MAX_CHANGELOG_FRAME_BYTES, MAX_CHANGELOG_FRAME_ENTRIES, ValidatedPrefixEntityTransitionCounts,
 };
 
 const FRAME_MAGIC: [u8; 8] = *b"RDBCLF02";
@@ -338,6 +338,116 @@ impl ChangelogV2RotationReceipt {
     #[must_use]
     pub const fn receipt_hash(self) -> [u8; HASH_BYTES] {
         self.receipt_hash
+    }
+}
+
+/// Delete-aware entity snapshot manifest at one exact V2 resume boundary.
+///
+/// The complete chain-head catalog, not merely the live entity table, is the
+/// bootstrap authority. Binding its cardinalities and fingerprint prevents a
+/// receiver from accepting a snapshot that silently omitted deleted identity
+/// history and would therefore accept a stale recreate later.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EntityReplicaBootstrapManifestV2 {
+    database_id: DatabaseId,
+    history_incarnation: u64,
+    rotation_receipt_hash: [u8; HASH_BYTES],
+    frontier: DualFrontier,
+    tail_chain_hash: [u8; HASH_BYTES],
+    counts: ValidatedPrefixEntityTransitionCounts,
+    entity_transition_fingerprint: EntityTransitionFingerprint,
+    manifest_hash: [u8; HASH_BYTES],
+}
+
+impl EntityReplicaBootstrapManifestV2 {
+    /// Constructs and self-hashes one exact entity bootstrap manifest.
+    pub fn new(
+        receipt: ChangelogV2RotationReceipt,
+        frontier: DualFrontier,
+        tail_chain_hash: [u8; HASH_BYTES],
+        counts: ValidatedPrefixEntityTransitionCounts,
+        entity_transition_fingerprint: EntityTransitionFingerprint,
+    ) -> Result<Self, ChangelogFrameV2Error> {
+        if frontier != receipt.predecessor() && !frontier.advances_from(receipt.predecessor()) {
+            return Err(ChangelogFrameV2Error::InvalidBinding);
+        }
+        let total_heads = counts
+            .live_entity_count
+            .checked_add(counts.deleted_entity_count)
+            .ok_or(ChangelogFrameV2Error::LimitExceeded)?;
+        if counts.entity_transition_count < total_heads {
+            return Err(ChangelogFrameV2Error::InvalidBinding);
+        }
+        let manifest_hash = digest_many(&[
+            b"riffdb.entity-replica-bootstrap-manifest/v2",
+            receipt.database_id().as_bytes(),
+            &receipt.history_incarnation().to_be_bytes(),
+            &receipt.receipt_hash(),
+            &frontier.to_canonical_bytes(),
+            &tail_chain_hash,
+            &counts.live_entity_count.to_be_bytes(),
+            &counts.deleted_entity_count.to_be_bytes(),
+            &counts.entity_transition_count.to_be_bytes(),
+            entity_transition_fingerprint.as_bytes(),
+        ]);
+        Ok(Self {
+            database_id: receipt.database_id(),
+            history_incarnation: receipt.history_incarnation(),
+            rotation_receipt_hash: receipt.receipt_hash(),
+            frontier,
+            tail_chain_hash,
+            counts,
+            entity_transition_fingerprint,
+            manifest_hash,
+        })
+    }
+
+    /// Database lineage captured by the snapshot.
+    #[must_use]
+    pub const fn database_id(self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Retained-history incarnation captured by the snapshot.
+    #[must_use]
+    pub const fn history_incarnation(self) -> u64 {
+        self.history_incarnation
+    }
+
+    /// Exact rotation receipt the snapshot extends.
+    #[must_use]
+    pub const fn rotation_receipt_hash(self) -> [u8; HASH_BYTES] {
+        self.rotation_receipt_hash
+    }
+
+    /// Exact dual frontier represented by the snapshot.
+    #[must_use]
+    pub const fn frontier(self) -> DualFrontier {
+        self.frontier
+    }
+
+    /// V2 chain hash required by the first post-bootstrap frame.
+    #[must_use]
+    pub const fn tail_chain_hash(self) -> [u8; HASH_BYTES] {
+        self.tail_chain_hash
+    }
+
+    /// Separated live, deleted, and historical transition counts.
+    #[must_use]
+    pub const fn counts(self) -> ValidatedPrefixEntityTransitionCounts {
+        self.counts
+    }
+
+    /// Canonical fingerprint of every entity-chain head.
+    #[must_use]
+    pub const fn entity_transition_fingerprint(self) -> EntityTransitionFingerprint {
+        self.entity_transition_fingerprint
+    }
+
+    /// Self-hash binding the receipt, resume cursor, and complete head proof.
+    #[must_use]
+    pub const fn manifest_hash(self) -> [u8; HASH_BYTES] {
+        self.manifest_hash
     }
 }
 
@@ -680,6 +790,17 @@ impl ChangelogStreamValidatorV2 {
         }
     }
 
+    /// Starts after one completely verified delete-aware bootstrap snapshot.
+    #[must_use]
+    pub const fn from_bootstrap(manifest: EntityReplicaBootstrapManifestV2) -> Self {
+        Self {
+            database_id: manifest.database_id,
+            history_incarnation: manifest.history_incarnation,
+            expected_predecessor: manifest.frontier,
+            expected_chain_hash: manifest.tail_chain_hash,
+        }
+    }
+
     /// Returns the exact predecessor frontier required by the next frame.
     #[must_use]
     pub const fn expected_predecessor(&self) -> DualFrontier {
@@ -776,6 +897,7 @@ impl EntityReplicaBootstrapRowV2 {
 /// are the conformance oracle shared by follower adapters and recovery tests.
 pub struct DeleteAwareEntityFollowerV2 {
     validator: ChangelogStreamValidatorV2,
+    bootstrap_manifest: EntityReplicaBootstrapManifestV2,
     bootstrap_complete: bool,
     last_bootstrap_key: Option<Box<[u8]>>,
     entities: BTreeMap<Box<[u8]>, Box<[u8]>>,
@@ -784,17 +906,26 @@ pub struct DeleteAwareEntityFollowerV2 {
 }
 
 impl DeleteAwareEntityFollowerV2 {
-    /// Starts an empty follower at the exact receipted rotation boundary.
-    #[must_use]
-    pub fn from_rotation(receipt: ChangelogV2RotationReceipt) -> Self {
-        Self {
-            validator: ChangelogStreamValidatorV2::from_rotation(receipt),
+    /// Starts an empty follower for one manifest-bound bootstrap snapshot.
+    pub fn from_bootstrap(
+        receipt: ChangelogV2RotationReceipt,
+        manifest: EntityReplicaBootstrapManifestV2,
+    ) -> Result<Self, ChangelogFrameV2Error> {
+        if manifest.database_id() != receipt.database_id()
+            || manifest.history_incarnation() != receipt.history_incarnation()
+            || manifest.rotation_receipt_hash() != receipt.receipt_hash()
+        {
+            return Err(ChangelogFrameV2Error::InvalidBinding);
+        }
+        Ok(Self {
+            validator: ChangelogStreamValidatorV2::from_bootstrap(manifest),
+            bootstrap_manifest: manifest,
             bootstrap_complete: false,
             last_bootstrap_key: None,
             entities: BTreeMap::new(),
             chain_head_values: BTreeMap::new(),
             chain_heads: BTreeMap::new(),
-        }
+        })
     }
 
     /// Installs one canonical bounded bootstrap page.
@@ -861,6 +992,44 @@ impl DeleteAwareEntityFollowerV2 {
                 .insert(row.key.clone(), row.chain_head_value);
             self.chain_heads.insert(row.key.clone(), head);
             self.last_bootstrap_key = Some(row.key);
+        }
+        if final_page {
+            let mut live_entity_count = 0_u64;
+            let mut deleted_entity_count = 0_u64;
+            let mut entity_transition_count = 0_u64;
+            for head in self.chain_heads.values() {
+                match head.state() {
+                    crate::EntityChainStateV1::Live { .. } => {
+                        live_entity_count = live_entity_count
+                            .checked_add(1)
+                            .ok_or(ChangelogFrameV2Error::LimitExceeded)?;
+                    }
+                    crate::EntityChainStateV1::Deleted => {
+                        deleted_entity_count = deleted_entity_count
+                            .checked_add(1)
+                            .ok_or(ChangelogFrameV2Error::LimitExceeded)?;
+                    }
+                    crate::EntityChainStateV1::NeverExisted => {
+                        return Err(ChangelogFrameV2Error::InvalidEntry);
+                    }
+                }
+                entity_transition_count = entity_transition_count
+                    .checked_add(head.chain_revision())
+                    .ok_or(ChangelogFrameV2Error::LimitExceeded)?;
+            }
+            let counts = ValidatedPrefixEntityTransitionCounts {
+                live_entity_count,
+                deleted_entity_count,
+                entity_transition_count,
+            };
+            let fingerprint =
+                EntityTransitionFingerprint::from_sorted_heads(self.chain_heads.values())
+                    .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?;
+            if counts != self.bootstrap_manifest.counts()
+                || fingerprint != self.bootstrap_manifest.entity_transition_fingerprint()
+            {
+                return Err(ChangelogFrameV2Error::ChecksumMismatch);
+            }
         }
         self.bootstrap_complete = final_page;
         Ok(())
@@ -1203,6 +1372,69 @@ mod tests {
             EntityChainStateV1::Deleted,
         )
         .expect("deletion")
+    }
+
+    fn empty_bootstrap_manifest(
+        receipt: ChangelogV2RotationReceipt,
+    ) -> EntityReplicaBootstrapManifestV2 {
+        EntityReplicaBootstrapManifestV2::new(
+            receipt,
+            receipt.predecessor(),
+            receipt.v2_chain_anchor(),
+            ValidatedPrefixEntityTransitionCounts {
+                live_entity_count: 0,
+                deleted_entity_count: 0,
+                entity_transition_count: 0,
+            },
+            EntityTransitionFingerprint::from_sorted_heads(std::iter::empty())
+                .expect("empty fingerprint"),
+        )
+        .expect("empty bootstrap manifest")
+    }
+
+    #[test]
+    fn bootstrap_manifest_binds_rotation_identity_and_complete_head_proof() {
+        let receipt =
+            ChangelogV2RotationReceipt::new(database_id(), 1, DualFrontier::INITIAL, [6; 32])
+                .expect("receipt");
+        let manifest = empty_bootstrap_manifest(receipt);
+        let mut follower = DeleteAwareEntityFollowerV2::from_bootstrap(receipt, manifest)
+            .expect("matching manifest");
+        follower
+            .install_bootstrap_page(Vec::new(), true)
+            .expect("empty manifest seals empty bootstrap");
+
+        let other_receipt = ChangelogV2RotationReceipt::new(
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_001, [0x78; 10])
+                .expect("other identity"),
+            1,
+            DualFrontier::INITIAL,
+            [6; 32],
+        )
+        .expect("other receipt");
+        assert!(matches!(
+            DeleteAwareEntityFollowerV2::from_bootstrap(other_receipt, manifest),
+            Err(ChangelogFrameV2Error::InvalidBinding)
+        ));
+
+        let wrong_counts = EntityReplicaBootstrapManifestV2::new(
+            receipt,
+            receipt.predecessor(),
+            receipt.v2_chain_anchor(),
+            ValidatedPrefixEntityTransitionCounts {
+                live_entity_count: 1,
+                deleted_entity_count: 0,
+                entity_transition_count: 1,
+            },
+            manifest.entity_transition_fingerprint(),
+        )
+        .expect("structurally valid but false manifest");
+        let mut follower = DeleteAwareEntityFollowerV2::from_bootstrap(receipt, wrong_counts)
+            .expect("identity still matches");
+        assert_eq!(
+            follower.install_bootstrap_page(Vec::new(), true),
+            Err(ChangelogFrameV2Error::ChecksumMismatch)
+        );
     }
 
     #[test]
