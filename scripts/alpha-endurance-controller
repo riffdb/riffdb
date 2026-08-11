@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Drive one closed endurance action manifest and emit an untrusted raw receipt."""
+
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+SCHEMA = "riffdb.alpha-endurance-actions/v1"
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_ACTIONS = 32
+MAX_ARGUMENTS = 64
+MAX_SAMPLES = 10000
+REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
+REQUIRED_LIFECYCLES = {
+    "journal_recycle",
+    "checkpoint",
+    "recovery",
+    "retention",
+    "backup",
+    "capability_rotation",
+    "certificate_rotation",
+    "deploy_under_load",
+    "restart",
+    "reactive_consumer",
+}
+REQUIRED_FAULTS = {
+    "checkpoint_crash",
+    "consumer_after_command_before_ack",
+    "journal_recycle_crash",
+    "network_interrupt",
+    "process_kill",
+}
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def command(value: Any, name: str) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > MAX_ARGUMENTS:
+        fail(f"{name} must be a bounded nonempty argv array")
+    if not all(isinstance(part, str) and part and "\x00" not in part for part in value):
+        fail(f"{name} contains an invalid argument")
+    return value
+
+
+def load_actions(candidate: Path) -> dict[str, Any]:
+    if not candidate.is_file() or not 0 < candidate.stat().st_size <= MAX_MANIFEST_BYTES:
+        fail("action manifest is absent or exceeds its byte bound")
+    with candidate.open(encoding="utf-8") as source:
+        value = json.load(source)
+    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
+        fail("action manifest has the wrong schema")
+    workers = value.get("workers")
+    if not isinstance(workers, list) or len(workers) != 4:
+        fail("action manifest must declare four language workers")
+    languages = set()
+    for worker in workers:
+        if not isinstance(worker, dict):
+            fail("worker entry must be an object")
+        languages.add(worker.get("language"))
+        command(worker.get("command"), "worker command")
+    if languages != REQUIRED_LANGUAGES:
+        fail("action manifest must declare Rust, Go, TypeScript, and Python")
+    lifecycles = value.get("lifecycles")
+    if not isinstance(lifecycles, list) or not 1 <= len(lifecycles) <= MAX_ACTIONS:
+        fail("lifecycle actions are absent or unbounded")
+    if {item.get("name") for item in lifecycles if isinstance(item, dict)} != REQUIRED_LIFECYCLES:
+        fail("lifecycle action inventory is incomplete")
+    for item in lifecycles:
+        command(item.get("command"), "lifecycle command")
+        if type(item.get("interval_seconds")) is not int or not 1 <= item["interval_seconds"] <= 86400:
+            fail("lifecycle interval is invalid")
+    command(value.get("sampler", {}).get("command"), "sampler command")
+    command(value.get("conformance", {}).get("command"), "conformance command")
+    if set(value.get("fault_coverage", [])) != REQUIRED_FAULTS:
+        fail("fault schedule coverage is incomplete")
+    for section in ("sampler", "conformance"):
+        interval = value[section].get("interval_seconds")
+        if type(interval) is not int or not 1 <= interval <= 86400:
+            fail(f"{section} interval is invalid")
+    return value
+
+
+def canonical_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def run_checked(argv: list[str], root: Path, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=root,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+
+
+def main() -> int:
+    action_path = os.environ.get("RIFFDB_ENDURANCE_ACTION_MANIFEST")
+    if not action_path:
+        fail("RIFFDB_ENDURANCE_ACTION_MANIFEST must select a reviewed closed action manifest")
+    duration = int(os.environ["RIFFDB_ENDURANCE_DURATION_SECONDS"])
+    if not 3600 <= duration <= 168 * 3600:
+        fail("controller duration is outside the closed 1..168 hour range")
+    raw_receipt = Path(os.environ["RIFFDB_ENDURANCE_RAW_RECEIPT"]).resolve()
+    action_manifest = load_actions(Path(action_path).resolve())
+    root = Path(__file__).resolve().parent.parent
+    environment = os.environ.copy()
+    started = time.monotonic()
+    deadline = started + duration
+    workers: list[tuple[str, subprocess.Popen[bytes]]] = []
+    lifecycle_counts = {name: 0 for name in sorted(REQUIRED_LIFECYCLES)}
+    errors: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    conformance_checkpoints = 0
+
+    for worker in action_manifest["workers"]:
+        process = subprocess.Popen(
+            command(worker["command"], "worker command"),
+            cwd=root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        workers.append((worker["language"], process))
+
+    next_sample = started
+    next_conformance = started
+    lifecycle_due = {item["name"]: started for item in action_manifest["lifecycles"]}
+    try:
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            for language, process in workers:
+                status = process.poll()
+                if status is not None:
+                    errors.append({"code": "worker_exited_early", "language": language, "status": status})
+                    deadline = now
+                    break
+            if now >= next_sample:
+                result = run_checked(command(action_manifest["sampler"]["command"], "sampler command"), root, environment)
+                if result.returncode != 0:
+                    errors.append({"code": "sampler_failed", "status": result.returncode})
+                    break
+                try:
+                    sample = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    errors.append({"code": "sampler_invalid_json"})
+                    break
+                if not isinstance(sample, dict) or len(observations) >= MAX_SAMPLES:
+                    errors.append({"code": "sampler_invalid_or_unbounded"})
+                    break
+                sample["elapsed_seconds"] = int(now - started)
+                observations.append(sample)
+                next_sample = now + action_manifest["sampler"]["interval_seconds"]
+            if now >= next_conformance:
+                result = run_checked(command(action_manifest["conformance"]["command"], "conformance command"), root, environment)
+                if result.returncode != 0:
+                    errors.append({"code": "conformance_failed", "status": result.returncode})
+                    break
+                conformance_checkpoints += 1
+                next_conformance = now + action_manifest["conformance"]["interval_seconds"]
+            for item in action_manifest["lifecycles"]:
+                if now < lifecycle_due[item["name"]]:
+                    continue
+                result = run_checked(command(item["command"], "lifecycle command"), root, environment)
+                if result.returncode != 0:
+                    errors.append({"code": "lifecycle_failed", "lifecycle": item["name"], "status": result.returncode})
+                    deadline = now
+                    break
+                lifecycle_counts[item["name"]] += 1
+                lifecycle_due[item["name"]] = now + item["interval_seconds"]
+            time.sleep(min(1.0, max(0.01, deadline - time.monotonic())))
+    finally:
+        for _, process in workers:
+            if process.poll() is None:
+                process.terminate()
+        for language, process in workers:
+            try:
+                status = process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                status = process.wait(timeout=10)
+            if status not in (0, -15):
+                errors.append({"code": "worker_shutdown_failed", "language": language, "status": status})
+
+    measured = int(time.monotonic() - started)
+    receipt = {
+        "schema": "riffdb.alpha-endurance-receipt/v1",
+        "status": "passed" if not errors and measured >= duration else "failed",
+        "requested_duration_seconds": duration,
+        "measured_duration_seconds": measured,
+        "manifest_sha256": os.environ["RIFFDB_ENDURANCE_MANIFEST_SHA256"],
+        "action_manifest_sha256": canonical_digest(action_manifest),
+        "release_artifact_sha256": os.environ.get("RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256", ""),
+        "languages_completed": sorted(REQUIRED_LANGUAGES) if not errors else [],
+        "workload_coverage": action_manifest.get("workload_coverage", []),
+        "faults_exercised": action_manifest.get("fault_coverage", []),
+        "lifecycle_counts": lifecycle_counts,
+        "conformance": {"all_passed": not any(item["code"] == "conformance_failed" for item in errors), "checkpoints": conformance_checkpoints},
+        "unsupported_storage_unavailable": sum(1 for item in errors if item["code"] == "storage_unavailable"),
+        "errors": errors,
+        "process_inventory": {"arguments_included": False, "maximum_processes": 64},
+        "observations": observations,
+    }
+    raw_receipt.parent.mkdir(parents=True, exist_ok=True)
+    with raw_receipt.open("w", encoding="utf-8") as destination:
+        json.dump(receipt, destination, sort_keys=True, indent=2)
+        destination.write("\n")
+    return 0 if receipt["status"] == "passed" else 3
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"endurance_controller_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

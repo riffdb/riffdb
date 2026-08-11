@@ -163,5 +163,13 @@ path = "../../tests/row_policy_conformance.rs"
 name = "row_policy_inference"
 path = "../../tests/row_policy_inference.rs"
 
+[[test]]
+name = "endurance_harness"
+path = "../../tests/endurance_harness.rs"
+
+[[test]]
+name = "release_format_compatibility"
+path = "../../tests/release_format_compatibility.rs"
+
 [lints]
 workspace = true

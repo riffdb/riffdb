@@ -1,0 +1,52 @@
+{
+  "schema": "riffdb.alpha-endurance-manifest/v1",
+  "application_surface": "public_named_operations_only",
+  "fault_controls": "orchestrator_only",
+  "languages": ["go", "python", "rust", "typescript"],
+  "workload": {
+    "mode": "closed",
+    "bounded_rate": true,
+    "coverage": [
+      "cold_keys",
+      "events",
+      "hot_keys",
+      "live_queries",
+      "multiple_tenants",
+      "reads",
+      "workflows",
+      "writes"
+    ]
+  },
+  "lifecycles": {
+    "backup": {"minimum_count": 2},
+    "capability_rotation": {"minimum_count": 2},
+    "certificate_rotation": {"minimum_count": 2},
+    "checkpoint": {"minimum_count": 2},
+    "deploy_under_load": {"minimum_count": 2},
+    "journal_recycle": {"minimum_count": 2},
+    "reactive_consumer": {"minimum_count": 2},
+    "recovery": {"minimum_count": 2},
+    "restart": {"minimum_count": 2},
+    "retention": {"minimum_count": 2}
+  },
+  "bounds": {
+    "maximum_observations": 10000,
+    "maximum_diagnostic_bytes": 1048576
+  },
+  "growth_limits": {
+    "rss_bytes": {"fixed_bytes": 67108864, "modeled_multiplier_milli": 2000},
+    "allocator_bytes": {"fixed_bytes": 67108864, "modeled_multiplier_milli": 2000},
+    "database_bytes": {"fixed_bytes": 67108864, "modeled_multiplier_milli": 2000},
+    "journal_bytes": {"fixed_bytes": 67108864, "modeled_multiplier_milli": 2000},
+    "backup_bytes": {"fixed_bytes": 67108864, "modeled_multiplier_milli": 2000},
+    "writer_queue_depth": {"absolute_maximum": 512},
+    "consumer_backlog": {"absolute_maximum": 4096},
+    "projection_backlog": {"absolute_maximum": 4096},
+    "lifecycle_time_ratio_milli": 1500,
+    "maximum_stalled_observations": 0
+  },
+  "controller": {
+    "command": ["scripts/alpha-endurance-controller"],
+    "action_manifest_environment": "RIFFDB_ENDURANCE_ACTION_MANIFEST"
+  }
+}
