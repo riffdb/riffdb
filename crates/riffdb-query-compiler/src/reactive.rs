@@ -935,6 +935,9 @@ fn type_name(value: &ValueType, contract: &ContractBundle) -> Option<String> {
             .find(|enumeration| Some(enumeration.id()) == value.enum_type_id())
             .map(|value| value.name().to_owned())?,
         ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Record => return None,
+        ValueTypeTag::Vector => {
+            format!("vector<{}>", value.vector_dimension()?.get())
+        }
     })
 }
 

@@ -71,6 +71,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x0c` | optional |
 | `0x0d` | list |
 | `0x0e` | record |
+| `0x0f` | vector |
 
 ### Expression
 
@@ -301,6 +302,7 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x0c` | optional | `inner_type`: recursive ValueType |
 | `0x0d` | list | `element_type`: recursive ValueType; `maximum_entries`: u32 |
 | `0x0e` | record | `record_type`: RecordTypeRef tag plus exact selected payload |
+| `0x0f` | vector | `dimension`: u32 in 1..=4096 |
 
 ### KeyPurpose
 

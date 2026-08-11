@@ -1516,7 +1516,8 @@ fn fixture_projection_value(
                 .first()
                 .ok_or("enum projection component without a variant")?,
         },
-        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Record => {
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Record
+        | ValueTypeTag::Vector => {
             return Err("projection fixture encountered a non-scalar group component".into());
         }
     };
@@ -1737,6 +1738,10 @@ fn value_type(value: &ValueType) -> String {
         ValueTypeTag::Record => format!(
             "record<{}>",
             record_type(value.record_ref().expect("record type has an owner"))
+        ),
+        ValueTypeTag::Vector => format!(
+            "vector<{}>",
+            value.vector_dimension().expect("vector type has a dimension").get()
         ),
     }
 }

@@ -855,6 +855,10 @@ impl<'a> Resolver<'a> {
                     "record references are not legal scalar query parameters or fields",
                 ));
             }
+            ValueTypeTag::Vector => {
+                let dim = value_type.vector_dimension().expect("tag checked");
+                format!("vector<{}>", dim.get())
+            }
         };
         Ok(NamedTypeSchema::Scalar(scalar))
     }
