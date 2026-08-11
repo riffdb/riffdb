@@ -261,17 +261,62 @@ impl Parser {
         } else {
             None
         };
+        let nearest = if let Some(nearest_kw_span) = self.take_word("nearest") {
+            self.expect(TokenKind::LeftParen)?;
+            let field = self.identifier()?;
+            self.expect(TokenKind::Comma)?;
+            let vector = self.parameter_name()?;
+            self.expect(TokenKind::Comma)?;
+            let k = self.take_limit()?;
+            self.expect(TokenKind::RightParen)?;
+            let span = self.span_from(nearest_kw_span.start as usize);
+            self.node()?;
+            Some(crate::NearestClause {
+                field,
+                vector,
+                k,
+                span,
+            })
+        } else {
+            None
+        };
         let absence_outcome = if self.take_word("else").is_some() {
             Some(self.identifier()?)
         } else {
             None
         };
-        if cardinality.value == Cardinality::Many && take.is_none() {
+        if cardinality.value == Cardinality::Many && take.is_none() && nearest.is_none() {
             return Err(ParseDiagnostics::one(ParseDiagnostic::new(
                 DiagnosticCode::UnboundedMany,
                 cardinality.span,
-                "many binding requires an explicit take clause",
-                Some("add take with a positive literal or Limit parameter"),
+                "many binding requires an explicit take clause or nearest clause",
+                Some(
+                    "add take with a positive literal or Limit parameter, or nearest(field, $vector, k)",
+                ),
+            )));
+        }
+        if nearest.is_some() && cardinality.value != Cardinality::Many {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                cardinality.span,
+                "nearest clause is only valid on many bindings",
+                Some("change cardinality to many"),
+            )));
+        }
+        if nearest.is_some() && !order.is_empty() {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                cardinality.span,
+                "nearest clause replaces order by (results are ordered by distance)",
+                Some("remove the order by clause"),
+            )));
+        }
+        if nearest.is_some() && take.is_some() {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                cardinality.span,
+                "nearest clause includes its own bound (k); take is not allowed",
+                Some("remove the take clause; the k argument to nearest is the bound"),
             )));
         }
         if cardinality.value == Cardinality::One && absence_outcome.is_none() {
@@ -289,6 +334,7 @@ impl Parser {
             predicate,
             order,
             take,
+            nearest,
             absence_outcome,
         })
     }
@@ -936,6 +982,7 @@ fn reserved(value: &str) -> bool {
             | "in"
             | "when"
             | "exists"
+            | "nearest"
             | "is"
             | "not"
             | "prefix"

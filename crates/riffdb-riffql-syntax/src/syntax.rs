@@ -183,6 +183,9 @@ pub struct Binding {
     pub order: Vec<OrderTerm>,
     /// Explicit bound for `many`, optional cursor for all cardinalities.
     pub take: Option<Take>,
+    /// Nearest-neighbor search clause (ADR-0091). When present, replaces
+    /// `order by` + `take` for a `many` binding.
+    pub nearest: Option<NearestClause>,
     /// Declared absence or missing-target outcome.
     ///
     /// This is required by `one`; the planner also requires it for a bounded
@@ -197,6 +200,23 @@ pub struct Take {
     pub limit: Spanned<Expression>,
     /// Optional cursor parameter.
     pub after: Option<Spanned<Identifier>>,
+}
+
+/// Nearest-neighbor search clause (ADR-0091).
+///
+/// Replaces `order by` + `take` for vector similarity queries. The bound `k`
+/// is mandatory and acts as the implicit page limit; no cursor pagination is
+/// supported for nearest queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NearestClause {
+    /// The declared vector field on the entity.
+    pub field: Spanned<Identifier>,
+    /// The query vector parameter (`$name`).
+    pub vector: Spanned<Identifier>,
+    /// Maximum results (K). Positive integer literal.
+    pub k: Spanned<Expression>,
+    /// Span of the entire `nearest(...)` clause.
+    pub span: Span,
 }
 
 /// One source order term.

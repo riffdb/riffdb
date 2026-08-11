@@ -78,6 +78,17 @@ pub fn format_query(document: &Document) -> String {
             }
             output.push('\n');
         }
+        if let Some(nearest) = &binding.nearest {
+            write!(
+                output,
+                "        nearest({}, ${}, {})",
+                nearest.field.value.as_str(),
+                nearest.vector.value.as_str(),
+                format_expression(&nearest.k.value, 0)
+            )
+            .expect("String writes cannot fail");
+            output.push('\n');
+        }
         if let Some(outcome) = &binding.absence_outcome {
             writeln!(output, "        else {}", outcome.value.as_str())
                 .expect("String writes cannot fail");

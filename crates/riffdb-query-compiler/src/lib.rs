@@ -506,15 +506,79 @@ impl<'a> Planner<'a> {
             }
 
             let row_limit = row_limit(binding, self.document)?;
-            let (access, index_id) = choose_access(
-                entity,
-                binding,
-                &comparisons,
-                &self.binding_cardinalities,
-                &self.binding_maximum_rows,
-                self.document,
-                maximum_rows,
-            )?;
+            let (access, index_id) = if let Some(nearest) = &binding.nearest {
+                // ADR-0091: nearest clause produces a Nearest access kind.
+                let vector_field_name = nearest.field.value.as_str();
+                // Validate the field exists and is a vector type.
+                let field_symbol = entity.field(vector_field_name).ok_or_else(|| {
+                    one(
+                        PlannerDiagnosticCode::Unindexed,
+                        nearest.field.span,
+                        vec![entity.name().to_owned(), vector_field_name.to_owned()],
+                        "nearest references a field that does not exist on the entity",
+                        None,
+                    )
+                })?;
+                if field_symbol.value_type().vector_dimension().is_none() {
+                    return Err(one(
+                        PlannerDiagnosticCode::Unindexed,
+                        nearest.field.span,
+                        vec![entity.name().to_owned(), vector_field_name.to_owned()],
+                        "nearest field is not a vector type",
+                        None,
+                    ));
+                }
+                let vector_parameter = nearest.vector.value.as_str().to_owned();
+                let k = match &nearest.k.value {
+                    riffdb_riffql_syntax::Expression::Literal(
+                        riffdb_riffql_syntax::Literal::Unsigned(value),
+                    ) => value.parse::<u32>().map_err(|_| {
+                        one(
+                            PlannerDiagnosticCode::Cardinality,
+                            nearest.k.span,
+                            vec![],
+                            "nearest k must be a positive integer",
+                            None,
+                        )
+                    })?,
+                    _ => {
+                        return Err(one(
+                            PlannerDiagnosticCode::Cardinality,
+                            nearest.k.span,
+                            vec![],
+                            "nearest k must be a positive integer literal",
+                            None,
+                        ));
+                    }
+                };
+                if k == 0 {
+                    return Err(one(
+                        PlannerDiagnosticCode::Cardinality,
+                        nearest.k.span,
+                        vec![],
+                        "nearest k must be positive",
+                        None,
+                    ));
+                }
+                (
+                    QueryAccessKind::Nearest {
+                        vector_field: vector_field_name.to_owned(),
+                        vector_parameter,
+                        k,
+                    },
+                    None,
+                )
+            } else {
+                choose_access(
+                    entity,
+                    binding,
+                    &comparisons,
+                    &self.binding_cardinalities,
+                    &self.binding_maximum_rows,
+                    self.document,
+                    maximum_rows,
+                )?
+            };
             let predicates = self.normalize_predicates(&comparisons)?;
             let mut predicate_fields = comparisons
                 .iter()

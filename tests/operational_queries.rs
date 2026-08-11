@@ -140,6 +140,15 @@ impl QueryReadView for IndexedView {
             .collect();
         Ok(QueryScanPage::exact_end(rows, 1))
     }
+
+    fn nearest(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+    ) -> Result<Vec<QueryRow>, Self::Error> {
+        Ok(Vec::new())
+    }
 }
 
 fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
