@@ -41,6 +41,15 @@ The current pre-alpha identity is alpha epoch `1`, writer `1`. Downgrade is
 unsupported. A format marker from another epoch or writer is not evidence that
 its bytes are readable merely because a decoder accepts some records.
 
+Capability records follow a least-successor rule: ordinary grants remain V1,
+migration authority uses migration-only V2, and any installation authority uses
+the distinct V3 record. V2's source and schema hash are frozen to ADR-0089's
+original bytes. A short-lived pre-alpha build accidentally emitted the additive
+V3 installation payload under V2's compact identity; current readers recover
+that exact payload without dropping authority, while every new installation
+grant is written as V3. No general unknown-field or best-effort durable decoder
+is enabled by this narrow compatibility repair.
+
 Normal daemon startup performs the source-free format comparison before redb
 can open the file. An exact mismatch exits with `RDB-FORMAT-0101`, the retained
 and binary epoch/writer identities, the sole manifest-authorized action, backup

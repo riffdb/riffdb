@@ -10,15 +10,8 @@ message CapabilityMigrationGrantExtensionV1 {
   bool approval_required = 2;
 }
 
-// Additive application-installation authority kept outside the frozen V1 schema.
-message CapabilityInstallationGrantExtensionV1 {
-  repeated string contract_lineages = 1;
-  bool approval_required = 2;
-}
-
 // One atomic capability value whose legacy portion remains an exact V1 record.
 message CapabilityRecordV2 {
   CapabilityRecordV1 base = 1;
   CapabilityMigrationGrantExtensionV1 migration = 2;
-  CapabilityInstallationGrantExtensionV1 installation = 3;
 }

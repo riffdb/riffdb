@@ -36,6 +36,11 @@ verified-backup-bound, restartable `riffdb storage upgrade` command. New
 physical backups carry the exact format marker and compatible restore range;
 legacy range-less backups require their source release.
 
+Capability persistence preserves the original migration-only V2 schema and
+uses V3 for installation authority. The reader contains one narrow recovery
+case for the exact pre-alpha build that emitted the additive installation
+field under V2's compact identity; new writes never reproduce that collision.
+
 ## Offline Contract Migration
 
 P7 supports exact direct-parent offline migration through additive, structural,

@@ -28,6 +28,7 @@ use super::{
 
 const RECORD: &str = "riffdb.storage.v1.CapabilityRecordV1";
 const RECORD_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
+const RECORD_V3: &str = "riffdb.storage.v1.CapabilityRecordV3";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
@@ -258,7 +259,7 @@ fn permission_from_proto(
         (CapabilityPermissionKindV1::MigrateContract, PermissionParameter::Lineage) => {
             Err(DurableCodecError::corrupt())
         }
-        // Installation authority is durable only in CapabilityRecordV2's
+        // Installation authority is durable only in CapabilityRecordV3's
         // required extension. The frozen V1 base rejects the bare tag.
         (CapabilityPermissionKindV1::InstallApplication, PermissionParameter::Lineage) => {
             Err(DurableCodecError::corrupt())
@@ -687,12 +688,19 @@ pub fn encode_capability_record_v1(
     };
     match (migration, installation) {
         (None, None) => encode_message(RECORD, &base),
-        (migration, installation) => encode_message(
+        (Some(migration), None) => encode_message(
             RECORD_V2,
             &wire::CapabilityRecordV2 {
                 base: Some(base),
+                migration: Some(migration),
+            },
+        ),
+        (migration, Some(installation)) => encode_message(
+            RECORD_V3,
+            &wire::CapabilityRecordV3 {
+                base: Some(base),
                 migration,
-                installation,
+                installation: Some(installation),
             },
         ),
     }
@@ -712,12 +720,22 @@ pub fn decode_capability_record_v1(
             record_from_proto(value, None, None)?
         }
         RECORD_V2 => {
-            let value = wire::CapabilityRecordV2::decode(decoded.payload())
+            let value = wire::CapabilityRecordV3::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
-            if value.migration.is_none() && value.installation.is_none() {
-                return Err(DurableCodecError::corrupt());
+            if value.installation.is_some() {
+                record_from_proto(require(value.base)?, value.migration, value.installation)?
+            } else {
+                record_from_proto(require(value.base)?, Some(require(value.migration)?), None)?
             }
-            record_from_proto(require(value.base)?, value.migration, value.installation)?
+        }
+        RECORD_V3 => {
+            let value = wire::CapabilityRecordV3::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            record_from_proto(
+                require(value.base)?,
+                value.migration,
+                Some(require(value.installation)?),
+            )?
         }
         _ => {
             return Err(DurableCodecError::new(

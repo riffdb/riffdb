@@ -9,6 +9,9 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/capability.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_migration.proto
   riffdb/storage/v1/capability_migration.proto
     import riffdb/storage/v1/capability.proto
   riffdb/storage/v1/catalog.proto
@@ -467,7 +470,10 @@ messages
     12 creation_request_id optional bytes
     13 grant optional .riffdb.storage.v1.CapabilityGrantV1
     14 lifecycle optional .riffdb.storage.v1.CapabilityLifecycleV1
-  riffdb.storage.v1.CapabilityRecordV2 fields=3
+  riffdb.storage.v1.CapabilityRecordV2 fields=2
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV3 fields=3
     1 base optional .riffdb.storage.v1.CapabilityRecordV1
     2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
     3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
