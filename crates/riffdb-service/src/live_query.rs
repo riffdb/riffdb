@@ -581,6 +581,7 @@ impl ServiceLiveQuerySubscription {
             &[],
             &self.prepared.parameters,
             None,
+            None,
         )
         .map_err(map_live_execution)?;
         if snapshot.continuation().is_some() || snapshot.continuation_binding().is_some() {
@@ -702,6 +703,7 @@ async fn establish_live_query(
         &prepared.program,
         &[],
         &prepared.parameters,
+        None,
         None,
     )
     .map_err(|error| execution_failure(&service, OPERATION, error))?;

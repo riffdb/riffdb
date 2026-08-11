@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use riffdb_policy::AuthorizedQueryRowPolicyContextV1;
 use riffdb_query_executor::{
     QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
     QueryOwnedSnapshot, QueryParameters,
@@ -117,6 +118,41 @@ impl QueryExecutionPort for RedbSharedPorts {
             aggregates,
             parameters,
             prior,
+        )
+    }
+
+    fn execute_policy_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        QueryExecutionPort::execute_policy_query_page(
+            &self.operational(),
+            program,
+            parameters,
+            prior,
+            policy,
+        )
+    }
+
+    fn execute_policy_operational_query_page(
+        &self,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+        parameters: &riffdb_query_executor::QueryParameters,
+        prior: Option<&riffdb_query_executor::QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
+    {
+        QueryExecutionPort::execute_policy_operational_query_page(
+            &self.operational(),
+            program,
+            aggregates,
+            parameters,
+            prior,
+            policy,
         )
     }
 }

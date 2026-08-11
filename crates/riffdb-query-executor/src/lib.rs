@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use riffdb_policy::AuthorizedQueryRowPolicyContextV1;
 use riffdb_query_ir::{
     NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateV1, PageBound,
     QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
@@ -486,6 +487,22 @@ impl QueryScanPage {
         }
     }
 
+    /// Constructs an exact-end policy-filtered page while retaining physical
+    /// candidate work. Denied rows never enter `rows`, but they remain charged
+    /// to the compiler-bounded scan ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn policy_exact_end(rows: Vec<QueryRow>, epoch: u64, scanned_rows: u64) -> Option<Self> {
+        let point_reads = rows.len() as u64;
+        (scanned_rows >= point_reads).then_some(Self {
+            rows,
+            epoch,
+            scanned_rows,
+            point_reads,
+            continuation: None,
+        })
+    }
+
     /// Constructs a non-final page with explicit physical progress.
     ///
     /// Construction does not enforce `MAX_QUERY_SCANNED_ROWS`; the closed
@@ -651,6 +668,7 @@ pub trait QueryReadView {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error>;
 
     /// Executes one ordered bounded set of complete primary-key steps.
@@ -662,6 +680,7 @@ pub trait QueryReadView {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[Vec<BoundPredicate>],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error>;
 
     /// Executes one bounded declared-index step.
@@ -671,6 +690,7 @@ pub trait QueryReadView {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error>;
 
     /// Executes one nearest-neighbor search step (ADR-0091, VEC-005).
@@ -689,6 +709,7 @@ pub trait QueryReadView {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         k: u32,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error>;
 }
 
@@ -755,6 +776,32 @@ pub trait QueryExecutionPort: Send + Sync {
         } else {
             Err(QueryExecutionError::InvalidProgram)
         }
+    }
+
+    /// Executes a query page with compiler-selected transaction-current row policy.
+    ///
+    /// The default denies so an adapter cannot accidentally enable protected
+    /// execution by implementing only the pre-policy port.
+    fn execute_policy_query_page(
+        &self,
+        _program: &QueryAccessProgramV1,
+        _parameters: &QueryParameters,
+        _prior: Option<&QueryContinuation>,
+        _policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
+    }
+
+    /// Executes an operational page with policy applied before aggregation.
+    fn execute_policy_operational_query_page(
+        &self,
+        _program: &QueryAccessProgramV1,
+        _aggregates: &[OperationalAggregateV1],
+        _parameters: &QueryParameters,
+        _prior: Option<&QueryContinuation>,
+        _policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
     }
 
     /// Executes one bounded group while the engine's same read view remains open.
@@ -1001,7 +1048,25 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
     prior: Option<&QueryContinuation>,
     view: &mut V,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-    execute_operational_page_in_snapshot(program, &[], parameters, prior, view)
+    execute_operational_page_in_snapshot_with_policy(program, &[], parameters, prior, view, None)
+}
+
+/// Executes one policy-protected page in an already-open authoritative view.
+pub fn execute_policy_page_in_snapshot<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+    policy: &AuthorizedQueryRowPolicyContextV1,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    execute_operational_page_in_snapshot_with_policy(
+        program,
+        &[],
+        parameters,
+        prior,
+        view,
+        Some(policy),
+    )
 }
 
 /// Executes one page and its compiler-sealed exact aggregate descriptors in
@@ -1012,6 +1077,38 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
     parameters: &QueryParameters,
     prior: Option<&QueryContinuation>,
     view: &mut V,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    execute_operational_page_in_snapshot_with_policy(
+        program, aggregates, parameters, prior, view, None,
+    )
+}
+
+/// Executes one operational page with row policy enforced before every shape.
+pub fn execute_policy_operational_page_in_snapshot<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    aggregates: &[OperationalAggregateV1],
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+    policy: &AuthorizedQueryRowPolicyContextV1,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    execute_operational_page_in_snapshot_with_policy(
+        program,
+        aggregates,
+        parameters,
+        prior,
+        view,
+        Some(policy),
+    )
+}
+
+fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    aggregates: &[OperationalAggregateV1],
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+    policy: Option<&AuthorizedQueryRowPolicyContextV1>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     if aggregates != program.surface().aggregates() {
         return Err(QueryExecutionError::InvalidProgram);
@@ -1048,7 +1145,7 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
                 let predicates = bind_predicates(step, parameters, &bindings)?;
                 fuel.points(1)?;
                 (
-                    view.point(step, &predicates)
+                    view.point(step, &predicates, policy)
                         .map_err(|error| map_view_error(view, &error))?
                         .into_iter()
                         .collect::<Vec<_>>(),
@@ -1075,7 +1172,7 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
                     .map_err(|_| QueryExecutionError::BoundExceeded)?;
                 fuel.dependent_keys(key_count)?;
                 let observations = view
-                    .dependent_point_batch(step, &predicates)
+                    .dependent_point_batch(step, &predicates, policy)
                     .map_err(|error| map_view_error(view, &error))?;
                 if observations.len() != predicates.len() {
                     return Err(QueryExecutionError::InvalidProgram);
@@ -1117,7 +1214,7 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
                 let predicates = bind_predicates(step, parameters, &bindings)?;
                 let page = view
-                    .scan(step, &predicates, limit, after)
+                    .scan(step, &predicates, limit, after, policy)
                     .map_err(|error| map_view_error(view, &error))?;
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
                     || page.rows.len() as u64 > limit
@@ -1156,7 +1253,7 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
                 // partition-scan ceiling, not K).
                 let predicates = bind_predicates(step, parameters, &bindings)?;
                 let page = view
-                    .nearest(step, &predicates, *k)
+                    .nearest(step, &predicates, *k, policy)
                     .map_err(|error| map_view_error(&*view, &error))?;
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
                     || page.rows.len() as u64 > u64::from(*k)
@@ -2241,6 +2338,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             &mut self,
             step: &QueryAccessStep,
             _predicates: &[BoundPredicate],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
         ) -> Result<Option<QueryRow>, Self::Error> {
             Ok(self
                 .rows
@@ -2253,6 +2351,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             &mut self,
             step: &QueryAccessStep,
             predicates: &[Vec<BoundPredicate>],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
         ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
             Ok(self
                 .rows
@@ -2271,6 +2370,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             _predicates: &[BoundPredicate],
             _limit: u64,
             _after: Option<&[u8]>,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
         ) -> Result<QueryScanPage, Self::Error> {
             let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
             Ok(QueryScanPage::exact_end(rows, 1))
@@ -2281,6 +2381,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             step: &QueryAccessStep,
             _predicates: &[BoundPredicate],
             _k: u32,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
         ) -> Result<QueryNearestPage, Self::Error> {
             let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
             let scanned_rows = rows.len() as u64;

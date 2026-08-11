@@ -706,21 +706,19 @@ fn compile_application_role_inner(
 }
 
 type SelectedPolicyMap<'a> = BTreeMap<riffdb_types::EntityTypeId, &'a RowPolicyPlanV1>;
+type CompiledRolePolicies<'a> = (
+    SelectedPolicyMap<'a>,
+    Vec<ApplicationRolePolicy>,
+    Vec<ApplicationRoleFactSchema>,
+    Vec<PrincipalFactSchemaV1>,
+    bool,
+);
 
 fn compile_role_policies<'a>(
     manifest: &ApplicationManifest,
     role: &ManifestRole,
     contract: &'a ContractBundle,
-) -> Result<
-    (
-        SelectedPolicyMap<'a>,
-        Vec<ApplicationRolePolicy>,
-        Vec<ApplicationRoleFactSchema>,
-        Vec<PrincipalFactSchemaV1>,
-        bool,
-    ),
-    ApplicationRoleError,
-> {
+) -> Result<CompiledRolePolicies<'a>, ApplicationRoleError> {
     let catalog = contract.row_policies();
     if manifest.schema() != crate::APPLICATION_MANIFEST_SCHEMA_V4 {
         if !catalog.is_empty() {
