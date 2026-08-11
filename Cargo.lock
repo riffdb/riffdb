@@ -2117,6 +2117,7 @@ name = "riffdb-service"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "riffdb-application",
  "riffdb-auth",
  "riffdb-catalog",
  "riffdb-columnar",

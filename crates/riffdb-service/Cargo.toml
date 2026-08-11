@@ -13,6 +13,7 @@ test-fixtures = []
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }

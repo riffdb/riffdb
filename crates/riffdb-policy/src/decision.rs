@@ -447,6 +447,84 @@ pub struct AuthorizedApplicationQuery {
     obligations: Obligations,
 }
 
+/// Move-only proof for one exact operator-owned application installation operation.
+///
+/// Deployment, migration, capability administration, and application-role
+/// proofs cannot be converted into this type. The coordinator receives only
+/// the selected database/environment/lineage operation that current policy
+/// checked and never bearer credential material.
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedApplicationInstallation {
+    database_id: DatabaseId,
+    environment: Environment,
+    lineage: ContractLineage,
+    operation: ServiceOperationV1,
+    identity: CurrentAuthorizationIdentity,
+    obligations: Obligations,
+}
+
+impl AuthorizedApplicationInstallation {
+    /// Exact selected database checked by current policy.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Exact selected environment checked by current policy.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    /// Exact application lineage checked by the dedicated permission.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Distinguishes start/resume authority from observation authority.
+    #[must_use]
+    pub const fn operation(&self) -> ServiceOperationV1 {
+        self.operation
+    }
+
+    /// Exact current capability identity retained at the safe point.
+    #[must_use]
+    pub const fn authorizing_capability_id(&self) -> CapabilityId {
+        self.identity.capability_id
+    }
+
+    /// Exact current capability revision retained at the safe point.
+    #[must_use]
+    pub const fn authorizing_capability_revision(&self) -> NonZeroU64 {
+        self.identity.capability_revision
+    }
+
+    /// Exact principal checked at the same current-policy safe point.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        &self.identity.principal_id
+    }
+
+    /// Exact actor kind checked at the same current-policy safe point.
+    #[must_use]
+    pub const fn actor_kind(&self) -> ActorKind {
+        self.identity.actor_kind
+    }
+
+    /// Canonical obligations checked for this administrative operation.
+    #[must_use]
+    pub const fn obligations(&self) -> &Obligations {
+        &self.obligations
+    }
+}
+
+impl fmt::Debug for AuthorizedApplicationInstallation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedApplicationInstallation([REDACTED])")
+    }
+}
+
 impl AuthorizedApplicationQuery {
     /// Returns the exact database boundary checked by policy.
     #[must_use]
@@ -733,6 +811,30 @@ impl AuthorizedOperation {
             database_id,
             environment,
             target,
+            identity,
+            obligations,
+        })
+    }
+
+    /// Consumes this fresh allow proof into one exact installation proof.
+    pub fn into_application_installation(self) -> Option<AuthorizedApplicationInstallation> {
+        let Self {
+            database_id,
+            environment,
+            request,
+            obligations,
+            identity,
+            discovery_authority,
+        } = self;
+        if discovery_authority.is_some() {
+            return None;
+        }
+        let (operation, lineage) = request.into_application_installation_parts()?;
+        Some(AuthorizedApplicationInstallation {
+            database_id,
+            environment,
+            lineage,
+            operation,
             identity,
             obligations,
         })

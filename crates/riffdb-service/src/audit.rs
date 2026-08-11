@@ -223,6 +223,25 @@ impl ServiceAuditTargetMap {
         one(ServiceAuditTargetV1::ContractVersion { lineage, version })
     }
 
+    /// Targets the exact candidate contract selected by an installation plan.
+    pub(crate) fn start_application_installation(
+        lineage: ContractLineage,
+        version: ContractVersion,
+    ) -> Result<ServiceAuditTargetsV1, ServiceAuditTargetsError> {
+        one(ServiceAuditTargetV1::ContractVersion { lineage, version })
+    }
+
+    /// Campaign observation is addressed by an opaque campaign identity.
+    ///
+    /// The durable audit target vocabulary deliberately has no campaign-id
+    /// variant. The authorization proof still binds the resolved lineage; an
+    /// empty target set avoids publishing the opaque identity as a semantic
+    /// database object or fabricating a contract version before lookup.
+    #[must_use]
+    pub(crate) const fn get_application_installation() -> ServiceAuditTargetsV1 {
+        ServiceAuditTargetsV1::empty()
+    }
+
     /// Target for one exact durable event consumer.
     pub(crate) fn event_consumer(
         lineage: ContractLineage,
@@ -777,6 +796,15 @@ mod tests {
                 ServiceOperationV1::GetReactiveWakeup,
                 ServiceAuditTargetMap::reactive_wakeup(),
             ),
+            (
+                ServiceOperationV1::StartApplicationInstallation,
+                ServiceAuditTargetMap::start_application_installation(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::GetApplicationInstallation,
+                ServiceAuditTargetMap::get_application_installation(),
+            ),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -794,7 +822,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

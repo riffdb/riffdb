@@ -1953,6 +1953,98 @@ mod tests {
     }
 
     #[test]
+    fn application_installation_proofs_require_exact_lineage_and_operation() {
+        let database_id = database_id();
+        let environment = Environment::new("dev").expect("valid environment");
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("installer-principal").expect("valid actor"),
+            ActorKind::Human,
+            Audience::new("grpc").expect("valid audience"),
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![
+                    CapabilityPermissionV1::InstallApplication(lineage()),
+                    CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                        .expect("valid read permission"),
+                ],
+                Vec::new(),
+                5,
+                Vec::new(),
+            ),
+        ))
+        .expect("valid fixture");
+        let resolver = fixture.current_capability_resolver();
+        let clock = FixedAuthorizationClock(timestamp(200));
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment.clone(),
+        );
+
+        for request in [
+            OperationRequest::start_application_installation(lineage()),
+            OperationRequest::get_application_installation(lineage()),
+        ] {
+            let expected_operation = request.operation();
+            let Decision::Allow(proof) = authorizer
+                .authorize(fixture.authenticated_principal(), request)
+                .expect("policy decision")
+            else {
+                panic!("expected installation allow proof");
+            };
+            let proof = proof
+                .into_application_installation()
+                .expect("dedicated installation proof");
+            assert_eq!(proof.database_id(), database_id);
+            assert_eq!(proof.environment(), &environment);
+            assert_eq!(proof.lineage(), &lineage());
+            assert_eq!(proof.operation(), expected_operation);
+            assert_eq!(
+                proof.authorizing_capability_id(),
+                fixture.authenticated_principal().capability_id()
+            );
+            assert_eq!(
+                proof.obligations().effective_tenant_scope(),
+                &TenantScope::Global
+            );
+            assert!(format!("{proof:?}").contains("[REDACTED]"));
+        }
+
+        let Decision::Allow(non_installation) = authorizer
+            .authorize(
+                fixture.authenticated_principal(),
+                OperationRequest::get_health(),
+            )
+            .expect("policy decision")
+        else {
+            panic!("expected health allow proof");
+        };
+        assert!(
+            non_installation.into_application_installation().is_none(),
+            "ordinary authority must not become installation authority"
+        );
+
+        let decision = authorizer
+            .authorize(
+                fixture.authenticated_principal(),
+                OperationRequest::start_application_installation(
+                    ContractLineage::new("other.contract").expect("other lineage"),
+                ),
+            )
+            .expect("policy decision");
+        assert!(matches!(
+            decision,
+            Decision::Deny(PolicyCode::MissingPermission)
+        ));
+    }
+
+    #[test]
     fn contract_migration_denies_implied_sibling_scoped_and_approval_authority() {
         let deploy =
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::DeployContract)
