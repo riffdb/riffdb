@@ -16,6 +16,8 @@ pub const MAX_CAPABILITY_PERMISSIONS: usize = 8_192;
 pub const MAX_CAPABILITY_FIELD_VISIBILITY: usize = 65_535;
 /// Maximum compiler-selected row-policy bindings carried by one capability.
 pub const MAX_CAPABILITY_ROW_POLICY_BINDINGS: usize = 1_024;
+/// Maximum lineage-scoped application export grants carried by one capability.
+pub const MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS: usize = 256;
 /// Maximum semantic bytes in one complete durable capability payload.
 pub const MAX_CAPABILITY_PAYLOAD_BYTES: usize = 1024 * 1024;
 
@@ -749,6 +751,185 @@ impl fmt::Debug for CapabilityRowPolicyGrantV1 {
     }
 }
 
+/// Closed V1 scope for one lineage-scoped application export grant.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CapabilityApplicationExportScopeV1 {
+    /// Apply current role, field-visibility, principal-fact, and row-policy authority.
+    PrincipalFiltered,
+    /// Explicit operator authority over the complete named application lineage.
+    WholeApplication,
+}
+
+impl CapabilityApplicationExportScopeV1 {
+    /// Returns the stable V1 semantic tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::PrincipalFiltered => 1,
+            Self::WholeApplication => 2,
+        }
+    }
+
+    /// Decodes a stable V1 semantic tag, rejecting unspecified and unknown values.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::PrincipalFiltered),
+            2 => Some(Self::WholeApplication),
+            _ => None,
+        }
+    }
+}
+
+/// One explicit lineage, scope, and portable record-class export authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityApplicationExportGrantV1 {
+    lineage: ContractLineage,
+    scope: CapabilityApplicationExportScopeV1,
+    entities: bool,
+    events: bool,
+    provenance: bool,
+    public_audit: bool,
+}
+
+impl CapabilityApplicationExportGrantV1 {
+    /// Constructs one checked grant. Supporting records cannot be granted
+    /// without at least one portable application-data class.
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub fn new(
+        lineage: ContractLineage,
+        scope: CapabilityApplicationExportScopeV1,
+        entities: bool,
+        events: bool,
+        provenance: bool,
+        public_audit: bool,
+    ) -> Result<Self, CapabilityGrantError> {
+        if !entities && !events {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        Ok(Self {
+            lineage,
+            scope,
+            entities,
+            events,
+            provenance,
+            public_audit,
+        })
+    }
+
+    /// Exact symbolic application lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Selected current-policy or whole-application authority class.
+    #[must_use]
+    pub const fn scope(&self) -> CapabilityApplicationExportScopeV1 {
+        self.scope
+    }
+
+    /// Whether symbolic entity records may be exported.
+    #[must_use]
+    pub const fn entities(&self) -> bool {
+        self.entities
+    }
+
+    /// Whether symbolic durable events may be exported.
+    #[must_use]
+    pub const fn events(&self) -> bool {
+        self.events
+    }
+
+    /// Whether separately protected provenance records may accompany the data.
+    #[must_use]
+    pub const fn provenance(&self) -> bool {
+        self.provenance
+    }
+
+    /// Whether separately protected public-audit records may accompany the data.
+    #[must_use]
+    pub const fn public_audit(&self) -> bool {
+        self.public_audit
+    }
+
+    fn narrows(&self, parent: &Self, child_has_row_policy: bool) -> bool {
+        self.lineage == parent.lineage
+            && match (self.scope, parent.scope) {
+                (
+                    CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                    CapabilityApplicationExportScopeV1::WholeApplication,
+                ) => child_has_row_policy,
+                (child, parent) => child == parent,
+            }
+            && (!self.entities || parent.entities)
+            && (!self.events || parent.events)
+            && (!self.provenance || parent.provenance)
+            && (!self.public_audit || parent.public_audit)
+    }
+}
+
+/// Complete canonical V1 application-export authority extension.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CapabilityExportGrantV1 {
+    applications: Arc<[CapabilityApplicationExportGrantV1]>,
+}
+
+impl CapabilityExportGrantV1 {
+    /// Constructs one bounded lineage-ordered extension.
+    pub fn new(
+        mut applications: Vec<CapabilityApplicationExportGrantV1>,
+    ) -> Result<Self, CapabilityGrantError> {
+        if applications.is_empty() {
+            return Err(CapabilityGrantError::Empty);
+        }
+        if applications.len() > MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS {
+            return Err(CapabilityGrantError::LimitExceeded);
+        }
+        applications.sort_by(|left, right| left.lineage.as_bytes().cmp(right.lineage.as_bytes()));
+        if applications
+            .windows(2)
+            .any(|pair| pair[0].lineage == pair[1].lineage)
+        {
+            return Err(CapabilityGrantError::Duplicate);
+        }
+        Ok(Self {
+            applications: applications.into(),
+        })
+    }
+
+    /// Canonical lineage-ordered export grants.
+    #[must_use]
+    pub fn applications(&self) -> &[CapabilityApplicationExportGrantV1] {
+        &self.applications
+    }
+
+    /// True only when every child lineage, scope, and class is equal or narrower.
+    #[must_use]
+    pub fn is_narrowing_of(&self, parent: &Self, child_has_row_policy: bool) -> bool {
+        self.applications.iter().all(|child| {
+            parent
+                .applications
+                .binary_search_by(|candidate| {
+                    candidate.lineage.as_bytes().cmp(child.lineage.as_bytes())
+                })
+                .ok()
+                .is_some_and(|index| {
+                    child.narrows(&parent.applications[index], child_has_row_policy)
+                })
+        })
+    }
+}
+
+impl fmt::Debug for CapabilityExportGrantV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityExportGrantV1")
+            .field("application_count", &self.applications.len())
+            .finish()
+    }
+}
+
 /// Complete bounded v1 grant persisted with a capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityGrantV1 {
@@ -759,6 +940,7 @@ pub struct CapabilityGrantV1 {
     max_scan_rows: NonZeroU16,
     approval_required: Arc<[CapabilityPermissionKindV1]>,
     row_policy: Option<CapabilityRowPolicyGrantV1>,
+    export: Option<CapabilityExportGrantV1>,
 }
 
 impl CapabilityGrantV1 {
@@ -812,6 +994,7 @@ impl CapabilityGrantV1 {
             max_scan_rows,
             approval_required: approval_required.into(),
             row_policy: None,
+            export: None,
         };
         validate_capability_payload_bytes(value.semantic_bytes()?)?;
         Ok(value)
@@ -899,6 +1082,43 @@ impl CapabilityGrantV1 {
         self.row_policy.as_ref()
     }
 
+    /// Adds the exact V5 export extension after checking scope prerequisites.
+    pub fn with_export(
+        mut self,
+        export: CapabilityExportGrantV1,
+    ) -> Result<Self, CapabilityGrantError> {
+        if self.export.is_some() {
+            return Err(CapabilityGrantError::Duplicate);
+        }
+        for application in export.applications() {
+            match application.scope() {
+                CapabilityApplicationExportScopeV1::PrincipalFiltered
+                    if self.row_policy.is_none() =>
+                {
+                    return Err(CapabilityGrantError::InvalidShape);
+                }
+                CapabilityApplicationExportScopeV1::WholeApplication
+                    if self.tenant_scope != TenantScope::Global
+                        || self.partition_scope != PartitionScopeV1::All =>
+                {
+                    return Err(CapabilityGrantError::InvalidShape);
+                }
+                CapabilityApplicationExportScopeV1::PrincipalFiltered
+                | CapabilityApplicationExportScopeV1::WholeApplication => {}
+            }
+        }
+        self.export = Some(export);
+        validate_capability_payload_bytes(self.semantic_bytes()?)?;
+        Ok(self)
+    }
+
+    /// Exact trusted export extension, absent for V1 through V4 capabilities.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_export(&self) -> Option<&CapabilityExportGrantV1> {
+        self.export.as_ref()
+    }
+
     /// Returns the complete checked v1 semantic grant byte count.
     pub fn semantic_bytes(&self) -> Result<usize, CapabilityGrantError> {
         let base = capability_grant_semantic_bytes_parts(
@@ -908,13 +1128,33 @@ impl CapabilityGrantV1 {
             &self.field_visibility,
             &self.approval_required,
         )?;
-        match &self.row_policy {
+        let with_row_policy = match &self.row_policy {
             Some(extension) => base
                 .checked_add(row_policy_semantic_bytes(extension)?)
+                .ok_or(CapabilityGrantError::SizeOverflow)?,
+            None => base,
+        };
+        match &self.export {
+            Some(extension) => with_row_policy
+                .checked_add(export_semantic_bytes(extension)?)
                 .ok_or(CapabilityGrantError::SizeOverflow),
-            None => Ok(base),
+            None => Ok(with_row_policy),
         }
     }
+}
+
+fn export_semantic_bytes(
+    extension: &CapabilityExportGrantV1,
+) -> Result<usize, CapabilityGrantError> {
+    extension
+        .applications
+        .iter()
+        .try_fold(4usize, |total, grant| {
+            total
+                .checked_add(framed_capability_bytes(grant.lineage.as_bytes().len())?)
+                .and_then(|value| value.checked_add(5))
+                .ok_or(CapabilityGrantError::SizeOverflow)
+        })
 }
 
 fn row_policy_semantic_bytes(
@@ -1405,6 +1645,158 @@ mod tests {
         .expect("grant");
         assert_eq!(
             base.with_row_policy(parent),
+            Err(CapabilityGrantError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn export_grants_are_canonical_bounded_and_explicit() {
+        let whole = CapabilityApplicationExportGrantV1::new(
+            ContractLineage::new("zeta").expect("lineage"),
+            CapabilityApplicationExportScopeV1::WholeApplication,
+            true,
+            false,
+            true,
+            true,
+        )
+        .expect("whole grant");
+        let principal = CapabilityApplicationExportGrantV1::new(
+            ContractLineage::new("alpha").expect("lineage"),
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("principal grant");
+        let extension = CapabilityExportGrantV1::new(vec![whole.clone(), principal.clone()])
+            .expect("canonical extension");
+        assert_eq!(extension.applications()[0].lineage().as_str(), "alpha");
+        assert_eq!(extension.applications()[1].lineage().as_str(), "zeta");
+
+        assert_eq!(
+            CapabilityApplicationExportGrantV1::new(
+                ContractLineage::new("empty").expect("lineage"),
+                CapabilityApplicationExportScopeV1::WholeApplication,
+                false,
+                false,
+                true,
+                true,
+            ),
+            Err(CapabilityGrantError::InvalidShape)
+        );
+        assert_eq!(
+            CapabilityExportGrantV1::new(vec![whole.clone(), whole]),
+            Err(CapabilityGrantError::Duplicate)
+        );
+        assert_eq!(
+            CapabilityExportGrantV1::new(Vec::new()),
+            Err(CapabilityGrantError::Empty)
+        );
+        let over_bound = (0..=MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS)
+            .map(|index| {
+                CapabilityApplicationExportGrantV1::new(
+                    ContractLineage::new(format!("lineage_{index:03}")).expect("lineage"),
+                    CapabilityApplicationExportScopeV1::WholeApplication,
+                    true,
+                    false,
+                    false,
+                    false,
+                )
+                .expect("application grant")
+            })
+            .collect();
+        assert_eq!(
+            CapabilityExportGrantV1::new(over_bound),
+            Err(CapabilityGrantError::LimitExceeded)
+        );
+        assert_eq!(CapabilityApplicationExportScopeV1::from_tag(0), None);
+        assert_eq!(CapabilityApplicationExportScopeV1::from_tag(3), None);
+    }
+
+    #[test]
+    fn export_scope_requires_distinct_current_authority() {
+        let role = ApplicationRoleHash::from_bytes([0x71; 32]);
+        let base = || {
+            CapabilityGrantV1::new(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                CapabilityPermissionsV1::new(vec![
+                    CapabilityPermissionV1::ApplicationRoleIdentity(role),
+                ])
+                .expect("permissions"),
+                Vec::new(),
+                NonZeroU16::MIN,
+                Vec::new(),
+            )
+            .expect("base grant")
+        };
+        let principal_export = || {
+            CapabilityExportGrantV1::new(vec![
+                CapabilityApplicationExportGrantV1::new(
+                    ContractLineage::new("ticketdesk").expect("lineage"),
+                    CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                    true,
+                    true,
+                    false,
+                    false,
+                )
+                .expect("application grant"),
+            ])
+            .expect("export grant")
+        };
+        assert_eq!(
+            base().with_export(principal_export()),
+            Err(CapabilityGrantError::InvalidShape)
+        );
+
+        let policy = CapabilityRowPolicyGrantV1::new(
+            role,
+            CapabilityPrincipalFactsV1::empty(),
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    ContractLineage::new("ticketdesk").expect("lineage"),
+                    RowPolicyName::new("TicketVisible").expect("policy"),
+                    EntityTypeId::first(),
+                    vec![CapabilityRowPolicyOperationV1::Read],
+                )
+                .expect("binding"),
+            ],
+        )
+        .expect("policy extension");
+        let protected = base()
+            .with_row_policy(policy)
+            .expect("protected grant")
+            .with_export(principal_export())
+            .expect("principal export authority");
+        assert_eq!(
+            protected.internal_export().expect("export").applications()[0].scope(),
+            CapabilityApplicationExportScopeV1::PrincipalFiltered
+        );
+
+        let tenant_bound = CapabilityGrantV1::new(
+            TenantScope::Tenant(crate::TenantId::new("tenant-a").expect("tenant")),
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(Vec::new()).expect("permissions"),
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("tenant-bound grant");
+        let whole_export = CapabilityExportGrantV1::new(vec![
+            CapabilityApplicationExportGrantV1::new(
+                ContractLineage::new("ticketdesk").expect("lineage"),
+                CapabilityApplicationExportScopeV1::WholeApplication,
+                true,
+                true,
+                true,
+                true,
+            )
+            .expect("application grant"),
+        ])
+        .expect("export grant");
+        assert_eq!(
+            tenant_bound.with_export(whole_export),
             Err(CapabilityGrantError::InvalidShape)
         );
     }

@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/capability.proto";
+import "riffdb/storage/v1/capability_installation.proto";
+import "riffdb/storage/v1/capability_migration.proto";
+import "riffdb/storage/v1/capability_row_policy.proto";
+
+enum CapabilityApplicationExportScopeV1 {
+  CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED = 0;
+  CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED = 1;
+  CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION = 2;
+}
+
+message CapabilityApplicationExportGrantV1 {
+  string contract_lineage = 1;
+  CapabilityApplicationExportScopeV1 scope = 2;
+  bool entities = 3;
+  bool events = 4;
+  bool provenance = 5;
+  bool public_audit = 6;
+}
+
+message CapabilityExportGrantExtensionV1 {
+  repeated CapabilityApplicationExportGrantV1 applications = 1;
+}
+
+message CapabilityRecordV5 {
+  CapabilityRecordV1 base = 1;
+  CapabilityMigrationGrantExtensionV1 migration = 2;
+  CapabilityInstallationGrantExtensionV1 installation = 3;
+  CapabilityRowPolicyGrantExtensionV1 row_policy = 4;
+  CapabilityExportGrantExtensionV1 export = 5;
+}

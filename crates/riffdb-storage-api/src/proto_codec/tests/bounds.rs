@@ -18,9 +18,10 @@ use super::sample;
 #[test]
 fn every_semantic_fixture_reports_its_exact_complete_envelope_charge() {
     let vectors = super::semantic_wire_vectors();
-    assert_eq!(vectors.len(), 26);
-    for ((name, envelope), schema) in vectors.iter().zip(READABLE_RECORD_SCHEMAS.iter()) {
-        assert_eq!(*name, schema.record_type());
+    assert_eq!(vectors.len(), 27);
+    for (name, envelope) in &vectors {
+        let schema = riffdb_proto::durable::readable_record_schema(name)
+            .expect("semantic fixture schema must remain readable");
         assert_eq!(
             envelope.encoded_content_charge().get(),
             envelope.as_bytes().len(),

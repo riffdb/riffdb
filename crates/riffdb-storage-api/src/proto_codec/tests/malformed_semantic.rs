@@ -400,6 +400,65 @@ fn capability_v4_row_policy_extension_is_required_canonical_and_role_bound() {
 }
 
 #[test]
+fn capability_v5_export_extension_is_required_canonical_and_scope_checked() {
+    const CAPABILITY_V5: &str = "riffdb.storage.v1.CapabilityRecordV5";
+    let value = sample::capability_record_with_export_authority();
+    let canonical = encode_capability_record_v1(&value).expect("export capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV5>(canonical.as_bytes());
+
+    let mut missing = message.clone();
+    missing.export = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &missing,
+    )));
+
+    let mut empty = message.clone();
+    empty
+        .export
+        .as_mut()
+        .expect("export extension")
+        .applications
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &empty,
+    )));
+
+    let mut false_only = message.clone();
+    let application = &mut false_only
+        .export
+        .as_mut()
+        .expect("export extension")
+        .applications[0];
+    application.entities = false;
+    application.events = false;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &false_only,
+    )));
+
+    let mut unknown_scope = message.clone();
+    unknown_scope
+        .export
+        .as_mut()
+        .expect("export extension")
+        .applications[0]
+        .scope = 99;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &unknown_scope,
+    )));
+
+    let mut missing_policy = message;
+    missing_policy.row_policy = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &missing_policy,
+    )));
+}
+
+#[test]
 fn interim_installation_payload_under_v2_compact_identity_is_recovered_exactly() {
     const CAPABILITY_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
     let expected = sample::capability_record_with_installation_authority();

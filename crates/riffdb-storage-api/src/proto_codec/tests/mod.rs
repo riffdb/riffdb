@@ -278,13 +278,18 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
 #[test]
 fn every_registered_semantic_record_round_trips_in_registry_order() {
     let vectors = semantic_wire_vectors();
-    assert_eq!(vectors.len(), 26);
+    assert_eq!(vectors.len(), 27);
     for ((name, _), schema) in vectors
         .iter()
+        .filter(|(name, _)| *name != "riffdb.storage.v1.StoredDurableEventV2")
         .zip(riffdb_proto::durable::READABLE_RECORD_SCHEMAS.iter())
     {
         assert_eq!(*name, schema.record_type());
     }
+    assert!(
+        riffdb_proto::durable::readable_record_schema("riffdb.storage.v1.StoredDurableEventV2")
+            .is_some()
+    );
 
     let (current, _) = sample::index_records();
     assert_round_trip(current, encode_index_entry_v2, decode_index_entry_v2);
