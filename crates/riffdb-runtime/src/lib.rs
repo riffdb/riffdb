@@ -1655,7 +1655,9 @@ fn map_canonical_codec_error(error: CanonicalCodecError) -> ExecutionFault {
         | CanonicalCodecError::ZeroEnumVariantId
         | CanonicalCodecError::ZeroFieldId
         | CanonicalCodecError::UnexpectedEnd
-        | CanonicalCodecError::TrailingBytes { .. } => ExecutionFault::Integrity,
+        | CanonicalCodecError::TrailingBytes { .. }
+        | CanonicalCodecError::VectorDimensionOutOfRange { .. }
+        | CanonicalCodecError::NonCanonicalVectorComponent { .. } => ExecutionFault::Integrity,
     }
 }
 

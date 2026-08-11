@@ -124,26 +124,86 @@ impl fmt::Display for StalenessSlo {
     }
 }
 
-/// A validated, dimension-checked vector of f32 values.
+/// Typed rejection of an invalid canonical vector construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CanonicalVectorError {
+    /// The component count is zero or exceeds `MAX_VECTOR_DIMENSION`.
+    DimensionOutOfRange {
+        /// Observed component count.
+        actual: usize,
+        /// Maximum supported dimension.
+        maximum: u32,
+    },
+    /// A component is NaN or infinite. Vectors carrying non-finite
+    /// components are garbage inputs and never become canonical values.
+    NonFiniteComponent {
+        /// Zero-based index of the first offending component.
+        index: usize,
+    },
+}
+
+impl fmt::Display for CanonicalVectorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DimensionOutOfRange { actual, maximum } => write!(
+                f,
+                "vector has {actual} components; the dimension must be in 1..={maximum}"
+            ),
+            Self::NonFiniteComponent { index } => {
+                write!(f, "vector component {index} is not a finite number")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CanonicalVectorError {}
+
+/// A validated, dimension-checked vector of f32 values in canonical form.
 ///
 /// Stored as authoritative entity state. Dimension is fixed at construction
 /// and matches the contract-declared `VectorDimension`.
+///
+/// # Canonical form
+///
+/// Every construction path (constructor and canonical decoder) enforces one
+/// canonical form: all components are finite, and negative zero is
+/// canonicalized to positive zero. Within that domain IEEE `f32` equality,
+/// bitwise comparison, and bitwise hashing all agree, so the derived
+/// `PartialEq`, the bitwise `Hash`/`Ord` below, and the durable canonical
+/// digest are mutually consistent (`a == b` implies `digest(a) == digest(b)`).
+/// This discipline is what makes vectors a safe exception to the
+/// no-business-floats rule in this crate.
 #[derive(Clone, PartialEq)]
 pub struct CanonicalVector {
-    /// The f32 components in declaration order.
+    /// The f32 components in declaration order, in canonical form.
     components: Vec<f32>,
 }
 
 impl CanonicalVector {
-    /// Creates a vector from components. Returns `None` if the length is zero
-    /// or exceeds `MAX_VECTOR_DIMENSION`.
-    #[must_use]
-    pub fn new(components: Vec<f32>) -> Option<Self> {
+    /// Creates a vector from components, enforcing canonical form.
+    ///
+    /// Rejects an empty or over-`MAX_VECTOR_DIMENSION` component list and any
+    /// NaN or infinite component as typed errors; canonicalizes `-0.0` to
+    /// `+0.0`.
+    pub fn new(mut components: Vec<f32>) -> Result<Self, CanonicalVectorError> {
         let len = components.len();
         if len == 0 || len > MAX_VECTOR_DIMENSION as usize {
-            return None;
+            return Err(CanonicalVectorError::DimensionOutOfRange {
+                actual: len,
+                maximum: MAX_VECTOR_DIMENSION,
+            });
         }
-        Some(Self { components })
+        for (index, component) in components.iter_mut().enumerate() {
+            if !component.is_finite() {
+                return Err(CanonicalVectorError::NonFiniteComponent { index });
+            }
+            if *component == 0.0 {
+                // Canonicalize -0.0 to +0.0 so IEEE equality and the bitwise
+                // Hash/Ord/digest agree on the one canonical representation.
+                *component = 0.0;
+            }
+        }
+        Ok(Self { components })
     }
 
     /// The number of components (the dimension).
@@ -177,10 +237,16 @@ impl fmt::Debug for CanonicalVector {
     }
 }
 
+// True because construction enforces canonical form: components are finite
+// and -0.0 is canonicalized, so IEEE equality is reflexive here and identical
+// to bitwise equality.
 impl Eq for CanonicalVector {}
 
-// f32 does not implement Ord, but we need it for CanonicalValue's derived traits.
-// Vector equality uses bitwise comparison (same as IEEE 754 totalOrder for non-NaN).
+// Hash and Ord are bitwise over the canonical form. Within the canonical
+// domain bitwise equality coincides with the derived IEEE `PartialEq`, so
+// `Hash`/`Ord` are consistent with `Eq`. Note `Ord` is a total order for
+// container use (length, then component bits); it is NOT a numeric order —
+// vectors have no meaningful numeric order.
 impl std::hash::Hash for CanonicalVector {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         for component in &self.components {
@@ -256,5 +322,76 @@ impl EmbeddingMetadata {
     #[must_use]
     pub fn model_version(&self) -> &str {
         &self.model_version
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn construction_rejects_non_finite_components_as_typed_errors() {
+        for (components, index) in [
+            (vec![f32::NAN], 0),
+            (vec![1.0, f32::INFINITY], 1),
+            (vec![1.0, 2.0, f32::NEG_INFINITY], 2),
+        ] {
+            assert_eq!(
+                CanonicalVector::new(components),
+                Err(CanonicalVectorError::NonFiniteComponent { index })
+            );
+        }
+    }
+
+    #[test]
+    fn construction_rejects_out_of_range_dimensions() {
+        assert_eq!(
+            CanonicalVector::new(Vec::new()),
+            Err(CanonicalVectorError::DimensionOutOfRange {
+                actual: 0,
+                maximum: MAX_VECTOR_DIMENSION,
+            })
+        );
+        let oversized = vec![0.5; MAX_VECTOR_DIMENSION as usize + 1];
+        assert_eq!(
+            CanonicalVector::new(oversized),
+            Err(CanonicalVectorError::DimensionOutOfRange {
+                actual: MAX_VECTOR_DIMENSION as usize + 1,
+                maximum: MAX_VECTOR_DIMENSION,
+            })
+        );
+        assert!(CanonicalVector::new(vec![0.5; MAX_VECTOR_DIMENSION as usize]).is_ok());
+    }
+
+    #[test]
+    fn negative_zero_is_canonicalized_at_construction() {
+        let negative = CanonicalVector::new(vec![-0.0_f32]).expect("finite");
+        let positive = CanonicalVector::new(vec![0.0_f32]).expect("finite");
+        // One canonical representation: bit-identical components.
+        assert_eq!(
+            negative.components()[0].to_bits(),
+            positive.components()[0].to_bits()
+        );
+        assert_eq!(negative, positive);
+        assert_eq!(negative.cmp(&positive), std::cmp::Ordering::Equal);
+        let hash_of = |vector: &CanonicalVector| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            vector.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash_of(&negative), hash_of(&positive));
+    }
+
+    #[test]
+    fn equality_is_reflexive_and_agrees_with_ordering() {
+        let vector = CanonicalVector::new(vec![1.5, -2.25, 0.0]).expect("finite");
+        // Reflexivity: with only finite canonical components, IEEE equality
+        // is reflexive (a NaN component previously made `v == v` false).
+        assert_eq!(vector, vector.clone());
+        assert_eq!(vector.cmp(&vector.clone()), std::cmp::Ordering::Equal);
+        let other = CanonicalVector::new(vec![1.5, -2.25, 0.5]).expect("finite");
+        assert_ne!(vector, other);
+        assert_ne!(vector.cmp(&other), std::cmp::Ordering::Equal);
     }
 }

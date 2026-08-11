@@ -552,15 +552,32 @@ impl Decoder<'_> {
             TAG_VECTOR => {
                 let dimension = u32::from_be_bytes(self.read_array()?);
                 if dimension == 0 || dimension > crate::MAX_VECTOR_DIMENSION {
-                    return Err(CanonicalCodecError::UnknownTag { tag: TAG_VECTOR });
+                    // The tag is known; the payload is out of range.
+                    return Err(CanonicalCodecError::VectorDimensionOutOfRange {
+                        actual: dimension,
+                        maximum: crate::MAX_VECTOR_DIMENSION,
+                    });
                 }
                 let mut components = Vec::with_capacity(dimension as usize);
-                for _ in 0..dimension {
-                    components.push(f32::from_be_bytes(self.read_array()?));
+                for index in 0..dimension as usize {
+                    let bits = u32::from_be_bytes(self.read_array()?);
+                    let component = f32::from_bits(bits);
+                    // Strict canonical decode: NaN, infinities, and the -0.0
+                    // bit pattern are not canonical bytes. Rejecting (rather
+                    // than canonicalizing) keeps encode/decode an
+                    // isomorphism, so distinct durable byte strings never
+                    // decode to equal values.
+                    if !component.is_finite() || bits == (-0.0_f32).to_bits() {
+                        return Err(CanonicalCodecError::NonCanonicalVectorComponent { index });
+                    }
+                    components.push(component);
                 }
-                Ok(CanonicalValue::Vector(
-                    CanonicalVector::new(components).expect("dimension already validated"),
-                ))
+                CanonicalVector::new(components)
+                    .map(CanonicalValue::Vector)
+                    .map_err(|_| CanonicalCodecError::VectorDimensionOutOfRange {
+                        actual: dimension,
+                        maximum: crate::MAX_VECTOR_DIMENSION,
+                    })
             }
             tag => Err(CanonicalCodecError::UnknownTag { tag }),
         }
@@ -704,6 +721,19 @@ pub enum CanonicalCodecError {
         /// Unknown tag byte.
         tag: u8,
     },
+    /// A vector payload declares a dimension outside `1..=MAX_VECTOR_DIMENSION`.
+    VectorDimensionOutOfRange {
+        /// Declared dimension.
+        actual: u32,
+        /// Maximum supported dimension.
+        maximum: u32,
+    },
+    /// A vector payload carries a non-canonical component (NaN, infinity, or
+    /// the negative-zero bit pattern).
+    NonCanonicalVectorComponent {
+        /// Zero-based index of the offending component.
+        index: usize,
+    },
     /// A Boolean payload is neither zero nor one.
     InvalidBoolean {
         /// Invalid payload byte.
@@ -765,6 +795,14 @@ impl fmt::Display for CanonicalCodecError {
                 write!(formatter, "unsupported canonical value version {version}")
             }
             Self::UnknownTag { tag } => write!(formatter, "unknown canonical value tag {tag}"),
+            Self::VectorDimensionOutOfRange { actual, maximum } => write!(
+                formatter,
+                "vector dimension {actual} is outside 1..={maximum}"
+            ),
+            Self::NonCanonicalVectorComponent { index } => write!(
+                formatter,
+                "vector component {index} is not in canonical form (NaN, infinity, or -0.0)"
+            ),
             Self::InvalidBoolean { value } => {
                 write!(formatter, "invalid Boolean payload {value}")
             }
@@ -845,6 +883,54 @@ mod tests {
     }
 
     #[test]
+    fn vector_decode_rejects_non_canonical_bytes() {
+        // dimension 0
+        let zero_dimension = [1u8, TAG_VECTOR, 0, 0, 0, 0];
+        assert_eq!(
+            decode_canonical_value(&zero_dimension),
+            Err(CanonicalCodecError::VectorDimensionOutOfRange {
+                actual: 0,
+                maximum: crate::MAX_VECTOR_DIMENSION,
+            })
+        );
+        // dimension above the maximum, declared before any component bytes
+        let mut oversized = vec![1u8, TAG_VECTOR];
+        oversized.extend((crate::MAX_VECTOR_DIMENSION + 1).to_be_bytes());
+        assert_eq!(
+            decode_canonical_value(&oversized),
+            Err(CanonicalCodecError::VectorDimensionOutOfRange {
+                actual: crate::MAX_VECTOR_DIMENSION + 1,
+                maximum: crate::MAX_VECTOR_DIMENSION,
+            })
+        );
+        // NaN, infinities, and -0.0 bit patterns are not canonical bytes.
+        for (bits, index) in [
+            (f32::NAN.to_bits(), 1u32),
+            (f32::INFINITY.to_bits(), 1),
+            (f32::NEG_INFINITY.to_bits(), 1),
+            ((-0.0_f32).to_bits(), 1),
+        ] {
+            let mut document = vec![1u8, TAG_VECTOR, 0, 0, 0, 2];
+            document.extend(1.0_f32.to_be_bytes());
+            document.extend(bits.to_be_bytes());
+            assert_eq!(
+                decode_canonical_value(&document),
+                Err(CanonicalCodecError::NonCanonicalVectorComponent {
+                    index: index as usize
+                }),
+                "bit pattern {bits:#010x} must be rejected"
+            );
+        }
+        // Distinct NaN payloads must both be rejected, so no NaN bit pattern
+        // ever round-trips into durable bytes.
+        for nan_bits in [0x7fc0_0000u32, 0x7fc0_0001] {
+            let mut document = vec![1u8, TAG_VECTOR, 0, 0, 0, 1];
+            document.extend(nan_bits.to_be_bytes());
+            assert!(decode_canonical_value(&document).is_err());
+        }
+    }
+
+    #[test]
     fn rejects_malformed_documents_without_panicking() {
         let cases: &[&[u8]] = &[
             &[],
@@ -908,6 +994,10 @@ mod tests {
             CanonicalValue::List(nested_list),
             CanonicalValue::Record(CanonicalRecord::new(vec![]).expect("empty record")),
             CanonicalValue::Record(nested_record),
+            CanonicalValue::Vector(CanonicalVector::new(vec![1.0]).expect("finite")),
+            CanonicalValue::Vector(
+                CanonicalVector::new(vec![0.0, -2.5, 3.25, f32::MIN, f32::MAX]).expect("finite"),
+            ),
         ];
         for value in samples {
             let encoded = encode_canonical_value(&value).expect("encode");
