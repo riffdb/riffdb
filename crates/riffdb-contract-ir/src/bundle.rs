@@ -2660,7 +2660,18 @@ pub(crate) fn encode_value_type(
         ValueTypeTag::Record => {
             encode_record_ref(writer, value_type.record_ref().expect("record tag"))
         }
-        _ => Ok(()),
+        ValueTypeTag::Vector => {
+            writer.u32(value_type.vector_dimension().expect("vector tag").get())
+        }
+        // Payload-free tags, listed explicitly so a new tag carrying a payload
+        // cannot silently fall into a no-op arm (the catch-all this replaces
+        // dropped the vector dimension from every encoded bundle).
+        ValueTypeTag::Bool
+        | ValueTypeTag::I64
+        | ValueTypeTag::U64
+        | ValueTypeTag::Timestamp
+        | ValueTypeTag::Date
+        | ValueTypeTag::Uuid => Ok(()),
     }
 }
 
@@ -4130,6 +4141,14 @@ pub(crate) fn decode_value_type(
             ValueType::list(element, reader.u32()? as usize)
         }
         value_type_tag::RECORD => Ok(ValueType::record(decode_record_ref(reader)?)),
+        value_type_tag::VECTOR => {
+            let dimension = riffdb_types::VectorDimension::new(reader.u32()?).ok_or(
+                IrValidationError::TypeMismatch {
+                    context: "vector type",
+                },
+            )?;
+            Ok(ValueType::vector(dimension))
+        }
         tag => Err(IrValidationError::UnknownTag {
             kind: "value type",
             tag,
