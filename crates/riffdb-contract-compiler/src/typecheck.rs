@@ -79,7 +79,8 @@ pub(crate) fn resolve_declared_types(
                         EntityItem::Invariant(_)
                         | EntityItem::Index(_)
                         | EntityItem::Unique(_)
-                        | EntityItem::Reference(_) => {}
+                        | EntityItem::Reference(_)
+                        | EntityItem::DeletePolicy(_) => {}
                         EntityItem::VectorField(vector_field) => {
                             // Resolve the vector field to ValueType::vector(dimension).
                             if let (Some(entity_id), Some(field_id)) = (
@@ -231,7 +232,11 @@ pub(crate) fn resolve_type(
             .and_then(|maximum| ValueType::bytes(maximum).ok()),
         TypeExpression::Optional(inner) => resolve_type(inner, symbols, diagnostics)
             .and_then(|inner| ValueType::optional(inner).ok()),
-        TypeExpression::List { element, maximum } => {
+        TypeExpression::List {
+            element,
+            minimum: _,
+            maximum,
+        } => {
             let element = resolve_type(element, symbols, diagnostics);
             let maximum = maximum.value.parse::<usize>().ok();
             element

@@ -856,6 +856,17 @@ impl NodeCounter {
                             self.name(&vector_field.name)?;
                             self.names(&vector_field.source_fields, item.span)?;
                         }
+                        EntityItem::DeletePolicy(policy) => {
+                            self.add(1, item.span)?;
+                            if let DeletePolicyDeclaration::Restrict {
+                                source_entity,
+                                index,
+                            } = policy
+                            {
+                                self.name(source_entity)?;
+                                self.name(index)?;
+                            }
+                        }
                     }
                 }
             }
@@ -1236,8 +1247,15 @@ impl NodeCounter {
             | TypeExpression::String { maximum: currency }
             | TypeExpression::Bytes { maximum: currency } => self.add(1, currency.span),
             TypeExpression::Optional(inner) => self.type_expression(inner),
-            TypeExpression::List { element, maximum } => {
+            TypeExpression::List {
+                element,
+                minimum,
+                maximum,
+            } => {
                 self.type_expression(element)?;
+                if let Some(minimum) = minimum {
+                    self.add(1, minimum.span)?;
+                }
                 self.add(1, maximum.span)
             }
             TypeExpression::Named(name) => self.name(name),

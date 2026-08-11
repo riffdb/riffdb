@@ -213,10 +213,21 @@ fn compile(
 fn reject_unlowered_collection_mutations(
     document: &riffdb_contract_syntax::ContractDocument,
 ) -> Result<(), CompilationError> {
-    use riffdb_contract_syntax::ast::{Binding, CommandKind, Declaration};
+    use riffdb_contract_syntax::ast::{Binding, CommandKind, Declaration, EntityItem};
 
     let mut diagnostics = Vec::new();
     for declaration in &document.contract.value.declarations {
+        if let Declaration::Entity(entity) = &declaration.value
+            && let Some(policy) = entity
+                .items
+                .iter()
+                .find(|item| matches!(item.value, EntityItem::DeletePolicy(_)))
+        {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnsupportedCollectionMutation,
+                policy.span,
+            ));
+        }
         let Declaration::Command(command) = &declaration.value else {
             continue;
         };
@@ -332,6 +343,44 @@ mod tests {
         assert_eq!(
             diagnostic.primary_span().end() as usize,
             start + exact_source.len()
+        );
+    }
+
+    #[test]
+    fn collection_and_delete_policy_surfaces_fail_closed_before_ir_activation() {
+        let bulk = r#"
+contract BulkGate version 1 {
+  entity Row { key (tenant_id: uuid, row_id: uuid) }
+  aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id) }
+  bulk command DeleteRows {
+    input tenant_id: uuid
+    input row_ids: list<uuid, 1..8>
+    idempotency_key tenant_id
+    for row_id in row_ids {
+      delete Row(tenant_id, row_id) as row else Missing {}
+    }
+    return Deleted {}
+  }
+}
+"#;
+        assert_semantic_diagnostic_at(
+            bulk,
+            CompilerDiagnosticCode::UnsupportedCollectionMutation,
+            "for row_id in row_ids {\n      delete Row(tenant_id, row_id) as row else Missing {}\n    }",
+        );
+
+        let policy = r#"
+contract DeletePolicyGate version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    delete_policy no_inbound
+  }
+}
+"#;
+        assert_semantic_diagnostic_at(
+            policy,
+            CompilerDiagnosticCode::UnsupportedCollectionMutation,
+            "delete_policy no_inbound",
         );
     }
 

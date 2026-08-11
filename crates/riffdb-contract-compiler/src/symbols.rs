@@ -225,6 +225,7 @@ fn allocate_symbols(
                                 &mut diagnostics,
                             );
                         }
+                        EntityItem::DeletePolicy(_) => {}
                     }
                 }
                 if key_count != 1 {

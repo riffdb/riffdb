@@ -197,6 +197,13 @@ EntityItem: Spanned<EntityItem> = {
             source_fields,
             staleness_slo,
         }), lo, hi),
+    <lo:@L> "delete_policy" "no_inbound" <hi:@R>
+        => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::NoInbound), lo, hi),
+    <lo:@L> "delete_policy" "restrict" <source_entity:Identifier> "." <index:Identifier> <hi:@R>
+        => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::Restrict {
+            source_entity,
+            index,
+        }), lo, hi),
 };
 
 IndexOption: Spanned<IndexOption> = {
@@ -303,10 +310,22 @@ TypeExpression: Spanned<TypeExpression> = {
         => parser::spanned(TypeExpression::Bytes { maximum }, lo, hi),
     <lo:@L> "optional" "<" <inner:TypeExpression> ">" <hi:@R>
         => parser::spanned(TypeExpression::Optional(Box::new(inner)), lo, hi),
-    <lo:@L> "list" "<" <element:TypeExpression> "," <maximum:UnsignedInteger> ">" <hi:@R>
-        => parser::spanned(TypeExpression::List { element: Box::new(element), maximum }, lo, hi),
+    <lo:@L> "list" "<" <element:TypeExpression> "," <bound:ListBound> ">" <hi:@R>
+        => parser::spanned(TypeExpression::List {
+            element: Box::new(element),
+            minimum: bound.0,
+            maximum: bound.1,
+        }, lo, hi),
     <lo:@L> <name:Identifier> <hi:@R>
         => parser::spanned(TypeExpression::Named(name), lo, hi),
+};
+
+ListBound: (Option<Spanned<String>>, Spanned<String>) = {
+    <maximum:UnsignedInteger> => (None, maximum),
+    <lo:@L> <range:"unsigned integer range"> <hi:@R> => {
+        let (minimum, maximum) = range;
+        (Some(parser::spanned(minimum, lo, hi)), parser::spanned(maximum, lo, hi))
+    },
 };
 
 CommandDeclaration: CommandDeclaration = {
@@ -766,6 +785,9 @@ extern {
         "unique" => Token::Unique,
         "reference" => Token::Reference,
         "vector_field" => Token::VectorField,
+        "delete_policy" => Token::DeletePolicy,
+        "no_inbound" => Token::NoInbound,
+        "restrict" => Token::Restrict,
         "cosine" => Token::Cosine,
         "euclidean" => Token::Euclidean,
         "dot_product" => Token::DotProduct,
@@ -878,6 +900,7 @@ extern {
         "+" => Token::Plus,
         "fixed decimal literal" => Token::FixedDecimalLiteral(<String>),
         "unsigned integer literal" => Token::UIntLiteral(<String>),
+        "unsigned integer range" => Token::UIntRange(<(String, String)>),
         "string literal" => Token::StringLiteral(<String>),
         "identifier" => Token::Identifier(<String>),
     }
