@@ -441,10 +441,28 @@ fn contextual_hydration_cannot_fall_back_to_an_unprotected_query_group() {
         .expect("consumer release has a closed boundary")
         .0;
     assert_eq!(
-        release.matches("begun.reauthorize(service, context)").count(),
+        release
+            .matches("begun.reauthorize(service, context)")
+            .count(),
         2,
         "contextual delivery must reauthorize immediately before hydration and release"
     );
+}
+
+#[test]
+fn contextual_reaction_reuses_the_authoritative_command_policy_path() {
+    let reaction = CONSUMER_SOURCE
+        .split_once("async fn execute_contextual_reaction_operation(")
+        .expect("contextual reaction orchestration exists")
+        .1
+        .split_once("pub(crate) fn bind_reaction_idempotency(")
+        .expect("contextual reaction has a closed boundary")
+        .0;
+    assert!(reaction.contains("EventConsumerPortRequest::ValidateLease"));
+    assert!(reaction.contains("CommandInvocationMode::Contextual"));
+    assert!(reaction.contains("crate::command_operations::execute_command("));
+    assert!(reaction.contains("finish_success(&service, &context, &begun)"));
+    assert!(!reaction.contains("execute_evaluated_command"));
 }
 
 #[test]

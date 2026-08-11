@@ -541,9 +541,7 @@ fn evaluate(
     if current.grant.internal_row_policy().is_some()
         && matches!(
             request.operation(),
-            ServiceOperationV1::ExecuteProjectedQuery
-                | ServiceOperationV1::ConsumeEventStream
-                | ServiceOperationV1::ExecuteContextualReaction
+            ServiceOperationV1::ExecuteProjectedQuery | ServiceOperationV1::ConsumeEventStream
         )
     {
         return Err(PolicyCode::MissingPermission);
@@ -1077,11 +1075,20 @@ mod tests {
             &environment,
             timestamp(15),
             &OperationRequest::consume_contextual_subscription(
-                contextual_target,
+                contextual_target.clone(),
                 NonZeroU16::new(4).expect("rows"),
             ),
         );
         assert!(allowed_to_contextual.is_ok());
+        let allowed_to_react = evaluate(
+            &principal,
+            &current,
+            database_id(),
+            &environment,
+            timestamp(15),
+            &OperationRequest::execute_contextual_reaction(contextual_target),
+        );
+        assert!(allowed_to_react.is_ok());
     }
 
     #[test]
