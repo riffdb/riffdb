@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 2 || "$1" != "--all-domains" || "$2" != "--all-languages" ]]; then
+    echo "usage: ./scripts/adapter-conformance --all-domains --all-languages" >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+
+for tool in cargo go jq node python3 rg; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "adapter conformance requires $tool" >&2
+        exit 1
+    }
+done
+
+./scripts/generate-adapter-conformance-fixtures --check
+cargo +1.97.0 test -p riffdb-application --all-features --quiet
+cargo +1.97.0 test -p riffdb-testkit --test adapter_conformance --all-features --quiet
+cargo +1.97.0 build -p riffdb-cli --bin riffdb --quiet
+
+domains=(openfga mlflow payload woodpecker)
+for domain in "${domains[@]}"; do
+    root="fixtures/adapters/conformance/$domain"
+    for plan in empty-install-plan upgrade-plan; do
+        target/debug/riffdb application conformance \
+            "$root/adapter.conformance.json" \
+            --plan "$root/$plan.json" \
+            --output json \
+            | jq -e --arg adapter "$domain" '
+                .ok == true
+                and .command == "application.conformance"
+                and .result.adapter == $adapter
+                and .result.feature_claims == 7
+                and .result.evolution_cases == 2
+                and (.result.manifest_hash | test("^[0-9a-f]{64}$"))
+                and (.result.installation_plan_hash | test("^[0-9a-f]{64}$"))
+            ' >/dev/null
+    done
+    jq -e --arg adapter "$domain" '
+        .schema == "riffdb.adapter-failure-classification/v1"
+        and .adapter == $adapter
+        and .immutable == true
+        and .classification == "riffdb_product_defect"
+        and .code == "remote_identity_mismatch"
+        and .action == "inspect_remote_identity_and_resume_same_campaign"
+        and (.campaign_state_hash | test("^[0-9a-f]{64}$"))
+    ' "$root/failure-classification.json" >/dev/null
+done
+
+# The three release-owned public corpora collectively exercise the four shapes
+# through direct TLS, generated Rust/Go/TypeScript/Python clients, CLI, and MCP
+# catalog schemas. Adapter manifests contain only symbolic probe identities;
+# they never provide executable test hooks.
+./scripts/adapter-bulk-command-acceptance --all-languages
+./scripts/adapter-operational-query-acceptance --all-languages
+./scripts/adapter-workflow-acceptance --all-languages
+
+boundary_sources=(
+    fixtures/adapters/bulk-conformance/runner
+    fixtures/adapters/operational-conformance/runner
+    tests/adapter_bulk_remote_client.rs
+    tests/adapter_operational_remote_client.rs
+)
+if rg -n \
+    'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|transaction)|entity_type_id|field_id|index_id|capability_mask|CommandService|StoragePort' \
+    "${boundary_sources[@]}"; then
+    echo "adapter conformance corpus crossed the public application boundary" >&2
+    exit 1
+fi
+
+if rg -n \
+    'raw_permissions|storage_access|kernel_access|server_hook|shell_command|method_path|version_range|silent_fallback' \
+    fixtures/adapters/conformance; then
+    echo "adapter manifest exposed a forbidden extension or fallback channel" >&2
+    exit 1
+fi
+
+echo "OpenFGA, MLflow, Payload, and Woodpecker passed exact install/evolution and public Rust, Go, TypeScript, and Python conformance."

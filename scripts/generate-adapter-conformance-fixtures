@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+case "${1:-}" in
+    --write)
+        [[ "$#" -eq 1 ]] || { echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2; exit 2; }
+        cargo +1.97.0 run --quiet -p riffdb-testkit --example generate_adapter_conformance -- \
+            "$repo_root" "$repo_root"
+        echo "Generated four-domain adapter conformance fixtures."
+        ;;
+    --check)
+        [[ "$#" -eq 1 ]] || { echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2; exit 2; }
+        task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+        mkdir -p "$task_tmp_root"
+        generated="$(mktemp -d "$task_tmp_root/riffdb-adapter-conformance-generated.XXXXXX")"
+        cleanup() {
+            case "$generated" in
+                "$task_tmp_root"/riffdb-adapter-conformance-generated.*) rm -rf "$generated" ;;
+                *) echo "refusing unexpected generated path: $generated" >&2; exit 1 ;;
+            esac
+        }
+        trap cleanup EXIT INT TERM
+        cargo +1.97.0 run --quiet -p riffdb-testkit --example generate_adapter_conformance -- \
+            "$repo_root" "$generated"
+        diff -ru -- \
+            "$repo_root/fixtures/adapters/conformance" \
+            "$generated/fixtures/adapters/conformance"
+        echo "Four-domain adapter conformance fixtures are current."
+        ;;
+    *)
+        echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2
+        exit 2
+        ;;
+esac

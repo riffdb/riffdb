@@ -1,0 +1,1 @@
+{"adapter":"openfga","languages":["go","python","rust","typescript"],"operations":[{"maximum_items":64,"name":"write-tuples","operation":"WriteTuples","result":"passed"},{"maximum_items":25,"name":"list-tuples","operation":"ListFgaTuples","result":"passed"}],"schema":"riffdb.adapter-conformance-observation/v1","transport":"public_tls"}

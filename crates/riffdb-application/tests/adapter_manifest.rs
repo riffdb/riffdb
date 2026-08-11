@@ -109,6 +109,29 @@ fn manifest() -> AdapterConformanceManifest {
     .expect("manifest")
 }
 
+fn current_manifest() -> AdapterConformanceManifest {
+    let mut input = manifest().input().clone();
+    input.feature_claims.extend([
+        AdapterFeatureClaim::new(
+            InstallationFeature::OperationalQueries,
+            AdapterFeatureDisposition::Optional,
+            None,
+        )
+        .expect("optional operational queries"),
+        AdapterFeatureClaim::new(
+            InstallationFeature::WorkflowConcurrency,
+            AdapterFeatureDisposition::Optional,
+            None,
+        )
+        .expect("optional workflows"),
+        AdapterFeatureClaim::unavailable(
+            InstallationFeature::RowPolicies,
+            AdapterLimitation::ProductUnavailable,
+        ),
+    ]);
+    AdapterConformanceManifest::compile_v2(input).expect("current exhaustive manifest")
+}
+
 #[test]
 fn manifest_is_canonical_content_addressed_and_strict() {
     let first = manifest();
@@ -121,6 +144,15 @@ fn manifest_is_canonical_content_addressed_and_strict() {
         String::from_utf8_lossy(include_bytes!(
             "../../../fixtures/installation/adapter-conformance-manifest-v1.json"
         ))
+    );
+
+    let current = AdapterConformanceManifest::decode_canonical(include_bytes!(
+        "../../../fixtures/adapters/conformance/openfga/adapter.conformance.json"
+    ))
+    .expect("current v2 manifest");
+    assert_eq!(
+        current.schema(),
+        riffdb_application::ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2
     );
 
     let mut value: serde_json::Value =
@@ -238,4 +270,49 @@ fn feature_disposition_cannot_hide_a_fallback() {
         .kind(),
         AdapterConformanceErrorKind::InvalidShape
     );
+}
+
+#[test]
+fn every_closed_feature_requires_an_explicit_support_disposition() {
+    let mut incomplete = current_manifest().input().clone();
+    incomplete.feature_claims.pop();
+    assert_eq!(
+        AdapterConformanceManifest::compile_v2(incomplete)
+            .expect_err("omitted product feature cannot become an implicit fallback")
+            .kind(),
+        AdapterConformanceErrorKind::InvalidShape
+    );
+}
+
+#[test]
+fn compatible_application_evolution_can_rotate_authority_without_contract_drift() {
+    let current = InstallationContract::new(
+        ContractVersion::new(2).expect("version"),
+        ContractBundleHash::from_bytes(hash32(7)),
+    );
+    AdapterEvolutionRequirement::new(
+        AdapterEvolutionClass::CompatibleUpgrade,
+        Some(current),
+        current,
+        None,
+        GeneratedArtifactHash::from_bytes(hash32(14)),
+    )
+    .expect("same-contract generated artifact and authority rotation is compatible evolution");
+}
+
+#[test]
+fn driver_runtime_claims_are_exact_and_never_ranges_or_floating_channels() {
+    for invalid in ["latest", "stable", "go1.24..1.26", "current"] {
+        assert_eq!(
+            AdapterDriverRequirement::new(
+                InstallationDriver::Go,
+                symbol(invalid),
+                vec![AdapterPlatform::LinuxX86_64Gnu],
+                GeneratedArtifactHash::from_bytes(hash32(15)),
+            )
+            .expect_err("floating or ranged runtime identity is rejected")
+            .kind(),
+            AdapterConformanceErrorKind::InvalidShape
+        );
+    }
 }

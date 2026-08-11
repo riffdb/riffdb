@@ -1,0 +1,1 @@
+{"action":"inspect_remote_identity_and_resume_same_campaign","adapter":"payload","campaign_state_hash":"552174d5fb42cc0a049b194016737712ef9f340726be0a9498b2d5adac244029","classification":"riffdb_product_defect","code":"remote_identity_mismatch","immutable":true,"schema":"riffdb.adapter-failure-classification/v1"}

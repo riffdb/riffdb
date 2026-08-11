@@ -2173,6 +2173,7 @@ fn check_adapter_conformance_manifest(manifest_path: &Path, plan_path: Option<&P
         &serde_json::json!({
             "adapter": manifest.input().adapter.as_str(),
             "adapter_version": manifest.input().adapter_version.as_str(),
+            "manifest_schema": manifest.schema(),
             "manifest_hash": hex(manifest.identity().as_bytes()),
             "installation_plan_hash": plan_hash,
             "feature_claims": manifest.input().feature_claims.len(),

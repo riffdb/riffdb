@@ -16,6 +16,8 @@ use crate::{
 
 /// Canonical schema for adapter-owned conformance manifests.
 pub const ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V1: &str = "riffdb.adapter-conformance-manifest/v1";
+/// Current schema requiring an explicit disposition for every closed alpha feature.
+pub const ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2: &str = "riffdb.adapter-conformance-manifest/v2";
 /// Maximum canonical manifest size.
 pub const MAX_ADAPTER_CONFORMANCE_MANIFEST_BYTES: usize = 1_048_576;
 /// Maximum feature claims in one manifest.
@@ -42,6 +44,8 @@ pub enum AdapterConformanceErrorKind {
     LimitExceeded,
     /// JSON or a closed registry value was invalid.
     InvalidEncoding,
+    /// The manifest schema is well formed but unsupported by this release.
+    UnsupportedVersion,
     /// Valid bytes were not the one canonical encoding.
     NonCanonical,
     /// A required shape or disposition was inconsistent.
@@ -82,6 +86,9 @@ impl fmt::Display for AdapterConformanceError {
             }
             AdapterConformanceErrorKind::InvalidEncoding => {
                 "adapter conformance manifest encoding is invalid"
+            }
+            AdapterConformanceErrorKind::UnsupportedVersion => {
+                "adapter conformance manifest version is unsupported"
             }
             AdapterConformanceErrorKind::NonCanonical => {
                 "adapter conformance manifest encoding is not canonical"
@@ -233,6 +240,12 @@ impl AdapterFeatureClaim {
     pub const fn disposition(self) -> AdapterFeatureDisposition {
         self.disposition
     }
+
+    /// Closed limitation for degraded or unavailable support.
+    #[must_use]
+    pub const fn limitation(self) -> Option<AdapterLimitation> {
+        self.limitation
+    }
 }
 
 /// Closed platform triples supported by the alpha driver matrix.
@@ -294,6 +307,15 @@ impl AdapterDriverRequirement {
         mut platforms: Vec<AdapterPlatform>,
         conformance_hash: GeneratedArtifactHash,
     ) -> Result<Self, AdapterConformanceError> {
+        let runtime = runtime_version.as_str();
+        if !runtime.bytes().any(|byte| byte.is_ascii_digit())
+            || runtime.contains("..")
+            || matches!(runtime, "latest" | "current" | "stable" | "any")
+        {
+            return Err(AdapterConformanceError::new(
+                AdapterConformanceErrorKind::InvalidShape,
+            ));
+        }
         platforms.sort();
         if platforms.is_empty()
             || platforms.len() > MAX_ADAPTER_PLATFORMS
@@ -331,6 +353,12 @@ impl AdapterDriverRequirement {
     #[must_use]
     pub fn platforms(&self) -> &[AdapterPlatform] {
         &self.platforms
+    }
+
+    /// Exact golden driver-conformance observation identity.
+    #[must_use]
+    pub const fn conformance_hash(&self) -> GeneratedArtifactHash {
+        self.conformance_hash
     }
 }
 
@@ -420,6 +448,36 @@ impl AdapterConformanceProbe {
             maximum_items,
         })
     }
+
+    /// Stable probe name.
+    #[must_use]
+    pub const fn name(&self) -> &InstallationSymbol {
+        &self.name
+    }
+
+    /// Exact least-authority role used by the probe.
+    #[must_use]
+    pub const fn role(&self) -> &InstallationSymbol {
+        &self.role
+    }
+
+    /// Public symbolic operation invoked by the probe.
+    #[must_use]
+    pub const fn operation(&self) -> &RoleOperation {
+        &self.operation
+    }
+
+    /// Exact value-free golden observation identity.
+    #[must_use]
+    pub const fn expected_observation_hash(&self) -> GeneratedArtifactHash {
+        self.expected_observation_hash
+    }
+
+    /// Maximum number of returned or mutated items accepted by the probe.
+    #[must_use]
+    pub const fn maximum_items(&self) -> u32 {
+        self.maximum_items
+    }
 }
 
 /// Closed application evolution class. No open version range exists.
@@ -476,8 +534,11 @@ impl AdapterEvolutionRequirement {
                 predecessor.is_none() && migration_hash.is_none()
             }
             AdapterEvolutionClass::CompatibleUpgrade => {
-                predecessor.is_some_and(|value| value.version() < successor.version())
-                    && migration_hash.is_none()
+                predecessor.is_some_and(|value| {
+                    value.version() < successor.version()
+                        || (value.version() == successor.version()
+                            && value.bundle_hash() == successor.bundle_hash())
+                }) && migration_hash.is_none()
             }
             AdapterEvolutionClass::ExplicitMigration => {
                 predecessor.is_some_and(|value| value.version() < successor.version())
@@ -502,6 +563,30 @@ impl AdapterEvolutionRequirement {
     #[must_use]
     pub const fn successor(&self) -> InstallationContract {
         self.successor
+    }
+
+    /// Closed evolution class.
+    #[must_use]
+    pub const fn class(&self) -> AdapterEvolutionClass {
+        self.class
+    }
+
+    /// Exact predecessor, absent only for empty installation.
+    #[must_use]
+    pub const fn predecessor(&self) -> Option<InstallationContract> {
+        self.predecessor
+    }
+
+    /// Exact migration identity for migration-required evolution.
+    #[must_use]
+    pub const fn migration_hash(&self) -> Option<MigrationBundleHash> {
+        self.migration_hash
+    }
+
+    /// Exact golden evolution observation identity.
+    #[must_use]
+    pub const fn expected_observation_hash(&self) -> GeneratedArtifactHash {
+        self.expected_observation_hash
     }
 }
 
@@ -535,6 +620,7 @@ pub struct AdapterConformanceManifestInput {
 /// One immutable content-addressed adapter conformance manifest.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AdapterConformanceManifest {
+    schema: &'static str,
     input: AdapterConformanceManifestInput,
     identity: AdapterConformanceManifestHash,
     canonical_bytes: Vec<u8>,
@@ -543,10 +629,25 @@ pub struct AdapterConformanceManifest {
 impl AdapterConformanceManifest {
     /// Compiles one canonical manifest without filesystem, server, or application execution.
     pub fn compile(
-        mut input: AdapterConformanceManifestInput,
+        input: AdapterConformanceManifestInput,
     ) -> Result<Self, AdapterConformanceError> {
-        validate_and_sort(&mut input)?;
-        let dto = ManifestDto::from_input(&input);
+        Self::compile_version(ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V1, input, false)
+    }
+
+    /// Compiles the current manifest format with an exhaustive feature disposition catalog.
+    pub fn compile_v2(
+        input: AdapterConformanceManifestInput,
+    ) -> Result<Self, AdapterConformanceError> {
+        Self::compile_version(ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2, input, true)
+    }
+
+    fn compile_version(
+        schema: &'static str,
+        mut input: AdapterConformanceManifestInput,
+        exhaustive_features: bool,
+    ) -> Result<Self, AdapterConformanceError> {
+        validate_and_sort(&mut input, exhaustive_features)?;
+        let dto = ManifestDto::from_input(schema, &input);
         let mut canonical_bytes = serde_json::to_vec(&dto).map_err(|_| {
             AdapterConformanceError::new(AdapterConformanceErrorKind::InvalidEncoding)
         })?;
@@ -558,6 +659,7 @@ impl AdapterConformanceManifest {
         }
         let identity = hash_adapter_conformance_manifest(&canonical_bytes);
         Ok(Self {
+            schema,
             input,
             identity,
             canonical_bytes,
@@ -574,7 +676,21 @@ impl AdapterConformanceManifest {
         let dto: ManifestDto = serde_json::from_slice(bytes).map_err(|_| {
             AdapterConformanceError::new(AdapterConformanceErrorKind::InvalidEncoding)
         })?;
-        let manifest = Self::compile(dto.into_input()?)?;
+        let schema = match dto.schema.as_str() {
+            ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V1 => ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V1,
+            ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2 => ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2,
+            _ => {
+                return Err(AdapterConformanceError::new(
+                    AdapterConformanceErrorKind::UnsupportedVersion,
+                ));
+            }
+        };
+        let input = dto.into_input()?;
+        let manifest = Self::compile_version(
+            schema,
+            input,
+            schema == ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2,
+        )?;
         if manifest.canonical_bytes != bytes {
             return Err(AdapterConformanceError::new(
                 AdapterConformanceErrorKind::NonCanonical,
@@ -587,6 +703,12 @@ impl AdapterConformanceManifest {
     #[must_use]
     pub const fn identity(&self) -> AdapterConformanceManifestHash {
         self.identity
+    }
+
+    /// Exact accepted compatibility schema.
+    #[must_use]
+    pub const fn schema(&self) -> &'static str {
+        self.schema
     }
 
     /// Validated manifest contents.
@@ -715,9 +837,9 @@ impl fmt::Debug for AdapterConformanceManifest {
 
 fn validate_and_sort(
     input: &mut AdapterConformanceManifestInput,
+    exhaustive_features: bool,
 ) -> Result<(), AdapterConformanceError> {
-    if input.feature_claims.is_empty()
-        || input.feature_claims.len() > MAX_ADAPTER_FEATURE_CLAIMS
+    if input.feature_claims.len() > MAX_ADAPTER_FEATURE_CLAIMS
         || input.artifacts.is_empty()
         || input.artifacts.len() > MAX_ADAPTER_ARTIFACTS
         || input.roles.is_empty()
@@ -733,6 +855,11 @@ fn validate_and_sort(
             AdapterConformanceErrorKind::LimitExceeded,
         ));
     }
+    if exhaustive_features && input.feature_claims.len() != InstallationFeature::ALL.len() {
+        return Err(AdapterConformanceError::new(
+            AdapterConformanceErrorKind::InvalidShape,
+        ));
+    }
     input.feature_claims.sort();
     reject_duplicate(
         input
@@ -740,6 +867,17 @@ fn validate_and_sort(
             .windows(2)
             .any(|pair| pair[0].feature == pair[1].feature),
     )?;
+    if exhaustive_features
+        && input
+            .feature_claims
+            .iter()
+            .map(|claim| claim.feature)
+            .ne(InstallationFeature::ALL)
+    {
+        return Err(AdapterConformanceError::new(
+            AdapterConformanceErrorKind::InvalidShape,
+        ));
+    }
     if !input.feature_claims.iter().any(|claim| {
         claim.feature == InstallationFeature::InstallationCampaigns
             && claim.disposition == AdapterFeatureDisposition::Required
@@ -903,9 +1041,9 @@ struct ContractDto {
 }
 
 impl ManifestDto {
-    fn from_input(input: &AdapterConformanceManifestInput) -> Self {
+    fn from_input(schema: &str, input: &AdapterConformanceManifestInput) -> Self {
         Self {
-            schema: ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V1.to_owned(),
+            schema: schema.to_owned(),
             adapter: input.adapter.as_str().to_owned(),
             adapter_version: input.adapter_version.as_str().to_owned(),
             application_manifest_hash: hex(input.application_manifest_hash.as_bytes()),
@@ -933,11 +1071,6 @@ impl ManifestDto {
     }
 
     fn into_input(self) -> Result<AdapterConformanceManifestInput, AdapterConformanceError> {
-        if self.schema != ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V1 {
-            return Err(AdapterConformanceError::new(
-                AdapterConformanceErrorKind::InvalidEncoding,
-            ));
-        }
         Ok(AdapterConformanceManifestInput {
             adapter: symbol(self.adapter)?,
             adapter_version: symbol(self.adapter_version)?,
