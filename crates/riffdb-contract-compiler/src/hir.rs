@@ -521,8 +521,22 @@ fn lower_entities(
                 EntityItem::Invariant(_)
                 | EntityItem::Index(_)
                 | EntityItem::Unique(_)
-                | EntityItem::Reference(_)
-                | EntityItem::VectorField(_) => {}
+                | EntityItem::Reference(_) => {}
+                EntityItem::VectorField(vector_field) => {
+                    let field_id = symbols
+                        .entity_fields
+                        .get(&(id, vector_field.name.value.clone()))
+                        .copied();
+                    if let Some(lowered) = lower_field(
+                        &vector_field.name,
+                        vector_field.dimension.span,
+                        field_id,
+                        field_id
+                            .and_then(|field_id| types.entity_fields.get(&(id, field_id))),
+                    ) {
+                        fields.push(lowered);
+                    }
+                }
             }
         }
         let field_scope = fields_by_name(&fields);
