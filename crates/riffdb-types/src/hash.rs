@@ -12,10 +12,10 @@ use crate::{
     CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash,
     ContractMigrationInputHash, ContractMigrationJournalHash, ContractMigrationValidationDigest,
     ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash,
-    EventConsumerIdentityHash, EventHash, GeneratedArtifactHash, MigrationBundleHash,
-    MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash,
-    ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash,
-    QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
+    EntityTransitionHash, EventConsumerIdentityHash, EventHash, GeneratedArtifactHash,
+    MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
+    PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash,
+    QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
     ScheduledAttemptHash, SchemaHash, SourceHash,
 };
 
@@ -78,6 +78,8 @@ pub enum HashDomain {
     Event,
     /// Complete canonical entity-record preimage.
     EntityRecord,
+    /// One canonical committed entity transition.
+    EntityTransition,
     /// Canonical entity key.
     EntityKey,
     /// Canonical conflict key.
@@ -114,7 +116,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -140,6 +142,7 @@ impl HashDomain {
         Self::CommandInput,
         Self::Event,
         Self::EntityRecord,
+        Self::EntityTransition,
         Self::EntityKey,
         Self::ConflictKey,
         Self::PartitionKey,
@@ -186,6 +189,7 @@ impl HashDomain {
             Self::CommandInput => "riffdb.command-input/v1",
             Self::Event => "riffdb.event/v1",
             Self::EntityRecord => "riffdb.entity-record/v1",
+            Self::EntityTransition => "riffdb.entity-transition/v1",
             Self::EntityKey => "riffdb.entity-key/v1",
             Self::ConflictKey => "riffdb.conflict-key/v1",
             Self::PartitionKey => "riffdb.partition-key/v1",
@@ -521,6 +525,12 @@ typed_hash_function!(
     hash_entity_record,
     EntityRecord,
     EntityRecordHash
+);
+typed_hash_function!(
+    /// Hashes one canonical committed entity transition in its immutable v1 domain.
+    hash_entity_transition,
+    EntityTransition,
+    EntityTransitionHash
 );
 typed_hash_function!(
     /// Hashes canonical entity-key bytes in their immutable v1 domain.

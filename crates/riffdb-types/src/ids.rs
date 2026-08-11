@@ -439,6 +439,10 @@ hash_id!(
     EntityRecordHash
 );
 hash_id!(
+    /// The hash of one canonical committed entity transition.
+    EntityTransitionHash
+);
+hash_id!(
     /// The hash of a canonical entity key.
     EntityKeyHash
 );
