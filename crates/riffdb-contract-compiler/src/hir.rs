@@ -1009,6 +1009,15 @@ fn lower_events(
             let Declaration::Event(source) = &declaration.value else {
                 return None;
             };
+            if let Some(anchor) = &source.policy_anchor {
+                // ADR-0116 requires the anchor to survive as checked IR and durable
+                // authority. Reject until that successor is present; silently
+                // compiling an unanchored event would create an authorization bypass.
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidEvent,
+                    anchor.span,
+                ));
+            }
             let id = symbols.events.get(&source.name.value).copied()?;
             let fields = source
                 .fields
