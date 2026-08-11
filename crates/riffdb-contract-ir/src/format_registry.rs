@@ -122,6 +122,7 @@ tag_registry!(binding_mode, "Binding mode", {
     READ = 0x01 => "read",
     MUTATE = 0x02 => "mutate",
     CREATE = 0x03 => "create",
+    DELETE = 0x04 => "delete",
 });
 tag_registry!(instruction, "Instruction", {
     REQUIRE = 0x01 => "require",
@@ -936,9 +937,9 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
 
 layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "magic" => "ASCII `RIFFDB-BUNDLE\\0`",
-    "bundle_format_version" => "u32 = 1, 2, 3, or 4",
-    "grammar_version" => "u32 = 1, 2, 3, or 4; must equal the bundle version",
-    "executable_ir_version" => "u32 = 1, 2, 3, or 4; must equal the bundle version",
+    "bundle_format_version" => "u32 = 1, 2, 3, 4, or 5",
+    "grammar_version" => "u32 = 1, 2, 3, 4, or 5; must equal the bundle version",
+    "executable_ir_version" => "u32 = 1, 2, 3, 4, or 5; must equal the bundle version",
     "compiler_version" => "nonempty ASCII compiler semantic-version identity string, <=64 bytes",
     "contract_lineage" => "string",
     "contract_version" => "u64",
@@ -1130,6 +1131,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "idempotency_input" => "optional FieldId",
     "input_schema_hash" => "32 bytes",
     "output_schema_hash" => "32 bytes",
+    "collection_expansion" => "IR v5+: optional CollectionExpansionPlanV1; omitted in v1-v4",
     "expressions" => "ExpressionArena",
     "bindings" => "u32 count + BindingPlan[]",
     "root_validation_reads" => "u32 count + RootValidationReadPlan[]",
@@ -1143,6 +1145,17 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "entity_closure" => "u32 count + EntitySchema[]",
     "aggregate_closure" => "AggregateSchema",
     "event_closure" => "u32 count + EventSchema[]",
+});
+layout!(COLLECTION_EXPANSION_LAYOUT, "CollectionExpansionPlanV1", {
+    "input_field" => "FieldId of one bounded list command input",
+    "minimum_elements" => "u32 in 1..=maximum_elements",
+    "maximum_elements" => "u32 <= 256 and equal to the input list maximum",
+    "element_type" => "exact ValueType of the list element",
+    "first_binding" => "dense BindingId",
+    "binding_count" => "nonzero u32 consecutive template bindings",
+    "first_instruction" => "dense zero-based u32 instruction position",
+    "instruction_count" => "u32 consecutive template instructions; zero is valid for delete-only expansion",
+    "duplicate_policy" => "u8 = 0x01 (reject)",
 });
 layout!(RELATIONSHIP_CHECK_LAYOUT, "RelationshipCheckPlan", {
     "relationship_name" => "string",
@@ -1324,6 +1337,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     WORKFLOW_LEASE_FIELDS_LAYOUT,
     COMMAND_ENTRY_LAYOUT,
     COMMAND_SEMANTICS_LAYOUT,
+    COLLECTION_EXPANSION_LAYOUT,
     OUTCOME_SCHEMA_LAYOUT,
     BINDING_LAYOUT,
     ROOT_READ_LAYOUT,
@@ -2077,7 +2091,13 @@ mod tests {
             registry_values(binary_operator::REGISTRY).as_slice()
         );
         assert_eq!(
-            [BindingMode::Read, BindingMode::Mutate, BindingMode::Create].map(|value| value as u8),
+            [
+                BindingMode::Read,
+                BindingMode::Mutate,
+                BindingMode::Create,
+                BindingMode::Delete,
+            ]
+            .map(|value| value as u8),
             registry_values(binding_mode::REGISTRY).as_slice()
         );
         assert_eq!(
@@ -2184,7 +2204,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 55);
+        assert_eq!(FORMAT_LAYOUTS.len(), 56);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(
