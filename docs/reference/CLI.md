@@ -844,18 +844,33 @@ Arguments:
 
 Options:
       --config <PATH>
+
       --expected-version <VERSION>
-      --concurrency <1..32>                [default: 8]
+
+      --concurrency <1..32>
+          [default: 8]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --database <DATABASE>
-      --idempotency-field <FIELD>          [default: idempotency_key]
+
+      --idempotency-field <FIELD>
+          [default: idempotency_key]
       --checkpoint <PATH>
-      --output <human|json>                [possible values: human, json]
+
+      --output <human|json>
+          [possible values: human, json]
       --error-outcome <OUTCOME>
+
       --max-attempts <1..10>
+
       --credential-file <PATH>
+
       --progress
-  -h, --help                               Print help
+
+      --application <RIFFDB.APPLICATION.JSON>
+          Exact application source used to preflight compiled collection bounds
+  -h, --help
+          Print help
 ```
 
 #### `riffdb command run`
@@ -868,14 +883,25 @@ Arguments:
 
 Options:
       --config <PATH>
+
       --input <JSON_INPUT>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --expected-version <VERSION>
+
+      --application <RIFFDB.APPLICATION.JSON>
+          Exact application source used to preflight compiled collection bounds
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+
+      --output <human|json>
+          [possible values: human, json]
       --max-attempts <1..10>
+
       --credential-file <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb command execute`

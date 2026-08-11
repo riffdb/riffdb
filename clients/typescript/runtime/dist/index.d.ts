@@ -20,6 +20,7 @@ export type ApplicationValueSchema = {
 } | {
     readonly kind: "list";
     readonly value: ApplicationValueSchema;
+    readonly minimum?: number;
     readonly maximum?: number;
 } | {
     readonly kind: "record";

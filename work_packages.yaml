@@ -10402,8 +10402,9 @@ work_packages:
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0107]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
-    crates/riffdb-api-mcp/**, clients/**, templates/**, fixtures/application-parity/**,
-    fixtures/adapters/**, examples/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-api-mcp/**, crates/riffdb-query-module/**, clients/**, templates/**,
+    fixtures/application-parity/**, fixtures/adapters/**, fixtures/driver/**, examples/**, tests/**,
+    scripts/**, docs/**]
   deliverables:
   - Generated bounded collection inputs, methods, whole-command outcomes, error decoding,
     idempotency helpers, and exact identities in every supported language and MCP schema

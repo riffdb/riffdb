@@ -1,0 +1,48 @@
+{
+  "schema": "riffdb.application-source/v5",
+  "application": "adapter-bulk-conformance",
+  "contract": {
+    "source": "riffdb/contract.riff",
+    "lineage": "AdapterBulkConformance",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "adapter_bulk_conformance",
+      "version": 1,
+      "queries": [
+        { "name": "GetFgaTuple", "source": "riffdb/queries/get_fga_tuple.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "name": "AdapterBulkApplication",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["GetFgaTuple"],
+      "commands": [
+        "WriteTuples",
+        "LogMetrics",
+        "CreateDocumentGraphs",
+        "CreatePipelinesWithSteps",
+        "CreateRestrictParents",
+        "CreateRestrictChildren",
+        "DeleteRestrictParents"
+      ],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": []
+    }
+  ],
+  "seed_inputs": []
+}

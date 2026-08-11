@@ -115,6 +115,15 @@ pub struct Item {
     pub created_at: TimestampValue,
 }
 
+fn encode_item_entity(value: &Item) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.title))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.item_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
 fn decode_item_entity(value: v1::Value) -> Result<Item, GeneratedCommandError> {
     let mut fields = wire_record_fields(value)?;
     let entity = Item {
@@ -150,6 +159,7 @@ impl GeneratedCommand for CreateItemInput {
     type Outcome = CreateItemOutcome;
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
         let fields = vec![
             wire_named_field("title", wire_string(Clone::clone(&self.title))),
             wire_named_field("item_id", wire_uuid(&self.item_id)?),

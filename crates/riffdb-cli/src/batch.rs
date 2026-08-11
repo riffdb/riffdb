@@ -57,6 +57,23 @@ pub(crate) struct BatchSource {
     items: Vec<BatchItem>,
 }
 
+/// One compiler-owned collection count constraint applied before transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CollectionInputConstraint {
+    pub(crate) field: String,
+    pub(crate) minimum: usize,
+    pub(crate) maximum: usize,
+}
+
+impl CollectionInputConstraint {
+    pub(crate) fn validate(&self, input: &serde_json::Map<String, serde_json::Value>) -> bool {
+        input
+            .get(&self.field)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| (self.minimum..=self.maximum).contains(&values.len()))
+    }
+}
+
 impl BatchSource {
     pub(crate) fn item_count(&self) -> usize {
         self.items.len()
@@ -181,6 +198,22 @@ pub(crate) fn parse_source(
     expected_contract_version: Option<u64>,
     idempotency_field: &str,
 ) -> Result<BatchSource, BatchError> {
+    parse_source_with_constraint(
+        source,
+        command_name,
+        expected_contract_version,
+        idempotency_field,
+        None,
+    )
+}
+
+pub(crate) fn parse_source_with_constraint(
+    source: &[u8],
+    command_name: &str,
+    expected_contract_version: Option<u64>,
+    idempotency_field: &str,
+    collection_constraint: Option<&CollectionInputConstraint>,
+) -> Result<BatchSource, BatchError> {
     if source.is_empty()
         || source.len() > MAX_BATCH_SOURCE_BYTES
         || idempotency_field.is_empty()
@@ -200,6 +233,9 @@ pub(crate) fn parse_source(
         }
         let UniqueCommandInput(input) =
             serde_json::from_str(raw_line).map_err(|_| BatchError::Input(InputError::Invalid))?;
+        if collection_constraint.is_some_and(|constraint| !constraint.validate(&input)) {
+            return Err(BatchError::Input(InputError::Invalid));
+        }
         let key = input
             .get(idempotency_field)
             .and_then(serde_json::Value::as_str)
@@ -738,6 +774,35 @@ mod tests {
             parse_source(duplicate_field, "CreateTicket", Some(7), "idempotency_key"),
             Err(BatchError::Input(InputError::Invalid))
         ));
+    }
+
+    #[test]
+    fn compiled_collection_count_is_rejected_before_batch_execution() {
+        let constraint = CollectionInputConstraint {
+            field: "tuples".to_owned(),
+            minimum: 1,
+            maximum: 2,
+        };
+        let empty = br#"{"idempotency_key":"seed:1","tuples":[]}"#;
+        assert!(matches!(
+            parse_source_with_constraint(
+                empty,
+                "WriteTuples",
+                Some(1),
+                "idempotency_key",
+                Some(&constraint),
+            ),
+            Err(BatchError::Input(InputError::Invalid))
+        ));
+        let bounded = br#"{"idempotency_key":"seed:1","tuples":["a","b"]}"#;
+        parse_source_with_constraint(
+            bounded,
+            "WriteTuples",
+            Some(1),
+            "idempotency_key",
+            Some(&constraint),
+        )
+        .expect("compiled collection count");
     }
 
     #[test]

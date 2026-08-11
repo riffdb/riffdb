@@ -13,12 +13,12 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "94a9ea6a07833689aef5e9af141cca4e6c51dda1a75ccf333826e32ef6def2ff",
+        "content_hash": "b7ee1e7499bbf53d668fb79395fdc17c6e7518ea6aebaf398403d3ae30ddf417",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "d2f3c7e5994bcdad2ca801c49997ef9762a7b086023c9e0982db2ceac2fc9c22",
+        "content_hash": "4991d45417c7db18547c10751b7cdba6b7986a2b880e8f79f90b6e61f83fc755",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
@@ -39,7 +39,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "1f1c6997c3e7e5913b48ed2dd6fa8b9aae63e546c4f9eda5abdc924ae3010f64",
+    "lock_hash": "f09f8a0ac936271bc231a2b94a35da7167fc388bde772296f5459917f9f5a09b",
     "manifest_hash": "056552dcab3671faa51024c1f4c2e5efca0e58abb4c65b3147a428f57e0c6038",
     "module_hash": "cab493c1344cfc048e031f6e1d9620f1250f8eafca128e7064c0c4bc9eaf4f86",
     "plan_or_family_hash": "8b9f18dca09bee268a7e1dbfe61b468165d27fcc0447a76e8e879a00f282d740",
@@ -62,12 +62,12 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "4d467e10e653d544b0a19f8d4c3bb1ffde2a45be91643c58b6a1796df5147366",
+        "content_hash": "4342dddba883feebbc69af2146da02a57e1c97c2324d9922044aeee8ef45a942",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "18b292f5d8dec615061dc21958efd31edae799b7c8c91ac25850c8a775cd3df7",
+        "content_hash": "549687afa4cf3d21b2ca7dc68931aa82829890fef396f8bb24d996ba6c06051b",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
@@ -88,7 +88,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "91eb5dc640af6195414b071a04f378f2803f87263e3d8b44c5cc1cfb5d80252d",
+    "lock_hash": "2978cfd53fc3d037fb33a625e5a24d56a22fc586522390d8804437a208ba3de6",
     "manifest_hash": "8b253be83f997b08c24c6b824940666c8c9b9fb485478df61439728ad28cfd8b",
     "module_hash": "43d4a0c523b923068a513e4be001bae315cc1c9bbd97ea00bdcab70fca164358",
     "plan_or_family_hash": "ccbdeae5d9c65a6ea89c4d38fc7f85c4df3aaebb35d5a0fc6860824314a4668d",
@@ -111,12 +111,12 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "2bb64ec977ee1a6671579da25930752c9eb429932d436814b84930e93480308e",
+        "content_hash": "e9290de3139abc373bac87503b3b5acad7dd0fe9139c69954dfec97d27560991",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "c97184754f8b84db8a555e9d8a7f857d5dd0535a603acddd78648b75816dba0b",
+        "content_hash": "4e7157ea0026b0e43569d56d82721b0cbbce126cad77f031935af6163277f16e",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
@@ -137,7 +137,7 @@
       }
     ],
     "language_version": 1,
-    "lock_hash": "ccfcc77df71c7dbea93bbaf7641bcb55b6f760d0a67ee90b16e4798dd1b10c4d",
+    "lock_hash": "948ad3438624bfe49ade8cb53bf4d357cf5f856af61b6a898d88ce876c57b347",
     "manifest_hash": "305102c6bc5579ed66ba46faedf13cee8eb18a1f979f0f39861054766fd22805",
     "module_hash": "825131a339e1180e68cefaaa46d97f8f06d64211b65f2a14c3a29ebe0441ecae",
     "plan_or_family_hash": "90296b54d2b9635d2d15336d7a76d226fb3b49f1ac9047377c7338ff30658f7f",
@@ -215,11 +215,11 @@
         "84ccb0a6009a88afa583bf300c6a0df57d7ed931fd0825686e73382d2fff7605",
         "4d0245689b82f7498d0fc5189cca42dea82c76354b17e6b10fce1eed598c77c5",
         "ca4a0d3bdef9c76f46c9ef0d2a381767095c128ead5bc89cbeaabea62fcafa76",
-        "eb8a001621d7598d399124fb8b2747015745749e016732c2c8304bea4d3807f2",
-        "bb25c11f0e86ffda38195e56f3dfd7b55102899792964ffb950c853882bb671a"
+        "2b34e9001ac51f5df22bc219134bab219bf6340b61e73eac14b9ab0d483d4ea1",
+        "dab2efba2bec3892896193989901314cfa445b13cf497bc83ef46c3dbf258118"
       ],
       "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
-      "lock_hash": "5b7217889ed2aedef55fe480289a4d075ed0c215f5dd0fee665255e4d6ed5f1a",
+      "lock_hash": "6f16ffb8db1cc2059fad268a751542257f9ececbd890cafa16af51fd61ff04a8",
       "manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
       "module_hashes": [
         "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb"
@@ -240,11 +240,11 @@
         "5a626675981c285294584492c45e567fb8edbca4816744161a362ac207c2e312",
         "976bc8d284d740ba91eabfa1cd3435d512ed4a8da2efdf3ba4c201eba8fdb51c",
         "cc65f0f8074bab4f8088c9ad3c701744d95e0a8d3eadc7daf1edaac1bd9d1b34",
-        "81cc9c0b7002ce222d4c2b61670779ac6e263323f8c04a1fe65f4282dcb2c686",
-        "f8ba6ccab9fc250752e66e874218f087c954d7f845877624bcdb600f163c3106"
+        "2fd40b20ca8ad3d67b0137342e601c44b8e9fe6a1b2b6aa4920c8c113b563bb8",
+        "50bcc4b268c2fa053166dab3372aa89034e1a47fea50a6e5bc4f6ae734755f75"
       ],
       "contract_bundle_hash": "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de",
-      "lock_hash": "3f041ee360c5f685d1c2f9410233bef707efd16d5f670e9215e3a9390db2f376",
+      "lock_hash": "a2daac54aa2fcd23ade2250bbad48b34f5838a75fdec6610067475d0cad67fb8",
       "manifest_hash": "53f75ee7aaa5695912588f28d6119cd0ac9f86b9cc1628fac17d4bdf508f1d34",
       "module_hashes": [
         "4b7d345da5723cf41bf543b0526d25d454fc85cc4c05a934d28715527fdeeb2f"

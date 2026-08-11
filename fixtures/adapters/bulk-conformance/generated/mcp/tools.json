@@ -1,0 +1,741 @@
+{
+  "application_manifest_hash": "07abd5f73c1d55ba14fd39e77dcc9c17d5aebeff0893e78ac15be4baf2ac402a",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact CreateDocumentGraphs compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "document_id": {
+                  "type": "string"
+                },
+                "revision_id": {
+                  "type": "string"
+                },
+                "site_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "body",
+                "title",
+                "site_id",
+                "document_id",
+                "revision_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "documents",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_create_document_graphs",
+      "operation_name": "CreateDocumentGraphs",
+      "plan_hash": "0f2e989bccbce786f0adf113f4902f0647765c1308d23d852a2cb4088d2c4fbc",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentGraphsCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RevisionAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateDocumentGraphs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact CreatePipelinesWithSteps compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "pipelines": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "pipeline_id": {
+                  "type": "string"
+                },
+                "run_text": {
+                  "type": "string"
+                },
+                "step_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "step_id",
+                "run_text",
+                "pipeline_id",
+                "organization_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pipelines",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_create_pipelines_with_steps",
+      "operation_name": "CreatePipelinesWithSteps",
+      "plan_hash": "1370b0e3712586e736eb0a13a45435632dc1534f3693fe7f1f17b51eae9ba51e",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PipelinesCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "StepAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PipelineAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreatePipelinesWithSteps"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact CreateRestrictChildren compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "children": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "child_id": {
+                  "type": "string"
+                },
+                "parent_id": {
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "child_id",
+                "parent_id",
+                "tenant_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "children",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_create_restrict_children",
+      "operation_name": "CreateRestrictChildren",
+      "plan_hash": "6b197b17628ae0bc6235b3261614a87782ba07e12afb91d890d576873b2dc820",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ChildAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RestrictParentRequired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RestrictChildrenCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateRestrictChildren"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact CreateRestrictParents compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "parents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "parent_id": {
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "parent_id",
+                "tenant_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "parents",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_create_restrict_parents",
+      "operation_name": "CreateRestrictParents",
+      "plan_hash": "68fff2aeba68e48145357fbfc171cf0e99a4519451b9b6e7c3e21db55595c17f",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ParentAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RestrictParentsCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateRestrictParents"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact DeleteRestrictParents compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "parent_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "parent_ids",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_delete_restrict_parents",
+      "operation_name": "DeleteRestrictParents",
+      "plan_hash": "68911c92dfddadef488c4dbf779240f8f0e9e6bfbae9d140e469889455b0288b",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ParentMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RestrictParentsDeleted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run DeleteRestrictParents"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact LogMetrics compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "experiment_id": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "step": {
+                  "type": "integer"
+                },
+                "value_micros": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "step",
+                "metric_id",
+                "value_micros",
+                "experiment_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "metrics",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_log_metrics",
+      "operation_name": "LogMetrics",
+      "plan_hash": "3bb9a736befa62c07dc56c2c810b1c1fdd520052e4d8ca2f401b31caf2764633",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "MetricsLogged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "MetricAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run LogMetrics"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31",
+      "description": "Execute the exact WriteTuples compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "tuples": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "object": {
+                  "type": "string"
+                },
+                "relation": {
+                  "type": "string"
+                },
+                "store_id": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "tuple_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "object",
+                "subject",
+                "relation",
+                "store_id",
+                "tuple_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "tuples",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_write_tuples",
+      "operation_name": "WriteTuples",
+      "plan_hash": "3b9b7645f44d2d3b10ebdd20b2635e0b771df9e2f72b13b715f28d7c47376a03",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TuplesWritten",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TupleAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run WriteTuples"
+    }
+  ],
+  "reactive_tools": [],
+  "schema": "riffdb-generated-application-operations/v2",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetFgaTuple named query from immutable module adapter_bulk_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "store_id": {
+            "type": "string"
+          },
+          "tuple_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "store_id",
+          "tuple_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "e9377fdf1d7bda17e3f068a3e89d6b951a5e8a15efdb218a7154bfad0300987f",
+      "name": "adapter_bulk_conformance_get_fga_tuple",
+      "operation_name": "GetFgaTuple",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TupleFound",
+                "type": "string"
+              },
+              "tuple": {
+                "additionalProperties": false,
+                "properties": {
+                  "object": {
+                    "type": "string"
+                  },
+                  "relation": {
+                    "type": "string"
+                  },
+                  "store_id": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "tuple_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "store_id",
+                  "tuple_id",
+                  "object",
+                  "relation",
+                  "subject"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "tuple"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TupleNotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetFgaTuple"
+    }
+  ]
+}

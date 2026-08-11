@@ -783,7 +783,9 @@ function encodeDriverValue(value, schema) {
         return value === null || value === undefined ? { type: "null" } : encodeDriverValue(value, schema.value);
     }
     if (schema.kind === "list") {
-        if (!Array.isArray(value) || value.length > (schema.maximum ?? 4_096)) {
+        if (!Array.isArray(value)
+            || value.length < (schema.minimum ?? 0)
+            || value.length > (schema.maximum ?? 4_096)) {
             throw new Error("invalid generated RiffDB list input");
         }
         return { type: "list", value: value.map((item) => encodeDriverValue(item, schema.value)) };
@@ -886,8 +888,11 @@ function decodeDriverValue(value, schema) {
     if (schema.kind === "optional")
         return value.type === "null" ? null : decodeDriverValue(value, schema.value);
     if (schema.kind === "list") {
-        if (value.type !== "list" || value.value.length > (schema.maximum ?? 4_096))
+        if (value.type !== "list"
+            || value.value.length < (schema.minimum ?? 0)
+            || value.value.length > (schema.maximum ?? 4_096)) {
             throw new Error("invalid RiffDB driver list result");
+        }
         return value.value.map((item) => decodeDriverValue(item, schema.value));
     }
     if (schema.kind === "record") {
@@ -1086,7 +1091,9 @@ function encodeValue(value, schema) {
         return value === null || value === undefined ? null : encodeValue(value, schema.value);
     }
     if (schema.kind === "list") {
-        if (!Array.isArray(value) || (schema.maximum !== undefined && value.length > schema.maximum)) {
+        if (!Array.isArray(value)
+            || (schema.minimum !== undefined && value.length < schema.minimum)
+            || (schema.maximum !== undefined && value.length > schema.maximum)) {
             throw new Error("invalid generated application input");
         }
         return value.map((item) => encodeValue(item, schema.value));
@@ -1289,7 +1296,9 @@ function decodePlain(value, schema) {
     if (schema.kind === "optional")
         return value === null ? null : decodePlain(value, schema.value);
     if (schema.kind === "list") {
-        if (!Array.isArray(value) || (schema.maximum !== undefined && value.length > schema.maximum))
+        if (!Array.isArray(value)
+            || (schema.minimum !== undefined && value.length < schema.minimum)
+            || (schema.maximum !== undefined && value.length > schema.maximum))
             return fail();
         return value.map((item) => decodePlain(item, schema.value));
     }
