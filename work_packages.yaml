@@ -10826,8 +10826,9 @@ work_packages:
     QRY-002, QRY-004, REC-001, RAP-006, RAP-007, RAP-008, RAP-009, RAP-010,
     RAP-011, RAP-015]
   required_adrs: [ADR-0007, ADR-0038, ADR-0055, ADR-0080, ADR-0086,
-    ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
+    ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111,
+    ADR-0114]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, fixtures/proto/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-runtime/**,
     crates/riffdb-query-executor/**, crates/riffdb-projection/**,
