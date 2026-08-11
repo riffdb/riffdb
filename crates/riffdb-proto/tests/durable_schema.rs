@@ -170,6 +170,13 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec!["riffdb/storage/v1/common.proto"],
             ),
             (
+                "riffdb/storage/v1/capability_installation.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/capability.proto",
+                    "riffdb/storage/v1/capability_migration.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/capability_migration.proto".to_owned(),
                 vec!["riffdb/storage/v1/capability.proto"],
             ),
@@ -320,8 +327,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        147,
-        "146 semantic messages plus the unchanged StoredEnvelope"
+        148,
+        "147 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -350,9 +357,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 56);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 79);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 56);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 57);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 80);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 57);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -420,6 +427,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV4".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV3".to_owned());
     readable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV2".to_owned());
+    readable_names.push("riffdb.storage.v1.CapabilityRecordV3".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -467,6 +475,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV4".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV3".to_owned());
     writable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV2".to_owned());
+    writable_names.push("riffdb.storage.v1.CapabilityRecordV3".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -595,8 +604,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 79);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 56);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 80);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 57);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1074,6 +1083,23 @@ fn critical_cross_package_field_numbers_are_frozen() {
         ]
     );
     assert_eq!(fields("CapabilityPermissionsV1"), vec![("values", 1)]);
+    assert_eq!(
+        fields("CapabilityRecordV2"),
+        vec![("base", 1), ("migration", 2)],
+        "ADR-0089 froze CapabilityRecordV2 as migration-only; later authority must use a successor record"
+    );
+    assert_eq!(
+        schema_hash_hex(
+            readable_record_schema("riffdb.storage.v1.CapabilityRecordV2")
+                .expect("frozen capability V2 schema"),
+        ),
+        "2c272df752f4b06b213c507cfbc3cf8dd8d2aea86243d5691a1d1c159c1cacc1",
+        "the original ADR-0089 V2 schema hash is a source literal, not a regenerated expectation"
+    );
+    assert_eq!(
+        fields("CapabilityRecordV3"),
+        vec![("base", 1), ("migration", 2), ("installation", 3)]
+    );
     assert_eq!(
         fields("StoredOutcomeV1"),
         vec![

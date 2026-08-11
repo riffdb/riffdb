@@ -204,6 +204,59 @@ fn capability_v2_migration_extension_is_required_and_canonical() {
 }
 
 #[test]
+fn capability_v3_installation_extension_is_required_and_canonical() {
+    const CAPABILITY_V3: &str = "riffdb.storage.v1.CapabilityRecordV3";
+    let value = sample::capability_record_with_installation_authority();
+    let canonical = encode_capability_record_v1(&value).expect("installation capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV3>(canonical.as_bytes());
+
+    let mut missing = message.clone();
+    missing.installation = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V3,
+        &missing,
+    )));
+
+    let mut empty = message.clone();
+    empty
+        .installation
+        .as_mut()
+        .expect("installation extension")
+        .contract_lineages
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V3,
+        &empty,
+    )));
+
+    let mut invalid = message;
+    invalid
+        .installation
+        .as_mut()
+        .expect("installation extension")
+        .contract_lineages[0] = String::new();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V3,
+        &invalid,
+    )));
+}
+
+#[test]
+fn interim_installation_payload_under_v2_compact_identity_is_recovered_exactly() {
+    const CAPABILITY_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
+    let expected = sample::capability_record_with_installation_authority();
+    let canonical = encode_capability_record_v1(&expected).expect("V3 capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV3>(canonical.as_bytes());
+
+    // Commit 49b66da briefly emitted this V3 payload under V2's already-frozen
+    // compact tag/revision. Preserve authority while decoding affected
+    // pre-alpha databases; every new write uses the distinct V3 identity.
+    let interim = checked_envelope(CAPABILITY_V2, &message);
+    let decoded = decode_capability_record_v1(&interim).expect("interim record is recoverable");
+    assert_eq!(decoded.value(), &expected);
+}
+
+#[test]
 fn canonical_keys_records_and_event_hashes_are_revalidated() {
     const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
     let entry = sample::legacy_index_record();

@@ -110,6 +110,38 @@ fn migration_authority_uses_additive_capability_v2_only() {
 }
 
 #[test]
+fn installation_authority_uses_additive_capability_v3_only() {
+    let capability = sample::capability_record_with_installation_authority();
+    let encoded = assert_round_trip(
+        capability,
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("installation capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV3"
+    );
+    let record = wire::CapabilityRecordV3::decode(envelope.payload()).expect("capability V3");
+    assert!(record.migration.is_none());
+    let base_grant = record.base.expect("V3 base").grant.expect("V3 base grant");
+    assert!(
+        base_grant
+            .permissions
+            .expect("V3 base permissions")
+            .values
+            .iter()
+            .all(|permission| permission.kind != 31)
+    );
+    assert!(base_grant.approval_required.iter().all(|kind| *kind != 31));
+    let installation = record.installation.expect("V3 installation extension");
+    assert_eq!(installation.contract_lineages, ["ticketdesk".to_owned()]);
+    assert!(installation.approval_required);
+}
+
+#[test]
 fn allocator_variants_include_maximum_and_exhausted_states() {
     let maximum_commit = CommitSequence::new(u64::MAX).expect("maximum commit sequence");
     let maximum_administration =

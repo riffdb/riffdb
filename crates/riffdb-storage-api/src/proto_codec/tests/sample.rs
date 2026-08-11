@@ -575,6 +575,43 @@ pub(super) fn capability_record_with_migration_authority() -> StoredCapabilityRe
     .expect("migration capability")
 }
 
+pub(super) fn capability_record_with_installation_authority() -> StoredCapabilityRecordV1 {
+    let (base, _, _, _) = capability_records();
+    let mut permissions = base.grant().permissions().as_slice().to_vec();
+    permissions.push(CapabilityPermissionV1::InstallApplication(
+        ContractLineage::new("ticketdesk").expect("installation lineage"),
+    ));
+    let permissions = CapabilityPermissionsV1::new(permissions).expect("installation permissions");
+    let mut approval_required = base.grant().approval_required().to_vec();
+    approval_required.push(CapabilityPermissionKindV1::InstallApplication);
+    let grant = CapabilityGrantV1::new(
+        base.grant().tenant_scope().clone(),
+        base.grant().partition_scope().clone(),
+        permissions,
+        base.grant().field_visibility().to_vec(),
+        base.grant().max_scan_rows(),
+        approval_required,
+    )
+    .expect("installation grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("installation capability")
+}
+
 pub(super) fn service_audit_record() -> StoredServiceAuditRecordV1 {
     let targets = ServiceAuditTargetsV1::new([
         ServiceAuditTargetV1::ContractLineage(lineage()),

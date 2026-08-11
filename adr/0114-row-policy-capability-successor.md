@@ -1,12 +1,14 @@
 # ADR-0114: Row-Policy Capability Successor and Current-Fact Binding
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction requested:** 2026-08-11
+- **Exact text accepted:** 2026-08-11
 - **Decision deadline:** Before WP-572 changes a durable capability record or
   enables any protected application operation
 - **Requires:** ADR-0006, ADR-0007, ADR-0009, ADR-0055, ADR-0089, ADR-0111,
   and ADR-0112
-- **Amends if accepted:** ADR-0089's closed `CapabilityRecordV2` extension set
+- **Amends:** ADR-0089's closed capability successor chain and
+  ADR-0110's installation-only `CapabilityRecordV3`
 - **Defines or blocks:** WP-572, WP-573, and WP-579
 
 ## Context
@@ -20,19 +22,24 @@ successor row hashes.
 
 Protected execution still cannot be enabled safely because current durable
 capabilities retain neither the role's exact selected policy bindings nor the
-principal fact set. `CapabilityRecordV1`, `CapabilityGrantV1`, and
-`CapabilityRecordV2` are schema-hash-bound durable formats. Adding a field to
-any of them would rotate its descriptor hash and make previously valid database
-rows unreadable. ADR-0089 established the correct pattern: preserve the frozen
-record and introduce an own-file successor containing explicit extensions.
+principal fact set. `CapabilityRecordV1`, `CapabilityGrantV1`, migration-only
+`CapabilityRecordV2`, and installation-capable `CapabilityRecordV3` are
+schema-hash-bound durable formats. Adding a field to any of them would rotate
+its descriptor hash and make previously valid database rows unreadable.
+ADR-0089 established the correct pattern: preserve the frozen record and
+introduce an own-file successor containing explicit extensions. The
+implementation briefly violated that rule by appending installation directly
+to V2; the WP-568 compatibility correction restored V2 byte-for-byte and moved
+installation authority to V3 before this decision was accepted.
 
-## Proposed Decision
+## Decision
 
-### A distinct V3 durable record
+### A distinct V4 durable record
 
-Keep `CapabilityRecordV1`, `CapabilityGrantV1`, the V1 permission enum, both
-ADR-0089 extension messages, and `CapabilityRecordV2` byte-for-byte unchanged.
-Add one own-file schema with these exact semantic shapes:
+Keep `CapabilityRecordV1`, `CapabilityGrantV1`, the V1 permission enum,
+ADR-0089's migration extension and `CapabilityRecordV2`, and ADR-0110's
+installation extension and `CapabilityRecordV3` byte-for-byte unchanged. Add
+one own-file schema with these exact semantic shapes:
 
 ```protobuf
 enum CapabilityRowPolicyOperationV1 {
@@ -56,7 +63,7 @@ message CapabilityRowPolicyGrantExtensionV1 {
   repeated CapabilityRowPolicyBindingV1 policies = 3;
 }
 
-message CapabilityRecordV3 {
+message CapabilityRecordV4 {
   CapabilityRecordV1 base = 1;
   CapabilityMigrationGrantExtensionV1 migration = 2;
   CapabilityInstallationGrantExtensionV1 installation = 3;
@@ -64,11 +71,12 @@ message CapabilityRecordV3 {
 }
 ```
 
-The new definitions live outside the frozen V1 and V2 source files. V3 requires
-`base` and `row_policy`. Migration and installation remain optional and retain
-their exact ADR-0089 meanings. A V3 record with a missing or empty row-policy
+The new definitions live outside the frozen V1, V2, and V3 source files. V4
+requires `base` and `row_policy`. Migration and installation remain optional
+and retain their exact ADR-0089 and ADR-0110 meanings. A V4 record with a
+missing or empty row-policy
 extension is corrupt; a capability without row-policy authority continues to
-encode exactly as V1 or V2.
+encode as the least applicable V1, V2, or V3 record.
 
 ### Canonical extension semantics
 
@@ -87,7 +95,7 @@ unknown policy names, entity mismatch, missing operation coverage, and any
 ordering or bound error fail closed.
 
 The base grant must contain exactly one matching
-`ApplicationRoleIdentity(application_role_hash)` permission. V3 decoding
+`ApplicationRoleIdentity(application_role_hash)` permission. V4 decoding
 rejects no role identity, multiple role identities, or a different role hash.
 The normalized in-memory grant may expose the extension only to trusted auth,
 policy, service, and commit owners; it is never a public request predicate or a
@@ -114,10 +122,10 @@ or widen a list fact. Existing tenant, partition, permission, audience,
 lifetime, approval, and field-visibility subset checks remain conjunctive.
 
 Because WP-570 never enabled protected application permissions, no existing
-V1/V2 protected capability has executable authority to migrate in place.
-Rebinding a protected role issues a new V3 capability and retires the prior
+V1/V2/V3 protected capability has executable authority to migrate in place.
+Rebinding a protected role issues a new V4 capability and retires the prior
 non-executable binding through the existing receipted credential-rotation path.
-There is no startup rewrite of V1/V2 records.
+There is no startup rewrite of V1/V2/V3 records.
 
 `principal.id` remains the WP-570 UUID operand. A selected policy that refers to
 it can be bound only to an `ActorId` containing canonical lowercase UUID text;
@@ -141,14 +149,15 @@ union, but never a principal-specific allow decision or fact value.
 
 ## Compatibility
 
-V1 and V2 sources, descriptors, schema hashes, payload goldens, envelope bytes,
-readable/writable registry entries, and behavior remain exact. V3 receives its
-own FQN, descriptor closure, schema hash, payload/envelope goldens, conservative
-bound, and durable-format manifest entry. Older binaries refuse V3 as an
-unknown registered tuple without mutating the database. Current binaries read
-V1, V2, and V3 and write the least version capable of representing the grant.
+V1, V2, and V3 sources, descriptors, schema hashes, payload goldens, envelope
+bytes, readable/writable registry entries, and behavior remain exact. V4
+receives its own FQN, descriptor closure, schema hash, payload/envelope goldens,
+conservative bound, and durable-format manifest entry. Older binaries refuse V4
+as an unknown registered tuple without mutating the database. Current binaries
+read V1, V2, V3, and V4 and write the least version capable of representing the
+grant.
 
-Backup, restore, export receipts, and alpha format manifests name V3 support.
+Backup, restore, export receipts, and alpha format manifests name V4 support.
 No automatic down-conversion exists because removing the row-policy extension
 would remove authority facts while leaving operation permissions ambiguous.
 
@@ -175,9 +184,9 @@ backup authority remains separate from principal-filtered application export.
 
 ## Testing
 
-- Freeze V1/V2 source, descriptor, schema-hash, payload, envelope, and registry
-  literals before adding V3.
-- Golden V3 fixtures cover policy-only, policy plus migration, policy plus
+- Freeze V1/V2/V3 source, descriptor, schema-hash, payload, envelope, and
+  registry literals before adding V4.
+- Golden V4 fixtures cover policy-only, policy plus migration, policy plus
   installation, and all three extensions.
 - Reject every missing, empty, duplicate, unordered, unknown, mismatched,
   over-bound, noncanonical, wrong-role, wrong-entity, and wrong-operation case.
@@ -185,7 +194,7 @@ backup authority remains separate from principal-filtered application export.
   preserve exact facts and policy bindings without formatting values.
 - Race capability revision/fact/policy/relationship/current-row/successor-row
   changes between evaluation and release/commit and prove no output/mutation.
-- Rebind a WP-570 non-executable protected role into V3 and prove the old
+- Rebind a WP-570 non-executable protected role into V4 and prove the old
   credential remains unable to execute protected operations.
 
 ## Requirements and Work Packages
@@ -195,8 +204,10 @@ backup authority remains separate from principal-filtered application export.
 - **Defines or blocks:** WP-572, WP-573, and WP-579
 - **Final evidence:** WP-573 and WP-579
 
-## Decision Deadline
+## Acceptance
 
-Exact human acceptance is required before adding the V3 Protobuf, durable
-registry tuple, in-memory normalized grant extension, capability issuance
-input, or any protected application permission.
+The human maintainer accepted this exact revised V4 text on 2026-08-11 after
+the frozen V2 correction assigned installation authority to V3. WP-572 may now
+add the V4 Protobuf, durable registry tuple, normalized grant extension,
+capability issuance input, and protected-operation enforcement without changing
+V1, V2, or V3.

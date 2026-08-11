@@ -151,6 +151,18 @@ public administration protocol, CLI/operator SDK, and conformance manifest
 require additive versioned formats. Existing deploy/migration/role/batch
 operations remain valid and are composed, not reinterpreted.
 
+### Implementation correction (2026-08-11)
+
+The first WP-568 implementation incorrectly appended installation authority to
+ADR-0089's already-frozen migration-only `CapabilityRecordV2`. The correction
+restores V2 source and schema hash byte-for-byte and places installation
+authority in the own-file `CapabilityRecordV3` successor. Migration-only grants
+remain V2; any grant containing installation authority is V3. The reader also
+recognizes the exact interim additive payload emitted under V2's compact
+identity and reconstructs its complete authority, while all new writes use V3.
+This is the additive-versioning rule this accepted section already required;
+it does not widen installation authority or reinterpret an application grant.
+
 ## Security
 
 Planning is read-only and redacted. Start/observe authorize current exact
