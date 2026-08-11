@@ -445,6 +445,7 @@ impl RedbQueryView<'_> {
             QueryAccessKind::Point { key_fields }
             | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
             QueryAccessKind::Index { .. } => return Err(invariant()),
+            QueryAccessKind::Nearest { .. } => return Err(invariant()),
         };
         let values = key_fields
             .iter()

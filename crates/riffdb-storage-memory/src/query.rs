@@ -322,6 +322,9 @@ impl MemoryQueryView<'_> {
             QueryAccessKind::Index { .. } => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
+            QueryAccessKind::Nearest { .. } => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
         };
         let values = key_fields
             .iter()

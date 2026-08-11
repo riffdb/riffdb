@@ -3197,7 +3197,9 @@ pub(crate) fn application_query_target(
         let rows = NonZeroU16::new(rows)?;
         let index_id = match step.access() {
             QueryAccessKind::Index { .. } => Some(step.internal_index_id()?),
-            QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => None,
+            QueryAccessKind::Point { .. }
+            | QueryAccessKind::DependentPointBatch { .. }
+            | QueryAccessKind::Nearest { .. } => None,
         };
         accesses.push(
             ApplicationQueryAccessRequirement::new(
