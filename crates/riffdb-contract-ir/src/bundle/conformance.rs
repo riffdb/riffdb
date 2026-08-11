@@ -660,6 +660,7 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                     (0x0c, "optional", vec!["inner_type"]),
                     (0x0d, "list", vec!["element_type", "maximum_entries"]),
                     (0x0e, "record", vec!["record_type"]),
+                    (0x0f, "vector", vec!["dimension"]),
                 ],
             ),
             (

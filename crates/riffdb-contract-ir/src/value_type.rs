@@ -40,6 +40,8 @@ pub enum ValueTypeTag {
     List = crate::format_registry::value_type::LIST,
     /// Complete typed record reference.
     Record = crate::format_registry::value_type::RECORD,
+    /// Fixed-dimension f32 vector for nearest-neighbor search.
+    Vector = crate::format_registry::value_type::VECTOR,
 }
 
 /// The stable owner of one record schema.
@@ -97,6 +99,7 @@ enum ValueTypeKind {
         maximum: usize,
     },
     Record(RecordTypeRef),
+    Vector(riffdb_types::VectorDimension),
 }
 
 /// One fully validated transactional value type.
@@ -231,6 +234,21 @@ impl ValueType {
         Self(ValueTypeKind::Record(owner))
     }
 
+    /// Fixed-dimension f32 vector type for nearest-neighbor search.
+    #[must_use]
+    pub const fn vector(dimension: riffdb_types::VectorDimension) -> Self {
+        Self(ValueTypeKind::Vector(dimension))
+    }
+
+    /// Returns the vector dimension when this is a vector type.
+    #[must_use]
+    pub const fn vector_dimension(&self) -> Option<riffdb_types::VectorDimension> {
+        match self.0 {
+            ValueTypeKind::Vector(dim) => Some(dim),
+            _ => None,
+        }
+    }
+
     /// Returns the immutable v1 type tag.
     #[must_use]
     pub const fn tag(&self) -> ValueTypeTag {
@@ -249,6 +267,7 @@ impl ValueType {
             ValueTypeKind::Optional(_) => ValueTypeTag::Optional,
             ValueTypeKind::List { .. } => ValueTypeTag::List,
             ValueTypeKind::Record(_) => ValueTypeTag::Record,
+            ValueTypeKind::Vector(_) => ValueTypeTag::Vector,
         }
     }
 
@@ -363,7 +382,9 @@ impl ValueType {
             | ValueTypeKind::Uuid
             | ValueTypeKind::Enum(_) => true,
             ValueTypeKind::Optional(inner) => inner.supports_equality(),
-            ValueTypeKind::List { .. } | ValueTypeKind::Record(_) => false,
+            ValueTypeKind::List { .. } | ValueTypeKind::Record(_) | ValueTypeKind::Vector(_) => {
+                false
+            }
         }
     }
 
@@ -395,6 +416,13 @@ impl ValueType {
                     .ok_or(IrValidationError::SizeOverflow { kind: "list type" })?
             }
             ValueTypeKind::Record(_) => return Ok(None),
+            ValueTypeKind::Vector(dim) => {
+                // tag + 4 bytes dimension + 4 bytes per f32 component
+                (dim.get() as usize)
+                    .checked_mul(4)
+                    .and_then(|bytes| bytes.checked_add(6))
+                    .ok_or(IrValidationError::SizeOverflow { kind: "vector type" })?
+            }
         };
         Ok(Some(value))
     }
@@ -447,6 +475,9 @@ impl ValueType {
                         .all(|value| element.validate_value(value).is_ok())
             }
             (ValueTypeKind::Record(_), CanonicalValue::Record(_)) => true,
+            (ValueTypeKind::Vector(dim), CanonicalValue::Vector(vec)) => {
+                vec.dimension() == dim.get()
+            }
             _ => false,
         };
         if valid {

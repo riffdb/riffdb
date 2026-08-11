@@ -1141,7 +1141,7 @@ fn python_contract_type(value_type: &ValueType, contract: &ContractBundle) -> St
             _ => "str".to_owned(),
         },
         ValueTypeTag::String => "str".to_owned(),
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!("handled above"),
     }
 }
 

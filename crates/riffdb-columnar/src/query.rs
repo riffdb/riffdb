@@ -630,7 +630,8 @@ pub(crate) fn key_type_preserves_value_order(value_type: &ValueType) -> bool {
         | ValueTypeTag::Money
         | ValueTypeTag::Optional
         | ValueTypeTag::List
-        | ValueTypeTag::Record => false,
+        | ValueTypeTag::Record
+        | ValueTypeTag::Vector => false,
     }
 }
 
@@ -718,6 +719,8 @@ fn org_value_matches_type(value: &CanonicalValue, expected: &ValueType) -> bool 
         // Optional org scopes are rejected at registration; List/Record are
         // never supported column types. Nothing conforms to them here.
         ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Record => false,
+        // Vectors are stored as entity field values, not as org-scope keys.
+        ValueTypeTag::Vector => matches!(value, CanonicalValue::Vector(_)),
     }
 }
 

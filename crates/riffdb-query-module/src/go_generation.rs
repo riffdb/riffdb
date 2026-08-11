@@ -742,7 +742,7 @@ fn go_type(value: &ValueType, contract: &ContractBundle) -> String {
             ),
             _ => "map[string]riffdb.Value".into(),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!(),
     }
 }
 
@@ -783,7 +783,7 @@ fn encode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
             ),
             _ => format!("riffdb.Record({value})"),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!(),
     }
 }
 
@@ -832,7 +832,7 @@ fn decode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
             ),
             _ => format!("riffdb.RecordFields({value})"),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!(),
     }
 }
 

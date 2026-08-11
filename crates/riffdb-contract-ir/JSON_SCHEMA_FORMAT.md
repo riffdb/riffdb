@@ -142,6 +142,14 @@ Rule: maximum is the bounded ValueType list limit.
 
 Rule: only entity and event references are legal inline; the inline record omits $schema.
 
+### `0x0f` vector
+
+```text
+{"description":"f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components","format":"byte","type":"string"}
+```
+
+Rule: dimension is validated against the contract-declared vector field dimension.
+
 ## Exact Record, Outcome, and Projection Shapes
 
 ### entity or event output record
