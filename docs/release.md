@@ -81,3 +81,39 @@ The final review must record:
 - backup/restore rewind acknowledgment;
 - security posture and known limitations; and
 - one decision: proceed to alpha, revise and repeat a gate, or stop.
+
+## Deployable Application Alpha gate
+
+The final installed gate is intentionally a coordinator, not another semantic
+implementation:
+
+```bash
+./scripts/deployable-alpha-acceptance \
+  --all-domains --all-languages --remote
+```
+
+It preflights the entire closed phase inventory before running anything, then
+executes application-binding and durable-format checks, retained performance
+verification, Compose and Kubernetes deployment checks, four-language driver
+and adapter conformance, bulk/query/workflow/row-policy behavior, symbolic
+export/reimport, destructive recovery, retained 72-hour endurance evidence,
+installed bootstrap, and the sealed independent-agent evaluation. Missing
+component scripts or evidence fail before an expensive partial gate.
+
+Each phase receipt stores only its symbolic name, exit status, elapsed time,
+and a SHA-256 of the reviewed argument array. A failed run remains under
+`target/deployable-alpha-gate/`; only a complete pass publishes
+`release/evidence/deployable-application-alpha-v1.json`. The coordinator cannot
+waive a phase, shorten endurance, substitute a diagnostic benchmark, or print
+command arguments into the receipt.
+
+The retained WP-552 comparator corpus is verified separately with:
+
+```bash
+./scripts/check-alpha-performance-evidence --verify
+```
+
+That verifier checks both content hashes and the semantic 90-second,
+three-repetition, idle-host, safe-app durability, stability, correctness, and
+concurrency matrix. It does not rerun the benchmark during routine release
+verification.

@@ -17,6 +17,15 @@ Both corpora contain three counterbalanced repetitions and are stable,
 correctness-clean, same-device comparable, host-idle, and eligible under the
 frozen safe-app comparator contract.
 
+`manifest-v1.json` is the machine-readable release inventory for these two
+reports. Verify the retained bytes and their eligibility, duration, matrix,
+durability, host-validity, and correctness semantics without rerunning the
+benchmark:
+
+```bash
+./scripts/check-alpha-performance-evidence --verify
+```
+
 ## Earlier fail-closed receipts
 
 The required interactive and write-only 90-second concurrency sweeps were

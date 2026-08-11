@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Verify the retained WP-552 alpha comparator corpus without rerunning it."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+
+MAX_MANIFEST_BYTES = 64 * 1024
+MAX_REPORT_BYTES = 8 * 1024 * 1024
+EXPECTED_REQUIREMENTS = {
+    "PERF-001", "PERF-002", "PERF-003", "PERF-004", "PERF-005",
+    "PERF-007", "PERF-008", "PERF-009", "PERF-013", "PERF-014",
+    "PERF-018",
+}
+
+
+def fail(detail: str) -> "None":
+    raise ValueError(detail)
+
+
+def load_json(path: Path, maximum: int) -> tuple[dict[str, Any], str]:
+    if not path.is_file() or path.is_symlink():
+        fail(f"evidence file is absent or linked: {path.name}")
+    with path.open("rb") as source:
+        encoded = source.read(maximum + 1)
+    if not 0 < len(encoded) <= maximum:
+        fail(f"evidence file exceeds its byte bound: {path.name}")
+    value = json.loads(encoded.decode("utf-8"))
+    if not isinstance(value, dict):
+        fail(f"evidence root must be an object: {path.name}")
+    return value, hashlib.sha256(encoded).hexdigest()
+
+
+def exact_names(value: Any, expected: set[str]) -> bool:
+    return isinstance(value, list) and len(value) == len(expected) and all(isinstance(item, str) for item in value) and set(value) == expected
+
+
+def verify_report(report: dict[str, Any], profile: str, manifest: dict[str, Any]) -> None:
+    if report.get("schema") != "riffdb.app-baseline-load-suite/v1":
+        fail(f"{profile}: wrong report schema")
+    eligibility = report.get("evidence_eligibility", {})
+    required_true = {
+        "eligible", "stable", "correctness_clean", "resource_attribution_complete",
+        "same_device_comparable", "comparison_complete", "host_idle",
+    }
+    if not all(eligibility.get(name) is True for name in required_true):
+        fail(f"{profile}: report is not stable eligible evidence")
+    if eligibility.get("non_evidentiary_window") is not False or eligibility.get("missing_required_fields") != [] or eligibility.get("reason_codes") != []:
+        fail(f"{profile}: report contains an evidence exclusion")
+    correctness = report.get("correctness", {})
+    if correctness.get("clean") is not True or correctness.get("failures") != [] or correctness.get("server_shutdown_error") is not None:
+        fail(f"{profile}: correctness did not reconcile")
+    if report.get("same_device") is not True or report.get("postgres_storage_medium") != report.get("riffdb_storage_medium"):
+        fail(f"{profile}: backend storage is not same-device comparable")
+    durability = report.get("postgres_durability", {})
+    if durability.get("fsync") != "on" or durability.get("synchronous_commit") != "on" or durability.get("full_page_writes") != "on":
+        fail(f"{profile}: PostgreSQL durability differs from the frozen safe-app comparator")
+    host = report.get("host_validity", {})
+    for boundary in ("preflight", "postflight"):
+        observation = host.get(boundary, {})
+        if observation.get("valid") is not True or observation.get("interfering_processes") != [] or observation.get("inventory_bounds", {}).get("process_arguments_included") is not False:
+            fail(f"{profile}: host validity failed at {boundary}")
+
+    backends = report.get("backends")
+    if not isinstance(backends, list):
+        fail(f"{profile}: backend runs are absent")
+    expected_backends = set(manifest["backends"])
+    expected_clients = set(manifest["clients"])
+    repetitions = manifest["repetitions"]
+    expected_cells = {
+        (backend, clients, repetition)
+        for backend in expected_backends
+        for clients in expected_clients
+        for repetition in range(repetitions)
+    }
+    observed_cells: set[tuple[str, int, int]] = set()
+    for run in backends:
+        if not isinstance(run, dict):
+            fail(f"{profile}: backend run is not an object")
+        backend = run.get("backend_id")
+        clients = run.get("clients")
+        repetition = run.get("rep")
+        if backend not in expected_backends or type(clients) is not int or clients not in expected_clients or type(repetition) is not int or repetition not in range(repetitions):
+            fail(f"{profile}: backend repetition identity is invalid")
+        cell = (backend, clients, repetition)
+        if cell in observed_cells:
+            fail(f"{profile}: duplicate backend repetition")
+        observed_cells.add(cell)
+        if run.get("profile") != profile or run.get("mode") != "closed_loop":
+            fail(f"{profile}: workload profile or mode drifted")
+        if run.get("duration_ms") != manifest["measured_seconds"] * 1000 or run.get("warmup_ms") != manifest["warmup_seconds"] * 1000:
+            fail(f"{profile}: measured or warmup duration drifted")
+        outcomes = run.get("aggregate", {}).get("outcomes", {})
+        for name in ("error", "unavailable", "idempotency_mismatch", "history_incarnation_mismatch", "overloaded"):
+            if outcomes.get(name) != 0:
+                fail(f"{profile}: {name} outcome is nonzero")
+        logical_operations = outcomes.get("logical_operations")
+        if type(logical_operations) is not int or logical_operations <= 0 or outcomes.get("success") != logical_operations:
+            fail(f"{profile}: operation totals do not reconcile")
+    if observed_cells != expected_cells or report.get("reps") != repetitions:
+        fail(f"{profile}: concurrency/repetition matrix is incomplete")
+
+
+def main() -> int:
+    if sys.argv[1:] not in ([], ["--verify"], ["--self-test"]):
+        fail("usage: check-alpha-performance-evidence [--verify|--self-test]")
+    self_test = sys.argv[1:] == ["--self-test"]
+    root = Path(__file__).resolve().parent.parent
+    manifest_path = root / "release/evidence/wp-552/manifest-v1.json"
+    manifest, _ = load_json(manifest_path, MAX_MANIFEST_BYTES)
+    if set(manifest) != {"schema", "reports", "backends", "clients", "repetitions", "measured_seconds", "warmup_seconds", "requirements"}:
+        fail("performance evidence manifest has an invalid shape")
+    if manifest.get("schema") != "riffdb.alpha-performance-evidence-manifest/v1":
+        fail("performance evidence manifest has the wrong schema")
+    if not exact_names(manifest.get("requirements"), EXPECTED_REQUIREMENTS):
+        fail("performance evidence requirements are incomplete")
+    if manifest.get("backends") != ["postgres_safe_app", "riffdb_public_grpc"] or manifest.get("clients") != [1, 8, 32, 128]:
+        fail("performance comparator or concurrency matrix drifted")
+    if manifest.get("repetitions") != 3 or manifest.get("measured_seconds") != 90 or manifest.get("warmup_seconds") != 15:
+        fail("performance timing contract drifted")
+    reports = manifest.get("reports")
+    if not isinstance(reports, list) or len(reports) != 2 or not all(isinstance(item, dict) for item in reports) or not exact_names([item.get("profile") for item in reports], {"interactive", "write_only"}):
+        fail("interactive/write-only evidence inventory is incomplete")
+    verified_reports: list[tuple[str, dict[str, Any]]] = []
+    for item in reports:
+        if set(item) != {"profile", "path", "sha256"}:
+            fail("performance evidence reference has an invalid shape")
+        relative = item["path"]
+        if not isinstance(relative, str) or not relative.startswith("release/evidence/wp-552/") or ".." in Path(relative).parts:
+            fail("performance evidence path escapes its closed root")
+        report_path = root / relative
+        if report_path.resolve() != report_path.absolute():
+            fail("performance evidence path traverses a symlink")
+        report, digest = load_json(report_path, MAX_REPORT_BYTES)
+        if digest != item.get("sha256"):
+            fail(f"{item['profile']}: evidence digest differs")
+        verify_report(report, item["profile"], manifest)
+        verified_reports.append((item["profile"], report))
+    if self_test:
+        profile, report = verified_reports[0]
+        invalid = copy.deepcopy(report)
+        invalid["evidence_eligibility"]["eligible"] = False
+        try:
+            verify_report(invalid, profile, manifest)
+        except ValueError:
+            print("ineligible_performance_evidence: rejected")
+        else:
+            fail("ineligible performance evidence passed")
+    print("WP-552 retained interactive and write-only alpha evidence: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        print(f"alpha_performance_evidence_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

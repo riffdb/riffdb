@@ -1,0 +1,25 @@
+{
+  "schema": "riffdb.alpha-performance-evidence-manifest/v1",
+  "reports": [
+    {
+      "profile": "interactive",
+      "path": "release/evidence/wp-552/interactive-90s-reps3.json",
+      "sha256": "18022333a18622c6b4347116bb7806def34d39285347f1e54b9edbb6b78dec07"
+    },
+    {
+      "profile": "write_only",
+      "path": "release/evidence/wp-552/write-only-90s-reps3.json",
+      "sha256": "dd9f5c13cdddb8925c656ac7e8e4e0216e156b06b05f9f6a06d406cad1be6f2e"
+    }
+  ],
+  "backends": ["postgres_safe_app", "riffdb_public_grpc"],
+  "clients": [1, 8, 32, 128],
+  "repetitions": 3,
+  "measured_seconds": 90,
+  "warmup_seconds": 15,
+  "requirements": [
+    "PERF-001", "PERF-002", "PERF-003", "PERF-004", "PERF-005",
+    "PERF-007", "PERF-008", "PERF-009", "PERF-013", "PERF-014",
+    "PERF-018"
+  ]
+}

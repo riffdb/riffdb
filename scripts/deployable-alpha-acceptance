@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Run the closed installed Deployable Application Alpha component gate."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+SCHEMA = "riffdb.deployable-application-alpha-gate/v1"
+MAX_PHASES = 32
+MAX_COMMAND_PARTS = 16
+REQUIRED_PHASES = {
+    "application_bindings",
+    "durable_format",
+    "performance_evidence",
+    "kubernetes_render",
+    "remote_compose",
+    "driver_conformance",
+    "adapter_conformance",
+    "bulk_commands",
+    "operational_queries",
+    "workflow_concurrency",
+    "row_policy",
+    "export_reimport",
+    "disaster_recovery",
+    "endurance_evidence",
+    "installed_bootstrap",
+    "independent_agent_evaluation",
+}
+
+
+def phases() -> list[tuple[str, list[str]]]:
+    return [
+        ("application_bindings", ["scripts/check-application-bindings"]),
+        ("durable_format", ["scripts/check-durable-format-manifest"]),
+        ("performance_evidence", ["scripts/check-alpha-performance-evidence", "--verify"]),
+        ("kubernetes_render", ["scripts/remote-kubernetes-render-check"]),
+        ("remote_compose", ["scripts/remote-compose-acceptance"]),
+        ("driver_conformance", ["scripts/driver-conformance", "--all-languages", "--remote"]),
+        ("adapter_conformance", ["scripts/adapter-conformance", "--all-domains", "--all-languages"]),
+        ("bulk_commands", ["scripts/adapter-bulk-command-acceptance", "--all-languages"]),
+        ("operational_queries", ["scripts/adapter-operational-query-acceptance", "--all-languages"]),
+        ("workflow_concurrency", ["scripts/adapter-workflow-acceptance", "--all-languages"]),
+        ("row_policy", ["scripts/adapter-row-policy-acceptance", "--all-languages", "--domains", "payload,mlflow"]),
+        ("export_reimport", ["scripts/adapter-export-reimport-acceptance", "--all-domains", "--all-languages"]),
+        ("disaster_recovery", ["scripts/adapter-disaster-recovery-acceptance", "--all-domains", "--remote"]),
+        ("endurance_evidence", ["scripts/alpha-endurance", "--verify-release-receipt", "release/evidence/alpha-endurance-v1.json"]),
+        ("installed_bootstrap", ["scripts/release-source-bootstrap-smoke"]),
+        ("independent_agent_evaluation", ["scripts/agent-application-alpha-acceptance", "--runs", "4", "--sealed", "--assert-gate"]),
+    ]
+
+
+def digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def validate_inventory(items: list[tuple[str, list[str]]]) -> None:
+    if not 1 <= len(items) <= MAX_PHASES or {name for name, _ in items} != REQUIRED_PHASES:
+        raise ValueError("alpha phase inventory is incomplete or duplicated")
+    if len({name for name, _ in items}) != len(items):
+        raise ValueError("alpha phase name is duplicated")
+    for name, command in items:
+        if not isinstance(name, str) or not name or not 1 <= len(command) <= MAX_COMMAND_PARTS:
+            raise ValueError("alpha phase has an invalid command")
+        if not all(isinstance(part, str) and part and "\x00" not in part for part in command):
+            raise ValueError("alpha phase command contains an invalid argument")
+        if not command[0].startswith("scripts/"):
+            raise ValueError("alpha phase command is outside the reviewed script surface")
+
+
+def publish(path: Path, receipt: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_name(f".{path.name}.{os.getpid()}.pending")
+    try:
+        with pending.open("x", encoding="utf-8") as destination:
+            json.dump(receipt, destination, sort_keys=True, indent=2)
+            destination.write("\n")
+        os.replace(pending, path)
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
+def main() -> int:
+    items = phases()
+    validate_inventory(items)
+    if sys.argv[1:] == ["--self-test"]:
+        print("deployable alpha phase inventory: passed")
+        return 0
+    if sys.argv[1:] != ["--all-domains", "--all-languages", "--remote"]:
+        raise ValueError("usage: deployable-alpha-acceptance --all-domains --all-languages --remote")
+
+    root = Path(__file__).resolve().parent.parent
+    missing = [
+        command[0]
+        for _, command in items
+        if not (root / command[0]).is_file()
+        or (root / command[0]).is_symlink()
+        or not os.access(root / command[0], os.X_OK)
+    ]
+    endurance = root / "release/evidence/alpha-endurance-v1.json"
+    if not endurance.is_file() or endurance.is_symlink():
+        missing.append("release/evidence/alpha-endurance-v1.json")
+    if missing:
+        raise ValueError("alpha gate components are absent: " + ", ".join(sorted(missing)))
+
+    task_tmp_root = Path(os.environ.get("RIFFDB_TMP_ROOT", Path.home() / "tmp"))
+    task_tmp_root.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["TMPDIR"] = str(task_tmp_root)
+    environment["RIFFDB_TMP_ROOT"] = str(task_tmp_root)
+    results: list[dict[str, Any]] = []
+    started = time.monotonic_ns()
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    for name, command in items:
+        phase_started = time.monotonic_ns()
+        status = subprocess.run(command, cwd=root, env=environment, check=False).returncode
+        elapsed = (time.monotonic_ns() - phase_started) // 1_000_000
+        results.append(
+            {
+                "name": name,
+                "status": "passed" if status == 0 else "failed",
+                "exit_status": status,
+                "elapsed_ms": elapsed,
+                "command_sha256": digest(command),
+            }
+        )
+        if status != 0:
+            receipt = {
+                "schema": SCHEMA,
+                "status": "failed",
+                "revision": revision,
+                "phase_inventory_sha256": digest(items),
+                "elapsed_ms": (time.monotonic_ns() - started) // 1_000_000,
+                "results": results,
+                "failed_phase": name,
+                "secrets_included": False,
+            }
+            publish(root / "target/deployable-alpha-gate/failed-receipt-v1.json", receipt)
+            return 3
+
+    receipt = {
+        "schema": SCHEMA,
+        "status": "passed",
+        "revision": revision,
+        "phase_inventory_sha256": digest(items),
+        "elapsed_ms": (time.monotonic_ns() - started) // 1_000_000,
+        "results": results,
+        "failed_phase": None,
+        "secrets_included": False,
+    }
+    publish(root / "release/evidence/deployable-application-alpha-v1.json", receipt)
+    print("Deployable Application Alpha installed gate: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        print(f"deployable_alpha_gate_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error
