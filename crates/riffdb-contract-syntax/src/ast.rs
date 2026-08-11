@@ -108,6 +108,8 @@ pub enum EntityItem {
     Unique(UniqueDeclaration),
     /// A required same-partition relationship.
     Reference(ReferenceDeclaration),
+    /// A declared vector field for nearest-neighbor search.
+    VectorField(VectorFieldDeclaration),
 }
 
 /// The typed fields forming an entity key.
@@ -192,6 +194,35 @@ pub struct ReferenceDeclaration {
     pub target_entity: Spanned<String>,
     /// Complete target primary-key fields in canonical order.
     pub target_fields: Vec<Spanned<String>>,
+}
+
+/// A declared vector field for nearest-neighbor search (ADR-0091).
+///
+/// Declares: name, dimension, distance metric, source fields (for staleness
+/// tracking), and staleness SLO.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorFieldDeclaration {
+    /// The vector field identifier.
+    pub name: Spanned<String>,
+    /// Declared vector dimension (positive integer lexeme).
+    pub dimension: Spanned<String>,
+    /// Distance metric keyword.
+    pub metric: Spanned<VectorMetricKeyword>,
+    /// Source-field names whose mutation makes the embedding stale.
+    pub source_fields: Vec<Spanned<String>>,
+    /// Staleness SLO in seconds (positive integer lexeme).
+    pub staleness_slo: Spanned<String>,
+}
+
+/// The grammar's closed distance metric keywords.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum VectorMetricKeyword {
+    /// Cosine similarity distance.
+    Cosine,
+    /// Euclidean (L2) distance.
+    Euclidean,
+    /// Negative dot product distance.
+    DotProduct,
 }
 
 /// A durable event declaration.

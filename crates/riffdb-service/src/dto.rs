@@ -4871,6 +4871,8 @@ pub enum HealthComponentKind {
     Projection,
     /// Derived outbox subsystem.
     Outbox,
+    /// Vector embedding staleness SLO (ADR-0091).
+    VectorStaleness,
 }
 
 /// Closed status of one health component.
@@ -11089,5 +11091,174 @@ contract OutcomeShapes version 1 {
             )
             .is_ok()
         );
+    }
+}
+
+// ─── Vector staleness inspection (ADR-0091, VEC-003, VEC-004, VEC-012) ───
+
+/// Request to inspect vector field staleness for one entity type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorStalenessRequest {
+    /// The entity type containing the vector field.
+    entity_type: riffdb_types::EntityTypeId,
+    /// The vector field to inspect.
+    vector_field: riffdb_types::VectorFieldId,
+}
+
+impl VectorStalenessRequest {
+    /// Creates a staleness inspection request.
+    #[must_use]
+    pub const fn new(
+        entity_type: riffdb_types::EntityTypeId,
+        vector_field: riffdb_types::VectorFieldId,
+    ) -> Self {
+        Self {
+            entity_type,
+            vector_field,
+        }
+    }
+
+    /// The entity type.
+    #[must_use]
+    pub const fn entity_type(&self) -> riffdb_types::EntityTypeId {
+        self.entity_type
+    }
+
+    /// The vector field.
+    #[must_use]
+    pub const fn vector_field(&self) -> riffdb_types::VectorFieldId {
+        self.vector_field
+    }
+}
+
+/// Result of a vector staleness inspection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorStalenessReport {
+    /// Total entities that have the vector field declared.
+    total_entities: u64,
+    /// Entities whose source fields have been written more recently than
+    /// their embedding (stale embedding count).
+    stale_count: u64,
+    /// The declared staleness SLO in seconds.
+    staleness_slo_seconds: u64,
+    /// Whether the SLO is currently breached (stale_count exceeds threshold).
+    slo_breached: bool,
+}
+
+impl VectorStalenessReport {
+    /// Creates a staleness report.
+    #[must_use]
+    pub const fn new(
+        total_entities: u64,
+        stale_count: u64,
+        staleness_slo_seconds: u64,
+        slo_breached: bool,
+    ) -> Self {
+        Self {
+            total_entities,
+            stale_count,
+            staleness_slo_seconds,
+            slo_breached,
+        }
+    }
+
+    /// Total entities with this vector field.
+    #[must_use]
+    pub const fn total_entities(&self) -> u64 {
+        self.total_entities
+    }
+
+    /// Number of stale entities.
+    #[must_use]
+    pub const fn stale_count(&self) -> u64 {
+        self.stale_count
+    }
+
+    /// Declared staleness SLO in seconds.
+    #[must_use]
+    pub const fn staleness_slo_seconds(&self) -> u64 {
+        self.staleness_slo_seconds
+    }
+
+    /// Whether the SLO is breached.
+    #[must_use]
+    pub const fn slo_breached(&self) -> bool {
+        self.slo_breached
+    }
+}
+
+/// Request to inspect model-version distribution for one vector field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorModelVersionRequest {
+    /// The entity type containing the vector field.
+    entity_type: riffdb_types::EntityTypeId,
+    /// The vector field to inspect.
+    vector_field: riffdb_types::VectorFieldId,
+    /// The contract-declared current model version to compare against.
+    declared_model_version: String,
+}
+
+impl VectorModelVersionRequest {
+    /// Creates a model-version inspection request.
+    pub fn new(
+        entity_type: riffdb_types::EntityTypeId,
+        vector_field: riffdb_types::VectorFieldId,
+        declared_model_version: impl Into<String>,
+    ) -> Self {
+        Self {
+            entity_type,
+            vector_field,
+            declared_model_version: declared_model_version.into(),
+        }
+    }
+
+    /// The entity type.
+    #[must_use]
+    pub const fn entity_type(&self) -> riffdb_types::EntityTypeId {
+        self.entity_type
+    }
+
+    /// The vector field.
+    #[must_use]
+    pub const fn vector_field(&self) -> riffdb_types::VectorFieldId {
+        self.vector_field
+    }
+
+    /// The declared model version.
+    #[must_use]
+    pub fn declared_model_version(&self) -> &str {
+        &self.declared_model_version
+    }
+}
+
+/// Result of a model-version inspection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorModelVersionReport {
+    /// Entities whose stored model version matches the declared version.
+    current_count: u64,
+    /// Entities whose stored model version differs from the declared version.
+    outdated_count: u64,
+}
+
+impl VectorModelVersionReport {
+    /// Creates a model-version report.
+    #[must_use]
+    pub const fn new(current_count: u64, outdated_count: u64) -> Self {
+        Self {
+            current_count,
+            outdated_count,
+        }
+    }
+
+    /// Entities with current model version.
+    #[must_use]
+    pub const fn current_count(&self) -> u64 {
+        self.current_count
+    }
+
+    /// Entities with outdated model version.
+    #[must_use]
+    pub const fn outdated_count(&self) -> u64 {
+        self.outdated_count
     }
 }

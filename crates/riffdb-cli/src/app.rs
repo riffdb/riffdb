@@ -3244,6 +3244,10 @@ fn canonical_value_json(value: &CanonicalValue) -> serde_json::Value {
                 "value": canonical_value_json(value),
             })).collect::<Vec<_>>(),
         }),
+        CanonicalValue::Vector(vector) => serde_json::json!({
+            "type": "vector",
+            "dimension": vector.dimension(),
+        }),
     }
 }
 

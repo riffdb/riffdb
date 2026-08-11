@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.90
+**Version:** 0.91
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.91 | 2026-08-10 | Registered the VEC-* requirement family (VEC-001 through VEC-012) for native vector search projections under ADR-0091 as amended: client-supplied embeddings through typed commands, typed staleness tracking, exact-first KNN with a declared recall contract for approximate tiers, policy-before-ranking, per-organization statistics isolation, and mandatory K with organization scope. ADR-0091 Amendment 1 recorded: the application owns embedding computation; the database never calls external model endpoints. |
 | 0.90 | 2026-08-09 | Strengthened the deterministic-simulation family after independent review: SIM-001 gained the digest-sensitivity obligation (identical operations under differently resolved fault schedules must diverge), SIM-003 now names AuthoritativeCommandModel with the model-extension and startup-validation/structural-inspection obligations and states the one-phase-commit precondition on the commit-to-sync correspondence, and SIM-005 (media-adapter conformance suites), SIM-006 (crash-matrix corpus subsumption, deferred), and SIM-007 (metadata-driven production-graph absence of riffdb-sim) were registered. |
 | 0.89 | 2026-08-09 | Registered the ADR-0113 deterministic-simulation requirement family through WP-580: seeded fault-schedule coverage and a versioned trace-digest determinism proof land with the `riffdb-sim` foundation, reference-model equality and the seed-replayable regression corpus are registered now and evidenced by later simulation packages, and the conflict-path ordered-collection and explicit worker-count hygiene freeze ambient nondeterminism out of `riffdb-commit`. |
 | 0.88 | 2026-08-09 | Accepted ADR-0105 through ADR-0112 and froze the Deployable Application Alpha requirements: authenticated remote ingress, Rust-owned Go/TypeScript/Python drivers, compiler-bounded collection commands, operational RiffQL, fenced workflows, exact installation/adapters, principal-aware row policy, durable-format compatibility, symbolic export/reimport, exercised disaster recovery, 72-hour endurance evidence, and the distinct PERF-018 comparator gate. |
@@ -4875,6 +4876,94 @@ query/status/frontier/lifecycle/page messages; WP-130 owns total wire conversion
 
 `BudgetUtilizationDaily` consumes `BudgetAllocated` events and groups by organization, fiscal year, and transaction date. The acceptance demo queries the projection using the winning allocation's commit sequence and verifies the result includes exactly one 80-unit allocation.
 
+## 15.5 Vector search projections
+
+Vector search is a native projection kind under ADR-0091 (as amended). A
+vector index is a projection in full under ADR-0086: derived and
+non-authoritative, fed from the single total order, org-partitioned, frontier-
+reporting, served under the declared freshness modes, and subject to the replay
+budget. The approximate-result contract (§3 of ADR-0091) amends the
+exact-result acceptance for vector projections only.
+
+Applications supply pre-computed embeddings through a typed command that writes
+a vector value alongside a model identity and version. RiffDB validates the
+declared dimension and stores the vector as authoritative entity state. The
+vector projection consumes these authoritative embeddings like any other field.
+RiffDB never calls external model endpoints.
+
+Requirements registered here; evidence is delivered by WP-591 through WP-595.
+
+- `VEC-001`: A contract MUST be able to declare a vector field on an entity
+  with dimension (positive integer), distance metric (closed enum: cosine,
+  euclidean, dot product), source-field binding (one or more entity fields
+  whose content the embedding semantically derives from), and staleness SLO
+  (duration). The compiler MUST reject a zero or negative dimension, an
+  unrecognized metric, an empty source-field list, a source field that does
+  not exist on the entity, and a non-positive staleness SLO.
+
+- `VEC-002`: An application MUST write an embedding to a declared vector
+  field through a typed command that carries the vector value (exactly
+  matching the declared dimension), a model identity string, and a model
+  version string. The command MUST reject a vector whose length does not
+  equal the declared dimension. The write MUST produce authoritative state
+  with provenance, idempotency, and commit atomicity identical to any other
+  mutation.
+
+- `VEC-003`: Typed staleness MUST be observable: an entity whose declared
+  source fields have been written more recently than its most recent embedding
+  write (for that vector field) MUST be countable and queryable as stale.
+  Staleness MUST be computable from authoritative state alone (source-field
+  commit sequence versus embedding-write commit sequence).
+
+- `VEC-004`: Each vector field's declared staleness SLO MUST be enforceable:
+  when the count of stale entities exceeds the SLO threshold, health MUST
+  degrade with a typed signal identifying the vector field and the stale
+  count. Silent search-quality degradation MUST NOT occur.
+
+- `VEC-005`: The vector projection MUST satisfy every unamended ADR-0086
+  obligation: derived and non-authoritative, org-partitioned segments
+  (exactly one organization scope per query), frontier-reporting, freshness-
+  served under `Causal`/`Bounded`/`Available`, snapshot-rebuildable from
+  current authoritative entity state, and subject to the replay budget that
+  detaches a stuck index.
+
+- `VEC-006`: The `nearest(field, $vector, k)` operator MUST enter the query
+  grammar with mandatory K (positive integer) and mandatory organization
+  scope (unrepresentable to omit either). It MUST compose with existing
+  equality and range predicates where the filter applies BEFORE distance
+  ranking (filtered ANN semantics).
+
+- `VEC-007`: Row-level policy MUST apply BEFORE distance ranking: distance
+  computation and top-K selection MUST run only over rows the querying
+  principal may see. Scores, ranks, and result presence MUST NOT leak an
+  unauthorized row's existence.
+
+- `VEC-008`: All index statistics that shape results (graph entry points,
+  centroids, quantization codebooks) MUST be computed per organization.
+  No tenant's data may influence another tenant's rankings or timings beyond
+  stated policy.
+
+- `VEC-009`: Exact KNN MUST remain available as the reference path and as
+  the small-partition default. The approximate structure MUST engage only
+  above a declared row threshold per organization. Below the threshold,
+  results MUST be exact.
+
+- `VEC-010`: For vector projections only, a query declares K and results
+  are top-K under a declared recall target (per projection, e.g.
+  `recall@10 >= 0.95`), measured against exact scan at the same frontier.
+  Compaction and structure maintenance MUST be bounded by recall regression
+  at a frozen frontier, not byte equality.
+
+- `VEC-011`: The frontier contract MUST NOT be weakened for vector
+  projections: frontier F means every relevant commit ≤ F is fully reflected
+  in the index. Crash recovery MUST NOT silently lose indexed vectors that
+  were acknowledged as committed.
+
+- `VEC-012`: Model version observability MUST be supported: entities whose
+  stored embedding carries a model version different from the contract's
+  declared current version MUST be queryable and countable, enabling
+  application-driven re-embedding campaigns.
+
 ---
 # 16. Operations, configuration, and observability
 
@@ -7748,5 +7837,6 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `EXP-*` | Snapshot-consistent symbolic application export and compiled reimport |
 | `END-*` | Exercised disaster recovery, sustained lifecycle load, and bounded-growth evidence |
 | `SIM-*` | Deterministic simulation of the durable engine under seeded fault schedules |
+| `VEC-*` | Native vector search projections, embedding writes, staleness, and recall contracts |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

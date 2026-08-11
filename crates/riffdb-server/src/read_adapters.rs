@@ -1361,7 +1361,8 @@ fn push_index_component(
         | CanonicalValue::Decimal(_)
         | CanonicalValue::Money(_)
         | CanonicalValue::List(_)
-        | CanonicalValue::Record(_) => return Err(AuthoritativeReadError::Integrity),
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => return Err(AuthoritativeReadError::Integrity),
     };
     result
         .map(|_| ())

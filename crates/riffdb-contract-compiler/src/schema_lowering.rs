@@ -862,4 +862,77 @@ contract Invalid version 1 {
             Span::new(start, start + 12).expect("span")
         );
     }
+
+    #[test]
+    fn vector_field_compiles_to_vector_typed_entity_field() {
+        let source = r#"
+contract Docs version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    vector_field embedding(1536, cosine, (title, body), staleness_slo 60)
+  }
+}
+"#;
+        let hir = hir(source);
+        let schema = lower_schema(&hir).expect("schema");
+        assert_eq!(schema.entities().len(), 1);
+        let entity = &schema.entities()[0];
+        // key fields (org_id, doc_id) + regular fields (title, body) + vector field (embedding) = 5
+        assert_eq!(entity.record().fields().len(), 5);
+        let embedding_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "embedding")
+            .expect("embedding field present");
+        assert_eq!(
+            embedding_field.value_type().tag(),
+            riffdb_contract_ir::ValueTypeTag::Vector
+        );
+        assert_eq!(
+            embedding_field.value_type().vector_dimension().map(|d| d.get()),
+            Some(1536)
+        );
+    }
+
+    #[test]
+    fn vector_field_rejects_zero_dimension() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(0, cosine, (title), staleness_slo 60)
+  }
+}
+"#;
+        let document = parse_contract(source).expect("syntax");
+        let symbols = allocate_genesis_symbols(&document).expect("symbols");
+        let types = resolve_declared_types(&document, &symbols).expect("types");
+        let hir_result = lower_contract_hir(&document, &symbols, &types);
+        // The dimension validation happens in the HIR pass; a zero dimension
+        // produces a BoundExceeded diagnostic.
+        assert!(hir_result.is_err());
+    }
+
+    #[test]
+    fn vector_field_rejects_unknown_source_field() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(1536, cosine, (title, nonexistent), staleness_slo 60)
+  }
+}
+"#;
+        let document = parse_contract(source).expect("syntax");
+        let symbols = allocate_genesis_symbols(&document).expect("symbols");
+        let types = resolve_declared_types(&document, &symbols).expect("types");
+        let hir_result = lower_contract_hir(&document, &symbols, &types);
+        // Unknown source field produces an UnknownName diagnostic.
+        assert!(hir_result.is_err());
+    }
 }

@@ -153,7 +153,8 @@ fn locate_contract_symbol(source: &str, path: &[String]) -> Option<(u32, u32)> {
                     | EntityItem::Invariant(_)
                     | EntityItem::Index(_)
                     | EntityItem::Unique(_)
-                    | EntityItem::Reference(_) => None,
+                    | EntityItem::Reference(_)
+                    | EntityItem::VectorField(_) => None,
                 })
             })
         }
@@ -1209,7 +1210,7 @@ fn python_contract_type(value_type: &ValueType, contract: &ContractBundle) -> St
             _ => "str".to_owned(),
         },
         ValueTypeTag::String => "str".to_owned(),
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!("handled above"),
     }
 }
 

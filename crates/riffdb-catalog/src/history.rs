@@ -1461,7 +1461,8 @@ fn push_unique_prefix_component(
         | CanonicalValue::Decimal(_)
         | CanonicalValue::Money(_)
         | CanonicalValue::List(_)
-        | CanonicalValue::Record(_) => {
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => {
             return Err(CatalogError::new(
                 CatalogErrorKind::InvalidHistoricalEvidence,
             ));

@@ -619,6 +619,7 @@ fn render_value_type(schema: &SchemaIr, value: &ValueType) -> Option<String> {
             format!("[{}; {maximum}]", render_value_type(schema, element)?)
         }
         ValueTypeTag::Record => "record".to_owned(),
+        ValueTypeTag::Vector => format!("vector<{}>", value.vector_dimension()?.get()),
     })
 }
 

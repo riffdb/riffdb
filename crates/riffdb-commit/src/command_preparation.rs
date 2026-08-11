@@ -68,6 +68,7 @@ fn canonical_record_retained_bytes(record: &CanonicalRecord) -> usize {
                 total.saturating_add(canonical_value_retained_bytes(value))
             }),
             CanonicalValue::Record(record) => canonical_record_retained_bytes(record),
+            CanonicalValue::Vector(vector) => vector.byte_size(),
             CanonicalValue::Null
             | CanonicalValue::Bool(_)
             | CanonicalValue::I64(_)
@@ -100,6 +101,7 @@ fn canonical_value_retained_bytes(value: &CanonicalValue) -> usize {
         | CanonicalValue::Date(_)
         | CanonicalValue::Uuid(_)
         | CanonicalValue::Enum { .. } => 32,
+        CanonicalValue::Vector(vector) => vector.byte_size(),
     }
 }
 

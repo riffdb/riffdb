@@ -78,6 +78,7 @@ tag_registry!(value_type, "Value type", {
     OPTIONAL = 0x0c => "optional",
     LIST = 0x0d => "list",
     RECORD = 0x0e => "record",
+    VECTOR = 0x0f => "vector",
 });
 tag_registry!(expression, "Expression", {
     CONSTANT = 0x01 => "constant",
@@ -364,6 +365,9 @@ pub(crate) const VALUE_TYPE_VARIANTS: &[TaggedVariantLayout] = &[
     }),
     tagged_variant!(value_type::RECORD, "record", {
         "record_type" => "RecordTypeRef tag plus exact selected payload",
+    }),
+    tagged_variant!(value_type::VECTOR, "vector", {
+        "dimension" => "u32 in 1..=4096",
     }),
 ];
 
@@ -1558,6 +1562,8 @@ pub(crate) enum JsonSchemaValueConstruction {
     List,
     /// Inline closed entity/event record.
     Record,
+    /// Fixed-dimension f32 vector as base64 bytes.
+    Vector,
 }
 
 /// One exact, parameterized JSON Schema construction selected by `ValueType`.
@@ -1723,6 +1729,13 @@ pub(crate) const JSON_SCHEMA_VALUE_TEMPLATES: &[JsonSchemaValueTemplate] = &[
         construction: JsonSchemaValueConstruction::Record,
         canonical_template: r#"{"additionalProperties":false,"properties":{<ASCII-name-ordered field schemas>},"required":["<all field names in FieldId order>"...],"type":"object"}"#,
         rule: "only entity and event references are legal inline; the inline record omits $schema",
+    },
+    JsonSchemaValueTemplate {
+        tag: value_type::VECTOR,
+        name: "vector",
+        construction: JsonSchemaValueConstruction::Vector,
+        canonical_template: r#"{"description":"f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components","format":"byte","type":"string"}"#,
+        rule: "dimension is validated against the contract-declared vector field dimension",
     },
 ];
 
@@ -2002,6 +2015,7 @@ mod tests {
                 ValueTypeTag::Optional,
                 ValueTypeTag::List,
                 ValueTypeTag::Record,
+                ValueTypeTag::Vector,
             ]
             .map(|value| value as u8),
             registry_values(value_type::REGISTRY).as_slice()

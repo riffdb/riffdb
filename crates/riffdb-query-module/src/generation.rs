@@ -1996,7 +1996,7 @@ fn rust_encode_wire_expr(
             }
             _ => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!("handled above"),
     }
 }
 
@@ -2039,7 +2039,7 @@ fn rust_decode_wire_expr(
             }
             _ => "return Err(GeneratedCommandError::InvalidOutcomeShape)".to_owned(),
         },
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!("handled above"),
     }
 }
 
@@ -3279,7 +3279,7 @@ fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -
             }
             "string"
         }
-        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Vector => unreachable!("handled above"),
     };
     json!({"kind": kind})
 }

@@ -728,6 +728,10 @@ fn type_node_size(
                 object_entries: 4,
             })
         }
+        JsonSchemaValueConstruction::Vector => Ok(SchemaNodeSize {
+            bytes: 80,
+            object_entries: 3,
+        }),
     }
 }
 
@@ -911,6 +915,16 @@ fn type_node(value_type: &ValueType, schema: &SchemaIr) -> Result<Json, IrValida
             })?;
             record_node(record, schema, RecordShape::Output, false)?
         }
+        JsonSchemaValueConstruction::Vector => Json::object([
+            (
+                "description",
+                Json::String(
+                    "f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components".to_owned(),
+                ),
+            ),
+            ("format", Json::String("byte".to_owned())),
+            ("type", Json::String("string".to_owned())),
+        ]),
     })
 }
 
@@ -1189,6 +1203,10 @@ mod tests {
             (
                 ValueType::record(RecordTypeRef::Event(event_id)),
                 r#"{"additionalProperties":false,"properties":{"flag":{"type":"boolean"}},"required":["flag"],"type":"object"}"#,
+            ),
+            (
+                ValueType::vector(riffdb_types::VectorDimension::new(1536).expect("dim")),
+                r#"{"description":"f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components","format":"byte","type":"string"}"#,
             ),
         ];
         assert_eq!(

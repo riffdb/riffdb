@@ -55,6 +55,16 @@ pub(crate) enum Token {
     Unique,
     #[token("reference")]
     Reference,
+    #[token("vector_field")]
+    VectorField,
+    #[token("cosine")]
+    Cosine,
+    #[token("euclidean")]
+    Euclidean,
+    #[token("dot_product")]
+    DotProduct,
+    #[token("staleness_slo")]
+    StalenessSlo,
     #[token("event")]
     Event,
     #[token("enum")]
