@@ -340,6 +340,7 @@ pub trait ApplicationService:
     + EventServiceApplication
     + AdministrationApplication
     + OfflineMaintenanceApplication
+    + ApplicationInstallationApplication
     + DiscoveryApplication
     + crate::SymbolicQueryApplication
     + crate::ProjectedQueryApplication
@@ -357,6 +358,7 @@ impl<T> ApplicationService for T where
         + EventServiceApplication
         + AdministrationApplication
         + OfflineMaintenanceApplication
+        + ApplicationInstallationApplication
         + DiscoveryApplication
         + crate::SymbolicQueryApplication
         + crate::ProjectedQueryApplication

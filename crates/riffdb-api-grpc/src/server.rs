@@ -2458,6 +2458,44 @@ impl AdminService for GrpcApplication {
             get_contract_migration_operation_result_to_proto(&result),
         ))
     }
+
+    async fn start_application_installation(
+        &self,
+        request: Request<v1::StartApplicationInstallationRequest>,
+    ) -> Result<Response<v1::StartApplicationInstallationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = start_application_installation_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::StartApplicationInstallation,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .start_application_installation(context, request)
+                .await,
+        )?;
+        Ok(Response::new(application_installation_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn get_application_installation(
+        &self,
+        request: Request<v1::GetApplicationInstallationRequest>,
+    ) -> Result<Response<v1::GetApplicationInstallationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = get_application_installation_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::GetApplicationInstallation,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.get_application_installation(context, request).await)?;
+        Ok(Response::new(get_application_installation_result_to_proto(
+            &result,
+        )))
+    }
 }
 
 fn has_normal_or_bootstrap_credentials(metadata: &MetadataMap) -> bool {

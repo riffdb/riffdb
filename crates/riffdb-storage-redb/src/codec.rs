@@ -113,6 +113,13 @@ borrowed_codec!(
     encode_contract_bundle_v1,
     decode_contract_bundle_v1
 );
+borrowed_codec!(
+    encode_application_installation_campaign_v1,
+    decode_application_installation_campaign_v1,
+    storage::StoredApplicationInstallationCampaignV1,
+    encode_application_installation_campaign_v1,
+    decode_application_installation_campaign_v1
+);
 
 pub(crate) fn decode_commit_entity_references(
     encoded: &[u8],

@@ -13,6 +13,7 @@ mod cursor;
 mod daemon;
 mod hosted_mcp;
 mod identifiers;
+mod installation_adapter;
 mod lifecycle;
 mod lifecycle_service;
 mod maintenance_adapter;

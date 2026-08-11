@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Opaque, engine-neutral persistence for one exact resumable application
+// installation campaign. The application layer owns canonical_state semantics;
+// storage binds it to the campaign, lineage, and immutable plan identity.
+message StoredApplicationInstallationCampaignV1 {
+  bytes campaign_id = 1;
+  string contract_lineage = 2;
+  bytes plan_hash = 3;
+  bytes canonical_state = 4;
+}

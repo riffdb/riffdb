@@ -44,30 +44,31 @@ use crate::gate::ExclusiveLease;
 use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
-    COMMITS, CONTRACT_BUNDLES, CONTRACT_MIGRATION_JOURNAL, CONTRACT_MIGRATIONS,
-    CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_CONSUMER_DELIVERIES, EVENT_CONSUMERS, EVENT_ROUTES,
-    EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
-    META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    APPLICATION_INSTALLATION_CAMPAIGNS, AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS,
+    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, CONTRACT_MIGRATION_JOURNAL,
+    CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_CONSUMER_DELIVERIES,
+    EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_PENDING,
+    INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
+    META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
-    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST,
-    PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
-    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
-    PRE_RETENTION_WATERMARK_REGISTRY_DIGEST, PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST,
-    PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST, PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST,
+    PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST, PRE_ENTITY_REFERENCE_REGISTRY_DIGEST,
+    PRE_EVENT_ROUTE_REGISTRY_DIGEST, PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
+    PRE_INDEX_GENERATION_REGISTRY_DIGEST, PRE_RETENTION_WATERMARK_REGISTRY_DIGEST,
+    PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST, PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
-const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 3;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 4;
 const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
@@ -83,6 +84,8 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
         || digest
             == riffdb_types::SchemaHash::from_bytes(PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST)
+        || digest
+            == riffdb_types::SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST)
 }
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
@@ -1197,6 +1200,7 @@ impl RedbStructuralEvidenceSession {
             table_len(transaction, REACTIVE_MODULES)?,
             table_len(transaction, EVENT_CONSUMERS)?,
             table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
+            table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
         ];
         if additive_counts != self.additive_structural_counts {
             return Err(corrupt());
@@ -2108,6 +2112,9 @@ impl RedbStructuralEvidenceSession {
                     30 => transaction
                         .open_table(EVENT_CONSUMER_DELIVERIES)
                         .map_err(table_error)?,
+                    31 => transaction
+                        .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -2199,6 +2206,7 @@ fn inspect_table_row_from_bytes(
         // `inspect_structural_forward`, which owns the one-pass witness set.
         29 => inspect_event_consumer_row(transaction, database_id, key, value),
         30 => inspect_event_consumer_delivery_row(transaction, key, value),
+        31 => inspect_application_installation_campaign_row(key, value),
         _ => Err(invariant()),
     }
 }
@@ -2212,6 +2220,19 @@ fn inspect_history_tombstone_row(
         .map_err(crate::error::codec_error)?;
     let tombstone = decoded.value();
     if tombstone.first_sequence() != first.get() {
+        return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_application_installation_campaign_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let decoded =
+        riffdb_storage_api::proto_codec::decode_application_installation_campaign_v1(value)
+            .map_err(crate::error::codec_error)?;
+    if key != decoded.value().campaign_id().as_bytes() {
         return Err(corrupt());
     }
     Ok(None)
@@ -2560,6 +2581,7 @@ fn collect_startup_snapshot(
         table_len(transaction, REACTIVE_MODULES)?,
         table_len(transaction, EVENT_CONSUMERS)?,
         table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
+        table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
     ];
     let total = counts
         .iter()

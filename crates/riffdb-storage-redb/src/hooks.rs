@@ -27,6 +27,8 @@ pub enum RedbTestOperation {
     QueryModuleAdministration,
     /// Immutable reactive-module publication.
     ReactiveModuleAdministration,
+    /// Durable exact application-installation campaign transition.
+    ApplicationInstallationCampaign,
     /// Durable event-consumer state transition.
     EventConsumerTransition,
     CapabilityAdministration,

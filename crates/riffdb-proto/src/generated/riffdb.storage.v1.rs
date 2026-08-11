@@ -2026,6 +2026,17 @@ pub struct StoredIndexEntryV2 {
     #[prost(bytes = "vec", tag = "4")]
     pub partition_key: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredApplicationInstallationCampaignV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub plan_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_state: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredStorageFormatVersionV1 {
     #[prost(uint32, tag = "1")]

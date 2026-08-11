@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "e6507874b890771fe71cd6e273082dc3dd22d5d34da40a4e47111ffa39afec24",
+  "record_registry_digest": "2f0c23fd25656442cf6a438b39095b92a2f956cd898b9527de8f56a9bb0872a7",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -97,6 +97,7 @@
     {"record_type":"riffdb.storage.v1.StoredOutcomeV3","tag":13,"revision":3,"schema_hash":"9aea2af175e464b0bc142a5b7d8b6a45d582106b417b8d0ec8a1272cda4914ae"},
     {"record_type":"riffdb.storage.v1.StoredCommandCapsuleV3","tag":54,"revision":2,"schema_hash":"4469911bb4c0da0bc480a9350cf0c5062027ddf371be126e93362c51eef7c7f1"},
     {"record_type":"riffdb.storage.v1.StoredCommandSegmentV2","tag":55,"revision":2,"schema_hash":"540b4d6d63c26db45f9bba5ad12f12d79a50f39b1d2f5a2db6ffb889fdc3e90d"},
+    {"record_type":"riffdb.storage.v1.StoredApplicationInstallationCampaignV1","tag":57,"revision":1,"schema_hash":"34b486c2e0d83cc50c9c06040b3d25195b7ad2958810d440f226c2588c332dcb"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":1,"schema_hash":"cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
@@ -156,9 +157,10 @@
     {"record_type":"riffdb.storage.v1.StoredCommandCapsuleV3","tag":54,"revision":2,"schema_hash":"4469911bb4c0da0bc480a9350cf0c5062027ddf371be126e93362c51eef7c7f1"},
     {"record_type":"riffdb.storage.v1.StoredCommandSegmentV2","tag":55,"revision":2,"schema_hash":"540b4d6d63c26db45f9bba5ad12f12d79a50f39b1d2f5a2db6ffb889fdc3e90d"},
     {"record_type":"riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1","tag":56,"revision":1,"schema_hash":"5fef28f9aff69c45a4e6b7e0bfce2af78087854414025196f76d847e39ccf617"},
+    {"record_type":"riffdb.storage.v1.StoredApplicationInstallationCampaignV1","tag":57,"revision":1,"schema_hash":"34b486c2e0d83cc50c9c06040b3d25195b7ad2958810d440f226c2588c332dcb"},
     {"record_type":"riffdb.storage.v1.StoredRecordRegistryV2","tag":30,"revision":1,"schema_hash":"0e1a29c18da0131e8231eb5426a120345397de4a93afb4079601f51f82a70d7e"}
   ],
-  "compatibility_fixture_digest": "6dc95329279294a5917c26b90b58128c7ba74a1ddf1c4abe07e3bc1b11b8af4d",
+  "compatibility_fixture_digest": "eb6423ece783ad7f29e9b5bf23d82dad4b92563a868d89c23d1e6e71f0c63290",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

@@ -1650,6 +1650,7 @@ dependencies = [
  "futures-util",
  "prost",
  "prost-types",
+ "riffdb-application",
  "riffdb-auth",
  "riffdb-client-rust",
  "riffdb-columnar",
@@ -1736,6 +1737,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
+ "riffdb-application",
  "riffdb-auth",
  "riffdb-client-rust",
  "riffdb-config",
@@ -1773,6 +1775,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "riffdb-api-grpc",
+ "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
@@ -2076,6 +2079,7 @@ dependencies = [
  "getrandom 0.3.4",
  "riffdb-api-grpc",
  "riffdb-api-mcp",
+ "riffdb-application",
  "riffdb-auth",
  "riffdb-catalog",
  "riffdb-client-rust",
@@ -2204,6 +2208,7 @@ dependencies = [
 name = "riffdb-testkit"
 version = "0.1.0"
 dependencies = [
+ "riffdb-application",
  "riffdb-auth",
  "riffdb-catalog",
  "riffdb-cli",

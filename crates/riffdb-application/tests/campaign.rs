@@ -286,7 +286,9 @@ fn campaign_identity_plan_identity_stage_order_and_evidence_fail_closed() {
 #[test]
 fn canonical_campaign_state_recovers_every_partial_and_terminal_boundary() {
     let plan = plan(1);
-    let id = campaign_id(5);
+    // The checked plan, terminal campaign state, and receipt fixtures form one
+    // exact compatibility chain rather than unrelated individually valid samples.
+    let id = campaign_id(1);
     let mut campaign = ApplicationInstallationCampaign::start(id, plan.identity());
 
     for stage in &InstallationStage::ALL[..9] {

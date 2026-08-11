@@ -722,6 +722,21 @@ mod tests {
         };
     }
 
+    impl riffdb_service::ApplicationInstallationApplication for ClosedApplicationService {
+        denied_operation!(
+            start_application_installation,
+            RequestContext,
+            riffdb_service::StartApplicationInstallationRequest,
+            riffdb_service::ApplicationInstallationOperationResult
+        );
+        denied_operation!(
+            get_application_installation,
+            RequestContext,
+            riffdb_service::GetApplicationInstallationRequest,
+            riffdb_service::GetApplicationInstallationResult
+        );
+    }
+
     impl ContractApplication for ClosedApplicationService {
         denied_operation!(
             validate_contract,

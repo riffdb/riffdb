@@ -231,6 +231,11 @@ the next stage is published locally. Do not delete
 `.riffdb/deployments/<database>/` to recover from an uncertain deploy: rerun the
 same command with the same exact lock.
 
+The lower-level, caller-identified installation campaign start and observation
+surface is documented in
+[Application Installation Campaigns](operations/APPLICATION-INSTALLATION-CAMPAIGNS.md).
+It reports durable partial progress and never treats `running` as installed.
+
 ### Python applications
 
 The Python application distribution is `riffdb-application` and supports

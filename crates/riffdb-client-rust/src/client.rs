@@ -15,12 +15,13 @@ use riffdb_proto::{
     validate_check_contract_migration_exchange, validate_contract_validation_exchange,
     validate_create_capability_exchange, validate_create_offline_backup_exchange,
     validate_discover_command_tools_exchange, validate_discover_resources_exchange,
-    validate_explain_command_exchange, validate_get_contract_migration_operation_exchange,
-    validate_get_contract_version_exchange, validate_get_offline_maintenance_operation_exchange,
-    validate_get_outcome_exchange, validate_get_projection_status_exchange,
-    validate_list_pending_outbox_deliveries_exchange, validate_public_message,
-    validate_query_projection_exchange, validate_restore_offline_backup_exchange,
-    validate_scan_commits_exchange, validate_scan_index_exchange,
+    validate_explain_command_exchange, validate_get_application_installation_exchange,
+    validate_get_contract_migration_operation_exchange, validate_get_contract_version_exchange,
+    validate_get_offline_maintenance_operation_exchange, validate_get_outcome_exchange,
+    validate_get_projection_status_exchange, validate_list_pending_outbox_deliveries_exchange,
+    validate_public_message, validate_query_projection_exchange,
+    validate_restore_offline_backup_exchange, validate_scan_commits_exchange,
+    validate_scan_index_exchange, validate_start_application_installation_exchange,
     validate_trace_provenance_exchange,
 };
 use riffdb_proto::{app::v1 as app_v1, v1};
@@ -37,7 +38,8 @@ use crate::status::{
 use crate::{
     ApplyContractMigration, AttemptBudget, BootstrapCallMetadata,
     BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, CreateOfflineBackup,
-    IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup, SystemIdSource,
+    IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup,
+    StartApplicationInstallation, SystemIdSource,
 };
 
 pub(crate) trait RetryRequestIdSource {
@@ -656,6 +658,22 @@ impl RiffDbClient {
         v1::GetContractMigrationOperationResponse,
         validate_get_contract_migration_operation_exchange
     );
+    unary_exchange!(
+        start_application_installation,
+        admin,
+        start_application_installation,
+        v1::StartApplicationInstallationRequest,
+        v1::StartApplicationInstallationResponse,
+        validate_start_application_installation_exchange
+    );
+    unary_exchange!(
+        get_application_installation,
+        admin,
+        get_application_installation,
+        v1::GetApplicationInstallationRequest,
+        v1::GetApplicationInstallationResponse,
+        validate_get_application_installation_exchange
+    );
 
     /// Performs normal authenticated capability creation.
     pub async fn create_capability(
@@ -931,6 +949,37 @@ impl RiffDbClient {
             retry.note_request_id(&request_id);
             match self
                 .apply_contract_migration(apply.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or resumes one immutable exact installation campaign with bounded retry.
+    pub async fn start_application_installation_with_retry(
+        &mut self,
+        start: &StartApplicationInstallation,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::StartApplicationInstallationResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .start_application_installation(start.request(request_id), metadata)
                 .await
             {
                 Ok(response) => return Ok(response),

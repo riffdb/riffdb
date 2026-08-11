@@ -229,7 +229,7 @@ fn capability_cancellation_guard_outlives_invocation_construction() {
 }
 
 #[test]
-fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
+fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
     let services = include_str!("../../../proto/riffdb/v1/services.proto");
     assert_eq!(
         services
@@ -243,7 +243,7 @@ fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        46
+        48
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
@@ -253,6 +253,8 @@ fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
         "rpc CheckContractMigration(",
         "rpc ApplyContractMigration(",
         "rpc GetContractMigrationOperation(",
+        "rpc StartApplicationInstallation(",
+        "rpc GetApplicationInstallation(",
     ] {
         assert_eq!(services.matches(rpc).count(), 1, "missing exact {rpc}");
     }
@@ -262,6 +264,8 @@ fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
     assert!(!normalized.contains("backup"));
     assert!(!normalized.contains("maintenance"));
     assert!(!normalized.contains("migration"));
+    assert!(!normalized.contains("installation"));
+    assert!(!normalized.contains("campaign"));
 
     for (surface, source) in [
         (

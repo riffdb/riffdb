@@ -14,6 +14,7 @@ test-fixtures = []
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 clap = { version = "=4.6.3", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features = false }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }

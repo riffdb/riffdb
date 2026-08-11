@@ -14,6 +14,7 @@ use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
     AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, ApplicationCommandTransactionPort,
+    ApplicationInstallationCampaignRepository, ApplicationInstallationCampaignWriteResultV1,
     AuditedAdmissionRepository, AuditedAdmissionRequestV1, AuditedAdmissionResultV1,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CapabilityAdministrationTransactionPort,
@@ -45,10 +46,10 @@ use riffdb_storage_api::{
     ReactiveModulePublicationResult, ReactiveModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
-    StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
-    StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
-    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
+    StoredApplicationInstallationCampaignV1, StoredCapabilityRecordV1, StoredCommitRecordV1,
+    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
+    StoredReactiveModuleV1, UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
@@ -911,6 +912,34 @@ impl ReactiveModuleRepository for SharedRedbOperationalPorts {
     ) -> Result<Option<StoredReactiveModuleV1>, StorageError> {
         self.cell
             .with_mut(|ports| ReactiveModuleRepository::read_reactive_module(ports, module_hash))
+    }
+}
+
+impl ApplicationInstallationCampaignRepository for SharedRedbOperationalPorts {
+    fn read_application_installation_campaign(
+        &self,
+        campaign_id: riffdb_types::ApplicationInstallationCampaignId,
+    ) -> Result<Option<StoredApplicationInstallationCampaignV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationInstallationCampaignRepository::read_application_installation_campaign(
+                ports,
+                campaign_id,
+            )
+        })
+    }
+
+    fn compare_and_swap_application_installation_campaign(
+        &mut self,
+        expected: Option<&StoredApplicationInstallationCampaignV1>,
+        replacement: &StoredApplicationInstallationCampaignV1,
+    ) -> Result<ApplicationInstallationCampaignWriteResultV1, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationInstallationCampaignRepository::compare_and_swap_application_installation_campaign(
+                ports,
+                expected,
+                replacement,
+            )
+        })
     }
 }
 

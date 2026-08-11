@@ -64,6 +64,7 @@ use crate::consumer_adapter::ServerEventConsumerPort;
 use crate::consumer_token::ProductionEventLeaseTokenSource;
 use crate::cursor::{ProductionCursorMonotonicClock, ProductionCursorTokenGenerator};
 use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
+use crate::installation_adapter::ServerApplicationInstallationCoordinator;
 use crate::lifecycle::{LifecycleInstallError, ProductionLifecycleRoute};
 use crate::lifecycle_service::LifecycleApplicationService;
 use crate::maintenance_adapter::MaintenanceController;
@@ -505,6 +506,10 @@ impl ProductionGraphBuilder {
             Arc::new(ProductionCursorMonotonicClock::new());
         let migration = maintenance.migration_coordinator(&blocking, storage.clone());
         let offline_maintenance = maintenance.coordinator(&blocking);
+        let installation = Arc::new(ServerApplicationInstallationCoordinator::new(
+            storage.clone(),
+            &blocking,
+        ));
         // Retained for the graceful-shutdown validated-prefix write (ADR-0019 A1).
         let shutdown_storage = storage.clone();
         let providers = ServiceProviders::new(
@@ -537,7 +542,8 @@ impl ProductionGraphBuilder {
         .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
         .with_offline_maintenance(offline_maintenance)
-        .with_contract_migration(migration);
+        .with_contract_migration(migration)
+        .with_application_installation(installation);
         let identity = ServiceIdentity::new(
             database_id,
             environment,

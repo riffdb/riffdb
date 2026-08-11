@@ -11,6 +11,7 @@ use riffdb_api_grpc::{
 use riffdb_errors::PublicError;
 use riffdb_service::{
     AdministrationApplication, ApplicationCatalogRequest, ApplicationCatalogResult,
+    ApplicationInstallationApplication, ApplicationInstallationOperationResult,
     CheckSymbolicQueryResult, CommandApplication, CommitApplication, CompileSymbolicQueryRequest,
     ConsumeContextualSubscriptionRequest, ConsumeContextualSubscriptionResult,
     ConsumeEventStreamRequest, ConsumeEventStreamResult, ContextualSubscriptionApplication,
@@ -26,11 +27,11 @@ use riffdb_service::{
     ExecuteContextualReactionRequest, ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult,
     ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
     ExplainCommandResult, ExplainSymbolicQueryResult, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
-    GetContractVersionResult, GetEntityRequest, GetEntityResult,
-    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
-    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
+    GetActiveContractResult, GetApplicationInstallationRequest, GetApplicationInstallationResult,
+    GetCommitRequest, GetCommitResult, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
+    GetQueryModuleRequest, GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
     ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
     LiveNamedQueryApplication, NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
     OfflineMaintenanceApplication, OfflineMaintenanceStartResult, ProjectedQueryApplication,
@@ -38,11 +39,12 @@ use riffdb_service::{
     ReplayEventsRequest, ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest,
     ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
     RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
-    ScanIndexResult, SeekEventStreamConsumerRequest, ServiceFuture, StatisticsRequest,
-    StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
-    SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
-    WatchLiveNamedQueryRequest, WatchLiveNamedQueryResult,
+    ScanIndexResult, SeekEventStreamConsumerRequest, ServiceFuture,
+    StartApplicationInstallationRequest, StatisticsRequest, StatisticsResult,
+    SubscribeToCommitsRequest, SubscribeToCommitsResult, SymbolicContractSelector,
+    SymbolicQueryApplication, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
+    TraceProvenanceResult, ValidateContractRequest, WatchLiveNamedQueryRequest,
+    WatchLiveNamedQueryResult,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -162,6 +164,19 @@ impl ContractApplication for LifecycleApplicationService {
             return unavailable();
         };
         Box::pin(async move { service.get_contract_version(context, request).await })
+    }
+}
+
+delegate_operation! {
+    ApplicationInstallationApplication {
+        start_application_installation(
+            context: RequestContext,
+            request: StartApplicationInstallationRequest
+        ) -> ApplicationInstallationOperationResult => StartApplicationInstallation;
+        get_application_installation(
+            context: RequestContext,
+            request: GetApplicationInstallationRequest
+        ) -> GetApplicationInstallationResult => GetApplicationInstallation;
     }
 }
 

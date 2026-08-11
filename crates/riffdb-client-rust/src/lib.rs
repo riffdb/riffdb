@@ -12,6 +12,7 @@ mod client;
 mod command;
 mod credential_file;
 mod ids;
+mod installation;
 mod maintenance;
 mod metadata;
 mod projected;
@@ -53,6 +54,7 @@ pub use ids::{
     generate_contract_migration_operation_id, generate_offline_maintenance_operation_id,
     generate_request_id,
 };
+pub use installation::StartApplicationInstallation;
 pub use maintenance::{
     ApplyContractMigration, CheckContractMigration, ContractMigrationSubmissionError,
     CreateOfflineBackup, RestoreOfflineBackup,
