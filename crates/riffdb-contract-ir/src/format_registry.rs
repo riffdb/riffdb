@@ -1018,6 +1018,7 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "relationships" => "optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty",
     "unique_keys" => "optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty",
     "delete_policies" => "IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty",
+    "vector_field_specs" => "IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",
@@ -1036,6 +1037,13 @@ layout!(DELETE_POLICY_LAYOUT, "DeletePolicySchemaV1", {
     "target_entity" => "EntityTypeId",
     "mode" => "delete policy mode tag",
     "restrict_payload" => "for restrict only: source EntityTypeId + reverse IndexId",
+});
+layout!(VECTOR_FIELD_SPEC_LAYOUT, "VectorFieldSpecV1", {
+    "entity" => "EntityTypeId",
+    "field" => "FieldId",
+    "metric" => "distance metric tag (0x01 cosine, 0x02 euclidean, 0x03 dot_product)",
+    "source_fields" => "u32 count + FieldId[]",
+    "staleness_slo_secs" => "u64 declared staleness SLO in seconds",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -1356,6 +1364,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     RELATIONSHIP_LAYOUT,
     UNIQUE_KEY_LAYOUT,
     DELETE_POLICY_LAYOUT,
+    VECTOR_FIELD_SPEC_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     EVENT_PARTITION_LAYOUT,
@@ -2246,7 +2255,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 58);
+        assert_eq!(FORMAT_LAYOUTS.len(), 59);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

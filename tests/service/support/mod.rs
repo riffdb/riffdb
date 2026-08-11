@@ -4654,8 +4654,11 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _k: u32,
-            ) -> Result<Vec<riffdb_query_executor::QueryRow>, Self::Error> {
-                Ok(Vec::new())
+            ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryNearestPage {
+                    rows: Vec::new(),
+                    scanned_rows: 0,
+                })
             }
         }
         riffdb_query_executor::execute_page_in_snapshot(program, parameters, prior, &mut EmptyView)
@@ -4714,8 +4717,11 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _k: u32,
-            ) -> Result<Vec<riffdb_query_executor::QueryRow>, Self::Error> {
-                Ok(Vec::new())
+            ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryNearestPage {
+                    rows: Vec::new(),
+                    scanned_rows: 0,
+                })
             }
         }
 
@@ -4787,8 +4793,11 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _k: u32,
-            ) -> Result<Vec<riffdb_query_executor::QueryRow>, Self::Error> {
-                Ok(Vec::new())
+            ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryNearestPage {
+                    rows: Vec::new(),
+                    scanned_rows: 0,
+                })
             }
         }
         riffdb_query_executor::execute_operational_page_in_snapshot(
