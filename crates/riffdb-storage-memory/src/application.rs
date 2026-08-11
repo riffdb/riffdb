@@ -31,7 +31,8 @@ use riffdb_storage_api::{
     SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1, StorageError, StorageErrorKind,
     StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
     StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1,
-    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, TransactionCurrentState,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
     TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
     UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest, derive_event_hash_v1,
 };
@@ -665,6 +666,47 @@ fn current_state(
             .map_err(materialization_value)?;
     }
     builder.finish().map_err(materialization_value)
+}
+
+fn transaction_current_policy_state(
+    core: &BatchCore,
+    request: &TransactionCurrentPolicyRequestV1,
+) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+    let capability = core.access.read(|state| {
+        Ok(state
+            .capabilities
+            .binary_search_by_key(&request.capability_id(), |record| record.capability_id())
+            .ok()
+            .map(|index| state.capabilities[index].clone()))
+    })?;
+    let mut relationship_exists = Vec::with_capacity(request.lookups().len());
+    for lookup in request.lookups() {
+        let start = core
+            .overlay
+            .index_entries
+            .partition_point(|entry| entry.key().as_bytes() < lookup.index_prefix());
+        let mut exists = false;
+        let mut inspected = 0usize;
+        for entry in core.overlay.index_entries[start..]
+            .iter()
+            .take_while(|entry| entry.key().as_bytes().starts_with(lookup.index_prefix()))
+        {
+            inspected = inspected.saturating_add(1);
+            if inspected > MAX_INDEX_SCAN_INSPECTED_ENTRIES {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            if entry.current_record().is_some_and(|record| {
+                record.key().index_id() == lookup.index_id()
+                    && record.partition_key() == lookup.partition()
+            }) {
+                exists = true;
+                break;
+            }
+        }
+        relationship_exists.push(exists);
+    }
+    TransactionCurrentPolicyStateV1::new(request, capability, relationship_exists)
+        .map_err(materialization_value)
 }
 
 fn affected_current_state(
@@ -1412,6 +1454,13 @@ macro_rules! impl_candidate_chain {
         impl CommandCandidateAwaitingValidation for MemoryCandidateAwaitingValidation<$prior> {
             type Prior = $prior;
             type AffectedEpochRead = MemoryCandidateAffectedEpochRead<$prior>;
+
+            fn read_transaction_current_policy(
+                &self,
+                request: &TransactionCurrentPolicyRequestV1,
+            ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+                transaction_current_policy_state(&self.prior.core, request)
+            }
 
             fn plan_validated(
                 self,

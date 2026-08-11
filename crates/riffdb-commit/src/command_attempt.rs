@@ -16,6 +16,9 @@ use riffdb_catalog::{
 use riffdb_conflict::{CancellationToken, ConflictError, ConflictManager, MutationLease};
 use riffdb_contract_ir::BindingMode;
 use riffdb_invariant::derive_input_command_facts;
+use riffdb_policy::{
+    AuthorizedCommandRowPolicyContextV1, resolve_authorized_command_row_policy_context,
+};
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
@@ -50,6 +53,7 @@ pub(crate) struct PendingCommandAttempts {
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     terminal_admission: bool,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     completed_attempts: usize,
 }
 
@@ -74,6 +78,7 @@ impl PendingCommandAttempts {
             terminal_admission,
             lookup_candidates: retained_lookup_candidates,
             post_evaluation_authorizer,
+            row_policy,
         } = (*candidate).into_acquisition_parts();
         if lookup_candidates != retained_lookup_candidates {
             return Err(CommandAttemptError::Integrity);
@@ -110,6 +115,7 @@ impl PendingCommandAttempts {
             audited_lifecycle,
             terminal_admission,
             post_evaluation_authorizer,
+            row_policy,
             completed_attempts: 0,
         })
     }
@@ -405,6 +411,10 @@ impl ProvenanceBoundCommandAttempt {
         self.attempt.audited_lifecycle()
     }
 
+    pub(super) const fn row_policy(&self) -> Option<&AuthorizedCommandRowPolicyContextV1> {
+        self.attempt.state.row_policy.as_ref()
+    }
+
     pub(super) fn matches_terminal_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
         outcome_matches_state(outcome, &self.attempt.state)
     }
@@ -554,6 +564,12 @@ impl ProvenanceBoundCommandAttempt {
                     reason,
                 }
             }
+            CandidateValidationRejection::RowPolicyDenied => {
+                drop(snapshot);
+                drop(lease);
+                drop(state);
+                RolledBackCandidateDisposition::PolicyDenied
+            }
         }
     }
 }
@@ -574,6 +590,8 @@ pub(super) enum RolledBackCandidateDisposition {
     },
     /// Late commit-check arithmetic reuses the same attempt evidence without provenance.
     ExecutionFault(Box<ExecutionFaultAttempt>),
+    /// Transaction-current row policy denied without revealing its cause.
+    PolicyDenied,
     /// The storage candidate did not retain the exact provenance-bound intent.
     Integrity,
 }
@@ -583,6 +601,7 @@ impl fmt::Debug for RolledBackCandidateDisposition {
         formatter.write_str(match self {
             Self::Retry { .. } => "RolledBackCandidateDisposition::Retry([REDACTED])",
             Self::ExecutionFault(_) => "RolledBackCandidateDisposition::ExecutionFault([REDACTED])",
+            Self::PolicyDenied => "RolledBackCandidateDisposition::PolicyDenied",
             Self::Integrity => "RolledBackCandidateDisposition::Integrity",
         })
     }
@@ -814,6 +833,14 @@ fn authorize_state_after_evaluation(
         return Err(PostEvaluationAuthorizationError::Integrity);
     };
     let authorization = authorizer.authorize()?;
+    let row_policy = resolve_authorized_command_row_policy_context(
+        &authorization,
+        state.resolved_plan.bundle().bundle(),
+    )
+    .map_err(|_| PostEvaluationAuthorizationError::Integrity)?;
+    if row_policy != state.row_policy {
+        return Err(PostEvaluationAuthorizationError::Integrity);
+    }
     let pending = state.commit_context.pending();
     let claims = authorization.provenance();
     let stored_claims = riffdb_storage_api::StoredAdmittedProvenanceClaimsV1::new(
@@ -1792,6 +1819,7 @@ contract AttemptMaterialization version {version} {{
             audited_lifecycle: None,
             terminal_admission: false,
             post_evaluation_authorizer: None,
+            row_policy: None,
             completed_attempts: 0,
         }
     }
@@ -1926,6 +1954,7 @@ contract AttemptMaterialization version {version} {{
                 audited_lifecycle: None,
                 terminal_admission: false,
                 post_evaluation_authorizer: None,
+                row_policy: None,
                 completed_attempts: 0,
             },
             snapshot,

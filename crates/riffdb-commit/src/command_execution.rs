@@ -59,9 +59,10 @@ use crate::{
         resolve_uncertain_command_commit, seal_checked_deferred_group,
     },
     command_validation::{
-        CheckedCandidateDecision, CommandCandidateChainStart, TransactionCurrentAttemptDecision,
-        begin_bound_command_candidate, begin_bound_command_candidate_on_empty,
-        begin_bound_command_candidate_on_prior, validate_checked_transaction_current,
+        CheckedCandidateDecision, CheckedRowPolicyDecision, CommandCandidateChainStart,
+        TransactionCurrentAttemptDecision, begin_bound_command_candidate,
+        begin_bound_command_candidate_on_empty, begin_bound_command_candidate_on_prior,
+        validate_checked_transaction_current,
     },
     read_only_execution::{ReadOnlyExecutionCoreError, ReadOnlyExecutionCoreErrorKind},
 };
@@ -3367,6 +3368,22 @@ where
         }
         Err(_) => return internal_defect(lifecycle),
     };
+    let validated = match validated.recheck_row_policy() {
+        CheckedRowPolicyDecision::Authorized(validated) => validated,
+        CheckedRowPolicyDecision::Denied(rejected) => {
+            return after_rollback(
+                port,
+                administration_clock,
+                lifecycle,
+                telemetry,
+                rejected.reject_storage_and_rollback(),
+            );
+        }
+        CheckedRowPolicyDecision::StorageFailure(error) => {
+            return proven_storage_failure(error, lifecycle);
+        }
+        CheckedRowPolicyDecision::Integrity => return internal_defect(lifecycle),
+    };
     let indexed = match derive_checked_command_indexes(validated) {
         Ok(indexed) => indexed,
         Err(_) => return internal_defect(lifecycle),
@@ -3678,6 +3695,22 @@ where
         }
         Err(_) => return Err(internal_defect(lifecycle)),
     };
+    let validated = match validated.recheck_row_policy() {
+        CheckedRowPolicyDecision::Authorized(validated) => validated,
+        CheckedRowPolicyDecision::Denied(rejected) => {
+            return Err(after_rollback(
+                port,
+                administration_clock,
+                lifecycle,
+                telemetry,
+                rejected.reject_storage_and_rollback(),
+            ));
+        }
+        CheckedRowPolicyDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        CheckedRowPolicyDecision::Integrity => return Err(internal_defect(lifecycle)),
+    };
     let indexed =
         derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
     let indexed = match indexed.read_affected_epoch_current() {
@@ -3808,6 +3841,22 @@ where
             ));
         }
         Err(_) => return Err(internal_defect(lifecycle)),
+    };
+    let validated = match validated.recheck_row_policy() {
+        CheckedRowPolicyDecision::Authorized(validated) => validated,
+        CheckedRowPolicyDecision::Denied(rejected) => {
+            return Err(after_rollback(
+                port,
+                administration_clock,
+                lifecycle,
+                telemetry,
+                rejected.reject_storage_and_rollback(),
+            ));
+        }
+        CheckedRowPolicyDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        CheckedRowPolicyDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
     let indexed =
         derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
@@ -3995,6 +4044,10 @@ where
         RolledBackCandidateDisposition::ExecutionFault(fault) => {
             continue_execution_fault(port, administration_clock, lifecycle, telemetry, *fault)
         }
+        RolledBackCandidateDisposition::PolicyDenied => post_evaluation_authorization_failure(
+            PostEvaluationAuthorizationError::Denied,
+            lifecycle,
+        ),
         RolledBackCandidateDisposition::Integrity => internal_defect(lifecycle),
     }
 }

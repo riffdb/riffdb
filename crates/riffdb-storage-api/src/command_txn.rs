@@ -2,15 +2,156 @@
 
 use std::num::NonZeroU16;
 
-use riffdb_types::CommitSequence;
+use riffdb_types::{
+    CapabilityId, CommitSequence, EntityTypeId, IndexId, MAX_KEY_BYTES, PartitionKey,
+};
 
 use crate::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, ApplicationSequenceAllocator,
     AtomicCommandRecordSet, CommandWriteSetChargeV1, CommandWriteSetPlanV1, CommitIntent,
     DurabilityMode, MAX_STAGED_COMMANDS, MAX_STAGED_WRITE_BYTES, ReadSnapshot, SnapshotRequest,
-    StorageError, StorageValueError, StoredExecutionFailedV1, StoredOutcomeV1,
+    StorageError, StorageErrorKind, StorageValueError, StoredExecutionFailedV1, StoredOutcomeV1,
     TransactionCurrentState,
 };
+
+/// One compiler-derived exact index-existence observation needed by row policy.
+#[derive(Clone, Eq, PartialEq)]
+pub struct TransactionCurrentPolicyLookupV1 {
+    target_entity: EntityTypeId,
+    index_id: IndexId,
+    partition: PartitionKey,
+    index_prefix: Vec<u8>,
+}
+
+impl TransactionCurrentPolicyLookupV1 {
+    /// Constructs one bounded lookup derived by the trusted policy layer.
+    pub fn new(
+        target_entity: EntityTypeId,
+        index_id: IndexId,
+        partition: PartitionKey,
+        index_prefix: Vec<u8>,
+    ) -> Result<Self, StorageValueError> {
+        if index_prefix.is_empty() || index_prefix.len() > MAX_KEY_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            target_entity,
+            index_id,
+            partition,
+            index_prefix,
+        })
+    }
+
+    /// Compiler-selected target entity.
+    #[must_use]
+    pub const fn target_entity(&self) -> EntityTypeId {
+        self.target_entity
+    }
+
+    /// Compiler-selected index.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+
+    /// Exact partition derived from trusted policy operands.
+    #[must_use]
+    pub const fn partition(&self) -> &PartitionKey {
+        &self.partition
+    }
+
+    /// Exact complete index prefix.
+    #[must_use]
+    pub fn index_prefix(&self) -> &[u8] {
+        &self.index_prefix
+    }
+}
+
+impl std::fmt::Debug for TransactionCurrentPolicyLookupV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TransactionCurrentPolicyLookupV1")
+            .field("target_entity", &self.target_entity)
+            .field("index_id", &self.index_id)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Closed bounded request for the command write transaction's policy safe point.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionCurrentPolicyRequestV1 {
+    capability_id: CapabilityId,
+    lookups: Vec<TransactionCurrentPolicyLookupV1>,
+}
+
+impl TransactionCurrentPolicyRequestV1 {
+    /// Constructs one request within the existing validation-target ceiling.
+    pub fn new(
+        capability_id: CapabilityId,
+        lookups: Vec<TransactionCurrentPolicyLookupV1>,
+    ) -> Result<Self, StorageValueError> {
+        if lookups.len() > crate::MAX_VALIDATION_TARGETS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            capability_id,
+            lookups,
+        })
+    }
+
+    /// Exact current capability to reload.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+
+    /// Ordered compiler-derived relationship lookups.
+    #[must_use]
+    pub fn lookups(&self) -> &[TransactionCurrentPolicyLookupV1] {
+        &self.lookups
+    }
+}
+
+/// Complete transaction-current observations for one row-policy request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionCurrentPolicyStateV1 {
+    capability: Option<crate::StoredCapabilityRecordV1>,
+    relationship_exists: Vec<bool>,
+}
+
+impl TransactionCurrentPolicyStateV1 {
+    /// Joins one capability observation and exact positional lookup results.
+    pub fn new(
+        request: &TransactionCurrentPolicyRequestV1,
+        capability: Option<crate::StoredCapabilityRecordV1>,
+        relationship_exists: Vec<bool>,
+    ) -> Result<Self, StorageValueError> {
+        if relationship_exists.len() != request.lookups.len()
+            || capability
+                .as_ref()
+                .is_some_and(|record| record.capability_id() != request.capability_id)
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            capability,
+            relationship_exists,
+        })
+    }
+
+    /// Transaction-current capability, when it still exists.
+    #[must_use]
+    pub const fn capability(&self) -> Option<&crate::StoredCapabilityRecordV1> {
+        self.capability.as_ref()
+    }
+
+    /// Positional exact relationship-existence observations.
+    #[must_use]
+    pub fn relationship_exists(&self) -> &[bool] {
+        &self.relationship_exists
+    }
+}
 
 /// Checked runtime accounting for a nonempty uncommitted command batch.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -633,6 +774,21 @@ pub trait CommandCandidateAwaitingValidation: Sized {
     /// State that reads mutation-derived epoch positions in the same transaction.
     type AffectedEpochRead: CommandCandidateAffectedEpochRead<Prior = Self::Prior>;
 
+    /// Reads capability revision and compiler-derived relationship evidence
+    /// from this exact authoritative write transaction.
+    ///
+    /// The default is deliberately fail-closed so an adapter cannot enable a
+    /// protected command merely by implementing the older command protocol.
+    fn read_transaction_current_policy(
+        &self,
+        _request: &TransactionCurrentPolicyRequestV1,
+    ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+        Err(StorageError::new(
+            StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
+
     /// Advances after private validation supplies the complete affected bucket set.
     fn plan_validated(self, affected_targets: AffectedIndexEpochTargets)
     -> Self::AffectedEpochRead;
@@ -715,6 +871,11 @@ pub enum CandidateValidationRejection {
     MutationPreconditionChanged,
     /// Another entity occupies one exact declared unique key.
     UniqueConflict,
+    /// Transaction-current capability, relationship, or row policy denied.
+    ///
+    /// This remains an opaque no-mutation result and never distinguishes a
+    /// hidden row from revoked or stale authority.
+    RowPolicyDenied,
 }
 
 /// Candidate state available only after exact pre-sequence capacity reservation.

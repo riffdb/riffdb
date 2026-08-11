@@ -9,9 +9,9 @@ use riffdb_types::{
 
 use crate::provenance::admit_for_actor_kind;
 use crate::{
-    AgentSessionAdmissionPolicy, AuditClass, AuthorizedProvenanceClaims, CommandExecutionClass,
-    Obligations, OperationRequest, OutputClassification, PartitionConstraint,
-    UntrustedInvocationClaims,
+    AgentSessionAdmissionPolicy, AuditClass, AuthorizedProvenanceClaims,
+    AuthorizedRowPolicyAuthority, CommandExecutionClass, Obligations, OperationRequest,
+    OutputClassification, PartitionConstraint, UntrustedInvocationClaims,
 };
 
 /// Safe failure to consume an allow proof as command-execution authority.
@@ -69,6 +69,7 @@ pub struct AuthorizedCommandExecution {
     partition: ScopedPartitionV1,
     actor: AdmittedActorContext,
     provenance: AuthorizedProvenanceClaims,
+    row_policy_authority: Option<AuthorizedRowPolicyAuthority>,
 }
 
 impl AuthorizedCommandExecution {
@@ -82,6 +83,7 @@ impl AuthorizedCommandExecution {
         actor_kind: ActorKind,
         claims: UntrustedInvocationClaims,
         agent_session_policy: AgentSessionAdmissionPolicy,
+        row_policy_authority: Option<AuthorizedRowPolicyAuthority>,
     ) -> Result<Self, CommandAuthorizationBindingError> {
         let command = request
             .into_command_execution()
@@ -125,6 +127,7 @@ impl AuthorizedCommandExecution {
                 agent_session_id,
             ),
             provenance,
+            row_policy_authority,
         })
     }
 
@@ -180,6 +183,17 @@ impl AuthorizedCommandExecution {
     #[must_use]
     pub const fn provenance(&self) -> &AuthorizedProvenanceClaims {
         &self.provenance
+    }
+
+    /// Transaction-current role, principal facts, and selected row policies.
+    ///
+    /// This authority is reconstructed only by the current authorizer and is
+    /// retained for the commit-owned transaction-current policy verifier. It
+    /// is never sourced from command input or exposed through a public wire.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_row_policy_authority(&self) -> Option<&AuthorizedRowPolicyAuthority> {
+        self.row_policy_authority.as_ref()
     }
 }
 
@@ -257,6 +271,7 @@ mod tests {
             ActorKind::Agent,
             UntrustedInvocationClaims::new(None, None, None, None, None),
             AgentSessionAdmissionPolicy::Discard,
+            None,
         )
     }
 

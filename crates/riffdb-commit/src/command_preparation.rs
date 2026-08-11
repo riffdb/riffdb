@@ -7,7 +7,10 @@ use riffdb_conflict::CancellationToken;
 use riffdb_contract_ir::{BindingMode, ExecutionClass};
 use riffdb_idempotency::PreparedIdempotencyRecheckV1;
 use riffdb_invariant::InputDerivedCommandFacts;
-use riffdb_policy::{AuthorizedCommandExecution, CommandExecutionClass};
+use riffdb_policy::{
+    AuthorizedCommandExecution, AuthorizedCommandRowPolicyContextV1, CommandExecutionClass,
+    resolve_authorized_command_row_policy_context,
+};
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommandId, DatabaseId, Environment, RequestId,
     ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1,
@@ -232,6 +235,7 @@ pub struct CommandExecutionPreparation {
     idempotency: PreparedIdempotencyRecheckV1,
     input_facts: InputDerivedCommandFacts,
     authorization: AuthorizedCommandExecution,
+    row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     request_id: RequestId,
     ingress: ServiceIngressKindV1,
     control: CommandRequestControl,
@@ -351,6 +355,11 @@ impl CommandExecutionPreparation {
         ) {
             return Err(CommandExecutionPreparationError::proof_mismatch());
         }
+        let row_policy = resolve_authorized_command_row_policy_context(
+            &authorization,
+            resolved_plan.bundle().bundle(),
+        )
+        .map_err(|_| CommandExecutionPreparationError::proof_mismatch())?;
 
         Ok(Self {
             resolved_plan,
@@ -358,6 +367,7 @@ impl CommandExecutionPreparation {
             idempotency,
             input_facts,
             authorization,
+            row_policy,
             request_id,
             ingress,
             control,
@@ -440,6 +450,7 @@ impl CommandExecutionPreparation {
             idempotency: self.idempotency,
             input_facts: self.input_facts,
             authorization: self.authorization,
+            row_policy: self.row_policy,
             request_id: self.request_id,
             deadline,
             cancellation,
@@ -463,6 +474,7 @@ pub(crate) struct CommandExecutionPreparationParts {
     pub(crate) idempotency: PreparedIdempotencyRecheckV1,
     pub(crate) input_facts: InputDerivedCommandFacts,
     pub(crate) authorization: AuthorizedCommandExecution,
+    pub(crate) row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     pub(crate) request_id: RequestId,
     pub(crate) deadline: Instant,
     pub(crate) cancellation: CancellationToken,

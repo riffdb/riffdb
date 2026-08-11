@@ -17,15 +17,18 @@ use riffdb_invariant::{
     CommitCheckResult, EvaluationError, ExpressionValueSource, derive_input_command_facts,
     evaluate_commit_checks,
 };
+use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
 use riffdb_storage_api::{
     ApplicationCommandTransactionPort, AtomicCommandRecordSet, CandidateAdmissionResult,
     CandidateCapacityResult, CandidateStartResult, CandidateValidationRejection,
-    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
-    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
-    EmptyCommandBatch, EntityMutation, EntityObservation, EntityTarget, EvaluatedCommand,
-    ExecutablePlanRef, NonEmptyCommandBatch, ReadDependencies, ReadDependency, StorageError,
-    StoredEntityRecordV1, StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
+    CapabilityLifecycleV1, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
+    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
+    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
+    CommandWriteSetPlanV1, EmptyCommandBatch, EntityMutation, EntityObservation, EntityTarget,
+    EvaluatedCommand, ExecutablePlanRef, NonEmptyCommandBatch, ReadDependencies, ReadDependency,
+    StorageError, StoredCapabilityRecordV1, StoredEntityRecordV1, StoredExecutionFailedV1,
+    StoredOutcomeV1, TransactionCurrentPolicyLookupV1, TransactionCurrentPolicyRequestV1,
+    TransactionCurrentState,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, FieldId, LogicalTime};
 
@@ -309,6 +312,18 @@ pub(super) enum CheckedCandidateDecision<C> {
     Rejected(CheckedCandidateRejection<C>),
 }
 
+/// Closed transaction-current row-policy decision before any sequence assignment.
+pub(super) enum CheckedRowPolicyDecision<C> {
+    /// Every protected mutation was authorized by current capability and evidence.
+    Authorized(CheckedValidatedCommand<C>),
+    /// Policy denied without distinguishing its capability, row, or relationship cause.
+    Denied(CheckedCandidateRejection<C>),
+    /// The write transaction could not load the complete policy evidence.
+    StorageFailure(StorageError),
+    /// Trusted policy and mutation structures disagreed.
+    Integrity,
+}
+
 /// A proven noncommit decision that owns the exact storage candidate to reject.
 pub(super) struct CheckedCandidateRejection<C> {
     candidate: C,
@@ -371,6 +386,190 @@ impl<C> CheckedValidatedCommand<C> {
     pub(super) fn mutation_positions(&self) -> &[Option<usize>] {
         &self.mutation_positions
     }
+}
+
+impl<C> CheckedValidatedCommand<C>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    /// Rechecks every protected mutation inside the authoritative write transaction.
+    pub(super) fn recheck_row_policy(self) -> CheckedRowPolicyDecision<C> {
+        let protected = self
+            .evaluated()
+            .mutations()
+            .iter()
+            .any(|mutation| mutation_entity_is_protected(self.resolved(), mutation));
+        if !protected {
+            return CheckedRowPolicyDecision::Authorized(self);
+        }
+        let Some(context) = self.attempt.row_policy() else {
+            return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
+        };
+        let mut all_lookups = Vec::new();
+        let mut lookup_counts = Vec::with_capacity(self.evaluated().mutations().len());
+        for mutation in self.evaluated().mutations() {
+            if !mutation_entity_is_protected(self.resolved(), mutation) {
+                lookup_counts.push(0usize);
+                continue;
+            }
+            let Some((operation, current, successor)) =
+                mutation_policy_rows(self.current(), mutation)
+            else {
+                return CheckedRowPolicyDecision::Integrity;
+            };
+            let lookups = match context.relationship_lookups(
+                mutation.target().entity_type_id(),
+                operation,
+                current,
+                successor,
+            ) {
+                Ok(lookups) => lookups,
+                Err(_) => return CheckedRowPolicyDecision::Denied(self.reject_row_policy()),
+            };
+            lookup_counts.push(lookups.len());
+            for lookup in lookups {
+                let storage_lookup = TransactionCurrentPolicyLookupV1::new(
+                    lookup.target_entity(),
+                    lookup.index_id(),
+                    lookup.partition().clone(),
+                    lookup.index_prefix().to_vec(),
+                );
+                match storage_lookup {
+                    Ok(lookup) => all_lookups.push(lookup),
+                    Err(_) => return CheckedRowPolicyDecision::Integrity,
+                }
+            }
+        }
+        let principal = context.internal_authority().internal_principal();
+        let request =
+            match TransactionCurrentPolicyRequestV1::new(principal.capability_id(), all_lookups) {
+                Ok(request) => request,
+                Err(_) => return CheckedRowPolicyDecision::Integrity,
+            };
+        let current_policy = match self.candidate.read_transaction_current_policy(&request) {
+            Ok(current) => current,
+            Err(error) => return CheckedRowPolicyDecision::StorageFailure(error),
+        };
+        let Some(capability) = current_policy.capability() else {
+            return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
+        };
+        if !capability_matches_policy_context(context, capability) {
+            return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
+        }
+        let mut evidence = current_policy.relationship_exists();
+        for (mutation, lookup_count) in self.evaluated().mutations().iter().zip(lookup_counts) {
+            if !mutation_entity_is_protected(self.resolved(), mutation) {
+                continue;
+            }
+            let Some((operation, current, successor)) =
+                mutation_policy_rows(self.current(), mutation)
+            else {
+                return CheckedRowPolicyDecision::Integrity;
+            };
+            let Some((selected, remaining)) = evidence.split_at_checked(lookup_count) else {
+                return CheckedRowPolicyDecision::Integrity;
+            };
+            if !context.allows_transition(
+                mutation.target().entity_type_id(),
+                operation,
+                current,
+                successor,
+                selected,
+            ) {
+                return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
+            }
+            evidence = remaining;
+        }
+        if !evidence.is_empty() {
+            return CheckedRowPolicyDecision::Integrity;
+        }
+        CheckedRowPolicyDecision::Authorized(self)
+    }
+
+    fn reject_row_policy(self) -> CheckedCandidateRejection<C> {
+        let Self {
+            seal: _,
+            candidate,
+            current,
+            mutation_positions: _,
+            attempt,
+        } = self;
+        drop(current);
+        CheckedCandidateRejection {
+            candidate,
+            reason: CandidateValidationRejection::RowPolicyDenied,
+            attempt,
+        }
+    }
+}
+
+fn mutation_entity_is_protected(
+    resolved: &ResolvedExecutablePlan,
+    mutation: &EntityMutation,
+) -> bool {
+    resolved
+        .bundle()
+        .bundle()
+        .row_policies()
+        .policies()
+        .iter()
+        .any(|policy| policy.entity() == mutation.target().entity_type_id())
+}
+
+fn mutation_policy_rows<'a>(
+    current: &'a TransactionCurrentState,
+    mutation: &'a EntityMutation,
+) -> Option<(
+    riffdb_contract_ir::RowPolicyOperationV1,
+    Option<&'a CanonicalRecord>,
+    Option<&'a CanonicalRecord>,
+)> {
+    let current_row = current
+        .bindings()
+        .iter()
+        .find_map(|observation| match observation {
+            EntityObservation::Present(record) if record.target() == mutation.target() => {
+                Some(record.fields())
+            }
+            EntityObservation::Absent(_) | EntityObservation::Present(_) => None,
+        });
+    match mutation {
+        EntityMutation::Create(post_image) => Some((
+            riffdb_contract_ir::RowPolicyOperationV1::Create,
+            None,
+            Some(post_image.fields()),
+        )),
+        EntityMutation::Replace { post_image, .. } => Some((
+            riffdb_contract_ir::RowPolicyOperationV1::Update,
+            Some(current_row?),
+            Some(post_image.fields()),
+        )),
+        EntityMutation::Delete { .. } => Some((
+            riffdb_contract_ir::RowPolicyOperationV1::Delete,
+            Some(current_row?),
+            None,
+        )),
+    }
+}
+
+fn capability_matches_policy_context(
+    context: &AuthorizedCommandRowPolicyContextV1,
+    capability: &StoredCapabilityRecordV1,
+) -> bool {
+    let authority = context.internal_authority();
+    let principal = authority.internal_principal();
+    capability.capability_id() == principal.capability_id()
+        && capability.revision() == principal.revision()
+        && capability.database_id() == principal.database_id()
+        && capability.environment() == principal.environment()
+        && capability.principal_id() == principal.principal_id()
+        && capability.actor_kind() == principal.actor_kind()
+        && capability.audiences() == principal.internal_audiences()
+        && capability.grant().tenant_scope() == principal.tenant_scope()
+        && capability.issued_at() == principal.issued_at()
+        && capability.expires_at() == principal.expires_at()
+        && capability.grant().internal_row_policy() == Some(authority.internal_grant())
+        && capability.lifecycle() == &CapabilityLifecycleV1::Active
 }
 
 impl<C> CheckedValidatedCommand<C>

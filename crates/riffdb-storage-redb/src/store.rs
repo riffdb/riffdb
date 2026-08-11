@@ -3608,6 +3608,27 @@ impl RedbWriteAccess {
         crate::journal::read_write_value(self.transaction()?, table, key).map_err(journal_io_error)
     }
 
+    pub(crate) fn read_command_capability_bytes(
+        &self,
+        capability_id: riffdb_types::CapabilityId,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let key = crate::keys::encode_capability_key(capability_id);
+        if let Some(stage) = self.composite_stage.as_ref() {
+            return stage
+                .try_borrow()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .read_capability_bytes(key.as_slice());
+        }
+        let table = self
+            .transaction()?
+            .open_table(crate::layout::CAPABILITIES)
+            .map_err(table_error)?;
+        table
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)
+            .map(|value| value.map(|value| value.value().to_vec()))
+    }
+
     pub(crate) fn put_command_value(
         &self,
         table: crate::journal::JournalTable,

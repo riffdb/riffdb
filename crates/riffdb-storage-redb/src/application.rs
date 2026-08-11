@@ -24,12 +24,13 @@ use riffdb_storage_api::{
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
     ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
     IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch, PartitionIndexTarget,
-    ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot, ReadSnapshotBuilder,
-    SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1, StagedCommandEvidenceV1,
-    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
-    StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1, StoredExecutionFailedV1,
-    StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    IndexEpochPosition, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_ENTRIES, NonEmptyCommandBatch,
+    PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot,
+    ReadSnapshotBuilder, SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1,
+    StagedCommandEvidenceV1, StorageError, StorageErrorKind, StorageValueError,
+    StoredAdmissionStateV1, StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1,
+    StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1,
+    StoredPendingAdmissionV1, TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1,
     TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
     UniqueIndexOccupancy, UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
     encode_capsule_command_record_set_v1,
@@ -41,12 +42,12 @@ use crate::administration::{
     stage_service_audit_group_in_write,
 };
 use crate::codec::{
-    IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_database_identity_v1,
-    decode_entity_record_v1, decode_history_incarnation_v1, decode_idempotency_record_v1,
-    decode_index_entry_v2, decode_index_epoch_v1, decode_pending_admission_v1,
-    encode_commit_record_v1, encode_durable_event_v1, encode_event_route_v1,
-    encode_execution_failed_v1, encode_outbox_intent_v1, encode_pending_admission_v1,
-    encode_provenance_record_v1, encode_stored_outcome_v1,
+    IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_capability_record_v1,
+    decode_database_identity_v1, decode_entity_record_v1, decode_history_incarnation_v1,
+    decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
+    decode_pending_admission_v1, encode_commit_record_v1, encode_durable_event_v1,
+    encode_event_route_v1, encode_execution_failed_v1, encode_outbox_intent_v1,
+    encode_pending_admission_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
 };
 use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{codec_error, precommit_storage_error, table_error};
@@ -1283,6 +1284,13 @@ macro_rules! impl_candidate_chain {
             type Prior = $prior;
             type AffectedEpochRead = RedbCandidateAffectedEpochRead<$prior>;
 
+            fn read_transaction_current_policy(
+                &self,
+                request: &TransactionCurrentPolicyRequestV1,
+            ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+                transaction_current_policy_state(&self.prior.core, request)
+            }
+
             fn plan_validated(
                 self,
                 affected_targets: AffectedIndexEpochTargets,
@@ -2281,6 +2289,55 @@ fn current_state_cached(
             .map_err(materialization_value)?;
     }
     builder.finish().map_err(materialization_value)
+}
+
+fn transaction_current_policy_state(
+    core: &BatchCore,
+    request: &TransactionCurrentPolicyRequestV1,
+) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+    let capability = core
+        .access
+        .read_command_capability_bytes(request.capability_id())?
+        .map(|value| {
+            let record = decoded_value(decode_capability_record_v1(&value)?);
+            if record.capability_id() != request.capability_id() {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            Ok(record)
+        })
+        .transpose()?;
+    let mut relationship_exists = Vec::with_capacity(request.lookups().len());
+    for lookup in request.lookups() {
+        let upper = exclusive_prefix_end(lookup.index_prefix())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut exists = false;
+        let rows = core.access.read_command_range(
+            JournalTable::SecondaryIndexes,
+            lookup.index_prefix(),
+            &upper,
+            MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
+        )?;
+        if rows.len() > MAX_INDEX_SCAN_INSPECTED_ENTRIES {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        for (key, value) in rows {
+            let physical = decode_index_entry_key(&key)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let record = decoded_value(decode_index_entry_v2(&value)?);
+            if record.key() != &physical {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            if record.key().index_id() == lookup.index_id()
+                && record.partition_key() == lookup.partition()
+            {
+                exists = true;
+                break;
+            }
+        }
+        relationship_exists.push(exists);
+    }
+    TransactionCurrentPolicyStateV1::new(request, capability, relationship_exists)
+        .map_err(materialization_value)
 }
 
 fn cached_entity_observation(
