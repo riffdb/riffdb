@@ -2,3 +2,5 @@
 agent-application-alpha.md
 performance/**
 superpowers/**
+architecture/vectors-recon-map.md
+architecture/vectors-projection-obligations.md

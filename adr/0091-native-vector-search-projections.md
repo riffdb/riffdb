@@ -139,7 +139,9 @@ unchanged; replay budget detaches a stuck index.
 ## Acceptance
 
 Accepted by the maintainer on 2026-08-02, with the exposure-bound,
-staleness-SLO, and backup-weight clauses folded in at acceptance.
+staleness-SLO, and backup-weight clauses folded in at acceptance. (Amendment 1
+below subsequently removed the exposure-bound clause; the staleness-SLO and
+backup-weight clauses stand.)
 
 ### Amendment 1 (2026-08-10)
 

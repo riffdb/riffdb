@@ -11567,8 +11567,7 @@ work_packages:
     plane against every ADR-0086 obligation ADR-0091 inherits, produce the interface-first
     type plan for the ladder, and surface the two human-review decisions early with a written
     recommendation for each; neither may be resolved by implementation choice.
-  requirements: [VEC-001, VEC-002, VEC-003, VEC-004, VEC-005, VEC-006, VEC-007, VEC-008,
-    VEC-009, VEC-010, VEC-011, VEC-012]
+  requirements: []
   required_adrs: [ADR-0086, ADR-0087, ADR-0091]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/0091-native-vector-search-projections.md,
     docs/architecture/**]
@@ -11587,6 +11586,12 @@ work_packages:
   acceptance_commands:
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
+  exit_gate: The VEC family is registered in SPEC.md and assigned across WP-591..WP-595 under
+    check-requirement-coverage (this docs-only recon package discharges none itself); ADR-0091
+    Amendment 1 and both human-review rulings are recorded; the recon map names real files.
+  standing_design_tests:
+    interface_safety: Documentation-only; no public surface changes.
+    scale: Not applicable; no runtime code.
   human_review_triggers: *id001
 - id: WP-591
   name: Vectors contract surface — declared vector fields through grammar, IR, and compiler
@@ -11611,6 +11616,21 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
   - ./scripts/handbook check
+  exit_gate: A contract declaring a vector_field compiles through the public
+    compile_contract_source into a bundle that encodes, decodes, and content-addresses the
+    dimension, metric, source fields, and staleness SLO (vector_contract.rs end-to-end tests);
+    canonical tag 0x0e is pinned by golden fixtures with an exhaustiveness guard; every
+    declared rejection carries a source-span snapshot; metric and staleness_slo names remain
+    valid ordinary identifiers.
+  standing_design_tests:
+    interface_safety: Vector components are enforced into one canonical form (finite, -0.0
+      canonicalized) at every construction and decode path, so equality, ordering, hashing,
+      and durable digests agree; no surface accepts a NaN or infinite component.
+    scale: Dimension is bounded by MAX_VECTOR_DIMENSION (4096, pinned in limits.rs); bundle
+      spec sections are count-checked before allocation.
+  deferred:
+  - The vector JSON-schema node does not yet pin the exact byte length for its declared
+    dimension; the schema is dimension-generic (validated at the value boundary instead)
   human_review_triggers: *id001
 - id: WP-592
   name: Vectors embedding write — typed command, staleness tracking, model-version observability
@@ -11646,6 +11666,25 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-service -p riffdb-commit -p riffdb-runtime --all-features
   - cargo test -p riffdb-storage-redb --all-targets
+  exit_gate: An embedding write lands through a typed command with provenance, idempotency,
+    and dimension validation proven; staleness and model-version surfaces count and enumerate
+    from authoritative state; the SLO-breach health signal is emitted and observed on both
+    gRPC and MCP with ADR-0040 parity.
+  standing_design_tests:
+    interface_safety: No public surface may accept an embedding without model identity and
+      version, and no wire path may pun a vector into another value kind (the proto surface
+      currently refuses vectors as a typed error until the wire variant is accepted).
+    scale: Embedding writes are bounded by the declared dimension and the canonical document
+      limits; staleness enumeration must be paginated under the standard query bounds.
+  deferred:
+  - NOT STARTED beyond typed interface stubs. SubmittedValue::Vector has no construction
+    site, no wire variant carries a typed vector, EmbeddingMetadata has no consumer, the
+    staleness/model-version DTOs have no service methods, and
+    HealthComponentKind::VectorStaleness is never emitted (its gRPC mapping to Projection
+    breaks ADR-0040 parity and needs a proto enum decision). The declared metric, source
+    fields, and SLO now reach the compiled bundle (fix round), giving this package its
+    substrate. VEC-003's sequence-versus-duration SLO basis needs a SPEC clarification
+    before the staleness surface is built.
   human_review_triggers: *id001
 - id: WP-593
   name: Vectors exact tier — vector projection, exact KNN, nearest() with policy before ranking
@@ -11674,6 +11713,26 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-projection -p riffdb-columnar --all-features
   - cargo test --test projection_semantics
+  exit_gate: nearest() compiles from RiffQL through plan to an org-scoped, K-bounded Nearest
+    step (scopeless queries uncompilable), the columnar engine executes exact KNN with
+    predicates applied before ranking (order-swap adversarial test), scan work is honestly
+    charged at both plan and fuel layers, and exact KNN determinism anchors the WP-594
+    recall harness.
+  standing_design_tests:
+    interface_safety: Organization scope and K are unrepresentable to omit on every layer
+      that exists (program partition parameter, engine request field, resolver page bound);
+      row stores refuse nearest steps as typed errors rather than serving unscoped scans.
+    scale: K inherits the 499 page-take ceiling; the static plan cost charges the full
+      partition-scan ceiling; the engine enforces its scan budget before allocation.
+  deferred:
+  - The projection-plane integration (ProjectionController lifecycle, frontier reporting,
+    freshness service, snapshot rebuild, replay-budget detach) has no vector consumer yet;
+    nearest_query_snapshot is not wired into any QueryReadView adapter, so the executor path
+    is fail-closed but unserved
+  - Principal row-policy evaluation does not exist at runtime for ANY access path; binding
+    compiled row policies into the nearest predicate set lands with that machinery
+  - The service/wire surface for nearest results (vector cells refused on proto until a wire
+    variant is accepted; resolver still permits selecting a vector field into a result)
   human_review_triggers: *id001
 - id: WP-594
   name: Vectors approximate tier — first-party ANN structure under the declared-recall contract
@@ -11700,6 +11759,17 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-columnar -p riffdb-projection --all-features
   - cargo deny check
+  exit_gate: The approximate tier meets each projection's declared recall target against
+    exact scan at matched frontiers, engages only above the declared per-organization row
+    threshold, and computes every result-shaping statistic per organization.
+  standing_design_tests:
+    interface_safety: No public surface may opt out of the recall declaration or reach
+      another tenant's statistics.
+    scale: Graph memory and maintenance work bounded per organization; recall harness
+      budgeted.
+  deferred:
+  - NOT STARTED. Exact KNN (WP-593) currently full-sorts the candidate set; the bounded
+    heap and the approximate structure both land here.
   human_review_triggers: *id001
 - id: WP-595
   name: Vectors pillar acceptance — end-to-end evidence and handbook graduation
@@ -11726,4 +11796,14 @@ work_packages:
   - cargo test --workspace --all-features
   - ./scripts/handbook check
   - ./scripts/check-requirement-coverage
+  exit_gate: Every ADR-0091 amended acceptance criterion is discharged by a named,
+    replayable evidence artifact, and the pillar's public surfaces pass the
+    interface-safety standing test end to end.
+  standing_design_tests:
+    interface_safety: No expressible unsafety on any pillar surface — no unscoped nearest,
+      no silent staleness, no policy bypass, no recall opt-out.
+    scale: Evidence harnesses bounded and replayable per seed.
+  deferred:
+  - NOT STARTED. Depends on WP-592 (embedding ingress) and WP-594 (approximate tier),
+    both open; the obligation map's pending table enumerates what remains unproven.
   human_review_triggers: *id001
