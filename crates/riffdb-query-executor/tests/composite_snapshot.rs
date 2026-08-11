@@ -6,9 +6,9 @@ use std::time::Instant;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_executor::{
-    BoundPredicate, QueryContinuation, QueryExecutionError, QueryParameters, QueryReadView,
-    QueryResultValue, QueryRow, QueryScanPage, bind_live_query_dependencies, execute_in_snapshot,
-    execute_page_in_snapshot,
+    BoundPredicate, QueryContinuation, QueryExecutionError, QueryNearestPage, QueryParameters,
+    QueryReadView, QueryResultValue, QueryRow, QueryScanPage, bind_live_query_dependencies,
+    execute_in_snapshot, execute_page_in_snapshot,
 };
 use riffdb_query_ir::{
     LiveInvalidationPrecisionV1, LiveQueryPlanError, LiveQueryPlanV1, LiveUpdateStrategyV1,
@@ -213,8 +213,10 @@ impl QueryReadView for FakeView {
         step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error> {
-        Ok(self.rows.get(step.binding()).cloned().unwrap_or_default())
+    ) -> Result<QueryNearestPage, Self::Error> {
+        let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
+        let scanned_rows = rows.len() as u64;
+        Ok(QueryNearestPage { rows, scanned_rows })
     }
 }
 
@@ -627,7 +629,7 @@ impl QueryReadView for ReportedWorkView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error> {
+    ) -> Result<QueryNearestPage, Self::Error> {
         Err(())
     }
 }
@@ -831,7 +833,7 @@ impl QueryReadView for ProbeScanView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error> {
+    ) -> Result<QueryNearestPage, Self::Error> {
         Err(())
     }
 }
