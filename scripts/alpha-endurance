@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""Run or validate the closed Deployable Alpha endurance evidence protocol."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+RECEIPT_SCHEMA = "riffdb.alpha-endurance-receipt/v1"
+MANIFEST_SCHEMA = "riffdb.alpha-endurance-manifest/v1"
+MAX_JSON_BYTES = 4 * 1024 * 1024
+REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
+REQUIRED_WORKLOADS = {
+    "reads",
+    "writes",
+    "workflows",
+    "events",
+    "live_queries",
+    "hot_keys",
+    "cold_keys",
+    "multiple_tenants",
+}
+REQUIRED_LIFECYCLES = {
+    "journal_recycle",
+    "checkpoint",
+    "recovery",
+    "retention",
+    "backup",
+    "capability_rotation",
+    "certificate_rotation",
+    "deploy_under_load",
+    "restart",
+    "reactive_consumer",
+}
+REQUIRED_FAULTS = {
+    "checkpoint_crash",
+    "consumer_after_command_before_ack",
+    "journal_recycle_crash",
+    "network_interrupt",
+    "process_kill",
+}
+REQUIRED_RESOURCES = {
+    "rss_bytes",
+    "allocator_bytes",
+    "database_bytes",
+    "journal_bytes",
+    "backup_bytes",
+    "journal_generation",
+    "retention_watermark",
+    "tombstone_count",
+    "writer_queue_depth",
+    "consumer_backlog",
+    "projection_backlog",
+    "logical_operations",
+    "transport_attempts",
+    "latency_p50_us",
+    "latency_p99_us",
+    "throughput_ops_per_second",
+    "checkpoint_count",
+    "consumer_checkpoint",
+    "projection_frontier",
+    "error_count",
+}
+HEX_256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class EvidenceError(ValueError):
+    """One bounded, public-safe reason an endurance receipt cannot pass."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+
+
+def read_json(candidate: Path) -> dict[str, Any]:
+    size = candidate.stat().st_size
+    if size <= 0 or size > MAX_JSON_BYTES:
+        raise EvidenceError("invalid_receipt_size", "JSON input exceeds its closed byte bound")
+    with candidate.open(encoding="utf-8") as source:
+        value = json.load(source)
+    if not isinstance(value, dict):
+        raise EvidenceError("invalid_receipt_shape", "JSON root must be an object")
+    return value
+
+
+def canonical_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def require(condition: bool, code: str, detail: str) -> None:
+    if not condition:
+        raise EvidenceError(code, detail)
+
+
+def integer(value: Any, code: str, name: str) -> int:
+    require(type(value) is int, code, f"{name} must be an integer")
+    return int(value)
+
+
+def validate_manifest(manifest: dict[str, Any]) -> None:
+    require(manifest.get("schema") == MANIFEST_SCHEMA, "invalid_manifest", "wrong manifest schema")
+    require(set(manifest.get("languages", [])) == REQUIRED_LANGUAGES, "missing_language", "all four language clients are required")
+    require(set(manifest.get("workload", {}).get("coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "workload coverage is incomplete")
+    lifecycle = manifest.get("lifecycles", {})
+    require(set(lifecycle) == REQUIRED_LIFECYCLES, "missing_lifecycle", "lifecycle manifest is incomplete")
+    for name, policy in lifecycle.items():
+        require(isinstance(policy, dict), "invalid_manifest", f"{name} policy must be an object")
+        require(integer(policy.get("minimum_count"), "invalid_manifest", f"{name}.minimum_count") >= 1, "invalid_manifest", f"{name} minimum must be positive")
+    bounds = manifest.get("bounds", {})
+    require(1 <= integer(bounds.get("maximum_observations"), "invalid_manifest", "maximum_observations") <= 100_000, "invalid_manifest", "observation bound is invalid")
+    require(1 <= integer(bounds.get("maximum_diagnostic_bytes"), "invalid_manifest", "maximum_diagnostic_bytes") <= MAX_JSON_BYTES, "invalid_manifest", "diagnostic bound is invalid")
+    require(manifest.get("fault_controls") == "orchestrator_only", "unsafe_fault_surface", "fault controls cannot enter production interfaces")
+    require(manifest.get("application_surface") == "public_named_operations_only", "unsafe_application_surface", "endurance clients must use public named operations")
+
+
+def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    require(len(observations) >= 2, "insufficient_observations", "at least two resource observations are required")
+    maximum = integer(manifest["bounds"]["maximum_observations"], "invalid_manifest", "maximum_observations")
+    require(len(observations) <= maximum, "unbounded_observations", "resource observation count exceeds manifest bound")
+    prior_elapsed = -1
+    prior_ops = -1
+    prior_generation = -1
+    for sample in observations:
+        require(set(sample) >= REQUIRED_RESOURCES | {"elapsed_seconds", "modeled_retained_bytes", "lifecycle_seconds"}, "missing_resource", "resource observation is incomplete")
+        elapsed = integer(sample["elapsed_seconds"], "invalid_observation", "elapsed_seconds")
+        logical = integer(sample["logical_operations"], "invalid_observation", "logical_operations")
+        generation = integer(sample["journal_generation"], "invalid_observation", "journal_generation")
+        require(elapsed > prior_elapsed and logical >= prior_ops and generation >= prior_generation, "nonmonotonic_observation", "frontiers and time must be monotonic")
+        prior_elapsed, prior_ops, prior_generation = elapsed, logical, generation
+
+    require(
+        integer(observations[-1]["journal_generation"], "invalid_observation", "journal_generation")
+        - integer(observations[0]["journal_generation"], "invalid_observation", "journal_generation")
+        >= integer(manifest["lifecycles"]["journal_recycle"]["minimum_count"], "invalid_manifest", "journal_recycle.minimum_count"),
+        "missing_generation",
+        "journal generation did not prove the required recycle count",
+    )
+    require(
+        integer(observations[-1]["retention_watermark"], "invalid_observation", "retention_watermark")
+        > integer(observations[0]["retention_watermark"], "invalid_observation", "retention_watermark"),
+        "missing_lifecycle",
+        "retention lifecycle did not advance its watermark",
+    )
+    require(
+        integer(observations[-1]["checkpoint_count"], "invalid_observation", "checkpoint_count")
+        > integer(observations[0]["checkpoint_count"], "invalid_observation", "checkpoint_count"),
+        "missing_lifecycle",
+        "checkpoint lifecycle did not advance",
+    )
+    require(
+        all(integer(sample["error_count"], "invalid_observation", "error_count") == 0 for sample in observations),
+        "runtime_error",
+        "resource samples contain errors",
+    )
+    maximum_stalled = integer(manifest["growth_limits"]["maximum_stalled_observations"], "invalid_manifest", "maximum_stalled_observations")
+    stalled = 0
+    for before, after in zip(observations, observations[1:]):
+        if integer(after["logical_operations"], "invalid_observation", "logical_operations") == integer(before["logical_operations"], "invalid_observation", "logical_operations"):
+            stalled += 1
+            require(stalled <= maximum_stalled, "starvation", "logical operation frontier stopped advancing")
+        else:
+            stalled = 0
+
+    first, last = observations[0], observations[-1]
+    modeled_growth = max(0, integer(last["modeled_retained_bytes"], "invalid_observation", "modeled_retained_bytes") - integer(first["modeled_retained_bytes"], "invalid_observation", "modeled_retained_bytes"))
+    growth = manifest["growth_limits"]
+    for metric in ("rss_bytes", "allocator_bytes", "database_bytes", "journal_bytes", "backup_bytes"):
+        actual = max(0, integer(last[metric], "invalid_observation", metric) - integer(first[metric], "invalid_observation", metric))
+        allowance = integer(growth[metric]["fixed_bytes"], "invalid_manifest", f"{metric}.fixed_bytes")
+        multiplier_milli = integer(growth[metric]["modeled_multiplier_milli"], "invalid_manifest", f"{metric}.modeled_multiplier_milli")
+        require(actual <= allowance + modeled_growth * multiplier_milli // 1000, "resource_leak", f"{metric} exceeds modeled retained-data growth")
+
+    for metric in ("writer_queue_depth", "consumer_backlog", "projection_backlog"):
+        ceiling = integer(growth[metric]["absolute_maximum"], "invalid_manifest", f"{metric}.absolute_maximum")
+        require(max(integer(sample[metric], "invalid_observation", metric) for sample in observations) <= ceiling, "queue_growth", f"{metric} exceeds its closed bound")
+
+    first_lifecycle = max(1, integer(first["lifecycle_seconds"], "invalid_observation", "lifecycle_seconds"))
+    last_lifecycle = integer(last["lifecycle_seconds"], "invalid_observation", "lifecycle_seconds")
+    first_history = max(1, integer(first["logical_operations"], "invalid_observation", "logical_operations"))
+    last_history = max(1, integer(last["logical_operations"], "invalid_observation", "logical_operations"))
+    allowed_ratio_milli = integer(growth["lifecycle_time_ratio_milli"], "invalid_manifest", "lifecycle_time_ratio_milli")
+    normalized_milli = last_lifecycle * first_history * 1000 // (first_lifecycle * last_history)
+    require(normalized_milli <= allowed_ratio_milli, "quadratic_lifecycle", "lifecycle work grows faster than retained-history model")
+
+    logical_delta = integer(last["logical_operations"], "invalid_observation", "logical_operations") - integer(first["logical_operations"], "invalid_observation", "logical_operations")
+    attempt_delta = integer(last["transport_attempts"], "invalid_observation", "transport_attempts") - integer(first["transport_attempts"], "invalid_observation", "transport_attempts")
+    declared_retries = integer(last.get("declared_retries", 0), "invalid_observation", "declared_retries") - integer(first.get("declared_retries", 0), "invalid_observation", "declared_retries")
+    require(attempt_delta == logical_delta + declared_retries, "hidden_retry", "transport attempts are not reconciled with logical operations and declared retries")
+
+
+def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requested_hours: int) -> None:
+    validate_manifest(manifest)
+    require(receipt.get("schema") == RECEIPT_SCHEMA, "invalid_receipt", "wrong receipt schema")
+    require(receipt.get("status") == "passed", "run_failed", "run did not report passed")
+    requested_seconds = requested_hours * 3600
+    require(integer(receipt.get("requested_duration_seconds"), "invalid_receipt", "requested_duration_seconds") == requested_seconds, "duration_mismatch", "receipt duration differs from invocation")
+    require(integer(receipt.get("measured_duration_seconds"), "invalid_receipt", "measured_duration_seconds") >= requested_seconds, "short_duration", "run ended before the requested duration")
+    require(receipt.get("host_validity", {}).get("preflight", {}).get("valid") is True and receipt.get("host_validity", {}).get("postflight", {}).get("valid") is True, "host_interference", "host validity failed")
+    require(receipt.get("manifest_sha256") == canonical_digest(manifest), "manifest_mismatch", "receipt is not bound to the selected manifest")
+    require(HEX_256.fullmatch(str(receipt.get("action_manifest_sha256", ""))) is not None, "manifest_mismatch", "action manifest digest is absent")
+    require(HEX_256.fullmatch(str(receipt.get("release_artifact_sha256", ""))) is not None, "artifact_mismatch", "release artifact digest is absent")
+    require(set(receipt.get("languages_completed", [])) == REQUIRED_LANGUAGES, "missing_language", "not every language completed")
+    require(set(receipt.get("workload_coverage", [])) == REQUIRED_WORKLOADS, "missing_workload", "receipt workload coverage is incomplete")
+    require(set(receipt.get("faults_exercised", [])) == REQUIRED_FAULTS, "missing_fault", "fault schedule coverage is incomplete")
+    counts = receipt.get("lifecycle_counts", {})
+    require(set(counts) == REQUIRED_LIFECYCLES, "missing_lifecycle", "receipt lifecycle inventory is incomplete")
+    for name, policy in manifest["lifecycles"].items():
+        require(integer(counts[name], "invalid_receipt", f"lifecycle_counts.{name}") >= integer(policy["minimum_count"], "invalid_manifest", f"{name}.minimum_count"), "missing_lifecycle", f"{name} did not reach its minimum")
+    require(receipt.get("conformance", {}).get("all_passed") is True, "conformance_failed", "periodic conformance did not remain green")
+    require(receipt.get("unsupported_storage_unavailable", 0) == 0, "storage_unavailable", "unsupported storage-unavailable result observed")
+    require(receipt.get("errors", []) == [], "runtime_error", "endurance run contains public failures")
+    inventory = receipt.get("process_inventory", {})
+    require(inventory.get("arguments_included") is False and integer(inventory.get("maximum_processes"), "invalid_receipt", "maximum_processes") <= 128, "unbounded_inventory", "process inventory is unbounded or contains arguments")
+    validate_growth(receipt.get("observations", []), manifest)
+
+
+def base_manifest() -> dict[str, Any]:
+    lifecycle = {name: {"minimum_count": 2} for name in sorted(REQUIRED_LIFECYCLES)}
+    growth_limits: dict[str, Any] = {
+        metric: {"fixed_bytes": 64 * 1024 * 1024, "modeled_multiplier_milli": 2000}
+        for metric in ("rss_bytes", "allocator_bytes", "database_bytes", "journal_bytes", "backup_bytes")
+    }
+    growth_limits.update(
+        {
+            "writer_queue_depth": {"absolute_maximum": 512},
+            "consumer_backlog": {"absolute_maximum": 4096},
+            "projection_backlog": {"absolute_maximum": 4096},
+            "lifecycle_time_ratio_milli": 1500,
+            "maximum_stalled_observations": 0,
+        }
+    )
+    return {
+        "schema": MANIFEST_SCHEMA,
+        "languages": sorted(REQUIRED_LANGUAGES),
+        "workload": {"coverage": sorted(REQUIRED_WORKLOADS), "mode": "closed", "bounded_rate": True},
+        "lifecycles": lifecycle,
+        "bounds": {"maximum_observations": 10000, "maximum_diagnostic_bytes": 1048576},
+        "growth_limits": growth_limits,
+        "fault_controls": "orchestrator_only",
+        "application_surface": "public_named_operations_only",
+    }
+
+
+def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
+    sample = {
+        "elapsed_seconds": 0,
+        "rss_bytes": 100_000_000,
+        "allocator_bytes": 40_000_000,
+        "database_bytes": 20_000_000,
+        "journal_bytes": 1_000_000,
+        "backup_bytes": 20_000_000,
+        "journal_generation": 1,
+        "retention_watermark": 0,
+        "tombstone_count": 0,
+        "writer_queue_depth": 0,
+        "consumer_backlog": 0,
+        "projection_backlog": 0,
+        "logical_operations": 100,
+        "transport_attempts": 100,
+        "declared_retries": 0,
+        "modeled_retained_bytes": 20_000_000,
+        "lifecycle_seconds": 1,
+        "latency_p50_us": 200,
+        "latency_p99_us": 3000,
+        "throughput_ops_per_second": 1000,
+        "checkpoint_count": 0,
+        "consumer_checkpoint": 0,
+        "projection_frontier": 0,
+        "error_count": 0,
+    }
+    final = copy.deepcopy(sample)
+    final.update(
+        {
+            "elapsed_seconds": hours * 3600,
+            "rss_bytes": 110_000_000,
+            "allocator_bytes": 45_000_000,
+            "database_bytes": 40_000_000,
+            "journal_bytes": 2_000_000,
+            "backup_bytes": 40_000_000,
+            "journal_generation": 8,
+            "retention_watermark": 5000,
+            "tombstone_count": 8,
+            "logical_operations": 10_100,
+            "transport_attempts": 10_105,
+            "declared_retries": 5,
+            "modeled_retained_bytes": 40_000_000,
+            "lifecycle_seconds": 50,
+            "latency_p50_us": 300,
+            "latency_p99_us": 5000,
+            "throughput_ops_per_second": 900,
+            "checkpoint_count": 4,
+            "consumer_checkpoint": 9000,
+            "projection_frontier": 9000,
+        }
+    )
+    return {
+        "schema": RECEIPT_SCHEMA,
+        "status": "passed",
+        "requested_duration_seconds": hours * 3600,
+        "measured_duration_seconds": hours * 3600,
+        "manifest_sha256": canonical_digest(manifest),
+        "action_manifest_sha256": "b" * 64,
+        "release_artifact_sha256": "a" * 64,
+        "host_validity": {"preflight": {"valid": True}, "postflight": {"valid": True}},
+        "languages_completed": sorted(REQUIRED_LANGUAGES),
+        "workload_coverage": sorted(REQUIRED_WORKLOADS),
+        "faults_exercised": sorted(REQUIRED_FAULTS),
+        "lifecycle_counts": {name: 2 for name in sorted(REQUIRED_LIFECYCLES)},
+        "conformance": {"all_passed": True, "checkpoints": 4},
+        "unsupported_storage_unavailable": 0,
+        "errors": [],
+        "process_inventory": {"arguments_included": False, "maximum_processes": 64},
+        "observations": [sample, final],
+    }
+
+
+def expect_rejection(name: str, receipt: dict[str, Any], manifest: dict[str, Any], code: str) -> None:
+    try:
+        validate_receipt(receipt, manifest, 1)
+    except EvidenceError as error:
+        if error.code != code:
+            raise AssertionError(f"{name}: expected {code}, got {error.code}") from error
+        print(f"{name}: rejected")
+        return
+    raise AssertionError(f"{name}: invalid receipt passed")
+
+
+def self_test() -> None:
+    checked_manifest = read_json(Path(__file__).resolve().parent.parent / "fixtures/endurance/alpha-manifest-v1.json")
+    validate_manifest(checked_manifest)
+    manifest = base_manifest()
+    valid = base_receipt(manifest)
+    cases: list[tuple[str, str, Any]] = [
+        ("invalid_structure", "invalid_receipt", lambda value: value.update(schema="riffdb.invalid/v1")),
+        ("short_duration", "short_duration", lambda value: value.update(measured_duration_seconds=3599)),
+        ("host_interference", "host_interference", lambda value: value["host_validity"]["postflight"].update(valid=False)),
+        ("missing_lifecycle", "missing_lifecycle", lambda value: value["lifecycle_counts"].update(restart=0)),
+        ("resource_leak", "resource_leak", lambda value: value["observations"][-1].update(rss_bytes=999_000_000)),
+        ("quadratic_lifecycle", "quadratic_lifecycle", lambda value: value["observations"][-1].update(lifecycle_seconds=1000)),
+        ("queue_growth", "queue_growth", lambda value: value["observations"][-1].update(writer_queue_depth=513)),
+        ("hidden_retry", "hidden_retry", lambda value: value["observations"][-1].update(transport_attempts=20_000)),
+        ("missing_generation", "missing_generation", lambda value: value["observations"][-1].update(journal_generation=1)),
+        ("starvation", "starvation", lambda value: value["observations"][-1].update(logical_operations=100, transport_attempts=100, declared_retries=0)),
+        ("storage_unavailable", "storage_unavailable", lambda value: value.update(unsupported_storage_unavailable=1)),
+        ("conformance_failure", "conformance_failed", lambda value: value["conformance"].update(all_passed=False)),
+    ]
+    for name, code, mutate in cases:
+        candidate = copy.deepcopy(valid)
+        mutate(candidate)
+        expect_rejection(name, candidate, manifest, code)
+    validate_receipt(valid, manifest, 1)
+    print("valid_complete_run: passed")
+
+
+def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> int:
+    controller = manifest.get("controller")
+    require(isinstance(controller, dict), "invalid_manifest", "real runs require a closed controller")
+    command = controller.get("command")
+    require(isinstance(command, list) and command and all(isinstance(part, str) and part for part in command), "invalid_manifest", "controller command must be a nonempty argv array")
+    root = Path(__file__).resolve().parent.parent
+    artifact_root = Path(arguments.artifact_root).resolve()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    raw_receipt = artifact_root / "raw-receipt-v1.json"
+    preflight = artifact_root / "host-preflight-v1.json"
+    postflight = artifact_root / "host-postflight-v1.json"
+
+    with preflight.open("w", encoding="utf-8") as output:
+        pre = subprocess.run([str(root / "scripts/app-baseline-host-validity")], cwd=root, stdout=output, check=False)
+    if arguments.require_idle_host and pre.returncode != 0:
+        raise EvidenceError("host_interference", "preflight host inventory is not idle")
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RIFFDB_ENDURANCE_DURATION_SECONDS": str(arguments.duration_hours * 3600),
+            "RIFFDB_ENDURANCE_ARTIFACT_ROOT": str(artifact_root),
+            "RIFFDB_ENDURANCE_RAW_RECEIPT": str(raw_receipt),
+            "RIFFDB_ENDURANCE_MANIFEST_SHA256": canonical_digest(manifest),
+        }
+    )
+    started = time.monotonic()
+    status = subprocess.run(command, cwd=root, env=environment, check=False).returncode
+    elapsed = int(time.monotonic() - started)
+    with postflight.open("w", encoding="utf-8") as output:
+        post = subprocess.run([str(root / "scripts/app-baseline-host-validity")], cwd=root, stdout=output, check=False)
+    require(status == 0 and raw_receipt.is_file(), "controller_failed", "endurance controller failed or omitted its receipt")
+    receipt = read_json(raw_receipt)
+    receipt["measured_duration_seconds"] = elapsed
+    receipt["host_validity"] = {"preflight": read_json(preflight), "postflight": read_json(postflight)}
+    if arguments.require_idle_host:
+        require(post == 0, "host_interference", "postflight host inventory is not idle")
+    validate_receipt(receipt, manifest, arguments.duration_hours)
+    output = Path(arguments.output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as destination:
+        json.dump(receipt, destination, sort_keys=True, indent=2)
+        destination.write("\n")
+    print(f"alpha endurance receipt: {output}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--validate-receipt")
+    parser.add_argument("--manifest", default="fixtures/endurance/alpha-manifest-v1.json")
+    parser.add_argument("--duration-hours", type=int)
+    parser.add_argument("--all-domains", action="store_true")
+    parser.add_argument("--all-languages", action="store_true")
+    parser.add_argument("--remote", action="store_true")
+    parser.add_argument("--require-idle-host", action="store_true")
+    parser.add_argument("--require-all-lifecycles", action="store_true")
+    parser.add_argument("--artifact-root", default="target/alpha-endurance/run")
+    parser.add_argument("--output", default="release/evidence/alpha-endurance-v1.json")
+    arguments = parser.parse_args()
+    if arguments.self_test:
+        if len(sys.argv) != 2:
+            parser.error("--self-test takes no other arguments")
+        self_test()
+        return 0
+
+    manifest = read_json(Path(arguments.manifest))
+    validate_manifest(manifest)
+    if arguments.validate_receipt:
+        require(arguments.duration_hours is not None, "invalid_invocation", "receipt validation requires --duration-hours")
+        validate_receipt(read_json(Path(arguments.validate_receipt)), manifest, arguments.duration_hours)
+        print("endurance receipt: passed")
+        return 0
+    require(arguments.duration_hours is not None and 1 <= arguments.duration_hours <= 168, "invalid_invocation", "duration must be between 1 and 168 hours")
+    require(arguments.all_domains and arguments.all_languages and arguments.remote and arguments.require_all_lifecycles, "invalid_invocation", "real runs require all domains, languages, remote transport, and lifecycles")
+    return run_controller(arguments, manifest)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except EvidenceError as error:
+        print(f"{error.code}: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

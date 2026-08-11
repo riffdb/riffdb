@@ -10924,7 +10924,8 @@ work_packages:
     crates/riffdb-storage-redb/**, crates/riffdb-proto/**,
     crates/riffdb-service/**, crates/riffdb-api-grpc/**,
     crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
-    tests/storage_recovery/**, tests/**, scripts/**, docs/**, release/**]
+    crates/riffdb-testkit/Cargo.toml, tests/storage_recovery/**, tests/**,
+    scripts/**, docs/**, release/**]
   deliverables:
   - Generated durable-format manifest naming alpha epoch, writer, complete readable/writable
     registry/record/storage/journal/backup/receipt versions, supported release edges, and fixture hash
@@ -11058,7 +11059,8 @@ work_packages:
     ADR-0101, ADR-0103, ADR-0104]
   allowed_paths: [SPEC.md, work_packages.yaml, examples/app-baseline/**,
     benchmarks/**, fixtures/endurance/**, crates/riffdb-observability/**,
-    tests/**, scripts/**, docs/performance/**, release/evidence/**]
+    crates/riffdb-testkit/Cargo.toml, tests/**, scripts/**, docs/SUMMARY.md,
+    docs/performance/**, release/evidence/**]
   deliverables:
   - Closed workload manifest with remote Rust/Go/TypeScript/Python clients, mixed reads/writes/
     workflows/events/live queries, hot/cold keys, tenant mix, bounded rates, seeds, and fault schedule
