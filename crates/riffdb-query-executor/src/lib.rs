@@ -649,6 +649,14 @@ pub struct QueryNearestPage {
     /// Up to `k` rows ordered by ascending distance (closest first).
     pub rows: Vec<QueryRow>,
     /// Rows examined while scanning the org partition.
+    ///
+    /// Load-bearing for ADR-0087 fuel accounting: the executor charges this
+    /// self-reported count against the plan's scan fuel. It bounds the value
+    /// above by the scan ceiling and below by `rows.len()`, but has no
+    /// independent measure of the adapter's real work — an under-report is a
+    /// first-party adapter bug, not a tenant-reachable bypass (the trait has
+    /// no plugin surface). The columnar engine supplies the honest count as
+    /// `NearestQueryResult::scanned_rows`.
     pub scanned_rows: u64,
 }
 

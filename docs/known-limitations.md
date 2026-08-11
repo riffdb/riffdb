@@ -56,6 +56,24 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- Vector search is compile-complete but not client-reachable. Contracts may
+  declare `vector_field`s and `nearest()` queries compile to bounded
+  org-scoped plans, but no public write surface accepts a vector value (the
+  typed wire variant is pending human review), and no production storage
+  adapter serves nearest execution — both row stores refuse the step as a
+  typed error. Generated Rust, Go, and Python client models exclude vector
+  fields entirely until the wire variant lands.
+- Until then the read surfaces deliberately disagree about vector cells: CLI
+  JSON output carries the complete value as `{"type": "vector", ...}` with
+  base64 big-endian f32 components — an interim form outside ADR-0041's
+  closed output list, pending its amendment — while gRPC and hosted MCP
+  refuse any response containing a vector value as a typed error rather than
+  punning, truncating, or aliasing it.
+- Vector staleness tracking (VEC-003/VEC-004/VEC-012) is typed-interface
+  staging only: nothing computes staleness, counts stale entities, or emits
+  the vector-staleness health component, and the SLO breach predicate
+  (stale-entity count versus a duration-typed threshold) awaits a SPEC
+  clarification.
 - Reactive applications are partition-local and bounded. P8 does not provide
   raw CDC, global or cross-partition order, physical time-based event
   retention, exactly-once external effects, event-sourced reconstruction,

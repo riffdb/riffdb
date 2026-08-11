@@ -59,6 +59,10 @@ impl std::error::Error for NearestError {}
 
 /// Performs exact KNN over a set of candidate vectors.
 ///
+/// Crate-private on purpose: [`crate::nearest_query_snapshot`] is the only
+/// entry point, so org scoping and predicate filtering can never be bypassed
+/// by ranking a hand-assembled candidate slice (VEC-006/VEC-007).
+///
 /// # Arguments
 /// * `query` - The query vector
 /// * `candidates` - The candidate vectors (already org-scoped and filtered)
@@ -68,7 +72,7 @@ impl std::error::Error for NearestError {}
 /// # Returns
 /// Up to `k` results sorted by distance ascending (closest first), or a
 /// typed error if any candidate's dimension differs from the query's.
-pub fn exact_knn(
+pub(crate) fn exact_knn(
     query: &CanonicalVector,
     candidates: &[&CanonicalVector],
     metric: DistanceMetric,
@@ -109,9 +113,13 @@ pub fn exact_knn(
 /// Computes the distance between two equal-dimension vectors under the given metric.
 ///
 /// Canonical vectors carry only finite components, but accumulation over
-/// finite inputs can still overflow to an infinity or produce NaN. A NaN
-/// result is mapped to `+infinity` so an unrankable pair deterministically
-/// sorts last instead of poisoning the comparator.
+/// finite inputs can still overflow to an infinity or produce NaN. EVERY
+/// non-finite result — NaN, `+infinity`, and `-infinity` alike — is mapped
+/// to `+infinity` so an unrankable pair deterministically sorts last.
+/// Sanitizing only NaN previously let a dot-product overflow return
+/// `-infinity`, which is not NaN and therefore sorted FIRST: one row of
+/// large finite components deterministically seized rank 0 of every
+/// dot-product result.
 #[inline]
 fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
     let distance = match metric {
@@ -119,10 +127,10 @@ fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
         DistanceMetric::Euclidean => euclidean_distance(a, b),
         DistanceMetric::DotProduct => dot_product_distance(a, b),
     };
-    if distance.is_nan() {
-        f32::INFINITY
-    } else {
+    if distance.is_finite() {
         distance
+    } else {
+        f32::INFINITY
     }
 }
 
@@ -289,22 +297,56 @@ mod tests {
         assert!(d.abs() < 1e-6);
     }
 
-    /// Overflowed accumulations cannot poison the ranking: a NaN distance is
-    /// mapped to +infinity and sorts last; the comparator is a total order.
+    /// Overflowed accumulations cannot poison the ranking under ANY metric:
+    /// every non-finite distance — NaN, `+inf`, and `-inf` — is mapped to
+    /// `+infinity` and sorts last; the comparator is a total order.
+    ///
+    /// One poisoned stored row (large finite components) against an ordinary
+    /// query. Per metric, the overflow before sanitization differs:
+    /// - Cosine: `inf / inf = NaN`
+    /// - Euclidean: `+inf`
+    /// - DotProduct: `-inf` — the case an `is_nan()`-only sanitizer misses,
+    ///   which let the overflow row deterministically seize rank 0.
     #[test]
-    fn non_finite_distances_sort_last_deterministically() {
-        // Huge finite components overflow the cosine norm accumulator to
-        // infinity, producing inf/inf = NaN before sanitization.
-        let query = vec_from(&[f32::MAX, f32::MAX]);
-        let huge = vec_from(&[f32::MAX, f32::MAX]);
-        let small = vec_from(&[1.0, 1.0]);
-        let candidates: Vec<&CanonicalVector> = vec![&huge, &small];
-        let results = knn(&query, &candidates, DistanceMetric::Cosine, 2);
-        assert_eq!(results.len(), 2);
-        // The sanitized (+inf) pair ranks last; every returned distance is
-        // non-NaN so ordering is total and deterministic.
-        assert!(results.iter().all(|scored| !scored.distance.is_nan()));
-        assert_eq!(results[1].distance, f32::INFINITY);
+    fn non_finite_distances_sort_last_deterministically_for_every_metric() {
+        // Both query components are nonzero so the poisoned row's product
+        // terms accumulate MAX + MAX and overflow under every metric.
+        let query = vec_from(&[1.0, 1.0]);
+        let near = vec_from(&[1.0, 0.1]);
+        let far = vec_from(&[0.0, 1.0]);
+        let poisoned = vec_from(&[f32::MAX, f32::MAX]);
+        let candidates: Vec<&CanonicalVector> = vec![&poisoned, &near, &far];
+
+        for metric in [
+            DistanceMetric::Cosine,
+            DistanceMetric::Euclidean,
+            DistanceMetric::DotProduct,
+        ] {
+            let results = knn(&query, &candidates, metric, 3);
+            assert_eq!(results.len(), 3, "{metric}: all candidates returned");
+            assert!(
+                results.iter().all(|scored| !scored.distance.is_nan()),
+                "{metric}: no NaN survives sanitization"
+            );
+            // The clean rows keep their true relative order at the top.
+            assert_eq!(results[0].index, 1, "{metric}: near row ranks first");
+            assert_eq!(results[1].index, 2, "{metric}: far row ranks second");
+            // The poisoned row sorts LAST as +infinity — never rank 0.
+            assert_eq!(
+                results[2].index, 0,
+                "{metric}: the overflow row must sort last, never seize rank 0"
+            );
+            assert_eq!(results[2].distance, f32::INFINITY);
+        }
+    }
+
+    /// The DotProduct overflow really is negative before sanitization: this
+    /// pins the direction so the `is_finite` guard cannot regress to
+    /// `is_nan` (under which `-inf` passes through and ranks first).
+    #[test]
+    fn dot_product_overflow_is_negative_infinity_before_sanitization() {
+        let raw = dot_product_distance(&[1.0, 1.0], &[f32::MAX, f32::MAX]);
+        assert_eq!(raw, f32::NEG_INFINITY);
     }
 
     /// Candidate-set exclusion at the `exact_knn` boundary, with the
