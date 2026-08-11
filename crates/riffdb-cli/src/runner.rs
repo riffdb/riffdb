@@ -393,12 +393,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+    static SYSTEM_CHILD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn exact_success_and_failure_protocol_is_closed() {
@@ -448,6 +449,9 @@ mod tests {
 
     #[test]
     fn invocation_is_exact_and_system_launch_is_direct_and_sanitized() {
+        let _system_child = SYSTEM_CHILD_TEST_LOCK
+            .lock()
+            .expect("system child test lock");
         let directory = temporary_directory();
         let runner = directory.join("riffdb runner; false");
         let credential = directory.join("credential");
@@ -490,6 +494,9 @@ mod tests {
 
     #[test]
     fn real_children_cover_every_closed_failure_exit_and_stream_boundary() {
+        let _system_child = SYSTEM_CHILD_TEST_LOCK
+            .lock()
+            .expect("system child test lock");
         let directory = temporary_directory();
         let credential = directory.join("credential");
         let cases = [
