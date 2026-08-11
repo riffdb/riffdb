@@ -84,6 +84,7 @@ pub const EXECUTABLE_IR_VERSION_V6: u32 = 6;
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
 const DELETE_POLICY_SCHEMA_EXTENSION: u32 = 0xffff_fffc;
+const VECTOR_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fffb;
 const INDEX_FIELD_ENCODING_EXTENSION: u32 = 0xffff_fffa;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
@@ -997,7 +998,8 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v6) {
+        let version = if schema.requires_ir_v6() || commands.iter().any(CommandPlan::requires_ir_v6)
+        {
             BUNDLE_FORMAT_VERSION_V6
         } else if schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5) {
             BUNDLE_FORMAT_VERSION_V5
@@ -2470,6 +2472,20 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             }
         }
     }
+    if !schema.vector_field_specs().is_empty() {
+        writer.u32(VECTOR_FIELD_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.vector_field_specs().len() as u32)?;
+        for spec in schema.vector_field_specs() {
+            writer.u32(spec.entity().get())?;
+            writer.u32(spec.field().get())?;
+            writer.u8(spec.metric().tag())?;
+            writer.u32(spec.source_fields().len() as u32)?;
+            for source in spec.source_fields() {
+                writer.u32(source.get())?;
+            }
+            writer.u64(spec.staleness_slo_secs())?;
+        }
+    }
     Ok(())
 }
 
@@ -3901,6 +3917,40 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             delete_policies.push(policy);
         }
     }
+    let mut vector_field_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == VECTOR_FIELD_SPEC_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let spec_count = decode_len(
+            reader,
+            "vector field specs",
+            crate::MAX_DECLARATIONS_PER_KIND,
+        )?;
+        vector_field_specs.reserve(spec_count);
+        for _ in 0..spec_count {
+            let entity = decode_entity_id(reader)?;
+            let field = decode_field_id(reader)?;
+            let metric_tag = reader.u8()?;
+            let metric = riffdb_types::DistanceMetric::from_tag(metric_tag).ok_or(
+                IrValidationError::UnknownTag {
+                    kind: "distance metric",
+                    tag: metric_tag,
+                },
+            )?;
+            let source_count = decode_len(reader, "vector spec source fields", 1_024)?;
+            let mut source_fields = Vec::with_capacity(source_count);
+            for _ in 0..source_count {
+                source_fields.push(decode_field_id(reader)?);
+            }
+            let staleness_slo_secs = reader.u64()?;
+            vector_field_specs.push(crate::VectorFieldSpecV1::new(
+                entity,
+                field,
+                metric,
+                source_fields,
+                staleness_slo_secs,
+            )?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -3909,7 +3959,8 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
         relationships,
         unique_keys,
         delete_policies,
-    )
+    )?
+    .with_vector_field_specs(vector_field_specs)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

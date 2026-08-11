@@ -117,8 +117,29 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             ))
         })?;
     }
-    if delete_policies.is_empty() {
-        Ok(base)
+    let vector_field_specs = hir
+        .entities
+        .iter()
+        .flat_map(|entity| {
+            entity.vector_fields.iter().map(|vector_field| {
+                riffdb_contract_ir::VectorFieldSpecV1::new(
+                    entity.id,
+                    vector_field.field_id,
+                    vector_field.metric,
+                    vector_field.source_fields.clone(),
+                    vector_field.staleness_slo_secs,
+                )
+                .map_err(|_| {
+                    CompilerDiagnostics::single(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidType,
+                        vector_field.span,
+                    ))
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let schema = if delete_policies.is_empty() {
+        base
     } else {
         SchemaIr::with_integrity_and_delete_policies(
             entities,
@@ -132,8 +153,11 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                 .map(|(policy, _)| policy)
                 .collect(),
         )
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?
+    };
+    schema
+        .with_vector_field_specs(vector_field_specs)
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
-    }
 }
 
 fn lower_delete_policies(hir: &TypedContractHir) -> Vec<(DeletePolicySchemaV1, Span)> {

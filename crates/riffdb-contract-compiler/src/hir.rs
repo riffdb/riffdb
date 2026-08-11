@@ -162,6 +162,19 @@ pub(crate) struct HirEntity {
     pub(crate) indexes: Vec<HirIndex>,
     pub(crate) relationships: Vec<HirRelationship>,
     pub(crate) delete_policy: Option<HirDeletePolicy>,
+    pub(crate) vector_fields: Vec<HirVectorField>,
+}
+
+/// One validated vector-field search configuration (ADR-0091): the resolved
+/// metric, source fields, and staleness SLO that previously were validated
+/// here and then discarded.
+#[derive(Clone, Debug)]
+pub(crate) struct HirVectorField {
+    pub(crate) field_id: FieldId,
+    pub(crate) metric: riffdb_types::DistanceMetric,
+    pub(crate) source_fields: Vec<FieldId>,
+    pub(crate) staleness_slo_secs: u64,
+    pub(crate) span: Span,
 }
 
 impl HirEntity {
@@ -861,39 +874,82 @@ fn lower_entities(
                 EntityItem::Key(_) | EntityItem::Field(_) | EntityItem::VectorField(_) => {}
             }
         }
-        // Validate vector field declarations.
+        // Validate vector field declarations and retain the resolved search
+        // configuration (metric, source fields, staleness SLO) — previously
+        // validated here and then discarded, so only the dimension survived
+        // into the IR.
+        let mut vector_fields = Vec::new();
         for item in &source.items {
             if let EntityItem::VectorField(vector_field) = &item.value {
+                let mut valid = true;
                 // Dimension must be a parseable positive integer within bound.
                 match vector_field.dimension.value.parse::<u32>() {
                     Ok(dim) if riffdb_types::VectorDimension::new(dim).is_some() => {}
-                    _ => diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::BoundExceeded,
-                        vector_field.dimension.span,
-                    )),
+                    _ => {
+                        valid = false;
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::BoundExceeded,
+                            vector_field.dimension.span,
+                        ));
+                    }
                 }
                 // Staleness SLO must be a parseable positive integer (seconds).
-                match vector_field.staleness_slo.value.parse::<u64>() {
-                    Ok(secs) if riffdb_types::StalenessSlo::from_secs(secs).is_some() => {}
-                    _ => diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::BoundExceeded,
-                        vector_field.staleness_slo.span,
-                    )),
-                }
+                let staleness_slo_secs = match vector_field.staleness_slo.value.parse::<u64>() {
+                    Ok(secs) if riffdb_types::StalenessSlo::from_secs(secs).is_some() => secs,
+                    _ => {
+                        valid = false;
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::BoundExceeded,
+                            vector_field.staleness_slo.span,
+                        ));
+                        0
+                    }
+                };
                 // Source fields must be non-empty and each must resolve to an entity field.
                 if vector_field.source_fields.is_empty() {
+                    valid = false;
                     diagnostics.push(CompilerDiagnostic::new(
                         CompilerDiagnosticCode::MissingDeclaration,
                         item.span,
                     ));
                 }
+                let mut source_fields = Vec::new();
                 for source_field in &vector_field.source_fields {
-                    if !field_scope.contains_key(&source_field.value) {
-                        diagnostics.push(CompilerDiagnostic::new(
-                            CompilerDiagnosticCode::UnknownName,
-                            source_field.span,
-                        ));
+                    match field_scope.get(&source_field.value) {
+                        Some((field_id, _)) => source_fields.push(*field_id),
+                        None => {
+                            valid = false;
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                source_field.span,
+                            ));
+                        }
                     }
+                }
+                source_fields.sort_unstable();
+                source_fields.dedup();
+                let field_id = symbols
+                    .entity_fields
+                    .get(&(id, vector_field.name.value.clone()))
+                    .copied();
+                if let (true, Some(field_id)) = (valid, field_id) {
+                    vector_fields.push(HirVectorField {
+                        field_id,
+                        metric: match vector_field.metric.value {
+                            riffdb_contract_syntax::ast::VectorMetricKeyword::Cosine => {
+                                riffdb_types::DistanceMetric::Cosine
+                            }
+                            riffdb_contract_syntax::ast::VectorMetricKeyword::Euclidean => {
+                                riffdb_types::DistanceMetric::Euclidean
+                            }
+                            riffdb_contract_syntax::ast::VectorMetricKeyword::DotProduct => {
+                                riffdb_types::DistanceMetric::DotProduct
+                            }
+                        },
+                        source_fields,
+                        staleness_slo_secs,
+                        span: item.span,
+                    });
                 }
             }
         }
@@ -907,6 +963,7 @@ fn lower_entities(
             indexes,
             relationships,
             delete_policy,
+            vector_fields,
         });
     }
     result

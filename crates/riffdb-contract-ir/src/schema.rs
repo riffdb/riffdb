@@ -1045,6 +1045,99 @@ pub struct SchemaIr {
     relationships: Vec<RelationshipSchema>,
     unique_keys: Vec<UniqueKeySchema>,
     delete_policies: Vec<DeletePolicySchemaV1>,
+    vector_field_specs: Vec<VectorFieldSpecV1>,
+}
+
+/// Search configuration for one contract-declared vector field
+/// (ADR-0091 / WP-591): the distance metric, the source fields whose edits
+/// make the embedding stale, and the declared staleness SLO.
+///
+/// Prior to the vectors fix round these were parsed and validated by the
+/// compiler and then discarded; only the dimension survived into the IR.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorFieldSpecV1 {
+    entity: EntityTypeId,
+    field: FieldId,
+    metric: riffdb_types::DistanceMetric,
+    source_fields: Vec<FieldId>,
+    staleness_slo_secs: u64,
+}
+
+impl VectorFieldSpecV1 {
+    /// Constructs one checked vector-field spec.
+    ///
+    /// Source fields must be nonempty, sorted, and unique; the staleness SLO
+    /// must be positive. (The SLO is carried as the declared number of
+    /// seconds; VEC-003's sequence-basis question is tracked as an open SPEC
+    /// clarification and deliberately not resolved by this type.)
+    pub fn new(
+        entity: EntityTypeId,
+        field: FieldId,
+        metric: riffdb_types::DistanceMetric,
+        source_fields: Vec<FieldId>,
+        staleness_slo_secs: u64,
+    ) -> Result<Self, IrValidationError> {
+        if source_fields.is_empty() {
+            return Err(IrValidationError::InvalidReference {
+                kind: "vector spec source fields",
+            });
+        }
+        checked_len("vector spec source fields", source_fields.len(), 1_024)?;
+        if source_fields.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "vector spec source fields",
+            });
+        }
+        if source_fields.contains(&field) {
+            return Err(IrValidationError::InvalidReference {
+                kind: "vector spec references itself as a source field",
+            });
+        }
+        if staleness_slo_secs == 0 {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "vector spec staleness SLO",
+                actual: 0,
+                maximum: u64::MAX as usize,
+            });
+        }
+        Ok(Self {
+            entity,
+            field,
+            metric,
+            source_fields,
+            staleness_slo_secs,
+        })
+    }
+
+    /// Owning entity type.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+
+    /// The vector field this spec configures.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+
+    /// Declared distance metric.
+    #[must_use]
+    pub const fn metric(&self) -> riffdb_types::DistanceMetric {
+        self.metric
+    }
+
+    /// Fields whose edits make the stored embedding stale, in field-ID order.
+    #[must_use]
+    pub fn source_fields(&self) -> &[FieldId] {
+        &self.source_fields
+    }
+
+    /// Declared staleness SLO in whole seconds.
+    #[must_use]
+    pub const fn staleness_slo_secs(&self) -> u64 {
+        self.staleness_slo_secs
+    }
 }
 
 impl SchemaIr {
@@ -1265,10 +1358,85 @@ impl SchemaIr {
             relationships,
             unique_keys,
             delete_policies,
+            vector_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
         result.validate_schema_enum_registries_and_constants()?;
         Ok(result)
+    }
+
+    /// Attaches checked vector-field specs (ADR-0091), validating that every
+    /// spec references an existing vector-typed field and that its source
+    /// fields exist on the same entity.
+    pub fn with_vector_field_specs(
+        mut self,
+        mut specs: Vec<VectorFieldSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("vector field specs", specs.len(), MAX_DECLARATIONS_PER_KIND)?;
+        specs.sort_unstable_by(|left, right| {
+            left.entity
+                .cmp(&right.entity)
+                .then_with(|| left.field.cmp(&right.field))
+        });
+        if specs
+            .windows(2)
+            .any(|pair| pair[0].entity == pair[1].entity && pair[0].field == pair[1].field)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate vector field spec",
+            });
+        }
+        for spec in &specs {
+            let entity = self
+                .entity(spec.entity)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "vector spec entity",
+                })?;
+            let field =
+                entity
+                    .record()
+                    .field(spec.field)
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "vector spec field",
+                    })?;
+            if field.value_type().vector_dimension().is_none() {
+                return Err(IrValidationError::TypeMismatch {
+                    context: "vector spec field is not vector-typed",
+                });
+            }
+            for source in &spec.source_fields {
+                if entity.record().field(*source).is_none() {
+                    return Err(IrValidationError::InvalidReference {
+                        kind: "vector spec source field",
+                    });
+                }
+            }
+        }
+        self.vector_field_specs = specs;
+        Ok(self)
+    }
+
+    /// Vector-field search specs in (entity, field) order.
+    #[must_use]
+    pub fn vector_field_specs(&self) -> &[VectorFieldSpecV1] {
+        &self.vector_field_specs
+    }
+
+    /// Resolves the spec for one entity's vector field.
+    #[must_use]
+    pub fn vector_field_spec(
+        &self,
+        entity: EntityTypeId,
+        field: FieldId,
+    ) -> Option<&VectorFieldSpecV1> {
+        self.vector_field_specs
+            .binary_search_by(|spec| {
+                spec.entity
+                    .cmp(&entity)
+                    .then_with(|| spec.field.cmp(&field))
+            })
+            .ok()
+            .map(|index| &self.vector_field_specs[index])
     }
 
     /// Entity schemas in stable-ID order.
@@ -1318,6 +1486,11 @@ impl SchemaIr {
     #[must_use]
     pub const fn requires_ir_v5(&self) -> bool {
         !self.delete_policies.is_empty()
+    }
+    /// Whether this structural schema requires IR v6 (vector-field specs).
+    #[must_use]
+    pub fn requires_ir_v6(&self) -> bool {
+        !self.vector_field_specs.is_empty()
     }
     /// Resolves an entity.
     #[must_use]

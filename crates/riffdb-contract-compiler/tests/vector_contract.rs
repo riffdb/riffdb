@@ -93,3 +93,53 @@ fn vector_dimension_is_part_of_the_bundle_identity() {
         "vector<128> and vector<1536> must not share a content address"
     );
 }
+
+/// The declared metric, source fields, and staleness SLO reach the compiled
+/// artifact and survive encode/decode (S8 — previously parsed, validated,
+/// and discarded; only the dimension survived).
+#[test]
+fn vector_search_configuration_reaches_the_bundle_and_round_trips() {
+    let bundle = compile_contract_source(&vector_contract(128)).expect("compiles");
+    let specs = bundle.schema().vector_field_specs();
+    assert_eq!(specs.len(), 1, "one vector field spec must be carried");
+    let spec = &specs[0];
+    assert_eq!(spec.metric(), riffdb_types::DistanceMetric::Cosine);
+    assert_eq!(spec.staleness_slo_secs(), 60);
+    let entity = &bundle.schema().entities()[0];
+    let source_names: Vec<&str> = spec
+        .source_fields()
+        .iter()
+        .map(|field_id| {
+            entity
+                .record()
+                .field(*field_id)
+                .expect("source field resolves")
+                .name()
+        })
+        .collect();
+    // Source fields ride in canonical field-ID order.
+    let mut sorted = source_names.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, ["body", "title"]);
+
+    let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("decodes");
+    assert_eq!(
+        decoded.schema().vector_field_specs(),
+        bundle.schema().vector_field_specs(),
+        "the search configuration must survive the durable round trip"
+    );
+}
+
+/// Contracts that differ only in distance metric have distinct bundle
+/// identities: the metric is part of the durable contract.
+#[test]
+fn distance_metric_is_part_of_the_bundle_identity() {
+    let cosine = compile_contract_source(&vector_contract(128)).expect("cosine compiles");
+    let euclidean_source = vector_contract(128).replace("cosine", "euclidean");
+    let euclidean = compile_contract_source(&euclidean_source).expect("euclidean compiles");
+    assert_ne!(
+        cosine.bundle_hash(),
+        euclidean.bundle_hash(),
+        "cosine and euclidean contracts must not share a content address"
+    );
+}
