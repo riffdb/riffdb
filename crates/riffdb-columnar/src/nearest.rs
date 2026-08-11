@@ -4,8 +4,11 @@
 //! org-partitioned vector segments. It is the reference implementation for
 //! WP-593 and the ground-truth recall harness for WP-594's approximate tier.
 //!
-//! All distance computations run only over rows that passed policy filtering
-//! (VEC-007: policy before ranking).
+//! `exact_knn` ranks exactly the candidate slice it is given. Callers own
+//! candidate assembly; the engine entry point
+//! [`crate::nearest_query_snapshot`] applies org scoping and predicate
+//! filtering BEFORE building that slice (VEC-006/VEC-007: the filter runs
+//! before distance ranking).
 
 #![forbid(unsafe_code)]
 
@@ -20,68 +23,106 @@ pub struct ScoredCandidate {
     pub distance: f32,
 }
 
+/// Typed rejection of a malformed KNN input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NearestError {
+    /// A candidate's dimension differs from the query vector's dimension.
+    ///
+    /// Recoverable runtime condition (for example dimension skew across a
+    /// projection segment mid-migration): a typed error, never a panic.
+    DimensionMismatch {
+        /// The query vector's dimension.
+        query: u32,
+        /// The offending candidate's dimension.
+        candidate: u32,
+        /// Index of the offending candidate in the input slice.
+        index: usize,
+    },
+}
+
+impl std::fmt::Display for NearestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DimensionMismatch {
+                query,
+                candidate,
+                index,
+            } => write!(
+                f,
+                "candidate {index} has dimension {candidate}; the query vector has {query}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NearestError {}
+
 /// Performs exact KNN over a set of candidate vectors.
 ///
 /// # Arguments
 /// * `query` - The query vector
-/// * `candidates` - The candidate vectors (already policy-filtered)
+/// * `candidates` - The candidate vectors (already org-scoped and filtered)
 /// * `metric` - The distance metric to use
 /// * `k` - Maximum results to return
 ///
 /// # Returns
-/// Up to `k` results sorted by distance ascending (closest first).
-///
-/// # Panics
-/// Panics if any candidate has a different dimension than the query.
+/// Up to `k` results sorted by distance ascending (closest first), or a
+/// typed error if any candidate's dimension differs from the query's.
 pub fn exact_knn(
     query: &CanonicalVector,
     candidates: &[&CanonicalVector],
     metric: DistanceMetric,
     k: u32,
-) -> Vec<ScoredCandidate> {
+) -> Result<Vec<ScoredCandidate>, NearestError> {
     if candidates.is_empty() || k == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let k = k as usize;
-    let mut scored: Vec<ScoredCandidate> = candidates
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            assert_eq!(
-                query.dimension(),
-                candidate.dimension(),
-                "candidate dimension mismatch"
-            );
-            ScoredCandidate {
+    let mut scored = Vec::with_capacity(candidates.len());
+    for (index, candidate) in candidates.iter().enumerate() {
+        if candidate.dimension() != query.dimension() {
+            return Err(NearestError::DimensionMismatch {
+                query: query.dimension(),
+                candidate: candidate.dimension(),
                 index,
-                distance: compute_distance(query.components(), candidate.components(), metric),
-            }
-        })
-        .collect();
+            });
+        }
+        scored.push(ScoredCandidate {
+            index,
+            distance: compute_distance(query.components(), candidate.components(), metric),
+        });
+    }
 
     // Partial sort: only need top-k, but for exact reference path we do a full
     // sort for determinism and simplicity. The approximate tier (WP-594) will
-    // use a bounded heap.
-    scored.sort_by(|a, b| {
-        a.distance
-            .partial_cmp(&b.distance)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // use a bounded heap. `total_cmp` is a total order (transitive), unlike
+    // the previous `partial_cmp(..).unwrap_or(Equal)` comparator, which was
+    // non-transitive in the presence of NaN and made the sort order
+    // unspecified.
+    scored.sort_by(|a, b| a.distance.total_cmp(&b.distance));
 
     scored.truncate(k);
-    scored
+    Ok(scored)
 }
 
 /// Computes the distance between two equal-dimension vectors under the given metric.
 ///
-/// All metrics return a non-negative value where 0.0 means identical.
+/// Canonical vectors carry only finite components, but accumulation over
+/// finite inputs can still overflow to an infinity or produce NaN. A NaN
+/// result is mapped to `+infinity` so an unrankable pair deterministically
+/// sorts last instead of poisoning the comparator.
 #[inline]
 fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
-    match metric {
+    let distance = match metric {
         DistanceMetric::Cosine => cosine_distance(a, b),
         DistanceMetric::Euclidean => euclidean_distance(a, b),
         DistanceMetric::DotProduct => dot_product_distance(a, b),
+    };
+    if distance.is_nan() {
+        f32::INFINITY
+    } else {
+        distance
     }
 }
 
@@ -135,6 +176,15 @@ mod tests {
         CanonicalVector::new(components.to_vec()).unwrap()
     }
 
+    fn knn(
+        query: &CanonicalVector,
+        candidates: &[&CanonicalVector],
+        metric: DistanceMetric,
+        k: u32,
+    ) -> Vec<ScoredCandidate> {
+        exact_knn(query, candidates, metric, k).expect("equal dimensions")
+    }
+
     #[test]
     fn exact_knn_returns_closest_by_cosine() {
         let query = vec_from(&[1.0, 0.0, 0.0]);
@@ -143,7 +193,7 @@ mod tests {
         let c3 = vec_from(&[0.7, 0.7, 0.0]); // 45 degrees
         let candidates: Vec<&CanonicalVector> = vec![&c1, &c2, &c3];
 
-        let results = exact_knn(&query, &candidates, DistanceMetric::Cosine, 2);
+        let results = knn(&query, &candidates, DistanceMetric::Cosine, 2);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].index, 0); // identical is closest
         assert_eq!(results[1].index, 2); // 45 degrees is next
@@ -157,7 +207,7 @@ mod tests {
         let c3 = vec_from(&[0.5, 0.5]); // distance ~0.7
         let candidates: Vec<&CanonicalVector> = vec![&c1, &c2, &c3];
 
-        let results = exact_knn(&query, &candidates, DistanceMetric::Euclidean, 2);
+        let results = knn(&query, &candidates, DistanceMetric::Euclidean, 2);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].index, 2); // closest
         assert_eq!(results[1].index, 0); // next
@@ -171,7 +221,7 @@ mod tests {
         let c3 = vec_from(&[-1.0, 0.0]); // dot=-1 → distance=1
         let candidates: Vec<&CanonicalVector> = vec![&c1, &c2, &c3];
 
-        let results = exact_knn(&query, &candidates, DistanceMetric::DotProduct, 2);
+        let results = knn(&query, &candidates, DistanceMetric::DotProduct, 2);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].index, 0); // highest dot product = lowest distance
         assert_eq!(results[1].index, 1);
@@ -185,7 +235,7 @@ mod tests {
         let c3 = vec_from(&[0.8, 0.2]);
         let candidates: Vec<&CanonicalVector> = vec![&c1, &c2, &c3];
 
-        let results = exact_knn(&query, &candidates, DistanceMetric::Cosine, 1);
+        let results = knn(&query, &candidates, DistanceMetric::Cosine, 1);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].index, 0);
     }
@@ -194,7 +244,7 @@ mod tests {
     fn exact_knn_handles_empty_candidates() {
         let query = vec_from(&[1.0, 0.0]);
         let candidates: Vec<&CanonicalVector> = vec![];
-        let results = exact_knn(&query, &candidates, DistanceMetric::Cosine, 10);
+        let results = knn(&query, &candidates, DistanceMetric::Cosine, 10);
         assert!(results.is_empty());
     }
 
@@ -203,8 +253,28 @@ mod tests {
         let query = vec_from(&[1.0, 0.0]);
         let c1 = vec_from(&[1.0, 0.0]);
         let candidates: Vec<&CanonicalVector> = vec![&c1];
-        let results = exact_knn(&query, &candidates, DistanceMetric::Cosine, 0);
+        let results = knn(&query, &candidates, DistanceMetric::Cosine, 0);
         assert!(results.is_empty());
+    }
+
+    /// A dimension-mismatched candidate is a typed error, never a panic
+    /// (previously `assert_eq!` panicked on runtime data).
+    #[test]
+    fn exact_knn_rejects_dimension_mismatch_as_a_typed_error() {
+        let query = vec_from(&[1.0, 0.0, 0.0]);
+        let good = vec_from(&[0.5, 0.5, 0.5]);
+        let skewed = vec_from(&[1.0, 0.0]);
+        let candidates: Vec<&CanonicalVector> = vec![&good, &skewed];
+        let error = exact_knn(&query, &candidates, DistanceMetric::Cosine, 2)
+            .expect_err("dimension skew must be a typed error");
+        assert_eq!(
+            error,
+            NearestError::DimensionMismatch {
+                query: 3,
+                candidate: 2,
+                index: 1,
+            }
+        );
     }
 
     #[test]
@@ -219,73 +289,51 @@ mod tests {
         assert!(d.abs() < 1e-6);
     }
 
-    // ─── VEC-007 adversarial evidence: policy before ranking ───
-
-    /// Proves that an unauthorized row (excluded by policy filtering before the
-    /// candidate set is passed to exact_knn) cannot influence presence, scores,
-    /// or timing of results.
-    ///
-    /// The test has a candidate that is closer to the query than all authorized
-    /// candidates. When excluded by policy (not passed to exact_knn), it must
-    /// not appear in results. When included (no policy filter), it would be
-    /// the top result. This proves the architecture: policy filters BEFORE
-    /// distance computation, not after.
+    /// Overflowed accumulations cannot poison the ranking: a NaN distance is
+    /// mapped to +infinity and sorts last; the comparator is a total order.
     #[test]
-    fn policy_before_ranking_excludes_unauthorized_from_results() {
-        let query = vec_from(&[1.0, 0.0, 0.0]);
-
-        // The "unauthorized" row — closest to query (identical direction)
-        let unauthorized = vec_from(&[1.0, 0.0, 0.0]);
-        // Authorized rows — farther from query
-        let auth1 = vec_from(&[0.7, 0.7, 0.0]); // 45 degrees
-        let auth2 = vec_from(&[0.0, 1.0, 0.0]); // 90 degrees
-
-        // WITHOUT policy filter: unauthorized row IS closest
-        let all_candidates: Vec<&CanonicalVector> = vec![&unauthorized, &auth1, &auth2];
-        let unfiltered = exact_knn(&query, &all_candidates, DistanceMetric::Cosine, 3);
-        assert_eq!(unfiltered[0].index, 0); // unauthorized IS closest
-
-        // WITH policy filter (the unauthorized row is not in the candidate set):
-        // This is how VEC-007 works — policy applies BEFORE distance computation.
-        let policy_filtered: Vec<&CanonicalVector> = vec![&auth1, &auth2];
-        let filtered = exact_knn(&query, &policy_filtered, DistanceMetric::Cosine, 3);
-
-        // The unauthorized row does NOT appear (not even scored)
-        assert_eq!(filtered.len(), 2);
-        // Results are only from the authorized set
-        assert_eq!(filtered[0].index, 0); // auth1 (45 degrees)
-        assert_eq!(filtered[1].index, 1); // auth2 (90 degrees)
-
-        // Scores are computed only from authorized rows — the unauthorized
-        // row's presence cannot be inferred from the distance values
-        assert!(filtered[0].distance > 0.0); // not zero — proving unauthorized isn't leaked
-        assert!(filtered[0].distance < filtered[1].distance);
+    fn non_finite_distances_sort_last_deterministically() {
+        // Huge finite components overflow the cosine norm accumulator to
+        // infinity, producing inf/inf = NaN before sanitization.
+        let query = vec_from(&[f32::MAX, f32::MAX]);
+        let huge = vec_from(&[f32::MAX, f32::MAX]);
+        let small = vec_from(&[1.0, 1.0]);
+        let candidates: Vec<&CanonicalVector> = vec![&huge, &small];
+        let results = knn(&query, &candidates, DistanceMetric::Cosine, 2);
+        assert_eq!(results.len(), 2);
+        // The sanitized (+inf) pair ranks last; every returned distance is
+        // non-NaN so ordering is total and deterministic.
+        assert!(results.iter().all(|scored| !scored.distance.is_nan()));
+        assert_eq!(results[1].distance, f32::INFINITY);
     }
 
-    /// Proves that the number of results and their scores are identical
-    /// regardless of how many unauthorized rows exist in the data. The
-    /// unauthorized rows influence NOTHING about the returned results.
+    /// Candidate-set exclusion at the `exact_knn` boundary, with the
+    /// k-discriminating case: at `k = 2` over {excluded-nearest, a, b} the
+    /// filtered run must return BOTH remaining candidates. A
+    /// filter-after-ranking implementation (rank all three, then drop the
+    /// excluded row) returns only one row here — this test reds it. The
+    /// engine-level proof over predicates lives in
+    /// `tests/projection_semantics.rs`.
     #[test]
-    fn policy_before_ranking_no_timing_or_score_leakage() {
+    fn excluding_the_nearest_candidate_before_ranking_fills_k_from_the_rest() {
         let query = vec_from(&[1.0, 0.0, 0.0]);
-        let auth1 = vec_from(&[0.9, 0.1, 0.0]);
-        let auth2 = vec_from(&[0.5, 0.5, 0.0]);
+        let excluded_nearest = vec_from(&[1.0, 0.0, 0.0]);
+        let a = vec_from(&[0.7, 0.7, 0.0]);
+        let b = vec_from(&[0.0, 1.0, 0.0]);
 
-        // Run with exactly the authorized set
-        let authorized_only: Vec<&CanonicalVector> = vec![&auth1, &auth2];
-        let result_a = exact_knn(&query, &authorized_only, DistanceMetric::Cosine, 2);
+        let unfiltered: Vec<&CanonicalVector> = vec![&excluded_nearest, &a, &b];
+        let filtered: Vec<&CanonicalVector> = vec![&a, &b];
 
-        // The exact same result regardless of what unauthorized rows "exist" —
-        // they are never passed to the function, so they cannot influence
-        // presence, scores, or the computation itself.
-        assert_eq!(result_a.len(), 2);
-        let score_0 = result_a[0].distance;
-        let score_1 = result_a[1].distance;
+        let ranked_then_dropped: Vec<ScoredCandidate> =
+            knn(&query, &unfiltered, DistanceMetric::Cosine, 2)
+                .into_iter()
+                .filter(|scored| scored.index != 0)
+                .collect();
+        let filtered_then_ranked = knn(&query, &filtered, DistanceMetric::Cosine, 2);
 
-        // Running again (same inputs) produces identical scores — no randomness,
-        // no data-dependent timing that could leak unauthorized presence.
-        let result_b = exact_knn(&query, &authorized_only, DistanceMetric::Cosine, 2);
-        assert_eq!(result_b[0].distance, score_0);
-        assert_eq!(result_b[1].distance, score_1);
+        // The order swap is observable: filter-after-rank starves the result.
+        assert_eq!(ranked_then_dropped.len(), 1);
+        assert_eq!(filtered_then_ranked.len(), 2);
+        assert!(filtered_then_ranked[0].distance < filtered_then_ranked[1].distance);
     }
 }
