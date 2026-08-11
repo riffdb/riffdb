@@ -1,6 +1,6 @@
 //! Grammar-v1 source-type resolution into IR-owned value types.
 
-use riffdb_contract_ir::ValueType;
+use riffdb_contract_ir::{RecordTypeRef, ValueType};
 use riffdb_contract_syntax::ast::{Declaration, EntityItem, ServiceValueKind, TypeExpression};
 use riffdb_contract_syntax::{ContractDocument, Spanned};
 use riffdb_types::{CommandId, EntityTypeId, EventTypeId, FieldId};
@@ -247,7 +247,14 @@ pub(crate) fn resolve_type(
             .enums
             .get(&name.value)
             .copied()
-            .map(ValueType::enumeration),
+            .map(ValueType::enumeration)
+            .or_else(|| {
+                symbols
+                    .entities
+                    .get(&name.value)
+                    .copied()
+                    .map(|entity| ValueType::record(RecordTypeRef::Entity(entity)))
+            }),
     };
 
     if resolved.is_none() {
@@ -282,6 +289,40 @@ contract Types version 1 {
         let document = parse_contract(source).expect("valid syntax");
         let symbols = allocate_genesis_symbols(&document).expect("valid symbols");
         validate_declared_types(&document, &symbols).expect("valid types");
+    }
+
+    #[test]
+    fn bounded_command_lists_resolve_named_entity_records() {
+        let source = r#"
+contract Types version 1 {
+  entity TupleInput {
+    key (id: uuid)
+    field relation: string<32>
+  }
+  bulk command PutTuples {
+    input request_id: uuid
+    input tuples: list<TupleInput, 1..256>
+    idempotency_key request_id
+    for tuple in tuples {
+      create TupleInput(tuple.id) as row else Duplicate {}
+    }
+    return Written {}
+  }
+}
+"#;
+        let document = parse_contract(source).expect("valid syntax");
+        let symbols = allocate_genesis_symbols(&document).expect("valid symbols");
+        let types = resolve_declared_types(&document, &symbols).expect("valid types");
+        let command = symbols.commands["PutTuples"];
+        let field = symbols.command_inputs[&(command, "tuples".to_owned())];
+        let (element, maximum) = types.command_inputs[&(command, field)]
+            .list_parts()
+            .expect("bounded list");
+        assert_eq!(maximum, 256);
+        assert_eq!(
+            element.record_ref(),
+            Some(&RecordTypeRef::Entity(symbols.entities["TupleInput"]))
+        );
     }
 
     #[test]

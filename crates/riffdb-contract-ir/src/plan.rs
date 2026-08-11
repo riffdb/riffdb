@@ -1406,7 +1406,17 @@ impl CommandPlan {
             &service_values,
             &bindings,
             &root_validation_reads,
+            collection_expansion.as_ref(),
             contract_schema,
+        )?;
+        validate_collection_expression_uses(
+            &expressions,
+            collection_expansion.as_ref(),
+            &bindings,
+            &root_validation_reads,
+            &locality,
+            &commit_checks,
+            &instructions,
         )?;
         contract_schema.validate_expression_enum_constants(&expressions)?;
         validate_binding_plans(&expressions, &bindings, &locality, contract_schema)?;
@@ -2344,6 +2354,7 @@ fn validate_expression_contexts(
     service_values: &[ServiceValueSchema],
     bindings: &[BindingPlan],
     root_validation_reads: &[RootValidationReadPlan],
+    collection_expansion: Option<&CollectionExpansionPlanV1>,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
     for node in arena.nodes() {
@@ -2372,6 +2383,42 @@ fn validate_expression_contexts(
                 if declared.field.value_type() != node.result_type() {
                     return Err(IrValidationError::TypeMismatch {
                         context: "service-owned command value",
+                    });
+                }
+            }
+            ExpressionKind::CollectionElement => {
+                let expansion =
+                    collection_expansion.ok_or(IrValidationError::InvalidDependency {
+                        reason: "collection element expression requires one collection expansion",
+                    })?;
+                if node.result_type() != expansion.element_type() {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "collection element",
+                    });
+                }
+            }
+            ExpressionKind::CollectionElementField(field) => {
+                let expansion =
+                    collection_expansion.ok_or(IrValidationError::InvalidDependency {
+                        reason: "collection element field requires one collection expansion",
+                    })?;
+                let entity_type = match expansion.element_type().record_ref() {
+                    Some(RecordTypeRef::Entity(entity_type)) => *entity_type,
+                    _ => {
+                        return Err(IrValidationError::TypeMismatch {
+                            context: "collection element field",
+                        });
+                    }
+                };
+                let declared = schema
+                    .entity(entity_type)
+                    .and_then(|entity| entity.record().field(*field))
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "collection element field",
+                    })?;
+                if declared.value_type() != node.result_type() {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "collection element field",
                     });
                 }
             }
@@ -2435,6 +2482,136 @@ fn validate_expression_contexts(
                 });
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_collection_expression_uses(
+    arena: &ExpressionArena,
+    expansion: Option<&CollectionExpansionPlanV1>,
+    bindings: &[BindingPlan],
+    root_validation_reads: &[RootValidationReadPlan],
+    locality: &LocalityPlan,
+    commit_checks: &[CommitCheckPlan],
+    instructions: &[Instruction],
+) -> Result<(), IrValidationError> {
+    let uses_collection = |expression: ExprId| -> Result<bool, IrValidationError> {
+        let dependencies = arena.dependencies(expression)?;
+        Ok(dependencies.uses_collection_element()
+            || !dependencies.collection_element_fields().is_empty())
+    };
+    let Some(expansion) = expansion else {
+        return Ok(());
+    };
+    let first_binding = expansion.first_binding().get() as usize;
+    let binding_end = first_binding + expansion.binding_count();
+    let binding_is_repeated =
+        |binding: BindingId| (first_binding..binding_end).contains(&(binding.get() as usize));
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction + expansion.instruction_count();
+    let reject = |expression: ExprId| -> Result<(), IrValidationError> {
+        if uses_collection(expression)? {
+            Err(IrValidationError::InvalidDependency {
+                reason: "collection element escapes its repeated template",
+            })
+        } else {
+            Ok(())
+        }
+    };
+    let reject_outcome = |outcome: &OutcomeConstruction| -> Result<(), IrValidationError> {
+        for field in &outcome.payload.fields {
+            reject(field.expression)?;
+        }
+        Ok(())
+    };
+
+    for binding in bindings
+        .iter()
+        .filter(|binding| !binding_is_repeated(binding.id()))
+    {
+        for expression in binding.key_expressions() {
+            reject(*expression)?;
+        }
+        reject_outcome(binding.failure())?;
+    }
+    for read in root_validation_reads
+        .iter()
+        .filter(|read| !binding_is_repeated(read.source_binding()))
+    {
+        for expression in read.key_expressions() {
+            reject(*expression)?;
+        }
+    }
+    let mutable = bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                binding.mode(),
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            )
+        })
+        .collect::<Vec<_>>();
+    for (conflict, binding) in locality.conflict_keys().iter().zip(mutable) {
+        if !binding_is_repeated(binding.id()) {
+            for expression in conflict.expressions() {
+                reject(*expression)?;
+            }
+        }
+    }
+    for check in commit_checks {
+        let repeated = check
+            .source_bindings()
+            .iter()
+            .all(|binding| binding_is_repeated(*binding))
+            && check.root_validation_reads().iter().all(|read| {
+                root_validation_reads
+                    .get(read.get() as usize)
+                    .is_some_and(|read| binding_is_repeated(read.source_binding()))
+            });
+        if !repeated {
+            reject(check.predicate())?;
+        }
+    }
+    for (index, instruction) in instructions.iter().enumerate() {
+        if (first_instruction..instruction_end).contains(&index) {
+            continue;
+        }
+        match instruction {
+            Instruction::Require {
+                predicate,
+                reject: outcome,
+                ..
+            } => {
+                reject(*predicate)?;
+                reject_outcome(outcome)?;
+            }
+            Instruction::SetField { value, .. } => reject(*value)?,
+            Instruction::WorkflowTransition {
+                expected_revision,
+                stale,
+                illegal,
+                ..
+            } => {
+                reject(*expected_revision)?;
+                reject_outcome(stale)?;
+                reject_outcome(illegal)?;
+            }
+            Instruction::WorkflowLease { operation, .. } => {
+                for expression in operation.expressions() {
+                    reject(expression)?;
+                }
+                for outcome in operation.outcomes() {
+                    reject_outcome(outcome)?;
+                }
+            }
+            Instruction::EmitEvent(event) => {
+                for field in &event.payload.fields {
+                    reject(field.expression)?;
+                }
+            }
+            Instruction::Return(outcome) => reject_outcome(outcome)?,
         }
     }
     Ok(())
@@ -3019,6 +3196,13 @@ fn expression_trees_equal(
             (ExpressionKind::Constant(left), ExpressionKind::Constant(right)) if left == right => {}
             (ExpressionKind::InputField(left), ExpressionKind::InputField(right))
                 if left == right => {}
+            (ExpressionKind::ServiceValue(left), ExpressionKind::ServiceValue(right))
+                if left == right => {}
+            (ExpressionKind::CollectionElement, ExpressionKind::CollectionElement) => {}
+            (
+                ExpressionKind::CollectionElementField(left),
+                ExpressionKind::CollectionElementField(right),
+            ) if left == right => {}
             (ExpressionKind::CompleteBinding(left), ExpressionKind::CompleteBinding(right))
                 if left == right => {}
             (
@@ -4725,6 +4909,78 @@ pub(crate) mod tests {
                 CollectionDuplicatePolicyV1::Reject,
             ),
             Err(IrValidationError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn collection_expressions_require_the_exact_declared_element_context() {
+        let (ordinary, schema) = minimal_mutation();
+        let mut nodes = ordinary
+            .expressions
+            .nodes()
+            .iter()
+            .map(|node| (node.kind().clone(), node.result_type().clone()))
+            .collect::<Vec<_>>();
+        nodes.push((ExpressionKind::CollectionElement, crate::ValueType::u64()));
+        let ordinary_result = CommandPlan::new_with_service_values(
+            ordinary.command_id,
+            test_lineage(),
+            ordinary.name.clone(),
+            ordinary.contract_version,
+            ordinary.input.clone(),
+            ordinary.service_values.clone(),
+            ordinary.outcomes.clone(),
+            ordinary.success_outcome,
+            ordinary.idempotency_input,
+            ExpressionArena::new(nodes).expect("expression arena"),
+            ordinary.bindings.clone(),
+            ordinary.root_validation_reads.clone(),
+            ordinary.locality.clone(),
+            ordinary.commit_checks.clone(),
+            ordinary.instructions.clone(),
+            ordinary.execution_class,
+            &schema,
+        );
+        assert!(matches!(
+            ordinary_result,
+            Err(IrValidationError::InvalidDependency {
+                reason: "collection element expression requires one collection expansion"
+            })
+        ));
+
+        let (collection, schema) = minimal_collection_mutation();
+        let mut nodes = collection
+            .expressions
+            .nodes()
+            .iter()
+            .map(|node| (node.kind().clone(), node.result_type().clone()))
+            .collect::<Vec<_>>();
+        nodes.push((ExpressionKind::CollectionElement, crate::ValueType::bool()));
+        let wrong_type = CommandPlan::new_collection(
+            collection.command_id,
+            test_lineage(),
+            collection.name.clone(),
+            collection.contract_version,
+            collection.input.clone(),
+            collection.service_values.clone(),
+            collection.outcomes.clone(),
+            collection.success_outcome,
+            collection.idempotency_input,
+            ExpressionArena::new(nodes).expect("expression arena"),
+            collection.bindings.clone(),
+            collection.root_validation_reads.clone(),
+            collection.locality.clone(),
+            collection.commit_checks.clone(),
+            collection.instructions.clone(),
+            collection.collection_expansion.clone().expect("expansion"),
+            collection.execution_class,
+            &schema,
+        );
+        assert!(matches!(
+            wrong_type,
+            Err(IrValidationError::TypeMismatch {
+                context: "collection element"
+            })
         ));
     }
 

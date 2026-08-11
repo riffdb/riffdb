@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
-    BindingId, BindingMode, BindingPlan, CommandInputSchema, CommandPlan, CommitCheckPlan,
-    ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
-    FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
-    OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
-    RootValidationReadPlan, SchemaIr, ServiceValueKind, ServiceValueSchema, WorkflowLeaseFields,
-    WorkflowLeaseOperation,
+    BindingId, BindingMode, BindingPlan, CollectionDuplicatePolicyV1, CollectionExpansionPlanV1,
+    CommandInputSchema, CommandPlan, CommitCheckPlan, ConflictDerivationPlan, EventConstruction,
+    EventSchema, ExecutionClass, ExprId, ExpressionKind, FieldExpression, FieldSchema, Instruction,
+    IrValidationError, KeySchema, LocalityPlan, OutcomeConstruction, OutcomeSchema, RecordSchema,
+    RecordTypeRef, RootValidationReadId, RootValidationReadPlan, SchemaIr, ServiceValueKind,
+    ServiceValueSchema, WorkflowLeaseFields, WorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -251,7 +251,8 @@ fn lower_command(
         &mut hir_expressions,
         &mut diagnostics,
     );
-    let raw_instructions = command_instructions(command, &mut diagnostics);
+    let (raw_instructions, repeated_instruction_range) =
+        command_instructions(command, &mut diagnostics);
     validate_event_partition_proofs(
         schema,
         &hir_expressions,
@@ -558,26 +559,63 @@ fn lower_command(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|diagnostic| vec![diagnostic])?;
-    CommandPlan::new_with_service_values(
-        command.id,
-        contract_lineage,
-        command.name.clone(),
-        hir.contract_version,
-        input_schema,
-        service_values,
-        outcome_schemas,
-        command.success.id,
-        idempotency_input,
-        expressions,
-        binding_plans,
-        root_validation_reads,
-        locality,
-        commit_checks,
-        instructions,
-        execution_class,
-        schema,
-    )
-    .map_err(|error| vec![ir_error_diagnostic(error, command.span)])
+    let result = if let Some(expansion) = &command.collection_expansion {
+        let (first_instruction, instruction_count) =
+            repeated_instruction_range.ok_or_else(|| vec![ir_diagnostic(expansion.span)])?;
+        let expansion = CollectionExpansionPlanV1::new(
+            expansion.input_field,
+            expansion.minimum_elements,
+            expansion.maximum_elements,
+            expansion.element_type.clone(),
+            expansion.first_binding,
+            expansion.binding_count,
+            first_instruction,
+            instruction_count,
+            CollectionDuplicatePolicyV1::Reject,
+        )
+        .map_err(|_| vec![ir_diagnostic(expansion.span)])?;
+        CommandPlan::new_collection(
+            command.id,
+            contract_lineage,
+            command.name.clone(),
+            hir.contract_version,
+            input_schema,
+            service_values,
+            outcome_schemas,
+            command.success.id,
+            idempotency_input,
+            expressions,
+            binding_plans,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            expansion,
+            execution_class,
+            schema,
+        )
+    } else {
+        CommandPlan::new_with_service_values(
+            command.id,
+            contract_lineage,
+            command.name.clone(),
+            hir.contract_version,
+            input_schema,
+            service_values,
+            outcome_schemas,
+            command.success.id,
+            idempotency_input,
+            expressions,
+            binding_plans,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            execution_class,
+            schema,
+        )
+    };
+    result.map_err(|error| vec![ir_error_diagnostic(error, command.span)])
 }
 
 fn validate_event_partition_proofs(
@@ -1124,8 +1162,8 @@ fn push_hir_node(
 fn command_instructions(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
-) -> Vec<RawInstruction> {
-    let mut instructions = Vec::new();
+) -> (Vec<RawInstruction>, Option<(u32, usize)>) {
+    let mut requirements = Vec::new();
     let rejection_base = command.bindings.len();
     for (index, requirement) in command.requirements.iter().enumerate() {
         let Ok(requirement_index) = u32::try_from(index) else {
@@ -1135,12 +1173,13 @@ fn command_instructions(
             ));
             continue;
         };
-        instructions.push(RawInstruction::Require {
+        requirements.push(RawInstruction::Require {
             requirement_index,
             predicate: requirement.condition.id,
             rejection_occurrence: rejection_base + index,
         });
     }
+    let mut effects = Vec::new();
     let mut effect_occurrence = rejection_base + command.requirements.len();
     for effect in &command.effects {
         match effect {
@@ -1149,7 +1188,7 @@ fn command_instructions(
                 field,
                 value,
                 ..
-            } => instructions.push(RawInstruction::SetField {
+            } => effects.push(RawInstruction::SetField {
                 binding: *binding,
                 field: *field,
                 value: value.id,
@@ -1165,7 +1204,7 @@ fn command_instructions(
                     .map(|field| FieldExpression::new(field.id, field.value.id))
                     .collect::<Vec<_>>();
                 fields.sort_by_key(|field| field.field_id());
-                instructions.push(RawInstruction::EmitEvent {
+                effects.push(RawInstruction::EmitEvent {
                     event_id: *event_id,
                     fields,
                     span: *event_span,
@@ -1179,7 +1218,7 @@ fn command_instructions(
                 expected_revision,
                 ..
             } => {
-                instructions.push(RawInstruction::WorkflowTransition {
+                effects.push(RawInstruction::WorkflowTransition {
                     binding: *binding,
                     state_field: *state_field,
                     source_states: source_states.clone(),
@@ -1271,7 +1310,7 @@ fn command_instructions(
                         }
                     }
                 };
-                instructions.push(RawInstruction::WorkflowLease {
+                effects.push(RawInstruction::WorkflowLease {
                     binding: *binding,
                     fields: WorkflowLeaseFields {
                         owner_field: *owner_field,
@@ -1286,7 +1325,24 @@ fn command_instructions(
             }
         }
     }
-    instructions
+    if let Some(expansion) = &command.collection_expansion {
+        if expansion.repeated_requirement_count > requirements.len()
+            || expansion.repeated_effect_count > effects.len()
+        {
+            diagnostics.push(ir_diagnostic(expansion.span));
+            return (Vec::new(), None);
+        }
+        let mut instructions = Vec::with_capacity(requirements.len() + effects.len());
+        instructions.extend(requirements.drain(..expansion.repeated_requirement_count));
+        instructions.extend(effects.drain(..expansion.repeated_effect_count));
+        let instruction_count = instructions.len();
+        instructions.extend(requirements);
+        instructions.extend(effects);
+        (instructions, Some((0, instruction_count)))
+    } else {
+        requirements.extend(effects);
+        (requirements, None)
+    }
 }
 
 fn collect_influential_roots(

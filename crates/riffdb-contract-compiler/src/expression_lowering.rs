@@ -25,6 +25,15 @@ pub(crate) struct BindingExpressionScope {
     pub(crate) id: BindingId,
     pub(crate) entity_id: EntityTypeId,
     pub(crate) fields: BTreeMap<String, (FieldId, ValueType)>,
+    pub(crate) collection_local: bool,
+}
+
+/// The one current element visible only while lowering a bulk body.
+#[derive(Clone, Debug)]
+pub(crate) struct CollectionElementExpressionScope {
+    pub(crate) name: String,
+    pub(crate) value_type: ValueType,
+    pub(crate) fields: BTreeMap<String, (FieldId, ValueType)>,
 }
 
 /// Names available to one expression arena.
@@ -43,6 +52,7 @@ pub(crate) enum ExpressionScope {
         inputs: BTreeMap<String, (FieldId, ValueType)>,
         service_values: BTreeMap<String, (FieldId, ValueType)>,
         bindings: BTreeMap<String, BindingExpressionScope>,
+        collection_element: Option<CollectionElementExpressionScope>,
     },
     Projection {
         event_id: EventTypeId,
@@ -55,6 +65,7 @@ pub(crate) struct ExpressionLowerer<'a> {
     symbols: &'a GenesisSymbols,
     scope: ExpressionScope,
     input_only: bool,
+    collection_context: bool,
     nodes: Vec<HirExpressionNode>,
 }
 
@@ -64,8 +75,14 @@ impl<'a> ExpressionLowerer<'a> {
             symbols,
             scope,
             input_only: false,
+            collection_context: false,
             nodes: Vec::new(),
         }
+    }
+
+    /// Controls visibility of the one compiler-owned bulk element and its local bindings.
+    pub(crate) const fn set_collection_context(&mut self, visible: bool) {
+        self.collection_context = visible;
     }
 
     /// Lowers one expression using an optional exact contextual type.
@@ -401,10 +418,23 @@ impl<'a> ExpressionLowerer<'a> {
                 inputs,
                 service_values,
                 bindings,
+                collection_element,
             } => {
                 let _ = command_id;
                 if segments.len() == 1 {
-                    if let Some((field, value_type)) = inputs.get(&segments[0].value).cloned() {
+                    if self.collection_context
+                        && collection_element
+                            .as_ref()
+                            .is_some_and(|element| element.name == segments[0].value)
+                    {
+                        let element = collection_element.as_ref().expect("matched element");
+                        Some((
+                            ExpressionKind::CollectionElement,
+                            element.value_type.clone(),
+                        ))
+                    } else if let Some((field, value_type)) =
+                        inputs.get(&segments[0].value).cloned()
+                    {
                         Some((ExpressionKind::InputField(field), value_type))
                     } else if let Some((field, value_type)) =
                         service_values.get(&segments[0].value).cloned()
@@ -417,12 +447,15 @@ impl<'a> ExpressionLowerer<'a> {
                     } else if self.input_only {
                         None
                     } else {
-                        bindings.get(&segments[0].value).map(|binding| {
-                            (
-                                ExpressionKind::CompleteBinding(binding.id),
-                                ValueType::record(RecordTypeRef::Entity(binding.entity_id)),
-                            )
-                        })
+                        bindings
+                            .get(&segments[0].value)
+                            .filter(|binding| self.collection_context || !binding.collection_local)
+                            .map(|binding| {
+                                (
+                                    ExpressionKind::CompleteBinding(binding.id),
+                                    ValueType::record(RecordTypeRef::Entity(binding.entity_id)),
+                                )
+                            })
                     }
                 } else if self.input_only {
                     None
@@ -431,20 +464,36 @@ impl<'a> ExpressionLowerer<'a> {
                     && segments[1].value == "time"
                 {
                     Some((ExpressionKind::TransactionTime, ValueType::timestamp()))
-                } else if segments.len() == 2 {
-                    bindings.get(&segments[0].value).and_then(|binding| {
-                        binding.fields.get(&segments[1].value).cloned().map(
+                } else if segments.len() == 2
+                    && self.collection_context
+                    && collection_element
+                        .as_ref()
+                        .is_some_and(|element| element.name == segments[0].value)
+                {
+                    collection_element.as_ref().and_then(|element| {
+                        element.fields.get(&segments[1].value).cloned().map(
                             |(field, value_type)| {
-                                (
-                                    ExpressionKind::BoundField {
-                                        binding: binding.id,
-                                        field,
-                                    },
-                                    value_type,
-                                )
+                                (ExpressionKind::CollectionElementField(field), value_type)
                             },
                         )
                     })
+                } else if segments.len() == 2 {
+                    bindings
+                        .get(&segments[0].value)
+                        .filter(|binding| self.collection_context || !binding.collection_local)
+                        .and_then(|binding| {
+                            binding.fields.get(&segments[1].value).cloned().map(
+                                |(field, value_type)| {
+                                    (
+                                        ExpressionKind::BoundField {
+                                            binding: binding.id,
+                                            field,
+                                        },
+                                        value_type,
+                                    )
+                                },
+                            )
+                        })
                 } else {
                     None
                 }
@@ -874,8 +923,10 @@ contract Example version 1 {
                     id: BindingId::new(0),
                     entity_id,
                     fields: BTreeMap::from([("amount".to_owned(), (field_id, ValueType::i64()))]),
+                    collection_local: false,
                 },
             )]),
+            collection_element: None,
         };
         let mut lowerer = ExpressionLowerer::new(&symbols, scope);
         let source = r#"
@@ -934,6 +985,7 @@ contract Example version 1 {
                 inputs: BTreeMap::new(),
                 service_values: BTreeMap::new(),
                 bindings: BTreeMap::new(),
+                collection_element: None,
             },
         );
         let source = r#"

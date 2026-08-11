@@ -513,7 +513,11 @@ fn allocate_command_symbols(
         });
 
     let mut binding_names = NameCollector::default();
-    for binding in &command.bindings {
+    let collection_bindings = command
+        .bulk_iteration
+        .as_ref()
+        .map_or(&[][..], |iteration| iteration.value.bindings.as_slice());
+    for binding in command.bindings.iter().chain(collection_bindings) {
         let entity_binding = match &binding.value {
             riffdb_contract_syntax::ast::Binding::Read(binding)
             | riffdb_contract_syntax::ast::Binding::Mutate(binding)
@@ -541,12 +545,16 @@ fn allocate_command_symbols(
         }
     }
     let mut requirement_names = NameCollector::default();
-    for requirement in &command.requirements {
+    let collection_requirements = command
+        .bulk_iteration
+        .as_ref()
+        .map_or(&[][..], |iteration| iteration.value.requirements.as_slice());
+    for requirement in command.requirements.iter().chain(collection_requirements) {
         requirement_names.insert(&requirement.value.name, diagnostics);
     }
     let mut rejection_names = BTreeMap::<String, Span>::new();
     let mut outcome_occurrences = Vec::new();
-    for binding in &command.bindings {
+    for binding in command.bindings.iter().chain(collection_bindings) {
         let failure = match &binding.value {
             riffdb_contract_syntax::ast::Binding::Read(binding)
             | riffdb_contract_syntax::ast::Binding::Mutate(binding)
@@ -558,14 +566,18 @@ fn allocate_command_symbols(
             .or_insert(failure.value.name.span);
         outcome_occurrences.push(&failure.value);
     }
-    for requirement in &command.requirements {
+    for requirement in command.requirements.iter().chain(collection_requirements) {
         let rejection = &requirement.value.rejection;
         rejection_names
             .entry(rejection.value.name.value.clone())
             .or_insert(rejection.value.name.span);
         outcome_occurrences.push(&rejection.value);
     }
-    for effect in &command.effects {
+    let collection_effects = command
+        .bulk_iteration
+        .as_ref()
+        .map_or(&[][..], |iteration| iteration.value.effects.as_slice());
+    for effect in command.effects.iter().chain(collection_effects) {
         let rejections = match &effect.value {
             riffdb_contract_syntax::ast::Effect::WorkflowTransition(transition) => {
                 vec![&transition.stale, &transition.illegal]
@@ -668,14 +680,19 @@ fn allocate_command_symbols(
             });
     }
 
-    let mutating_binding = command.bindings.iter().any(|binding| {
-        matches!(
-            binding.value,
-            riffdb_contract_syntax::ast::Binding::Mutate(_)
-                | riffdb_contract_syntax::ast::Binding::Create(_)
-        )
-    });
-    let has_effect = !command.effects.is_empty();
+    let mutating_binding = command
+        .bindings
+        .iter()
+        .chain(collection_bindings)
+        .any(|binding| {
+            matches!(
+                binding.value,
+                riffdb_contract_syntax::ast::Binding::Mutate(_)
+                    | riffdb_contract_syntax::ast::Binding::Create(_)
+                    | riffdb_contract_syntax::ast::Binding::Delete(_)
+            )
+        });
+    let has_effect = !command.effects.is_empty() || !collection_effects.is_empty();
     let mutating = mutating_binding || has_effect;
     if mutating && command.idempotency.is_none() {
         diagnostics.push(CompilerDiagnostic::new(
