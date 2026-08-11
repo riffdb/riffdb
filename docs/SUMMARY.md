@@ -41,6 +41,7 @@
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
 - [Application Errors](getting-started/APPLICATION-ERRORS.md)
 - [Resumable Command Batches](getting-started/COMMAND-BATCHES.md)
+- [Generated Operational Queries](getting-started/OPERATIONAL-QUERIES.md)
 - [Rust Applications](sdks/RUST.md)
 - [Driver Host](sdks/DRIVER-HOST.md)
 - [Go Applications](sdks/GO.md)

@@ -23,6 +23,68 @@ const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
 /// Maximum independently in-flight items in one generated command batch.
 pub const MAX_GENERATED_BATCH_CONCURRENCY: usize = 384;
 
+const APPLICATION_CATALOG_SCHEMA_V1: &str = "riffdb.application-catalog/v1";
+
+/// Closed application feature vocabulary returned by symbolic catalog preflight.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ApplicationCatalogFeature {
+    /// Finite compiler-owned optional predicate families.
+    OperationalOptionalPredicates,
+    /// Snapshot-bound stable cursor pages.
+    StableCursorPages,
+    /// Indexed null and existence predicates.
+    NullExistencePredicates,
+    /// Exact binary UTF-8 prefix indexes.
+    BinaryTextPrefix,
+    /// Versioned Unicode-fold prefix indexes.
+    UnicodeFoldTextPrefixV1,
+    /// Bounded exact operational aggregates.
+    ExactAggregates,
+}
+
+/// Availability of one closed application feature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationCatalogFeatureState {
+    /// The exact selected server surface implements the feature.
+    Available,
+    /// The feature is explicitly unavailable and must not be emulated.
+    Unavailable,
+}
+
+/// One checked symbolic application feature view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApplicationCatalogFeatureView {
+    /// Closed feature identity.
+    pub feature: ApplicationCatalogFeature,
+    /// Checked availability state.
+    pub state: ApplicationCatalogFeatureState,
+}
+
+/// Checked feature-preflight result for one exact application contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationCatalogPreflight {
+    /// Exact contract lineage returned by the authorized catalog.
+    pub contract_lineage: String,
+    /// Exact contract version returned by the authorized catalog.
+    pub contract_version: u64,
+    /// Exact contract bundle hash returned by the authorized catalog.
+    pub contract_bundle_hash: [u8; 32],
+    /// Active query-module identities in canonical server order.
+    pub query_module_hashes: Vec<[u8; 32]>,
+    /// Complete closed feature registry.
+    pub features: Vec<ApplicationCatalogFeatureView>,
+}
+
+impl ApplicationCatalogPreflight {
+    /// Returns whether the exact selected server surface exposes `feature`.
+    #[must_use]
+    pub fn is_available(&self, feature: ApplicationCatalogFeature) -> bool {
+        self.features.iter().any(|view| {
+            view.feature == feature && view.state == ApplicationCatalogFeatureState::Available
+        })
+    }
+}
+
 /// A local shape failure for one bounded transport batch of ordinary commands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IdempotentTransportBatchError {
@@ -125,6 +187,37 @@ impl StableApplicationClient {
             return Err(ApplicationClientError::InvalidResponse);
         }
         Ok(())
+    }
+
+    /// Reads and validates the symbolic feature catalog for one exact contract.
+    ///
+    /// This application-only view deliberately omits catalog symbols, numeric
+    /// identities, raw IR, and capability details. An unavailable feature is
+    /// explicit and never authorizes a client-side fallback.
+    pub async fn preflight_application_features(
+        &mut self,
+        contract: ApplicationContract,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationCatalogPreflight, ApplicationClientError> {
+        let expected = contract.clone();
+        let request_id = Vec::from(
+            generate_request_id()
+                .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
+                .into_bytes(),
+        );
+        let response = self
+            .inner
+            .get_application_catalog(
+                app_v1::GetApplicationCatalogRequest {
+                    contract: lower_contract(contract),
+                    limit: 1,
+                    cursor: None,
+                    request_id,
+                },
+                metadata,
+            )
+            .await?;
+        raise_application_catalog_preflight(response, &expected)
     }
 
     /// Executes one exact named module query.
@@ -1421,6 +1514,101 @@ fn validate_query_response_identity(
     Ok(())
 }
 
+fn raise_application_catalog_preflight(
+    response: app_v1::GetApplicationCatalogResponse,
+    contract: &ApplicationContract,
+) -> Result<ApplicationCatalogPreflight, ApplicationClientError> {
+    if response.schema != APPLICATION_CATALOG_SCHEMA_V1
+        || response.contract_lineage.is_empty()
+        || response.contract_version == 0
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    let contract_bundle_hash: [u8; 32] = response
+        .contract_bundle_hash
+        .try_into()
+        .map_err(|_| ApplicationClientError::InvalidResponse)?;
+    if let ApplicationContract::Exact {
+        lineage,
+        version,
+        bundle_hash,
+    } = contract
+        && (response.contract_lineage != *lineage
+            || response.contract_version != *version
+            || bundle_hash.is_some_and(|expected| expected != contract_bundle_hash))
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+
+    let mut query_module_hashes = Vec::with_capacity(response.query_module_hashes.len());
+    for hash in response.query_module_hashes {
+        query_module_hashes.push(
+            hash.try_into()
+                .map_err(|_| ApplicationClientError::InvalidResponse)?,
+        );
+    }
+    if query_module_hashes
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+
+    let mut features = Vec::with_capacity(response.features.len());
+    for view in response.features {
+        let feature = match app_v1::ApplicationCatalogFeature::try_from(view.feature) {
+            Ok(app_v1::ApplicationCatalogFeature::OperationalOptionalPredicates) => {
+                ApplicationCatalogFeature::OperationalOptionalPredicates
+            }
+            Ok(app_v1::ApplicationCatalogFeature::StableCursorPages) => {
+                ApplicationCatalogFeature::StableCursorPages
+            }
+            Ok(app_v1::ApplicationCatalogFeature::NullExistencePredicates) => {
+                ApplicationCatalogFeature::NullExistencePredicates
+            }
+            Ok(app_v1::ApplicationCatalogFeature::BinaryTextPrefix) => {
+                ApplicationCatalogFeature::BinaryTextPrefix
+            }
+            Ok(app_v1::ApplicationCatalogFeature::UnicodeFoldTextPrefixV1) => {
+                ApplicationCatalogFeature::UnicodeFoldTextPrefixV1
+            }
+            Ok(app_v1::ApplicationCatalogFeature::ExactAggregates) => {
+                ApplicationCatalogFeature::ExactAggregates
+            }
+            Ok(app_v1::ApplicationCatalogFeature::Unspecified) | Err(_) => {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+        };
+        let state = match app_v1::ApplicationCatalogFeatureState::try_from(view.state) {
+            Ok(app_v1::ApplicationCatalogFeatureState::Available) => {
+                ApplicationCatalogFeatureState::Available
+            }
+            Ok(app_v1::ApplicationCatalogFeatureState::Unavailable) => {
+                ApplicationCatalogFeatureState::Unavailable
+            }
+            Ok(app_v1::ApplicationCatalogFeatureState::Unspecified) | Err(_) => {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+        };
+        features.push(ApplicationCatalogFeatureView { feature, state });
+    }
+    if features.len() != 6
+        || features
+            .windows(2)
+            .any(|pair| pair[0].feature >= pair[1].feature)
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+
+    Ok(ApplicationCatalogPreflight {
+        contract_lineage: response.contract_lineage,
+        contract_version: response.contract_version,
+        contract_bundle_hash,
+        query_module_hashes,
+        features,
+    })
+}
+
 pub(crate) fn validate_contract(
     contract: &ApplicationContract,
 ) -> Result<(), ApplicationClientError> {
@@ -1927,6 +2115,83 @@ mod tests {
                 Some([3; 32]),
                 Some([2; 32])
             ),
+            Err(ApplicationClientError::InvalidResponse)
+        ));
+    }
+
+    #[test]
+    fn application_catalog_preflight_is_exact_closed_and_name_only() {
+        let contract = ApplicationContract::Exact {
+            lineage: "TicketDesk".to_owned(),
+            version: 3,
+            bundle_hash: Some([7; 32]),
+        };
+        let response = app_v1::GetApplicationCatalogResponse {
+            schema: APPLICATION_CATALOG_SCHEMA_V1.to_owned(),
+            contract_lineage: "TicketDesk".to_owned(),
+            contract_version: 3,
+            contract_bundle_hash: vec![7; 32],
+            query_module_hashes: vec![vec![3; 32], vec![5; 32]],
+            features: [
+                app_v1::ApplicationCatalogFeature::OperationalOptionalPredicates,
+                app_v1::ApplicationCatalogFeature::StableCursorPages,
+                app_v1::ApplicationCatalogFeature::NullExistencePredicates,
+                app_v1::ApplicationCatalogFeature::BinaryTextPrefix,
+                app_v1::ApplicationCatalogFeature::UnicodeFoldTextPrefixV1,
+                app_v1::ApplicationCatalogFeature::ExactAggregates,
+            ]
+            .into_iter()
+            .map(|feature| app_v1::ApplicationCatalogFeatureView {
+                feature: feature as i32,
+                state: if feature == app_v1::ApplicationCatalogFeature::UnicodeFoldTextPrefixV1 {
+                    app_v1::ApplicationCatalogFeatureState::Unavailable as i32
+                } else {
+                    app_v1::ApplicationCatalogFeatureState::Available as i32
+                },
+            })
+            .collect(),
+            ..Default::default()
+        };
+
+        let preflight =
+            raise_application_catalog_preflight(response, &contract).expect("preflight");
+        assert_eq!(preflight.contract_lineage, "TicketDesk");
+        assert_eq!(preflight.contract_version, 3);
+        assert_eq!(preflight.contract_bundle_hash, [7; 32]);
+        assert_eq!(preflight.query_module_hashes, vec![[3; 32], [5; 32]]);
+        assert!(preflight.is_available(ApplicationCatalogFeature::BinaryTextPrefix));
+        assert!(!preflight.is_available(ApplicationCatalogFeature::UnicodeFoldTextPrefixV1));
+    }
+
+    #[test]
+    fn application_catalog_preflight_rejects_identity_and_registry_drift() {
+        let contract = ApplicationContract::Exact {
+            lineage: "TicketDesk".to_owned(),
+            version: 3,
+            bundle_hash: Some([7; 32]),
+        };
+        let response = app_v1::GetApplicationCatalogResponse {
+            schema: APPLICATION_CATALOG_SCHEMA_V1.to_owned(),
+            contract_lineage: "TicketDesk".to_owned(),
+            contract_version: 4,
+            contract_bundle_hash: vec![7; 32],
+            ..Default::default()
+        };
+        assert!(matches!(
+            raise_application_catalog_preflight(response, &contract),
+            Err(ApplicationClientError::InvalidResponse)
+        ));
+
+        let response = app_v1::GetApplicationCatalogResponse {
+            schema: APPLICATION_CATALOG_SCHEMA_V1.to_owned(),
+            contract_lineage: "TicketDesk".to_owned(),
+            contract_version: 3,
+            contract_bundle_hash: vec![7; 32],
+            query_module_hashes: vec![vec![5; 32], vec![3; 32]],
+            ..Default::default()
+        };
+        assert!(matches!(
+            raise_application_catalog_preflight(response, &contract),
             Err(ApplicationClientError::InvalidResponse)
         ));
     }

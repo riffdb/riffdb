@@ -50,6 +50,12 @@ The exact generated names come from your contract and lock. Treat a changed
 generated diff like an API change: review the source change and new lock before
 accepting it.
 
+Operational applications can preflight the exact authorized server feature
+registry with `StableApplicationClient::preflight_application_features` before
+constructing the generated facade. An unavailable feature never authorizes a
+client-side scan or filter. See [Generated Operational
+Queries](../getting-started/OPERATIONAL-QUERIES.md).
+
 Generated entity and outcome decoders consume every wire field exactly once.
 An `optional<T>` field maps a wire null to `None` and a present value to
 `Some(T)` through the same typed decoder used for required fields. This applies

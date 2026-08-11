@@ -914,7 +914,16 @@ fn decode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
         ValueTypeTag::Bytes => format!("riffdb.BytesValue({value})"),
         ValueTypeTag::Date => format!("riffdb.DateValue({value})"),
         ValueTypeTag::Timestamp => format!("riffdb.TimestampValue({value})"),
-        ValueTypeTag::Decimal => format!("riffdb.DecimalValue({value})"),
+        ValueTypeTag::Decimal => ty.decimal_spec().map_or_else(
+            || format!("riffdb.DecimalValue({value})"),
+            |spec| {
+                format!(
+                    "riffdb.DecimalValueWithSchema({value}, {}, {})",
+                    spec.precision(),
+                    spec.scale()
+                )
+            },
+        ),
         ValueTypeTag::Money => format!("riffdb.MoneyValue({value})"),
         ValueTypeTag::Enum => {
             let name = ty
@@ -1066,7 +1075,12 @@ fn decode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
             "timestamp" => format!("riffdb.TimestampValue({value})"),
             "date" => format!("riffdb.DateValue({value})"),
             name if name.starts_with("bytes<") => format!("riffdb.BytesValue({value})"),
-            name if name.starts_with("decimal<") => format!("riffdb.DecimalValue({value})"),
+            name if name.starts_with("decimal<") => decimal_type_parts(name).map_or_else(
+                || format!("riffdb.DecimalValue({value})"),
+                |(precision, scale)| {
+                    format!("riffdb.DecimalValueWithSchema({value}, {precision}, {scale})")
+                },
+            ),
             name if name.starts_with("money<") => format!("riffdb.MoneyValue({value})"),
             name if contract
                 .schema()
@@ -1082,6 +1096,12 @@ fn decode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
             _ => format!("riffdb.StringValue({value})"),
         },
     }
+}
+
+fn decimal_type_parts(type_name: &str) -> Option<(u8, u8)> {
+    let body = type_name.strip_prefix("decimal<")?.strip_suffix('>')?;
+    let (precision, scale) = body.split_once(',')?;
+    Some((precision.parse().ok()?, scale.parse().ok()?))
 }
 
 fn schema_hash(schema: &str) -> String {

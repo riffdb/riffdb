@@ -635,7 +635,7 @@ function validateDecimal(value) {
     const decimal = exactObject(value);
     boundedString(decimal.coefficient, 1_366);
     boundedInteger(decimal.scale, 0, 4_294_967_295);
-    if (decimal.precision !== undefined)
+    if (decimal.precision !== undefined && decimal.precision !== null)
         boundedInteger(decimal.precision, 1, 4_294_967_295);
 }
 function signedTwosComplement(value) {

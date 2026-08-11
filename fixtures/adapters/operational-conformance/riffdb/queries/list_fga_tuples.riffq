@@ -1,0 +1,17 @@
+query ListFgaTuples(
+    $store_id: FgaTuple.store_id,
+    $relation: FgaTuple.relation?,
+    $after: Cursor?,
+) {
+    many tuples from FgaTuple
+        where store_id == $store_id
+          && when $relation { relation == $relation }
+        order by tuple_id asc
+        take 25 after $after
+
+    return Found {
+        tuples: tuples { tuple_id object relation subject }
+    }
+
+    outcomes Found
+}

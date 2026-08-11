@@ -32,12 +32,14 @@ pub use riffdb_proto::app::v1 as app_v1;
 pub use riffdb_proto::v1;
 
 pub use application::{
-    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
-    ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationUuid,
-    ApplicationValue, GeneratedBatchError, GeneratedBatchItem, GeneratedBatchOptions,
-    GeneratedBatchProgress, GeneratedBatchResult, IdempotentTransportBatchError,
-    MAX_GENERATED_BATCH_CONCURRENCY, NamedQuery, NamedQueryResult, QueryOptions,
-    QueryResponseIdentity, StableApplicationClient, TypedCommandResult, TypedQueryResult,
+    ApplicationCardinality, ApplicationCatalogFeature, ApplicationCatalogFeatureState,
+    ApplicationCatalogFeatureView, ApplicationCatalogPreflight, ApplicationClientError,
+    ApplicationCommand, ApplicationCommandResult, ApplicationContract, ApplicationRecord,
+    ApplicationResultField, ApplicationUuid, ApplicationValue, GeneratedBatchError,
+    GeneratedBatchItem, GeneratedBatchOptions, GeneratedBatchProgress, GeneratedBatchResult,
+    IdempotentTransportBatchError, MAX_GENERATED_BATCH_CONCURRENCY, NamedQuery, NamedQueryResult,
+    QueryOptions, QueryResponseIdentity, StableApplicationClient, TypedCommandResult,
+    TypedQueryResult,
 };
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,

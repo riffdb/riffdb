@@ -10545,8 +10545,10 @@ work_packages:
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0108]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
-    crates/riffdb-api-mcp/**, clients/**, templates/**, fixtures/application-parity/**,
-    fixtures/adapters/**, examples/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-api-mcp/**, crates/riffdb-query-module/**, crates/riffdb-testkit/**,
+    clients/**, templates/**, fixtures/application-parity/**, fixtures/application-locks/**,
+    fixtures/application-manifests/**, fixtures/query-modules/**, fixtures/adapters/**,
+    examples/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Generated typed optional filters, null/existence/prefix values, page cursors, total order,
     aggregate/group results, and catalog feature views in Rust, Go, TypeScript, and Python

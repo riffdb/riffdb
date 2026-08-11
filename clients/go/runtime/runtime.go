@@ -57,9 +57,19 @@ type Money struct {
 	Amount   Decimal `json:"amount"`
 }
 
-type ExactDecimal struct { CoefficientTwosComplement []byte; Scale uint32; Precision uint32 }
-type ExactMoney struct { Currency string; Amount ExactDecimal }
-type Instant struct { Seconds int64; Nanos uint32 }
+type ExactDecimal struct {
+	CoefficientTwosComplement []byte
+	Scale                     uint32
+	Precision                 uint32
+}
+type ExactMoney struct {
+	Currency string
+	Amount   ExactDecimal
+}
+type Instant struct {
+	Seconds int64
+	Nanos   uint32
+}
 
 func Null() Value                          { return Value{Type: "null"} }
 func Bool(value bool) Value                { return Value{Type: "bool", Value: value} }
@@ -72,28 +82,242 @@ func Bytes(value string) Value             { return Value{Type: "bytes", Value: 
 func Date(days int32) Value                { return Value{Type: "date", Value: strconv.FormatInt(int64(days), 10)} }
 func List(values []Value) Value            { return Value{Type: "list", Value: values} }
 func Record(values map[string]Value) Value { return Value{Type: "record", Value: values} }
-func BytesFrom(value []byte) Value { return Bytes(base64.StdEncoding.EncodeToString(value)) }
-func TimestampFrom(value Instant) Value { return Value{Type: "timestamp", Value: Timestamp{Seconds: strconv.FormatInt(value.Seconds, 10), Nanos: value.Nanos}} }
-func DecimalFrom(value ExactDecimal) Value { precision := value.Precision; return Value{Type: "decimal", Value: Decimal{Coefficient: base64.StdEncoding.EncodeToString(value.CoefficientTwosComplement), Scale: value.Scale, Precision: &precision}} }
-func MoneyFrom(value ExactMoney) Value { decimal := DecimalFrom(value.Amount).Value.(Decimal); return Value{Type: "money", Value: Money{Currency: value.Currency, Amount: decimal}} }
-func Optional[T any](value *T, encode func(T) Value) Value { if value == nil { return Null() }; return encode(*value) }
-func Values[T any](items []T, encode func(T) Value) Value { output := make([]Value, len(items)); for index, item := range items { output[index] = encode(item) }; return List(output) }
+func BytesFrom(value []byte) Value         { return Bytes(base64.StdEncoding.EncodeToString(value)) }
+func TimestampFrom(value Instant) Value {
+	return Value{Type: "timestamp", Value: Timestamp{Seconds: strconv.FormatInt(value.Seconds, 10), Nanos: value.Nanos}}
+}
+func DecimalFrom(value ExactDecimal) Value {
+	precision := value.Precision
+	return Value{Type: "decimal", Value: Decimal{Coefficient: base64.StdEncoding.EncodeToString(value.CoefficientTwosComplement), Scale: value.Scale, Precision: &precision}}
+}
+func MoneyFrom(value ExactMoney) Value {
+	decimal := DecimalFrom(value.Amount).Value.(Decimal)
+	return Value{Type: "money", Value: Money{Currency: value.Currency, Amount: decimal}}
+}
+func Optional[T any](value *T, encode func(T) Value) Value {
+	if value == nil {
+		return Null()
+	}
+	return encode(*value)
+}
+func Values[T any](items []T, encode func(T) Value) Value {
+	output := make([]Value, len(items))
+	for index, item := range items {
+		output[index] = encode(item)
+	}
+	return List(output)
+}
 
-func RecordFields(value Value) (map[string]Value, error) { fields, ok := value.Value.(map[string]any); if value.Type != "record" || !ok { if typed, valid := value.Value.(map[string]Value); valid && value.Type == "record" { return typed, nil }; return nil, errors.New("invalid RiffDB record value") }; output := make(map[string]Value, len(fields)); for name, raw := range fields { encoded, err := json.Marshal(raw); if err != nil { return nil, errors.New("invalid RiffDB record value") }; var field Value; if json.Unmarshal(encoded, &field) != nil || validateValue(field, 0) != nil { return nil, errors.New("invalid RiffDB record value") }; output[name] = field }; return output, nil }
-func ListItems(value Value) ([]Value, error) { if value.Type != "list" { return nil, errors.New("invalid RiffDB list value") }; if typed, ok := value.Value.([]Value); ok { return typed, nil }; raw, ok := value.Value.([]any); if !ok { return nil, errors.New("invalid RiffDB list value") }; output := make([]Value, len(raw)); for index, item := range raw { encoded, _ := json.Marshal(item); if json.Unmarshal(encoded, &output[index]) != nil || validateValue(output[index], 0) != nil { return nil, errors.New("invalid RiffDB list value") } }; return output, nil }
-func BoolValue(value Value) (bool, error) { result, ok := value.Value.(bool); if value.Type != "bool" || !ok { return false, errors.New("invalid RiffDB bool value") }; return result, nil }
-func I64Value(value Value) (int64, error) { text, ok := value.Value.(string); if value.Type != "i64" || !ok { return 0, errors.New("invalid RiffDB i64 value") }; result, err := strconv.ParseInt(text, 10, 64); if err != nil { return 0, errors.New("invalid RiffDB i64 value") }; return result, nil }
-func U64Value(value Value) (uint64, error) { text, ok := value.Value.(string); if value.Type != "u64" || !ok { return 0, errors.New("invalid RiffDB u64 value") }; result, err := strconv.ParseUint(text, 10, 64); if err != nil { return 0, errors.New("invalid RiffDB u64 value") }; return result, nil }
-func StringValue(value Value) (string, error) { result, ok := value.Value.(string); if value.Type != "string" || !ok { return "", errors.New("invalid RiffDB string value") }; return result, nil }
-func UUIDValue(value Value) (string, error) { result, ok := value.Value.(string); if value.Type != "uuid" || !ok { return "", errors.New("invalid RiffDB UUID value") }; return result, nil }
-func EnumValue(value Value) (string, error) { result, ok := value.Value.(string); if value.Type != "enum" || !ok || !symbolPattern.MatchString(result) { return "", errors.New("invalid RiffDB enum value") }; return result, nil }
-func BytesValue(value Value) ([]byte, error) { text, ok := value.Value.(string); if value.Type != "bytes" || !ok { return nil, errors.New("invalid RiffDB bytes value") }; result, err := base64.StdEncoding.Strict().DecodeString(text); if err != nil { return nil, errors.New("invalid RiffDB bytes value") }; return result, nil }
-func DateValue(value Value) (int32, error) { text, ok := value.Value.(string); if value.Type != "date" || !ok { return 0, errors.New("invalid RiffDB date value") }; result, err := strconv.ParseInt(text, 10, 32); if err != nil { return 0, errors.New("invalid RiffDB date value") }; return int32(result), nil }
-func TimestampValue(value Value) (Instant, error) { if value.Type != "timestamp" { return Instant{}, errors.New("invalid RiffDB timestamp value") }; encoded, err := json.Marshal(value.Value); if err != nil { return Instant{}, errors.New("invalid RiffDB timestamp value") }; var wire Timestamp; if json.Unmarshal(encoded, &wire) != nil || wire.Nanos > 999_999_999 { return Instant{}, errors.New("invalid RiffDB timestamp value") }; seconds, err := strconv.ParseInt(wire.Seconds, 10, 64); if err != nil { return Instant{}, errors.New("invalid RiffDB timestamp value") }; return Instant{Seconds: seconds, Nanos: wire.Nanos}, nil }
-func DecimalValue(value Value) (ExactDecimal, error) { if value.Type != "decimal" { return ExactDecimal{}, errors.New("invalid RiffDB decimal value") }; encoded, err := json.Marshal(value.Value); if err != nil { return ExactDecimal{}, errors.New("invalid RiffDB decimal value") }; var wire Decimal; if json.Unmarshal(encoded, &wire) != nil || wire.Precision == nil { return ExactDecimal{}, errors.New("invalid RiffDB decimal value") }; coefficient, err := base64.StdEncoding.Strict().DecodeString(wire.Coefficient); if err != nil || len(coefficient) < 1 || len(coefficient) > 16 { return ExactDecimal{}, errors.New("invalid RiffDB decimal value") }; return ExactDecimal{CoefficientTwosComplement: coefficient, Scale: wire.Scale, Precision: *wire.Precision}, nil }
-func MoneyValue(value Value) (ExactMoney, error) { if value.Type != "money" { return ExactMoney{}, errors.New("invalid RiffDB money value") }; encoded, err := json.Marshal(value.Value); if err != nil { return ExactMoney{}, errors.New("invalid RiffDB money value") }; var wire Money; if json.Unmarshal(encoded, &wire) != nil || !regexp.MustCompile(`^[A-Z]{3}$`).MatchString(wire.Currency) { return ExactMoney{}, errors.New("invalid RiffDB money value") }; decimal, err := DecimalValue(Value{Type: "decimal", Value: wire.Amount}); if err != nil { return ExactMoney{}, err }; return ExactMoney{Currency: wire.Currency, Amount: decimal}, nil }
-func DecodeOptional[T any](value Value, decode func(Value) (T, error)) (*T, error) { if value.Type == "null" { return nil, nil }; decoded, err := decode(value); if err != nil { return nil, err }; return &decoded, nil }
-func DecodeValues[T any](value Value, decode func(Value) (T, error)) ([]T, error) { items, err := ListItems(value); if err != nil { return nil, err }; output := make([]T, len(items)); for index, item := range items { output[index], err = decode(item); if err != nil { return nil, err } }; return output, nil }
+func RecordFields(value Value) (map[string]Value, error) {
+	fields, ok := value.Value.(map[string]any)
+	if value.Type != "record" || !ok {
+		if typed, valid := value.Value.(map[string]Value); valid && value.Type == "record" {
+			return typed, nil
+		}
+		return nil, errors.New("invalid RiffDB record value")
+	}
+	output := make(map[string]Value, len(fields))
+	for name, raw := range fields {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, errors.New("invalid RiffDB record value")
+		}
+		var field Value
+		if json.Unmarshal(encoded, &field) != nil || validateValue(field, 0) != nil {
+			return nil, errors.New("invalid RiffDB record value")
+		}
+		output[name] = field
+	}
+	return output, nil
+}
+func ListItems(value Value) ([]Value, error) {
+	if value.Type != "list" {
+		return nil, errors.New("invalid RiffDB list value")
+	}
+	if typed, ok := value.Value.([]Value); ok {
+		return typed, nil
+	}
+	raw, ok := value.Value.([]any)
+	if !ok {
+		return nil, errors.New("invalid RiffDB list value")
+	}
+	output := make([]Value, len(raw))
+	for index, item := range raw {
+		encoded, _ := json.Marshal(item)
+		if json.Unmarshal(encoded, &output[index]) != nil || validateValue(output[index], 0) != nil {
+			return nil, errors.New("invalid RiffDB list value")
+		}
+	}
+	return output, nil
+}
+func BoolValue(value Value) (bool, error) {
+	result, ok := value.Value.(bool)
+	if value.Type != "bool" || !ok {
+		return false, errors.New("invalid RiffDB bool value")
+	}
+	return result, nil
+}
+func I64Value(value Value) (int64, error) {
+	text, ok := value.Value.(string)
+	if value.Type != "i64" || !ok {
+		return 0, errors.New("invalid RiffDB i64 value")
+	}
+	result, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid RiffDB i64 value")
+	}
+	return result, nil
+}
+func U64Value(value Value) (uint64, error) {
+	text, ok := value.Value.(string)
+	if value.Type != "u64" || !ok {
+		return 0, errors.New("invalid RiffDB u64 value")
+	}
+	result, err := strconv.ParseUint(text, 10, 64)
+	if err != nil {
+		return 0, errors.New("invalid RiffDB u64 value")
+	}
+	return result, nil
+}
+func StringValue(value Value) (string, error) {
+	result, ok := value.Value.(string)
+	if value.Type != "string" || !ok {
+		return "", errors.New("invalid RiffDB string value")
+	}
+	return result, nil
+}
+func UUIDValue(value Value) (string, error) {
+	result, ok := value.Value.(string)
+	if value.Type != "uuid" || !ok {
+		return "", errors.New("invalid RiffDB UUID value")
+	}
+	return result, nil
+}
+func EnumValue(value Value) (string, error) {
+	result, ok := value.Value.(string)
+	if value.Type != "enum" || !ok || !symbolPattern.MatchString(result) {
+		return "", errors.New("invalid RiffDB enum value")
+	}
+	return result, nil
+}
+func BytesValue(value Value) ([]byte, error) {
+	text, ok := value.Value.(string)
+	if value.Type != "bytes" || !ok {
+		return nil, errors.New("invalid RiffDB bytes value")
+	}
+	result, err := base64.StdEncoding.Strict().DecodeString(text)
+	if err != nil {
+		return nil, errors.New("invalid RiffDB bytes value")
+	}
+	return result, nil
+}
+func DateValue(value Value) (int32, error) {
+	text, ok := value.Value.(string)
+	if value.Type != "date" || !ok {
+		return 0, errors.New("invalid RiffDB date value")
+	}
+	result, err := strconv.ParseInt(text, 10, 32)
+	if err != nil {
+		return 0, errors.New("invalid RiffDB date value")
+	}
+	return int32(result), nil
+}
+func TimestampValue(value Value) (Instant, error) {
+	if value.Type != "timestamp" {
+		return Instant{}, errors.New("invalid RiffDB timestamp value")
+	}
+	encoded, err := json.Marshal(value.Value)
+	if err != nil {
+		return Instant{}, errors.New("invalid RiffDB timestamp value")
+	}
+	var wire Timestamp
+	if json.Unmarshal(encoded, &wire) != nil || wire.Nanos > 999_999_999 {
+		return Instant{}, errors.New("invalid RiffDB timestamp value")
+	}
+	seconds, err := strconv.ParseInt(wire.Seconds, 10, 64)
+	if err != nil {
+		return Instant{}, errors.New("invalid RiffDB timestamp value")
+	}
+	return Instant{Seconds: seconds, Nanos: wire.Nanos}, nil
+}
+func DecimalValue(value Value) (ExactDecimal, error) {
+	if value.Type != "decimal" {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	encoded, err := json.Marshal(value.Value)
+	if err != nil {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	var wire Decimal
+	if json.Unmarshal(encoded, &wire) != nil || wire.Precision == nil {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	coefficient, err := base64.StdEncoding.Strict().DecodeString(wire.Coefficient)
+	if err != nil || len(coefficient) < 1 || len(coefficient) > 16 {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	return ExactDecimal{CoefficientTwosComplement: coefficient, Scale: wire.Scale, Precision: *wire.Precision}, nil
+}
+func DecimalValueWithSchema(value Value, precision uint32, scale uint32) (ExactDecimal, error) {
+	if value.Type != "decimal" || precision == 0 {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	encoded, err := json.Marshal(value.Value)
+	if err != nil {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	var wire Decimal
+	if json.Unmarshal(encoded, &wire) != nil || wire.Scale != scale || (wire.Precision != nil && *wire.Precision != precision) {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	coefficient, err := base64.StdEncoding.Strict().DecodeString(wire.Coefficient)
+	if err != nil || len(coefficient) < 1 || len(coefficient) > 16 {
+		return ExactDecimal{}, errors.New("invalid RiffDB decimal value")
+	}
+	return ExactDecimal{CoefficientTwosComplement: coefficient, Scale: scale, Precision: precision}, nil
+}
+func MoneyValue(value Value) (ExactMoney, error) {
+	if value.Type != "money" {
+		return ExactMoney{}, errors.New("invalid RiffDB money value")
+	}
+	encoded, err := json.Marshal(value.Value)
+	if err != nil {
+		return ExactMoney{}, errors.New("invalid RiffDB money value")
+	}
+	var wire Money
+	if json.Unmarshal(encoded, &wire) != nil || !regexp.MustCompile(`^[A-Z]{3}$`).MatchString(wire.Currency) {
+		return ExactMoney{}, errors.New("invalid RiffDB money value")
+	}
+	decimal, err := DecimalValue(Value{Type: "decimal", Value: wire.Amount})
+	if err != nil {
+		return ExactMoney{}, err
+	}
+	return ExactMoney{Currency: wire.Currency, Amount: decimal}, nil
+}
+func DecodeOptional[T any](value Value, decode func(Value) (T, error)) (*T, error) {
+	if value.Type == "null" {
+		return nil, nil
+	}
+	decoded, err := decode(value)
+	if err != nil {
+		return nil, err
+	}
+	return &decoded, nil
+}
+func DecodeValues[T any](value Value, decode func(Value) (T, error)) ([]T, error) {
+	items, err := ListItems(value)
+	if err != nil {
+		return nil, err
+	}
+	output := make([]T, len(items))
+	for index, item := range items {
+		output[index], err = decode(item)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return output, nil
+}
 
 type Identity struct {
 	ApplicationManifestHash string

@@ -2091,9 +2091,12 @@ fn rust_decode_wire_expr(
     contract: &ContractBundle,
 ) -> String {
     if let Some(inner) = value_type.optional_inner() {
+        if let Some(function) = rust_decode_wire_function(inner, contract) {
+            return format!("decode_wire_optional({access}, {function})?");
+        }
         return format!(
-            "decode_wire_optional({access}, |value| Ok({}))?",
-            rust_decode_wire_expr(inner, "value", contract)
+            "decode_wire_optional({access}, |value| {})?",
+            rust_decode_wire_result_expr(inner, "value", contract)
         );
     }
     if let Some((inner, _)) = value_type.list_parts() {
@@ -2128,6 +2131,44 @@ fn rust_decode_wire_expr(
             unreachable!("handled above")
         }
     }
+}
+
+fn rust_decode_wire_function(value_type: &ValueType, contract: &ContractBundle) -> Option<String> {
+    let function = match value_type.tag() {
+        ValueTypeTag::Bool => "decode_wire_bool",
+        ValueTypeTag::I64 => "decode_wire_i64",
+        ValueTypeTag::U64 => "decode_wire_u64",
+        ValueTypeTag::Decimal => "decode_wire_decimal",
+        ValueTypeTag::String => "decode_wire_string",
+        ValueTypeTag::Bytes => "decode_wire_bytes",
+        ValueTypeTag::Timestamp => "decode_wire_timestamp",
+        ValueTypeTag::Date => "decode_wire_date",
+        ValueTypeTag::Uuid => "decode_wire_uuid",
+        ValueTypeTag::Enum => "decode_wire_enum",
+        ValueTypeTag::Record => {
+            let entity = value_type.record_ref().and_then(|record| match record {
+                RecordTypeRef::Entity(entity_id) => contract.schema().entity(*entity_id),
+                _ => None,
+            })?;
+            return Some(format!("decode_{}_entity", snake(entity.name())));
+        }
+        ValueTypeTag::Money
+        | ValueTypeTag::Optional
+        | ValueTypeTag::List
+        | ValueTypeTag::Vector => return None,
+    };
+    Some(function.to_owned())
+}
+
+fn rust_decode_wire_result_expr(
+    value_type: &ValueType,
+    access: &str,
+    contract: &ContractBundle,
+) -> String {
+    let expression = rust_decode_wire_expr(value_type, access, contract);
+    expression
+        .strip_suffix('?')
+        .map_or_else(|| format!("Ok({expression})"), str::to_owned)
 }
 
 /// Generates a dependency-free TypeScript request model for every named query and command.
@@ -3547,7 +3588,7 @@ mod tests {
         assert_eq!(expression.matches(access).count(), 1);
         assert_eq!(
             expression,
-            "decode_wire_optional(take_wire_field(&mut fields, 12)?, |value| Ok(decode_wire_i64(value)?))?"
+            "decode_wire_optional(take_wire_field(&mut fields, 12)?, decode_wire_i64)?"
         );
     }
 

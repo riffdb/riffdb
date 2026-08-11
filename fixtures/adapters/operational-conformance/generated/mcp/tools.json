@@ -1,0 +1,815 @@
+{
+  "application_manifest_hash": "9dfeb1ae9dad1e30a498de205ce1c82e79544d4ad1efa9ca6c49307919e0c7b2",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "description": "Execute the exact CreateDocuments compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "document_id": {
+                  "type": "string"
+                },
+                "published_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "site_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "site_id",
+                "document_id",
+                "published_at"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "documents",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_create_documents",
+      "operation_name": "CreateDocuments",
+      "plan_hash": "1a546abe56d6e6968d91b5e332e10d77cb09eb15b70689c33f7070f6ce30901f",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentsCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateDocuments"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "description": "Execute the exact CreatePipelines compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "pipelines": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "pipeline_id": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "state",
+                "pipeline_id",
+                "organization_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pipelines",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_create_pipelines",
+      "operation_name": "CreatePipelines",
+      "plan_hash": "055f86d2422f20cebeeda7d876e58442c147a21155253d5b5be5eb142e69c192",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PipelinesCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PipelineAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreatePipelines"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "description": "Execute the exact LogMetrics compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "metrics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "experiment_id": {
+                  "type": "string"
+                },
+                "metric_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "step": {
+                  "type": "integer"
+                },
+                "value_micros": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "step",
+                "metric_id",
+                "value_micros",
+                "experiment_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "metrics",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_log_metrics",
+      "operation_name": "LogMetrics",
+      "plan_hash": "93f03c1e9f6393553eb6887d02d40c8fb3862aeb578b90112757af0a2f64ecca",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "MetricsLogged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "MetricAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run LogMetrics"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "description": "Execute the exact WriteTuples compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "tuples": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "object": {
+                  "type": "string"
+                },
+                "relation": {
+                  "type": "string"
+                },
+                "store_id": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "tuple_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "object",
+                "subject",
+                "relation",
+                "store_id",
+                "tuple_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "tuples",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_write_tuples",
+      "operation_name": "WriteTuples",
+      "plan_hash": "db0ddb0fc7a0623be18557a100d6263241177ca3dabff405552596fdd7527c0a",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TuplesWritten",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TupleAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run WriteTuples"
+    }
+  ],
+  "reactive_tools": [],
+  "schema": "riffdb-generated-application-operations/v2",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListDraftDocuments named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "name": "adapter_operational_conformance_list_draft_documents",
+      "operation_name": "ListDraftDocuments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "title",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListDraftDocuments"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListFgaTuples named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "store_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "store_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "name": "adapter_operational_conformance_list_fga_tuples",
+      "operation_name": "ListFgaTuples",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "tuples": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "type": "string"
+                    },
+                    "relation": {
+                      "type": "string"
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "tuple_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "tuple_id",
+                    "object",
+                    "relation",
+                    "subject"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "tuples"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListFgaTuples"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListPipelines named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "name": "adapter_operational_conformance_list_pipelines",
+      "operation_name": "ListPipelines",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "pipelines": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "pipeline_id": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "pipeline_id",
+                    "name",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "pipelines"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListPipelines"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact MetricDashboard named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "experiment_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "name": "adapter_operational_conformance_metric_dashboard",
+      "operation_name": "MetricDashboard",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "summary": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maximum_micros": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "minimum_micros": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "sample_count": {
+                      "type": "string"
+                    },
+                    "total_micros": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "sample_count",
+                    "total_micros",
+                    "minimum_micros",
+                    "maximum_micros"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "summary"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run MetricDashboard"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact SearchDocuments named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "title_prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "title_prefix"
+        ],
+        "type": "object"
+      },
+      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "name": "adapter_operational_conformance_search_documents",
+      "operation_name": "SearchDocuments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "title",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run SearchDocuments"
+    }
+  ]
+}

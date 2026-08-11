@@ -35,7 +35,7 @@ export interface DriverTimestamp {
 export interface DriverDecimal {
     readonly coefficient: string;
     readonly scale: number;
-    readonly precision?: number;
+    readonly precision?: number | null;
 }
 export interface DriverMoney {
     readonly currency: string;
