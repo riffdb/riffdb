@@ -1547,8 +1547,17 @@ pub(crate) fn grant_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1
         && partition_subset(child.partition_scope(), parent.partition_scope())
         && permissions_subset(child, parent)
         && field_visibility_subset(child, parent)
+        && row_policy_subset(child, parent)
         && child.max_scan_rows() <= parent.max_scan_rows()
         && inherited_approvals_preserved(child, parent)
+}
+
+fn row_policy_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1) -> bool {
+    match (child.internal_row_policy(), parent.internal_row_policy()) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(child), Some(parent)) => child.is_narrowing_of(parent),
+    }
 }
 
 fn tenant_subset(child: &TenantScope, parent: &TenantScope) -> bool {

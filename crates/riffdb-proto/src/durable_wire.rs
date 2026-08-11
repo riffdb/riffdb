@@ -576,6 +576,22 @@ shape!(CAPABILITY_RECORD_V3 [
     message(2, &CAPABILITY_MIGRATION_GRANT_EXTENSION),
     message(3, &CAPABILITY_INSTALLATION_GRANT_EXTENSION),
 ]);
+shape!(CAPABILITY_ROW_POLICY_BINDING [
+    string(1, MAX_TEXT_ID_BYTES),
+    string(2, MAX_TEXT_ID_BYTES),
+    packed_varints(4, 4),
+]);
+shape!(CAPABILITY_ROW_POLICY_GRANT_EXTENSION [
+    fixed_bytes(1, 32),
+    nonempty_bytes(2, 64 * 1024),
+    repeated_message(3, 1_024, &CAPABILITY_ROW_POLICY_BINDING),
+]);
+shape!(CAPABILITY_RECORD_V4 [
+    message(1, &CAPABILITY_RECORD),
+    message(2, &CAPABILITY_MIGRATION_GRANT_EXTENSION),
+    message(3, &CAPABILITY_INSTALLATION_GRANT_EXTENSION),
+    message(4, &CAPABILITY_ROW_POLICY_GRANT_EXTENSION),
+]);
 shape!(CAPABILITY_LOOKUP[fixed_bytes(1, 16)]);
 shape!(CAPABILITY_BOOTSTRAP [
     fixed_bytes(1, 16),
@@ -816,7 +832,7 @@ shape!(ROOT_APPLICATION_INSTALLATION_CAMPAIGN [
     nonempty_bytes(4, 8 * 1024 * 1024),
 ]);
 
-const ROOTS: [&Shape; 75] = [
+const ROOTS: [&Shape; 76] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -903,6 +919,7 @@ const ROOTS: [&Shape; 75] = [
     &COMMAND_SEGMENT_V3,
     &VALIDATED_PREFIX_CHECKPOINT_V2,
     &CAPABILITY_RECORD_V3,
+    &CAPABILITY_RECORD_V4,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

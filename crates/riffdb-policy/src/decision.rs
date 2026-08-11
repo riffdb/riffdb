@@ -3,11 +3,12 @@
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
+use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
-    ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, EntityTypeId, Environment,
-    FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1,
-    ServiceOperationV1, TenantScope, Timestamp,
+    CapabilityRowPolicyGrantV1, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
+    EntityTypeId, Environment, FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1,
+    ScopedPartitionV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::operation::{
@@ -424,6 +425,44 @@ pub struct AuthorizedOperation {
     obligations: Obligations,
     identity: CurrentAuthorizationIdentity,
     discovery_authority: Option<CapabilityGrantV1>,
+    row_policy_authority: Option<AuthorizedRowPolicyAuthority>,
+}
+
+/// Transaction-current role, facts, and selected policies carried only by a
+/// current-policy proof.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthorizedRowPolicyAuthority {
+    principal: PrincipalFactBindingV1,
+    grant: CapabilityRowPolicyGrantV1,
+}
+
+impl AuthorizedRowPolicyAuthority {
+    pub(crate) fn new(
+        principal: PrincipalFactBindingV1,
+        grant: CapabilityRowPolicyGrantV1,
+    ) -> Self {
+        Self { principal, grant }
+    }
+
+    /// Transaction-current principal facts. Values remain authorization-only.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_principal(&self) -> &PrincipalFactBindingV1 {
+        &self.principal
+    }
+
+    /// Exact compiler-selected role and policy bindings.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_grant(&self) -> &CapabilityRowPolicyGrantV1 {
+        &self.grant
+    }
+}
+
+impl fmt::Debug for AuthorizedRowPolicyAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedRowPolicyAuthority([REDACTED])")
+    }
 }
 
 /// Move-only proof that current policy allowed one exact compiler-derived application plan.
@@ -445,6 +484,7 @@ pub struct AuthorizedApplicationQuery {
     target: ApplicationQueryTarget,
     identity: CurrentAuthorizationIdentity,
     obligations: Obligations,
+    row_policy_authority: Option<AuthorizedRowPolicyAuthority>,
 }
 
 /// Move-only proof for one exact operator-owned application installation operation.
@@ -554,6 +594,13 @@ impl AuthorizedApplicationQuery {
     #[must_use]
     pub const fn obligations(&self) -> &Obligations {
         &self.obligations
+    }
+
+    /// Transaction-current row-policy authority, when the capability is V4.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_row_policy_authority(&self) -> Option<&AuthorizedRowPolicyAuthority> {
+        self.row_policy_authority.as_ref()
     }
 }
 
@@ -677,6 +724,7 @@ impl AuthorizedOperation {
             obligations,
             identity,
             discovery_authority: None,
+            row_policy_authority: None,
         }
     }
 
@@ -694,8 +742,16 @@ impl AuthorizedOperation {
             request,
             obligations,
             discovery_authority: Some(grant),
+            row_policy_authority: None,
             identity,
         }
+    }
+
+    pub(crate) fn bind_row_policy_authority(
+        &mut self,
+        authority: Option<AuthorizedRowPolicyAuthority>,
+    ) {
+        self.row_policy_authority = authority;
     }
 
     /// Returns the exact database boundary checked by the current authorizer.
@@ -790,6 +846,7 @@ impl AuthorizedOperation {
             obligations: self.obligations.clone(),
             identity: self.identity.clone(),
             discovery_authority: self.discovery_authority.clone(),
+            row_policy_authority: self.row_policy_authority.clone(),
         })
     }
 
@@ -802,6 +859,7 @@ impl AuthorizedOperation {
             obligations,
             identity,
             discovery_authority,
+            row_policy_authority,
         } = self;
         if discovery_authority.is_some() {
             return None;
@@ -813,6 +871,7 @@ impl AuthorizedOperation {
             target,
             identity,
             obligations,
+            row_policy_authority,
         })
     }
 
@@ -825,6 +884,7 @@ impl AuthorizedOperation {
             obligations,
             identity,
             discovery_authority,
+            row_policy_authority: _,
         } = self;
         if discovery_authority.is_some() {
             return None;
@@ -858,6 +918,7 @@ impl AuthorizedOperation {
             obligations,
             identity,
             discovery_authority,
+            row_policy_authority: _,
         } = self;
         if discovery_authority.is_some() {
             return Err(CommandAuthorizationBindingError::OperationMismatch);
@@ -893,6 +954,7 @@ impl AuthorizedOperation {
             obligations,
             identity,
             discovery_authority,
+            row_policy_authority: _,
         } = self;
         if discovery_authority.is_some() {
             return Err(CatalogDeploymentAuthorizationBindingError::OperationMismatch);
@@ -945,6 +1007,7 @@ impl AuthorizedOperation {
             obligations,
             identity: _,
             discovery_authority,
+            row_policy_authority: _,
         } = self;
         match discovery_authority {
             Some(grant) => Ok(AuthorizedDiscovery {

@@ -88,6 +88,7 @@ fn grant() -> v1::CapabilityGrant {
         field_visibility: Vec::new(),
         max_scan_rows: 1,
         approval_required: Vec::new(),
+        row_policy: None,
     }
 }
 

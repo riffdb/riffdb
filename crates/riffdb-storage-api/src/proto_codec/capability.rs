@@ -5,10 +5,11 @@ use riffdb_proto::durable::readable_record_registry;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     ActorId, AdministrationSequence, ApplicationRoleHash, ApprovalId, Audience,
-    CapabilityGrantError, CapabilityId, CapabilityTokenDigest, CommandId, ContractLineage,
-    DatabaseId, DigestKeyId, EntityTypeId, Environment, FieldId, IndexId, PartitionKey,
-    ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
-    RequestId,
+    CapabilityGrantError, CapabilityId, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+    CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CapabilityTokenDigest, CommandId,
+    ContractLineage, DatabaseId, DigestKeyId, EntityTypeId, Environment, FieldId, IndexId,
+    PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
+    ReactiveOperationName, RequestId, RowPolicyName,
 };
 
 use crate::{
@@ -29,6 +30,7 @@ use super::{
 const RECORD: &str = "riffdb.storage.v1.CapabilityRecordV1";
 const RECORD_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
 const RECORD_V3: &str = "riffdb.storage.v1.CapabilityRecordV3";
+const RECORD_V4: &str = "riffdb.storage.v1.CapabilityRecordV4";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
@@ -430,6 +432,7 @@ fn grant_to_proto_with_extensions(
     wire::CapabilityGrantV1,
     Option<wire::CapabilityMigrationGrantExtensionV1>,
     Option<wire::CapabilityInstallationGrantExtensionV1>,
+    Option<wire::CapabilityRowPolicyGrantExtensionV1>,
 ) {
     let mut legacy = grant_to_proto(value);
     let lineages = value
@@ -484,7 +487,31 @@ fn grant_to_proto_with_extensions(
             approval_required: installation_approval_required,
         },
     );
-    (legacy, extension, installation)
+    let row_policy =
+        value
+            .internal_row_policy()
+            .map(|extension| wire::CapabilityRowPolicyGrantExtensionV1 {
+                application_role_hash: extension.application_role_hash().as_bytes().to_vec(),
+                canonical_principal_facts: extension
+                    .internal_principal_facts()
+                    .internal_canonical_bytes()
+                    .to_vec(),
+                policies: extension
+                    .bindings()
+                    .iter()
+                    .map(|binding| wire::CapabilityRowPolicyBindingV1 {
+                        contract_lineage: binding.lineage().as_str().to_owned(),
+                        policy_name: binding.policy_name().as_str().to_owned(),
+                        entity_type_id: binding.entity_type().get(),
+                        operations: binding
+                            .operations()
+                            .iter()
+                            .map(|operation| i32::from(operation.tag()))
+                            .collect(),
+                    })
+                    .collect(),
+            });
+    (legacy, extension, installation, row_policy)
 }
 
 fn grant_from_proto(
@@ -606,6 +633,64 @@ fn grant_from_proto_with_extensions(
     ))
 }
 
+fn grant_from_proto_with_row_policy(
+    value: wire::CapabilityGrantV1,
+    migration: Option<wire::CapabilityMigrationGrantExtensionV1>,
+    installation: Option<wire::CapabilityInstallationGrantExtensionV1>,
+    row_policy: wire::CapabilityRowPolicyGrantExtensionV1,
+) -> Result<CapabilityGrantV1, DurableCodecError> {
+    let base = match (migration, installation) {
+        (None, None) => grant_from_proto(value)?,
+        (migration, installation) => {
+            grant_from_proto_with_extensions(value, migration, installation)?
+        }
+    };
+    let role_hash = ApplicationRoleHash::from_bytes(fixed(row_policy.application_role_hash)?);
+    let principal_facts =
+        CapabilityPrincipalFactsV1::decode_canonical(&row_policy.canonical_principal_facts)
+            .map_err(|_| DurableCodecError::corrupt())?;
+    if row_policy.policies.is_empty() {
+        return Err(DurableCodecError::corrupt());
+    }
+    let raw_bindings = row_policy
+        .policies
+        .into_iter()
+        .map(|binding| {
+            let raw_operations = binding
+                .operations
+                .into_iter()
+                .map(|operation| {
+                    u8::try_from(operation)
+                        .ok()
+                        .and_then(CapabilityRowPolicyOperationV1::from_tag)
+                        .ok_or_else(DurableCodecError::corrupt)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if raw_operations.is_empty() || !raw_operations.windows(2).all(|pair| pair[0] < pair[1])
+            {
+                return Err(DurableCodecError::corrupt());
+            }
+            grant_result(CapabilityRowPolicyBindingV1::new(
+                ContractLineage::new(binding.contract_lineage)
+                    .map_err(|_| DurableCodecError::corrupt())?,
+                RowPolicyName::new(binding.policy_name)
+                    .map_err(|_| DurableCodecError::corrupt())?,
+                EntityTypeId::new(binding.entity_type_id).ok_or_else(DurableCodecError::corrupt)?,
+                raw_operations,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let extension = grant_result(CapabilityRowPolicyGrantV1::new(
+        role_hash,
+        principal_facts,
+        raw_bindings.clone(),
+    ))?;
+    if extension.bindings() != raw_bindings {
+        return Err(DurableCodecError::corrupt());
+    }
+    grant_result(base.with_row_policy(extension))
+}
+
 fn digest_to_proto(value: CapabilityTokenDigest) -> wire::CapabilityTokenDigestV1 {
     wire::CapabilityTokenDigestV1 {
         digest_scheme: u32::from(value.scheme()),
@@ -665,7 +750,8 @@ fn lifecycle_from_proto(
 pub fn encode_capability_record_v1(
     value: &StoredCapabilityRecordV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    let (grant, migration, installation) = grant_to_proto_with_extensions(value.grant());
+    let (grant, migration, installation, row_policy) =
+        grant_to_proto_with_extensions(value.grant());
     let base = wire::CapabilityRecordV1 {
         capability_id: value.capability_id().as_bytes().to_vec(),
         revision: value.revision().get(),
@@ -686,16 +772,25 @@ pub fn encode_capability_record_v1(
         grant: Some(grant),
         lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
     };
-    match (migration, installation) {
-        (None, None) => encode_message(RECORD, &base),
-        (Some(migration), None) => encode_message(
+    match (migration, installation, row_policy) {
+        (migration, installation, Some(row_policy)) => encode_message(
+            RECORD_V4,
+            &wire::CapabilityRecordV4 {
+                base: Some(base),
+                migration,
+                installation,
+                row_policy: Some(row_policy),
+            },
+        ),
+        (None, None, None) => encode_message(RECORD, &base),
+        (Some(migration), None, None) => encode_message(
             RECORD_V2,
             &wire::CapabilityRecordV2 {
                 base: Some(base),
                 migration: Some(migration),
             },
         ),
-        (migration, Some(installation)) => encode_message(
+        (migration, Some(installation), None) => encode_message(
             RECORD_V3,
             &wire::CapabilityRecordV3 {
                 base: Some(base),
@@ -717,15 +812,25 @@ pub fn decode_capability_record_v1(
         RECORD => {
             let value = wire::CapabilityRecordV1::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
-            record_from_proto(value, None, None)?
+            record_from_proto(value, None, None, None)?
         }
         RECORD_V2 => {
             let value = wire::CapabilityRecordV3::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
             if value.installation.is_some() {
-                record_from_proto(require(value.base)?, value.migration, value.installation)?
+                record_from_proto(
+                    require(value.base)?,
+                    value.migration,
+                    value.installation,
+                    None,
+                )?
             } else {
-                record_from_proto(require(value.base)?, Some(require(value.migration)?), None)?
+                record_from_proto(
+                    require(value.base)?,
+                    Some(require(value.migration)?),
+                    None,
+                    None,
+                )?
             }
         }
         RECORD_V3 => {
@@ -735,6 +840,17 @@ pub fn decode_capability_record_v1(
                 require(value.base)?,
                 value.migration,
                 Some(require(value.installation)?),
+                None,
+            )?
+        }
+        RECORD_V4 => {
+            let value = wire::CapabilityRecordV4::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            record_from_proto(
+                require(value.base)?,
+                value.migration,
+                value.installation,
+                Some(require(value.row_policy)?),
             )?
         }
         _ => {
@@ -752,14 +868,23 @@ fn record_from_proto(
     value: wire::CapabilityRecordV1,
     migration: Option<wire::CapabilityMigrationGrantExtensionV1>,
     installation: Option<wire::CapabilityInstallationGrantExtensionV1>,
+    row_policy: Option<wire::CapabilityRowPolicyGrantExtensionV1>,
 ) -> Result<StoredCapabilityRecordV1, DurableCodecError> {
-    let grant = match (migration, installation) {
-        (None, None) => grant_from_proto(require(value.grant.clone())?)?,
-        (migration, installation) => grant_from_proto_with_extensions(
+    let grant = match row_policy {
+        Some(row_policy) => grant_from_proto_with_row_policy(
             require(value.grant.clone())?,
             migration,
             installation,
+            row_policy,
         )?,
+        None => match (migration, installation) {
+            (None, None) => grant_from_proto(require(value.grant.clone())?)?,
+            (migration, installation) => grant_from_proto_with_extensions(
+                require(value.grant.clone())?,
+                migration,
+                installation,
+            )?,
+        },
     };
     storage_result(StoredCapabilityRecordV1::from_stored_parts(
         CapabilityId::from_bytes(fixed(value.capability_id)?)

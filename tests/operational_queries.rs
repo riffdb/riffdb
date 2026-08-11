@@ -110,6 +110,7 @@ impl QueryReadView for IndexedView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         Ok(None)
     }
@@ -118,6 +119,7 @@ impl QueryReadView for IndexedView {
         &mut self,
         _step: &QueryAccessStep,
         predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         Ok(vec![None; predicates.len()])
     }
@@ -128,6 +130,7 @@ impl QueryReadView for IndexedView {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         assert!(after.is_none(), "acceptance page fits in one bounded read");
         let prefixes = bound_index_prefix_bytes_v1(step, predicates).expect("sealed prefixes");
@@ -146,6 +149,7 @@ impl QueryReadView for IndexedView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
         Ok(riffdb_query_executor::QueryNearestPage {
             rows: Vec::new(),

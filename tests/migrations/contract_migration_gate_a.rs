@@ -501,6 +501,7 @@ fn bootstrap_request(
                 .collect(),
             max_scan_rows: 100,
             approval_required: Vec::new(),
+            row_policy: None,
         }),
     })
 }

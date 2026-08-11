@@ -7,11 +7,13 @@ use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use riffdb_policy::{AuthorizedIndexedRelationshipLookupV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_executor::{
     BoundPredicate, MAX_QUERY_SCANNED_ROWS, QueryBackendFault, QueryContinuation,
     QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryNearestPage,
     QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
-    execute_in_snapshot, execute_page_in_snapshot, validate_query_execution_group,
+    execute_in_snapshot, execute_page_in_snapshot, execute_policy_operational_page_in_snapshot,
+    execute_policy_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -176,6 +178,63 @@ impl QueryExecutionPort for RedbOperationalPorts {
             program, aggregates, parameters, prior, &mut view,
         )
     }
+
+    fn execute_policy_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        let mut view = RedbQueryView {
+            transaction: &transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head,
+            program,
+            parameters,
+        };
+        execute_policy_page_in_snapshot(program, parameters, prior, &mut view, policy)
+    }
+
+    fn execute_policy_operational_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        let mut view = RedbQueryView {
+            transaction: &transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head,
+            program,
+            parameters,
+        };
+        execute_policy_operational_page_in_snapshot(
+            program, aggregates, parameters, prior, &mut view, policy,
+        )
+    }
 }
 
 fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
@@ -280,15 +339,17 @@ impl QueryReadView for RedbQueryView<'_> {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         let plan = RowMaterializePlan::for_step(self.program, step)?;
-        self.point_with_plan(step, predicates, &plan)
+        self.point_with_plan(step, predicates, &plan, policy)
     }
 
     fn dependent_point_batch(
         &mut self,
         step: &QueryAccessStep,
         predicates: &[Vec<BoundPredicate>],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
             return Err(invariant());
@@ -297,7 +358,7 @@ impl QueryReadView for RedbQueryView<'_> {
         let plan = RowMaterializePlan::for_step(self.program, step)?;
         predicates
             .iter()
-            .map(|predicates| self.point_with_plan(step, predicates, &plan))
+            .map(|predicates| self.point_with_plan(step, predicates, &plan, policy))
             .collect()
     }
 
@@ -307,6 +368,7 @@ impl QueryReadView for RedbQueryView<'_> {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         let QueryAccessKind::Index { direction, .. } = step.access() else {
             return Err(invariant());
@@ -326,10 +388,11 @@ impl QueryReadView for RedbQueryView<'_> {
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
-        let mut entries = Vec::<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2)>::new();
+        let mut entries = Vec::<(IndexEntryKey, QueryRow)>::new();
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let mut inspected = 0usize;
+        let mut partition_candidates = 0usize;
         let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
             .map_err(|_| invariant())?;
         prefixes.sort_unstable();
@@ -341,6 +404,7 @@ impl QueryReadView for RedbQueryView<'_> {
         if *direction == AccessDirection::Reverse {
             prefixes.reverse();
         }
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
 
         self.touch_indexes();
         'prefixes: for prefix in prefixes {
@@ -393,7 +457,18 @@ impl QueryReadView for RedbQueryView<'_> {
                 if decoded.1.partition_key() != generation_target.partition_key() {
                     continue;
                 }
-                entries.push(decoded);
+                partition_candidates = partition_candidates
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                let decoded_key = schema.decode_index(&decoded.0).map_err(|_| corrupt())?;
+                let target =
+                    EntityTarget::new(step.internal_entity_id(), decoded_key.entity_key().clone())
+                        .map_err(|_| corrupt())?;
+                let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
+                if !self.allows_policy_record(policy, step.internal_entity_id(), record.fields())? {
+                    continue;
+                }
+                entries.push((decoded.0, plan.materialize(&record)?));
                 if entries.len() == fetch_limit {
                     break 'prefixes;
                 }
@@ -405,31 +480,24 @@ impl QueryReadView for RedbQueryView<'_> {
         // Continuation only when an extra matching entry was observed. Bound is
         // the last included key; the peeked row is never returned. Charge the
         // peeked observation to scanned_rows for accurate fuel accounting.
-        let scanned = entries.len();
-        let has_more = scanned > page_limit;
+        let has_more = entries.len() > page_limit;
         if has_more {
             entries.truncate(page_limit);
         }
-        let scanned_rows =
-            u64::try_from(scanned).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let scanned_rows = u64::try_from(partition_candidates)
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let continuation = has_more
             .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
             .flatten();
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
-        let mut rows = Vec::with_capacity(entries.len());
-        for (key, _) in entries {
-            let decoded = schema.decode_index(&key).map_err(|_| corrupt())?;
-            let target = EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
-                .map_err(|_| corrupt())?;
-            let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
-            rows.push(plan.materialize(&record)?);
-        }
+        let rows = entries.into_iter().map(|(_, row)| row).collect();
         match continuation {
             Some(continuation) => {
                 QueryScanPage::continued(rows, epoch, scanned_rows.max(1), continuation)
                     .ok_or_else(invariant)
             }
-            None => Ok(QueryScanPage::exact_end(rows, epoch)),
+            None => {
+                QueryScanPage::policy_exact_end(rows, epoch, scanned_rows).ok_or_else(invariant)
+            }
         }
     }
 
@@ -438,6 +506,7 @@ impl QueryReadView for RedbQueryView<'_> {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         // Row-store does not support vector nearest-neighbor search (ADR-0091).
         // Nearest queries must be routed through the columnar projection engine.
@@ -451,6 +520,7 @@ impl RedbQueryView<'_> {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         plan: &RowMaterializePlan,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, StorageError> {
         let key_fields = match step.access() {
             QueryAccessKind::Point { key_fields }
@@ -473,9 +543,61 @@ impl RedbQueryView<'_> {
             .encode_entity(&values)
             .map_err(|_| invariant())?;
         let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
-        self.read_entity(&target)?
-            .map(|record| plan.materialize(&record))
-            .transpose()
+        let Some(record) = self.read_entity(&target)? else {
+            return Ok(None);
+        };
+        if !self.allows_policy_record(policy, step.internal_entity_id(), record.fields())? {
+            return Ok(None);
+        }
+        plan.materialize(&record).map(Some)
+    }
+
+    fn allows_policy_record(
+        &mut self,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        entity: riffdb_types::EntityTypeId,
+        row: &riffdb_types::CanonicalRecord,
+    ) -> Result<bool, StorageError> {
+        let Some(policy) = policy else {
+            return Ok(true);
+        };
+        if !policy.protects(entity) {
+            return Ok(true);
+        }
+        let lookups = policy
+            .relationship_lookups(entity, row)
+            .map_err(|_| invariant())?;
+        let mut evidence = Vec::with_capacity(lookups.len());
+        for lookup in &lookups {
+            evidence.push(self.indexed_relationship_exists(lookup)?);
+        }
+        Ok(policy.allows(entity, row, &evidence))
+    }
+
+    fn indexed_relationship_exists(
+        &mut self,
+        lookup: &AuthorizedIndexedRelationshipLookupV1,
+    ) -> Result<bool, StorageError> {
+        let upper = exclusive_prefix_end(lookup.index_prefix()).ok_or_else(invariant)?;
+        self.touch_indexes();
+        let maximum = usize::try_from(MAX_QUERY_SCANNED_ROWS)
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let rows = self.transaction.read_range(
+            JournalTable::SecondaryIndexes,
+            lookup.index_prefix(),
+            &upper,
+            maximum,
+        )?;
+        if rows.len() == maximum {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        for row in rows {
+            let (_, entry) = decode_current_index_entry(row)?;
+            if entry.partition_key() == lookup.partition() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

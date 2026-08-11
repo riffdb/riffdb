@@ -7206,6 +7206,7 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
             .collect(),
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
         approval_required: Vec::new(),
+        row_policy: None,
     }
 }
 
@@ -7824,6 +7825,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             .into_iter()
             .map(permission_kind)
             .collect(),
+        row_policy: None,
     })
 }
 
@@ -10706,6 +10708,7 @@ mod tests {
                 field_visibility: Vec::new(),
                 max_scan_rows: 1,
                 approval_required: Vec::new(),
+                row_policy: None,
             }),
         }
     }

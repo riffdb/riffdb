@@ -14,6 +14,10 @@ files
     import riffdb/storage/v1/capability_migration.proto
   riffdb/storage/v1/capability_migration.proto
     import riffdb/storage/v1/capability.proto
+  riffdb/storage/v1/capability_row_policy.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/command_capsule_v1.proto
@@ -477,6 +481,20 @@ messages
     1 base optional .riffdb.storage.v1.CapabilityRecordV1
     2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
     3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV4 fields=4
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+  riffdb.storage.v1.CapabilityRowPolicyBindingV1 fields=4
+    1 contract_lineage optional string
+    2 policy_name optional string
+    3 entity_type_id optional uint32
+    4 operations repeated .riffdb.storage.v1.CapabilityRowPolicyOperationV1
+  riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1 fields=3
+    1 application_role_hash optional bytes
+    2 canonical_principal_facts optional bytes
+    3 policies repeated .riffdb.storage.v1.CapabilityRowPolicyBindingV1
   riffdb.storage.v1.CapabilityTokenDigestV1 fields=3
     1 digest_scheme optional uint32
     2 digest_key_id optional uint32
@@ -1292,13 +1310,14 @@ messages
     5 storage_format_version optional uint32
     6 contract_ir_version optional uint32
     7 mcp_protocol_baseline optional string
-  riffdb.v1.CapabilityGrant fields=6
+  riffdb.v1.CapabilityGrant fields=7
     1 tenant_scope optional .riffdb.v1.TenantScope
     2 partition_scope optional .riffdb.v1.PartitionScope
     3 permissions repeated .riffdb.v1.CapabilityPermission
     4 field_visibility repeated .riffdb.v1.EntityFieldVisibility
     5 max_scan_rows optional uint32
     6 approval_required repeated .riffdb.v1.CapabilityPermissionKind
+    7 row_policy optional .riffdb.v1.CapabilityRowPolicyGrant
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
@@ -1334,6 +1353,18 @@ messages
     29 watch_named_query optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     30 consume_contextual_subscription optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     31 install_application optional string oneof=permission
+  riffdb.v1.CapabilityPrincipalFact fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.CapabilityRowPolicyBinding fields=4
+    1 contract_lineage optional string
+    2 policy_name optional string
+    3 entity_type_id optional uint32
+    4 operations repeated .riffdb.v1.CapabilityRowPolicyOperation
+  riffdb.v1.CapabilityRowPolicyGrant fields=3
+    1 application_role_hash optional bytes
+    2 principal_facts repeated .riffdb.v1.CapabilityPrincipalFact
+    3 policies repeated .riffdb.v1.CapabilityRowPolicyBinding
   riffdb.v1.CapabilityTransition fields=2
     1 identity optional .riffdb.v1.CapabilityIdentity
     2 administration_sequence optional uint64
@@ -2488,6 +2519,12 @@ enums
     28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
     29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
     30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
+  riffdb.storage.v1.CapabilityRowPolicyOperationV1 values=5
+    0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
+    1 CAPABILITY_ROW_POLICY_OPERATION_READ
+    2 CAPABILITY_ROW_POLICY_OPERATION_CREATE
+    3 CAPABILITY_ROW_POLICY_OPERATION_UPDATE
+    4 CAPABILITY_ROW_POLICY_OPERATION_DELETE
   riffdb.storage.v1.CommandDerivedIndexKindV1 values=7
     0 COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED
     1 COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY
@@ -2693,6 +2730,12 @@ enums
     29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
     30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
     31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
+  riffdb.v1.CapabilityRowPolicyOperation values=5
+    0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
+    1 CAPABILITY_ROW_POLICY_OPERATION_READ
+    2 CAPABILITY_ROW_POLICY_OPERATION_CREATE
+    3 CAPABILITY_ROW_POLICY_OPERATION_UPDATE
+    4 CAPABILITY_ROW_POLICY_OPERATION_DELETE
   riffdb.v1.CommandDurability values=3
     0 COMMAND_DURABILITY_UNSPECIFIED
     1 COMMAND_DURABILITY_SYNCHRONOUS
