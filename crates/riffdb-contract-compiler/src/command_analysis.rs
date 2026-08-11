@@ -362,16 +362,26 @@ fn validate_unique_conflicts(
             HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
-    for binding in command
-        .bindings
-        .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Create | BindingMode::Mutate))
-    {
+    for binding in command.bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Create | BindingMode::Mutate | BindingMode::Delete
+        )
+    }) {
         let Some(entity) = hir.entity(binding.entity_id) else {
             continue;
         };
+        if binding.mode == BindingMode::Delete {
+            for unique in entity.indexes.iter().filter(|index| index.unique) {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnsupportedCollectionMutation,
+                    unique.span,
+                ));
+            }
+            continue;
+        }
         for unique in entity.indexes.iter().filter(|index| index.unique) {
-            let changes = binding.mode == BindingMode::Create
+            let changes = matches!(binding.mode, BindingMode::Create | BindingMode::Delete)
                 || unique
                     .fields
                     .iter()
@@ -504,10 +514,12 @@ fn validate_relationship_reads(
 }
 
 fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<CompilerDiagnostic>) {
-    let has_mutable_binding = command
-        .bindings
-        .iter()
-        .any(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create));
+    let has_mutable_binding = command.bindings.iter().any(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+        )
+    });
     if !command.bindings.is_empty() && (command.effects.is_empty() || has_mutable_binding) {
         return;
     }
@@ -533,11 +545,12 @@ fn validate_idempotency(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Option<FieldId> {
-    let mutating = command
-        .bindings
-        .iter()
-        .any(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
-        || !command.effects.is_empty();
+    let mutating = command.bindings.iter().any(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+        )
+    }) || !command.effects.is_empty();
     let Some(idempotency) = &command.idempotency else {
         if mutating {
             diagnostics.push(CompilerDiagnostic::new(

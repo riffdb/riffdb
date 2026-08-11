@@ -1,0 +1,34 @@
+contract WoodpeckerPipelineBulk version 1 {
+  entity Pipeline {
+    key (organization_id: uuid, pipeline_id: uuid)
+    field name: string<128>
+  }
+  entity PipelineStep {
+    key (organization_id: uuid, pipeline_id: uuid, step_id: uuid)
+    field run_text: string<1024>
+  }
+  entity PipelineGraphInput {
+    key (organization_id: uuid, pipeline_id: uuid, step_id: uuid)
+    field name: string<128>
+    field run_text: string<1024>
+  }
+  aggregate Pipelines {
+    root Pipeline
+    child PipelineStep
+    child PipelineGraphInput
+    partition_by organization_id
+    conflict_key (organization_id, pipeline_id)
+  }
+  bulk command CreatePipelinesWithSteps {
+    input request_id: uuid
+    input pipelines: list<PipelineGraphInput, 1..64>
+    idempotency_key request_id
+    for pipeline in pipelines {
+      create Pipeline(pipeline.organization_id, pipeline.pipeline_id) as stored else PipelineExists {}
+      create PipelineStep(pipeline.organization_id, pipeline.pipeline_id, pipeline.step_id) as step else StepExists {}
+      set stored.name = pipeline.name
+      set step.run_text = pipeline.run_text
+    }
+    return Created {}
+  }
+}

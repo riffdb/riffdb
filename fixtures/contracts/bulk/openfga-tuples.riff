@@ -1,0 +1,25 @@
+contract OpenFgaTupleBulk version 1 {
+  entity Tuple {
+    key (store_id: uuid, tuple_id: uuid)
+    field object: string<256>
+    field relation: string<64>
+    field subject: string<256>
+  }
+  aggregate Tuples {
+    root Tuple
+    partition_by store_id
+    conflict_key (store_id, tuple_id)
+  }
+  bulk command WriteTuples {
+    input request_id: uuid
+    input tuples: list<Tuple, 1..128>
+    idempotency_key request_id
+    for tuple in tuples {
+      create Tuple(tuple.store_id, tuple.tuple_id) as stored else Exists {}
+      set stored.object = tuple.object
+      set stored.relation = tuple.relation
+      set stored.subject = tuple.subject
+    }
+    return Written {}
+  }
+}

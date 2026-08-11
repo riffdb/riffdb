@@ -141,6 +141,13 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x01` | no inbound relationship |
 | `0x02` | indexed restrict |
 
+### Delete check mode
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | no inbound relationship |
+| `0x02` | transaction-current indexed restrict |
+
 ### Instruction
 
 | Tag | Variant |
@@ -757,15 +764,16 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 10 | `bindings` | u32 count + BindingPlan[] |
 | 11 | `root_validation_reads` | u32 count + RootValidationReadPlan[] |
 | 12 | `relationship_checks` | u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted |
-| 13 | `locality` | LocalityPlan |
-| 14 | `commit_checks` | u32 count + CommitCheckPlan[] |
-| 15 | `instructions` | u32 count + Instruction[] |
-| 16 | `execution_class` | Execution class tag |
-| 17 | `retry_policy` | Retry policy tag |
-| 18 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 19 | `entity_closure` | u32 count + EntitySchema[] |
-| 20 | `aggregate_closure` | AggregateSchema |
-| 21 | `event_closure` | u32 count + EventSchema[] |
+| 13 | `delete_checks` | IR v5+: u32 count + DeleteCheckPlanV1[]; omitted in v1-v4 |
+| 14 | `locality` | LocalityPlan |
+| 15 | `commit_checks` | u32 count + CommitCheckPlan[] |
+| 16 | `instructions` | u32 count + Instruction[] |
+| 17 | `execution_class` | Execution class tag |
+| 18 | `retry_policy` | Retry policy tag |
+| 19 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 20 | `entity_closure` | u32 count + EntitySchema[] |
+| 21 | `aggregate_closure` | AggregateSchema |
+| 22 | `event_closure` | u32 count + EventSchema[] |
 
 ### CollectionExpansionPlanV1
 
@@ -821,6 +829,15 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 1 | `relationship_name` | string |
 | 2 | `source_binding` | BindingId |
 | 3 | `target_binding` | BindingId |
+
+### DeleteCheckPlanV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `binding` | BindingId of one delete binding |
+| 2 | `mode` | Delete check mode tag |
+| 3 | `restrict_source_entity` | EntityTypeId only for indexed restrict |
+| 4 | `restrict_index` | IndexId only for indexed restrict |
 
 ### LocalityPlan
 

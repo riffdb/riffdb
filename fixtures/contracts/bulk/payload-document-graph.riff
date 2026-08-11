@@ -1,0 +1,34 @@
+contract PayloadDocumentGraphBulk version 1 {
+  entity Document {
+    key (site_id: uuid, document_id: uuid)
+    field title: string<256>
+  }
+  entity DocumentRevision {
+    key (site_id: uuid, document_id: uuid, revision_id: uuid)
+    field body: string<4096>
+  }
+  entity DocumentGraphInput {
+    key (site_id: uuid, document_id: uuid, revision_id: uuid)
+    field title: string<256>
+    field body: string<4096>
+  }
+  aggregate Documents {
+    root Document
+    child DocumentRevision
+    child DocumentGraphInput
+    partition_by site_id
+    conflict_key (site_id, document_id)
+  }
+  bulk command CreateDocumentGraphs {
+    input request_id: uuid
+    input documents: list<DocumentGraphInput, 1..64>
+    idempotency_key request_id
+    for document in documents {
+      create Document(document.site_id, document.document_id) as stored else DocumentExists {}
+      create DocumentRevision(document.site_id, document.document_id, document.revision_id) as revision else RevisionExists {}
+      set stored.title = document.title
+      set revision.body = document.body
+    }
+    return Created {}
+  }
+}

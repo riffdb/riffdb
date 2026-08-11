@@ -2866,6 +2866,25 @@ fn encode_command_semantics_versioned(
             writer.u32(check.target_binding().get())?;
         }
     }
+    if ir_version >= EXECUTABLE_IR_VERSION_V5 {
+        writer.u32(command.delete_checks().len() as u32)?;
+        for check in command.delete_checks() {
+            writer.u32(check.binding().get())?;
+            match check.mode() {
+                crate::DeleteCheckModeV1::NoInbound => {
+                    writer.u8(crate::format_registry::delete_check_mode::NO_INBOUND)?;
+                }
+                crate::DeleteCheckModeV1::Restrict {
+                    source_entity,
+                    index_id,
+                } => {
+                    writer.u8(crate::format_registry::delete_check_mode::RESTRICT)?;
+                    writer.u32(source_entity.get())?;
+                    writer.u32(index_id.get())?;
+                }
+            }
+        }
+    }
     encode_locality(writer, command.locality())?;
     writer.u32(command.commit_checks().len() as u32)?;
     for check in command.commit_checks() {
@@ -4642,6 +4661,32 @@ fn decode_command_versioned(
             ));
         }
     }
+    let mut encoded_delete_checks = Vec::new();
+    if ir_version >= EXECUTABLE_IR_VERSION_V5 {
+        let count = decode_len(reader, "command delete checks", crate::MAX_COMMAND_ITEMS)?;
+        encoded_delete_checks.reserve(count);
+        for _ in 0..count {
+            let binding = BindingId::new(reader.u32()?);
+            let mode = match reader.u8()? {
+                crate::format_registry::delete_check_mode::NO_INBOUND => {
+                    crate::DeleteCheckModeV1::NoInbound
+                }
+                crate::format_registry::delete_check_mode::RESTRICT => {
+                    crate::DeleteCheckModeV1::Restrict {
+                        source_entity: decode_entity_id(reader)?,
+                        index_id: decode_index_id(reader)?,
+                    }
+                }
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "delete check mode",
+                        tag,
+                    });
+                }
+            };
+            encoded_delete_checks.push((binding, mode));
+        }
+    }
     let locality = decode_locality(reader)?;
     let check_count = decode_len(reader, "commit checks", crate::MAX_COMMAND_ITEMS)?;
     let mut commit_checks = Vec::with_capacity(check_count);
@@ -4761,6 +4806,17 @@ fn decode_command_versioned(
     {
         return Err(IrValidationError::InvalidDependency {
             reason: "relationship proof does not match the derived command plan",
+        });
+    }
+    if encoded_delete_checks
+        != plan
+            .delete_checks()
+            .iter()
+            .map(|check| (check.binding(), check.mode()))
+            .collect::<Vec<_>>()
+    {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "delete proof does not match the derived command plan",
         });
     }
     if plan.plan_hash() != stored_plan_hash {

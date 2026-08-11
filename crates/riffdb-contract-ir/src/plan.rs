@@ -22,6 +22,8 @@ pub const MAX_COMMAND_ITEMS: usize = 4_096;
 pub const MAX_OBJECT_FIELDS: usize = 1_024;
 /// Maximum submitted elements in one compiler-owned collection expansion.
 pub const MAX_COLLECTION_COMMAND_ELEMENTS_V1: usize = 256;
+/// Maximum canonical input plus authoritative mutation/event graph for one collection command.
+pub const MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1: usize = 16 * 1024 * 1024;
 
 /// Closed service-owned command-value kinds introduced by executable IR v2.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -472,6 +474,41 @@ pub struct RelationshipCheckPlan {
     relationship_name: String,
     source_binding: BindingId,
     target_binding: BindingId,
+}
+
+/// Closed compiler-derived proof required before one current entity may be deleted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteCheckPlanV1 {
+    binding: BindingId,
+    mode: DeleteCheckModeV1,
+}
+
+/// Exact transaction-current dependency for a checked delete.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeleteCheckModeV1 {
+    /// The structural schema proves that no relationship targets this entity.
+    NoInbound,
+    /// The named reverse-index prefix must be empty in the committing transaction.
+    Restrict {
+        /// Entity owning the inbound relationship and reverse index.
+        source_entity: EntityTypeId,
+        /// Exact canonical reverse index selected by the structural policy.
+        index_id: IndexId,
+    },
+}
+
+impl DeleteCheckPlanV1 {
+    /// Delete binding whose transaction-current row is being removed.
+    #[must_use]
+    pub const fn binding(&self) -> BindingId {
+        self.binding
+    }
+
+    /// Compiler-sealed no-inbound or indexed-restrict proof.
+    #[must_use]
+    pub const fn mode(&self) -> DeleteCheckModeV1 {
+        self.mode
+    }
 }
 
 /// One compiler-derived input-computable unique conflict capability.
@@ -1114,6 +1151,7 @@ pub struct CommandPlan {
     expressions: ExpressionArena,
     bindings: Vec<BindingPlan>,
     relationship_checks: Vec<RelationshipCheckPlan>,
+    delete_checks: Vec<DeleteCheckPlanV1>,
     unique_conflicts: Vec<UniqueConflictPlan>,
     root_validation_reads: Vec<RootValidationReadPlan>,
     locality: LocalityPlan,
@@ -1324,6 +1362,13 @@ impl CommandPlan {
         }
         if let Some(expansion) = &collection_expansion {
             validate_collection_expansion(expansion, &input, &bindings, &instructions)?;
+            validate_collection_graph_bytes(
+                expansion,
+                &input,
+                &bindings,
+                &instructions,
+                contract_schema,
+            )?;
         } else if bindings
             .iter()
             .any(|binding| binding.mode() == BindingMode::Delete)
@@ -1510,11 +1555,13 @@ impl CommandPlan {
             &bindings,
             &root_validation_reads,
             &instructions,
+            collection_expansion.as_ref(),
             locality.partition_schema().maximum_encoded_bytes(),
             contract_schema,
         )?;
         let relationship_checks =
             derive_relationship_checks(&expressions, &bindings, &instructions, contract_schema)?;
+        let delete_checks = derive_delete_checks(&bindings, contract_schema)?;
         let unique_conflicts =
             derive_unique_conflicts(&expressions, &bindings, &instructions, contract_schema)?;
         checked_len(
@@ -1541,6 +1588,7 @@ impl CommandPlan {
             expressions,
             bindings,
             relationship_checks,
+            delete_checks,
             unique_conflicts,
             root_validation_reads,
             locality,
@@ -1641,6 +1689,11 @@ impl CommandPlan {
     #[must_use]
     pub fn relationship_checks(&self) -> &[RelationshipCheckPlan] {
         &self.relationship_checks
+    }
+    /// Complete checked-delete dependencies in binding order.
+    #[must_use]
+    pub fn delete_checks(&self) -> &[DeleteCheckPlanV1] {
+        &self.delete_checks
     }
     /// Declared unique values and their exact input-derived conflict capabilities.
     #[must_use]
@@ -1809,6 +1862,140 @@ fn validate_collection_expansion(
     Ok(())
 }
 
+fn validate_collection_graph_bytes(
+    expansion: &CollectionExpansionPlanV1,
+    input: &CommandInputSchema,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    let mut total = maximum_record_value_bytes(input.record(), schema, 0)?;
+    let first_binding = expansion.first_binding().get() as usize;
+    let binding_end = first_binding + expansion.binding_count();
+    for (position, binding) in bindings.iter().enumerate() {
+        if !matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate) {
+            continue;
+        }
+        let entity =
+            schema
+                .entity(binding.entity_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "collection graph entity",
+                })?;
+        let copies = if (first_binding..binding_end).contains(&position) {
+            expansion.maximum_elements()
+        } else {
+            1
+        };
+        total = total
+            .checked_add(
+                maximum_record_value_bytes(entity.record(), schema, 0)?
+                    .checked_mul(copies)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection command graph",
+                    })?,
+            )
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection command graph",
+            })?;
+    }
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction + expansion.instruction_count();
+    for (position, instruction) in instructions.iter().enumerate() {
+        let Instruction::EmitEvent(event) = instruction else {
+            continue;
+        };
+        let declared =
+            schema
+                .event(event.event_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "collection graph event",
+                })?;
+        let copies = if (first_instruction..instruction_end).contains(&position) {
+            expansion.maximum_elements()
+        } else {
+            1
+        };
+        total = total
+            .checked_add(
+                maximum_record_value_bytes(declared.payload(), schema, 0)?
+                    .checked_mul(copies)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection command graph",
+                    })?,
+            )
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection command graph",
+            })?;
+    }
+    checked_len(
+        "collection command canonical input and write graph bytes",
+        total,
+        MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+    )
+}
+
+fn maximum_record_value_bytes(
+    record: &RecordSchema,
+    schema: &SchemaIr,
+    depth: usize,
+) -> Result<usize, IrValidationError> {
+    if depth >= 32 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "collection command graph record depth",
+            actual: depth,
+            maximum: 32,
+        });
+    }
+    record.fields().iter().try_fold(6usize, |bytes, field| {
+        let value = maximum_typed_value_bytes(field.value_type(), schema, depth + 1)?;
+        bytes
+            .checked_add(4)
+            .and_then(|bytes| bytes.checked_add(value))
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection command graph record",
+            })
+    })
+}
+
+fn maximum_typed_value_bytes(
+    value_type: &crate::ValueType,
+    schema: &SchemaIr,
+    depth: usize,
+) -> Result<usize, IrValidationError> {
+    if let Some(inner) = value_type.optional_inner() {
+        return Ok(maximum_typed_value_bytes(inner, schema, depth)?.max(2));
+    }
+    if let Some((element, maximum)) = value_type.list_parts() {
+        return maximum_typed_value_bytes(element, schema, depth + 1)?
+            .checked_mul(maximum)
+            .and_then(|bytes| bytes.checked_add(6))
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection command graph list",
+            });
+    }
+    if let Some(record_ref) = value_type.record_ref() {
+        let record = match record_ref {
+            RecordTypeRef::Entity(entity) => {
+                schema.entity(*entity).map(crate::EntitySchema::record)
+            }
+            RecordTypeRef::Event(event) => schema.event(*event).map(crate::EventSchema::payload),
+            RecordTypeRef::CommandInput(_)
+            | RecordTypeRef::CommandOutcome { .. }
+            | RecordTypeRef::ProjectionResult(_) => None,
+        }
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "collection command graph record",
+        })?;
+        return maximum_record_value_bytes(record, schema, depth + 1);
+    }
+    value_type
+        .maximum_canonical_bytes()?
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "collection command graph value",
+        })
+}
+
 // Closed v1 storage framing charges are repeated here to preserve the
 // IR/storage dependency direction.
 const INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1: usize = 14;
@@ -1930,6 +2117,38 @@ fn derive_relationship_checks(
     Ok(checks)
 }
 
+fn derive_delete_checks(
+    bindings: &[BindingPlan],
+    schema: &SchemaIr,
+) -> Result<Vec<DeleteCheckPlanV1>, IrValidationError> {
+    let mut checks = Vec::new();
+    for binding in bindings
+        .iter()
+        .filter(|binding| binding.mode() == BindingMode::Delete)
+    {
+        let policy = schema.delete_policy(binding.entity_type()).ok_or(
+            IrValidationError::InvalidDependency {
+                reason: "delete binding lacks one checked structural deletion policy",
+            },
+        )?;
+        let mode = match policy.mode() {
+            crate::DeletePolicyModeV1::NoInbound => DeleteCheckModeV1::NoInbound,
+            crate::DeletePolicyModeV1::Restrict {
+                source_entity,
+                index_id,
+            } => DeleteCheckModeV1::Restrict {
+                source_entity,
+                index_id,
+            },
+        };
+        checks.push(DeleteCheckPlanV1 {
+            binding: binding.id(),
+            mode,
+        });
+    }
+    Ok(checks)
+}
+
 fn derive_unique_conflicts(
     expressions: &ExpressionArena,
     bindings: &[BindingPlan],
@@ -1952,6 +2171,20 @@ fn derive_unique_conflicts(
         })
         .collect::<BTreeMap<_, _>>();
     let mut conflicts = Vec::new();
+    for binding in bindings
+        .iter()
+        .filter(|binding| binding.mode() == BindingMode::Delete)
+    {
+        if schema
+            .unique_keys()
+            .iter()
+            .any(|unique| unique.source_entity() == binding.entity_type())
+        {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "checked delete of an entity with a unique key lacks an input-computable release conflict",
+            });
+        }
+    }
     for binding in bindings
         .iter()
         .filter(|binding| matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate))
@@ -2055,17 +2288,53 @@ fn validate_worst_case_index_derivation(
     bindings: &[BindingPlan],
     root_validation_reads: &[RootValidationReadPlan],
     instructions: &[Instruction],
+    collection_expansion: Option<&CollectionExpansionPlanV1>,
     maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let derivation =
-        worst_case_index_derivation(bindings, instructions, maximum_partition_key_bytes, schema)?;
-    validate_worst_case_index_limits(derivation, bindings.len(), root_validation_reads.len())
+    let derivation = worst_case_index_derivation(
+        bindings,
+        instructions,
+        collection_expansion,
+        maximum_partition_key_bytes,
+        schema,
+    )?;
+    let repeated = |binding: BindingId| {
+        collection_expansion.is_some_and(|expansion| {
+            let first = expansion.first_binding().get() as usize;
+            (first..first + expansion.binding_count()).contains(&(binding.get() as usize))
+        })
+    };
+    let binding_count = bindings.iter().try_fold(0usize, |count, binding| {
+        checked_index_derivation_add(
+            count,
+            if repeated(binding.id()) {
+                collection_expansion.map_or(1, CollectionExpansionPlanV1::maximum_elements)
+            } else {
+                1
+            },
+        )
+    })?;
+    let root_validation_read_count =
+        root_validation_reads
+            .iter()
+            .try_fold(0usize, |count, read| {
+                checked_index_derivation_add(
+                    count,
+                    if repeated(read.source_binding()) {
+                        collection_expansion.map_or(1, CollectionExpansionPlanV1::maximum_elements)
+                    } else {
+                        1
+                    },
+                )
+            })?;
+    validate_worst_case_index_limits(derivation, binding_count, root_validation_read_count)
 }
 
 fn worst_case_index_derivation(
     bindings: &[BindingPlan],
     instructions: &[Instruction],
+    collection_expansion: Option<&CollectionExpansionPlanV1>,
     maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
 ) -> Result<WorstCaseIndexDerivation, IrValidationError> {
@@ -2104,6 +2373,14 @@ fn worst_case_index_derivation(
                 .ok_or(IrValidationError::InvalidReference {
                     kind: "binding entity",
                 })?;
+        let multiplier = collection_expansion.map_or(1, |expansion| {
+            let first = expansion.first_binding().get() as usize;
+            if (first..first + expansion.binding_count()).contains(&(binding.id().get() as usize)) {
+                expansion.maximum_elements()
+            } else {
+                1
+            }
+        });
         for index in entity.indexes() {
             let earliest_changed_component = match binding.mode {
                 BindingMode::Read => continue,
@@ -2126,9 +2403,12 @@ fn worst_case_index_derivation(
             } else {
                 2
             };
-            index_entry_deltas = checked_index_derivation_add(index_entry_deltas, entry_delta)?;
+            index_entry_deltas = checked_index_derivation_add(
+                index_entry_deltas,
+                checked_index_derivation_mul(entry_delta, multiplier)?,
+            )?;
             if binding.mode != BindingMode::Delete {
-                index_entry_puts = checked_index_derivation_add(index_entry_puts, 1)?;
+                index_entry_puts = checked_index_derivation_add(index_entry_puts, multiplier)?;
             }
             affected_indexes.insert(index.id());
 
@@ -2148,22 +2428,31 @@ fn worst_case_index_derivation(
                     } else {
                         1
                     };
-                non_whole_prefixes = checked_index_derivation_add(non_whole_prefixes, copies)?;
+                non_whole_prefixes = checked_index_derivation_add(
+                    non_whole_prefixes,
+                    checked_index_derivation_mul(copies, multiplier)?,
+                )?;
                 non_whole_prefix_bytes = checked_index_derivation_add(
                     non_whole_prefix_bytes,
-                    checked_index_derivation_mul(prefix_bytes, copies)?,
+                    checked_index_derivation_mul(
+                        checked_index_derivation_mul(prefix_bytes, copies)?,
+                        multiplier,
+                    )?,
                 )?;
             }
             if unique_indexes.contains(&index.id()) {
-                unique_occupancies = checked_index_derivation_add(unique_occupancies, 1)?;
+                unique_occupancies = checked_index_derivation_add(unique_occupancies, multiplier)?;
                 unique_occupancy_bytes = checked_index_derivation_add(
                     unique_occupancy_bytes,
-                    checked_index_derivation_add(
+                    checked_index_derivation_mul(
                         checked_index_derivation_add(
-                            INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
-                            cumulative_component_bytes,
+                            checked_index_derivation_add(
+                                INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                                cumulative_component_bytes,
+                            )?,
+                            checked_index_derivation_add(MAX_KEY_BYTES, 5)?,
                         )?,
-                        checked_index_derivation_add(MAX_KEY_BYTES, 5)?,
+                        multiplier,
                     )?,
                 )?;
             }
@@ -2636,8 +2925,10 @@ fn validate_binding_plans(
             },
         )?;
         if entity.primary_key() != &binding.key_schema
-            || (matches!(binding.mode, BindingMode::Mutate | BindingMode::Create)
-                && owner.id() != locality.aggregate_id)
+            || (matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            ) && owner.id() != locality.aggregate_id)
         {
             return Err(IrValidationError::InvalidDependency {
                 reason: "binding key mismatch or mutable binding is outside the locality aggregate",
@@ -2715,8 +3006,10 @@ fn validate_root_validation_reads(
     let mut required = Vec::<(BindingId, Vec<ExprId>)>::new();
     if !aggregate.invariants().is_empty() {
         for binding in bindings.iter().filter(|binding| {
-            matches!(binding.mode, BindingMode::Mutate | BindingMode::Create)
-                && binding.entity_type != root.id()
+            matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            ) && binding.entity_type != root.id()
         }) {
             let prefix = binding
                 .key_expressions
@@ -2766,8 +3059,10 @@ fn validate_root_validation_reads(
                 kind: "root-validation source binding",
             },
         )?;
-        if !matches!(source.mode, BindingMode::Mutate | BindingMode::Create)
-            || source.entity_type == root.id()
+        if !matches!(
+            source.mode,
+            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+        ) || source.entity_type == root.id()
             || read.entity_type != root.id()
             || read.key_schema != *root.primary_key()
             || read.key_expressions.len() != root.primary_key_fields().len()
@@ -2870,7 +3165,12 @@ fn validate_locality(
     }
     let mutable = bindings
         .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+        .filter(|binding| {
+            matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            )
+        })
         .collect::<Vec<_>>();
     if locality.conflict_keys.len() != mutable.len() {
         return Err(IrValidationError::InvalidDependency {
@@ -3339,12 +3639,12 @@ fn validate_commit_checks(
         }
     }
 
-    let mutable = bindings
+    let postimage_bindings = bindings
         .iter()
         .filter(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
-    for binding in &mutable {
+    for binding in &postimage_bindings {
         let entity =
             schema
                 .entity(binding.entity_type)
@@ -3364,7 +3664,15 @@ fn validate_commit_checks(
 
     if !aggregate.invariants().is_empty() {
         let mut root_subjects = BTreeSet::new();
-        for binding in mutable {
+        for binding in bindings.iter().filter(|binding| {
+            matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            )
+        }) {
+            if binding.mode == BindingMode::Delete && binding.entity_type == aggregate.root() {
+                continue;
+            }
             if binding.entity_type == aggregate.root() {
                 root_subjects.insert((Some(binding.id), None));
                 continue;
@@ -4355,6 +4663,7 @@ pub(crate) mod tests {
         mode: BindingMode,
         assigned_fields: &[FieldId],
         binding_count: usize,
+        collection_maximum: Option<usize>,
     ) -> WorstCaseIndexDerivation {
         let entity_id = EntityTypeId::first();
         let index_id = IndexId::first();
@@ -4474,9 +4783,24 @@ pub(crate) mod tests {
                     })
             })
             .collect::<Vec<_>>();
+        let collection_expansion = collection_maximum.map(|maximum| {
+            CollectionExpansionPlanV1::new(
+                FieldId::first(),
+                1,
+                maximum,
+                crate::ValueType::u64(),
+                BindingId::new(0),
+                binding_count,
+                0,
+                instructions.len(),
+                CollectionDuplicatePolicyV1::Reject,
+            )
+            .expect("collection expansion")
+        });
         worst_case_index_derivation(
             &bindings,
             &instructions,
+            collection_expansion.as_ref(),
             maximum_partition_key_bytes,
             &schema,
         )
@@ -4757,7 +5081,12 @@ pub(crate) mod tests {
         let unrelated = FieldId::new(5).expect("field");
 
         assert_eq!(
-            index_estimator_derivation(BindingMode::Create, &[first, middle, last, unrelated], 1,),
+            index_estimator_derivation(
+                BindingMode::Create,
+                &[first, middle, last, unrelated],
+                1,
+                None,
+            ),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 1,
                 index_entry_puts: 1,
@@ -4769,7 +5098,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            index_estimator_derivation(BindingMode::Mutate, &[first], 1),
+            index_estimator_derivation(BindingMode::Mutate, &[first], 1, None),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 2,
                 index_entry_puts: 1,
@@ -4781,7 +5110,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            index_estimator_derivation(BindingMode::Mutate, &[middle], 1),
+            index_estimator_derivation(BindingMode::Mutate, &[middle], 1, None),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 2,
                 index_entry_puts: 1,
@@ -4793,7 +5122,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            index_estimator_derivation(BindingMode::Mutate, &[last], 1),
+            index_estimator_derivation(BindingMode::Mutate, &[last], 1, None),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 2,
                 index_entry_puts: 1,
@@ -4805,7 +5134,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            index_estimator_derivation(BindingMode::Mutate, &[unrelated], 1),
+            index_estimator_derivation(BindingMode::Mutate, &[unrelated], 1, None),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 0,
                 index_entry_puts: 0,
@@ -4817,13 +5146,38 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            index_estimator_derivation(BindingMode::Mutate, &[first], 2),
+            index_estimator_derivation(BindingMode::Mutate, &[first], 2, None),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 4,
                 index_entry_puts: 2,
                 index_entry_v2_partition_semantic_bytes: 36,
                 affected_prefixes: 13,
                 affected_target_bytes: 374,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn collection_index_capacity_multiplies_the_repeated_template_but_not_shared_whole_prefixes() {
+        let first = FieldId::new(2).expect("field");
+        let middle = FieldId::new(3).expect("field");
+        let last = FieldId::new(4).expect("field");
+        let unrelated = FieldId::new(5).expect("field");
+        assert_eq!(
+            index_estimator_derivation(
+                BindingMode::Create,
+                &[first, middle, last, unrelated],
+                1,
+                Some(8),
+            ),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 8,
+                index_entry_puts: 8,
+                index_entry_v2_partition_semantic_bytes: 144,
+                affected_prefixes: 25,
+                affected_target_bytes: 734,
                 unique_occupancies: 0,
                 unique_occupancy_bytes: 0,
             }

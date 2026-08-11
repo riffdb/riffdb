@@ -12,7 +12,7 @@ use riffdb_types::hash_source;
 use crate::bundle_lowering::{BundleParts, assemble_bundle};
 use crate::command_analysis::validate_commands;
 use crate::command_lowering::lower_commands;
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::diagnostic::CompilerDiagnostics;
 use crate::hir::lower_contract_hir;
 use crate::locality::analyze_locality;
 use crate::mcp_name::build_command_tool_registry;
@@ -74,7 +74,6 @@ impl Error for CompilationError {}
 /// same phases before checked IR lowering.
 pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
     let document = parse_contract(source).map_err(CompilationError::Syntax)?;
-    reject_unlowered_collection_mutations(&document)?;
     let symbols = allocate_genesis_symbols(&document).map_err(CompilationError::Semantic)?;
     let types = resolve_declared_types(&document, &symbols).map_err(CompilationError::Semantic)?;
     let hir =
@@ -132,7 +131,6 @@ fn compile(
     renames: Vec<riffdb_contract_ir::StableIdentityRename>,
 ) -> Result<ContractBundle, CompilationError> {
     let document = parse_contract(source).map_err(CompilationError::Syntax)?;
-    reject_unlowered_collection_mutations(&document)?;
     let symbols = match parent {
         Some(parent) => {
             if parent.lineage().as_str() != document.contract.value.name.value {
@@ -203,47 +201,6 @@ fn compile(
         compatibility,
     )
     .map_err(|error| ir_compilation_error(error, document.contract.span))
-}
-
-/// Keeps newly parsed grammar fail-closed until its versioned IR is sealed.
-///
-/// This gate is intentionally source-spanned and runs before symbol allocation,
-/// so neither `bulk` nor `delete` can be silently interpreted as an ordinary
-/// mutation while WP-560 is landing interface-first.
-fn reject_unlowered_collection_mutations(
-    document: &riffdb_contract_syntax::ContractDocument,
-) -> Result<(), CompilationError> {
-    use riffdb_contract_syntax::ast::{Binding, Declaration};
-
-    let mut diagnostics = Vec::new();
-    for declaration in &document.contract.value.declarations {
-        let Declaration::Command(command) = &declaration.value else {
-            continue;
-        };
-        if let Some(binding) = command
-            .bindings
-            .iter()
-            .chain(
-                command
-                    .bulk_iteration
-                    .iter()
-                    .flat_map(|iteration| iteration.value.bindings.iter()),
-            )
-            .find(|binding| matches!(binding.value, Binding::Delete(_)))
-        {
-            diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::UnsupportedCollectionMutation,
-                binding.span,
-            ));
-        }
-    }
-    if diagnostics.is_empty() {
-        Ok(())
-    } else {
-        Err(CompilationError::Semantic(
-            CompilerDiagnostics::new(diagnostics).expect("nonempty collection gate diagnostics"),
-        ))
-    }
 }
 
 fn ir_compilation_error(
@@ -332,15 +289,19 @@ mod tests {
     }
 
     #[test]
-    fn delete_bindings_fail_closed_until_the_complete_command_proof_is_available() {
+    fn delete_bindings_lower_with_one_complete_checked_policy_proof() {
         let bulk = r#"
 contract BulkGate version 1 {
-  entity Row { key (tenant_id: uuid, row_id: uuid) }
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    delete_policy no_inbound
+  }
   aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id) }
   bulk command DeleteRows {
+    input request_id: uuid
     input tenant_id: uuid
     input row_ids: list<uuid, 1..8>
-    idempotency_key tenant_id
+    idempotency_key request_id
     for row_id in row_ids {
       delete Row(tenant_id, row_id) as row else Missing {}
     }
@@ -348,11 +309,17 @@ contract BulkGate version 1 {
   }
 }
 "#;
-        assert_semantic_diagnostic_at(
-            bulk,
-            CompilerDiagnosticCode::UnsupportedCollectionMutation,
-            "delete Row(tenant_id, row_id) as row else Missing {}",
-        );
+        let bundle = compile_contract_source(bulk).expect("checked delete command");
+        let command = bundle.commands().first().expect("delete command");
+        assert_eq!(command.delete_checks().len(), 1);
+        assert!(matches!(
+            command.delete_checks()[0].mode(),
+            riffdb_contract_ir::DeleteCheckModeV1::NoInbound
+        ));
+        assert_eq!(bundle.ir_version(), 5);
+        let decoded = riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes())
+            .expect("delete command round trip");
+        assert_eq!(decoded, bundle);
     }
 
     #[test]
@@ -398,6 +365,16 @@ contract DeleteRestrict version 1 {
     partition_by tenant_id
     conflict_key (tenant_id)
   }
+  bulk command DeleteParents {
+    input request_id: uuid
+    input tenant_id: uuid
+    input parent_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for parent_id in parent_ids {
+      delete Parent(tenant_id, parent_id) as parent else Missing {}
+    }
+    return Deleted {}
+  }
 }
 "#;
         let bundle = compile_contract_source(source).expect("checked restrict policy");
@@ -422,6 +399,24 @@ contract DeleteRestrict version 1 {
             } if source_entity == child.id()
                 && child.indexes().iter().any(|index| index.id() == index_id)
         ));
+        let delete = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "DeleteParents")
+            .expect("delete command");
+        assert!(matches!(
+            delete.delete_checks()[0].mode(),
+            riffdb_contract_ir::DeleteCheckModeV1::Restrict {
+                source_entity,
+                index_id,
+            } if source_entity == child.id()
+                && child.indexes().iter().any(|index| index.id() == index_id)
+        ));
+        assert!(
+            riffdb_contract_ir::CommandExplain::from_plan(delete)
+                .render_text()
+                .contains("transaction-current-empty:true")
+        );
 
         let invalid = source.replace(
             "index by_parent (tenant_id, parent_id)",
@@ -475,6 +470,34 @@ contract BulkCreate version 1 {
             node.kind(),
             riffdb_contract_ir::ExpressionKind::CollectionElementField(_)
         )));
+    }
+
+    #[test]
+    fn bounded_collection_rejects_a_statically_oversized_input_and_write_graph() {
+        let source = r#"
+contract OversizedBulk version 1 {
+  entity Item {
+    key (tenant_id: uuid, item_id: uuid)
+    field payload: string<1048576>
+  }
+  aggregate Items {
+    root Item
+    partition_by tenant_id
+    conflict_key (tenant_id, item_id)
+  }
+  bulk command PutItems {
+    input request_id: uuid
+    input items: list<Item, 1..32>
+    idempotency_key request_id
+    for item in items {
+      create Item(item.tenant_id, item.item_id) as row else Exists {}
+      set row.payload = item.payload
+    }
+    return Written {}
+  }
+}
+"#;
+        assert_semantic_diagnostic_at(source, CompilerDiagnosticCode::BoundExceeded, "PutItems");
     }
 
     #[test]

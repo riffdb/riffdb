@@ -395,6 +395,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "bindings",
                 "root_validation_reads",
                 "relationship_checks",
+                "delete_checks",
                 "locality",
                 "commit_checks",
                 "instructions",
@@ -449,6 +450,15 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         (
             "RelationshipCheckPlan",
             vec!["relationship_name", "source_binding", "target_binding"],
+        ),
+        (
+            "DeleteCheckPlanV1",
+            vec![
+                "binding",
+                "mode",
+                "restrict_source_entity",
+                "restrict_index",
+            ],
         ),
         (
             "LocalityPlan",
@@ -599,6 +609,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("BindingPlan", "root-validation command fixture"),
         ("RootValidationReadPlan", "root-validation command fixture"),
         ("RelationshipCheckPlan", "relationship compiler fixture"),
+        ("DeleteCheckPlanV1", "checked-delete command fixture"),
         ("LocalityPlan", "root-validation command fixture"),
         ("ConflictDerivationPlan", "root-validation command fixture"),
         ("CommitCheckPlan", "root-validation command fixture"),
