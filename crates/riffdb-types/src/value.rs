@@ -5,7 +5,7 @@ use std::fmt;
 use crate::limits::{
     MAX_BYTES_VALUE_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, MAX_STRING_BYTES,
 };
-use crate::{Date, Decimal, EnumTypeId, EnumVariantId, FieldId, Money, Timestamp};
+use crate::{CanonicalVector, Date, Decimal, EnumTypeId, EnumVariantId, FieldId, Money, Timestamp};
 
 /// A value in RiffDB's closed, deterministic transactional value algebra.
 ///
@@ -47,6 +47,8 @@ pub enum CanonicalValue {
     List(CanonicalList),
     /// Fields in strictly increasing stable-ID order.
     Record(CanonicalRecord),
+    /// A fixed-dimension f32 vector for nearest-neighbor search (ADR-0091).
+    Vector(CanonicalVector),
 }
 
 impl fmt::Debug for CanonicalValue {
@@ -77,6 +79,10 @@ impl fmt::Debug for CanonicalValue {
             Self::Record(record) => formatter
                 .debug_struct("CanonicalValue::Record")
                 .field("field_count", &record.len())
+                .finish(),
+            Self::Vector(vector) => formatter
+                .debug_struct("CanonicalValue::Vector")
+                .field("dimension", &vector.dimension())
                 .finish(),
         }
     }

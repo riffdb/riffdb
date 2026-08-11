@@ -960,6 +960,9 @@ fn canonical_value_len(value: &CanonicalValue, depth: usize) -> Result<usize, Du
             })?
         }
         CanonicalValue::Record(_) => unreachable!("record sizing returns above"),
+        CanonicalValue::Vector(vector) => 4usize
+            .checked_add(vector.byte_size())
+            .ok_or_else(DurableCodecError::invariant)?,
     };
     payload
         .checked_add(2)

@@ -945,7 +945,8 @@ fn push_storage_prefix_component(
         | CanonicalValue::Decimal(_)
         | CanonicalValue::Money(_)
         | CanonicalValue::List(_)
-        | CanonicalValue::Record(_) => return Err(CommandIndexError::internal_defect()),
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => return Err(CommandIndexError::internal_defect()),
     };
     result
         .map(|_| ())

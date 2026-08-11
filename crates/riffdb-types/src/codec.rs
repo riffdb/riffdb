@@ -3,8 +3,9 @@
 use std::fmt;
 
 use crate::{
-    CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue, CurrencyCode,
-    Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId, Money, Timestamp,
+    CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
+    CanonicalVector, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId,
+    Money, Timestamp,
     limits::{
         MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
         MAX_RECORD_FIELDS, MAX_STRING_BYTES,
@@ -28,6 +29,7 @@ const TAG_UUID: u8 = 0x0a;
 const TAG_ENUM: u8 = 0x0b;
 const TAG_LIST: u8 = 0x0c;
 const TAG_RECORD: u8 = 0x0d;
+const TAG_VECTOR: u8 = 0x0e;
 
 /// Encodes one value using canonical value encoding v1.
 ///
@@ -201,6 +203,14 @@ impl Encoder {
                 Ok(())
             }
             CanonicalValue::Record(record) => self.encode_record_payload(record, depth),
+            CanonicalValue::Vector(vector) => {
+                self.write(&[TAG_VECTOR])?;
+                self.write(&vector.dimension().to_be_bytes())?;
+                for component in vector.components() {
+                    self.write(&component.to_be_bytes())?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -342,6 +352,11 @@ impl LengthCounter {
                 Ok(())
             }
             CanonicalValue::Record(record) => self.encode_record_payload(record, depth),
+            CanonicalValue::Vector(vector) => {
+                // tag + 4 bytes dimension + 4 bytes per component
+                self.add(1 + 4 + (vector.dimension() as usize) * 4)?;
+                Ok(())
+            }
         }
     }
 
@@ -532,6 +547,20 @@ impl Decoder<'_> {
                 }
                 Ok(CanonicalValue::Record(
                     CanonicalRecord::from_canonical_fields(fields),
+                ))
+            }
+            TAG_VECTOR => {
+                let dimension = u32::from_be_bytes(self.read_array()?);
+                if dimension == 0 || dimension > crate::MAX_VECTOR_DIMENSION {
+                    return Err(CanonicalCodecError::UnknownTag { tag: TAG_VECTOR });
+                }
+                let mut components = Vec::with_capacity(dimension as usize);
+                for _ in 0..dimension {
+                    components.push(f32::from_be_bytes(self.read_array()?));
+                }
+                Ok(CanonicalValue::Vector(
+                    CanonicalVector::new(components)
+                        .expect("dimension already validated"),
                 ))
             }
             tag => Err(CanonicalCodecError::UnknownTag { tag }),

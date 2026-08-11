@@ -1056,6 +1056,14 @@ fn canonical_value_into_public_unchecked(value: riffdb_types::CanonicalValue) ->
             }
             Kind::RecordValue(v1::ValueRecord { fields })
         }
+        CanonicalValue::Vector(vector) => {
+            let mut bytes = Vec::with_capacity(4 + vector.dimension() as usize * 4);
+            bytes.extend_from_slice(&vector.dimension().to_be_bytes());
+            for component in vector.components() {
+                bytes.extend_from_slice(&component.to_be_bytes());
+            }
+            Kind::BytesValue(bytes)
+        }
     };
     v1::Value { kind: Some(kind) }
 }

@@ -123,3 +123,135 @@ impl fmt::Display for StalenessSlo {
         write!(f, "{}s", self.0.as_secs())
     }
 }
+
+/// A validated, dimension-checked vector of f32 values.
+///
+/// Stored as authoritative entity state. Dimension is fixed at construction
+/// and matches the contract-declared `VectorDimension`.
+#[derive(Clone, PartialEq)]
+pub struct CanonicalVector {
+    /// The f32 components in declaration order.
+    components: Vec<f32>,
+}
+
+impl CanonicalVector {
+    /// Creates a vector from components. Returns `None` if the length is zero
+    /// or exceeds `MAX_VECTOR_DIMENSION`.
+    #[must_use]
+    pub fn new(components: Vec<f32>) -> Option<Self> {
+        let len = components.len();
+        if len == 0 || len > MAX_VECTOR_DIMENSION as usize {
+            return None;
+        }
+        Some(Self { components })
+    }
+
+    /// The number of components (the dimension).
+    #[must_use]
+    pub fn dimension(&self) -> u32 {
+        self.components.len() as u32
+    }
+
+    /// The raw f32 components.
+    #[must_use]
+    pub fn components(&self) -> &[f32] {
+        &self.components
+    }
+
+    /// Consumes self and returns the owned components.
+    #[must_use]
+    pub fn into_components(self) -> Vec<f32> {
+        self.components
+    }
+
+    /// Byte size for budget accounting (4 bytes per f32 component).
+    #[must_use]
+    pub fn byte_size(&self) -> usize {
+        self.components.len() * 4
+    }
+}
+
+impl fmt::Debug for CanonicalVector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CanonicalVector(dim={},[REDACTED])", self.dimension())
+    }
+}
+
+impl Eq for CanonicalVector {}
+
+// f32 does not implement Ord, but we need it for CanonicalValue's derived traits.
+// Vector equality uses bitwise comparison (same as IEEE 754 totalOrder for non-NaN).
+impl std::hash::Hash for CanonicalVector {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for component in &self.components {
+            state.write_u32(component.to_bits());
+        }
+    }
+}
+
+impl PartialOrd for CanonicalVector {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CanonicalVector {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.components
+            .len()
+            .cmp(&other.components.len())
+            .then_with(|| {
+                for (a, b) in self.components.iter().zip(other.components.iter()) {
+                    let ordering = a.to_bits().cmp(&b.to_bits());
+                    if ordering != std::cmp::Ordering::Equal {
+                        return ordering;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            })
+    }
+}
+
+/// Metadata about an embedding write for staleness and model-version tracking.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EmbeddingMetadata {
+    /// The model identity string (e.g. "text-embedding-3-small").
+    model_identity: String,
+    /// The model version string (e.g. "2024-01-25").
+    model_version: String,
+}
+
+impl EmbeddingMetadata {
+    /// Maximum length for model identity and version strings.
+    pub const MAX_MODEL_STRING_LEN: usize = 256;
+
+    /// Creates validated embedding metadata.
+    #[must_use]
+    pub fn new(model_identity: impl Into<String>, model_version: impl Into<String>) -> Option<Self> {
+        let model_identity = model_identity.into();
+        let model_version = model_version.into();
+        if model_identity.is_empty()
+            || model_identity.len() > Self::MAX_MODEL_STRING_LEN
+            || model_version.is_empty()
+            || model_version.len() > Self::MAX_MODEL_STRING_LEN
+        {
+            return None;
+        }
+        Some(Self {
+            model_identity,
+            model_version,
+        })
+    }
+
+    /// The model identity.
+    #[must_use]
+    pub fn model_identity(&self) -> &str {
+        &self.model_identity
+    }
+
+    /// The model version.
+    #[must_use]
+    pub fn model_version(&self) -> &str {
+        &self.model_version
+    }
+}

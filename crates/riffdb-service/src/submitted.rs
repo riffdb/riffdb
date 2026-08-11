@@ -436,6 +436,8 @@ pub enum SubmittedValue {
     List(SubmittedList),
     /// Bounded fields retaining submitted identities.
     Record(SubmittedRecord),
+    /// A fixed-dimension f32 vector for nearest-neighbor search.
+    Vector(riffdb_types::CanonicalVector),
 }
 
 impl SubmittedValue {
@@ -513,6 +515,7 @@ impl SubmittedValue {
             }
             Self::List(list) => list.structural_size()?,
             Self::Record(record) => record.structural_size()?,
+            Self::Vector(vector) => 4 + vector.byte_size(),
         };
         payload
             .checked_add(TAG_BYTES)
@@ -553,6 +556,7 @@ impl TryFrom<CanonicalValue> for SubmittedValue {
                     .collect::<Result<Vec<_>, ServiceDtoError>>()?,
             )?),
             CanonicalValue::Record(record) => Self::Record(SubmittedRecord::try_from(record)?),
+            CanonicalValue::Vector(vector) => Self::Vector(vector),
         };
         ensure_document_bound(submitted.structural_size()?)?;
         Ok(submitted)
