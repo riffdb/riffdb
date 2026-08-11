@@ -1,13 +1,14 @@
 //! Resumable installation-campaign semantic corpus.
 
 use riffdb_application::{
-    ApplicationInstallationCampaign, ApplicationInstallationPlan, ApplicationInstallationPlanInput,
-    ApplicationInstallationReceipt, CredentialDestination, InstallationArtifact,
-    InstallationArtifactKind, InstallationCampaignErrorKind, InstallationCampaignPhase,
-    InstallationContract, InstallationDriver, InstallationFailureCode, InstallationFeature,
-    InstallationNextAction, InstallationRole, InstallationSeed, InstallationStage,
-    InstallationStageEvidence, InstallationSymbol, InstallationTarget, InstalledCredentialEvidence,
-    InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation, RoleOperationKind,
+    ApplicationInstallationCampaign, ApplicationInstallationCampaignState,
+    ApplicationInstallationPlan, ApplicationInstallationPlanInput, ApplicationInstallationReceipt,
+    CredentialDestination, InstallationArtifact, InstallationArtifactKind,
+    InstallationCampaignErrorKind, InstallationCampaignPhase, InstallationContract,
+    InstallationDriver, InstallationFailureCode, InstallationFeature, InstallationNextAction,
+    InstallationRole, InstallationSeed, InstallationStage, InstallationStageEvidence,
+    InstallationSymbol, InstallationTarget, InstalledCredentialEvidence, InstalledRoleEvidence,
+    InstalledSeedEvidence, RoleOperation, RoleOperationKind,
 };
 use riffdb_types::{
     ApplicationInstallationCampaignId, ApplicationLockHash, ApplicationManifestHash,
@@ -280,4 +281,89 @@ fn campaign_identity_plan_identity_stage_order_and_evidence_fail_closed() {
         InstallationCampaignErrorKind::EvidenceMismatch
     );
     assert!(campaign.completed_evidence().is_empty());
+}
+
+#[test]
+fn canonical_campaign_state_recovers_every_partial_and_terminal_boundary() {
+    let plan = plan(1);
+    let id = campaign_id(5);
+    let mut campaign = ApplicationInstallationCampaign::start(id, plan.identity());
+
+    for stage in &InstallationStage::ALL[..9] {
+        campaign
+            .complete_stage(&plan, evidence(*stage))
+            .expect("stage completion");
+        let state = ApplicationInstallationCampaignState::capture(&campaign, &plan)
+            .expect("canonical durable state");
+        let recovered =
+            ApplicationInstallationCampaignState::decode_canonical(state.canonical_bytes())
+                .expect("strict durable decode");
+        assert_eq!(recovered.plan(), &plan);
+        assert_eq!(recovered.campaign(), &campaign);
+        assert_eq!(recovered.canonical_bytes(), state.canonical_bytes());
+    }
+
+    campaign
+        .record_failure(&plan, InstallationFailureCode::ServiceUnavailable)
+        .expect("typed partial");
+    let partial = ApplicationInstallationCampaignState::capture(&campaign, &plan)
+        .expect("partial durable state");
+    let recovered =
+        ApplicationInstallationCampaignState::decode_canonical(partial.canonical_bytes())
+            .expect("partial recovery");
+    assert_eq!(
+        recovered.campaign().observe().phase(),
+        InstallationCampaignPhase::Partial
+    );
+
+    campaign.resume(id, &plan).expect("clear partial failure");
+    campaign.seal_receipt(&plan).expect("terminal receipt");
+    let terminal = ApplicationInstallationCampaignState::capture(&campaign, &plan)
+        .expect("terminal durable state");
+    assert_eq!(
+        terminal.canonical_bytes(),
+        include_bytes!(
+            "../../../fixtures/installation/application-installation-campaign-state-v1.json"
+        )
+    );
+    let recovered =
+        ApplicationInstallationCampaignState::decode_canonical(terminal.canonical_bytes())
+            .expect("terminal recovery");
+    assert!(recovered.campaign().is_installed());
+    assert_eq!(recovered.campaign(), &campaign);
+}
+
+#[test]
+fn campaign_state_rejects_noncanonical_tampered_and_cross_plan_bytes() {
+    let plan = plan(1);
+    let mut campaign = ApplicationInstallationCampaign::start(campaign_id(6), plan.identity());
+    campaign
+        .complete_stage(&plan, evidence(InstallationStage::Preflight))
+        .expect("preflight");
+    let state =
+        ApplicationInstallationCampaignState::capture(&campaign, &plan).expect("canonical state");
+
+    let mut noncanonical = state.canonical_bytes().to_vec();
+    noncanonical.extend_from_slice(b"\n");
+    assert_eq!(
+        ApplicationInstallationCampaignState::decode_canonical(&noncanonical)
+            .expect_err("extra bytes are not canonical")
+            .kind(),
+        InstallationCampaignErrorKind::NonCanonical
+    );
+
+    let text = std::str::from_utf8(state.canonical_bytes()).expect("utf8 state");
+    let plan_hash = plan
+        .identity()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let tampered = text.replacen(&plan_hash, &"ff".repeat(32), 1);
+    assert_eq!(
+        ApplicationInstallationCampaignState::decode_canonical(tampered.as_bytes())
+            .expect_err("plan identity substitution")
+            .kind(),
+        InstallationCampaignErrorKind::PlanIdentityMismatch
+    );
 }
