@@ -1039,6 +1039,9 @@ fn committed_entity(
                 .checked_next()
                 .ok_or_else(CommandRecordGraphError::internal_defect)?,
         ),
+        EntityMutation::Delete { .. } => {
+            return Err(CommandRecordGraphError::internal_defect());
+        }
     };
     let post_image = mutation.post_image();
     let stored = StoredEntityRecordV1::from_checked_post_image(

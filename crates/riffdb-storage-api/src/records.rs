@@ -2497,6 +2497,9 @@ fn validate_intent_entity_derivation(
             EntityMutation::Create(_) => ExpectedEntityState::Absent,
             EntityMutation::Replace {
                 expected_version, ..
+            }
+            | EntityMutation::Delete {
+                expected_version, ..
             } => ExpectedEntityState::Present(*expected_version),
         };
         let intent_post_image = intent_mutation.post_image();
@@ -2822,6 +2825,9 @@ fn projected_atomic_semantic_breakdown(
     let expected_for = |mutation: &EntityMutation| match mutation {
         EntityMutation::Create(_) => ExpectedEntityState::Absent,
         EntityMutation::Replace {
+            expected_version, ..
+        }
+        | EntityMutation::Delete {
             expected_version, ..
         } => ExpectedEntityState::Present(*expected_version),
     };
