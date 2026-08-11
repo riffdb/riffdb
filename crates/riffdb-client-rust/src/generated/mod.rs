@@ -75,6 +75,48 @@ pub trait GeneratedCommand {
         &self,
         response: &v1::ExecuteCommandResponse,
     ) -> Result<Self::Outcome, GeneratedCommandError>;
+
+    /// Derives compiler-owned successor revisions for successful checked
+    /// workflow mutations.
+    ///
+    /// Ordinary commands return no revisions. Generated workflow bindings
+    /// override this method and derive each successor from the exact observed
+    /// revision that the server accepted. The response outcome gates the
+    /// derivation, so stale or illegal business outcomes never manufacture a
+    /// revision.
+    fn workflow_successor_revisions(
+        &self,
+        _response: &v1::ExecuteCommandResponse,
+    ) -> Result<Vec<WorkflowSuccessorRevision>, GeneratedCommandError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Successor revision produced by one checked workflow binding mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowSuccessorRevision {
+    binding: &'static str,
+    revision: u64,
+}
+
+impl WorkflowSuccessorRevision {
+    /// Constructs compiler-generated successor evidence.
+    #[must_use]
+    pub const fn generated(binding: &'static str, revision: u64) -> Self {
+        Self { binding, revision }
+    }
+
+    /// Exact source binding whose entity revision advanced.
+    #[must_use]
+    pub const fn binding(&self) -> &'static str {
+        self.binding
+    }
+
+    /// Exact successor revision after the successful command.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 /// A closed failure in generated shape-only code.

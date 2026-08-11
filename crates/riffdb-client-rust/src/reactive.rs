@@ -808,7 +808,7 @@ impl StableApplicationClient {
         let outcome = command
             .decode_outcome(&response)
             .map_err(GeneratedExecutionError::CommandShape)?;
-        typed_command_result(outcome, response)
+        typed_command_result(command, outcome, response)
     }
 
     /// Opens and decodes one generated exact live query.

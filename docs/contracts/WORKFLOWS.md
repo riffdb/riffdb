@@ -77,6 +77,18 @@ operations must be direct, typed command inputs. RiffDB rejects computed or
 implicitly substituted values. Generated application bindings therefore make
 the exact concurrency evidence required method parameters.
 
+On the declared success outcome, generated clients also return a bounded
+`workflow_revisions` collection. Each item names the source binding and its
+exact successor entity revision. Callers feed that revision into the next
+transition, renewal, release, expiration, or fenced business command; they do
+not re-read the entity or guess from a commit sequence. Non-success outcomes
+return an empty collection. Same-key replay returns the identical successor
+revision because the accepted input and persisted outcome are identical.
+
+For example, a successful `ClaimWork` called with `expected_revision = 7`
+returns `{ binding: "work", revision: 8 }` alongside `Claimed`. Revision
+overflow fails closed as an invalid generated response and never wraps.
+
 ## Renew, release, expire, and protect work
 
 The remaining operations form a closed family:

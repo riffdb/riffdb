@@ -19,11 +19,16 @@ type QueryResult[T any] struct {
 	ApplicationHead uint64
 	NextCursor      string
 }
+type WorkflowSuccessorRevision struct {
+	Binding  string
+	Revision uint64
+}
 type CommandResult[T any] struct {
-	Outcome        T
-	CommitSequence *uint64
-	Replayed       bool
-	OutcomeURI     string
+	Outcome           T
+	CommitSequence    *uint64
+	Replayed          bool
+	OutcomeURI        string
+	WorkflowRevisions []WorkflowSuccessorRevision
 }
 type BatchItem[T any] struct {
 	Index  uint32

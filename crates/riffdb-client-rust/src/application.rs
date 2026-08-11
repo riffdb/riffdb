@@ -184,6 +184,9 @@ impl StableApplicationClient {
             .execute_generated_with_recovery(command, attempts, metadata)
             .await?;
         let (outcome, response) = execution.into_parts();
+        let workflow_revisions = command
+            .workflow_successor_revisions(&response)
+            .map_err(GeneratedExecutionError::CommandShape)?;
         Ok(TypedCommandResult {
             outcome,
             commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
@@ -196,6 +199,7 @@ impl StableApplicationClient {
             replayed: response.status
                 == v1::execute_command_response::CompletionStatus::Replayed as i32,
             outcome_uri: response.outcome_uri,
+            workflow_revisions,
         })
     }
 
@@ -377,7 +381,7 @@ impl StableApplicationClient {
                     .map_err(GeneratedExecutionError::CommandShape);
                 (
                     index,
-                    outcome.and_then(|outcome| typed_command_result(outcome, response)),
+                    outcome.and_then(|outcome| typed_command_result(&command, outcome, response)),
                 )
             },
         ));
@@ -605,7 +609,8 @@ fn resolve_generated_batch_items<C: GeneratedCommand>(
                     .map_err(GeneratedExecutionError::CommandShape);
                 resolved.push((
                     index,
-                    outcome.and_then(|outcome| typed_command_result(outcome, item_response)),
+                    outcome
+                        .and_then(|outcome| typed_command_result(&command, outcome, item_response)),
                 ));
             }
             Some(v1::execute_command_batch_item::Result::Error(error_wire)) => {
@@ -703,10 +708,14 @@ fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
     (transport_batch_size, transport_concurrency)
 }
 
-pub(crate) fn typed_command_result<T>(
+pub(crate) fn typed_command_result<C: GeneratedCommand<Outcome = T>, T>(
+    command: &C,
     outcome: T,
     response: v1::ExecuteCommandResponse,
 ) -> Result<TypedCommandResult<T>, GeneratedExecutionError> {
+    let workflow_revisions = command
+        .workflow_successor_revisions(&response)
+        .map_err(GeneratedExecutionError::CommandShape)?;
     let plan_hash = response.plan_hash.try_into().map_err(|_| {
         GeneratedExecutionError::CommandShape(
             crate::generated::GeneratedCommandError::InvalidOutcomeShape,
@@ -720,6 +729,7 @@ pub(crate) fn typed_command_result<T>(
         replayed: response.status
             == v1::execute_command_response::CompletionStatus::Replayed as i32,
         outcome_uri: response.outcome_uri,
+        workflow_revisions,
     })
 }
 
@@ -1090,6 +1100,9 @@ pub struct TypedCommandResult<T> {
     pub replayed: bool,
     /// Durable opaque outcome locator, when available.
     pub outcome_uri: Option<String>,
+    /// Compiler-derived successor revisions for successful checked workflow
+    /// mutations, keyed by source binding rather than numeric entity IDs.
+    pub workflow_revisions: Vec<crate::generated::WorkflowSuccessorRevision>,
 }
 
 /// One symbolic command invocation with only name-addressed input.
@@ -2034,6 +2047,22 @@ mod tests {
                 Err(crate::generated::GeneratedCommandError::InvalidOutcomeShape)
             }
         }
+
+        fn workflow_successor_revisions(
+            &self,
+            response: &v1::ExecuteCommandResponse,
+        ) -> Result<
+            Vec<crate::generated::WorkflowSuccessorRevision>,
+            crate::generated::GeneratedCommandError,
+        > {
+            if response.outcome_type == "Workflow" {
+                Ok(vec![
+                    crate::generated::WorkflowSuccessorRevision::generated("work", 8),
+                ])
+            } else {
+                Ok(Vec::new())
+            }
+        }
     }
 
     fn stub_command(outcome: &'static str, key: &'static str) -> StubBatchCommand {
@@ -2055,6 +2084,18 @@ mod tests {
             outcome_uri: None,
             history_incarnation: 1,
         }
+    }
+
+    #[test]
+    fn typed_command_results_preserve_generated_workflow_revision_evidence() {
+        let command = stub_command("Workflow", "workflow-key");
+        let response = stub_response("Workflow");
+        let outcome = command.decode_outcome(&response).expect("outcome");
+        let result = typed_command_result(&command, outcome, response).expect("typed result");
+
+        assert_eq!(result.workflow_revisions.len(), 1);
+        assert_eq!(result.workflow_revisions[0].binding(), "work");
+        assert_eq!(result.workflow_revisions[0].revision(), 8);
     }
 
     fn stub_error_item(code: ApplicationErrorCode) -> v1::ExecuteCommandBatchItem {
@@ -2310,7 +2351,7 @@ mod tests {
                     let outcome = command
                         .decode_outcome(&response)
                         .map_err(GeneratedExecutionError::CommandShape)
-                        .and_then(|outcome| typed_command_result(outcome, response));
+                        .and_then(|outcome| typed_command_result(&command, outcome, response));
                     (index, outcome)
                 }
             },
@@ -2433,6 +2474,7 @@ mod tests {
                         plan_hash: [0x55; 32],
                         replayed: true,
                         outcome_uri: None,
+                        workflow_revisions: Vec::new(),
                     }),
                 )
             },
@@ -2502,6 +2544,7 @@ mod tests {
                 plan_hash: [0x11; 32],
                 replayed: false,
                 outcome_uri: None,
+                workflow_revisions: Vec::new(),
             })
         };
         let err = Err(GeneratedExecutionError::Client(ClientError::Application(
@@ -2561,6 +2604,7 @@ mod tests {
                 plan_hash: [0x22; 32],
                 replayed: false,
                 outcome_uri: None,
+                workflow_revisions: Vec::new(),
             })
         };
         record_generated_batch_item_completion(

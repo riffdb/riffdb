@@ -21,7 +21,9 @@ from riffdb_application import (
     RiffDate,
     SyncApplicationTransport,
     Timestamp,
+    TypedCommandResult,
     VerifiedTlsConfig,
+    WorkflowSuccessorRevision,
 )
 from riffdb_application import _translate_native, _validate_batch
 from riffdb_application import _native
@@ -56,6 +58,22 @@ class ReactiveParameters:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_typed_command_mapping_preserves_workflow_revision_evidence(self) -> None:
+        revision = WorkflowSuccessorRevision(binding="work", revision=8)
+        result = TypedCommandResult(
+            outcome={"outcome": "Claimed"},
+            commit_sequence=7,
+            contract_version=1,
+            plan_hash="11" * 32,
+            replayed=False,
+            workflow_revisions=(revision,),
+        )
+
+        mapped = result._map_outcome(lambda value: value["outcome"])
+
+        self.assertEqual(mapped.outcome, "Claimed")
+        self.assertEqual(mapped.workflow_revisions, (revision,))
+
     def test_exact_values_cross_the_private_dto_without_float_or_range_loss(self) -> None:
         value = Values(
             signed=-(2**63),

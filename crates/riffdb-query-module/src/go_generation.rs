@@ -8,6 +8,7 @@ use riffdb_query_ir::{NamedTypeSchema, ReactiveModulePlanV1, ReactiveOperationPl
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::generation::{workflow_revision_bindings, workflow_success_outcome_name};
 use crate::{QueryModule, generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools};
 
 /// Generates one dependency-light Go package for all named queries and commands.
@@ -91,7 +92,7 @@ fn generate_go_client_inner(
         hex(module.contract_hash().as_bytes())
     )
     .unwrap();
-    output.push_str("type QueryOptions = riffdb.Options\ntype QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }\ntype CommandResult[T any] struct { Outcome T; CommitSequence *uint64; Replayed bool; OutcomeURI string }\ntype BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }\ntype BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }\n\n");
+    output.push_str("type QueryOptions = riffdb.Options\ntype QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }\ntype WorkflowSuccessorRevision struct { Binding string; Revision uint64 }\ntype CommandResult[T any] struct { Outcome T; CommitSequence *uint64; Replayed bool; OutcomeURI string; WorkflowRevisions []WorkflowSuccessorRevision }\ntype BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }\ntype BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }\n\n");
     if !reactive_modules.is_empty() {
         output.push_str("type ConsumerOptions struct { BatchLimit uint32; InFlightLimit uint32; LeaseSeconds uint64; MaximumWait time.Duration }\nfunc DefaultConsumerOptions() ConsumerOptions { return ConsumerOptions{BatchLimit: 1, InFlightLimit: 16, LeaseSeconds: 60, MaximumWait: 30 * time.Second} }\nfunc (options ConsumerOptions) validate() error { if options.BatchLimit < 1 || options.BatchLimit > 64 || options.InFlightLimit < 1 || options.InFlightLimit > 64 || options.LeaseSeconds < 5 || options.LeaseSeconds > 900 || options.MaximumWait < 0 || options.MaximumWait > 30*time.Second { return errors.New(\"invalid generated RiffDB consumer options\") }; return nil }\nfunc retryDelayNanos(delay time.Duration) (uint64, error) { if delay < 0 || delay > 5*time.Minute { return 0, errors.New(\"invalid generated RiffDB retry delay\") }; return uint64(delay), nil }\n\n");
     }
@@ -317,6 +318,8 @@ fn emit_command_methods(
     for command in commands {
         let source_name = command.name();
         let name = go_public(source_name);
+        let workflow_revisions = workflow_revision_bindings(command);
+        let success_outcome = workflow_success_outcome_name(command);
         let (operation, schema_hash) = &operations[source_name];
         writeln!(output, "var {name}Operation = riffdb.Operation{{Name: \"{operation}\", InputSchemaHash: \"{schema_hash}\"}}").unwrap();
         writeln!(output, "func encode{name}Input(input {name}Input) map[string]riffdb.Value {{ return map[string]riffdb.Value{{").unwrap();
@@ -350,8 +353,49 @@ fn emit_command_methods(
             output.push_str("return result, nil\n");
         }
         output.push_str("default: return nil, errors.New(\"RiffDB driver returned unknown command outcome\") } }\n");
-        writeln!(output, "func (client *Client) {name}(ctx context.Context, input {name}Input) (CommandResult[{name}Outcome], error) {{ response, err := client.session.Invoke(ctx, {name}Operation, encode{name}Input(input), riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; outcome, err := decode{name}Outcome(response.Value); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; return CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}}, nil }}").unwrap();
-        writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
+        if !workflow_revisions.is_empty() {
+            writeln!(output, "func workflow{name}Revisions(input {name}Input, outcome {name}Outcome) ([]WorkflowSuccessorRevision, error) {{ if _, ok := outcome.({name}{}); !ok {{ return nil, nil }}", go_public(success_outcome)).unwrap();
+            for revision in &workflow_revisions {
+                writeln!(output, "if input.{} == ^uint64(0) {{ return nil, errors.New(\"RiffDB workflow successor revision overflow\") }}", go_public(revision.input_name)).unwrap();
+            }
+            output.push_str("return []WorkflowSuccessorRevision{");
+            for revision in &workflow_revisions {
+                write!(
+                    output,
+                    "{{Binding: {:?}, Revision: input.{} + 1}},",
+                    revision.binding_name,
+                    go_public(revision.input_name)
+                )
+                .unwrap();
+            }
+            output.push_str("}, nil }\n");
+        }
+        let revision_call = if workflow_revisions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "workflowRevisions, err := workflow{name}Revisions(input, outcome); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; "
+            )
+        };
+        let revision_field = if workflow_revisions.is_empty() {
+            String::new()
+        } else {
+            ", WorkflowRevisions: workflowRevisions".to_owned()
+        };
+        writeln!(output, "func (client *Client) {name}(ctx context.Context, input {name}Input) (CommandResult[{name}Outcome], error) {{ response, err := client.session.Invoke(ctx, {name}Operation, encode{name}Input(input), riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; outcome, err := decode{name}Outcome(response.Value); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; {revision_call}return CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}").unwrap();
+        let batch_revision_call = if workflow_revisions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "if item.Index >= uint32(len(inputs)) {{ return BatchResult[{name}Outcome]{{}}, errors.New(\"RiffDB driver returned invalid batch index\") }}; workflowRevisions, revisionErr := workflow{name}Revisions(inputs[item.Index], outcome); if revisionErr != nil {{ return BatchResult[{name}Outcome]{{}}, revisionErr }}; "
+            )
+        };
+        let batch_revision_field = if workflow_revisions.is_empty() {
+            String::new()
+        } else {
+            ", WorkflowRevisions: workflowRevisions".to_owned()
+        };
+        writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; {batch_revision_call}converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI{batch_revision_field}}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
     }
 }
 
@@ -489,12 +533,30 @@ fn emit_go_reactive_module(
                 writeln!(output, "type {name}Consumer struct {{ client *Client; parameters {name}Params; consumerName string }}\nfunc (client *Client) {name}(parameters {name}Params, consumerName string) *{name}Consumer {{ return &{name}Consumer{{client: client, parameters: parameters, consumerName: consumerName}} }}\nfunc (consumer *{name}Consumer) Next(ctx context.Context, maximumWait time.Duration) (ContextualBatch[{stream}Event], error) {{ if maximumWait < 0 || maximumWait > 30*time.Second {{ return ContextualBatch[{stream}Event]{{}}, errors.New(\"invalid generated RiffDB contextual wait\") }}; deadline := maximumWait; if deadline < time.Millisecond {{ deadline = time.Millisecond }}; input := map[string]riffdb.Value{{\"parameters\": riffdb.Record(encode{name}Params(consumer.parameters)), \"consumer_name\": riffdb.String(consumer.consumerName)}}; response, err := consumer.client.session.Invoke(ctx, {name}NextOperation, input, riffdb.Options{{Deadline: deadline}}); if err != nil {{ return ContextualBatch[{stream}Event]{{}}, err }}; return decodeContextualBatch(response.Value, decode{stream}Event) }}\nfunc (consumer *{name}Consumer) Ack(ctx context.Context, item ContextualWorkItem[{stream}Event]) (EventMutationResult, error) {{ response, err := consumer.client.session.Invoke(ctx, {name}AckOperation, leaseInput(encode{name}Params(consumer.parameters), consumer.consumerName, item.Delivery.EventID, item.Delivery.LeaseToken, item.Delivery.HistoryIncarnation), riffdb.Options{{}}); if err != nil {{ return \"\", err }}; return decodeMutation(response.Value) }}\nfunc (consumer *{name}Consumer) Nack(ctx context.Context, item ContextualWorkItem[{stream}Event], retryDelay time.Duration) (EventMutationResult, error) {{ delay, err := retryDelayNanos(retryDelay); if err != nil {{ return \"\", err }}; input := leaseInput(encode{name}Params(consumer.parameters), consumer.consumerName, item.Delivery.EventID, item.Delivery.LeaseToken, item.Delivery.HistoryIncarnation); input[\"retry_delay_nanos\"] = riffdb.U64(delay); response, err := consumer.client.session.Invoke(ctx, {name}NackOperation, input, riffdb.Options{{}}); if err != nil {{ return \"\", err }}; return decodeMutation(response.Value) }}\nfunc (consumer *{name}Consumer) Status(ctx context.Context) (*ConsumerStatus, error) {{ input := map[string]riffdb.Value{{\"parameters\": riffdb.Record(encode{name}Params(consumer.parameters)), \"consumer_name\": riffdb.String(consumer.consumerName)}}; response, err := consumer.client.session.Invoke(ctx, {name}StatusOperation, input, riffdb.Options{{}}); if err != nil {{ return nil, err }}; if response.Value.Type == \"null\" {{ return nil, nil }}; status, err := decodeConsumerStatus(response.Value); return &status, err }}").unwrap();
                 for reaction in reactions {
                     let command = go_public(reaction.command_name());
+                    let command_plan = contract
+                        .commands()
+                        .iter()
+                        .find(|candidate| candidate.name() == reaction.command_name())
+                        .expect("reactive compiler retained exact command dependency");
+                    let workflow_revisions = workflow_revision_bindings(command_plan);
                     let reaction_method = go_public(reaction.reaction_name());
                     let action = format!("react_{}", go_snake(reaction.reaction_name()));
                     let (driver_name, schema_hash) = operations
                         .get(&(source_name.to_owned(), action))
                         .expect("generated reaction operation");
-                    writeln!(output, "var {name}React{reaction_method}Operation = riffdb.Operation{{Name: {driver_name:?}, InputSchemaHash: {schema_hash:?}}}\nfunc (consumer *{name}Consumer) React{reaction_method}(ctx context.Context, reaction ContextualReaction, input {command}Input) (CommandResult[{command}Outcome], error) {{ if reaction.Name != {:?} || reaction.CommandName != {:?} {{ return CommandResult[{command}Outcome]{{}}, errors.New(\"contextual reaction identity mismatch\") }}; request := map[string]riffdb.Value{{\"parameters\": riffdb.Record(encode{name}Params(consumer.parameters)), \"consumer_name\": riffdb.String(consumer.consumerName), \"causation_token\": riffdb.String(reaction.CausationToken), \"input\": riffdb.Record(encode{command}Input(input))}}; response, err := consumer.client.session.Invoke(ctx, {name}React{reaction_method}Operation, request, riffdb.Options{{MaximumAttempts: consumer.client.commandAttempts}}); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; outcome, err := decode{command}Outcome(response.Value); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; return CommandResult[{command}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}}, nil }}", reaction.reaction_name(), reaction.command_name()).unwrap();
+                    let revision_call = if workflow_revisions.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "workflowRevisions, err := workflow{command}Revisions(input, outcome); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; "
+                        )
+                    };
+                    let revision_field = if workflow_revisions.is_empty() {
+                        String::new()
+                    } else {
+                        ", WorkflowRevisions: workflowRevisions".to_owned()
+                    };
+                    writeln!(output, "var {name}React{reaction_method}Operation = riffdb.Operation{{Name: {driver_name:?}, InputSchemaHash: {schema_hash:?}}}\nfunc (consumer *{name}Consumer) React{reaction_method}(ctx context.Context, reaction ContextualReaction, input {command}Input) (CommandResult[{command}Outcome], error) {{ if reaction.Name != {:?} || reaction.CommandName != {:?} {{ return CommandResult[{command}Outcome]{{}}, errors.New(\"contextual reaction identity mismatch\") }}; request := map[string]riffdb.Value{{\"parameters\": riffdb.Record(encode{name}Params(consumer.parameters)), \"consumer_name\": riffdb.String(consumer.consumerName), \"causation_token\": riffdb.String(reaction.CausationToken), \"input\": riffdb.Record(encode{command}Input(input))}}; response, err := consumer.client.session.Invoke(ctx, {name}React{reaction_method}Operation, request, riffdb.Options{{MaximumAttempts: consumer.client.commandAttempts}}); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; outcome, err := decode{command}Outcome(response.Value); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; {revision_call}return CommandResult[{command}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}", reaction.reaction_name(), reaction.command_name()).unwrap();
                 }
                 output.push('\n');
             }

@@ -3,7 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
+use riffdb_contract_ir::{
+    CommandPlan, ContractBundle, ExpressionKind, Instruction, RecordTypeRef, ValueType,
+    ValueTypeTag, WorkflowLeaseOperation,
+};
 use riffdb_query_ir::{
     NamedQuerySchemas, NamedTypeSchema, PageBound, ReactiveModulePlanV1, ReactiveOperationPlanV1,
     max_query_page_take,
@@ -14,6 +17,93 @@ use sha2::{Digest, Sha256};
 use crate::QueryModule;
 
 const MCP_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WorkflowRevisionBinding<'a> {
+    pub(crate) binding_name: &'a str,
+    pub(crate) input_name: &'a str,
+}
+
+pub(crate) fn workflow_success_outcome_name(command: &CommandPlan) -> &str {
+    command
+        .outcomes()
+        .iter()
+        .find(|outcome| outcome.id() == command.success_outcome())
+        .expect("checked command success outcome")
+        .name()
+}
+
+pub(crate) fn workflow_revision_bindings(
+    command: &CommandPlan,
+) -> Vec<WorkflowRevisionBinding<'_>> {
+    let mut revisions = BTreeMap::new();
+    for instruction in command.instructions() {
+        let (binding, expected_revision) = match instruction {
+            Instruction::WorkflowTransition {
+                binding,
+                expected_revision,
+                ..
+            } => (*binding, *expected_revision),
+            Instruction::WorkflowLease {
+                binding, operation, ..
+            } => {
+                let expected_revision = match operation {
+                    WorkflowLeaseOperation::Claim {
+                        expected_revision, ..
+                    }
+                    | WorkflowLeaseOperation::Renew {
+                        expected_revision, ..
+                    }
+                    | WorkflowLeaseOperation::Release {
+                        expected_revision, ..
+                    }
+                    | WorkflowLeaseOperation::Expire {
+                        expected_revision, ..
+                    }
+                    | WorkflowLeaseOperation::Fence {
+                        expected_revision, ..
+                    } => *expected_revision,
+                };
+                (*binding, expected_revision)
+            }
+            _ => continue,
+        };
+        let input_id = match command
+            .expressions()
+            .get(expected_revision)
+            .expect("checked workflow revision expression")
+            .kind()
+        {
+            ExpressionKind::InputField(field) => *field,
+            _ => panic!("checked workflow revision must be a direct input"),
+        };
+        let binding_name = command
+            .bindings()
+            .get(binding.get() as usize)
+            .expect("checked workflow binding")
+            .name();
+        let input_name = command
+            .input()
+            .record()
+            .field(input_id)
+            .expect("checked workflow revision input")
+            .name();
+        if let Some(previous) = revisions.insert(binding, (binding_name, input_name)) {
+            assert_eq!(
+                previous,
+                (binding_name, input_name),
+                "one workflow binding must use one exact revision input"
+            );
+        }
+    }
+    revisions
+        .into_values()
+        .map(|(binding_name, input_name)| WorkflowRevisionBinding {
+            binding_name,
+            input_name,
+        })
+        .collect()
+}
 
 /// One compiler-owned generated MCP tool for a visible named query.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1588,6 +1678,8 @@ fn emit_rust_generated_command_impl(
         .idempotency_input()
         .and_then(|id| command.input().record().field(id))
         .map(|field| rust_identifier(field.name()));
+    let workflow_revisions = workflow_revision_bindings(command);
+    let success_outcome = workflow_success_outcome_name(command);
     write!(
         output,
         "const {}_PLAN_HASH: [u8; 32] = [",
@@ -1689,9 +1781,27 @@ fn emit_rust_generated_command_impl(
     }
     writeln!(
         output,
-        "            _ => Err(GeneratedCommandError::InvalidOutcomeShape),\n        }}\n    }}\n}}\n"
+        "            _ => Err(GeneratedCommandError::InvalidOutcomeShape),\n        }}\n    }}"
     )
     .expect("string");
+    if !workflow_revisions.is_empty() {
+        writeln!(
+            output,
+            "\n    fn workflow_successor_revisions(&self, response: &v1::ExecuteCommandResponse) -> Result<Vec<riffdb_client_rust::generated::WorkflowSuccessorRevision>, GeneratedCommandError> {{\n        if response.outcome_type != {success_outcome:?} {{ return Ok(Vec::new()); }}\n        Ok(vec!["
+        )
+        .expect("string");
+        for revision in workflow_revisions {
+            writeln!(
+                output,
+                "            riffdb_client_rust::generated::WorkflowSuccessorRevision::generated({:?}, self.{}.checked_add(1).ok_or(GeneratedCommandError::InvalidOutcomeShape)?),",
+                revision.binding_name,
+                rust_identifier(revision.input_name),
+            )
+            .expect("string");
+        }
+        writeln!(output, "        ])\n    }}").expect("string");
+    }
+    writeln!(output, "}}\n").expect("string");
 }
 
 fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: &[&CommandPlan]) {
@@ -1998,8 +2108,10 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; \
          readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }}\n\
          export interface TypedQueryResult<T> {{ readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }}\n\
+         export interface WorkflowSuccessorRevision {{ readonly binding: string; readonly revision: bigint; }}\n\
          export interface TypedCommandResult<T> {{ readonly outcome: T; readonly commitSequence?: bigint; \
-         readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }}\n\
+         readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; \
+         readonly workflowRevisions?: ReadonlyArray<WorkflowSuccessorRevision>; }}\n\
          export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
          export interface CommandBatchProgress {{ readonly completed: number; readonly total: number; readonly checkpoint: number; }}\n\
          export const MAX_COMMAND_BATCH_CONCURRENCY = 384;\n\
@@ -2446,14 +2558,41 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                 .expect("string");
                 for reaction in reactions {
                     let command = reaction.command_name();
+                    let command_plan = contract
+                        .commands()
+                        .iter()
+                        .find(|candidate| candidate.name() == command)
+                        .expect("reactive compiler retained exact command dependency");
+                    let workflow_revisions = workflow_revision_bindings(command_plan);
+                    let success_outcome = workflow_success_outcome_name(command_plan);
                     writeln!(
                         output,
-                        "  public react{reaction_method}(parameters: {name}Params, consumerName: string, item: {name}Item, input: {command}Input): Promise<TypedCommandResult<{command}Outcome>> {{ const reaction = item.availableReactions.find((value) => value.name === {reaction_name:?} && value.commandName === {command:?}); if (reaction === undefined) throw new Error(\"contextual reaction is unavailable\"); return this.transport.executeContextualReaction({request}, reaction, {command_function}(input)); }}",
+                        "  public async react{reaction_method}(parameters: {name}Params, consumerName: string, item: {name}Item, input: {command}Input): Promise<TypedCommandResult<{command}Outcome>> {{ const reaction = item.availableReactions.find((value) => value.name === {reaction_name:?} && value.commandName === {command:?}); if (reaction === undefined) throw new Error(\"contextual reaction is unavailable\"); const result = await this.transport.executeContextualReaction({request}, reaction, {command_function}(input));",
                         reaction_method = pascal(reaction.reaction_name()),
                         reaction_name = reaction.reaction_name(),
                         command_function = camel(command),
                     )
                     .expect("string");
+                    if workflow_revisions.is_empty() {
+                        writeln!(output, "    return result; }}").expect("string");
+                    } else {
+                        writeln!(output, "    if (result.outcome.outcome !== {success_outcome:?}) return {{ ...result, workflowRevisions: [] }};").expect("string");
+                        for revision in &workflow_revisions {
+                            writeln!(output, "    if (input.{} === 18446744073709551615n) throw new Error(\"RiffDB workflow successor revision overflow\");", ts_identifier(revision.input_name)).expect("string");
+                        }
+                        writeln!(output, "    return {{ ...result, workflowRevisions: [")
+                            .expect("string");
+                        for revision in workflow_revisions {
+                            writeln!(
+                                output,
+                                "      {{ binding: {:?}, revision: input.{} + 1n }},",
+                                revision.binding_name,
+                                ts_identifier(revision.input_name)
+                            )
+                            .expect("string");
+                        }
+                        writeln!(output, "    ] }}; }}").expect("string");
+                    }
                 }
             }
         }
@@ -2737,16 +2876,46 @@ fn emit_typescript_client_facade(
     }
     for command in commands {
         let name = command.name();
+        let workflow_revisions = workflow_revision_bindings(command);
+        let success_outcome = workflow_success_outcome_name(command);
         writeln!(
             output,
             "  public async {function}(input: {name}Input): Promise<TypedCommandResult<{name}Outcome>> {{\n    \
              const result = await this.transport.executeCommand<{name}Input, {name}Outcome>({function}(input), this.commandAttemptBudget);\n    \
              if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== {constant}_PLAN_HASH) \
-             throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
+             throw new Error(\"RiffDB application identity mismatch\");",
             function = camel(name),
             constant = screaming_snake(name),
         )
         .expect("string");
+        if workflow_revisions.is_empty() {
+            writeln!(output, "    return result;\n  }}\n").expect("string");
+        } else {
+            writeln!(
+                output,
+                "    if (result.outcome.outcome !== {success_outcome:?}) return {{ ...result, workflowRevisions: [] }};"
+            )
+            .expect("string");
+            for revision in &workflow_revisions {
+                writeln!(
+                    output,
+                    "    if (input.{} === 18446744073709551615n) throw new Error(\"RiffDB workflow successor revision overflow\");",
+                    ts_identifier(revision.input_name),
+                )
+                .expect("string");
+            }
+            writeln!(output, "    return {{ ...result, workflowRevisions: [").expect("string");
+            for revision in workflow_revisions {
+                writeln!(
+                    output,
+                    "      {{ binding: {:?}, revision: input.{} + 1n }},",
+                    revision.binding_name,
+                    ts_identifier(revision.input_name),
+                )
+                .expect("string");
+            }
+            writeln!(output, "    ] }};\n  }}\n").expect("string");
+        }
         writeln!(
             output,
             "  public async {function}Batch(inputs: ReadonlyArray<{name}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{name}Outcome>> {{\n    \

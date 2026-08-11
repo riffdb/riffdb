@@ -11,6 +11,7 @@ use riffdb_query_ir::{
 use riffdb_riffql_syntax::{FieldSelection, Selection};
 
 use crate::QueryModule;
+use crate::generation::{workflow_revision_bindings, workflow_success_outcome_name};
 
 /// Source symbol responsible for one Python name collision.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -343,7 +344,7 @@ pub fn generate_python_client(
          from riffdb_application import (\n\
              AsyncApplicationTransport, AttemptBudget, CommandBatchOptions,\n\
              CommandBatchProgress, CommandBatchResult, Money, QueryOptions, RiffDate,\n\
-             SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult,\n\
+             SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, WorkflowSuccessorRevision,\n\
          )\n\
          from riffdb_application._binding import decode_variant, encode_record\n"
     )
@@ -769,6 +770,8 @@ fn emit_python_reactive_module(
                         .find(|command| command.name() == reaction.command_name())
                         .expect("reactive compiler retained exact command dependency");
                     let command_name = pascal(command.name());
+                    let workflow_revisions = workflow_revision_bindings(command);
+                    let success_outcome = workflow_success_outcome_name(command);
                     writeln!(
                         output,
                         "    async def react_{reaction_method}(self, parameters: {name}Params, consumer_name: str, item: {name}Item, input: {command_name}Input) -> TypedCommandResult[{command_name}Outcome]:\n        reaction = next((value for value in item.available_reactions if value.name == {reaction_name:?} and value.command_name == {command:?}), None)\n        if reaction is None: raise ValueError(\"contextual reaction is unavailable\")\n        raw = await self._transport._execute_contextual_reaction(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name, reaction_name=reaction.name, command_id=reaction.command_id, causation_token=reaction.causation_token, contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION, command_name={command:?}, plan_hash={plan_constant}_PLAN_HASH, input=encode_record(input))\n        outcomes = {{",
@@ -789,7 +792,36 @@ fn emit_python_reactive_module(
                         )
                         .expect("String writes cannot fail");
                     }
-                    output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
+                    if workflow_revisions.is_empty() {
+                        output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
+                    } else {
+                        output.push_str("        }\n        result = raw._map_outcome(lambda value: decode_variant(outcomes, value))\n");
+                        writeln!(
+                            output,
+                            "        if not isinstance(result.outcome, {command_name}{}):\n            return result._with_workflow_revisions(())",
+                            pascal(success_outcome),
+                        )
+                        .expect("String writes cannot fail");
+                        for revision in &workflow_revisions {
+                            writeln!(
+                                output,
+                                "        if input.{} >= 2**64 - 1:\n            raise ValueError(\"RiffDB workflow successor revision overflow\")",
+                                python_identifier(revision.input_name),
+                            )
+                            .expect("String writes cannot fail");
+                        }
+                        output.push_str("        return result._with_workflow_revisions((\n");
+                        for revision in workflow_revisions {
+                            writeln!(
+                                output,
+                                "            WorkflowSuccessorRevision(binding={:?}, revision=input.{} + 1),",
+                                revision.binding_name,
+                                python_identifier(revision.input_name),
+                            )
+                            .expect("String writes cannot fail");
+                        }
+                        output.push_str("        ))\n\n");
+                    }
                 }
             }
         }
@@ -967,6 +999,8 @@ fn emit_client(
         let name = pascal(wire_name);
         let method = python_identifier(&snake(wire_name));
         let async_token = if asynchronous { "async " } else { "" };
+        let workflow_revisions = workflow_revision_bindings(command);
+        let success_outcome = workflow_success_outcome_name(command);
         writeln!(
             output,
             "    {async_token}def {method}(self, input: {name}Input) -> TypedCommandResult[{name}Outcome]:\n        raw = {await_token}self._transport._execute_command(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            command_name={wire_name:?}, plan_hash={constant}_PLAN_HASH,\n            input=encode_record(input), attempts=self._command_attempts,\n        )\n        outcomes = {{",
@@ -982,9 +1016,36 @@ fn emit_client(
             )
             .expect("String writes cannot fail");
         }
-        output.push_str(
-            "        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n",
-        );
+        if workflow_revisions.is_empty() {
+            output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
+        } else {
+            output.push_str("        }\n        result = raw._map_outcome(lambda value: decode_variant(outcomes, value))\n");
+            writeln!(
+                output,
+                "        if not isinstance(result.outcome, {name}{}):\n            return result._with_workflow_revisions(())",
+                pascal(success_outcome),
+            )
+            .expect("String writes cannot fail");
+            for revision in &workflow_revisions {
+                writeln!(
+                    output,
+                    "        if input.{} >= 2**64 - 1:\n            raise ValueError(\"RiffDB workflow successor revision overflow\")",
+                    python_identifier(revision.input_name),
+                )
+                .expect("String writes cannot fail");
+            }
+            output.push_str("        return result._with_workflow_revisions((\n");
+            for revision in workflow_revisions {
+                writeln!(
+                    output,
+                    "            WorkflowSuccessorRevision(binding={:?}, revision=input.{} + 1),",
+                    revision.binding_name,
+                    python_identifier(revision.input_name),
+                )
+                .expect("String writes cannot fail");
+            }
+            output.push_str("        ))\n\n");
+        }
         let batch_await = if asynchronous { "await " } else { "" };
         writeln!(
             output,

@@ -126,7 +126,8 @@ export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity
 }
 export interface CommandRequest<I, R> { readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
-export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
+export interface WorkflowSuccessorRevision { readonly binding: string; readonly revision: bigint; }
+export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; readonly workflowRevisions?: ReadonlyArray<WorkflowSuccessorRevision>; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
