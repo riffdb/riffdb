@@ -247,6 +247,17 @@ pub enum QueryError {
         /// Type tag the registered org scope field requires.
         expected: ValueTypeTag,
     },
+    /// A vector's dimension does not match the declared field dimension.
+    ///
+    /// Raised for a query vector that does not match the contract-declared
+    /// dimension, and for a stored cell whose dimension has skewed from the
+    /// declaration (typed error, never a panic).
+    VectorDimensionMismatch {
+        /// The contract-declared dimension of the vector field.
+        expected: u32,
+        /// The observed dimension.
+        actual: u32,
+    },
 }
 
 impl fmt::Display for QueryError {
@@ -278,6 +289,12 @@ impl fmt::Display for QueryError {
             Self::OrgScopeTypeMismatch { expected } => {
                 write!(f, "org scope value type mismatch (expected {expected:?})")
             }
+            Self::VectorDimensionMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "vector dimension {actual} does not match the declared dimension {expected}"
+                )
+            }
         }
     }
 }
@@ -307,6 +324,12 @@ pub struct NearestQueryRequest {
     pub k: u32,
     /// Distance metric for scoring.
     pub metric: riffdb_types::DistanceMetric,
+    /// Row filters applied BEFORE distance ranking (VEC-006/VEC-007).
+    ///
+    /// A row failing any predicate never enters the candidate set: it is
+    /// not scored, not ranked, and cannot influence distances, ordering, or
+    /// the result count.
+    pub predicates: Vec<ColumnPredicate>,
     /// Scan budget.
     pub budget: QueryBudget,
 }
@@ -336,10 +359,11 @@ pub struct NearestQueryResult {
 
 /// Executes a nearest-neighbor query against a published snapshot.
 ///
-/// Policy filtering (VEC-007) is the caller's responsibility: only rows
-/// whose predicates pass should be included in the candidate set. This
-/// function scans all org-partitioned rows and applies the vector field
-/// extraction + distance computation.
+/// Filtering runs BEFORE distance ranking (VEC-006/VEC-007): the org scope
+/// bounds the scan to one partition, `request.predicates` exclude rows
+/// before they enter the candidate set, and only the surviving candidates
+/// are scored and ranked. A denied row therefore influences nothing —
+/// neither presence, distances, ranking, nor result count.
 ///
 /// Returns up to `k` rows ordered by distance ascending (closest first).
 pub fn nearest_query_snapshot(
@@ -355,15 +379,27 @@ pub fn nearest_query_snapshot(
     }
     let org = OrgKey::from_value(&request.org_scope).map_err(|_| QueryError::InvalidOrgScope)?;
 
-    // Find the vector field index in the projected fields.
+    // Find the vector field index in the projected fields, and validate the
+    // query vector against the declared dimension before any scan work.
     let vector_field_index = projected_field_index(definition, request.vector_field)?;
+    let declared_dimension = definition.projected_types()[vector_field_index]
+        .vector_dimension()
+        .map(riffdb_types::VectorDimension::get)
+        .ok_or(QueryError::UnknownField {
+            field_id: request.vector_field,
+        })?;
+    if request.query_vector.dimension() != declared_dimension {
+        return Err(QueryError::VectorDimensionMismatch {
+            expected: declared_dimension,
+            actual: request.query_vector.dimension(),
+        });
+    }
 
     let merged = snapshot.merged_org(&org);
     let mut scanned = 0usize;
 
-    // Collect candidates: (row_index, vector_ref) for rows that have a vector value.
-    // All rows are included (caller is responsible for policy-pre-filtering via
-    // the predicate mechanism at the executor level).
+    // Collect candidates that pass every predicate. Filtering happens HERE,
+    // before distance computation, so an excluded row is never scored.
     let mut candidate_rows: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
     let mut candidate_vectors: Vec<riffdb_types::CanonicalVector> = Vec::new();
 
@@ -374,9 +410,20 @@ pub fn nearest_query_snapshot(
                 max: request.budget.max_scanned_rows,
             });
         }
+        if !predicates_match(definition, &row, &request.predicates)? {
+            continue;
+        }
         // Extract the vector value from the projected cell.
         let cell = &row.cells[vector_field_index];
         if let CanonicalValue::Vector(vec_val) = cell {
+            if vec_val.dimension() != declared_dimension {
+                // Dimension skew in stored data is a typed integrity error,
+                // never a panic (previously exact_knn asserted).
+                return Err(QueryError::VectorDimensionMismatch {
+                    expected: declared_dimension,
+                    actual: vec_val.dimension(),
+                });
+            }
             let pk_values = decode_primary_key(definition, &key)?;
             candidate_vectors.push(vec_val.clone());
             candidate_rows.push((key, pk_values, row));
@@ -384,14 +431,26 @@ pub fn nearest_query_snapshot(
         // Rows without a vector value (Null or non-Vector) are silently skipped.
     }
 
-    // Run exact KNN.
+    // Run exact KNN. Every candidate and the query vector were validated
+    // against the declared dimension above, so a mismatch here is unreachable
+    // in practice; it still maps to the typed error, never a panic.
     let candidate_refs: Vec<&riffdb_types::CanonicalVector> = candidate_vectors.iter().collect();
     let scored = crate::nearest::exact_knn(
         &request.query_vector,
         &candidate_refs,
         request.metric,
         request.k,
-    );
+    )
+    .map_err(
+        |crate::nearest::NearestError::DimensionMismatch {
+             query, candidate, ..
+         }| {
+            QueryError::VectorDimensionMismatch {
+                expected: query,
+                actual: candidate,
+            }
+        },
+    )?;
 
     let primary_key_fields = definition.primary_key_fields().to_vec();
     let projected_fields = definition.projected_fields().to_vec();
