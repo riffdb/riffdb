@@ -176,9 +176,10 @@ changelog frames follow published durable frontiers, dual-frontier
 addressed; the replication implementation arc opens with the emitter
 package against this boundary.
 
-## Proposed Amendment 2 — Delete-aware entity transition frames
+## Accepted Amendment 2 — Delete-aware entity transition frames
 
-- **Status:** Proposed
+- **Status:** Accepted
+- **Exact text accepted:** Yes, 2026-08-11
 - **Date:** 2026-08-09
 - **Amends:** this record's closed insert-or-replace entry algebra
 - **Related:** ADR-0019 Amendment 1 (validated-prefix proof), ADR-0083
