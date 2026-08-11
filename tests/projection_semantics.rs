@@ -274,12 +274,11 @@ fn nearest_query_respects_org_isolation() {
 /// applies BEFORE ranking.
 ///
 /// Construction: the DENIED row is the nearest to the query. At `k = 2` over
-/// {denied-nearest, auth-mid, auth-far}:
-///   - filter-before-rank returns BOTH authorized rows;
-///   - filter-after-rank (rank all three, truncate to k, then drop denied)
-///     returns only ONE row — the count assertion below reds that order swap.
-/// The distances must equal a control run over a snapshot that never
-/// contained the denied row at all.
+/// {denied-nearest, auth-mid, auth-far}: filter-before-rank returns BOTH
+/// authorized rows, while filter-after-rank (rank all three, truncate to k,
+/// then drop denied) returns only ONE row — the count assertion below reds
+/// that order swap. The distances must equal a control run over a snapshot
+/// that never contained the denied row at all.
 #[test]
 fn nearest_query_filters_denied_rows_before_ranking() {
     let bundle = vector_bundle();
