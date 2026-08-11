@@ -339,8 +339,28 @@ pub struct EventDeclaration {
     pub name: Spanned<String>,
     /// Ordered payload fields forming the application-stream partition, when declared.
     pub partition_by: Option<Spanned<Vec<Spanned<String>>>>,
+    /// Compiler-owned current-row authorization anchor, when declared.
+    pub policy_anchor: Option<Spanned<EventPolicyAnchorDeclaration>>,
     /// Event payload fields in source order.
     pub fields: Vec<Spanned<TypedField>>,
+}
+
+/// One explicit mapping from an anchored entity key field to an event payload field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventPolicyAnchorField {
+    /// Source entity partition/key field.
+    pub entity_field: Spanned<String>,
+    /// Event payload field carrying the exact key component.
+    pub payload_field: Spanned<String>,
+}
+
+/// A compiler-owned current-row event authorization anchor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventPolicyAnchorDeclaration {
+    /// Entity whose current read policy controls protected delivery.
+    pub entity: Spanned<String>,
+    /// Complete entity partition/key-to-payload mapping in source order.
+    pub fields: Vec<Spanned<EventPolicyAnchorField>>,
 }
 
 /// A named enumeration declaration.
