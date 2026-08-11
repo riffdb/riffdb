@@ -681,7 +681,7 @@ mod tests {
     impl TestRoot {
         fn new(label: &str) -> Self {
             let ordinal = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
+            let path = crate::test_path::root().join(format!(
                 "riffdb-redb-capability-{label}-{}-{ordinal}",
                 std::process::id()
             ));

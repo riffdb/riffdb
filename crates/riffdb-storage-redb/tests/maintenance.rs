@@ -39,7 +39,7 @@ struct TestRoot(PathBuf);
 impl TestRoot {
     fn new(label: &str) -> Self {
         let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "riffdb-redb-maintenance-{label}-{}-{ordinal}",
             std::process::id()
         ));

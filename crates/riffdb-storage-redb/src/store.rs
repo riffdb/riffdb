@@ -6537,7 +6537,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("test clock after Unix epoch")
                 .as_nanos();
-            Self(std::env::temp_dir().join(format!(
+            Self(crate::test_path::root().join(format!(
                 "riffdb-redb-{label}-{}-{invocation}-{ordinal}.redb",
                 std::process::id()
             )))

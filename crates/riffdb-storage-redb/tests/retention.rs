@@ -32,7 +32,7 @@ struct TestRoot(PathBuf);
 
 impl TestRoot {
     fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "riffdb-retention-{}-{}-{}",
             label,
             std::process::id(),
