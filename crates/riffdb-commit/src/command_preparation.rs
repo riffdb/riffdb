@@ -255,31 +255,35 @@ impl CommandExecutionPreparation {
     pub(crate) fn deferred_group_compatibility(&self) -> Option<PreparedCommandCompatibility> {
         self.audited_lifecycle.as_ref()?;
         let plan = self.resolved_plan.plan();
-        if plan.bindings().len() != self.input_facts.binding_entity_keys().len()
-            || plan.root_validation_reads().len()
+        if self.input_facts.binding_plan_indices().len()
+            != self.input_facts.binding_entity_keys().len()
+            || self.input_facts.root_validation_plan_indices().len()
                 != self.input_facts.root_validation_entity_keys().len()
         {
             return None;
         }
-        let binding_accesses = plan
-            .bindings()
+        let binding_accesses = self
+            .input_facts
+            .binding_plan_indices()
             .iter()
             .zip(self.input_facts.binding_entity_keys())
-            .map(|(binding, key)| {
+            .map(|(index, key)| {
+                let binding = plan.bindings().get(*index as usize)?;
                 riffdb_storage_api::EntityTarget::new(binding.entity_type(), key.clone())
                     .map(|target| (binding.mode(), target))
+                    .ok()
             })
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
-        let root_validation_targets = plan
-            .root_validation_reads()
+            .collect::<Option<Vec<_>>>()?;
+        let root_validation_targets = self
+            .input_facts
+            .root_validation_plan_indices()
             .iter()
             .zip(self.input_facts.root_validation_entity_keys())
-            .map(|(read, key)| {
-                riffdb_storage_api::EntityTarget::new(read.entity_type(), key.clone())
+            .map(|(index, key)| {
+                let read = plan.root_validation_reads().get(*index as usize)?;
+                riffdb_storage_api::EntityTarget::new(read.entity_type(), key.clone()).ok()
             })
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
+            .collect::<Option<Vec<_>>>()?;
         Some(PreparedCommandCompatibility {
             conflict_keys: self.input_facts.declared_conflict_keys().to_vec(),
             binding_accesses,

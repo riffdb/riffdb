@@ -10353,7 +10353,8 @@ work_packages:
   required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0012, ADR-0058, ADR-0059,
     ADR-0093, ADR-0095, ADR-0100, ADR-0101, ADR-0102, ADR-0104, ADR-0107]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
-    crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-runtime/**,
+    crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-catalog/**, crates/riffdb-runtime/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-proto/**,

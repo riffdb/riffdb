@@ -13,5 +13,8 @@ default = []
 riffdb-contract-ir = { path = "../riffdb-contract-ir", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../riffdb-types", version = "0.1.0", default-features = false }
 
+[dev-dependencies]
+riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.1.0", default-features = false }
+
 [lints]
 workspace = true

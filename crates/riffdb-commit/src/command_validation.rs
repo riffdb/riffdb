@@ -14,7 +14,8 @@ use riffdb_contract_ir::{
     RootValidationReadId, SchemaIr, ValueType,
 };
 use riffdb_invariant::{
-    CommitCheckResult, EvaluationError, ExpressionValueSource, evaluate_commit_checks,
+    CommitCheckResult, EvaluationError, ExpressionValueSource, derive_input_command_facts,
+    evaluate_commit_checks,
 };
 use riffdb_storage_api::{
     ApplicationCommandTransactionPort, AtomicCommandRecordSet, CandidateAdmissionResult,
@@ -767,7 +768,10 @@ fn validate_transaction_current_command_parts(
         return Ok(CheckedCommandDecision::ZeroMutation);
     }
 
-    let coverage = prove_mutation_coverage(resolved, evaluated, current)?;
+    let coverage = prove_mutation_coverage(resolved, normalized_input, evaluated, current)?;
+    if resolved.plan().commit_checks().is_empty() {
+        return Ok(CheckedCommandDecision::NonZero(coverage));
+    }
     let values = assemble_transaction_current_values(
         resolved,
         normalized_input,
@@ -802,16 +806,18 @@ fn validate_identity_positions_and_output(
     let reference = resolved.reference();
     let plan = resolved.plan();
     let request = evaluated.validation_request();
+    let facts = derive_input_command_facts(plan, normalized_input.clone())
+        .map_err(|_| CommandValidationError::integrity())?;
     if reference != evaluated.plan()
         || request.plan() != evaluated.plan()
         || plan.execution_class() != ExecutionClass::IdempotentMutation
         || plan.command_id() != reference.command_id()
         || plan.contract_version() != reference.contract_version()
         || plan.plan_hash() != reference.command_plan_hash()
-        || plan.bindings().len() != request.binding_targets().len()
-        || plan.bindings().len() != current.bindings().len()
-        || plan.root_validation_reads().len() != request.root_validation_targets().len()
-        || plan.root_validation_reads().len() != current.root_validations().len()
+        || facts.binding_entity_keys().len() != request.binding_targets().len()
+        || facts.binding_entity_keys().len() != current.bindings().len()
+        || facts.root_validation_entity_keys().len() != request.root_validation_targets().len()
+        || facts.root_validation_entity_keys().len() != current.root_validations().len()
         || !request.range_targets().is_empty()
         || !current.ranges().is_empty()
     {
@@ -823,29 +829,41 @@ fn validate_identity_positions_and_output(
         plan.input().record(),
         normalized_input,
     )?;
-    for (index, ((binding, target), observation)) in plan
-        .bindings()
+    for (slot, (((plan_index, key), target), observation)) in facts
+        .binding_plan_indices()
         .iter()
+        .zip(facts.binding_entity_keys())
         .zip(request.binding_targets())
         .zip(current.bindings())
         .enumerate()
     {
-        if binding.id().get() as usize != index
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
+        if facts.binding_element_ordinals().get(slot).is_none()
             || binding.entity_type() != target.entity_type_id()
+            || target.key() != key
             || observation.target() != target
         {
             return Err(CommandValidationError::integrity());
         }
     }
-    for (index, ((read, target), observation)) in plan
-        .root_validation_reads()
+    for (slot, (((plan_index, key), target), observation)) in facts
+        .root_validation_plan_indices()
         .iter()
+        .zip(facts.root_validation_entity_keys())
         .zip(request.root_validation_targets())
         .zip(current.root_validations())
         .enumerate()
     {
-        if read.id().get() as usize != index
+        let read = plan
+            .root_validation_reads()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
+        if facts.root_validation_element_ordinals().get(slot).is_none()
             || read.entity_type() != target.entity_type_id()
+            || target.key() != key
             || observation.target() != target
         {
             return Err(CommandValidationError::integrity());
@@ -1001,15 +1019,22 @@ pub(super) fn dependencies_from_current(
 
 fn prove_mutation_coverage(
     resolved: &ResolvedExecutablePlan,
+    normalized_input: &CanonicalRecord,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
 ) -> Result<Box<[Option<usize>]>, CommandValidationError> {
     let plan = resolved.plan();
     let request = evaluated.validation_request();
-    let mutable_count = plan
-        .bindings()
+    let facts = derive_input_command_facts(plan, normalized_input.clone())
+        .map_err(|_| CommandValidationError::integrity())?;
+    let mutable_count = facts
+        .binding_plan_indices()
         .iter()
-        .filter(|binding| binding.mode() != BindingMode::Read)
+        .filter(|index| {
+            plan.bindings()
+                .get(**index as usize)
+                .is_some_and(|binding| binding.mode() != BindingMode::Read)
+        })
         .count();
     if evaluated.mutations().len() != mutable_count {
         return Err(CommandValidationError::integrity());
@@ -1026,14 +1051,18 @@ fn prove_mutation_coverage(
     }
 
     let mut mutable_targets = BTreeMap::<EntityTarget, BindingId>::new();
-    let mut mutation_index_by_binding = vec![None; plan.bindings().len()];
-    for (index, ((binding, target), observation)) in plan
-        .bindings()
+    let mut mutation_index_by_binding = vec![None; request.binding_targets().len()];
+    for (slot, ((plan_index, target), observation)) in facts
+        .binding_plan_indices()
         .iter()
         .zip(request.binding_targets())
         .zip(current.bindings())
         .enumerate()
     {
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
         if binding.mode() == BindingMode::Read {
             continue;
         }
@@ -1066,7 +1095,22 @@ fn prove_mutation_coverage(
                 return Err(CommandValidationError::integrity());
             }
         }
-        mutation_index_by_binding[index] = Some(mutation_index);
+        let entity = resolved
+            .bundle()
+            .bundle()
+            .schema()
+            .entity(binding.entity_type())
+            .ok_or_else(CommandValidationError::integrity)?;
+        validate_post_image_and_project(
+            resolved.bundle().bundle().schema(),
+            entity,
+            target,
+            mutation.post_image().fields(),
+            binding.mode(),
+            observation,
+            resolved.reference(),
+        )?;
+        mutation_index_by_binding[slot] = Some(mutation_index);
     }
     if !mutation_by_target.is_empty() {
         return Err(CommandValidationError::integrity());
@@ -1454,11 +1498,87 @@ mod tests {
         IndexRangePrefixBuilder, IndexRangeTarget, SnapshotRequest,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, ContractBundleHash,
-        EntityVersion, IndexId, PartitionKeyBuilder, RequestId, TenantScope, Timestamp,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalList,
+        ContractBundleHash, EntityVersion, IndexId, PartitionKeyBuilder, RequestId, TenantScope,
+        Timestamp,
     };
 
     use super::*;
+
+    const BULK_TUPLE_SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/contracts/bulk/openfga-tuples.riff"
+    ));
+
+    #[test]
+    fn collection_mutations_cover_every_concrete_slot_before_commit() {
+        let compiled = compile_contract_source(BULK_TUPLE_SOURCE).expect("bulk fixture compiles");
+        let tuple = compiled
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Tuple")
+            .expect("tuple entity");
+        let tuple_value = |id: u8, object: &str| {
+            CanonicalValue::Record(
+                named_record(
+                    tuple.record(),
+                    &[
+                        ("store_id", CanonicalValue::Uuid([0x31; 16])),
+                        ("tuple_id", CanonicalValue::Uuid([id; 16])),
+                        ("object", CanonicalValue::string(object).expect("object")),
+                        (
+                            "relation",
+                            CanonicalValue::string("reader").expect("relation"),
+                        ),
+                        (
+                            "subject",
+                            CanonicalValue::string("user:alice").expect("subject"),
+                        ),
+                    ],
+                    &[],
+                ),
+            )
+        };
+        let prepared = prepare(
+            BULK_TUPLE_SOURCE,
+            "WriteTuples",
+            &[
+                ("request_id", CanonicalValue::Uuid([0x21; 16])),
+                (
+                    "tuples",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![
+                            tuple_value(0x41, "document:first"),
+                            tuple_value(0x42, "document:second"),
+                        ])
+                        .expect("tuple list"),
+                    ),
+                ),
+            ],
+        );
+        let bindings = prepared
+            .binding_targets
+            .iter()
+            .cloned()
+            .map(EntityObservation::Absent)
+            .collect();
+        let fixture = evaluate(prepared, bindings, vec![]);
+
+        let CheckedCommandDecision::NonZero(positions) =
+            validate_transaction_current_command_parts(
+                &fixture.prepared.resolved,
+                &fixture.prepared.input,
+                fixture.prepared.logical_time,
+                &fixture.evaluated,
+                &fixture.current,
+            )
+            .expect("collection validates")
+        else {
+            panic!("collection must retain one nonzero atomic graph");
+        };
+        assert_eq!(positions.as_ref(), &[Some(0), Some(1)]);
+    }
 
     const ZERO_REJECT_SOURCE: &str = r#"
 contract ZeroReject version 1 {
@@ -1732,18 +1852,25 @@ contract ReadOnlyValidation version 1 {
         );
         let input = named_record(plan.input().record(), fields, &[]);
         let facts = derive_input_command_facts(plan, input.clone()).expect("fixture input facts");
-        let binding_targets = plan
-            .bindings()
+        let binding_targets = facts
+            .binding_plan_indices()
             .iter()
             .zip(facts.binding_entity_keys())
-            .map(|(binding, key)| EntityTarget::new(binding.entity_type(), key.clone()))
+            .map(|(index, key)| {
+                EntityTarget::new(plan.bindings()[*index as usize].entity_type(), key.clone())
+            })
             .collect::<Result<Vec<_>, _>>()
             .expect("binding targets");
-        let root_targets = plan
-            .root_validation_reads()
+        let root_targets = facts
+            .root_validation_plan_indices()
             .iter()
             .zip(facts.root_validation_entity_keys())
-            .map(|(read, key)| EntityTarget::new(read.entity_type(), key.clone()))
+            .map(|(index, key)| {
+                EntityTarget::new(
+                    plan.root_validation_reads()[*index as usize].entity_type(),
+                    key.clone(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()
             .expect("root targets");
         PreparedFixture {
@@ -2393,6 +2520,7 @@ contract ReadOnlyValidation version 1 {
 
         let coverage = prove_mutation_coverage(
             &fixture.prepared.resolved,
+            &fixture.prepared.input,
             &fixture.evaluated,
             &fixture.current,
         )

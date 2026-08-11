@@ -919,18 +919,35 @@ fn lower_snapshot(
     resolved_plan: &ResolvedExecutablePlan,
     facts: &InputDerivedCommandFacts,
 ) -> Result<CommandSnapshotRequestProof, CommandAdmissionError> {
-    let binding_types = resolved_plan
-        .plan()
-        .bindings()
+    let plan = resolved_plan.plan();
+    if facts.binding_plan_indices().len() != facts.binding_entity_keys().len()
+        || facts.binding_element_ordinals().len() != facts.binding_entity_keys().len()
+        || facts.root_validation_plan_indices().len() != facts.root_validation_entity_keys().len()
+        || facts.root_validation_element_ordinals().len()
+            != facts.root_validation_entity_keys().len()
+    {
+        return Err(CommandAdmissionError::Integrity);
+    }
+    let binding_types = facts
+        .binding_plan_indices()
         .iter()
-        .map(|binding| binding.entity_type())
-        .collect::<Vec<_>>();
-    let root_types = resolved_plan
-        .plan()
-        .root_validation_reads()
+        .map(|index| {
+            plan.bindings()
+                .get(*index as usize)
+                .map(|binding| binding.entity_type())
+                .ok_or(CommandAdmissionError::Integrity)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let root_types = facts
+        .root_validation_plan_indices()
         .iter()
-        .map(|read| read.entity_type())
-        .collect::<Vec<_>>();
+        .map(|index| {
+            plan.root_validation_reads()
+                .get(*index as usize)
+                .map(|read| read.entity_type())
+                .ok_or(CommandAdmissionError::Integrity)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     lower_snapshot_parts(
         resolved_plan.reference(),
         &binding_types,

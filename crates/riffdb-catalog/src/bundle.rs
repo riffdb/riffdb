@@ -5,8 +5,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V1, CommandPlan, ContractBundle, EXECUTABLE_IR_VERSION_V1,
-    GRAMMAR_VERSION_V1, MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
+    BUNDLE_FORMAT_VERSION_V1, BUNDLE_FORMAT_VERSION_V2, BUNDLE_FORMAT_VERSION_V3,
+    BUNDLE_FORMAT_VERSION_V4, BUNDLE_FORMAT_VERSION_V5, CommandPlan, ContractBundle,
+    EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
+    EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5, GRAMMAR_VERSION_V1,
+    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
+    MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StoredContractBundleV1,
@@ -395,10 +399,19 @@ pub fn resolve_executable_plan<R: CatalogRepository>(
 }
 
 fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogError> {
-    if bundle.format_version() != BUNDLE_FORMAT_VERSION_V1
-        || bundle.grammar_version() != GRAMMAR_VERSION_V1
-        || bundle.ir_version() != EXECUTABLE_IR_VERSION_V1
-    {
+    let versions = (
+        bundle.format_version(),
+        bundle.grammar_version(),
+        bundle.ir_version(),
+    );
+    if !matches!(
+        versions,
+        (BUNDLE_FORMAT_VERSION_V1, GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
+            | (BUNDLE_FORMAT_VERSION_V2, GRAMMAR_VERSION_V2, EXECUTABLE_IR_VERSION_V2)
+            | (BUNDLE_FORMAT_VERSION_V3, GRAMMAR_VERSION_V3, EXECUTABLE_IR_VERSION_V3)
+            | (BUNDLE_FORMAT_VERSION_V4, GRAMMAR_VERSION_V4, EXECUTABLE_IR_VERSION_V4)
+            | (BUNDLE_FORMAT_VERSION_V5, GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
+    ) {
         return Err(CatalogError::new(
             CatalogErrorKind::UnsupportedBundleVersion,
         ));
