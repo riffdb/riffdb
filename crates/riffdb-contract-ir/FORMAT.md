@@ -134,6 +134,13 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x03` | create |
 | `0x04` | delete |
 
+### Delete policy mode
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | no inbound relationship |
+| `0x02` | indexed restrict |
+
 ### Instruction
 
 | Tag | Variant |
@@ -421,6 +428,7 @@ Each compatibility entry encodes its exact eight-byte ASCII code through normal 
 | `RDB-K020` | `0x02` | added outcome |
 | `RDB-K021` | `0x02` | added optional outcome field |
 | `RDB-K022` | `0x02` | added enum variant |
+| `RDB-K023` | `0x02` | added checked deletion policy |
 | `RDB-K030` | `0x04` | added required field |
 | `RDB-K031` | `0x04` | added index over existing state |
 | `RDB-K032` | `0x04` | added relationship over existing state |
@@ -531,6 +539,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 4 | `aggregates` | u32 count + AggregateSchema[] |
 | 5 | `relationships` | optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty |
 | 6 | `unique_keys` | optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty |
+| 7 | `delete_policies` | IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty |
 
 ### RelationshipSchema
 
@@ -550,6 +559,14 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `source_entity` | EntityTypeId |
 | 3 | `index_id` | IndexId |
 | 4 | `fields` | u32 count + FieldId[] |
+
+### DeletePolicySchemaV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `target_entity` | EntityTypeId |
+| 2 | `mode` | delete policy mode tag |
+| 3 | `restrict_payload` | for restrict only: source EntityTypeId + reverse IndexId |
 
 ### EntitySchema
 

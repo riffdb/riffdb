@@ -81,6 +81,8 @@ pub enum CompatibilityCode {
     AddedOptionalOutcomeField,
     /// Added variant to an existing enum, requiring explicit version selection.
     AddedEnumVariant,
+    /// Added a checked deletion policy to an existing entity.
+    AddedDeletePolicy,
     /// Added required field requiring deterministic backfill.
     AddedRequiredField,
     /// Added index requiring historical construction.
@@ -124,7 +126,7 @@ pub enum CompatibilityCode {
 }
 
 impl CompatibilityCode {
-    pub(crate) const ALL: [Self; 31] = [
+    pub(crate) const ALL: [Self; 32] = [
         Self::NoSemanticChange,
         Self::AddedCommand,
         Self::AddedEvent,
@@ -136,6 +138,7 @@ impl CompatibilityCode {
         Self::AddedOutcome,
         Self::AddedOptionalOutcomeField,
         Self::AddedEnumVariant,
+        Self::AddedDeletePolicy,
         Self::AddedRequiredField,
         Self::AddedIndex,
         Self::AddedRelationship,
@@ -279,6 +282,9 @@ impl StableAffectedPath {
             (_, [_]) => {}
             ("aggregate", [_, child]) => {
                 push_expected_stable_segment(&mut segments, child, "invariant")?;
+            }
+            ("entity", [_, "delete-policy"]) => {
+                segments.push(StablePathSegment::literal("delete-policy"));
             }
             ("entity", [_, child]) => {
                 let (kind, id) = parse_stable_path_id(child).ok_or_else(invalid)?;
@@ -852,6 +858,34 @@ fn compare_schema(
                 findings,
                 CompatibilityCode::InvariantChange,
                 format!("entity:{}", key.0.get()),
+            );
+        }
+    }
+    let parent_delete_policies = parent
+        .delete_policies()
+        .iter()
+        .map(|policy| (policy.target_entity(), policy))
+        .collect::<BTreeMap<_, _>>();
+    let next_delete_policies = next
+        .delete_policies()
+        .iter()
+        .map(|policy| (policy.target_entity(), policy))
+        .collect::<BTreeMap<_, _>>();
+    for (target, policy) in &next_delete_policies {
+        let path = format!("entity:{}/delete-policy", target.get());
+        match parent_delete_policies.get(target) {
+            None if compatible.added_entities.contains(target) => {}
+            None => add(findings, CompatibilityCode::AddedDeletePolicy, path),
+            Some(old) if *old == *policy => {}
+            Some(_) => add(findings, CompatibilityCode::InvariantChange, path),
+        }
+    }
+    for target in parent_delete_policies.keys() {
+        if !next_delete_policies.contains_key(target) {
+            add(
+                findings,
+                CompatibilityCode::InvariantChange,
+                format!("entity:{}/delete-policy", target.get()),
             );
         }
     }
@@ -2141,6 +2175,38 @@ mod tests {
                 "accepted {path}"
             );
         }
+    }
+
+    #[test]
+    fn adding_a_checked_delete_policy_requires_explicit_version_selection() {
+        let (parent, _) = one_entity_candidate("Row");
+        let entity = parent.entities()[0].clone();
+        let target = entity.id();
+        let next = SchemaIr::with_integrity_and_delete_policies(
+            vec![entity],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![crate::DeletePolicySchemaV1::no_inbound(target)],
+        )
+        .expect("candidate schema");
+        let mut findings = BTreeSet::new();
+        compare_schema(&parent, &next, &mut findings);
+        assert_eq!(
+            findings,
+            BTreeSet::from([(
+                CompatibilityCode::AddedDeletePolicy,
+                "entity:1/delete-policy".to_owned(),
+            )])
+        );
+        let entry = CompatibilityEntry::new(
+            CompatibilityCode::AddedDeletePolicy,
+            "entity:1/delete-policy",
+        )
+        .expect("entry");
+        assert_eq!(entry.class(), CompatibilityClass::RequiresExplicitVersion);
     }
 
     #[test]

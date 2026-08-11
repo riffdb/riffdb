@@ -126,6 +126,10 @@ tag_registry!(binding_mode, "Binding mode", {
     CREATE = 0x03 => "create",
     DELETE = 0x04 => "delete",
 });
+tag_registry!(delete_policy_mode, "Delete policy mode", {
+    NO_INBOUND = 0x01 => "no inbound relationship",
+    RESTRICT = 0x02 => "indexed restrict",
+});
 tag_registry!(instruction, "Instruction", {
     REQUIRE = 0x01 => "require",
     SET_FIELD = 0x02 => "set field",
@@ -237,6 +241,7 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     binary_operator::REGISTRY,
     key_purpose::REGISTRY,
     binding_mode::REGISTRY,
+    delete_policy_mode::REGISTRY,
     instruction::REGISTRY,
     service_value_kind::REGISTRY,
     execution_class::REGISTRY,
@@ -843,6 +848,11 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
         meaning: "added enum variant",
     },
     CompatibilityCodeFormat {
+        code: "RDB-K023",
+        class_tag: compatibility_class::REQUIRES_EXPLICIT_VERSION,
+        meaning: "added checked deletion policy",
+    },
+    CompatibilityCodeFormat {
         code: "RDB-K030",
         class_tag: compatibility_class::REQUIRES_MIGRATION,
         meaning: "added required field",
@@ -1002,6 +1012,7 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "aggregates" => "u32 count + AggregateSchema[]",
     "relationships" => "optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty",
     "unique_keys" => "optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty",
+    "delete_policies" => "IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",
@@ -1015,6 +1026,11 @@ layout!(UNIQUE_KEY_LAYOUT, "UniqueKeySchema", {
     "source_entity" => "EntityTypeId",
     "index_id" => "IndexId",
     "fields" => "u32 count + FieldId[]",
+});
+layout!(DELETE_POLICY_LAYOUT, "DeletePolicySchemaV1", {
+    "target_entity" => "EntityTypeId",
+    "mode" => "delete policy mode tag",
+    "restrict_payload" => "for restrict only: source EntityTypeId + reverse IndexId",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -1326,6 +1342,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     SCHEMA_LAYOUT,
     RELATIONSHIP_LAYOUT,
     UNIQUE_KEY_LAYOUT,
+    DELETE_POLICY_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     EVENT_PARTITION_LAYOUT,
@@ -2215,7 +2232,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 56);
+        assert_eq!(FORMAT_LAYOUTS.len(), 57);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(
