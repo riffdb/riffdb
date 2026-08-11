@@ -157,11 +157,47 @@ contract RootValidationConstantFixture version 1 {
 }
 "#;
 
+/// Secret-classified fixture contract (ADR-0118 / WP-597): pins the v7
+/// bundle encoding so a decoder that loses the secret extension arm reds
+/// against checked-in bytes rather than freshly generated ones.
+const SECRET_SOURCE: &str = r#"
+contract AuthShape version 1 {
+  entity Account {
+    key (org_id: uuid)
+  }
+  entity Session {
+    key (org_id: uuid, session_id: uuid)
+    field secret token_hash: string<256>
+    field secret refresh_secret: string<256>
+    field expires_at: timestamp
+    unique token (org_id, token_hash)
+  }
+  aggregate AccountRoot {
+    root Account
+    child Session
+    partition_by org_id
+    conflict_key (org_id)
+  }
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
     let fixture_root = output_root.join("fixtures/compiler");
     let schema_root = fixture_root.join("schemas");
     fs::create_dir_all(&schema_root)?;
+
+    let secret_bundle = compile_contract_source(SECRET_SOURCE)?;
+    let secret_root = fixture_root.join("secret");
+    fs::create_dir_all(&secret_root)?;
+    fs::write(
+        secret_root.join("bundle.bin"),
+        secret_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        secret_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(secret_bundle.bundle_hash().as_bytes())),
+    )?;
 
     let bundle = compile_contract_source(BUDGET_SOURCE)?;
     fs::write(fixture_root.join("bundle.bin"), bundle.canonical_bytes())?;

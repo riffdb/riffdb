@@ -1008,3 +1008,121 @@ contract Invalid version 1 {
         Span::new(start, start + 13).expect("span")
     );
 }
+
+// ─── Secret field classification is contextual (ADR-0118, WP-597) ───
+
+/// `field secret name: type` records the classification with the modifier's
+/// exact source span; an unclassified field records `None`.
+#[test]
+fn parses_secret_field_classification_with_exact_spans() {
+    let source = r#"
+contract Auth version 1 {
+  entity Session {
+    key (id: uuid)
+    field secret token_hash: string<256>
+    field expires_at: timestamp
+  }
+}
+"#;
+    let document = parse_contract(source).expect("secret field classification parses");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration");
+    };
+    let EntityItem::Field(token_hash) = &entity.items[1].value else {
+        panic!("classified field item");
+    };
+    assert_eq!(token_hash.name.value, "token_hash");
+    let secret = token_hash.secret.expect("classification span");
+    assert_eq!(
+        &source[secret.start() as usize..secret.end() as usize],
+        "secret"
+    );
+    let EntityItem::Field(expires_at) = &entity.items[2].value else {
+        panic!("plain field item");
+    };
+    assert_eq!(expires_at.name.value, "expires_at");
+    assert_eq!(expires_at.secret, None);
+}
+
+/// `secret` stays an ordinary identifier everywhere except the classifier
+/// position: a field named `secret` and a secret-classified field named
+/// `secret` both parse (additive compatibility, the WP-591 S10 lesson).
+#[test]
+fn secret_remains_a_valid_field_identifier() {
+    let source = r#"
+contract Compat version 1 {
+  entity Row {
+    key (id: uuid)
+    field secret: string<64>
+    field secret secret: string<64>
+  }
+}
+"#;
+    let document = parse_contract(source).expect("`secret` must stay usable as a field name");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration");
+    };
+    let EntityItem::Field(plain) = &entity.items[1].value else {
+        panic!("plain field item");
+    };
+    assert_eq!(plain.name.value, "secret");
+    assert_eq!(plain.secret, None);
+    let EntityItem::Field(classified) = &entity.items[2].value else {
+        panic!("classified field item");
+    };
+    assert_eq!(classified.name.value, "secret");
+    assert!(classified.secret.is_some());
+}
+
+/// An unknown classification modifier is rejected at its exact span with the
+/// closed invalid-token code.
+#[test]
+fn unknown_field_classification_is_rejected_at_its_span() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Session {
+    key (id: uuid)
+    field hidden token_hash: string<256>
+  }
+}
+"#;
+    let diagnostics = parse_contract(source).expect_err("unknown modifier must be rejected");
+    let start = source.find("hidden").expect("modifier span");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::InvalidToken);
+    assert_eq!(diagnostic.span(), Span::new(start, start + 6).expect("span"));
+}
+
+/// The classification is unrepresentable outside stored entity fields: key
+/// fields, event fields, and command inputs reject the modifier position
+/// outright.
+#[test]
+fn secret_classification_is_rejected_outside_stored_entity_fields() {
+    for source in [
+        r#"
+contract Invalid version 1 {
+  entity Session {
+    key (secret id: uuid)
+  }
+}
+"#,
+        r#"
+contract Invalid version 1 {
+  event TokenIssued {
+    secret token_hash: string<256>
+  }
+}
+"#,
+        r#"
+contract Invalid version 1 {
+  command IssueToken {
+    input secret token_hash: string<256>
+    return issued {}
+  }
+}
+"#,
+    ] {
+        parse_contract(source)
+            .expect_err("the classification position must not exist outside entity fields");
+    }
+}

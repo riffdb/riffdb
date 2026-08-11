@@ -85,6 +85,9 @@ pub(crate) struct HirField {
     pub(crate) name_span: Span,
     pub(crate) type_span: Span,
     pub(crate) value_type: ValueType,
+    /// Span of the `secret` classification modifier (ADR-0118). Only stored
+    /// entity fields can carry it; every other position lowers `None`.
+    pub(crate) secret_span: Option<Span>,
 }
 
 #[derive(Clone, Debug)]
@@ -616,11 +619,12 @@ fn lower_entities(
                         .entity_fields
                         .get(&(id, field.name.value.clone()))
                         .copied();
-                    if let Some(lowered) = lower_field(
+                    if let Some(lowered) = lower_classified_field(
                         &field.name,
                         field.ty.span,
                         field_id,
                         field_id.and_then(|field_id| types.entity_fields.get(&(id, field_id))),
+                        field.secret,
                     ) {
                         fields.push(lowered);
                     }
@@ -2418,12 +2422,23 @@ fn lower_field(
     id: Option<FieldId>,
     value_type: Option<&ValueType>,
 ) -> Option<HirField> {
+    lower_classified_field(name, type_span, id, value_type, None)
+}
+
+fn lower_classified_field(
+    name: &Spanned<String>,
+    type_span: Span,
+    id: Option<FieldId>,
+    value_type: Option<&ValueType>,
+    secret_span: Option<Span>,
+) -> Option<HirField> {
     Some(HirField {
         id: id?,
         name: name.value.clone(),
         name_span: name.span,
         type_span,
         value_type: value_type?.clone(),
+        secret_span,
     })
 }
 
