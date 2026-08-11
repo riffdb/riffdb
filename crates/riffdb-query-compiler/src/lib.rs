@@ -1004,10 +1004,16 @@ impl QueryCostAccumulator {
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
             }
             QueryAccessKind::Nearest { .. } => {
-                // Exact KNN scans all org-partitioned rows; cost is bounded by
-                // the entity count within the partition, reported as scanned rows.
-                self.scanned_index_rows =
-                    checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
+                // Exact KNN examines every row in the org partition, bounded
+                // only by the physical scan ceiling — the honest static charge
+                // is that ceiling, not K (charging the declared output rows
+                // under-billed a partition scan by orders of magnitude and
+                // left the runtime fuel unable to fund the real scan).
+                self.scanned_index_rows = checked_cost_add(
+                    self.scanned_index_rows,
+                    riffdb_query_ir::MAX_QUERY_SCANNED_ROWS,
+                    self.primary_span,
+                )?;
             }
         }
         self.intermediate_rows = checked_cost_add(self.intermediate_rows, rows, self.primary_span)?;
@@ -1674,6 +1680,24 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
     if binding.cardinality.value != Cardinality::Many {
         return Ok(1);
     }
+    // A nearest binding declares K instead of `take` (the parser rejects
+    // combining them); K is the binding's explicit bound (VEC-010).
+    if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
+        return match &nearest.k.value {
+            Expression::Literal(Literal::Unsigned(value)) => value.parse::<u64>().ok(),
+            _ => None,
+        }
+        .filter(|value| (1..=MAX_QUERY_ROWS).contains(value))
+        .ok_or_else(|| {
+            one(
+                PlannerDiagnosticCode::Unbounded,
+                nearest.k.span,
+                vec![binding.name.value.as_str().to_owned()],
+                "binding bound exceeds the service row ceiling",
+                None,
+            )
+        });
+    }
     let Some(take) = &binding.take else {
         return Err(one(
             PlannerDiagnosticCode::Unbounded,
@@ -1706,6 +1730,18 @@ fn row_limit(
 ) -> Result<QueryRowLimit, PlannerDiagnostics> {
     if binding.cardinality.value != Cardinality::Many {
         return Ok(QueryRowLimit::Literal(1));
+    }
+    if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
+        // K is the nearest binding's literal row limit (validated positive
+        // by the planner's access construction).
+        return match &nearest.k.value {
+            Expression::Literal(Literal::Unsigned(value)) => value
+                .parse::<u64>()
+                .ok()
+                .map(QueryRowLimit::Literal)
+                .ok_or_else(internal),
+            _ => Err(internal()),
+        };
     }
     let take = binding.take.as_ref().ok_or_else(internal)?;
     match &take.limit.value {

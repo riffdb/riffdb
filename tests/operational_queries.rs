@@ -146,8 +146,11 @@ impl QueryReadView for IndexedView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error> {
-        Ok(Vec::new())
+    ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
+        Ok(riffdb_query_executor::QueryNearestPage {
+            rows: Vec::new(),
+            scanned_rows: 0,
+        })
     }
 }
 

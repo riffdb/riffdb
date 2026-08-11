@@ -621,6 +621,20 @@ pub enum QueryBackendFault {
     LimitExceeded,
 }
 
+/// One executed nearest-neighbor step: ranked rows plus honest scan work.
+///
+/// `scanned_rows` reports every row the adapter examined while scanning the
+/// org partition, not the rows returned — exact KNN examines the whole
+/// partition, and the fuel accounting must charge that examination
+/// (previously nothing was charged on the nearest path).
+#[derive(Clone, Debug)]
+pub struct QueryNearestPage {
+    /// Up to `k` rows ordered by ascending distance (closest first).
+    pub rows: Vec<QueryRow>,
+    /// Rows examined while scanning the org partition.
+    pub scanned_rows: u64,
+}
+
 /// The only operations available while a concrete adapter owns one read transaction.
 pub trait QueryReadView {
     /// Adapter-internal error retained below the safe public boundary.
@@ -661,9 +675,12 @@ pub trait QueryReadView {
 
     /// Executes one nearest-neighbor search step (ADR-0091, VEC-005).
     ///
-    /// The adapter scans all org-partitioned rows for the vector field,
-    /// applies policy predicates BEFORE distance computation (VEC-007), runs
-    /// exact KNN, and returns up to `k` rows ordered by distance (closest first).
+    /// The adapter scans the org-partitioned rows for the vector field,
+    /// applies the bound predicates BEFORE distance computation and top-K
+    /// selection (VEC-006/VEC-007 — the columnar engine's
+    /// `nearest_query_snapshot` enforces this order structurally), runs
+    /// exact KNN, and returns up to `k` rows ordered by distance (closest
+    /// first) together with the honest count of rows examined.
     ///
     /// Implementations that do not support vector queries (row-store adapters)
     /// return an integrity/invariant error.
@@ -672,7 +689,7 @@ pub trait QueryReadView {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error>;
+    ) -> Result<QueryNearestPage, Self::Error>;
 }
 
 fn map_view_error<V: QueryReadView>(view: &V, error: &V::Error) -> QueryExecutionError {
@@ -1131,14 +1148,24 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
                 (page.rows, Some(predicates))
             }
             riffdb_query_ir::QueryAccessKind::Nearest { k, .. } => {
-                // WP-593: exact KNN execution path. The view adapter scans
-                // all org-partitioned vectors, applies policy filter (VEC-007),
-                // then runs exact_knn. Results are ordered by distance.
+                // WP-593: exact KNN execution path. The adapter applies the
+                // bound predicates BEFORE ranking (filter-before-rank is
+                // enforced structurally in the columnar engine), then runs
+                // exact KNN. Scan work is charged against the same fuel the
+                // plan cost vector funded (the static charge is the
+                // partition-scan ceiling, not K).
                 let predicates = bind_predicates(step, parameters, &bindings)?;
-                let rows = view
+                let page = view
                     .nearest(step, &predicates, *k)
                     .map_err(|error| map_view_error(&*view, &error))?;
-                (rows, Some(predicates))
+                if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
+                    || page.rows.len() as u64 > u64::from(*k)
+                    || page.rows.len() as u64 > page.scanned_rows
+                {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
+                fuel.scans(page.scanned_rows)?;
+                (page.rows, Some(predicates))
             }
         };
         fuel.intermediates(
@@ -2254,8 +2281,10 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             step: &QueryAccessStep,
             _predicates: &[BoundPredicate],
             _k: u32,
-        ) -> Result<Vec<QueryRow>, Self::Error> {
-            Ok(self.rows.get(step.binding()).cloned().unwrap_or_default())
+        ) -> Result<QueryNearestPage, Self::Error> {
+            let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
+            let scanned_rows = rows.len() as u64;
+            Ok(QueryNearestPage { rows, scanned_rows })
         }
     }
 

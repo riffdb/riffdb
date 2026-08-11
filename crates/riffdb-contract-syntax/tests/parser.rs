@@ -7,6 +7,7 @@ use riffdb_contract_syntax::ast::{
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
+use riffdb_contract_syntax::span::Span;
 use riffdb_contract_syntax::{parse_contract, parse_contract_bytes};
 use std::fmt::Write as _;
 
@@ -925,5 +926,85 @@ fn all_effect_variants_are_represented_in_the_full_fixture() {
             .effects
             .iter()
             .any(|effect| matches!(effect.value, Effect::Emit(_)))
+    );
+}
+
+// ─── Vector keywords are contextual (fix round S10) ───
+
+/// The metric names and `staleness_slo` are ordinary identifiers outside a
+/// `vector_field` declaration: the WP-591 hard keywords broke contracts
+/// declaring fields with these names while claiming additive compatibility.
+#[test]
+fn metric_and_slo_names_remain_valid_field_identifiers() {
+    let source = r#"
+contract Compat version 1 {
+  entity Row {
+    key (id: uuid)
+    field cosine: u64
+    field euclidean: u64
+    field dot_product: u64
+    field staleness_slo: u64
+  }
+}
+"#;
+    let document = parse_contract(source).expect("metric names must stay usable as field names");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration");
+    };
+    let field_names: Vec<&str> = entity
+        .items
+        .iter()
+        .filter_map(|item| match &item.value {
+            EntityItem::Field(field) => Some(field.name.value.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        field_names,
+        ["cosine", "euclidean", "dot_product", "staleness_slo"]
+    );
+}
+
+/// An unknown metric identifier inside `vector_field` is rejected at its
+/// exact span.
+#[test]
+fn unknown_vector_metric_is_rejected_at_its_span() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, manhattan, (title), staleness_slo 60)
+  }
+}
+"#;
+    let diagnostics = parse_contract(source).expect_err("unknown metric must be rejected");
+    let start = source.find("manhattan").expect("metric span");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(
+        diagnostic.span(),
+        Span::new(start, start + 9).expect("span")
+    );
+}
+
+/// A misplaced keyword in the `staleness_slo` position is rejected at its
+/// exact span.
+#[test]
+fn wrong_staleness_keyword_is_rejected_at_its_span() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), freshness_slo 60)
+  }
+}
+"#;
+    let diagnostics = parse_contract(source).expect_err("wrong keyword must be rejected");
+    let start = source.find("freshness_slo").expect("keyword span");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(
+        diagnostic.span(),
+        Span::new(start, start + 13).expect("span")
     );
 }

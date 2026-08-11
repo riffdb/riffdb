@@ -1,12 +1,15 @@
-//! WP-593 projection semantics: nearest() query compilation, access-kind shape,
-//! and columnar exact-KNN execution under org isolation and policy-before-ranking.
+//! WP-593 projection semantics: nearest() query syntax, and columnar
+//! exact-KNN execution under org isolation, predicate filtering BEFORE
+//! ranking (VEC-006/VEC-007), and exact-KNN determinism (WP-594 ground
+//! truth).
 //!
 //! Acceptance command: `cargo test --test projection_semantics`
 //!
-//! Note: full contract compilation with `vector_field` triggers an IR bundle
-//! assembly gap (WP-592 prerequisite). The compilation tests use the query
-//! compiler's vector-field validation directly; the columnar execution tests
-//! construct snapshots manually.
+//! The projection under test is registered over a genuinely vector-typed
+//! contract field: `vector_field embedding(3, ...)` compiles through the
+//! public front door (the WP-592-era bundle gap is fixed), so no stand-in
+//! string column carrying smuggled vector cells is needed — the engine's
+//! declared-dimension conformance would now reject exactly that.
 
 use std::collections::BTreeMap;
 
@@ -18,21 +21,9 @@ use riffdb_types::{
 };
 
 use riffdb_columnar::{
-    ColumnarProjectionDefinition, ColumnarSnapshot, LiveRow, NearestQueryRequest, OrgKey,
-    PrimaryKeyBytes, QueryBudget, RegisteredDefinition, nearest_query_snapshot,
+    ColumnPredicate, ColumnarProjectionDefinition, ColumnarSnapshot, LiveRow, NearestQueryRequest,
+    OrgKey, PrimaryKeyBytes, QueryBudget, QueryError, RegisteredDefinition, nearest_query_snapshot,
 };
-
-// ─── Contract without vector_field for compilation path tests ───
-// Tests the parser→compiler→Nearest plan path by using a contract entity
-// that HAS a vector-typed field at the SymbolicCatalog level. Because full
-// bundle compilation with vector_field is blocked (WP-592 gap), we use the
-// schema-level field type directly.
-
-/// Contract where the entity has a field typed as a regular field. For the
-/// compilation path tests we validate the query syntax parses and the plan
-/// shape is correct using the ticketdesk baseline contract.
-const COMPILATION_CONTRACT: &str =
-    include_str!("../examples/app-baseline/contracts/ticketdesk.riff");
 
 #[test]
 fn nearest_syntax_parses_and_formats_correctly() {
@@ -62,24 +53,28 @@ fn nearest_syntax_parses_and_formats_correctly() {
     );
 }
 
-// ─── Columnar execution path tests ───
-// These test nearest_query_snapshot directly with a manually-constructed
-// RegisteredDefinition and snapshot.
+// ─── Columnar execution path ───
 
-/// Contract that compiles successfully (no vector_field in entity creation path)
-/// but whose entity schema includes a vector-typed field for the projection.
-/// Works around the WP-592 gap by putting vector_field on an entity without
-/// an aggregate (the IR accepts entity schemas with vector fields; the gap is
-/// specifically in aggregate key computation or bundle artifact generation).
-///
-/// Note: This contract puts the vector field on an entity that has no
-/// create command targeting it, avoiding the initialization requirement.
-fn columnar_test_bundle() -> riffdb_contract_ir::ContractBundle {
-    // The ticketdesk contract doesn't have vector fields, but the columnar
-    // engine tests don't need the query compiler — they build RegisteredDefinition
-    // directly. We use the ticketdesk contract for the projection registration
-    // (it has uuid/u64/string fields that work as stand-ins).
-    compile_contract_source(COMPILATION_CONTRACT).expect("ticketdesk compiles")
+/// A real vector-bearing contract: the embedding column in the projection is
+/// vector-typed with a declared dimension of 3.
+const VECTOR_CONTRACT: &str = r#"
+contract Docs version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    vector_field embedding(3, cosine, (title, body), staleness_slo 60)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+}
+"#;
+
+fn vector_bundle() -> riffdb_contract_ir::ContractBundle {
+    compile_contract_source(VECTOR_CONTRACT).expect("vector contract compiles")
 }
 
 fn field_id(bundle: &riffdb_contract_ir::ContractBundle, entity: &str, name: &str) -> FieldId {
@@ -98,28 +93,25 @@ fn field_id(bundle: &riffdb_contract_ir::ContractBundle, entity: &str, name: &st
         .unwrap_or_else(|| panic!("field {name} on {}", entity.name()))
 }
 
-/// Builds a RegisteredDefinition for Ticket that includes a field we'll use
-/// as the vector column (the field is string-typed in the contract schema but
-/// we'll store CanonicalValue::Vector in the snapshot cells — the columnar
-/// engine's nearest_query_snapshot extracts Vector values by index, not by
-/// type validation at query time).
-fn ticket_vector_projection(
+/// Registers a projection over (title, embedding) with org_id as the scope.
+fn document_vector_projection(
     bundle: &riffdb_contract_ir::ContractBundle,
 ) -> (RegisteredDefinition, riffdb_types::EntityTypeId) {
-    let org = field_id(bundle, "Ticket", "organization_id");
-    let title = field_id(bundle, "Ticket", "title");
+    let org = field_id(bundle, "Document", "org_id");
+    let title = field_id(bundle, "Document", "title");
+    let embedding = field_id(bundle, "Document", "embedding");
     let entity_type = bundle
         .schema()
         .entities()
         .iter()
-        .find(|e| e.name() == "Ticket")
-        .expect("Ticket entity")
+        .find(|e| e.name() == "Document")
+        .expect("Document entity")
         .id();
     let def = RegisteredDefinition::register(
         ColumnarProjectionDefinition {
-            name: "ticket_vectors".into(),
-            entity_name: "Ticket".into(),
-            projected_fields: vec![title],
+            name: "document_vectors".into(),
+            entity_name: "Document".into(),
+            projected_fields: vec![title, embedding],
             org_scope_field: org,
         },
         bundle,
@@ -131,61 +123,86 @@ fn ticket_vector_projection(
 fn build_pk(
     entity_type: riffdb_types::EntityTypeId,
     org: [u8; 16],
-    ticket_id: u64,
+    doc_id: u64,
 ) -> PrimaryKeyBytes {
     let mut key_builder = riffdb_types::EntityKeyBuilder::new(entity_type);
     key_builder.push_uuid(&org).expect("uuid");
-    // ticketdesk Ticket key is (organization_id: uuid, ticket_id: uuid)
     let mut id_bytes = [0u8; 16];
-    id_bytes[0..8].copy_from_slice(&ticket_id.to_be_bytes());
-    key_builder.push_uuid(&id_bytes).expect("ticket uuid");
+    id_bytes[0..8].copy_from_slice(&doc_id.to_be_bytes());
+    key_builder.push_uuid(&id_bytes).expect("doc uuid");
     PrimaryKeyBytes::from_entity_key_bytes(key_builder.finish().expect("key").as_bytes().to_vec())
 }
 
-fn vector_row(embedding: &[f32]) -> LiveRow {
+/// Row cells in projection order: (title, embedding).
+fn document_row(title: &str, embedding: &[f32]) -> LiveRow {
     LiveRow {
         entity_version: EntityVersion::new(1).expect("v"),
-        cells: vec![CanonicalValue::Vector(
-            CanonicalVector::new(embedding.to_vec()).expect("vec"),
-        )],
+        cells: vec![
+            CanonicalValue::string(title).expect("title"),
+            CanonicalValue::Vector(CanonicalVector::new(embedding.to_vec()).expect("vec")),
+        ],
+    }
+}
+
+fn request(
+    org: [u8; 16],
+    vector_field: FieldId,
+    query: &[f32],
+    k: u32,
+    predicates: Vec<ColumnPredicate>,
+) -> NearestQueryRequest {
+    NearestQueryRequest {
+        org_scope: CanonicalValue::Uuid(org),
+        vector_field,
+        query_vector: CanonicalVector::new(query.to_vec()).expect("query"),
+        k,
+        metric: DistanceMetric::Cosine,
+        predicates,
+        budget: QueryBudget::default(),
     }
 }
 
 #[test]
 fn nearest_query_returns_k_closest_by_cosine() {
-    let bundle = columnar_test_bundle();
-    let (definition, entity_type) = ticket_vector_projection(&bundle);
-    let vector_field = field_id(&bundle, "Ticket", "title"); // our vector column
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
 
     let org = [1u8; 16];
-    let org_value = CanonicalValue::Uuid(org);
-    let org_key = OrgKey::from_value(&org_value).expect("org key");
+    let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org key");
 
     // 5 documents at varying angles from query [1, 0, 0]
     let mut delta: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
-    delta.insert(build_pk(entity_type, org, 1), vector_row(&[1.0, 0.0, 0.0])); // identical
-    delta.insert(build_pk(entity_type, org, 2), vector_row(&[0.7, 0.7, 0.0])); // ~45 deg
-    delta.insert(build_pk(entity_type, org, 3), vector_row(&[0.0, 1.0, 0.0])); // orthogonal
-    delta.insert(build_pk(entity_type, org, 4), vector_row(&[-1.0, 0.0, 0.0])); // opposite
-    delta.insert(build_pk(entity_type, org, 5), vector_row(&[0.9, 0.1, 0.0])); // very close
+    delta.insert(
+        build_pk(entity_type, org, 1),
+        document_row("a", &[1.0, 0.0, 0.0]),
+    ); // identical
+    delta.insert(
+        build_pk(entity_type, org, 2),
+        document_row("b", &[0.7, 0.7, 0.0]),
+    ); // ~45 deg
+    delta.insert(
+        build_pk(entity_type, org, 3),
+        document_row("c", &[0.0, 1.0, 0.0]),
+    ); // orthogonal
+    delta.insert(
+        build_pk(entity_type, org, 4),
+        document_row("d", &[-1.0, 0.0, 0.0]),
+    ); // opposite
+    delta.insert(
+        build_pk(entity_type, org, 5),
+        document_row("e", &[0.9, 0.1, 0.0]),
+    ); // very close
 
     let mut snapshot = ColumnarSnapshot::empty();
     snapshot.delta.insert(org_key, delta);
     snapshot.visible_frontier =
         FrontierPosition::AppliedThrough(CommitSequence::new(5).expect("seq"));
 
-    let query_vector = CanonicalVector::new(vec![1.0, 0.0, 0.0]).expect("query");
     let result = nearest_query_snapshot(
         &definition,
         &snapshot,
-        &NearestQueryRequest {
-            org_scope: org_value,
-            vector_field,
-            query_vector,
-            k: 3,
-            metric: DistanceMetric::Cosine,
-            budget: QueryBudget::default(),
-        },
+        &request(org, vector_field, &[1.0, 0.0, 0.0], 3, Vec::new()),
     )
     .expect("nearest query");
 
@@ -204,9 +221,9 @@ fn nearest_query_returns_k_closest_by_cosine() {
 
 #[test]
 fn nearest_query_respects_org_isolation() {
-    let bundle = columnar_test_bundle();
-    let (definition, entity_type) = ticket_vector_projection(&bundle);
-    let vector_field = field_id(&bundle, "Ticket", "title");
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
 
     let org_a = [1u8; 16];
     let org_b = [2u8; 16];
@@ -216,13 +233,13 @@ fn nearest_query_respects_org_isolation() {
     let mut delta_a: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
     delta_a.insert(
         build_pk(entity_type, org_a, 1),
-        vector_row(&[1.0, 0.0, 0.0]),
+        document_row("a", &[1.0, 0.0, 0.0]),
     ); // close
 
     let mut delta_b: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
     delta_b.insert(
         build_pk(entity_type, org_b, 1),
-        vector_row(&[-1.0, 0.0, 0.0]),
+        document_row("b", &[-1.0, 0.0, 0.0]),
     ); // far
 
     let mut snapshot = ColumnarSnapshot::empty();
@@ -231,20 +248,11 @@ fn nearest_query_respects_org_isolation() {
     snapshot.visible_frontier =
         FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("seq"));
 
-    let query_vector = CanonicalVector::new(vec![1.0, 0.0, 0.0]).expect("query");
-
     // Org A: finds close doc
     let result = nearest_query_snapshot(
         &definition,
         &snapshot,
-        &NearestQueryRequest {
-            org_scope: CanonicalValue::Uuid(org_a),
-            vector_field,
-            query_vector: query_vector.clone(),
-            k: 10,
-            metric: DistanceMetric::Cosine,
-            budget: QueryBudget::default(),
-        },
+        &request(org_a, vector_field, &[1.0, 0.0, 0.0], 10, Vec::new()),
     )
     .expect("org A");
     assert_eq!(result.rows.len(), 1);
@@ -254,67 +262,176 @@ fn nearest_query_respects_org_isolation() {
     let result = nearest_query_snapshot(
         &definition,
         &snapshot,
-        &NearestQueryRequest {
-            org_scope: CanonicalValue::Uuid(org_b),
-            vector_field,
-            query_vector: query_vector.clone(),
-            k: 10,
-            metric: DistanceMetric::Cosine,
-            budget: QueryBudget::default(),
-        },
+        &request(org_b, vector_field, &[1.0, 0.0, 0.0], 10, Vec::new()),
     )
     .expect("org B");
     assert_eq!(result.rows.len(), 1);
     assert!(result.rows[0].distance > 1.5, "org B doc should be far");
 }
 
-/// VEC-007: Policy before ranking architecture proof at the columnar level.
-/// Only rows in the queried org partition are visible.
+/// VEC-007 adversarial proof: rows denied by the filter influence nothing —
+/// presence, distances, ranking, or count — and the filter demonstrably
+/// applies BEFORE ranking.
+///
+/// Construction: the DENIED row is the nearest to the query. At `k = 2` over
+/// {denied-nearest, auth-mid, auth-far}: filter-before-rank returns BOTH
+/// authorized rows, while filter-after-rank (rank all three, truncate to k,
+/// then drop denied) returns only ONE row — the count assertion below reds
+/// that order swap. The distances must equal a control run over a snapshot
+/// that never contained the denied row at all.
 #[test]
-fn nearest_query_policy_before_ranking_via_org_scoping() {
-    let bundle = columnar_test_bundle();
-    let (definition, entity_type) = ticket_vector_projection(&bundle);
-    let vector_field = field_id(&bundle, "Ticket", "title");
+fn nearest_query_filters_denied_rows_before_ranking() {
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
+    let title_field = field_id(&bundle, "Document", "title");
 
     let org = [1u8; 16];
     let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org");
 
-    let mut delta: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
-    delta.insert(build_pk(entity_type, org, 1), vector_row(&[0.5, 0.5, 0.0]));
-    delta.insert(build_pk(entity_type, org, 2), vector_row(&[0.7, 0.3, 0.0]));
+    let denied_pk = build_pk(entity_type, org, 1);
+    let auth_mid_pk = build_pk(entity_type, org, 2);
+    let auth_far_pk = build_pk(entity_type, org, 3);
 
+    // The denied row is IDENTICAL to the query — strictly nearest.
+    let mut delta: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
+    delta.insert(denied_pk.clone(), document_row("secret", &[1.0, 0.0, 0.0]));
+    delta.insert(
+        auth_mid_pk.clone(),
+        document_row("public", &[0.7, 0.7, 0.0]),
+    );
+    delta.insert(
+        auth_far_pk.clone(),
+        document_row("public", &[0.0, 1.0, 0.0]),
+    );
+
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.delta.insert(org_key.clone(), delta);
+    snapshot.visible_frontier =
+        FrontierPosition::AppliedThrough(CommitSequence::new(3).expect("seq"));
+
+    // Control: a world in which the denied row never existed.
+    let mut control_delta: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
+    control_delta.insert(
+        auth_mid_pk.clone(),
+        document_row("public", &[0.7, 0.7, 0.0]),
+    );
+    control_delta.insert(
+        auth_far_pk.clone(),
+        document_row("public", &[0.0, 1.0, 0.0]),
+    );
+    let mut control_snapshot = ColumnarSnapshot::empty();
+    control_snapshot.delta.insert(org_key, control_delta);
+    control_snapshot.visible_frontier =
+        FrontierPosition::AppliedThrough(CommitSequence::new(3).expect("seq"));
+
+    let deny_predicate = vec![ColumnPredicate::Eq {
+        field: title_field,
+        value: CanonicalValue::string("public").expect("value"),
+    }];
+
+    // Sanity: unfiltered, the denied row IS the top result.
+    let unfiltered = nearest_query_snapshot(
+        &definition,
+        &snapshot,
+        &request(org, vector_field, &[1.0, 0.0, 0.0], 2, Vec::new()),
+    )
+    .expect("unfiltered");
+    assert_eq!(unfiltered.rows[0].primary_key.len(), 2);
+    assert!(unfiltered.rows[0].distance < 1e-6, "denied row is nearest");
+
+    // Filtered: k=2 must be filled from the authorized rows.
+    let filtered = nearest_query_snapshot(
+        &definition,
+        &snapshot,
+        &request(
+            org,
+            vector_field,
+            &[1.0, 0.0, 0.0],
+            2,
+            deny_predicate.clone(),
+        ),
+    )
+    .expect("filtered");
+
+    // COUNT: exactly k results — a filter-after-rank order swap returns 1.
+    assert_eq!(
+        filtered.rows.len(),
+        2,
+        "filter must run before ranking: k results from authorized rows"
+    );
+    // PRESENCE: the denied row's cells are absent from every returned row.
+    for row in &filtered.rows {
+        assert_ne!(
+            row.cells[0],
+            CanonicalValue::string("secret").expect("value"),
+            "denied row must be absent"
+        );
+    }
+    // DISTANCES + RANKING: byte-identical to the control world without the
+    // denied row — its existence influenced nothing.
+    let control = nearest_query_snapshot(
+        &definition,
+        &control_snapshot,
+        &request(org, vector_field, &[1.0, 0.0, 0.0], 2, deny_predicate),
+    )
+    .expect("control");
+    assert_eq!(filtered.rows.len(), control.rows.len());
+    for (filtered_row, control_row) in filtered.rows.iter().zip(control.rows.iter()) {
+        assert_eq!(filtered_row.primary_key, control_row.primary_key);
+        assert_eq!(
+            filtered_row.distance.to_bits(),
+            control_row.distance.to_bits(),
+            "distances must be exactly those of the denied-row-free world"
+        );
+    }
+    // And the denied row's absence did not zero the top distance.
+    assert!(filtered.rows[0].distance > 0.01);
+}
+
+/// The engine rejects a query vector that does not match the declared
+/// dimension as a typed error (M5: previously unchecked, and a mismatched
+/// stored cell panicked in exact_knn).
+#[test]
+fn nearest_query_rejects_query_dimension_mismatch() {
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
+
+    let org = [1u8; 16];
+    let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org");
+    let mut delta: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
+    delta.insert(
+        build_pk(entity_type, org, 1),
+        document_row("a", &[1.0, 0.0, 0.0]),
+    );
     let mut snapshot = ColumnarSnapshot::empty();
     snapshot.delta.insert(org_key, delta);
     snapshot.visible_frontier =
-        FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("seq"));
+        FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("seq"));
 
-    let query_vector = CanonicalVector::new(vec![1.0, 0.0, 0.0]).expect("query");
-    let result = nearest_query_snapshot(
+    // Declared dimension is 3; the query vector has 2 components.
+    let error = nearest_query_snapshot(
         &definition,
         &snapshot,
-        &NearestQueryRequest {
-            org_scope: CanonicalValue::Uuid(org),
-            vector_field,
-            query_vector,
-            k: 10,
-            metric: DistanceMetric::Cosine,
-            budget: QueryBudget::default(),
-        },
+        &request(org, vector_field, &[1.0, 0.0], 5, Vec::new()),
     )
-    .expect("policy filtered");
-
-    assert_eq!(result.rows.len(), 2);
-    assert!(result.rows[0].distance <= result.rows[1].distance);
-    // Neither distance is 0 — no unauthorized identical doc leaked in
-    assert!(result.rows[0].distance > 0.01);
+    .expect_err("dimension mismatch must be a typed error");
+    assert!(matches!(
+        error,
+        QueryError::VectorDimensionMismatch {
+            expected: 3,
+            actual: 2,
+        }
+    ));
 }
 
 /// Exact KNN is the WP-594 recall harness ground truth — must be deterministic.
 #[test]
 fn nearest_query_exact_knn_is_deterministic() {
-    let bundle = columnar_test_bundle();
-    let (definition, entity_type) = ticket_vector_projection(&bundle);
-    let vector_field = field_id(&bundle, "Ticket", "title");
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
 
     let org = [1u8; 16];
     let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org");
@@ -324,7 +441,7 @@ fn nearest_query_exact_knn_is_deterministic() {
         let angle = (i as f32) * 0.1;
         delta.insert(
             build_pk(entity_type, org, i),
-            vector_row(&[angle.cos(), angle.sin(), 0.0]),
+            document_row("doc", &[angle.cos(), angle.sin(), 0.0]),
         );
     }
 
@@ -333,21 +450,37 @@ fn nearest_query_exact_knn_is_deterministic() {
     snapshot.visible_frontier =
         FrontierPosition::AppliedThrough(CommitSequence::new(20).expect("seq"));
 
-    let request = NearestQueryRequest {
-        org_scope: CanonicalValue::Uuid(org),
-        vector_field,
-        query_vector: CanonicalVector::new(vec![1.0, 0.0, 0.0]).expect("query"),
-        k: 5,
-        metric: DistanceMetric::Cosine,
-        budget: QueryBudget::default(),
-    };
-
-    let result_a = nearest_query_snapshot(&definition, &snapshot, &request).expect("a");
-    let result_b = nearest_query_snapshot(&definition, &snapshot, &request).expect("b");
+    let query = request(org, vector_field, &[1.0, 0.0, 0.0], 5, Vec::new());
+    let result_a = nearest_query_snapshot(&definition, &snapshot, &query).expect("a");
+    let result_b = nearest_query_snapshot(&definition, &snapshot, &query).expect("b");
 
     assert_eq!(result_a.rows.len(), result_b.rows.len());
     for (a, b) in result_a.rows.iter().zip(result_b.rows.iter()) {
         assert_eq!(a.distance, b.distance, "exact KNN must be deterministic");
         assert_eq!(a.primary_key, b.primary_key);
     }
+}
+
+/// Vectors are entity field values, never org-scope keys: registration
+/// rejects a vector-typed org scope (S7 — the gate previously admitted it
+/// against its own comment).
+#[test]
+fn vector_org_scope_is_rejected_at_registration() {
+    let bundle = vector_bundle();
+    let title = field_id(&bundle, "Document", "title");
+    let embedding = field_id(&bundle, "Document", "embedding");
+    let error = RegisteredDefinition::register(
+        riffdb_columnar::ColumnarProjectionDefinition {
+            name: "bad_scope".into(),
+            entity_name: "Document".into(),
+            projected_fields: vec![title],
+            org_scope_field: embedding,
+        },
+        &bundle,
+    )
+    .expect_err("a vector org scope must be rejected");
+    assert!(matches!(
+        error,
+        riffdb_columnar::DefinitionError::UnsupportedColumnType { .. }
+    ));
 }

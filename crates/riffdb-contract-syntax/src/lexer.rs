@@ -63,14 +63,6 @@ pub(crate) enum Token {
     NoInbound,
     #[token("restrict")]
     Restrict,
-    #[token("cosine")]
-    Cosine,
-    #[token("euclidean")]
-    Euclidean,
-    #[token("dot_product")]
-    DotProduct,
-    #[token("staleness_slo")]
-    StalenessSlo,
     #[token("event")]
     Event,
     #[token("enum")]

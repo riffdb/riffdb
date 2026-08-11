@@ -117,8 +117,29 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             ))
         })?;
     }
-    if delete_policies.is_empty() {
-        Ok(base)
+    let vector_field_specs = hir
+        .entities
+        .iter()
+        .flat_map(|entity| {
+            entity.vector_fields.iter().map(|vector_field| {
+                riffdb_contract_ir::VectorFieldSpecV1::new(
+                    entity.id,
+                    vector_field.field_id,
+                    vector_field.metric,
+                    vector_field.source_fields.clone(),
+                    vector_field.staleness_slo_secs,
+                )
+                .map_err(|_| {
+                    CompilerDiagnostics::single(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidType,
+                        vector_field.span,
+                    ))
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let schema = if delete_policies.is_empty() {
+        base
     } else {
         SchemaIr::with_integrity_and_delete_policies(
             entities,
@@ -132,8 +153,11 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                 .map(|(policy, _)| policy)
                 .collect(),
         )
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?
+    };
+    schema
+        .with_vector_field_specs(vector_field_specs)
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
-    }
 }
 
 fn lower_delete_policies(hir: &TypedContractHir) -> Vec<(DeletePolicySchemaV1, Span)> {
@@ -955,9 +979,28 @@ contract Docs version 1 {
         );
     }
 
+    /// Lowers a vector_field contract expecting rejection, returning the
+    /// diagnostic matching `code` at `spanned` (AGENTS.md: every compiler
+    /// diagnostic needs a source-span snapshot plus semantic assertion).
+    fn vector_rejection(source: &str, code: CompilerDiagnosticCode, spanned: &str) -> Span {
+        let document = parse_contract(source).expect("syntax");
+        let symbols = allocate_genesis_symbols(&document).expect("symbols");
+        let types = resolve_declared_types(&document, &symbols).expect("types");
+        let diagnostics = lower_contract_hir(&document, &symbols, &types).expect_err("rejects");
+        let start = source.find(spanned).expect("spanned text present");
+        let expected = Span::new(start, start + spanned.len()).expect("span");
+        let found = diagnostics
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code() == code && diagnostic.primary_span() == expected)
+            .unwrap_or_else(|| panic!("expected {code:?} at {expected:?}; found {diagnostics:?}"));
+        found.primary_span()
+    }
+
     #[test]
-    fn vector_field_rejects_zero_dimension() {
-        let source = r#"
+    fn vector_field_rejects_zero_dimension_at_its_span() {
+        vector_rejection(
+            r#"
 contract Invalid version 1 {
   entity Document {
     key (doc_id: uuid)
@@ -965,19 +1008,67 @@ contract Invalid version 1 {
     vector_field embedding(0, cosine, (title), staleness_slo 60)
   }
 }
-"#;
-        let document = parse_contract(source).expect("syntax");
-        let symbols = allocate_genesis_symbols(&document).expect("symbols");
-        let types = resolve_declared_types(&document, &symbols).expect("types");
-        let hir_result = lower_contract_hir(&document, &symbols, &types);
-        // The dimension validation happens in the HIR pass; a zero dimension
-        // produces a BoundExceeded diagnostic.
-        assert!(hir_result.is_err());
+"#,
+            CompilerDiagnosticCode::BoundExceeded,
+            "0",
+        );
     }
 
     #[test]
-    fn vector_field_rejects_unknown_source_field() {
+    fn vector_field_rejects_oversized_dimension_at_its_span() {
+        vector_rejection(
+            r#"
+contract Invalid version 1 {
+  entity Document {
+    key (doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(4097, cosine, (title), staleness_slo 60)
+  }
+}
+"#,
+            CompilerDiagnosticCode::BoundExceeded,
+            "4097",
+        );
+    }
+
+    #[test]
+    fn vector_field_rejects_zero_staleness_slo_at_its_span() {
+        vector_rejection(
+            r#"
+contract Invalid version 1 {
+  entity Document {
+    key (doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 0)
+  }
+}
+"#,
+            CompilerDiagnosticCode::BoundExceeded,
+            "0",
+        );
+    }
+
+    #[test]
+    fn vector_field_rejects_an_empty_source_field_list_in_the_grammar() {
+        // An empty source-field list is unrepresentable: the grammar requires
+        // at least one identifier, so rejection happens at parse time (the
+        // HIR's MissingDeclaration check remains as a defensive second layer).
         let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (), staleness_slo 60)
+  }
+}
+"#;
+        assert!(parse_contract(source).is_err());
+    }
+
+    #[test]
+    fn vector_field_rejects_unknown_source_field_at_its_span() {
+        vector_rejection(
+            r#"
 contract Invalid version 1 {
   entity Document {
     key (doc_id: uuid)
@@ -985,12 +1076,9 @@ contract Invalid version 1 {
     vector_field embedding(1536, cosine, (title, nonexistent), staleness_slo 60)
   }
 }
-"#;
-        let document = parse_contract(source).expect("syntax");
-        let symbols = allocate_genesis_symbols(&document).expect("symbols");
-        let types = resolve_declared_types(&document, &symbols).expect("types");
-        let hir_result = lower_contract_hir(&document, &symbols, &types);
-        // Unknown source field produces an UnknownName diagnostic.
-        assert!(hir_result.is_err());
+"#,
+            CompilerDiagnosticCode::UnknownName,
+            "nonexistent",
+        );
     }
 }

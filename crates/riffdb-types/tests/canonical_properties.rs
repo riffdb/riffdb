@@ -7,10 +7,28 @@ use std::collections::BTreeMap;
 use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
 use riffdb_types::{
-    CanonicalCodecError, CanonicalRecord, CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec,
-    EnumTypeId, EnumVariantId, FieldId, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_STRING_BYTES,
-    Money, Timestamp, decode_canonical_value, encode_canonical_value,
+    CanonicalCodecError, CanonicalRecord, CanonicalValue, CanonicalVector, CurrencyCode, Date,
+    Decimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
+    MAX_STRING_BYTES, Money, Timestamp, decode_canonical_value, encode_canonical_value,
 };
+
+/// Finite components across magnitudes, including exact zero. Construction
+/// canonicalizes -0.0, so the generated vector is always in canonical form.
+fn finite_component() -> BoxedStrategy<f32> {
+    prop_oneof![
+        Just(0.0_f32),
+        Just(-0.0_f32),
+        -1.0e30_f32..1.0e30_f32,
+        -1.0_f32..1.0_f32,
+    ]
+    .boxed()
+}
+
+fn canonical_vector() -> BoxedStrategy<CanonicalVector> {
+    vec(finite_component(), 1..16)
+        .prop_map(|components| CanonicalVector::new(components).expect("finite components"))
+        .boxed()
+}
 
 fn decimal(precision: u8, scale: u8, coefficient: i128) -> Decimal {
     Decimal::new(
@@ -44,6 +62,7 @@ fn leaf_value() -> BoxedStrategy<CanonicalValue> {
             type_id: EnumTypeId::new(type_id).expect("generated nonzero enum type ID"),
             variant_id: EnumVariantId::new(variant_id).expect("generated nonzero enum variant ID"),
         }),
+        canonical_vector().prop_map(CanonicalValue::Vector),
     ]
     .boxed()
 }
@@ -103,6 +122,37 @@ proptest! {
     #[test]
     fn arbitrary_bounded_bytes_never_panic(input in vec(any::<u8>(), 0..2048)) {
         let _ = decode_canonical_value(&input);
+    }
+
+    /// Canonical-form invariants (ADR-0011 vector amendment): within the
+    /// canonical domain, equality, ordering, hashing, and durable bytes must
+    /// all agree — `a == b` iff `cmp == Equal` iff equal hashes iff equal
+    /// encoded documents.
+    #[test]
+    fn vector_equality_ordering_hash_and_digest_agree(
+        left in canonical_vector(),
+        right in canonical_vector(),
+    ) {
+        use std::hash::{Hash, Hasher};
+        let hash_of = |vector: &CanonicalVector| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            vector.hash(&mut hasher);
+            hasher.finish()
+        };
+        // Reflexivity always holds in the canonical domain.
+        prop_assert_eq!(&left, &left.clone());
+        prop_assert_eq!(left.cmp(&left.clone()), std::cmp::Ordering::Equal);
+
+        let equal = left == right;
+        prop_assert_eq!(equal, left.cmp(&right) == std::cmp::Ordering::Equal);
+        if equal {
+            prop_assert_eq!(hash_of(&left), hash_of(&right));
+        }
+        let left_bytes =
+            encode_canonical_value(&CanonicalValue::Vector(left)).expect("bounded");
+        let right_bytes =
+            encode_canonical_value(&CanonicalValue::Vector(right)).expect("bounded");
+        prop_assert_eq!(equal, left_bytes == right_bytes);
     }
 }
 

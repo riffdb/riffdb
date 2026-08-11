@@ -4320,10 +4320,22 @@ fn canonical_value_json(value: &CanonicalValue) -> serde_json::Value {
                 "value": canonical_value_json(value),
             })).collect::<Vec<_>>(),
         }),
-        CanonicalValue::Vector(vector) => serde_json::json!({
-            "type": "vector",
-            "dimension": vector.dimension(),
-        }),
+        // Complete value, never truncated: components ride as padded
+        // standard base64 over big-endian f32 bytes (the CLI's byte
+        // spelling). ADR-0041's closed type list predates vectors; the
+        // needed amendment is flagged in the vectors fix-round report.
+        CanonicalValue::Vector(vector) => {
+            use base64::Engine as _;
+            let mut bytes = Vec::with_capacity(vector.byte_size());
+            for component in vector.components() {
+                bytes.extend_from_slice(&component.to_be_bytes());
+            }
+            serde_json::json!({
+                "type": "vector",
+                "dimension": vector.dimension(),
+                "components": base64::engine::general_purpose::STANDARD.encode(bytes),
+            })
+        }
     }
 }
 

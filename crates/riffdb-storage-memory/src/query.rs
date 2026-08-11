@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
-    QueryExecutionRequest, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow,
-    QueryScanPage, execute_in_snapshot, execute_operational_page_in_snapshot,
+    QueryExecutionRequest, QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView,
+    QueryRow, QueryScanPage, execute_in_snapshot, execute_operational_page_in_snapshot,
     execute_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
@@ -313,7 +313,7 @@ impl QueryReadView for MemoryQueryView<'_> {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
-    ) -> Result<Vec<QueryRow>, Self::Error> {
+    ) -> Result<QueryNearestPage, Self::Error> {
         // Row-store does not support vector nearest-neighbor search (ADR-0091).
         // Nearest queries must be routed through the columnar projection engine.
         Err(storage_error(StorageErrorKind::InvariantViolation))
