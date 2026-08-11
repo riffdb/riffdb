@@ -3346,5 +3346,16 @@ mod tests {
                 .next()
                 .is_none()
         );
+        // Explicit form of what the deleted cleanup used to observe by
+        // accident (remove_file on a directory errors with EISDIR): the
+        // generator must refuse without unlinking the symlink or replacing
+        // it with a real directory.
+        assert!(
+            fs::symlink_metadata(base.join("generated"))
+                .expect("generated entry survives the refusal")
+                .file_type()
+                .is_symlink(),
+            "the rejected output parent must still be a symlink"
+        );
     }
 }

@@ -155,14 +155,27 @@ impl ScratchScope {
     fn new(label: &str) -> Self {
         static SWEEP_ONCE: OnceLock<()> = OnceLock::new();
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-        SWEEP_ONCE.get_or_init(|| sweep_dead_scratch_scopes(&root));
-        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let path = root.join(format!(
-            "{SCRATCH_SCOPE_PREFIX}{label}-{}-{ordinal}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("create test scope directory");
-        Self(path)
+        if root.exists() {
+            SWEEP_ONCE.get_or_init(|| sweep_dead_scratch_scopes(&root));
+        } else {
+            std::fs::create_dir_all(&root).expect("create scratch root");
+        }
+        // create_dir (not create_dir_all) plus retry: after pid reuse a
+        // stale scope carrying our pid survives the sweep, and silently
+        // inheriting its database and journals would make a *recovery* test
+        // non-hermetic. Terminates because the ordinal is monotonic.
+        loop {
+            let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "{SCRATCH_SCOPE_PREFIX}{label}-{}-{ordinal}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("create test scope directory: {error}"),
+            }
+        }
     }
 
     fn path(&self) -> &Path {

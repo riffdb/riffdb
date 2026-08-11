@@ -1654,6 +1654,14 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // TESTHYG deferred: this helper and the medium probes above leak on
+    // panic (no lifecycle guard). The workspace-wide fix uses a guarded
+    // scope (`tempfile` pinned =3.24.0 as a dev-dependency, or
+    // riffdb-testkit's ScratchDir), but this benchmark is a separate cargo
+    // workspace whose Cargo.lock does not contain tempfile, and adding a
+    // supply-chain node here needs maintainer review. Until then: artifacts
+    // land under the ambient temp dir and are removed at the end of each
+    // test only on the success path.
     fn unique_temp_dir(label: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

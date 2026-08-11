@@ -794,7 +794,11 @@ mod tests {
     /// [`crate::test_path::ScopedDirectory`] removed on drop — pass, fail, or
     /// panic — so cleanup never depends on a hand-maintained file list. This
     /// retires the stale `target/wp487-composite-view` marker-leak class.
-    struct TestDatabasePath(PathBuf, crate::test_path::ScopedDirectory);
+    struct TestDatabasePath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestDatabasePath {
         fn new(label: &str) -> Self {

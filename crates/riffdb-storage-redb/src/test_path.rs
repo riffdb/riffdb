@@ -10,7 +10,10 @@
 //! durable-format marker, …) to a single directory removed on `Drop` — pass,
 //! fail, or panic — so cleanup never depends on a hand-maintained file list.
 //! Directory names embed the owning pid; creation sweeps sibling scopes whose
-//! pid is dead, bounding what interrupted runs can accumulate.
+//! pid is dead, bounding what interrupted runs can accumulate. The 24-hour
+//! staleness belt outranks liveness: a scope idle for over a day is swept
+//! even if its owner is still alive (the price of closing the pid-reuse
+//! leak), so a long-lived process must keep touching its scope.
 //!
 //! This intentionally mirrors `riffdb_testkit::scratch::ScratchDir`; the
 //! testkit itself depends on this crate, so the storage layer keeps a local
@@ -47,13 +50,21 @@ impl ScopedDirectory {
     pub(crate) fn new(label: &str) -> Self {
         let root = root();
         sweep_stale_scopes(&root);
-        let ordinal = NEXT_SCOPE.fetch_add(1, Ordering::Relaxed);
-        let path = root.join(format!(
-            "{SCOPE_PREFIX}{label}-{}-{ordinal}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).expect("create unit test scope directory");
-        Self(path)
+        // Retry on AlreadyExists: after pid reuse a stale scope carrying our
+        // pid survives the sweep, and inheriting it would make a test
+        // non-hermetic. Terminates because the ordinal is monotonic.
+        loop {
+            let ordinal = NEXT_SCOPE.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "{SCOPE_PREFIX}{label}-{}-{ordinal}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("create unit test scope directory: {error}"),
+            }
+        }
     }
 
     /// Joins a file name onto the scope.
@@ -177,5 +188,22 @@ mod tests {
         assert!(init.exists(), "live foreign-pid scope must survive");
         assert!(foreign.exists(), "non-scope names are never touched");
         assert!(malformed.exists(), "unparseable names are never touched");
+    }
+
+    /// Kill-path pin: merely constructing a scope must reap a dead session's
+    /// orphan under the shared unit root. With the construction-time sweep
+    /// call deleted, this test fails — the direct-call sweep test above
+    /// cannot catch that, because it exercises the sweep on an inner root.
+    #[test]
+    fn constructing_a_scope_reaps_a_dead_sessions_orphan() {
+        let orphan = root().join("scope-kill-pin-999999-1");
+        fs::create_dir(&orphan).expect("seed dead-pid orphan");
+        fs::write(orphan.join("db.redb"), b"leak").expect("seed leaked database");
+
+        let _fresh = ScopedDirectory::new("kill-pin");
+        assert!(
+            !orphan.exists(),
+            "constructing a scope must sweep the dead session's orphan"
+        );
     }
 }

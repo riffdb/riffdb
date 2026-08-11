@@ -1104,7 +1104,13 @@ mod tests {
 
     /// Whole-directory scope: `.0` is the root path inside a
     /// [`tempfile::TempDir`] removed on drop — pass, fail, or panic.
-    struct TestRoot(PathBuf, tempfile::TempDir);
+    struct TestRoot(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope (field-scoped allow so
+        // the protection survives if this file's `#![allow(dead_code)]` is
+        // ever narrowed).
+        #[allow(dead_code)] tempfile::TempDir,
+    );
 
     impl TestRoot {
         fn new() -> Self {
