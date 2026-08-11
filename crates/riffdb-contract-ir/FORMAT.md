@@ -130,6 +130,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x01` | read |
 | `0x02` | mutate |
 | `0x03` | create |
+| `0x04` | delete |
 
 ### Instruction
 
@@ -452,9 +453,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `magic` | ASCII `RIFFDB-BUNDLE\0` |
-| 2 | `bundle_format_version` | u32 = 1, 2, 3, or 4 |
-| 3 | `grammar_version` | u32 = 1, 2, 3, or 4; must equal the bundle version |
-| 4 | `executable_ir_version` | u32 = 1, 2, 3, or 4; must equal the bundle version |
+| 2 | `bundle_format_version` | u32 = 1, 2, 3, 4, or 5 |
+| 3 | `grammar_version` | u32 = 1, 2, 3, 4, or 5; must equal the bundle version |
+| 4 | `executable_ir_version` | u32 = 1, 2, 3, 4, or 5; must equal the bundle version |
 | 5 | `compiler_version` | nonempty ASCII compiler semantic-version identity string, <=64 bytes |
 | 6 | `contract_lineage` | string |
 | 7 | `contract_version` | u64 |
@@ -730,19 +731,34 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 5 | `idempotency_input` | optional FieldId |
 | 6 | `input_schema_hash` | 32 bytes |
 | 7 | `output_schema_hash` | 32 bytes |
-| 8 | `expressions` | ExpressionArena |
-| 9 | `bindings` | u32 count + BindingPlan[] |
-| 10 | `root_validation_reads` | u32 count + RootValidationReadPlan[] |
-| 11 | `relationship_checks` | u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted |
-| 12 | `locality` | LocalityPlan |
-| 13 | `commit_checks` | u32 count + CommitCheckPlan[] |
-| 14 | `instructions` | u32 count + Instruction[] |
-| 15 | `execution_class` | Execution class tag |
-| 16 | `retry_policy` | Retry policy tag |
-| 17 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 18 | `entity_closure` | u32 count + EntitySchema[] |
-| 19 | `aggregate_closure` | AggregateSchema |
-| 20 | `event_closure` | u32 count + EventSchema[] |
+| 8 | `collection_expansion` | IR v5+: optional CollectionExpansionPlanV1; omitted in v1-v4 |
+| 9 | `expressions` | ExpressionArena |
+| 10 | `bindings` | u32 count + BindingPlan[] |
+| 11 | `root_validation_reads` | u32 count + RootValidationReadPlan[] |
+| 12 | `relationship_checks` | u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted |
+| 13 | `locality` | LocalityPlan |
+| 14 | `commit_checks` | u32 count + CommitCheckPlan[] |
+| 15 | `instructions` | u32 count + Instruction[] |
+| 16 | `execution_class` | Execution class tag |
+| 17 | `retry_policy` | Retry policy tag |
+| 18 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 19 | `entity_closure` | u32 count + EntitySchema[] |
+| 20 | `aggregate_closure` | AggregateSchema |
+| 21 | `event_closure` | u32 count + EventSchema[] |
+
+### CollectionExpansionPlanV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `input_field` | FieldId of one bounded list command input |
+| 2 | `minimum_elements` | u32 in 1..=maximum_elements |
+| 3 | `maximum_elements` | u32 <= 256 and equal to the input list maximum |
+| 4 | `element_type` | exact ValueType of the list element |
+| 5 | `first_binding` | dense BindingId |
+| 6 | `binding_count` | nonzero u32 consecutive template bindings |
+| 7 | `first_instruction` | dense zero-based u32 instruction position |
+| 8 | `instruction_count` | u32 consecutive template instructions; zero is valid for delete-only expansion |
+| 9 | `duplicate_policy` | u8 = 0x01 (reject) |
 
 ### OutcomeSchema
 

@@ -29,18 +29,19 @@ use crate::row_policy::{
 };
 use crate::{
     AggregateKeyPlan, AggregateSchema, BinaryOperator, BindingId, BindingMode, BindingPlan,
-    CapabilityRequirement, CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode,
-    CompatibilityEntry, CompatibilityReport, ConflictDerivationPlan, EntitySchema, EnumSchema,
-    EnumVariantSchema, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionArena,
-    ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexFieldEncodingV1,
-    IndexSchema, Instruction, InvariantPlan, IrValidationError, KeyComponentCodecV1,
-    KeyComponentSchema, KeyPurpose, KeySchema, LocalityPlan, McpCommandNameEntryV2,
-    McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction, OutcomeSchema,
-    ProjectionFrontierPolicy, ProjectionGroupComponentSchema, ProjectionGroupSchema,
-    ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy,
-    RowPolicyCatalogV1, SchemaIr, TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag,
-    WorkflowCatalog, WorkflowLeaseFields, WorkflowLeaseOperation, WorkflowLeaseSchema,
-    WorkflowSchema, WorkflowTransitionSchema, checked_len, validate_source_name,
+    CapabilityRequirement, CollectionDuplicatePolicyV1, CollectionExpansionPlanV1,
+    CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode, CompatibilityEntry,
+    CompatibilityReport, ConflictDerivationPlan, EntitySchema, EnumSchema, EnumVariantSchema,
+    EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionArena, ExpressionKind,
+    FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexFieldEncodingV1, IndexSchema,
+    Instruction, InvariantPlan, IrValidationError, KeyComponentCodecV1, KeyComponentSchema,
+    KeyPurpose, KeySchema, LocalityPlan, McpCommandNameEntryV2, McpCommandNameRegistryV2,
+    ObjectConstruction, OutcomeConstruction, OutcomeSchema, ProjectionFrontierPolicy,
+    ProjectionGroupComponentSchema, ProjectionGroupSchema, ProjectionMeasurePlan, ProjectionPlan,
+    RecordSchema, RecordTypeRef, RetryPolicy, RowPolicyCatalogV1, SchemaIr, TextKeyProfileV1,
+    UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog, WorkflowLeaseFields,
+    WorkflowLeaseOperation, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
+    checked_len, validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
@@ -51,6 +52,8 @@ pub const BUNDLE_FORMAT_VERSION_V2: u32 = 2;
 pub const BUNDLE_FORMAT_VERSION_V3: u32 = 3;
 /// Bundle framing containing compiled principal-aware row policies.
 pub const BUNDLE_FORMAT_VERSION_V4: u32 = 4;
+/// Bundle framing containing compiler-bounded collection command plans.
+pub const BUNDLE_FORMAT_VERSION_V5: u32 = 5;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -59,6 +62,8 @@ pub const GRAMMAR_VERSION_V2: u32 = 2;
 pub const GRAMMAR_VERSION_V3: u32 = 3;
 /// Contract grammar containing principal facts and closed row policies.
 pub const GRAMMAR_VERSION_V4: u32 = 4;
+/// Contract grammar containing bounded collection commands and checked deletes.
+pub const GRAMMAR_VERSION_V5: u32 = 5;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -67,6 +72,8 @@ pub const EXECUTABLE_IR_VERSION_V2: u32 = 2;
 pub const EXECUTABLE_IR_VERSION_V3: u32 = 3;
 /// Executable IR containing the compiled row-policy catalog.
 pub const EXECUTABLE_IR_VERSION_V4: u32 = 4;
+/// Executable IR containing one finite collection expansion template.
+pub const EXECUTABLE_IR_VERSION_V5: u32 = 5;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -983,7 +990,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if !row_policies.is_empty() {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v5) {
+            BUNDLE_FORMAT_VERSION_V5
+        } else if !row_policies.is_empty() {
             BUNDLE_FORMAT_VERSION_V4
         } else if commands.iter().any(CommandPlan::requires_ir_v3) {
             BUNDLE_FORMAT_VERSION_V3
@@ -1051,12 +1060,18 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V4,
                 GRAMMAR_VERSION_V4,
                 EXECUTABLE_IR_VERSION_V4
+            ) | (
+                BUNDLE_FORMAT_VERSION_V5,
+                GRAMMAR_VERSION_V5,
+                EXECUTABLE_IR_VERSION_V5
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
             || (ir_version < EXECUTABLE_IR_VERSION_V3
                 && commands.iter().any(CommandPlan::requires_ir_v3))
             || (ir_version < EXECUTABLE_IR_VERSION_V4 && !row_policies.is_empty())
+            || (ir_version < EXECUTABLE_IR_VERSION_V5
+                && commands.iter().any(CommandPlan::requires_ir_v5))
         {
             return Err(IrValidationError::UnsupportedVersion {
                 kind: "contract bundle version tuple",
@@ -1712,7 +1727,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v3() {
+    let ir_version = if plan.requires_ir_v5() {
+        EXECUTABLE_IR_VERSION_V5
+    } else if plan.requires_ir_v3() {
         EXECUTABLE_IR_VERSION_V3
     } else if plan.requires_ir_v2() {
         EXECUTABLE_IR_VERSION_V2
@@ -2703,7 +2720,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v3() {
+    let ir_version = if command.requires_ir_v5() {
+        EXECUTABLE_IR_VERSION_V5
+    } else if command.requires_ir_v3() {
         EXECUTABLE_IR_VERSION_V3
     } else if command.requires_ir_v2() {
         EXECUTABLE_IR_VERSION_V2
@@ -2733,7 +2752,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v3() {
+    let ir_version = if command.requires_ir_v5() {
+        EXECUTABLE_IR_VERSION_V5
+    } else if command.requires_ir_v3() {
         EXECUTABLE_IR_VERSION_V3
     } else if command.requires_ir_v2() {
         EXECUTABLE_IR_VERSION_V2
@@ -2785,6 +2806,13 @@ fn encode_command_semantics_versioned(
     )?;
     writer.raw(input_artifact.hash().as_bytes())?;
     writer.raw(output_artifact.hash().as_bytes())?;
+
+    if ir_version >= EXECUTABLE_IR_VERSION_V5 {
+        writer.bool(command.collection_expansion().is_some())?;
+        if let Some(expansion) = command.collection_expansion() {
+            encode_collection_expansion(writer, expansion)?;
+        }
+    }
 
     encode_expression_arena(writer, command.expressions())?;
     writer.u32(command.bindings().len() as u32)?;
@@ -2903,6 +2931,21 @@ fn encode_command_semantics_versioned(
         )?;
     }
     Ok(())
+}
+
+fn encode_collection_expansion(
+    writer: &mut Writer,
+    expansion: &CollectionExpansionPlanV1,
+) -> Result<(), IrValidationError> {
+    writer.u32(expansion.input_field().get())?;
+    writer.u32(expansion.minimum_elements() as u32)?;
+    writer.u32(expansion.maximum_elements() as u32)?;
+    encode_value_type(writer, expansion.element_type())?;
+    writer.u32(expansion.first_binding().get())?;
+    writer.u32(expansion.binding_count() as u32)?;
+    writer.u32(expansion.first_instruction())?;
+    writer.u32(expansion.instruction_count() as u32)?;
+    writer.u8(expansion.duplicate_policy() as u8)
 }
 
 fn encode_outcome_schema(
@@ -3270,6 +3313,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V4,
             GRAMMAR_VERSION_V4,
             EXECUTABLE_IR_VERSION_V4
+        ) | (
+            BUNDLE_FORMAT_VERSION_V5,
+            GRAMMAR_VERSION_V5,
+            EXECUTABLE_IR_VERSION_V5
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4471,11 +4518,16 @@ fn decode_command_versioned(
             kind: "command generated schema",
         });
     }
+    let collection_expansion = if ir_version >= EXECUTABLE_IR_VERSION_V5 && reader.bool()? {
+        Some(decode_collection_expansion(reader)?)
+    } else {
+        None
+    };
     let expressions = decode_expression_arena_versioned(reader, ir_version)?;
     let binding_count = decode_len(reader, "command bindings", crate::MAX_COMMAND_ITEMS)?;
     let mut bindings = Vec::with_capacity(binding_count);
     for _ in 0..binding_count {
-        bindings.push(decode_binding(reader, &outcomes, &expressions)?);
+        bindings.push(decode_binding(reader, &outcomes, &expressions, ir_version)?);
     }
     let root_read_count = decode_len(
         reader,
@@ -4594,25 +4646,47 @@ fn decode_command_versioned(
         locality.aggregate_id(),
         &instructions,
     )?;
-    let plan = CommandPlan::new_with_service_values(
-        command_id,
-        lineage.clone(),
-        name,
-        contract_version,
-        input,
-        service_values,
-        outcomes,
-        success_outcome,
-        idempotency_input,
-        expressions,
-        bindings,
-        root_validation_reads,
-        locality,
-        commit_checks,
-        instructions,
-        execution_class,
-        schema,
-    )?;
+    let plan = match collection_expansion {
+        Some(expansion) => CommandPlan::new_collection(
+            command_id,
+            lineage.clone(),
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            expansion,
+            execution_class,
+            schema,
+        )?,
+        None => CommandPlan::new_with_service_values(
+            command_id,
+            lineage.clone(),
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            execution_class,
+            schema,
+        )?,
+    };
     if encoded_relationship_checks
         != plan
             .relationship_checks()
@@ -4698,10 +4772,11 @@ fn decode_binding(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
     arena: &ExpressionArena,
+    ir_version: u32,
 ) -> Result<BindingPlan, IrValidationError> {
     let id = BindingId::new(reader.u32()?);
     let name = reader.string(256)?;
-    let mode = decode_binding_mode(reader.u8()?)?;
+    let mode = decode_binding_mode(reader.u8()?, ir_version)?;
     let entity_type = decode_entity_id(reader)?;
     let key_schema = decode_key_schema(reader, 0)?;
     let key_count = decode_len(reader, "binding key expressions", 1_024)?;
@@ -4729,16 +4804,66 @@ fn decode_binding(
     )
 }
 
-fn decode_binding_mode(tag: u8) -> Result<BindingMode, IrValidationError> {
+fn decode_binding_mode(tag: u8, ir_version: u32) -> Result<BindingMode, IrValidationError> {
     match tag {
         binding_tag::READ => Ok(BindingMode::Read),
         binding_tag::MUTATE => Ok(BindingMode::Mutate),
         binding_tag::CREATE => Ok(BindingMode::Create),
+        binding_tag::DELETE if ir_version >= EXECUTABLE_IR_VERSION_V5 => Ok(BindingMode::Delete),
         tag => Err(IrValidationError::UnknownTag {
             kind: "binding mode",
             tag,
         }),
     }
+}
+
+fn decode_collection_expansion(
+    reader: &mut Reader<'_>,
+) -> Result<CollectionExpansionPlanV1, IrValidationError> {
+    let input_field = decode_field_id(reader)?;
+    let minimum_elements = decode_len(
+        reader,
+        "collection minimum elements",
+        crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+    )?;
+    let maximum_elements = decode_len(
+        reader,
+        "collection maximum elements",
+        crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+    )?;
+    let element_type = decode_value_type(reader, 0)?;
+    let first_binding = BindingId::new(reader.u32()?);
+    let binding_count = decode_len(
+        reader,
+        "collection binding templates",
+        crate::MAX_COMMAND_ITEMS,
+    )?;
+    let first_instruction = reader.u32()?;
+    let instruction_count = decode_len(
+        reader,
+        "collection instruction templates",
+        crate::MAX_COMMAND_ITEMS,
+    )?;
+    let duplicate_policy = match reader.u8()? {
+        0x01 => CollectionDuplicatePolicyV1::Reject,
+        tag => {
+            return Err(IrValidationError::UnknownTag {
+                kind: "collection duplicate policy",
+                tag,
+            });
+        }
+    };
+    CollectionExpansionPlanV1::new(
+        input_field,
+        minimum_elements,
+        maximum_elements,
+        element_type,
+        first_binding,
+        binding_count,
+        first_instruction,
+        instruction_count,
+        duplicate_policy,
+    )
 }
 
 fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidationError> {
@@ -5617,6 +5742,37 @@ mod tests {
     }
 
     #[test]
+    fn collection_command_entry_round_trips_only_in_ir_v5() {
+        let (plan, schema) = crate::plan::tests::minimal_collection_mutation();
+        let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+        encode_command_bundle_entry_versioned(
+            &mut writer,
+            &plan,
+            &schema,
+            EXECUTABLE_IR_VERSION_V5,
+        )
+        .expect("encode collection command");
+        let bytes = writer.finish();
+        let mut reader = Reader::new(&bytes);
+        let decoded = decode_command_versioned(
+            &mut reader,
+            plan.required_capability().lineage(),
+            &schema,
+            EXECUTABLE_IR_VERSION_V5,
+        )
+        .expect("decode collection command");
+        reader.finish().expect("fully consumed");
+        assert_eq!(decoded, plan);
+        assert_eq!(
+            decoded
+                .collection_expansion()
+                .expect("collection expansion")
+                .maximum_elements(),
+            8
+        );
+    }
+
+    #[test]
     fn every_truncated_canonical_prefix_and_deterministic_malformed_corpus_rejects() {
         let bundle = empty_bundle();
         for length in 0..bundle.canonical_bytes().len() {
@@ -5673,9 +5829,17 @@ mod tests {
             Err(IrValidationError::UnknownTag { .. })
         ));
         assert!(matches!(
-            decode_binding_mode(0),
+            decode_binding_mode(0, EXECUTABLE_IR_VERSION_V5),
             Err(IrValidationError::UnknownTag { .. })
         ));
+        assert!(matches!(
+            decode_binding_mode(binding_tag::DELETE, EXECUTABLE_IR_VERSION_V4),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert_eq!(
+            decode_binding_mode(binding_tag::DELETE, EXECUTABLE_IR_VERSION_V5),
+            Ok(BindingMode::Delete)
+        );
         assert!(matches!(
             decode_execution_class(0),
             Err(IrValidationError::UnknownTag { .. })

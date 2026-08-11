@@ -1472,6 +1472,39 @@ pub(crate) fn validate_declared_field_type(
     Ok(())
 }
 
+/// Validates a command input while confining record-valued lists to the one
+/// compiler-declared collection expansion input.
+pub(crate) fn validate_command_input_field_type(
+    value_type: &crate::ValueType,
+    schema: &SchemaIr,
+    collection_input: bool,
+) -> Result<(), IrValidationError> {
+    if !collection_input {
+        return validate_declared_field_type(value_type, schema);
+    }
+    let Some((element, maximum)) = value_type.list_parts() else {
+        return Err(IrValidationError::TypeMismatch {
+            context: "collection command list input",
+        });
+    };
+    if maximum > crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "collection command elements",
+            actual: maximum,
+            maximum: crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+        });
+    }
+    if let Some(record) = element.record_ref() {
+        return match record {
+            RecordTypeRef::Entity(id) if schema.entity(*id).is_some() => Ok(()),
+            _ => Err(IrValidationError::InvalidReference {
+                kind: "collection element record type",
+            }),
+        };
+    }
+    validate_declared_field_type(element, schema)
+}
+
 pub(crate) fn validate_payload_field_type(
     value_type: &crate::ValueType,
     schema: &SchemaIr,

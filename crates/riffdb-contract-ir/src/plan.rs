@@ -20,6 +20,8 @@ use crate::{
 pub const MAX_COMMAND_ITEMS: usize = 4_096;
 /// Maximum fields in one encoded IR tuple or object construction.
 pub const MAX_OBJECT_FIELDS: usize = 1_024;
+/// Maximum submitted elements in one compiler-owned collection expansion.
+pub const MAX_COLLECTION_COMMAND_ELEMENTS_V1: usize = 256;
 
 /// Closed service-owned command-value kinds introduced by executable IR v2.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -78,6 +80,120 @@ pub enum BindingMode {
     Mutate = crate::format_registry::binding_mode::MUTATE,
     /// Mutable new entity with an absence dependency.
     Create = crate::format_registry::binding_mode::CREATE,
+    /// Checked removal of current entity and index state while history remains retained.
+    Delete = crate::format_registry::binding_mode::DELETE,
+}
+
+/// The closed first-release duplicate policy for collection commands.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum CollectionDuplicatePolicyV1 {
+    /// Reject repeated canonical element values before deterministic evaluation.
+    Reject = 0x01,
+}
+
+/// One compiler-owned, finite, non-nestable expansion over a command list input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollectionExpansionPlanV1 {
+    input_field: FieldId,
+    minimum_elements: usize,
+    maximum_elements: usize,
+    element_type: crate::ValueType,
+    first_binding: BindingId,
+    binding_count: usize,
+    first_instruction: u32,
+    instruction_count: usize,
+    duplicate_policy: CollectionDuplicatePolicyV1,
+}
+
+impl CollectionExpansionPlanV1 {
+    /// Creates one bounded expansion descriptor. Command construction validates
+    /// the descriptor against the input schema and template ranges.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        input_field: FieldId,
+        minimum_elements: usize,
+        maximum_elements: usize,
+        element_type: crate::ValueType,
+        first_binding: BindingId,
+        binding_count: usize,
+        first_instruction: u32,
+        instruction_count: usize,
+        duplicate_policy: CollectionDuplicatePolicyV1,
+    ) -> Result<Self, IrValidationError> {
+        if minimum_elements == 0
+            || minimum_elements > maximum_elements
+            || maximum_elements > MAX_COLLECTION_COMMAND_ELEMENTS_V1
+        {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "collection command elements",
+                actual: maximum_elements,
+                maximum: MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+            });
+        }
+        if binding_count == 0 {
+            return Err(IrValidationError::Empty {
+                kind: "collection expansion template",
+            });
+        }
+        Ok(Self {
+            input_field,
+            minimum_elements,
+            maximum_elements,
+            element_type,
+            first_binding,
+            binding_count,
+            first_instruction,
+            instruction_count,
+            duplicate_policy,
+        })
+    }
+
+    /// Command input containing the submitted list.
+    #[must_use]
+    pub const fn input_field(&self) -> FieldId {
+        self.input_field
+    }
+    /// Inclusive nonzero minimum element count.
+    #[must_use]
+    pub const fn minimum_elements(&self) -> usize {
+        self.minimum_elements
+    }
+    /// Inclusive compiled maximum element count.
+    #[must_use]
+    pub const fn maximum_elements(&self) -> usize {
+        self.maximum_elements
+    }
+    /// Exact list element type.
+    #[must_use]
+    pub const fn element_type(&self) -> &crate::ValueType {
+        &self.element_type
+    }
+    /// First dense binding repeated for each submitted element.
+    #[must_use]
+    pub const fn first_binding(&self) -> BindingId {
+        self.first_binding
+    }
+    /// Number of consecutive binding templates in the expansion.
+    #[must_use]
+    pub const fn binding_count(&self) -> usize {
+        self.binding_count
+    }
+    /// First instruction repeated for each submitted element.
+    #[must_use]
+    pub const fn first_instruction(&self) -> u32 {
+        self.first_instruction
+    }
+    /// Number of consecutive instruction templates in the expansion.
+    #[must_use]
+    pub const fn instruction_count(&self) -> usize {
+        self.instruction_count
+    }
+    /// Closed duplicate handling policy.
+    #[must_use]
+    pub const fn duplicate_policy(&self) -> CollectionDuplicatePolicyV1 {
+        self.duplicate_policy
+    }
 }
 
 /// One field expression in a typed event or outcome construction.
@@ -1003,6 +1119,7 @@ pub struct CommandPlan {
     locality: LocalityPlan,
     commit_checks: Vec<CommitCheckPlan>,
     instructions: Vec<Instruction>,
+    collection_expansion: Option<CollectionExpansionPlanV1>,
     execution_class: ExecutionClass,
     retry_policy: RetryPolicy,
     required_capability: CapabilityRequirement,
@@ -1059,6 +1176,92 @@ impl CommandPlan {
         name: impl Into<String>,
         contract_version: ContractVersion,
         input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            None,
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates and validates one compiler-bounded collection command plan.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_collection(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: CollectionExpansionPlanV1,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            Some(collection_expansion),
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_internal(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
         mut service_values: Vec<ServiceValueSchema>,
         mut outcomes: Vec<OutcomeSchema>,
         success_outcome: OutcomeId,
@@ -1069,6 +1272,7 @@ impl CommandPlan {
         locality: LocalityPlan,
         mut commit_checks: Vec<CommitCheckPlan>,
         instructions: Vec<Instruction>,
+        collection_expansion: Option<CollectionExpansionPlanV1>,
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
@@ -1080,7 +1284,13 @@ impl CommandPlan {
             });
         }
         for field in input.record().fields() {
-            crate::schema::validate_declared_field_type(field.value_type(), contract_schema)?;
+            crate::schema::validate_command_input_field_type(
+                field.value_type(),
+                contract_schema,
+                collection_expansion
+                    .as_ref()
+                    .is_some_and(|expansion| expansion.input_field() == field.id()),
+            )?;
         }
         checked_len(
             "command service values",
@@ -1110,6 +1320,16 @@ impl CommandPlan {
         if outcomes.is_empty() || bindings.is_empty() || instructions.is_empty() {
             return Err(IrValidationError::Empty {
                 kind: "command plan",
+            });
+        }
+        if let Some(expansion) = &collection_expansion {
+            validate_collection_expansion(expansion, &input, &bindings, &instructions)?;
+        } else if bindings
+            .iter()
+            .any(|binding| binding.mode() == BindingMode::Delete)
+        {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "checked delete requires one collection expansion plan",
             });
         }
         for outcome in &outcomes {
@@ -1247,9 +1467,12 @@ impl CommandPlan {
             &instructions,
         )?;
         if execution_class == ExecutionClass::IdempotentMutation
-            && !bindings
-                .iter()
-                .any(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+            && !bindings.iter().any(|binding| {
+                matches!(
+                    binding.mode,
+                    BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                )
+            })
         {
             return Err(IrValidationError::InvalidDependency {
                 reason: "mutating command has no mutable binding",
@@ -1313,6 +1536,7 @@ impl CommandPlan {
             locality,
             commit_checks,
             instructions,
+            collection_expansion,
             execution_class,
             retry_policy: RetryPolicy::BoundedFullReevaluation,
             required_capability: CapabilityRequirement::InvokeCommand {
@@ -1369,6 +1593,15 @@ impl CommandPlan {
             .iter()
             .any(|instruction| matches!(instruction, Instruction::WorkflowLease { .. }))
     }
+    /// Whether this command requires bounded-collection executable IR v5.
+    #[must_use]
+    pub fn requires_ir_v5(&self) -> bool {
+        self.collection_expansion.is_some()
+            || self
+                .bindings
+                .iter()
+                .any(|binding| matches!(binding.mode, BindingMode::Delete))
+    }
     /// Outcomes in stable-ID order.
     #[must_use]
     pub fn outcomes(&self) -> &[OutcomeSchema] {
@@ -1424,6 +1657,11 @@ impl CommandPlan {
     pub fn instructions(&self) -> &[Instruction] {
         &self.instructions
     }
+    /// Compiler-owned collection expansion, present only for an explicit bulk command.
+    #[must_use]
+    pub const fn collection_expansion(&self) -> Option<&CollectionExpansionPlanV1> {
+        self.collection_expansion.as_ref()
+    }
     /// Read-only or admitted mutation classification.
     #[must_use]
     pub const fn execution_class(&self) -> ExecutionClass {
@@ -1463,6 +1701,7 @@ impl CommandPlan {
             match binding.mode() {
                 BindingMode::Read => {}
                 BindingMode::Mutate => return None,
+                BindingMode::Delete => return None,
                 BindingMode::Create => {
                     if aggregate
                         .children()
@@ -1494,6 +1733,70 @@ impl CommandPlan {
     pub const fn plan_hash(&self) -> PlanHash {
         self.plan_hash
     }
+}
+
+fn validate_collection_expansion(
+    expansion: &CollectionExpansionPlanV1,
+    input: &CommandInputSchema,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+) -> Result<(), IrValidationError> {
+    let field = input.record().field(expansion.input_field()).ok_or(
+        IrValidationError::InvalidReference {
+            kind: "collection command input",
+        },
+    )?;
+    let Some((element_type, maximum)) = field.value_type().list_parts() else {
+        return Err(IrValidationError::TypeMismatch {
+            context: "collection command input",
+        });
+    };
+    if element_type != expansion.element_type() || maximum != expansion.maximum_elements() {
+        return Err(IrValidationError::TypeMismatch {
+            context: "collection expansion element or maximum",
+        });
+    }
+    let first_binding = expansion.first_binding().get() as usize;
+    let binding_end = first_binding.checked_add(expansion.binding_count()).ok_or(
+        IrValidationError::SizeOverflow {
+            kind: "collection binding range",
+        },
+    )?;
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction
+        .checked_add(expansion.instruction_count())
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection instruction range",
+        })?;
+    if binding_end > bindings.len() || instruction_end > instructions.len() {
+        return Err(IrValidationError::InvalidReference {
+            kind: "collection expansion template range",
+        });
+    }
+    if bindings.iter().enumerate().any(|(index, binding)| {
+        binding.mode() == BindingMode::Delete && !(first_binding..binding_end).contains(&index)
+    }) {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "checked delete must be inside the collection template",
+        });
+    }
+    let mutable_bindings = bindings[first_binding..binding_end]
+        .iter()
+        .filter(|binding| binding.mode() != BindingMode::Read)
+        .count();
+    let aggregate_instances = mutable_bindings
+        .checked_mul(expansion.maximum_elements())
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate instances",
+        })?;
+    if mutable_bindings == 0 || aggregate_instances > MAX_COLLECTION_COMMAND_ELEMENTS_V1 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "collection aggregate instances",
+            actual: aggregate_instances,
+            maximum: MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+        });
+    }
+    Ok(())
 }
 
 // Closed v1 storage framing charges are repeated here to preserve the
@@ -1795,6 +2098,7 @@ fn worst_case_index_derivation(
             let earliest_changed_component = match binding.mode {
                 BindingMode::Read => continue,
                 BindingMode::Create => None,
+                BindingMode::Delete => None,
                 BindingMode::Mutate => {
                     let Some(position) = index
                         .fields()
@@ -1807,13 +2111,15 @@ fn worst_case_index_derivation(
                 }
             };
 
-            let entry_delta = if binding.mode == BindingMode::Create {
+            let entry_delta = if matches!(binding.mode, BindingMode::Create | BindingMode::Delete) {
                 1
             } else {
                 2
             };
             index_entry_deltas = checked_index_derivation_add(index_entry_deltas, entry_delta)?;
-            index_entry_puts = checked_index_derivation_add(index_entry_puts, 1)?;
+            if binding.mode != BindingMode::Delete {
+                index_entry_puts = checked_index_derivation_add(index_entry_puts, 1)?;
+            }
             affected_indexes.insert(index.id());
 
             let mut cumulative_component_bytes = 0usize;
@@ -4342,6 +4648,84 @@ pub(crate) mod tests {
 
     pub(crate) fn minimal_mutation() -> (CommandPlan, SchemaIr) {
         minimal_mutation_with_idempotency(crate::ValueType::string(64).expect("string"))
+    }
+
+    pub(crate) fn minimal_collection_mutation() -> (CommandPlan, SchemaIr) {
+        let (base, schema) = minimal_mutation();
+        let collection_field = FieldId::new(3).expect("collection field");
+        let mut fields = base.input.record().fields().to_vec();
+        fields.push(
+            FieldSchema::new(
+                collection_field,
+                "row_ids",
+                crate::ValueType::list(crate::ValueType::u64(), 8).expect("bounded list"),
+            )
+            .expect("collection field schema"),
+        );
+        let input = CommandInputSchema::new(
+            base.command_id,
+            RecordSchema::new(RecordTypeRef::CommandInput(base.command_id), fields)
+                .expect("collection input record"),
+        )
+        .expect("collection input");
+        let expansion = CollectionExpansionPlanV1::new(
+            collection_field,
+            1,
+            8,
+            crate::ValueType::u64(),
+            BindingId::new(0),
+            1,
+            0,
+            0,
+            CollectionDuplicatePolicyV1::Reject,
+        )
+        .expect("collection expansion");
+        let plan = CommandPlan::new_collection(
+            base.command_id,
+            test_lineage(),
+            "ApplyMany",
+            base.contract_version,
+            input,
+            base.service_values.clone(),
+            base.outcomes.clone(),
+            base.success_outcome,
+            base.idempotency_input,
+            base.expressions.clone(),
+            base.bindings.clone(),
+            base.root_validation_reads.clone(),
+            base.locality.clone(),
+            base.commit_checks.clone(),
+            base.instructions.clone(),
+            expansion,
+            base.execution_class,
+            &schema,
+        )
+        .expect("collection command");
+        (plan, schema)
+    }
+
+    #[test]
+    fn collection_expansion_is_bounded_and_part_of_plan_identity() {
+        let (plan, _) = minimal_collection_mutation();
+        let expansion = plan.collection_expansion().expect("collection expansion");
+        assert_eq!(expansion.minimum_elements(), 1);
+        assert_eq!(expansion.maximum_elements(), 8);
+        assert!(plan.requires_ir_v5());
+
+        assert!(matches!(
+            CollectionExpansionPlanV1::new(
+                FieldId::first(),
+                1,
+                MAX_COLLECTION_COMMAND_ELEMENTS_V1 + 1,
+                crate::ValueType::u64(),
+                BindingId::new(0),
+                1,
+                0,
+                0,
+                CollectionDuplicatePolicyV1::Reject,
+            ),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
     }
 
     fn minimal_mutation_with_idempotency(
