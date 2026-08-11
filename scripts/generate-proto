@@ -72,6 +72,8 @@ artifacts=(
     fixtures/proto/durable-migration-v1-schema-hashes.bin
     fixtures/proto/durable-capability-v2-record-bound.bin
     fixtures/proto/durable-capability-v2-schema-hash.bin
+    fixtures/proto/durable-capability-v5-record-bound.bin
+    fixtures/proto/durable-capability-v5-schema-hash.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin
     fixtures/proto/durable-retention-watermark-v1-record-bound.bin

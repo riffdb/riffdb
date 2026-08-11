@@ -212,6 +212,83 @@ fn row_policy_authority_uses_additive_capability_v4_only() {
 }
 
 #[test]
+fn export_authority_uses_additive_capability_v5_only() {
+    let capability = sample::capability_record_with_export_authority();
+    assert_eq!(
+        riffdb_proto::durable::current_record_schema("riffdb.storage.v1.CapabilityRecordV5")
+            .expect("capability V5 writable schema")
+            .record_type(),
+        <wire::CapabilityRecordV5 as riffdb_proto::durable::ReadableRecordMessage>::record_schema()
+            .record_type(),
+    );
+    let encoded = assert_round_trip(
+        capability.clone(),
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("export capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV5"
+    );
+    let record = wire::CapabilityRecordV5::decode(envelope.payload()).expect("capability V5");
+    assert!(record.migration.is_none());
+    assert!(record.installation.is_none());
+    assert!(record.row_policy.is_some());
+    let export = record.export.expect("V5 export extension");
+    assert_eq!(export.applications.len(), 1);
+    assert_eq!(export.applications[0].contract_lineage, "ticketdesk");
+    assert_eq!(export.applications[0].scope, 1);
+    assert!(export.applications[0].entities);
+    assert!(export.applications[0].events);
+    assert!(export.applications[0].provenance);
+    assert!(!export.applications[0].public_audit);
+    assert_eq!(
+        capability
+            .grant()
+            .internal_export()
+            .expect("export grant")
+            .applications()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn capability_v5_composes_all_predecessor_extensions_and_export_scopes() {
+    let capability = sample::capability_record_with_complete_export_authority();
+    let encoded = assert_round_trip(
+        capability,
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("combined export capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV5"
+    );
+    let record = wire::CapabilityRecordV5::decode(envelope.payload()).expect("capability V5");
+    assert!(record.migration.is_some());
+    assert!(record.installation.is_some());
+    assert!(record.row_policy.is_some());
+    let applications = record.export.expect("export extension").applications;
+    assert_eq!(applications.len(), 2);
+    assert_eq!(applications[0].contract_lineage, "accounts");
+    assert_eq!(applications[0].scope, 2);
+    assert!(applications[0].events);
+    assert!(applications[0].public_audit);
+    assert_eq!(applications[1].contract_lineage, "ticketdesk");
+    assert_eq!(applications[1].scope, 1);
+    assert!(applications[1].entities);
+    assert!(applications[1].events);
+    assert!(applications[1].provenance);
+}
+
+#[test]
 fn allocator_variants_include_maximum_and_exhausted_states() {
     let maximum_commit = CommitSequence::new(u64::MAX).expect("maximum commit sequence");
     let maximum_administration =

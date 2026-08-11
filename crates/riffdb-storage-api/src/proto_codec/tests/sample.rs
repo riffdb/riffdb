@@ -4,15 +4,16 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
     ApplicationRoleHash, ApprovalId, Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue,
-    CapabilityId, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
-    CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CapabilityTokenDigest, CommandId,
-    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, DigestKeyId,
-    EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventId, EventTypeId, FieldId,
-    IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKey,
-    PartitionKeyBuilder, PlanHash, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration,
-    ProjectionId, ProvenanceId, RequestId, RowPolicyName, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
-    TenantId, TenantScope, Timestamp, hash_partition_key,
+    CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+    CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactsV1,
+    CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
+    CapabilityTokenDigest, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
+    ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
+    Environment, EventId, EventTypeId, FieldId, IndexEntryKeyBuilder, IndexEpoch, IndexId,
+    LogicalTime, OutcomeId, PartitionKey, PartitionKeyBuilder, PlanHash, ProjectionApplyHash,
+    ProjectionApplyKey, ProjectionGeneration, ProjectionId, ProvenanceId, RequestId, RowPolicyName,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp, hash_partition_key,
 };
 
 use crate::{
@@ -666,6 +667,119 @@ pub(super) fn capability_record_with_row_policy_authority() -> StoredCapabilityR
         base.lifecycle().clone(),
     )
     .expect("row-policy capability")
+}
+
+pub(super) fn capability_record_with_export_authority() -> StoredCapabilityRecordV1 {
+    let base = capability_record_with_row_policy_authority();
+    let export = CapabilityExportGrantV1::new(vec![
+        CapabilityApplicationExportGrantV1::new(
+            ContractLineage::new("ticketdesk").expect("export lineage"),
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            true,
+            true,
+            true,
+            false,
+        )
+        .expect("export application"),
+    ])
+    .expect("export extension");
+    let grant = base
+        .grant()
+        .clone()
+        .with_export(export)
+        .expect("export grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("export capability")
+}
+
+pub(super) fn capability_record_with_complete_export_authority() -> StoredCapabilityRecordV1 {
+    let base = capability_record_with_row_policy_authority();
+    let mut permissions = base.grant().permissions().as_slice().to_vec();
+    permissions.extend([
+        CapabilityPermissionV1::MigrateContract(
+            ContractLineage::new("accounts").expect("migration lineage"),
+        ),
+        CapabilityPermissionV1::InstallApplication(
+            ContractLineage::new("ticketdesk").expect("installation lineage"),
+        ),
+    ]);
+    let mut approvals = base.grant().approval_required().to_vec();
+    approvals.extend([
+        CapabilityPermissionKindV1::MigrateContract,
+        CapabilityPermissionKindV1::InstallApplication,
+    ]);
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        CapabilityPermissionsV1::new(permissions).expect("combined permissions"),
+        base.grant().field_visibility().to_vec(),
+        base.grant().max_scan_rows(),
+        approvals,
+    )
+    .expect("combined base grant")
+    .with_row_policy(
+        base.grant()
+            .internal_row_policy()
+            .expect("row policy")
+            .clone(),
+    )
+    .expect("combined row policy")
+    .with_export(
+        CapabilityExportGrantV1::new(vec![
+            CapabilityApplicationExportGrantV1::new(
+                ContractLineage::new("ticketdesk").expect("export lineage"),
+                CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                true,
+                true,
+                true,
+                false,
+            )
+            .expect("principal export"),
+            CapabilityApplicationExportGrantV1::new(
+                ContractLineage::new("accounts").expect("export lineage"),
+                CapabilityApplicationExportScopeV1::WholeApplication,
+                false,
+                true,
+                false,
+                true,
+            )
+            .expect("whole export"),
+        ])
+        .expect("combined export extension"),
+    )
+    .expect("combined export grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("combined export capability")
 }
 
 pub(super) fn service_audit_record() -> StoredServiceAuditRecordV1 {

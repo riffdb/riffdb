@@ -3,9 +3,9 @@
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 
 use riffdb_types::{
-    ActorId, ActorKind, ApprovalId, Audience, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, DatabaseId, Environment, PartitionScopeV1,
-    RequestId, TenantScope, Timestamp,
+    ActorId, ActorKind, ApprovalId, Audience, CapabilityApplicationExportScopeV1,
+    CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1,
+    DatabaseId, Environment, PartitionScopeV1, RequestId, TenantScope, Timestamp,
 };
 pub use riffdb_types::{
     MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_LIFETIME_SECONDS, RevocationReasonCodeV1,
@@ -1548,6 +1548,7 @@ pub(crate) fn grant_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1
         && permissions_subset(child, parent)
         && field_visibility_subset(child, parent)
         && row_policy_subset(child, parent)
+        && export_subset(child, parent)
         && child.max_scan_rows() <= parent.max_scan_rows()
         && inherited_approvals_preserved(child, parent)
 }
@@ -1555,8 +1556,45 @@ pub(crate) fn grant_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1
 fn row_policy_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1) -> bool {
     match (child.internal_row_policy(), parent.internal_row_policy()) {
         (None, _) => true,
-        (Some(_), None) => false,
+        (Some(_), None) => export_scope_narrows_to_principal(child, parent),
         (Some(child), Some(parent)) => child.is_narrowing_of(parent),
+    }
+}
+
+fn export_scope_narrows_to_principal(
+    child: &CapabilityGrantV1,
+    parent: &CapabilityGrantV1,
+) -> bool {
+    let (Some(child_export), Some(parent_export)) =
+        (child.internal_export(), parent.internal_export())
+    else {
+        return false;
+    };
+    child_export.applications().iter().all(|child_application| {
+        child_application.scope() == CapabilityApplicationExportScopeV1::PrincipalFiltered
+            && parent_export
+                .applications()
+                .binary_search_by(|candidate| {
+                    candidate
+                        .lineage()
+                        .as_bytes()
+                        .cmp(child_application.lineage().as_bytes())
+                })
+                .ok()
+                .is_some_and(|index| {
+                    parent_export.applications()[index].scope()
+                        == CapabilityApplicationExportScopeV1::WholeApplication
+                })
+    })
+}
+
+fn export_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1) -> bool {
+    match (child.internal_export(), parent.internal_export()) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(child_export), Some(parent_export)) => {
+            child_export.is_narrowing_of(parent_export, child.internal_row_policy().is_some())
+        }
     }
 }
 
@@ -1695,8 +1733,11 @@ mod tests {
     use std::num::NonZeroU16;
 
     use riffdb_types::{
-        AggregateTypeId, CapabilityPermissionsV1, CommandId, ContractLineage,
-        EntityFieldVisibilityV1, EntityTypeId, FieldId, PartitionKeyBuilder, PartitionScopeV1,
+        AggregateTypeId, ApplicationRoleHash, CapabilityApplicationExportGrantV1,
+        CapabilityApplicationExportScopeV1, CapabilityExportGrantV1, CapabilityPermissionsV1,
+        CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1,
+        CapabilityRowPolicyOperationV1, CommandId, ContractLineage, EntityFieldVisibilityV1,
+        EntityTypeId, FieldId, PartitionKeyBuilder, PartitionScopeV1, RowPolicyName,
         ScopedPartitionV1, TenantId,
     };
 
@@ -1757,6 +1798,90 @@ mod tests {
             approval_required,
         )
         .expect("valid grant")
+    }
+
+    fn export_grant(
+        role: ApplicationRoleHash,
+        scope: CapabilityApplicationExportScopeV1,
+        entities: bool,
+        events: bool,
+        protected: bool,
+    ) -> CapabilityGrantV1 {
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let base = grant(
+            TenantScope::Global,
+            vec![CapabilityPermissionV1::ApplicationRoleIdentity(role)],
+            1,
+            Vec::new(),
+        );
+        let base = if protected {
+            base.with_row_policy(
+                CapabilityRowPolicyGrantV1::new(
+                    role,
+                    CapabilityPrincipalFactsV1::empty(),
+                    vec![
+                        CapabilityRowPolicyBindingV1::new(
+                            lineage.clone(),
+                            RowPolicyName::new("TicketVisible").expect("policy"),
+                            EntityTypeId::first(),
+                            vec![CapabilityRowPolicyOperationV1::Read],
+                        )
+                        .expect("binding"),
+                    ],
+                )
+                .expect("row policy"),
+            )
+            .expect("protected grant")
+        } else {
+            base
+        };
+        base.with_export(
+            CapabilityExportGrantV1::new(vec![
+                CapabilityApplicationExportGrantV1::new(
+                    lineage, scope, entities, events, true, true,
+                )
+                .expect("application export"),
+            ])
+            .expect("export grant"),
+        )
+        .expect("grant with export")
+    }
+
+    #[test]
+    fn export_delegation_is_narrowing_and_policy_bound() {
+        let role = ApplicationRoleHash::from_bytes([0x81; 32]);
+        let parent = export_grant(
+            role,
+            CapabilityApplicationExportScopeV1::WholeApplication,
+            true,
+            true,
+            false,
+        );
+        let principal_child = export_grant(
+            role,
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            true,
+            false,
+            true,
+        );
+        assert!(grant_subset(&principal_child, &parent));
+        assert!(!grant_subset(&parent, &principal_child));
+
+        let entities_only_parent = export_grant(
+            role,
+            CapabilityApplicationExportScopeV1::WholeApplication,
+            true,
+            false,
+            false,
+        );
+        let event_child = export_grant(
+            role,
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            false,
+            true,
+            true,
+        );
+        assert!(!grant_subset(&event_child, &entities_only_parent));
     }
 
     fn current(

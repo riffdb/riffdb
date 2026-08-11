@@ -1261,6 +1261,80 @@ impl CapabilityAdministrationOperationV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityApplicationExportGrantV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(enumeration = "CapabilityApplicationExportScopeV1", tag = "2")]
+    pub scope: i32,
+    #[prost(bool, tag = "3")]
+    pub entities: bool,
+    #[prost(bool, tag = "4")]
+    pub events: bool,
+    #[prost(bool, tag = "5")]
+    pub provenance: bool,
+    #[prost(bool, tag = "6")]
+    pub public_audit: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityExportGrantExtensionV1 {
+    #[prost(message, repeated, tag = "1")]
+    pub applications: ::prost::alloc::vec::Vec<CapabilityApplicationExportGrantV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityRecordV5 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<CapabilityRecordV1>,
+    #[prost(message, optional, tag = "2")]
+    pub migration: ::core::option::Option<CapabilityMigrationGrantExtensionV1>,
+    #[prost(message, optional, tag = "3")]
+    pub installation: ::core::option::Option<CapabilityInstallationGrantExtensionV1>,
+    #[prost(message, optional, tag = "4")]
+    pub row_policy: ::core::option::Option<CapabilityRowPolicyGrantExtensionV1>,
+    #[prost(message, optional, tag = "5")]
+    pub export: ::core::option::Option<CapabilityExportGrantExtensionV1>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CapabilityApplicationExportScopeV1 {
+    CapabilityApplicationExportScopeUnspecified = 0,
+    CapabilityApplicationExportScopePrincipalFiltered = 1,
+    CapabilityApplicationExportScopeWholeApplication = 2,
+}
+impl CapabilityApplicationExportScopeV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::CapabilityApplicationExportScopeUnspecified => {
+                "CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED"
+            }
+            Self::CapabilityApplicationExportScopePrincipalFiltered => {
+                "CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED"
+            }
+            Self::CapabilityApplicationExportScopeWholeApplication => {
+                "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED" => {
+                Some(Self::CapabilityApplicationExportScopeUnspecified)
+            }
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED" => {
+                Some(Self::CapabilityApplicationExportScopePrincipalFiltered)
+            }
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION" => {
+                Some(Self::CapabilityApplicationExportScopeWholeApplication)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CapabilityInstallationGrantExtensionV1 {
     #[prost(string, repeated, tag = "1")]
     pub contract_lineages: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
