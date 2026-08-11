@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/command_segment_v1.proto";
+import "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto";
+import "riffdb/storage/v1/workflow_service_values_v3.proto";
+
+// Closed state tags for one authoritative entity identity. NEVER_EXISTED is
+// valid only as the prior state of the first transition and is never retained
+// in an entity-chain head.
+enum EntityChainStateKindV1 {
+  ENTITY_CHAIN_STATE_KIND_UNSPECIFIED = 0;
+  ENTITY_CHAIN_STATE_KIND_NEVER_EXISTED = 1;
+  ENTITY_CHAIN_STATE_KIND_LIVE = 2;
+  ENTITY_CHAIN_STATE_KIND_DELETED = 3;
+}
+
+// One exact chain state. LIVE requires both value fields; the other variants
+// require both to be absent/empty.
+message StoredEntityChainStateV1 {
+  EntityChainStateKindV1 kind = 1;
+  optional uint64 entity_version = 2;
+  bytes value_hash = 3;
+}
+
+// Immutable command-attributed transition carried by the command authority.
+message StoredCommittedEntityTransitionV1 {
+  uint64 command_sequence = 1;
+  uint32 mutation_ordinal = 2;
+  EntityTargetV1 target = 3;
+  StoredEntityChainStateV1 prior_state = 4;
+  uint64 prior_chain_revision = 5;
+  optional bytes prior_transition_hash = 6;
+  StoredEntityChainStateV1 next_state = 7;
+  bytes transition_hash = 8;
+}
+
+// Current authoritative chain state retained even after the materialized
+// entity row has been deleted.
+message StoredEntityChainHeadV1 {
+  EntityTargetV1 target = 1;
+  uint64 chain_revision = 2;
+  StoredEntityChainStateV1 state = 3;
+  uint64 last_command_sequence = 4;
+  bytes last_transition_hash = 5;
+}
+
+// Receipted one-way boundary from the terminal V1 changelog frame to the first
+// V2 frame. Frontier components are optional because the initial frontier has
+// neither component.
+message StoredChangelogV2RotationReceiptV1 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  optional uint64 predecessor_application_frontier = 3;
+  optional uint64 predecessor_administration_frontier = 4;
+  bytes terminal_v1_frame_hash = 5;
+  bytes v2_chain_anchor = 6;
+  bytes receipt_hash = 7;
+}
+
+// Successor command authority. V3 remains byte-immutable and readable.
+message StoredCommandCapsuleV4 {
+  StoredCommandCapsuleV3 base = 1;
+  repeated StoredCommittedEntityTransitionV1 entity_transitions = 2;
+}
+
+message StoredCommandSegmentBodyV3 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes predecessor_segment_hash = 3;
+  uint64 first_commit_sequence = 4;
+  uint64 last_commit_sequence = 5;
+  uint64 first_administration_sequence = 6;
+  uint64 last_administration_sequence = 7;
+  repeated StoredCommandCapsuleV4 commands = 8;
+  CommandSegmentManifestV1 manifest = 9;
+}
+
+message StoredCommandSegmentV3 {
+  StoredCommandSegmentBodyV3 body = 1;
+  bytes segment_digest = 2;
+}
+
+// Successor checkpoint separates materialized cardinality from historical
+// transition count and binds the complete entity-chain-head map.
+message StoredValidatedPrefixCheckpointV2 {
+  StoredValidatedPrefixCheckpointV1 base = 1;
+  uint64 live_entity_count = 2;
+  uint64 deleted_entity_count = 3;
+  uint64 entity_transition_count = 4;
+  bytes entity_transition_fingerprint = 5;
+  bytes checkpoint_hash = 6;
+}

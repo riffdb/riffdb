@@ -2935,9 +2935,9 @@ fn validated_prefix_checkpoint_binding_mismatch_falls_back_to_full_validation() 
 #[test]
 fn validated_prefix_checkpoint_prefix_count_mismatch_fails_closed() {
     use riffdb_storage_api::{
-        StoredValidatedPrefixCheckpointV1,
+        StoredValidatedPrefixCheckpointV1, StoredValidatedPrefixCheckpointV2,
         proto_codec::{
-            decode_validated_prefix_checkpoint_v1, encode_validated_prefix_checkpoint_v1,
+            decode_validated_prefix_checkpoint_v2, encode_validated_prefix_checkpoint_v2,
         },
     };
 
@@ -2960,17 +2960,18 @@ fn validated_prefix_checkpoint_prefix_count_mismatch_fails_closed() {
                 .expect("checkpoint present")
                 .value()
                 .to_vec();
-            let original = decode_validated_prefix_checkpoint_v1(&existing)
+            let original_v2 = decode_validated_prefix_checkpoint_v2(&existing)
                 .expect("decode")
                 .into_parts()
                 .0;
+            let original = original_v2.base();
             assert!(
                 original.counts().commits_count >= 1,
                 "fixture must record a non-empty commits prefix"
             );
             let mut counts = original.counts();
             counts.commits_count = 0;
-            let doctored = StoredValidatedPrefixCheckpointV1::new(
+            let doctored_base = StoredValidatedPrefixCheckpointV1::new(
                 original.database_id(),
                 original.history_incarnation(),
                 original.registry_digest(),
@@ -2983,7 +2984,13 @@ fn validated_prefix_checkpoint_prefix_count_mismatch_fails_closed() {
                 0,
             )
             .expect("rehash under-reported counts");
-            let encoded = encode_validated_prefix_checkpoint_v1(&doctored).expect("encode");
+            let doctored = StoredValidatedPrefixCheckpointV2::new(
+                doctored_base,
+                original_v2.entity_counts(),
+                original_v2.entity_transition_fingerprint(),
+            )
+            .expect("rehash delete-aware checkpoint");
+            let encoded = encode_validated_prefix_checkpoint_v2(&doctored).expect("encode");
             meta.insert(key, encoded.as_bytes()).expect("insert");
         }
         txn.commit().expect("commit doctor");
@@ -3196,8 +3203,9 @@ fn perf_014_unclean_recovery_vs_clean_startup() {
 fn validated_prefix_checkpoint_entity_fingerprint_mismatch_falls_back() {
     use riffdb_storage_api::{
         EntityChainFingerprint, StoredValidatedPrefixCheckpointV1,
+        StoredValidatedPrefixCheckpointV2,
         proto_codec::{
-            decode_validated_prefix_checkpoint_v1, encode_validated_prefix_checkpoint_v1,
+            decode_validated_prefix_checkpoint_v2, encode_validated_prefix_checkpoint_v2,
         },
     };
 
@@ -3219,12 +3227,13 @@ fn validated_prefix_checkpoint_entity_fingerprint_mismatch_falls_back() {
                 .expect("checkpoint present")
                 .value()
                 .to_vec();
-            let original = decode_validated_prefix_checkpoint_v1(&existing)
+            let original_v2 = decode_validated_prefix_checkpoint_v2(&existing)
                 .expect("decode checkpoint")
                 .into_parts()
                 .0;
+            let original = original_v2.base();
             let wrong_fp = EntityChainFingerprint::from_bytes([0xab; 32]);
-            let doctored = StoredValidatedPrefixCheckpointV1::new(
+            let doctored_base = StoredValidatedPrefixCheckpointV1::new(
                 original.database_id(),
                 original.history_incarnation(),
                 original.registry_digest(),
@@ -3238,11 +3247,17 @@ fn validated_prefix_checkpoint_entity_fingerprint_mismatch_falls_back() {
             )
             .expect("rehash doctored checkpoint");
             assert_ne!(
-                doctored.entity_chain_fingerprint(),
+                doctored_base.entity_chain_fingerprint(),
                 original.entity_chain_fingerprint()
             );
+            let doctored = StoredValidatedPrefixCheckpointV2::new(
+                doctored_base,
+                original_v2.entity_counts(),
+                original_v2.entity_transition_fingerprint(),
+            )
+            .expect("rehash delete-aware checkpoint");
             let encoded =
-                encode_validated_prefix_checkpoint_v1(&doctored).expect("encode doctored");
+                encode_validated_prefix_checkpoint_v2(&doctored).expect("encode doctored");
             meta.insert(key, encoded.as_bytes()).expect("insert");
         }
         txn.commit().expect("commit doctor");
@@ -3350,8 +3365,11 @@ fn rewrite_checkpoint(
         &riffdb_storage_api::StoredValidatedPrefixCheckpointV1,
     ) -> riffdb_storage_api::StoredValidatedPrefixCheckpointV1,
 ) {
-    use riffdb_storage_api::proto_codec::{
-        decode_validated_prefix_checkpoint_v1, encode_validated_prefix_checkpoint_v1,
+    use riffdb_storage_api::{
+        StoredValidatedPrefixCheckpointV2,
+        proto_codec::{
+            decode_validated_prefix_checkpoint_v2, encode_validated_prefix_checkpoint_v2,
+        },
     };
     let database = Database::create(path).expect("open for checkpoint rewrite");
     let txn = database.begin_write().expect("begin checkpoint rewrite");
@@ -3363,12 +3381,18 @@ fn rewrite_checkpoint(
             .expect("checkpoint present")
             .value()
             .to_vec();
-        let original = decode_validated_prefix_checkpoint_v1(&existing)
+        let original = decode_validated_prefix_checkpoint_v2(&existing)
             .expect("decode checkpoint")
             .into_parts()
             .0;
-        let doctored = mutate(&original);
-        let encoded = encode_validated_prefix_checkpoint_v1(&doctored).expect("encode doctored");
+        let doctored_base = mutate(original.base());
+        let doctored = StoredValidatedPrefixCheckpointV2::new(
+            doctored_base,
+            original.entity_counts(),
+            original.entity_transition_fingerprint(),
+        )
+        .expect("rehash delete-aware checkpoint");
+        let encoded = encode_validated_prefix_checkpoint_v2(&doctored).expect("encode doctored");
         meta.insert(CHECKPOINT_META_KEY, encoded.as_bytes())
             .expect("insert doctored");
     }

@@ -2,12 +2,16 @@
 
 use riffdb_types::{DatabaseId, EntityVersion, HashDomain, SchemaHash, hash};
 
-use crate::{EntityTarget, StorageValueError};
+use crate::{EntityChainHeadV1, EntityChainStateV1, EntityTarget, StorageValueError};
 
 /// Domain label framed into the checkpoint self-hash preimage.
 const CHECKPOINT_HASH_LABEL: &[u8] = b"riffdb.validated-prefix-checkpoint/v1\0";
 /// Domain label framed into the entity-chain fingerprint preimage.
 const ENTITY_CHAIN_FINGERPRINT_LABEL: &[u8] = b"riffdb.entity-chain-fingerprint/v1\0";
+/// Domain label for the delete-aware entity-transition checkpoint fingerprint.
+const ENTITY_TRANSITION_FINGERPRINT_LABEL: &[u8] = b"riffdb.entity-transition-fingerprint/v1\0";
+/// Domain label for the delete-aware checkpoint successor self-hash.
+const CHECKPOINT_V2_HASH_LABEL: &[u8] = b"riffdb.validated-prefix-checkpoint/v2\0";
 
 /// Chained self-hash of one validated-prefix checkpoint.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -316,6 +320,179 @@ impl StoredValidatedPrefixCheckpointV1 {
         Ok(ValidatedPrefixCheckpointHash::from_bytes(
             *digest.as_bytes(),
         ))
+    }
+}
+
+/// Domain-separated fingerprint of every retained entity-chain head.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EntityTransitionFingerprint([u8; 32]);
+
+impl EntityTransitionFingerprint {
+    /// Reconstructs an exact fingerprint.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrows the digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Digests canonical heads already sorted by exact entity target.
+    pub fn from_sorted_heads<'a, I>(heads: I) -> Result<Self, StorageValueError>
+    where
+        I: IntoIterator<Item = &'a EntityChainHeadV1>,
+    {
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(ENTITY_TRANSITION_FINGERPRINT_LABEL);
+        let mut previous: Option<&EntityTarget> = None;
+        for head in heads {
+            if previous.is_some_and(|prior| prior >= head.target()) {
+                return Err(StorageValueError::NonCanonicalOrder);
+            }
+            previous = Some(head.target());
+            preimage.extend_from_slice(&head.target().entity_type_id().get().to_be_bytes());
+            let key = head.target().key().as_bytes();
+            let key_len = u32::try_from(key.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+            preimage.extend_from_slice(&key_len.to_be_bytes());
+            preimage.extend_from_slice(key);
+            preimage.extend_from_slice(&head.chain_revision().to_be_bytes());
+            match head.state() {
+                EntityChainStateV1::Live {
+                    version,
+                    value_hash,
+                } => {
+                    preimage.push(1);
+                    preimage.extend_from_slice(&version.get().to_be_bytes());
+                    preimage.extend_from_slice(value_hash.as_bytes());
+                }
+                EntityChainStateV1::Deleted => preimage.push(2),
+                EntityChainStateV1::NeverExisted => {
+                    return Err(StorageValueError::InvalidShape);
+                }
+            }
+            preimage.extend_from_slice(&head.last_command_sequence().get().to_be_bytes());
+            preimage.extend_from_slice(head.last_transition_hash().as_bytes());
+        }
+        let digest = hash(HashDomain::Schema, &preimage);
+        Ok(Self::from_bytes(*digest.as_bytes()))
+    }
+}
+
+/// Delete-aware cardinality and history counters at one validated prefix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedPrefixEntityTransitionCounts {
+    /// Materialized live entity rows at the checkpoint.
+    pub live_entity_count: u64,
+    /// Retained deleted chain heads at the checkpoint.
+    pub deleted_entity_count: u64,
+    /// Historical transitions represented by all chain revisions.
+    pub entity_transition_count: u64,
+}
+
+/// Chained self-hash of a delete-aware checkpoint successor.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ValidatedPrefixCheckpointV2Hash([u8; 32]);
+
+impl ValidatedPrefixCheckpointV2Hash {
+    /// Reconstructs an exact hash.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrows the digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Validated-prefix successor whose entity proof survives current-row deletion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredValidatedPrefixCheckpointV2 {
+    base: StoredValidatedPrefixCheckpointV1,
+    entity_counts: ValidatedPrefixEntityTransitionCounts,
+    entity_transition_fingerprint: EntityTransitionFingerprint,
+    checkpoint_hash: ValidatedPrefixCheckpointV2Hash,
+}
+
+impl StoredValidatedPrefixCheckpointV2 {
+    /// Constructs and self-hashes one delete-aware checkpoint.
+    pub fn new(
+        base: StoredValidatedPrefixCheckpointV1,
+        entity_counts: ValidatedPrefixEntityTransitionCounts,
+        entity_transition_fingerprint: EntityTransitionFingerprint,
+    ) -> Result<Self, StorageValueError> {
+        let head_count = entity_counts
+            .live_entity_count
+            .checked_add(entity_counts.deleted_entity_count)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if entity_counts.entity_transition_count < head_count {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let mut value = Self {
+            base,
+            entity_counts,
+            entity_transition_fingerprint,
+            checkpoint_hash: ValidatedPrefixCheckpointV2Hash::from_bytes([0; 32]),
+        };
+        value.checkpoint_hash = value.computed_hash();
+        Ok(value)
+    }
+
+    /// Reconstructs a durable successor and verifies its complete self-hash.
+    pub fn from_stored_parts(
+        base: StoredValidatedPrefixCheckpointV1,
+        entity_counts: ValidatedPrefixEntityTransitionCounts,
+        entity_transition_fingerprint: EntityTransitionFingerprint,
+        checkpoint_hash: ValidatedPrefixCheckpointV2Hash,
+    ) -> Result<Self, StorageValueError> {
+        let value = Self::new(base, entity_counts, entity_transition_fingerprint)?;
+        if value.checkpoint_hash != checkpoint_hash {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(value)
+    }
+
+    /// Borrows the established validated-prefix proof.
+    #[must_use]
+    pub const fn base(&self) -> &StoredValidatedPrefixCheckpointV1 {
+        &self.base
+    }
+
+    /// Returns separated current-state and historical counts.
+    #[must_use]
+    pub const fn entity_counts(&self) -> ValidatedPrefixEntityTransitionCounts {
+        self.entity_counts
+    }
+
+    /// Returns the complete entity-chain-head fingerprint.
+    #[must_use]
+    pub const fn entity_transition_fingerprint(&self) -> EntityTransitionFingerprint {
+        self.entity_transition_fingerprint
+    }
+
+    /// Returns the successor self-hash.
+    #[must_use]
+    pub const fn checkpoint_hash(&self) -> ValidatedPrefixCheckpointV2Hash {
+        self.checkpoint_hash
+    }
+
+    /// Recomputes the self-hash over the V1 proof plus all delete-aware fields.
+    #[must_use]
+    pub fn computed_hash(&self) -> ValidatedPrefixCheckpointV2Hash {
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(CHECKPOINT_V2_HASH_LABEL);
+        preimage.extend_from_slice(self.base.checkpoint_hash().as_bytes());
+        preimage.extend_from_slice(&self.entity_counts.live_entity_count.to_be_bytes());
+        preimage.extend_from_slice(&self.entity_counts.deleted_entity_count.to_be_bytes());
+        preimage.extend_from_slice(&self.entity_counts.entity_transition_count.to_be_bytes());
+        preimage.extend_from_slice(self.entity_transition_fingerprint.as_bytes());
+        let digest = hash(HashDomain::Schema, &preimage);
+        ValidatedPrefixCheckpointV2Hash::from_bytes(*digest.as_bytes())
     }
 }
 

@@ -17,21 +17,22 @@ use riffdb_storage_api::{
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandDerivedIndexKindV1,
     CommandDerivedIndexManifestEntryV1, CommandDerivedMemberV1, CommandSegmentDigestV1,
     CommandSegmentManifestV1, CommandWriteSetPlanV1, CommitIntent, CommittedBatchV1,
-    CurrentIndexGenerationObservation, CurrentRangeObservation, DeferredCommandEpoch,
-    DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode, EmptyCommandBatch,
-    EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
-    ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
-    IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyLookupCandidatesV1,
-    IndexEntryMutationV1, IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch,
-    PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot,
-    ReadSnapshotBuilder, SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1,
-    StagedCommandEvidenceV1, StorageError, StorageErrorKind, StorageValueError,
-    StoredAdmissionStateV1, StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1,
-    StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, TransactionCurrentState, TransactionCurrentStateBuilder,
-    TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
-    UnpublishedAuditedBatchV1, ValidationReadRequest, encode_capsule_command_record_set_v1,
+    CommittedEntityTransitionV1, CurrentIndexGenerationObservation, CurrentRangeObservation,
+    DeferredCommandEpoch, DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode,
+    EmptyCommandBatch, EntityChainHeadV1, EntityChainStateV1, EntityObservation, EntityTarget,
+    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
+    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
+    IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch, PartitionIndexTarget,
+    ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot, ReadSnapshotBuilder,
+    SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1, StagedCommandEvidenceV1,
+    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
+    StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1, StoredExecutionFailedV1,
+    StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
+    UniqueIndexOccupancy, UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
+    encode_capsule_command_record_set_v1,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
@@ -79,6 +80,7 @@ struct BatchCore {
     pending_index_generations: BTreeMap<PartitionIndexTarget, PendingIndexGenerationPostImage>,
     reserved_provenance_ids: BTreeSet<ProvenanceId>,
     capsule_extensions: Vec<Vec<riffdb_storage_api::IndexEpochAdvanceV1>>,
+    capsule_entity_transitions: Vec<Vec<CommittedEntityTransitionV1>>,
 }
 
 struct PendingIndexGenerationPostImage {
@@ -104,6 +106,7 @@ impl BatchCore {
             pending_index_generations: BTreeMap::new(),
             reserved_provenance_ids: BTreeSet::new(),
             capsule_extensions: Vec::new(),
+            capsule_entity_transitions: Vec::new(),
         })
     }
 }
@@ -139,24 +142,28 @@ fn capsulate_command_rows(
     let mut terminals = Vec::with_capacity(command_links.len());
     if audit_records.len() != command_links.len()
         || audit_records.len() != core.capsule_extensions.len()
+        || audit_records.len() != core.capsule_entity_transitions.len()
     {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     let mut capsules = Vec::with_capacity(command_links.len());
-    for ((link, audit), index_generation_transitions) in command_links
+    for (((link, audit), index_generation_transitions), entity_transitions) in command_links
         .into_iter()
         .zip(audit_records)
         .zip(core.capsule_extensions.drain(..))
+        .zip(core.capsule_entity_transitions.drain(..))
     {
         let (started, terminal) = audit.into_parts();
         let base = link
             .into_capsule(started, terminal.clone())
             .map_err(invariant_value)?;
-        let capsule = riffdb_storage_api::StoredCommandCapsuleV2::from_base(
-            base,
-            index_generation_transitions,
-        )
-        .map_err(invariant_value)?;
+        let capsule =
+            riffdb_storage_api::StoredCommandCapsuleV2::from_base_with_entity_transitions(
+                base,
+                index_generation_transitions,
+                entity_transitions,
+            )
+            .map_err(invariant_value)?;
         capsules.push(capsule);
         terminals.push(terminal);
     }
@@ -1439,10 +1446,11 @@ macro_rules! impl_candidate_chain {
                 let encoded =
                     encode_capsule_command_record_set_v1(&records).map_err(codec_error)?;
                 let mut core = self.prior.core;
-                apply_record_set(&mut core, &records, encoded)?;
+                let entity_transitions = apply_record_set(&mut core, &records, encoded)?;
                 core.metrics = Some(metrics_after(core.metrics, &records)?);
                 core.capsule_extensions
                     .push(records.index_epochs().to_vec());
+                core.capsule_entity_transitions.push(entity_transitions);
                 core.staged.push(records.into_staged_evidence());
                 Ok(RedbNonEmptyBatch { core })
             }
@@ -1486,7 +1494,7 @@ fn apply_record_set(
     core: &mut BatchCore,
     records: &AtomicCommandRecordSet,
     encoded: riffdb_storage_api::EncodedCapsuleCommandRecordSetV1,
-) -> Result<(), StorageError> {
+) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
     let BatchCore {
         access,
         entity_observations,
@@ -1503,7 +1511,7 @@ fn apply_record_set(
     // authoritative duplicate/vacancy assertion. Re-reading and decoding both
     // idempotency tables here supplied no newer evidence.
 
-    apply_entities(access, records, entities, entity_observations)?;
+    let entity_transitions = apply_entities(access, records, entities, entity_observations)?;
     apply_index_entries(access, records, index_entries)?;
     apply_index_epochs(
         records,
@@ -1531,7 +1539,7 @@ fn apply_record_set(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
     }
-    Ok(())
+    Ok(entity_transitions)
 }
 
 fn journal_codec_error(error: JournalCodecError) -> StorageError {
@@ -1564,30 +1572,90 @@ fn apply_entities(
     records: &AtomicCommandRecordSet,
     encoded: Vec<riffdb_storage_api::CanonicalStoredEnvelopeV1>,
     observations: &mut BTreeMap<EntityTarget, EntityObservation>,
-) -> Result<(), StorageError> {
+) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
     if records.entities().is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    for (mutation, bytes) in records.entities().iter().zip(encoded) {
+    let mut transitions = Vec::with_capacity(records.entities().len());
+    for (ordinal, (mutation, bytes)) in records.entities().iter().zip(encoded).enumerate() {
         let key = encode_entity_key(mutation.post_image().target().key());
+        let observation = observations
+            .get(mutation.post_image().target())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if observation.expected_state() != mutation.expected() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let stored_head = access
+            .read_command_value(JournalTable::EntityChainHeads, key)?
+            .map(|bytes| {
+                riffdb_storage_api::decode_entity_chain_head_v1(&bytes)
+                    .map(|decoded| decoded.into_parts().0)
+                    .map_err(codec_error)
+            })
+            .transpose()?;
+        let (prior_state, prior_revision, prior_hash) = match (stored_head.as_ref(), observation) {
+            (None, EntityObservation::Absent(_)) => (EntityChainStateV1::NeverExisted, 0, None),
+            (Some(head), EntityObservation::Present(record)) => {
+                let expected_state = EntityChainStateV1::Live {
+                    version: record.entity_version(),
+                    value_hash: riffdb_storage_api::derive_entity_record_hash_v1(record)
+                        .map_err(invariant_value)?,
+                };
+                if head.target() != mutation.post_image().target() || head.state() != expected_state
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                (
+                    head.state(),
+                    head.chain_revision(),
+                    Some(head.last_transition_hash()),
+                )
+            }
+            _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+        };
+        let next_state = EntityChainStateV1::Live {
+            version: mutation.post_image().entity_version(),
+            value_hash: riffdb_storage_api::derive_entity_record_hash_v1(mutation.post_image())
+                .map_err(invariant_value)?,
+        };
+        let transition = CommittedEntityTransitionV1::new(
+            records.assignment().assigned(),
+            u32::try_from(ordinal).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+            mutation.post_image().target().clone(),
+            prior_state,
+            prior_revision,
+            prior_hash,
+            next_state,
+        )
+        .map_err(invariant_value)?;
+        let next_head = match stored_head {
+            Some(head) => head.apply(&transition),
+            None => EntityChainHeadV1::from_genesis(&transition),
+        }
+        .map_err(invariant_value)?;
+        let encoded_head =
+            riffdb_storage_api::encode_entity_chain_head_v1(&next_head).map_err(codec_error)?;
+        let replaced_head = access.put_command_value(
+            JournalTable::EntityChainHeads,
+            key.to_vec(),
+            encoded_head.into_bytes(),
+        )?;
+        if replaced_head.is_some() != (prior_revision != 0) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         let prior =
             access.put_command_value(JournalTable::Entities, key.to_vec(), bytes.into_bytes())?;
         let expected_presence = matches!(mutation.expected(), ExpectedEntityState::Present(_));
         if prior.is_some() != expected_presence {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if observations
-            .get(mutation.post_image().target())
-            .is_none_or(|observed| observed.expected_state() != mutation.expected())
-        {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
         observations.insert(
             mutation.post_image().target().clone(),
             EntityObservation::Present(mutation.post_image().clone()),
         );
+        transitions.push(transition);
     }
-    Ok(())
+    Ok(transitions)
 }
 
 fn apply_index_entries(

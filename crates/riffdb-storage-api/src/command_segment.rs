@@ -5,8 +5,9 @@ use std::fmt;
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, MAX_KEY_BYTES};
 
 use crate::{
-    IndexEpochAdvanceV1, MAX_EVENT_INTENTS, MAX_INDEX_DELTAS, MAX_STAGED_COMMANDS,
-    StorageValueError, StoredCommandCapsuleV1, StoredDurableEventV1,
+    CommittedEntityTransitionV1, EntityChainStateV1, IndexEpochAdvanceV1, MAX_ENTITY_MUTATIONS,
+    MAX_EVENT_INTENTS, MAX_INDEX_DELTAS, MAX_STAGED_COMMANDS, StorageValueError,
+    StoredCommandCapsuleV1, StoredDurableEventV1,
 };
 
 /// Maximum exact derived-index entries retained by one segment or checkpoint.
@@ -212,6 +213,7 @@ impl fmt::Debug for CommandSegmentManifestV1 {
 pub struct StoredCommandCapsuleV2 {
     base: StoredCommandCapsuleV1,
     index_generation_transitions: Vec<IndexEpochAdvanceV1>,
+    entity_transitions: Vec<CommittedEntityTransitionV1>,
 }
 
 impl StoredCommandCapsuleV2 {
@@ -233,17 +235,63 @@ impl StoredCommandCapsuleV2 {
         base: StoredCommandCapsuleV1,
         index_generation_transitions: Vec<IndexEpochAdvanceV1>,
     ) -> Result<Self, StorageValueError> {
+        Self::from_base_with_entity_transitions(base, index_generation_transitions, Vec::new())
+    }
+
+    /// Constructs current command authority with exact entity-chain transitions.
+    pub fn from_base_with_entity_transitions(
+        base: StoredCommandCapsuleV1,
+        index_generation_transitions: Vec<IndexEpochAdvanceV1>,
+        entity_transitions: Vec<CommittedEntityTransitionV1>,
+    ) -> Result<Self, StorageValueError> {
         if base.commit().events().len() > MAX_EVENT_INTENTS
             || index_generation_transitions.len() > MAX_INDEX_DELTAS
+            || entity_transitions.len() > MAX_ENTITY_MUTATIONS
             || index_generation_transitions
+                .windows(2)
+                .any(|pair| pair[0].target() >= pair[1].target())
+            || entity_transitions
+                .iter()
+                .enumerate()
+                .any(|(ordinal, transition)| {
+                    transition.command_sequence() != base.commit_sequence()
+                        || usize::try_from(transition.mutation_ordinal()).ok() != Some(ordinal)
+                })
+            || entity_transitions
                 .windows(2)
                 .any(|pair| pair[0].target() >= pair[1].target())
         {
             return Err(StorageValueError::IdentityMismatch);
         }
+        if !entity_transitions.is_empty() {
+            let live = entity_transitions
+                .iter()
+                .filter_map(|transition| match transition.next_state() {
+                    EntityChainStateV1::Live {
+                        version,
+                        value_hash,
+                    } => Some((transition.target(), version, value_hash)),
+                    EntityChainStateV1::Deleted | EntityChainStateV1::NeverExisted => None,
+                })
+                .collect::<Vec<_>>();
+            let references = base.commit().entity_references();
+            if live.len() != references.len()
+                || live
+                    .iter()
+                    .zip(references)
+                    .any(|((target, version, value_hash), reference)| {
+                        *target != reference.target()
+                            || *version != reference.entity_version()
+                            || *value_hash != reference.post_image_hash()
+                    })
+            {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+        }
         Ok(Self {
             base,
             index_generation_transitions,
+            entity_transitions,
         })
     }
 
@@ -269,6 +317,12 @@ impl StoredCommandCapsuleV2 {
     #[must_use]
     pub fn index_generation_transitions(&self) -> &[IndexEpochAdvanceV1] {
         &self.index_generation_transitions
+    }
+
+    /// Borrows exact entity-chain transitions in mutation ordinal order.
+    #[must_use]
+    pub fn entity_transitions(&self) -> &[CommittedEntityTransitionV1] {
+        &self.entity_transitions
     }
 }
 

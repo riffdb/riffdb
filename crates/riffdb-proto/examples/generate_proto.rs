@@ -50,6 +50,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
+    "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
@@ -82,6 +83,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
+    "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
@@ -509,6 +511,31 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredApplicationInstallationCampaignV1",
         PayloadBound::EnvelopeMaximum,
     ),
+    durable(
+        "entity_transitions_v4.proto",
+        "StoredEntityChainHeadV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "entity_transitions_v4.proto",
+        "StoredChangelogV2RotationReceiptV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "entity_transitions_v4.proto",
+        "StoredCommandCapsuleV4",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "entity_transitions_v4.proto",
+        "StoredCommandSegmentV3",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "entity_transitions_v4.proto",
+        "StoredValidatedPrefixCheckpointV2",
+        PayloadBound::Tiny,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -910,6 +937,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let installation_v1_record = durable_registry
         .get(current_v1_record_count + 39)
         .ok_or_else(|| io::Error::other("durable installation-v1 registry is incomplete"))?;
+    let entity_transitions_v4_records = durable_registry
+        .get(current_v1_record_count + 40..current_v1_record_count + 45)
+        .ok_or_else(|| io::Error::other("durable entity-transitions-v4 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1154,6 +1184,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-installation-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(installation_v1_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
+        &durable_schema_hashes(entity_transitions_v4_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-entity-transitions-v4-record-bounds.bin",
+        &durable_record_bounds(entity_transitions_v4_records),
     )?;
     write_artifact(
         &output_root,
@@ -1422,9 +1462,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 69 {
+    if DURABLE_RECORDS.len() != 74 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 69 records").into(),
+            io::Error::other("readable durable registry must contain exactly 74 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1448,9 +1488,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 139 || enum_count != 18 {
+    if message_count != 147 || enum_count != 19 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 139 messages and 18 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 147 messages and 19 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1677,7 +1717,7 @@ fn durable_writable_registry_fixture(
     let capability_v2 = records
         .get(current_v1_record_count + 13)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV2"))?;
-    let validated_prefix_checkpoint =
+    let _validated_prefix_checkpoint =
         records.get(current_v1_record_count + 14).ok_or_else(|| {
             io::Error::other("durable registry is missing StoredValidatedPrefixCheckpointV1")
         })?;
@@ -1722,6 +1762,11 @@ fn durable_writable_registry_fixture(
     let installation_v1 = records
         .get(current_v1_record_count + 39)
         .ok_or_else(|| io::Error::other("durable registry is missing installation V1 record"))?;
+    let entity_transitions_v4 = records
+        .get(current_v1_record_count + 40..current_v1_record_count + 45)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing entity-transition V4 records")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1740,20 +1785,19 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(event_route))
         .chain(migration_v1.iter())
         .chain(std::iter::once(capability_v2))
-        .chain(std::iter::once(validated_prefix_checkpoint))
         .chain(std::iter::once(retention_watermark))
         .chain(std::iter::once(retention_holds))
         .chain(std::iter::once(history_tombstone))
         .chain(std::iter::once(retention_administration))
         .chain(reactive_consumer_v1.iter())
         .chain(command_capsule_v1.iter())
-        .chain(workflow_service_values_v3[3..].iter())
         .chain(command_segment_v1[2..].iter())
         .chain(std::iter::once(installation_v1))
+        .chain(entity_transitions_v4.iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 25);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 27);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

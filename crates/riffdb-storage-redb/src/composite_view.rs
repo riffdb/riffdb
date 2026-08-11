@@ -34,9 +34,9 @@ use crate::keys::{
     decode_index_entry_key, decode_partition_index_key, decode_provenance_key,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
-    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_DATABASE_ID, META_HISTORY_INCARNATION,
-    META_RECORD_REGISTRY, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
+    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
+    IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_DATABASE_ID,
+    META_HISTORY_INCARNATION, META_RECORD_REGISTRY, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
 };
 use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_tail};
 
@@ -689,6 +689,16 @@ fn validate_canonical_entry(
                 }
             }
         }
+        CompositeTableV1::EntityChainHeads => {
+            let physical = decode_entity_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                let decoded = riffdb_storage_api::decode_entity_chain_head_v1(value)
+                    .map_err(invalid_shape)?;
+                if decoded.value().target().key() != &physical {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -708,6 +718,7 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
         CompositeTableV1::Commits => crate::journal::JournalTable::Commits,
         CompositeTableV1::Audit => crate::journal::JournalTable::Audit,
         CompositeTableV1::AuditByRequest => crate::journal::JournalTable::AuditByRequest,
+        CompositeTableV1::EntityChainHeads => crate::journal::JournalTable::EntityChainHeads,
     }
 }
 
@@ -728,6 +739,7 @@ const fn byte_table(
         CompositeTableV1::Commits => Some(COMMITS),
         CompositeTableV1::Audit => Some(AUDIT),
         CompositeTableV1::AuditByRequest => Some(AUDIT_BY_REQUEST),
+        CompositeTableV1::EntityChainHeads => Some(ENTITY_CHAIN_HEADS),
     }
 }
 

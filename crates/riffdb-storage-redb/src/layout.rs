@@ -12,6 +12,8 @@ pub(crate) const QUERY_MODULES: TableDefinition<&[u8], &[u8]> =
 pub(crate) const QUERY_MODULE_ACTIVE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("query_module_active");
 pub(crate) const ENTITIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entities");
+pub(crate) const ENTITY_CHAIN_HEADS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("entity_chain_heads");
 pub(crate) const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("secondary_indexes");
 pub(crate) const INDEX_EPOCHS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("index_epochs");
@@ -56,13 +58,14 @@ pub(crate) const EVENT_CONSUMER_DELIVERIES: TableDefinition<&[u8], &[u8]> =
 pub(crate) const APPLICATION_INSTALLATION_CAMPAIGNS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("application_installation_campaigns");
 
-pub(crate) const TABLE_NAMES: [&str; 32] = [
+pub(crate) const TABLE_NAMES: [&str; 33] = [
     "meta",
     "contract_bundles",
     "catalog_active",
     "query_modules",
     "query_module_active",
     "entities",
+    "entity_chain_heads",
     "secondary_indexes",
     "index_epochs",
     "idempotency",
@@ -91,12 +94,13 @@ pub(crate) const TABLE_NAMES: [&str; 32] = [
     "application_installation_campaigns",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 31] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 32] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
     QUERY_MODULE_ACTIVE,
     ENTITIES,
+    ENTITY_CHAIN_HEADS,
     SECONDARY_INDEXES,
     INDEX_EPOCHS,
     IDEMPOTENCY,
@@ -143,8 +147,10 @@ pub(crate) const META_VALIDATED_PREFIX_CHECKPOINT: &str = "validated_prefix_chec
 pub(crate) const META_RETENTION_WATERMARK: &str = "retention_watermark/v1";
 /// Operator retention holds (ADR-0085 Amendment 2). Optional; absent means empty holds.
 pub(crate) const META_RETENTION_HOLDS: &str = "retention_holds/v1";
+/// One-shot binding from the V1 changelog frontier to delete-aware V2 state.
+pub(crate) const META_CHANGELOG_V2_ROTATION_RECEIPT: &str = "changelog_v2_rotation_receipt/v1";
 
-pub(crate) const META_KEYS: [&str; 11] = [
+pub(crate) const META_KEYS: [&str; 12] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
@@ -156,6 +162,7 @@ pub(crate) const META_KEYS: [&str; 11] = [
     META_VALIDATED_PREFIX_CHECKPOINT,
     META_RETENTION_WATERMARK,
     META_RETENTION_HOLDS,
+    META_CHANGELOG_V2_ROTATION_RECEIPT,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -168,6 +175,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(QUERY_MODULES)?);
     drop(tx.open_table(QUERY_MODULE_ACTIVE)?);
     drop(tx.open_table(ENTITIES)?);
+    drop(tx.open_table(ENTITY_CHAIN_HEADS)?);
     drop(tx.open_table(SECONDARY_INDEXES)?);
     drop(tx.open_table(INDEX_EPOCHS)?);
     drop(tx.open_table(IDEMPOTENCY)?);
@@ -214,6 +222,7 @@ mod tests {
             QUERY_MODULES.name(),
             QUERY_MODULE_ACTIVE.name(),
             ENTITIES.name(),
+            ENTITY_CHAIN_HEADS.name(),
             SECONDARY_INDEXES.name(),
             INDEX_EPOCHS.name(),
             IDEMPOTENCY.name(),
@@ -243,7 +252,7 @@ mod tests {
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 32);
+        assert_eq!(TABLE_NAMES.len(), 33);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()
@@ -266,9 +275,10 @@ mod tests {
                 "validated_prefix_checkpoint/v1",
                 "retention_watermark/v1",
                 "retention_holds/v1",
+                "changelog_v2_rotation_receipt/v1",
             ]
         );
-        assert_eq!(META_KEYS.len(), 11);
+        assert_eq!(META_KEYS.len(), 12);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()

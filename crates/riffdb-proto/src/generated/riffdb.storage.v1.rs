@@ -1933,6 +1933,154 @@ pub struct StoredCommitRecordV3 {
     pub durability_mode: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredEntityChainStateV1 {
+    #[prost(enumeration = "EntityChainStateKindV1", tag = "1")]
+    pub kind: i32,
+    #[prost(uint64, optional, tag = "2")]
+    pub entity_version: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub value_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredCommittedEntityTransitionV1 {
+    #[prost(uint64, tag = "1")]
+    pub command_sequence: u64,
+    #[prost(uint32, tag = "2")]
+    pub mutation_ordinal: u32,
+    #[prost(message, optional, tag = "3")]
+    pub target: ::core::option::Option<EntityTargetV1>,
+    #[prost(message, optional, tag = "4")]
+    pub prior_state: ::core::option::Option<StoredEntityChainStateV1>,
+    #[prost(uint64, tag = "5")]
+    pub prior_chain_revision: u64,
+    #[prost(bytes = "vec", optional, tag = "6")]
+    pub prior_transition_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "7")]
+    pub next_state: ::core::option::Option<StoredEntityChainStateV1>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub transition_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredEntityChainHeadV1 {
+    #[prost(message, optional, tag = "1")]
+    pub target: ::core::option::Option<EntityTargetV1>,
+    #[prost(uint64, tag = "2")]
+    pub chain_revision: u64,
+    #[prost(message, optional, tag = "3")]
+    pub state: ::core::option::Option<StoredEntityChainStateV1>,
+    #[prost(uint64, tag = "4")]
+    pub last_command_sequence: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub last_transition_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredChangelogV2RotationReceiptV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(uint64, optional, tag = "3")]
+    pub predecessor_application_frontier: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub predecessor_administration_frontier: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub terminal_v1_frame_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub v2_chain_anchor: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub receipt_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandCapsuleV4 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredCommandCapsuleV3>,
+    #[prost(message, repeated, tag = "2")]
+    pub entity_transitions: ::prost::alloc::vec::Vec<StoredCommittedEntityTransitionV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentBodyV3 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub predecessor_segment_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub first_commit_sequence: u64,
+    #[prost(uint64, tag = "5")]
+    pub last_commit_sequence: u64,
+    #[prost(uint64, tag = "6")]
+    pub first_administration_sequence: u64,
+    #[prost(uint64, tag = "7")]
+    pub last_administration_sequence: u64,
+    #[prost(message, repeated, tag = "8")]
+    pub commands: ::prost::alloc::vec::Vec<StoredCommandCapsuleV4>,
+    #[prost(message, optional, tag = "9")]
+    pub manifest: ::core::option::Option<CommandSegmentManifestV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentV3 {
+    #[prost(message, optional, tag = "1")]
+    pub body: ::core::option::Option<StoredCommandSegmentBodyV3>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub segment_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredValidatedPrefixCheckpointV2 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredValidatedPrefixCheckpointV1>,
+    #[prost(uint64, tag = "2")]
+    pub live_entity_count: u64,
+    #[prost(uint64, tag = "3")]
+    pub deleted_entity_count: u64,
+    #[prost(uint64, tag = "4")]
+    pub entity_transition_count: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub entity_transition_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub checkpoint_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EntityChainStateKindV1 {
+    EntityChainStateKindUnspecified = 0,
+    EntityChainStateKindNeverExisted = 1,
+    EntityChainStateKindLive = 2,
+    EntityChainStateKindDeleted = 3,
+}
+impl EntityChainStateKindV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::EntityChainStateKindUnspecified => {
+                "ENTITY_CHAIN_STATE_KIND_UNSPECIFIED"
+            }
+            Self::EntityChainStateKindNeverExisted => {
+                "ENTITY_CHAIN_STATE_KIND_NEVER_EXISTED"
+            }
+            Self::EntityChainStateKindLive => "ENTITY_CHAIN_STATE_KIND_LIVE",
+            Self::EntityChainStateKindDeleted => "ENTITY_CHAIN_STATE_KIND_DELETED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ENTITY_CHAIN_STATE_KIND_UNSPECIFIED" => {
+                Some(Self::EntityChainStateKindUnspecified)
+            }
+            "ENTITY_CHAIN_STATE_KIND_NEVER_EXISTED" => {
+                Some(Self::EntityChainStateKindNeverExisted)
+            }
+            "ENTITY_CHAIN_STATE_KIND_LIVE" => Some(Self::EntityChainStateKindLive),
+            "ENTITY_CHAIN_STATE_KIND_DELETED" => Some(Self::EntityChainStateKindDeleted),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredEnvelope {
     #[prost(uint32, tag = "1")]
     pub storage_format_version: u32,

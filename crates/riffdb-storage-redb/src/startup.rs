@@ -49,11 +49,12 @@ use crate::layout::{
     CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_CONSUMER_DELIVERIES,
     EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_PENDING,
     INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
-    META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
-    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
-    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
-    QUERY_MODULES, REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
+    META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_DATABASE_ID,
+    META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS,
+    META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED,
+    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
+    REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
     PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST, PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST,
@@ -2850,6 +2851,9 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         // Optional retention meta: full verify happens in the retention module.
         META_RETENTION_WATERMARK => true,
         META_RETENTION_HOLDS => true,
+        META_CHANGELOG_V2_ROTATION_RECEIPT => {
+            riffdb_storage_api::decode_changelog_v2_rotation_receipt_v1(value).is_ok()
+        }
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
@@ -6737,9 +6741,10 @@ mod tests {
         CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
         CatalogActivationIntentV1, CatalogAdministrationRepository, CommittedEntityReferenceV2,
         DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
-        EntityTarget, ExecutablePlanRef, ExpectedEntityState, HistoricalEvidencePage,
-        IdempotencyIdentity, IdempotencyKeyDigest, PartitionScopeV1, ProjectionGenerationPosition,
-        ProjectionLifecycleV1, PublishedApplyModeV1, ReactiveModuleAdministrationRepository,
+        EntityChainHeadV1, EntityChainStateV1, EntityTarget, ExecutablePlanRef,
+        ExpectedEntityState, HistoricalEvidencePage, IdempotencyIdentity, IdempotencyKeyDigest,
+        PartitionScopeV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
+        PublishedApplyModeV1, ReactiveModuleAdministrationRepository,
         ReactiveModulePublicationIntentV1, ReadDependencies, ReadDependency,
         ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, StoredAdministrationAuditRecordV1,
@@ -6755,12 +6760,12 @@ mod tests {
         ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
         Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityId,
         CapabilityTokenDigest, CommandId, CommitSequence, DigestKeyId, EntityKeyBuilder,
-        EntityTypeId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder, LogicalTime,
-        OutcomeId, PartitionKeyBuilder, PlanHash, ProjectionApplyHash, ProjectionApplyKey,
-        ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash, ProvenanceId,
-        RequestId, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
-        hash_partition_key,
+        EntityTransitionHash, EntityTypeId, EntityVersion, Environment, FieldId,
+        IndexEntryKeyBuilder, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
+        ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, ProvenanceId, RequestId, ScopedPartitionV1,
+        ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
+        ServiceOperationV1, TenantScope, Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -7922,11 +7927,30 @@ contract RedbMigration version 1 {
         }
         {
             let mut table = write.open_table(ENTITIES).expect("entities");
-            for entity in entities {
+            let mut heads = write
+                .open_table(crate::layout::ENTITY_CHAIN_HEADS)
+                .expect("entity chain heads");
+            for (ordinal, entity) in entities.iter().enumerate() {
                 let encoded = codec::encode_entity_record_v1(entity).expect("encode entity");
                 table
                     .insert(entity.target().key().as_bytes(), encoded.as_bytes())
                     .expect("insert entity");
+                let sequence = commits
+                    .iter()
+                    .find(|commit| {
+                        commit
+                            .entity_references()
+                            .iter()
+                            .any(|reference| reference.target() == entity.target())
+                    })
+                    .map(StoredCommitRecordV1::commit_sequence)
+                    .unwrap_or_else(CommitSequence::first);
+                let head = test_genesis_entity_head(entity, sequence, ordinal);
+                let encoded_head = riffdb_storage_api::encode_entity_chain_head_v1(&head)
+                    .expect("encode entity chain head");
+                heads
+                    .insert(entity.target().key().as_bytes(), encoded_head.as_bytes())
+                    .expect("insert entity chain head");
             }
         }
         {
@@ -8047,6 +8071,31 @@ contract RedbMigration version 1 {
                 .expect("update admin allocator");
         }
         write.commit().expect("commit history fixture");
+    }
+
+    fn test_genesis_entity_head(
+        entity: &StoredEntityRecordV1,
+        sequence: CommitSequence,
+        ordinal: usize,
+    ) -> EntityChainHeadV1 {
+        let mut transition_hash = [0_u8; 32];
+        transition_hash[..8].copy_from_slice(&sequence.get().to_be_bytes());
+        transition_hash[8..16].copy_from_slice(
+            &u64::try_from(ordinal)
+                .expect("transition ordinal")
+                .to_be_bytes(),
+        );
+        EntityChainHeadV1::from_stored_parts(
+            entity.target().clone(),
+            1,
+            EntityChainStateV1::Live {
+                version: entity.entity_version(),
+                value_hash: derive_entity_record_hash_v1(entity).expect("entity hash"),
+            },
+            sequence,
+            EntityTransitionHash::from_bytes(transition_hash),
+        )
+        .expect("fixture entity head")
     }
 
     fn finding_codes(findings: &[StructuralFinding]) -> Vec<StructuralFindingCode> {
@@ -10339,6 +10388,9 @@ contract RedbMigration version 1 {
                     .expect("insert audit index");
             }
             let mut entities = write.open_table(ENTITIES).expect("entities");
+            let mut heads = write
+                .open_table(crate::layout::ENTITY_CHAIN_HEADS)
+                .expect("entity chain heads");
             for ordinal in 0..shape.entities {
                 let record = history_entity(ordinal, EntityVersion::first(), b"counts", bundle);
                 let encoded = codec::encode_entity_record_v1(&record).expect("encode entity");
@@ -10348,6 +10400,16 @@ contract RedbMigration version 1 {
                         encoded.as_bytes(),
                     )
                     .expect("insert entity");
+                let head = test_genesis_entity_head(
+                    &record,
+                    CommitSequence::new(last_commit.max(1)).expect("head sequence"),
+                    usize::try_from(ordinal).expect("head ordinal"),
+                );
+                let encoded_head = riffdb_storage_api::encode_entity_chain_head_v1(&head)
+                    .expect("encode entity chain head");
+                heads
+                    .insert(record.target().key().as_bytes(), encoded_head.as_bytes())
+                    .expect("insert entity chain head");
             }
             let _ = last_commit;
         }
@@ -10383,7 +10445,7 @@ contract RedbMigration version 1 {
         )
         .expect("derived checkpoint");
         let encode = |checkpoint: &_| {
-            riffdb_storage_api::proto_codec::encode_validated_prefix_checkpoint_v1(checkpoint)
+            riffdb_storage_api::proto_codec::encode_validated_prefix_checkpoint_v2(checkpoint)
                 .expect("encode checkpoint")
                 .as_bytes()
                 .to_vec()
@@ -10933,8 +10995,8 @@ contract RedbMigration version 1 {
              {derived_elapsed:?} over {derived_rows} rows"
         );
         assert_eq!(
-            walked.counts(),
-            derived.counts(),
+            walked.base().counts(),
+            derived.base().counts(),
             "the scale fixture must agree on counts or the timing compares \
              different work"
         );

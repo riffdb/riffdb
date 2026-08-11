@@ -348,6 +348,31 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
         ),
         (
+            "riffdb.v1.ApplicationInstallationDriver",
+            0,
+            "APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.ApplicationInstallationDriver",
+            1,
+            "APPLICATION_INSTALLATION_DRIVER_RUST",
+        ),
+        (
+            "riffdb.v1.ApplicationInstallationDriver",
+            2,
+            "APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT",
+        ),
+        (
+            "riffdb.v1.ApplicationInstallationDriver",
+            3,
+            "APPLICATION_INSTALLATION_DRIVER_GO",
+        ),
+        (
+            "riffdb.v1.ApplicationInstallationDriver",
+            4,
+            "APPLICATION_INSTALLATION_DRIVER_PYTHON",
+        ),
+        (
             "riffdb.v1.ApplicationInstallationStage",
             0,
             "APPLICATION_INSTALLATION_STAGE_UNSPECIFIED",

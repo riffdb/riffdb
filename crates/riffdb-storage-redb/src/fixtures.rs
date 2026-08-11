@@ -81,9 +81,9 @@ pub fn read_validated_prefix_checkpoint_commit_sequence_fixture(
         return Ok(None);
     };
     let checkpoint =
-        riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v1(encoded.value())
+        riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v2(encoded.value())
             .map_err(codec_error)?
             .into_parts()
             .0;
-    Ok(Some(checkpoint.checkpoint_commit_sequence()))
+    Ok(Some(checkpoint.base().checkpoint_commit_sequence()))
 }

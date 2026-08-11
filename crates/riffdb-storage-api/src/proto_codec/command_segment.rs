@@ -21,8 +21,10 @@ use super::{application, command_capsule};
 const COMMAND_CAPSULE_V1: &str = "riffdb.storage.v1.StoredCommandCapsuleV1";
 const COMMAND_CAPSULE_V2: &str = "riffdb.storage.v1.StoredCommandCapsuleV2";
 const COMMAND_CAPSULE_V3: &str = "riffdb.storage.v1.StoredCommandCapsuleV3";
+const COMMAND_CAPSULE_V4: &str = "riffdb.storage.v1.StoredCommandCapsuleV4";
 const COMMAND_SEGMENT_V1: &str = "riffdb.storage.v1.StoredCommandSegmentV1";
 const COMMAND_SEGMENT_V2: &str = "riffdb.storage.v1.StoredCommandSegmentV2";
+const COMMAND_SEGMENT_V3: &str = "riffdb.storage.v1.StoredCommandSegmentV3";
 const COMMAND_DERIVED_INDEX_CHECKPOINT_V1: &str =
     "riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1";
 
@@ -307,6 +309,18 @@ fn capsule_v3_bytes_for_seal(value: &StoredCommandCapsuleV2) -> Result<Vec<u8>, 
     Ok(capsule)
 }
 
+fn capsule_v4_bytes_for_seal(value: &StoredCommandCapsuleV2) -> Result<Vec<u8>, DurableCodecError> {
+    let base = capsule_v3_bytes_for_seal(value)?;
+    let mut capsule = Vec::new();
+    append_length_delimited_field(&mut capsule, 0x0a, &base)?;
+    for transition in value.entity_transitions() {
+        let transition =
+            super::entity_transition::entity_transition_to_proto(transition).encode_to_vec();
+        append_length_delimited_field(&mut capsule, 0x12, &transition)?;
+    }
+    Ok(capsule)
+}
+
 fn capsule_v2_from_proto(
     value: wire::StoredCommandCapsuleV2,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
@@ -340,24 +354,60 @@ fn capsule_v3_from_proto(
     storage_result(StoredCommandCapsuleV2::from_base(base, transitions))
 }
 
+fn capsule_v4_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCapsuleV4 {
+    wire::StoredCommandCapsuleV4 {
+        base: Some(capsule_v3_to_proto(value)),
+        entity_transitions: value
+            .entity_transitions()
+            .iter()
+            .map(super::entity_transition::entity_transition_to_proto)
+            .collect(),
+    }
+}
+
+fn capsule_v4_from_proto(
+    value: wire::StoredCommandCapsuleV4,
+) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
+    let entity_transitions = value
+        .entity_transitions
+        .into_iter()
+        .map(super::entity_transition::entity_transition_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let capsule = capsule_v3_from_proto(require(value.base)?)?;
+    let generations = capsule.index_generation_transitions().to_vec();
+    storage_result(StoredCommandCapsuleV2::from_base_with_entity_transitions(
+        capsule.base().clone(),
+        generations,
+        entity_transitions,
+    ))
+}
+
 /// Encodes one complete V2 command capsule.
 pub fn encode_command_capsule_v2(
     value: &StoredCommandCapsuleV2,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    encode_message(COMMAND_CAPSULE_V3, &capsule_v3_to_proto(value))
+    encode_message(COMMAND_CAPSULE_V4, &capsule_v4_to_proto(value))
 }
 
 /// Decodes one complete V2 command capsule.
 pub fn decode_command_capsule_v2(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredCommandCapsuleV2>, DurableCodecError> {
-    match decode_record_variant_chain(encoded, &[COMMAND_CAPSULE_V3, COMMAND_CAPSULE_V2])? {
-        0 => decode_message::<wire::StoredCommandCapsuleV3, _, _>(
+    match decode_record_variant_chain(
+        encoded,
+        &[COMMAND_CAPSULE_V4, COMMAND_CAPSULE_V3, COMMAND_CAPSULE_V2],
+    )? {
+        0 => decode_message::<wire::StoredCommandCapsuleV4, _, _>(
+            COMMAND_CAPSULE_V4,
+            encoded,
+            capsule_v4_from_proto,
+        ),
+        1 => decode_message::<wire::StoredCommandCapsuleV3, _, _>(
             COMMAND_CAPSULE_V3,
             encoded,
             capsule_v3_from_proto,
         ),
-        1 => decode_message::<wire::StoredCommandCapsuleV2, _, _>(
+        2 => decode_message::<wire::StoredCommandCapsuleV2, _, _>(
             COMMAND_CAPSULE_V2,
             encoded,
             capsule_v2_from_proto,
@@ -366,8 +416,8 @@ pub fn decode_command_capsule_v2(
     }
 }
 
-fn segment_body_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredCommandSegmentBodyV2 {
-    wire::StoredCommandSegmentBodyV2 {
+fn segment_body_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredCommandSegmentBodyV3 {
+    wire::StoredCommandSegmentBodyV3 {
         database_id: value.database_id().as_bytes().to_vec(),
         history_incarnation: value.history_incarnation(),
         predecessor_segment_hash: value
@@ -377,7 +427,7 @@ fn segment_body_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredCommandS
         last_commit_sequence: value.last_commit_sequence().get(),
         first_administration_sequence: value.first_administration_sequence().get(),
         last_administration_sequence: value.last_administration_sequence().get(),
-        commands: value.commands().iter().map(capsule_v3_to_proto).collect(),
+        commands: value.commands().iter().map(capsule_v4_to_proto).collect(),
         manifest: Some(manifest_to_proto(value.manifest())),
     }
 }
@@ -450,7 +500,7 @@ fn segment_body_bytes_for_seal(
     append_varint_field(&mut body, 0x30, value.first_administration_sequence().get());
     append_varint_field(&mut body, 0x38, value.last_administration_sequence().get());
     for command in value.commands() {
-        let command = capsule_v3_bytes_for_seal(command)?;
+        let command = capsule_v4_bytes_for_seal(command)?;
         append_length_delimited_field(&mut body, 0x42, &command)?;
     }
     append_length_delimited_field(&mut body, 0x4a, &manifest)?;
@@ -491,8 +541,8 @@ pub fn seal_and_encode_command_segment_v1(
     );
     append_length_delimited_field(&mut payload, 0x0a, &body_bytes)?;
     append_length_delimited_field(&mut payload, 0x12, digest.as_bytes())?;
-    let encoded = encode_structurally_proven_message::<wire::StoredCommandSegmentV2>(
-        COMMAND_SEGMENT_V2,
+    let encoded = encode_structurally_proven_message::<wire::StoredCommandSegmentV3>(
+        COMMAND_SEGMENT_V3,
         &payload,
     )?;
     Ok((value, encoded))
@@ -508,8 +558,8 @@ pub fn encode_command_segment_v1(
         return Err(DurableCodecError::corrupt());
     }
     encode_message(
-        COMMAND_SEGMENT_V2,
-        &wire::StoredCommandSegmentV2 {
+        COMMAND_SEGMENT_V3,
+        &wire::StoredCommandSegmentV3 {
             body: Some(body),
             segment_digest: digest.as_bytes().to_vec(),
         },
@@ -520,8 +570,61 @@ pub fn encode_command_segment_v1(
 pub fn decode_command_segment_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredCommandSegmentV1>, DurableCodecError> {
-    match decode_record_variant_chain(encoded, &[COMMAND_SEGMENT_V2, COMMAND_SEGMENT_V1])? {
-        0 => decode_message::<wire::StoredCommandSegmentV2, _, _>(
+    match decode_record_variant_chain(
+        encoded,
+        &[COMMAND_SEGMENT_V3, COMMAND_SEGMENT_V2, COMMAND_SEGMENT_V1],
+    )? {
+        0 => decode_message::<wire::StoredCommandSegmentV3, _, _>(
+            COMMAND_SEGMENT_V3,
+            encoded,
+            |value| {
+                let body = require(value.body)?;
+                let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
+                if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+                    return Err(DurableCodecError::corrupt());
+                }
+                let first = CommitSequence::new(body.first_commit_sequence)
+                    .ok_or_else(DurableCodecError::corrupt)?;
+                let last = CommitSequence::new(body.last_commit_sequence)
+                    .ok_or_else(DurableCodecError::corrupt)?;
+                let first_administration =
+                    riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+                        .ok_or_else(DurableCodecError::corrupt)?;
+                let last_administration =
+                    riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+                        .ok_or_else(DurableCodecError::corrupt)?;
+                let predecessor = if body.predecessor_segment_hash.is_empty() {
+                    None
+                } else {
+                    Some(CommandSegmentDigestV1::from_bytes(fixed(
+                        body.predecessor_segment_hash,
+                    )?))
+                };
+                let commands = body
+                    .commands
+                    .into_iter()
+                    .map(capsule_v4_from_proto)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let segment = storage_result(StoredCommandSegmentV1::new(
+                    DatabaseId::from_bytes(fixed(body.database_id)?)
+                        .map_err(|_| DurableCodecError::corrupt())?,
+                    body.history_incarnation,
+                    predecessor,
+                    commands,
+                    manifest_from_proto(require(body.manifest)?)?,
+                    digest,
+                ))?;
+                if segment.first_commit_sequence() != first
+                    || segment.last_commit_sequence() != last
+                    || segment.first_administration_sequence() != first_administration
+                    || segment.last_administration_sequence() != last_administration
+                {
+                    return Err(DurableCodecError::corrupt());
+                }
+                Ok(segment)
+            },
+        ),
+        1 => decode_message::<wire::StoredCommandSegmentV2, _, _>(
             COMMAND_SEGMENT_V2,
             encoded,
             |value| {
@@ -571,7 +674,7 @@ pub fn decode_command_segment_v1(
                 Ok(segment)
             },
         ),
-        1 => decode_message::<wire::StoredCommandSegmentV1, _, _>(
+        2 => decode_message::<wire::StoredCommandSegmentV1, _, _>(
             COMMAND_SEGMENT_V1,
             encoded,
             |value| {

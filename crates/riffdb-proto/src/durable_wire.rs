@@ -385,6 +385,44 @@ shape!(COMMAND_SEGMENT_V2 [
     message(1, &COMMAND_SEGMENT_BODY_V2),
     fixed_bytes(2, 32),
 ]);
+shape!(ENTITY_CHAIN_STATE_V1[fixed_bytes(3, 32)]);
+shape!(COMMITTED_ENTITY_TRANSITION_V1 [
+    message(3, &ENTITY_TARGET),
+    message(4, &ENTITY_CHAIN_STATE_V1),
+    fixed_bytes(6, 32),
+    message(7, &ENTITY_CHAIN_STATE_V1),
+    fixed_bytes(8, 32),
+]);
+shape!(ENTITY_CHAIN_HEAD_V1 [
+    message(1, &ENTITY_TARGET),
+    message(3, &ENTITY_CHAIN_STATE_V1),
+    fixed_bytes(5, 32),
+]);
+shape!(CHANGELOG_V2_ROTATION_RECEIPT_V1 [
+    fixed_bytes(1, 16),
+    fixed_bytes(5, 32),
+    fixed_bytes(6, 32),
+    fixed_bytes(7, 32),
+]);
+shape!(COMMAND_CAPSULE_V4 [
+    message(1, &COMMAND_CAPSULE_V3),
+    repeated_message(2, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
+]);
+shape!(COMMAND_SEGMENT_BODY_V3 [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V4),
+    message(9, &COMMAND_SEGMENT_MANIFEST_V1),
+]);
+shape!(COMMAND_SEGMENT_V3 [
+    message(1, &COMMAND_SEGMENT_BODY_V3),
+    fixed_bytes(2, 32),
+]);
+shape!(VALIDATED_PREFIX_CHECKPOINT_V2 [
+    message(1, &ROOT_VALIDATED_PREFIX_CHECKPOINT),
+    fixed_bytes(5, 32),
+    fixed_bytes(6, 32),
+]);
 shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
     message(2, &ENTITY_RECORD),
@@ -770,7 +808,7 @@ shape!(ROOT_APPLICATION_INSTALLATION_CAMPAIGN [
     nonempty_bytes(4, 8 * 1024 * 1024),
 ]);
 
-const ROOTS: [&Shape; 69] = [
+const ROOTS: [&Shape; 74] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -851,6 +889,11 @@ const ROOTS: [&Shape; 69] = [
     &COMMAND_CAPSULE_V3,
     &COMMAND_SEGMENT_V2,
     &ROOT_APPLICATION_INSTALLATION_CAMPAIGN,
+    &ENTITY_CHAIN_HEAD_V1,
+    &CHANGELOG_V2_ROTATION_RECEIPT_V1,
+    &COMMAND_CAPSULE_V4,
+    &COMMAND_SEGMENT_V3,
+    &VALIDATED_PREFIX_CHECKPOINT_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
