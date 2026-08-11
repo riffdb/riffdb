@@ -658,6 +658,21 @@ pub trait QueryReadView {
         limit: u64,
         after: Option<&[u8]>,
     ) -> Result<QueryScanPage, Self::Error>;
+
+    /// Executes one nearest-neighbor search step (ADR-0091, VEC-005).
+    ///
+    /// The adapter scans all org-partitioned rows for the vector field,
+    /// applies policy predicates BEFORE distance computation (VEC-007), runs
+    /// exact KNN, and returns up to `k` rows ordered by distance (closest first).
+    ///
+    /// Implementations that do not support vector queries (row-store adapters)
+    /// return an integrity/invariant error.
+    fn nearest(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        k: u32,
+    ) -> Result<Vec<QueryRow>, Self::Error>;
 }
 
 fn map_view_error<V: QueryReadView>(view: &V, error: &V::Error) -> QueryExecutionError {
@@ -1115,15 +1130,15 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
                 }
                 (page.rows, Some(predicates))
             }
-            riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
-                // WP-593: exact KNN execution path. The columnar engine
-                // will scan all org-partitioned vectors, apply policy filter,
-                // then run exact_knn from crate::nearest. For now, return
-                // an empty result set (the nearest module has the algorithm;
-                // integration with the columnar store's row access is the
-                // remaining WP-593 work).
+            riffdb_query_ir::QueryAccessKind::Nearest { k, .. } => {
+                // WP-593: exact KNN execution path. The view adapter scans
+                // all org-partitioned vectors, applies policy filter (VEC-007),
+                // then runs exact_knn. Results are ordered by distance.
                 let predicates = bind_predicates(step, parameters, &bindings)?;
-                (Vec::new(), Some(predicates))
+                let rows = view
+                    .nearest(step, &predicates, *k)
+                    .map_err(|error| map_view_error(&*view, &error))?;
+                (rows, Some(predicates))
             }
         };
         fuel.intermediates(
@@ -2232,6 +2247,15 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         ) -> Result<QueryScanPage, Self::Error> {
             let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
             Ok(QueryScanPage::exact_end(rows, 1))
+        }
+
+        fn nearest(
+            &mut self,
+            step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _k: u32,
+        ) -> Result<Vec<QueryRow>, Self::Error> {
+            Ok(self.rows.get(step.binding()).cloned().unwrap_or_default())
         }
     }
 

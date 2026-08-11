@@ -207,6 +207,15 @@ impl QueryReadView for FakeView {
             Ok(QueryScanPage::exact_end(rows, self.scan_epoch))
         }
     }
+
+    fn nearest(
+        &mut self,
+        step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+    ) -> Result<Vec<QueryRow>, Self::Error> {
+        Ok(self.rows.get(step.binding()).cloned().unwrap_or_default())
+    }
 }
 
 #[test]
@@ -612,6 +621,15 @@ impl QueryReadView for ReportedWorkView {
         )
         .ok_or(())
     }
+
+    fn nearest(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+    ) -> Result<Vec<QueryRow>, Self::Error> {
+        Err(())
+    }
 }
 
 #[test]
@@ -806,6 +824,15 @@ impl QueryReadView for ProbeScanView {
         } else {
             Ok(QueryScanPage::exact_end(rows, 1))
         }
+    }
+
+    fn nearest(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+    ) -> Result<Vec<QueryRow>, Self::Error> {
+        Err(())
     }
 }
 
