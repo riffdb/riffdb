@@ -426,6 +426,39 @@ fn nearest_query_rejects_query_dimension_mismatch() {
     ));
 }
 
+/// Naming a projected field that exists but is not vector-typed is its own
+/// typed error, not `UnknownField` (the field is perfectly known — it just
+/// cannot be searched).
+#[test]
+fn nearest_query_on_a_non_vector_field_is_a_typed_error() {
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let title_field = field_id(&bundle, "Document", "title");
+
+    let org = [1u8; 16];
+    let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org");
+    let mut delta: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
+    delta.insert(
+        build_pk(entity_type, org, 1),
+        document_row("a", &[1.0, 0.0, 0.0]),
+    );
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.delta.insert(org_key, delta);
+    snapshot.visible_frontier =
+        FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("seq"));
+
+    let error = nearest_query_snapshot(
+        &definition,
+        &snapshot,
+        &request(org, title_field, &[1.0, 0.0, 0.0], 5, Vec::new()),
+    )
+    .expect_err("a non-vector field must be a typed error");
+    assert!(matches!(
+        error,
+        QueryError::NotAVectorField { field_id } if field_id == title_field
+    ));
+}
+
 /// Exact KNN is the WP-594 recall harness ground truth — must be deterministic.
 #[test]
 fn nearest_query_exact_knn_is_deterministic() {
@@ -459,6 +492,71 @@ fn nearest_query_exact_knn_is_deterministic() {
         assert_eq!(a.distance, b.distance, "exact KNN must be deterministic");
         assert_eq!(a.primary_key, b.primary_key);
     }
+}
+
+/// The engine reports the honest scan-work count: every merged row visited
+/// in the queried org partition — including rows the predicates excluded —
+/// and never rows from other organizations. This is the number an executor
+/// adapter must hand to `QueryNearestPage::scanned_rows` for ADR-0087 fuel
+/// accounting; before this field existed the columnar engine could not
+/// supply the count the executor demands, forcing any future adapter to
+/// fabricate it.
+#[test]
+fn nearest_query_reports_examined_rows_not_returned_rows() {
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
+    let title_field = field_id(&bundle, "Document", "title");
+
+    let org_a = [1u8; 16];
+    let org_b = [2u8; 16];
+    let org_a_key = OrgKey::from_value(&CanonicalValue::Uuid(org_a)).expect("a");
+    let org_b_key = OrgKey::from_value(&CanonicalValue::Uuid(org_b)).expect("b");
+
+    // Org A: three rows; one will be excluded by the predicate.
+    let mut delta_a: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
+    delta_a.insert(
+        build_pk(entity_type, org_a, 1),
+        document_row("public", &[1.0, 0.0, 0.0]),
+    );
+    delta_a.insert(
+        build_pk(entity_type, org_a, 2),
+        document_row("public", &[0.7, 0.7, 0.0]),
+    );
+    delta_a.insert(
+        build_pk(entity_type, org_a, 3),
+        document_row("secret", &[0.9, 0.1, 0.0]),
+    );
+    // Org B: one row that must not be examined at all.
+    let mut delta_b: BTreeMap<PrimaryKeyBytes, LiveRow> = BTreeMap::new();
+    delta_b.insert(
+        build_pk(entity_type, org_b, 1),
+        document_row("public", &[1.0, 0.0, 0.0]),
+    );
+
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.delta.insert(org_a_key, delta_a);
+    snapshot.delta.insert(org_b_key, delta_b);
+    snapshot.visible_frontier =
+        FrontierPosition::AppliedThrough(CommitSequence::new(4).expect("seq"));
+
+    let predicates = vec![ColumnPredicate::Eq {
+        field: title_field,
+        value: CanonicalValue::string("public").expect("value"),
+    }];
+    let result = nearest_query_snapshot(
+        &definition,
+        &snapshot,
+        &request(org_a, vector_field, &[1.0, 0.0, 0.0], 1, predicates),
+    )
+    .expect("nearest query");
+
+    assert_eq!(result.rows.len(), 1, "k = 1 result row returned");
+    assert_eq!(
+        result.scanned_rows, 3,
+        "scan work is every examined org-A row (filtered rows included), \
+         never rows from other organizations, never merely the returned rows"
+    );
 }
 
 /// Vectors are entity field values, never org-scope keys: registration
