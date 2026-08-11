@@ -11,6 +11,8 @@ default = []
 
 [dependencies]
 riffdb-types = { path = "../riffdb-types", version = "0.1.0", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
