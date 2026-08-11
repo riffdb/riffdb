@@ -309,6 +309,7 @@ fn is_supported_column_type(value_type: &ValueType) -> bool {
             .optional_inner()
             .is_some_and(is_supported_column_type),
         ValueTypeTag::List | ValueTypeTag::Record => false,
+        ValueTypeTag::Vector => true,
     }
 }
 

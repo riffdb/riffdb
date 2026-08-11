@@ -64,6 +64,7 @@ mod definition;
 mod engine;
 mod error;
 mod hooks;
+pub mod nearest;
 mod outcome;
 mod query;
 mod store;

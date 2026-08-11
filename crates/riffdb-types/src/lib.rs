@@ -22,6 +22,7 @@ mod query;
 mod service;
 mod time;
 mod value;
+mod vector;
 
 pub use actor::*;
 pub use capability::*;
@@ -43,3 +44,4 @@ pub use query::*;
 pub use service::*;
 pub use time::*;
 pub use value::*;
+pub use vector::*;

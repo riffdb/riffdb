@@ -577,6 +577,21 @@ fn lower_entities(
                 | EntityItem::Index(_)
                 | EntityItem::Unique(_)
                 | EntityItem::Reference(_) => {}
+                EntityItem::VectorField(vector_field) => {
+                    let field_id = symbols
+                        .entity_fields
+                        .get(&(id, vector_field.name.value.clone()))
+                        .copied();
+                    if let Some(lowered) = lower_field(
+                        &vector_field.name,
+                        vector_field.dimension.span,
+                        field_id,
+                        field_id
+                            .and_then(|field_id| types.entity_fields.get(&(id, field_id))),
+                    ) {
+                        fields.push(lowered);
+                    }
+                }
             }
         }
         let field_scope = fields_by_name(&fields);
@@ -756,7 +771,43 @@ fn lower_entities(
                         target_fields,
                     });
                 }
-                EntityItem::Key(_) | EntityItem::Field(_) => {}
+                EntityItem::Key(_) | EntityItem::Field(_) | EntityItem::VectorField(_) => {}
+            }
+        }
+        // Validate vector field declarations.
+        for item in &source.items {
+            if let EntityItem::VectorField(vector_field) = &item.value {
+                // Dimension must be a parseable positive integer within bound.
+                match vector_field.dimension.value.parse::<u32>() {
+                    Ok(dim) if riffdb_types::VectorDimension::new(dim).is_some() => {}
+                    _ => diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::BoundExceeded,
+                        vector_field.dimension.span,
+                    )),
+                }
+                // Staleness SLO must be a parseable positive integer (seconds).
+                match vector_field.staleness_slo.value.parse::<u64>() {
+                    Ok(secs) if riffdb_types::StalenessSlo::from_secs(secs).is_some() => {}
+                    _ => diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::BoundExceeded,
+                        vector_field.staleness_slo.span,
+                    )),
+                }
+                // Source fields must be non-empty and each must resolve to an entity field.
+                if vector_field.source_fields.is_empty() {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::MissingDeclaration,
+                        item.span,
+                    ));
+                }
+                for source_field in &vector_field.source_fields {
+                    if !field_scope.contains_key(&source_field.value) {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::UnknownName,
+                            source_field.span,
+                        ));
+                    }
+                }
             }
         }
         result.push(HirEntity {

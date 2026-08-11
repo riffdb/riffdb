@@ -4368,7 +4368,7 @@ fn named_query_value(
             .map(|value| named_query_value(result, value))
             .collect::<Result<Vec<_>, _>>()
             .map(serde_json::Value::Array),
-        CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
+        CanonicalValue::Record(_) | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
     }
 }
 
@@ -4493,7 +4493,7 @@ fn canonical_natural_value(value: &CanonicalValue) -> Result<serde_json::Value, 
             "days_since_unix_epoch": value.days_since_unix_epoch(),
         })),
         CanonicalValue::Uuid(value) => Ok(serde_json::Value::String(format_uuid(*value))),
-        CanonicalValue::Enum { .. } | CanonicalValue::List(_) | CanonicalValue::Record(_) => {
+        CanonicalValue::Enum { .. } | CanonicalValue::List(_) | CanonicalValue::Record(_) | CanonicalValue::Vector(_) => {
             Err(McpBackendError::InvalidResponse)
         }
     }
@@ -4772,7 +4772,7 @@ fn schema_bound_scalar(value: &CanonicalValue) -> Result<McpSchemaBoundValue, Mc
         CanonicalValue::Null
         | CanonicalValue::Enum { .. }
         | CanonicalValue::List(_)
-        | CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
+        | CanonicalValue::Record(_) | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
     }
 }
 
@@ -4882,6 +4882,7 @@ fn authenticated_health_payload(
                     riffdb_service::HealthComponentKind::CommitCoordinator => "commit_coordinator",
                     riffdb_service::HealthComponentKind::Projection => "projection",
                     riffdb_service::HealthComponentKind::Outbox => "outbox",
+                    riffdb_service::HealthComponentKind::VectorStaleness => "vector_staleness",
                 },
                 status: match component.status() {
                     riffdb_service::HealthComponentStatus::Healthy => "healthy",
@@ -4969,6 +4970,9 @@ fn presented_value(value: &CanonicalValue) -> Result<McpPresentedValue, McpBacke
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         CanonicalValue::Record(record) => presented_record(record),
+        CanonicalValue::Vector(vector) => Ok(McpPresentedValue::String {
+            value: format!("vector(dim={},bytes={})", vector.dimension(), vector.byte_size()),
+        }),
     }
 }
 

@@ -895,6 +895,12 @@ fn render_value_type(
             format!("[{}; {maximum}]", render_value_type(element, contract)?)
         }
         ValueTypeTag::Record => "record".to_owned(),
+        ValueTypeTag::Vector => {
+            format!(
+                "vector<{}>",
+                value_type.vector_dimension().ok_or(ApplicationCatalogError)?.get()
+            )
+        }
     };
     if rendered.is_empty() || rendered.len() > MAX_APPLICATION_CATALOG_TEXT_BYTES {
         return Err(ApplicationCatalogError);

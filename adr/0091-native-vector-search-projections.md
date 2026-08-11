@@ -34,26 +34,23 @@ non-authoritative, fed from the single total order, org-partitioned segments
 subject to the replay budget. Nothing in this record weakens any 0086
 obligation except the explicitly amended result contract in §3.
 
-### 2. Embeddings are authoritative data; the database owns the loop
+### 2. Embeddings are authoritative data; the application owns the computation
 
 A contract declares a **vector field** on an entity: dimension, distance
-metric, the source fields it is derived from, and a named embedding model
-with an explicit version. The embedding pipeline is the database's job, not
-the application's: a write touching the source fields enqueues an embedding
-intent through the existing outbox machinery; an embedding worker computes
-the vector (calling the configured model endpoint); the result is written
-back as an authoritative system command carrying the model version. The
-vector projection then consumes the embedding like any other field.
+metric, and the source fields it semantically derives from (for staleness
+tracking). The application computes the embedding externally (using whatever
+model, provider, or pipeline it chooses) and writes the vector to the entity
+through a typed command that carries the model identity and version. RiffDB
+validates dimension, stores the vector as authoritative state, and feeds the
+vector projection — but never calls an external model endpoint itself.
 
-The declared vector field also carries an **exposure bound**: the set of
-source fields whose content may be sent to the model endpoint is exactly the
-declared source-field list, checked at deploy time against field
-classifications — a model endpoint is an egress surface and is governed like
-one (the projection-envelope principle of ADR-0086 §5 applied to outbound
-data). Embedding freshness is a typed, budgeted state: each vector field
-declares a staleness SLO (like ADR-0086 §6 lag profiles); entities whose
-source fields outrun their embeddings are countable and queryable, and a
-breached budget changes health — never a silent search-quality degradation.
+The declared vector field also carries a **source-field binding**: the set
+of source fields whose content the embedding semantically derives from. This
+binding enables typed staleness tracking: an entity whose source fields have
+been written more recently than its last embedding write is countable and
+queryable as stale. Staleness is observable, typed state — never a silent
+search-quality degradation. Each vector field declares a staleness SLO;
+breached budgets change health.
 
 Consequences of this shape, all deliberate:
 - Embeddings add real weight to authoritative state and therefore to
@@ -62,15 +59,17 @@ Consequences of this shape, all deliberate:
   not declare vector fields on high-cardinality entities, and a quantized
   authoritative representation is a future amendment, not an assumption.
 - Apply-time external calls are PROHIBITED — projection apply stays
-  deterministic and fast, and apply lag can never be held hostage by a model
-  endpoint.
+  deterministic and fast.
 - The projection is snapshot-rebuildable (§1 of 0086): embeddings live in
   authoritative state, so the index rebuilds from current entities alone.
 - Embedding staleness is observable, typed state (the entity has source
-  fields newer than its embedding's model input hash), never silent.
-- A model version change is a declared migration: new embeddings backfill
-  through the same outbox loop; the projection reports `Rebuilding` progress;
-  both versions never silently mix in one index.
+  fields newer than its last embedding write), never silent.
+- A model version change is the application's responsibility: the typed
+  command carries the model version; a change in version is observable in
+  authoritative state and the staleness surface reports entities whose
+  embedding version does not match the contract's declared current version.
+- RiffDB never bundles, configures, or calls LLM/embedding provider APIs.
+  The model computation boundary lives entirely in the application client.
 
 ### 3. The approximate-result contract (amends 0086's acceptance for vector projections only)
 
@@ -112,9 +111,12 @@ tenant's rankings or timings beyond stated policy.
 
 ## Rejected alternatives
 
-- **Application-managed embedding pipelines.** The risky wiring this
-  database exists to absorb; also unrebuildable by RiffDB's own classification
-  when embeddings live outside authoritative state.
+- **Database-managed embedding pipelines (outbox-worker model).** Couples
+  the database to external LLM provider APIs, adds a credential and endpoint
+  configuration surface, and makes the database responsible for retrying
+  external calls. The application is better positioned to manage model
+  selection, versioning, batching, and provider failover. Moved from the
+  original accepted text to rejected by Amendment 1 (2026-08-10).
 - **Apply-time embedding computation.** Couples apply lag to an external
   service and destroys deterministic replay.
 - **An external vector database sidecar.** Two systems of record, two
@@ -125,14 +127,26 @@ tenant's rankings or timings beyond stated policy.
 ## Acceptance criteria (feasibility prototype + evidence)
 
 Recall targets met against exact scan at matched frontiers across randomized
-histories; embedding loop crash/retry never loses or duplicates an embedding
-(outbox semantics); model-version migration backfills completely with typed
-progress; row policy before ranking verified adversarially (unauthorized
-rows influence nothing — presence, scores, or timing beyond stated policy);
-per-tenant statistics isolation verified; frontier and crash invariants of
-ADR-0086 hold unchanged; replay budget detaches a stuck index.
+histories; client-supplied embedding writes validated for dimension, metric,
+and model version; typed staleness tracking correct (source-field mutation
+without a subsequent embedding write marks the entity stale); model-version
+observability proven (entities with outdated model versions queryable);
+row policy before ranking verified adversarially (unauthorized rows influence
+nothing — presence, scores, or timing beyond stated policy); per-tenant
+statistics isolation verified; frontier and crash invariants of ADR-0086 hold
+unchanged; replay budget detaches a stuck index.
 
 ## Acceptance
 
 Accepted by the maintainer on 2026-08-02, with the exposure-bound,
 staleness-SLO, and backup-weight clauses folded in at acceptance.
+
+### Amendment 1 (2026-08-10)
+
+§2 rewritten: the application supplies pre-computed embeddings through a typed
+command; the database does not own an embedding computation loop and never
+calls external model endpoints. The exposure-bound clause (field
+classification checked against a model endpoint's egress classification) is
+removed — the application controls what it sends to its own model. The
+staleness SLO, source-field binding, backup-weight, and all other clauses
+remain. The rejected-alternatives list is updated accordingly.
