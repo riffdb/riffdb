@@ -11095,6 +11095,14 @@ contract OutcomeShapes version 1 {
 }
 
 // ─── Vector staleness inspection (ADR-0091, VEC-003, VEC-004, VEC-012) ───
+//
+// PROVISIONAL SHAPE — no constructor call site, no service method, no wire
+// mapping. VEC-004's trigger clause compares a stale-entity COUNT against a
+// threshold that VEC-001 declares as a DURATION; that comparison is not
+// well-formed and its resolution is an open SPEC clarification awaiting the
+// maintainer (recorded in WP-592's deferred entry). These types must not be
+// read as having resolved it, and they may change shape when the ruling
+// lands.
 
 /// Request to inspect vector field staleness for one entity type.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11141,7 +11149,13 @@ pub struct VectorStalenessReport {
     stale_count: u64,
     /// The declared staleness SLO in seconds.
     staleness_slo_seconds: u64,
-    /// Whether the SLO is currently breached (stale_count exceeds threshold).
+    /// Whether the SLO is currently breached.
+    ///
+    /// PROVISIONAL: the breach predicate is undecided — VEC-004 compares a
+    /// stale-entity count against a threshold VEC-001 declares as a
+    /// duration, and that clash awaits a SPEC clarification. This field
+    /// transports whatever decision the (not yet existing) producer makes;
+    /// it does not define one.
     slo_breached: bool,
 }
 
@@ -11180,7 +11194,8 @@ impl VectorStalenessReport {
         self.staleness_slo_seconds
     }
 
-    /// Whether the SLO is breached.
+    /// Whether the SLO is breached (provisional — see the field's note; the
+    /// breach predicate awaits a SPEC clarification).
     #[must_use]
     pub const fn slo_breached(&self) -> bool {
         self.slo_breached

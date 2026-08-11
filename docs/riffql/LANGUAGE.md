@@ -88,6 +88,41 @@ Pages with multiple collections should use fixed `take` values whose complete
 scan total is at most 500. This is checked again while deriving every symbolic
 application role; `RDB-AR007` names the role and query before a lock is written.
 
+## Nearest-neighbor bindings (alpha)
+
+A `many` binding over an entity that declares a contract `vector_field` may
+replace its ordering and bound with a `nearest` clause:
+
+```riffql
+query SimilarDocuments(
+    $org_id: Document.org_id,
+    $query_vec: Document.embedding,
+) {
+    many results from Document
+        where org_id == $org_id
+        nearest(embedding, $query_vec, 10)
+    return Found { results: results { title } }
+    outcomes Found
+}
+```
+
+- `nearest` is valid only on `many` bindings. It replaces `order by` (rows
+  come back in ascending distance order) and `take` (K is the binding's
+  checked page bound).
+- K is a positive integer literal of at most 499 — the same page-take
+  ceiling every bounded binding carries.
+- The binding still requires the exact partition (organization) equality
+  predicate that routes all query access; a nearest query without it does
+  not compile (`RDB-QP002`).
+- The static plan cost charges the full 500-row partition-scan ceiling, not
+  K: exact nearest search examines the whole partition.
+- `nearest` is a contextual word, not reserved — a contract field named
+  `nearest` remains fully queryable.
+
+The compiled plan is real, but no production storage adapter serves nearest
+steps yet; see [Known Limitations](../known-limitations.md) for the exact
+reachability boundary.
+
 ## Accepted application-profile target
 
 The following boundary is accepted by ADR-0055 and assigned to WP-280 through
