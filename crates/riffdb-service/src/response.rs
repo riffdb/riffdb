@@ -947,6 +947,7 @@ impl ServiceResponseCharge for CanonicalValue {
             Self::Bytes(value) => charge.bytes(value.len())?,
             Self::List(values) => charge.repeated(values.values())?,
             Self::Record(record) => charge.nested(record)?,
+            Self::Vector(vector) => charge.bytes(vector.byte_size())?,
             Self::Null
             | Self::Bool(_)
             | Self::I64(_)
