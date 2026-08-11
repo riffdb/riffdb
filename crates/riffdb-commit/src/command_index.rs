@@ -7,8 +7,10 @@ use std::collections::BTreeSet;
 
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
-    BindingMode, EXECUTABLE_IR_VERSION_V1, ExecutionClass, GRAMMAR_VERSION_V1, IndexSchema,
+    BindingMode, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V5, ExecutionClass,
+    GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V5, IndexSchema,
 };
+use riffdb_invariant::derive_input_command_facts;
 use riffdb_storage_api::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandCandidateAffectedEpochRead,
     CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
@@ -101,6 +103,7 @@ where
     } else {
         derive_grammar_v1_indexes(
             checked.resolved(),
+            checked.attempt().normalized_input(),
             checked.evaluated(),
             checked.current(),
             checked.mutation_positions(),
@@ -722,6 +725,7 @@ impl IndexDerivationBuilder {
 
 fn derive_grammar_v1_indexes(
     resolved: &ResolvedExecutablePlan,
+    normalized_input: &CanonicalRecord,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     mutation_positions: &[Option<usize>],
@@ -730,31 +734,42 @@ fn derive_grammar_v1_indexes(
     let bundle = resolved.bundle().bundle();
     let plan = resolved.plan();
     let request = evaluated.validation_request();
-    if bundle.grammar_version() != GRAMMAR_VERSION_V1
-        || bundle.ir_version() != EXECUTABLE_IR_VERSION_V1
+    let facts = derive_input_command_facts(plan, normalized_input.clone())
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    if !matches!(
+        (bundle.grammar_version(), bundle.ir_version()),
+        (GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
+            | (GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
+    )
         || plan.execution_class() != ExecutionClass::IdempotentMutation
         || resolved.reference() != evaluated.plan()
         || request.plan() != evaluated.plan()
         || evaluated.mutations().is_empty()
-        || plan.bindings().len() != request.binding_targets().len()
-        || plan.bindings().len() != current.bindings().len()
-        || plan.bindings().len() != mutation_positions.len()
-        || plan.root_validation_reads().len() != request.root_validation_targets().len()
-        || plan.root_validation_reads().len() != current.root_validations().len()
+        || facts.binding_entity_keys().len() != request.binding_targets().len()
+        || facts.binding_entity_keys().len() != current.bindings().len()
+        || facts.binding_entity_keys().len() != mutation_positions.len()
+        || facts.root_validation_entity_keys().len() != request.root_validation_targets().len()
+        || facts.root_validation_entity_keys().len() != current.root_validations().len()
         || !request.range_targets().is_empty()
         || !current.ranges().is_empty()
     {
         return Err(CommandIndexError::internal_defect());
     }
-    for (position, ((read, target), observation)) in plan
-        .root_validation_reads()
+    for (slot, (((plan_index, key), target), observation)) in facts
+        .root_validation_plan_indices()
         .iter()
+        .zip(facts.root_validation_entity_keys())
         .zip(request.root_validation_targets())
         .zip(current.root_validations())
         .enumerate()
     {
-        if read.id().get() as usize != position
+        let read = plan
+            .root_validation_reads()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if facts.root_validation_element_ordinals().get(slot).is_none()
             || read.entity_type() != target.entity_type_id()
+            || target.key() != key
             || observation.target() != target
         {
             return Err(CommandIndexError::internal_defect());
@@ -762,15 +777,19 @@ fn derive_grammar_v1_indexes(
     }
 
     let mut builder =
-        IndexDerivationBuilder::new(plan.bindings().len(), plan.root_validation_reads().len())?;
+        IndexDerivationBuilder::new(request.binding_targets().len(), request.root_validation_targets().len())?;
     let schema_binding = DurableKeySchemaBindingV1::from_plan(resolved.reference());
     let empty_covered =
         CanonicalRecord::new(Vec::new()).map_err(|_| CommandIndexError::internal_defect())?;
 
-    for (binding_position, binding) in plan.bindings().iter().enumerate() {
+    for (binding_position, plan_index) in facts.binding_plan_indices().iter().enumerate() {
         let Some(mutation_position) = mutation_positions[binding_position] else {
             continue;
         };
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandIndexError::internal_defect)?;
         let mutation = &evaluated.mutations()[mutation_position];
         let entity = bundle
             .schema()
@@ -1053,6 +1072,7 @@ contract OperationalIndexes version 1 {
 
     struct Fixture {
         resolved: ResolvedExecutablePlan,
+        input: CanonicalRecord,
         evaluated: EvaluatedCommand,
         intent: CommitIntent,
         current: TransactionCurrentState,
@@ -1211,6 +1231,7 @@ contract OperationalIndexes version 1 {
         Fixture {
             resolved: crate::test_support::resolve_genesis_plan(&bundle, &reference)
                 .expect("resolved plan"),
+            input,
             evaluated,
             intent,
             current,
@@ -1479,6 +1500,7 @@ contract OperationalIndexes version 1 {
         let fixture = fixture("CreateRow", "create-1", ([0x21; 16], "new", 10), None);
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
+            &fixture.input,
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -1557,6 +1579,7 @@ contract OperationalIndexes version 1 {
         );
         let unchanged = derive_grammar_v1_indexes(
             &unchanged.resolved,
+            &unchanged.input,
             &unchanged.evaluated,
             &unchanged.current,
             &[Some(0)],
@@ -1574,6 +1597,7 @@ contract OperationalIndexes version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &changed.resolved,
+            &changed.input,
             &changed.evaluated,
             &changed.current,
             &[Some(0)],
@@ -1784,6 +1808,7 @@ contract OperationalIndexes version 1 {
             |index_id: IndexId| PartitionIndexTarget::new(fixture.partition.clone(), index_id);
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
+            &fixture.input,
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -1893,6 +1918,7 @@ contract OperationalIndexes version 1 {
         assert_eq!(
             derive_grammar_v1_indexes(
                 &fixture.resolved,
+                &fixture.input,
                 &empty,
                 &fixture.current,
                 &[None],

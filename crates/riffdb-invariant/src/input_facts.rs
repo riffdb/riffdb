@@ -1,10 +1,12 @@
 //! Proof-bearing derivation of command facts available before admission.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use riffdb_contract_ir::{CommandPlan, ExprId, KeySchema};
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, ConflictKey, EntityKey, PartitionKey, PlanHash,
+    encode_canonical_value,
 };
 
 use crate::{EvaluationError, ExpressionEvaluator, ExpressionValueSource};
@@ -43,7 +45,11 @@ pub struct InputDerivedCommandFacts {
     partition_key: PartitionKey,
     declared_conflict_keys: Vec<ConflictKey>,
     binding_entity_keys: Vec<EntityKey>,
+    binding_plan_indices: Vec<u32>,
+    binding_element_ordinals: Vec<Option<u16>>,
     root_validation_entity_keys: Vec<EntityKey>,
+    root_validation_plan_indices: Vec<u32>,
+    root_validation_element_ordinals: Vec<Option<u16>>,
 }
 
 impl InputDerivedCommandFacts {
@@ -77,6 +83,25 @@ impl InputDerivedCommandFacts {
         &self.binding_entity_keys
     }
 
+    /// Borrows the checked plan-binding index corresponding to each concrete key.
+    ///
+    /// Ordinary commands contain the dense identity sequence. A collection
+    /// command repeats only the compiler-declared template indices in submitted
+    /// element order.
+    #[must_use]
+    pub fn binding_plan_indices(&self) -> &[u32] {
+        &self.binding_plan_indices
+    }
+
+    /// Borrows the submitted element ordinal for each concrete binding key.
+    ///
+    /// `None` identifies a non-repeated binding. Ordinals are zero-based and
+    /// bounded by the executable IR's 256-element ceiling.
+    #[must_use]
+    pub fn binding_element_ordinals(&self) -> &[Option<u16>] {
+        &self.binding_element_ordinals
+    }
+
     /// Borrows canonical entity keys in exact dense root-validation-read order.
     ///
     /// Grammar/IR v1 has no command range-read plan, so these two ordered key
@@ -84,6 +109,18 @@ impl InputDerivedCommandFacts {
     #[must_use]
     pub fn root_validation_entity_keys(&self) -> &[EntityKey] {
         &self.root_validation_entity_keys
+    }
+
+    /// Borrows the checked root-validation plan index for each concrete key.
+    #[must_use]
+    pub fn root_validation_plan_indices(&self) -> &[u32] {
+        &self.root_validation_plan_indices
+    }
+
+    /// Borrows the submitted element ordinal for each concrete root read.
+    #[must_use]
+    pub fn root_validation_element_ordinals(&self) -> &[Option<u16>] {
+        &self.root_validation_element_ordinals
     }
 }
 
@@ -108,70 +145,168 @@ pub fn derive_input_command_facts(
 ) -> Result<InputDerivedCommandFacts, EvaluationError> {
     validate_normalized_input(plan, &normalized_input)?;
 
-    let (partition_key, declared_conflict_keys, binding_entity_keys, root_validation_entity_keys) = {
-        let values = NormalizedInputValues {
-            input: &normalized_input,
-        };
+    let collection_elements = collection_elements(plan, &normalized_input)?;
+    let (
+        partition_key,
+        declared_conflict_keys,
+        binding_entity_keys,
+        binding_plan_indices,
+        binding_element_ordinals,
+        root_validation_entity_keys,
+        root_validation_plan_indices,
+        root_validation_element_ordinals,
+    ) = {
         let mut evaluator = ExpressionEvaluator::new(plan.expressions());
-        let mut evaluation = evaluator.batch(&values);
-
-        let partition_component = evaluation.evaluate(plan.locality().partition_expression())?;
-        let partition_key = plan
-            .locality()
-            .partition_schema()
-            .encode_partition(&[partition_component])
-            .map_err(|_| EvaluationError::Integrity)?;
+        let evaluate_partition = |evaluator: &mut ExpressionEvaluator<'_>, element| {
+            let values = NormalizedInputValues {
+                input: &normalized_input,
+                element,
+            };
+            let partition_component = evaluator
+                .batch(&values)
+                .evaluate(plan.locality().partition_expression())?;
+            plan.locality()
+                .partition_schema()
+                .encode_partition(&[partition_component])
+                .map_err(|_| EvaluationError::Integrity)
+        };
+        let partition_key = match collection_elements {
+            Some(elements) => {
+                let first = elements.first().ok_or(EvaluationError::Integrity)?;
+                let partition = evaluate_partition(&mut evaluator, Some(first))?;
+                for element in &elements[1..] {
+                    if evaluate_partition(&mut evaluator, Some(element))? != partition {
+                        return Err(EvaluationError::Integrity);
+                    }
+                }
+                partition
+            }
+            None => evaluate_partition(&mut evaluator, None)?,
+        };
 
         let mut declared_conflict_keys = Vec::with_capacity(plan.locality().conflict_keys().len());
-        for derivation in plan.locality().conflict_keys() {
-            let components = derivation
-                .expressions()
-                .iter()
-                .map(|expression| evaluation.evaluate(*expression))
-                .collect::<Result<Vec<_>, _>>()?;
-            let key = derivation
-                .schema()
-                .encode_conflict(&components)
-                .map_err(|_| EvaluationError::Integrity)?;
-            declared_conflict_keys.push(key);
-        }
-        for derivation in plan.unique_conflicts() {
-            let components = derivation
-                .expressions()
-                .iter()
-                .map(|expression| evaluation.evaluate(*expression))
-                .collect::<Result<Vec<_>, _>>()?;
-            let key = derivation
-                .schema()
-                .encode_conflict(&components)
-                .map_err(|_| EvaluationError::Integrity)?;
-            declared_conflict_keys.push(key);
+        let conflict_elements = collection_elements.map_or_else(
+            || vec![None],
+            |elements| elements.iter().map(Some).collect(),
+        );
+        for element in conflict_elements {
+            let values = NormalizedInputValues {
+                input: &normalized_input,
+                element,
+            };
+            let mut evaluation = evaluator.batch(&values);
+            for derivation in plan.locality().conflict_keys() {
+                let components = derivation
+                    .expressions()
+                    .iter()
+                    .map(|expression| evaluation.evaluate(*expression))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let key = derivation
+                    .schema()
+                    .encode_conflict(&components)
+                    .map_err(|_| EvaluationError::Integrity)?;
+                declared_conflict_keys.push(key);
+            }
+            for derivation in plan.unique_conflicts() {
+                let components = derivation
+                    .expressions()
+                    .iter()
+                    .map(|expression| evaluation.evaluate(*expression))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let key = derivation
+                    .schema()
+                    .encode_conflict(&components)
+                    .map_err(|_| EvaluationError::Integrity)?;
+                declared_conflict_keys.push(key);
+            }
         }
 
-        let binding_entity_keys = plan
-            .bindings()
-            .iter()
-            .map(|binding| {
-                derive_entity_key(
+        let mut binding_entity_keys = Vec::new();
+        let mut binding_plan_indices = Vec::new();
+        let mut binding_element_ordinals = Vec::new();
+        for (index, binding) in plan.bindings().iter().enumerate() {
+            let repeated = plan.collection_expansion().is_some_and(|expansion| {
+                let first = expansion.first_binding().get() as usize;
+                (first..first + expansion.binding_count()).contains(&index)
+            });
+            let elements = if repeated {
+                collection_elements
+                    .ok_or(EvaluationError::Integrity)?
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, element)| (Some(ordinal as u16), Some(element)))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![(None, None)]
+            };
+            for (ordinal, element) in elements {
+                let values = NormalizedInputValues {
+                    input: &normalized_input,
+                    element,
+                };
+                let mut evaluation = evaluator.batch(&values);
+                binding_entity_keys.push(derive_entity_key(
                     binding.key_schema(),
                     binding.key_expressions(),
                     &mut evaluation,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let root_validation_entity_keys = plan
-            .root_validation_reads()
-            .iter()
-            .map(|read| {
-                derive_entity_key(read.key_schema(), read.key_expressions(), &mut evaluation)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                )?);
+                binding_plan_indices.push(index as u32);
+                binding_element_ordinals.push(ordinal);
+            }
+        }
+
+        let mut root_validation_entity_keys = Vec::new();
+        let mut root_validation_plan_indices = Vec::new();
+        let mut root_validation_element_ordinals = Vec::new();
+        for (index, read) in plan.root_validation_reads().iter().enumerate() {
+            let repeated = read
+                .key_expressions()
+                .iter()
+                .try_fold(false, |uses, expression| {
+                    let dependencies = plan
+                        .expressions()
+                        .dependencies(*expression)
+                        .map_err(|_| EvaluationError::Integrity)?;
+                    Ok::<_, EvaluationError>(
+                        uses || dependencies.uses_collection_element()
+                            || !dependencies.collection_element_fields().is_empty(),
+                    )
+                })?;
+            let elements = if repeated {
+                collection_elements
+                    .ok_or(EvaluationError::Integrity)?
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, element)| (Some(ordinal as u16), Some(element)))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![(None, None)]
+            };
+            for (ordinal, element) in elements {
+                let values = NormalizedInputValues {
+                    input: &normalized_input,
+                    element,
+                };
+                let mut evaluation = evaluator.batch(&values);
+                root_validation_entity_keys.push(derive_entity_key(
+                    read.key_schema(),
+                    read.key_expressions(),
+                    &mut evaluation,
+                )?);
+                root_validation_plan_indices.push(index as u32);
+                root_validation_element_ordinals.push(ordinal);
+            }
+        }
 
         (
             partition_key,
             declared_conflict_keys,
             binding_entity_keys,
+            binding_plan_indices,
+            binding_element_ordinals,
             root_validation_entity_keys,
+            root_validation_plan_indices,
+            root_validation_element_ordinals,
         )
     };
 
@@ -181,8 +316,45 @@ pub fn derive_input_command_facts(
         partition_key,
         declared_conflict_keys,
         binding_entity_keys,
+        binding_plan_indices,
+        binding_element_ordinals,
         root_validation_entity_keys,
+        root_validation_plan_indices,
+        root_validation_element_ordinals,
     })
+}
+
+fn collection_elements<'a>(
+    plan: &CommandPlan,
+    input: &'a CanonicalRecord,
+) -> Result<Option<&'a [CanonicalValue]>, EvaluationError> {
+    let Some(expansion) = plan.collection_expansion() else {
+        return Ok(None);
+    };
+    let CanonicalValue::List(list) = input
+        .fields()
+        .binary_search_by_key(&expansion.input_field(), |(field, _)| *field)
+        .ok()
+        .map(|index| &input.fields()[index].1)
+        .ok_or(EvaluationError::Integrity)?
+    else {
+        return Err(EvaluationError::Integrity);
+    };
+    if list.len() < expansion.minimum_elements() || list.len() > expansion.maximum_elements() {
+        return Err(EvaluationError::Integrity);
+    }
+    let mut canonical = BTreeSet::new();
+    for element in list.values() {
+        expansion
+            .element_type()
+            .validate_value(element)
+            .map_err(|_| EvaluationError::Integrity)?;
+        let encoded = encode_canonical_value(element).map_err(|_| EvaluationError::Integrity)?;
+        if !canonical.insert(encoded) {
+            return Err(EvaluationError::Integrity);
+        }
+    }
+    Ok(Some(list.values()))
 }
 
 fn derive_entity_key<Values: ExpressionValueSource + ?Sized>(
@@ -217,6 +389,7 @@ fn validate_normalized_input(
 
 struct NormalizedInputValues<'input> {
     input: &'input CanonicalRecord,
+    element: Option<&'input CanonicalValue>,
 }
 
 impl ExpressionValueSource for NormalizedInputValues<'_> {
@@ -226,5 +399,20 @@ impl ExpressionValueSource for NormalizedInputValues<'_> {
             .binary_search_by_key(&field, |(candidate, _)| *candidate)
             .ok()
             .map(|index| self.input.fields()[index].1.clone())
+    }
+
+    fn collection_element(&self) -> Option<CanonicalValue> {
+        self.element.cloned()
+    }
+
+    fn collection_element_field(&self, field: riffdb_types::FieldId) -> Option<CanonicalValue> {
+        let CanonicalValue::Record(record) = self.element? else {
+            return None;
+        };
+        record
+            .fields()
+            .binary_search_by_key(&field, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| record.fields()[index].1.clone())
     }
 }

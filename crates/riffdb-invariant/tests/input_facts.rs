@@ -2,6 +2,7 @@
 
 //! Semantic checks for proof-bearing pre-admission command facts.
 
+use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{
     AggregateKeyPlan, AggregateSchema, BinaryOperator, BindingId, BindingMode, BindingPlan,
     CommandInputSchema, CommandPlan, CommitCheckPlan, ConflictDerivationPlan, ExecutionClass,
@@ -11,11 +12,15 @@ use riffdb_contract_ir::{
 };
 use riffdb_invariant::{EvaluationError, derive_input_command_facts};
 use riffdb_types::{
-    AggregateTypeId, CanonicalRecord, CanonicalValue, CommandId, ContractLineage, ContractVersion,
-    EntityTypeId, FieldId, InvariantId, OutcomeId,
+    AggregateTypeId, CanonicalList, CanonicalRecord, CanonicalValue, CommandId, ContractLineage,
+    ContractVersion, EntityTypeId, FieldId, InvariantId, OutcomeId,
 };
 
 const SECRET_KEY: &str = "idempotency-secret-canary";
+const BULK_TUPLE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/contracts/bulk/openfga-tuples.riff"
+));
 
 struct PlanFixture {
     plan: CommandPlan,
@@ -23,6 +28,103 @@ struct PlanFixture {
     entity_schema: KeySchema,
     partition_schema: KeySchema,
     conflict_schema: KeySchema,
+}
+
+#[test]
+fn collection_facts_expand_only_the_compiler_owned_template_in_submitted_order() {
+    let bundle = compile_contract_source(BULK_TUPLE_SOURCE).expect("bulk fixture compiles");
+    let plan = bundle
+        .commands()
+        .iter()
+        .find(|command| command.name() == "WriteTuples")
+        .expect("bulk command");
+    let tuple = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Tuple")
+        .expect("tuple entity");
+    let store = [0x31; 16];
+    let tuple_value = |id: u8, object: &str| {
+        CanonicalValue::Record(
+            CanonicalRecord::new(
+                tuple
+                    .record()
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        let value = match field.name() {
+                            "store_id" => CanonicalValue::Uuid(store),
+                            "tuple_id" => CanonicalValue::Uuid([id; 16]),
+                            "object" => CanonicalValue::string(object).expect("object"),
+                            "relation" => CanonicalValue::string("reader").expect("relation"),
+                            "subject" => CanonicalValue::string("user:alice").expect("subject"),
+                            other => panic!("unexpected tuple field {other}"),
+                        };
+                        (field.id(), value)
+                    })
+                    .collect(),
+            )
+            .expect("tuple record"),
+        )
+    };
+    let elements = vec![
+        tuple_value(0x41, "document:first"),
+        tuple_value(0x42, "document:second"),
+    ];
+    let input = CanonicalRecord::new(
+        plan.input()
+            .record()
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = match field.name() {
+                    "request_id" => CanonicalValue::Uuid([0x21; 16]),
+                    "tuples" => CanonicalValue::List(
+                        CanonicalList::new(elements.clone()).expect("tuple list"),
+                    ),
+                    other => panic!("unexpected input field {other}"),
+                };
+                (field.id(), value)
+            })
+            .collect(),
+    )
+    .expect("bulk input");
+
+    let facts = derive_input_command_facts(plan, input.clone()).expect("collection facts");
+    assert_eq!(facts.binding_entity_keys().len(), 2);
+    assert_eq!(facts.binding_plan_indices(), &[0, 0]);
+    assert_eq!(facts.binding_element_ordinals(), &[Some(0), Some(1)]);
+    assert_eq!(facts.declared_conflict_keys().len(), 2);
+    let expected_partition = plan
+        .locality()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::Uuid(store)])
+        .expect("partition");
+    assert_eq!(facts.partition_key(), &expected_partition);
+
+    let duplicate = CanonicalRecord::new(
+        input
+            .fields()
+            .iter()
+            .map(|(field, value)| {
+                let replacement = if matches!(value, CanonicalValue::List(_)) {
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![elements[0].clone(), elements[0].clone()])
+                            .expect("duplicate list"),
+                    )
+                } else {
+                    value.clone()
+                };
+                (*field, replacement)
+            })
+            .collect(),
+    )
+    .expect("duplicate input");
+    assert!(matches!(
+        derive_input_command_facts(plan, duplicate),
+        Err(EvaluationError::Integrity)
+    ));
 }
 
 #[test]

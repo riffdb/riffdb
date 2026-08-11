@@ -16,6 +16,7 @@ use riffdb_contract_ir::{
 };
 use riffdb_invariant::{
     EvaluationBatch, EvaluationError, ExpressionEvaluator, ExpressionValueSource,
+    derive_input_command_facts,
 };
 use riffdb_storage_api::{
     DeclaredOutcome, EntityMutation, EntityObservation, EntityPostImage, EntityTarget,
@@ -188,6 +189,9 @@ pub fn execute_command(
 ) -> Result<ExecutionResult, ExecutionFault> {
     let plan = validate_execution_identity(bundle, snapshot, context)?;
     validate_record_exact(bundle.schema(), plan.input().record(), input)?;
+    if plan.collection_expansion().is_some() {
+        return execute_collection_command(bundle, plan, input, snapshot, context, budget);
+    }
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
     validate_snapshot_targets(plan, input, snapshot, context, &mut evaluator)?;
 
@@ -795,6 +799,327 @@ pub fn execute_command(
     Err(ExecutionFault::Integrity)
 }
 
+fn execute_collection_command(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    budget: EvaluationBudget,
+) -> Result<ExecutionResult, ExecutionFault> {
+    let expansion = plan
+        .collection_expansion()
+        .ok_or(ExecutionFault::Integrity)?;
+    let facts =
+        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
+    if facts.partition_key() != context.partition_key()
+        || facts.binding_entity_keys().len() != snapshot.bindings().len()
+        || facts.root_validation_entity_keys().len() != snapshot.root_validations().len()
+        || !snapshot.ranges().is_empty()
+    {
+        return Err(ExecutionFault::Integrity);
+    }
+    for ((index, key), observation) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .zip(snapshot.bindings())
+    {
+        let binding = plan
+            .bindings()
+            .get(*index as usize)
+            .ok_or(ExecutionFault::Integrity)?;
+        if observation.target().entity_type_id() != binding.entity_type()
+            || observation.target().key() != key
+        {
+            return Err(ExecutionFault::Integrity);
+        }
+    }
+    for ((index, key), observation) in facts
+        .root_validation_plan_indices()
+        .iter()
+        .zip(facts.root_validation_entity_keys())
+        .zip(snapshot.root_validations())
+    {
+        let read = plan
+            .root_validation_reads()
+            .get(*index as usize)
+            .ok_or(ExecutionFault::Integrity)?;
+        if observation.target().entity_type_id() != read.entity_type()
+            || observation.target().key() != key
+        {
+            return Err(ExecutionFault::Integrity);
+        }
+    }
+
+    let CanonicalValue::List(elements) =
+        record_field(input, expansion.input_field()).ok_or(ExecutionFault::Integrity)?
+    else {
+        return Err(ExecutionFault::Integrity);
+    };
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction
+        .checked_add(expansion.instruction_count())
+        .ok_or(ExecutionFault::ResourceLimit)?;
+    let first_binding = expansion.first_binding().get() as usize;
+    let binding_end = first_binding
+        .checked_add(expansion.binding_count())
+        .ok_or(ExecutionFault::ResourceLimit)?;
+    if first_binding != 0
+        || binding_end != plan.bindings().len()
+        || first_instruction != 0
+        || instruction_end > plan.instructions().len()
+    {
+        // The first runtime slice deliberately accepts only the compiler's
+        // closed all-local template. Shared command bindings/instructions need
+        // their own semantic schedule rather than accidental partial reuse.
+        return Err(ExecutionFault::Integrity);
+    }
+
+    let mut evaluator = ExpressionEvaluator::new(plan.expressions());
+    let mut mutations = Vec::new();
+    let mut events = Vec::new();
+    for (element_ordinal, element) in elements.values().iter().enumerate() {
+        let ordinal = u16::try_from(element_ordinal).map_err(|_| ExecutionFault::ResourceLimit)?;
+        let mut records = vec![None; plan.bindings().len()];
+        let mut roots = vec![None; plan.root_validation_reads().len()];
+
+        for (slot, observation) in snapshot.bindings().iter().enumerate() {
+            if facts.binding_element_ordinals().get(slot) != Some(&Some(ordinal)) {
+                continue;
+            }
+            let binding_index = *facts
+                .binding_plan_indices()
+                .get(slot)
+                .ok_or(ExecutionFault::Integrity)? as usize;
+            let binding = plan
+                .bindings()
+                .get(binding_index)
+                .ok_or(ExecutionFault::Integrity)?;
+            match (binding.mode(), observation) {
+                (BindingMode::Delete, _) => return Err(ExecutionFault::Integrity),
+                (BindingMode::Read | BindingMode::Mutate, EntityObservation::Absent(_))
+                | (BindingMode::Create, EntityObservation::Present(_)) => {
+                    if !roots.is_empty() {
+                        return Err(ExecutionFault::Integrity);
+                    }
+                    let values = CollectionRuntimeValues::new(
+                        bundle.schema(),
+                        plan,
+                        input,
+                        &records,
+                        &[],
+                        context,
+                        element,
+                    );
+                    let mut evaluation = evaluator.batch(&values);
+                    let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
+                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                }
+                (BindingMode::Read | BindingMode::Mutate, EntityObservation::Present(record)) => {
+                    let entity = bundle
+                        .schema()
+                        .entity(binding.entity_type())
+                        .ok_or(ExecutionFault::Integrity)?;
+                    records[binding_index] = Some(materialize_entity_record(
+                        bundle.schema(),
+                        entity.record(),
+                        entity.primary_key_fields(),
+                        binding.key_schema(),
+                        record.target(),
+                        record.fields(),
+                    )?);
+                }
+                (BindingMode::Create, EntityObservation::Absent(target)) => {
+                    let entity = bundle
+                        .schema()
+                        .entity(binding.entity_type())
+                        .ok_or(ExecutionFault::Integrity)?;
+                    records[binding_index] = Some(initialize_create_record(
+                        entity.record(),
+                        entity.primary_key_fields(),
+                        binding.key_schema(),
+                        target,
+                    )?);
+                }
+            }
+        }
+        for (slot, observation) in snapshot.root_validations().iter().enumerate() {
+            if facts.root_validation_element_ordinals().get(slot) != Some(&Some(ordinal)) {
+                continue;
+            }
+            let read_index = *facts
+                .root_validation_plan_indices()
+                .get(slot)
+                .ok_or(ExecutionFault::Integrity)? as usize;
+            let read = plan
+                .root_validation_reads()
+                .get(read_index)
+                .ok_or(ExecutionFault::Integrity)?;
+            let EntityObservation::Present(record) = observation else {
+                return Err(ExecutionFault::Integrity);
+            };
+            let entity = bundle
+                .schema()
+                .entity(read.entity_type())
+                .ok_or(ExecutionFault::Integrity)?;
+            roots[read_index] = Some(materialize_entity_record(
+                bundle.schema(),
+                entity.record(),
+                entity.primary_key_fields(),
+                read.key_schema(),
+                record.target(),
+                record.fields(),
+            )?);
+        }
+        let roots = roots
+            .into_iter()
+            .map(|root| root.ok_or(ExecutionFault::Integrity))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for instruction in &plan.instructions()[first_instruction..instruction_end] {
+            match instruction {
+                Instruction::Require {
+                    predicate, reject, ..
+                } => {
+                    let values = CollectionRuntimeValues::new(
+                        bundle.schema(),
+                        plan,
+                        input,
+                        &records,
+                        &roots,
+                        context,
+                        element,
+                    );
+                    let mut evaluation = evaluator.batch(&values);
+                    if !evaluation.evaluate_predicate(*predicate)? {
+                        let outcome = construct_outcome(reject, &mut evaluation)?;
+                        return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                    }
+                }
+                Instruction::SetField {
+                    binding,
+                    field,
+                    value,
+                } => {
+                    let value = {
+                        let values = CollectionRuntimeValues::new(
+                            bundle.schema(),
+                            plan,
+                            input,
+                            &records,
+                            &roots,
+                            context,
+                            element,
+                        );
+                        evaluator.batch(&values).evaluate(*value)?
+                    };
+                    set_working_field(
+                        bundle.schema(),
+                        plan,
+                        &mut records,
+                        *binding,
+                        *field,
+                        value,
+                    )?;
+                }
+                Instruction::EmitEvent(event) => {
+                    let payload = {
+                        let values = CollectionRuntimeValues::new(
+                            bundle.schema(),
+                            plan,
+                            input,
+                            &records,
+                            &roots,
+                            context,
+                            element,
+                        );
+                        let mut evaluation = evaluator.batch(&values);
+                        construct_record(event.payload(), &mut evaluation)?
+                    };
+                    events.push(
+                        EventIntent::new(event.event_type(), payload)
+                            .map_err(map_storage_value_error)?,
+                    );
+                }
+                Instruction::WorkflowTransition { .. }
+                | Instruction::WorkflowLease { .. }
+                | Instruction::Return(_) => return Err(ExecutionFault::Integrity),
+            }
+        }
+
+        for (slot, observation) in snapshot.bindings().iter().enumerate() {
+            if facts.binding_element_ordinals().get(slot) != Some(&Some(ordinal)) {
+                continue;
+            }
+            let binding_index = facts.binding_plan_indices()[slot] as usize;
+            let binding = &plan.bindings()[binding_index];
+            if binding.mode() == BindingMode::Read {
+                continue;
+            }
+            let record = records[binding_index]
+                .as_ref()
+                .ok_or(ExecutionFault::Integrity)?;
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .ok_or(ExecutionFault::Integrity)?;
+            validate_entity_post_image(bundle.schema(), entity.record(), record)?;
+            let post_image = EntityPostImage::new(
+                observation.target().clone(),
+                plan.contract_version(),
+                record.clone(),
+            )
+            .map_err(map_storage_value_error)?;
+            mutations.push(match (binding.mode(), observation) {
+                (BindingMode::Create, EntityObservation::Absent(_)) => {
+                    EntityMutation::Create(post_image)
+                }
+                (BindingMode::Mutate, EntityObservation::Present(record)) => {
+                    EntityMutation::Replace {
+                        expected_version: record.entity_version(),
+                        post_image,
+                    }
+                }
+                _ => return Err(ExecutionFault::Integrity),
+            });
+        }
+    }
+
+    mutations.sort_unstable_by_key(|mutation| mutation_order_key(mutation.target()));
+    if mutations
+        .windows(2)
+        .any(|pair| pair[0].target() == pair[1].target())
+    {
+        return Err(ExecutionFault::Integrity);
+    }
+    let return_instruction = plan
+        .instructions()
+        .get(instruction_end)
+        .filter(|instruction| matches!(instruction, Instruction::Return(_)))
+        .ok_or(ExecutionFault::Integrity)?;
+    if plan.instructions().len() != instruction_end + 1 {
+        return Err(ExecutionFault::Integrity);
+    }
+    let Instruction::Return(outcome) = return_instruction else {
+        return Err(ExecutionFault::Integrity);
+    };
+    let empty_records = vec![None; plan.bindings().len()];
+    let empty_roots = vec![];
+    let values = RuntimeValues {
+        schema: bundle.schema(),
+        plan,
+        input,
+        records: &empty_records,
+        roots: &empty_roots,
+        tx_time: context.tx_time(),
+        service_values: context.service_values(),
+    };
+    let mut evaluation = evaluator.batch(&values);
+    let outcome = construct_outcome(outcome, &mut evaluation)?;
+    finish_declared(plan, snapshot, budget, outcome, mutations, events)
+}
+
 fn validate_execution_identity<'a>(
     bundle: &'a ContractBundle,
     snapshot: &ReadSnapshot,
@@ -1298,6 +1623,77 @@ struct RuntimeValues<'a> {
     roots: &'a [CanonicalRecord],
     tx_time: LogicalTime,
     service_values: &'a CanonicalRecord,
+}
+
+struct CollectionRuntimeValues<'a> {
+    base: RuntimeValues<'a>,
+    element: &'a CanonicalValue,
+}
+
+impl<'a> CollectionRuntimeValues<'a> {
+    fn new(
+        schema: &'a SchemaIr,
+        plan: &'a CommandPlan,
+        input: &'a CanonicalRecord,
+        records: &'a [Option<CanonicalRecord>],
+        roots: &'a [CanonicalRecord],
+        context: &'a TransactionContext,
+        element: &'a CanonicalValue,
+    ) -> Self {
+        Self {
+            base: RuntimeValues {
+                schema,
+                plan,
+                input,
+                records,
+                roots,
+                tx_time: context.tx_time(),
+                service_values: context.service_values(),
+            },
+            element,
+        }
+    }
+}
+
+impl ExpressionValueSource for CollectionRuntimeValues<'_> {
+    fn input_field(&self, field: FieldId) -> Option<CanonicalValue> {
+        self.base.input_field(field)
+    }
+
+    fn service_value(&self, field: FieldId) -> Option<CanonicalValue> {
+        self.base.service_value(field)
+    }
+
+    fn collection_element(&self) -> Option<CanonicalValue> {
+        Some(self.element.clone())
+    }
+
+    fn collection_element_field(&self, field: FieldId) -> Option<CanonicalValue> {
+        let CanonicalValue::Record(record) = self.element else {
+            return None;
+        };
+        record_field(record, field).cloned()
+    }
+
+    fn complete_binding(&self, binding: BindingId) -> Option<CanonicalValue> {
+        self.base.complete_binding(binding)
+    }
+
+    fn bound_field(&self, binding: BindingId, field: FieldId) -> Option<CanonicalValue> {
+        self.base.bound_field(binding, field)
+    }
+
+    fn root_validation_field(
+        &self,
+        read: RootValidationReadId,
+        field: FieldId,
+    ) -> Option<CanonicalValue> {
+        self.base.root_validation_field(read, field)
+    }
+
+    fn transaction_time(&self) -> Option<LogicalTime> {
+        self.base.transaction_time()
+    }
 }
 
 impl ExpressionValueSource for RuntimeValues<'_> {

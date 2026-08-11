@@ -4,22 +4,151 @@ use std::collections::BTreeMap;
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordSchema};
-use riffdb_invariant::{ExpressionValueSource, evaluate_expression};
+use riffdb_invariant::{ExpressionValueSource, derive_input_command_facts, evaluate_expression};
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     DurableKeySchemaBindingV1, EntityObservation, EntityTarget, EvaluationBudget,
     ExecutablePlanRef, ReadDependency, ReadSnapshot, SnapshotRequest, StoredEntityRecordV1,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AdmittedActorContext, CanonicalBytes, CanonicalRecord, CanonicalValue,
-    Decimal, DecimalSpec, EntityVersion, FieldId, LogicalTime, OutcomeId, RequestId, TenantScope,
-    Timestamp,
+    ActorId, ActorKind, AdmittedActorContext, CanonicalBytes, CanonicalList, CanonicalRecord,
+    CanonicalValue, Decimal, DecimalSpec, EntityVersion, FieldId, LogicalTime, OutcomeId,
+    RequestId, TenantScope, Timestamp,
 };
 
 const BUDGET_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/examples/budget.riff"
 ));
+const BULK_TUPLE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/contracts/bulk/openfga-tuples.riff"
+));
+
+#[test]
+fn bounded_collection_create_executes_as_one_complete_evaluated_graph() {
+    let bundle = compile_contract_source(BULK_TUPLE_SOURCE).expect("bulk fixture compiles");
+    let plan = command(&bundle, "WriteTuples");
+    let tuple = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Tuple")
+        .expect("tuple entity");
+    let store = [0x31; 16];
+    let tuple_value = |id: u8, object: &str| {
+        CanonicalValue::Record(
+            CanonicalRecord::new(
+                tuple
+                    .record()
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        let value = match field.name() {
+                            "store_id" => CanonicalValue::Uuid(store),
+                            "tuple_id" => CanonicalValue::Uuid([id; 16]),
+                            "object" => CanonicalValue::string(object).expect("object"),
+                            "relation" => CanonicalValue::string("reader").expect("relation"),
+                            "subject" => CanonicalValue::string("user:alice").expect("subject"),
+                            other => panic!("unexpected tuple field {other}"),
+                        };
+                        (field.id(), value)
+                    })
+                    .collect(),
+            )
+            .expect("tuple record"),
+        )
+    };
+    let input = CanonicalRecord::new(
+        plan.input()
+            .record()
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = match field.name() {
+                    "request_id" => CanonicalValue::Uuid([0x21; 16]),
+                    "tuples" => CanonicalValue::List(
+                        CanonicalList::new(vec![
+                            tuple_value(0x41, "document:first"),
+                            tuple_value(0x42, "document:second"),
+                        ])
+                        .expect("tuple list"),
+                    ),
+                    other => panic!("unexpected input field {other}"),
+                };
+                (field.id(), value)
+            })
+            .collect(),
+    )
+    .expect("bulk input");
+    let facts = derive_input_command_facts(plan, input.clone()).expect("collection facts");
+    let targets = facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .map(|(index, key)| {
+            EntityTarget::new(plan.bindings()[*index as usize].entity_type(), key.clone())
+                .expect("binding target")
+        })
+        .collect::<Vec<_>>();
+    let request = SnapshotRequest::new(plan_ref(&bundle, plan), targets.clone(), vec![], vec![])
+        .expect("snapshot request");
+    let snapshot = ReadSnapshot::new(
+        &request,
+        None,
+        targets
+            .iter()
+            .cloned()
+            .map(EntityObservation::Absent)
+            .collect(),
+        vec![],
+        vec![],
+    )
+    .expect("snapshot");
+    let logical_time = LogicalTime::new(Timestamp::new(1, 0).expect("time"));
+    let context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        logical_time,
+        facts.partition_key().clone(),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("collection evaluates")
+    else {
+        panic!("bulk create mutates");
+    };
+    assert_eq!(evaluated.mutations().len(), 2);
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "Written")
+    );
+    let objects = evaluated
+        .mutations()
+        .iter()
+        .map(|mutation| {
+            field(
+                mutation.post_image().fields(),
+                entity_field(&bundle, "Tuple", "object"),
+            )
+            .clone()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        objects,
+        vec![
+            CanonicalValue::string("document:first").expect("object"),
+            CanonicalValue::string("document:second").expect("object"),
+        ]
+    );
+}
 
 const CROSS_DOMAIN_SOURCE: &str = r#"
 contract CrossDomain version 1 {
