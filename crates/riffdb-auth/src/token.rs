@@ -376,20 +376,10 @@ mod tests {
         use std::fs;
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        use std::sync::atomic::{AtomicU64, Ordering};
 
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-        let root = loop {
-            let suffix = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let candidate = std::env::temp_dir()
-                .join(format!("riffdb-token-file-{}-{suffix}", std::process::id()));
-            match fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => panic!("create isolated test directory: {error}"),
-            }
-        };
-        let path = root.join("credential");
+        let root = tempfile::TempDir::with_prefix("riffdb-token-file-")
+            .expect("create isolated test directory");
+        let path = root.path().join("credential");
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -419,6 +409,5 @@ mod tests {
             load_capability_token_file(&path).unwrap_err(),
             CapabilityTokenFileError::ProtectedFileRejected
         );
-        fs::remove_dir_all(root).expect("remove isolated test directory");
     }
 }

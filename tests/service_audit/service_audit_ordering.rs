@@ -6,7 +6,7 @@ use std::future::Future;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use riffdb_catalog::validate_catalog_history;
 use riffdb_commit::{
@@ -32,6 +32,7 @@ use riffdb_storage_redb::{
     RedbDormantPorts, RedbOperationalPorts, RedbStore, RedbTestController, RedbTestOperation,
     RedbTestPhase,
 };
+use riffdb_testkit::scratch::ScratchDir;
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, ApprovalId, CapabilityId, CommandId,
     CommitSequence, ContractLineage, ContractVersion, DatabaseId, DigestKeyId, RequestId,
@@ -40,17 +41,15 @@ use riffdb_types::{
 };
 
 const BASE_SECONDS: i64 = 1_700_100_000;
-static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
-struct AuditDatabase(PathBuf);
+/// Field 1 is held only for its whole-directory cleanup on `Drop`.
+struct AuditDatabase(PathBuf, #[allow(dead_code)] ScratchDir);
 
 impl AuditDatabase {
     fn create(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-service-audit-ordering-{label}-{}-{}.redb",
-            std::process::id(),
-            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-        ));
+        let scratch = ScratchDir::new(&format!("service-audit-ordering-{label}"))
+            .expect("create service-audit scratch directory");
+        let path = scratch.join("db.redb");
         let mut store = RedbStore::open(&path).expect("create service-audit database");
         assert_eq!(
             store
@@ -59,7 +58,7 @@ impl AuditDatabase {
             DatabaseInitializationResult::Installed(database_id())
         );
         drop(store);
-        Self(path)
+        Self(path, scratch)
     }
 
     fn open(&self) -> RedbOperationalPorts {
@@ -71,12 +70,6 @@ impl AuditDatabase {
             RedbStore::open_with_test_controller(&self.0, controller)
                 .expect("open controlled service-audit database"),
         )
-    }
-}
-
-impl Drop for AuditDatabase {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }
 

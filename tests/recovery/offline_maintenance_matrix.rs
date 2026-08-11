@@ -7,7 +7,6 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use riffdb_storage_api::{
@@ -26,6 +25,7 @@ use riffdb_storage_redb::{
 };
 use riffdb_testkit::failpoint::verify_wp190_recovery_report_v1;
 use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
+use riffdb_testkit::scratch::ScratchDir;
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, DatabaseId, DigestKeyId,
     OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
@@ -707,37 +707,18 @@ impl MaintenanceFixture {
 }
 
 struct TemporaryDirectory {
-    path: PathBuf,
+    scratch: ScratchDir,
 }
 
 impl TemporaryDirectory {
     fn new(label: &str) -> TestResult<Self> {
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-        for _ in 0..1_024 {
-            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-wp190-maintenance-{label}-{}-{ordinal}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(Box::new(error)),
-            }
-        }
-        Err(test_failure(
-            "temporary maintenance directory bound exhausted",
-        ))
+        Ok(Self {
+            scratch: ScratchDir::new(&format!("wp190-maintenance-{label}"))?,
+        })
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        self.scratch.path()
     }
 }
 

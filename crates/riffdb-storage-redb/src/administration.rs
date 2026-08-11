@@ -3656,7 +3656,11 @@ mod tests {
     /// (journal, checkpoint, spare, rewrite, …) live in one
     /// [`crate::test_path::ScopedDirectory`] removed on drop — pass, fail, or
     /// panic — so cleanup never depends on a hand-maintained file list.
-    struct TestPath(PathBuf, crate::test_path::ScopedDirectory);
+    struct TestPath(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
 
     impl TestPath {
         fn new(label: &str) -> Self {

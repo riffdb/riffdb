@@ -42,6 +42,7 @@ use riffdb_storage_redb::{
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
+use riffdb_testkit::scratch::ScratchDir;
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, Audience, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
@@ -53,17 +54,15 @@ use riffdb_types::{
 
 const CONTRACT_SOURCE: &str = include_str!("../../contracts/examples/budget.riff");
 const BASE_SECONDS: i64 = 1_700_300_000;
-static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
-struct TestDatabase(PathBuf);
+/// Field 1 is held only for its whole-directory cleanup on `Drop`.
+struct TestDatabase(PathBuf, #[allow(dead_code)] ScratchDir);
 
 impl TestDatabase {
     fn create(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-control-plane-{label}-{}-{}.redb",
-            std::process::id(),
-            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-        ));
+        let scratch = ScratchDir::new(&format!("control-plane-{label}"))
+            .expect("create control-plane scratch directory");
+        let path = scratch.join("db.redb");
         let mut store = RedbStore::open(&path).expect("create control-plane database");
         assert_eq!(
             store
@@ -72,7 +71,7 @@ impl TestDatabase {
             DatabaseInitializationResult::Installed(database_id())
         );
         drop(store);
-        Self(path)
+        Self(path, scratch)
     }
 
     fn open(&self) -> RedbOperationalPorts {
@@ -84,12 +83,6 @@ impl TestDatabase {
             RedbStore::open_with_test_controller(&self.0, controller)
                 .expect("open controlled database"),
         )
-    }
-}
-
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }
 

@@ -160,7 +160,10 @@ pub fn sweep_stale(root: &Path, prefix: &str) -> io::Result<usize> {
 }
 
 fn validate_prefix(prefix: &str) -> io::Result<()> {
-    let valid = prefix.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+    let valid = prefix
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
         && prefix
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
@@ -230,7 +233,10 @@ mod tests {
         fs::create_dir(scratch.join("nested")).expect("nested");
         fs::write(scratch.join("nested/marker"), b"marker").expect("marker");
         drop(scratch);
-        assert!(!path.exists(), "directory scope must remove every side file");
+        assert!(
+            !path.exists(),
+            "directory scope must remove every side file"
+        );
     }
 
     #[test]
@@ -238,10 +244,7 @@ mod tests {
         let root = ScratchDir::new("sweep-root").expect("create sweep root");
         // Mirror riffdb-bench-root: a very high never-started pid reads as dead.
         let dead = root.join(format!("{SCRATCH_COMPONENT}-swp-999999-1"));
-        let live = root.join(format!(
-            "{SCRATCH_COMPONENT}-swp-{}-2",
-            std::process::id()
-        ));
+        let live = root.join(format!("{SCRATCH_COMPONENT}-swp-{}-2", std::process::id()));
         let foreign = root.join("keep-me");
         let malformed = root.join(format!("{SCRATCH_COMPONENT}-swp-notapid-3"));
         let other_prefix = root.join(format!("{SCRATCH_COMPONENT}-other-999999-4"));
