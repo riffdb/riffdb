@@ -399,14 +399,33 @@ Binding: Spanned<Binding> = {
         => parser::spanned(Binding::Mutate(binding), lo, hi),
     <lo:@L> "create" <binding:EntityBinding> <hi:@R>
         => parser::spanned(Binding::Create(binding), lo, hi),
-    <lo:@L> "delete" <binding:EntityBinding> <hi:@R>
+    <lo:@L> "delete" <binding:DeleteEntityBinding> <hi:@R>
         => parser::spanned(Binding::Delete(binding), lo, hi),
 };
 
 EntityBinding: EntityBinding = {
     <entity:Identifier> "(" <arguments:ExpressionList> ")"
         "as" <binding:Identifier> "else" <failure:OutcomeExpression>
-        => EntityBinding { entity, arguments, binding, failure },
+        => EntityBinding {
+            entity,
+            arguments,
+            binding,
+            failure,
+            restriction_failure: None,
+        },
+};
+
+DeleteEntityBinding: EntityBinding = {
+    <entity:Identifier> "(" <arguments:ExpressionList> ")"
+        "as" <binding:Identifier> "else" <failure:OutcomeExpression>
+        <restriction_failure:("restrict" <OutcomeExpression>)?>
+        => EntityBinding {
+            entity,
+            arguments,
+            binding,
+            failure,
+            restriction_failure,
+        },
 };
 
 Requirement: Spanned<Requirement> = {

@@ -555,16 +555,23 @@ fn allocate_command_symbols(
     let mut rejection_names = BTreeMap::<String, Span>::new();
     let mut outcome_occurrences = Vec::new();
     for binding in command.bindings.iter().chain(collection_bindings) {
-        let failure = match &binding.value {
+        let entity_binding = match &binding.value {
             riffdb_contract_syntax::ast::Binding::Read(binding)
             | riffdb_contract_syntax::ast::Binding::Mutate(binding)
             | riffdb_contract_syntax::ast::Binding::Create(binding)
-            | riffdb_contract_syntax::ast::Binding::Delete(binding) => &binding.failure,
+            | riffdb_contract_syntax::ast::Binding::Delete(binding) => binding,
         };
+        let failure = &entity_binding.failure;
         rejection_names
             .entry(failure.value.name.value.clone())
             .or_insert(failure.value.name.span);
         outcome_occurrences.push(&failure.value);
+        if let Some(restriction_failure) = &entity_binding.restriction_failure {
+            rejection_names
+                .entry(restriction_failure.value.name.value.clone())
+                .or_insert(restriction_failure.value.name.span);
+            outcome_occurrences.push(&restriction_failure.value);
+        }
     }
     for requirement in command.requirements.iter().chain(collection_requirements) {
         let rejection = &requirement.value.rejection;

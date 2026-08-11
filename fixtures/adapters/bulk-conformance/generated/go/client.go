@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "e9377fdf1d7bda17e3f068a3e89d6b951a5e8a15efdb218a7154bfad0300987f"
+const QueryModuleHash = "42bc762077726e0b077b8c936aafe13fcca696b8efe1cda05aa46bf3a8054e16"
 const ContractLineage = "AdapterBulkConformance"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31"
+const ContractBundleHash = "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1"
 
 type QueryOptions = riffdb.Options
 type QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }
@@ -191,6 +191,11 @@ type DeleteRestrictParentsParentMissing struct {
 	Outcome string
 }
 func (DeleteRestrictParentsParentMissing) isDeleteRestrictParentsOutcome() {}
+
+type DeleteRestrictParentsParentReferenced struct {
+	Outcome string
+}
+func (DeleteRestrictParentsParentReferenced) isDeleteRestrictParentsOutcome() {}
 
 type DeleteRestrictParentsRestrictParentsDeleted struct {
 	Outcome string
@@ -447,6 +452,8 @@ func encodeDeleteRestrictParentsInput(input DeleteRestrictParentsInput) map[stri
 func validateDeleteRestrictParentsInput(input DeleteRestrictParentsInput) error { if len(input.ParentIds) < 1 || len(input.ParentIds) > 8 { return errors.New("invalid bounded collection length for DeleteRestrictParents.parent_ids") }; return nil }
 func decodeDeleteRestrictParentsOutcome(value riffdb.Value) (DeleteRestrictParentsOutcome, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; switch outcome {
 case "ParentMissing": result := DeleteRestrictParentsParentMissing{Outcome: outcome}
+return result, nil
+case "ParentReferenced": result := DeleteRestrictParentsParentReferenced{Outcome: outcome}
 return result, nil
 case "RestrictParentsDeleted": result := DeleteRestrictParentsRestrictParentsDeleted{Outcome: outcome}
 return result, nil

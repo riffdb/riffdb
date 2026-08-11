@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.91
+**Version:** 0.92
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.92 | 2026-08-11 | Applied the maintainer-approved ADR-0107 correction: an indexed-restrict delete declares a distinct business outcome in grammar/executable/bundle IR v6; a stable inbound reference persists that zero-mutation outcome, while a racing reference causes bounded whole-command reevaluation rather than an infrastructure-error retry loop. Existing v5 no-inbound delete plans remain decodable. |
 | 0.91 | 2026-08-10 | Registered the VEC-* requirement family (VEC-001 through VEC-012) for native vector search projections under ADR-0091 as amended: client-supplied embeddings through typed commands, typed staleness tracking, exact-first KNN with a declared recall contract for approximate tiers, policy-before-ranking, per-organization statistics isolation, and mandatory K with organization scope. ADR-0091 Amendment 1 recorded: the application owns embedding computation; the database never calls external model endpoints. |
 | 0.90 | 2026-08-09 | Strengthened the deterministic-simulation family after independent review: SIM-001 gained the digest-sensitivity obligation (identical operations under differently resolved fault schedules must diverge), SIM-003 now names AuthoritativeCommandModel with the model-extension and startup-validation/structural-inspection obligations and states the one-phase-commit precondition on the commit-to-sync correspondence, and SIM-005 (media-adapter conformance suites), SIM-006 (crash-matrix corpus subsumption, deferred), and SIM-007 (metadata-driven production-graph absence of riffdb-sim) were registered. |
 | 0.89 | 2026-08-09 | Registered the ADR-0113 deterministic-simulation requirement family through WP-580: seeded fault-schedule coverage and a versioned trace-digest determinism proof land with the `riffdb-sim` foundation, reference-model equality and the seed-replayable regression corpus are registered now and evidenced by later simulation packages, and the conflict-path ordered-collection and explicit worker-count hygiene freeze ambient nondeterminism out of `riffdb-commit`. |
@@ -7289,7 +7290,11 @@ does not create a kernel or storage escape hatch.
 - `BLK-010`: Delete MUST be a compiler-visible checked binding with an explicit
   deletion policy. Alpha permits only no inbound relation or indexed bounded
   `restrict`; cascade, set-null, orphaning, unindexed discovery, history purge,
-  cross-partition removal, and physical erasure are forbidden.
+  cross-partition removal, and physical erasure are forbidden. An indexed-
+  restrict binding MUST declare a distinct bounded business outcome for an
+  observed inbound reference. Stable references persist that zero-mutation
+  outcome; a concurrent reference causes bounded whole-command reevaluation
+  and MUST NOT become an unbounded infrastructure retry.
 - `BLK-011`: Production delete activation MUST follow a versioned ADR-0100
   changelog delete/tombstone entry through primary emission, shipping, follower
   apply, bootstrap, compatibility fixtures, and projection tombstone masking.

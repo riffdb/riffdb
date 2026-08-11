@@ -109,6 +109,20 @@ fn healthy_collection_delete_reopens_with_a_reciprocal_tombstone_graph() {
 }
 
 #[test]
+fn healthy_collection_delete_can_be_recreated_through_the_same_entity_chain() {
+    let database = BulkRowsDatabase::create("healthy-delete-recreate");
+    let put = execute_healthy(&database, Operation::Put, 0x93, 0xe3, 0xf3, 0x83);
+    let deleted = execute_healthy(&database, Operation::Delete, 0x94, 0xe4, 0xf4, 0x84);
+    let recreated = execute_healthy(&database, Operation::Put, 0x95, 0xe5, 0xf5, 0x85);
+
+    let ports = database.open();
+    database.assert_rows_present(&ports, &ROW_IDS, true);
+    database.assert_commit_graph(&ports, put.stored_outcome(), ROW_IDS.len());
+    database.assert_commit_graph(&ports, deleted.stored_outcome(), ROW_IDS.len());
+    database.assert_commit_graph(&ports, recreated.stored_outcome(), ROW_IDS.len());
+}
+
+#[test]
 fn bulk_command_recovery_child() {
     let Ok(mode) = std::env::var(CHILD_MODE) else {
         return;

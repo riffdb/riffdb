@@ -377,6 +377,7 @@ pub struct BindingPlan {
     accessed_fields: Vec<FieldId>,
     complete_record_access: bool,
     failure: OutcomeConstruction,
+    restriction_failure: Option<OutcomeConstruction>,
 }
 
 impl BindingPlan {
@@ -389,9 +390,38 @@ impl BindingPlan {
         entity_type: EntityTypeId,
         key_schema: KeySchema,
         key_expressions: Vec<ExprId>,
+        accessed_fields: Vec<FieldId>,
+        complete_record_access: bool,
+        failure: OutcomeConstruction,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_with_restriction_failure(
+            id,
+            name,
+            mode,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            failure,
+            None,
+        )
+    }
+
+    /// Creates a checked binding with the distinct declared outcome used when
+    /// an indexed-restrict delete observes an inbound reference.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_restriction_failure(
+        id: BindingId,
+        name: impl Into<String>,
+        mode: BindingMode,
+        entity_type: EntityTypeId,
+        key_schema: KeySchema,
+        key_expressions: Vec<ExprId>,
         mut accessed_fields: Vec<FieldId>,
         complete_record_access: bool,
         failure: OutcomeConstruction,
+        restriction_failure: Option<OutcomeConstruction>,
     ) -> Result<Self, IrValidationError> {
         let name = name.into();
         validate_source_name(&name, "binding")?;
@@ -408,6 +438,11 @@ impl BindingPlan {
                 kind: "binding accessed fields",
             });
         }
+        if restriction_failure.is_some() && mode != BindingMode::Delete {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "only a delete binding may declare a restrict failure",
+            });
+        }
         Ok(Self {
             id,
             name,
@@ -418,6 +453,7 @@ impl BindingPlan {
             accessed_fields,
             complete_record_access,
             failure,
+            restriction_failure,
         })
     }
 
@@ -465,6 +501,11 @@ impl BindingPlan {
     #[must_use]
     pub const fn failure(&self) -> &OutcomeConstruction {
         &self.failure
+    }
+    /// Declared failure when an indexed-restrict delete observes an inbound reference.
+    #[must_use]
+    pub const fn restriction_failure(&self) -> Option<&OutcomeConstruction> {
+        self.restriction_failure.as_ref()
     }
 }
 
@@ -1659,6 +1700,24 @@ impl CommandPlan {
                 .bindings
                 .iter()
                 .any(|binding| matches!(binding.mode, BindingMode::Delete))
+    }
+    /// Whether this command requires a distinct indexed-restrict outcome in IR v6.
+    #[must_use]
+    pub fn requires_ir_v6(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|binding| binding.restriction_failure.is_some())
+    }
+    pub(crate) fn delete_restriction_failures_are_complete(&self) -> bool {
+        self.delete_checks.iter().all(|check| {
+            self.bindings
+                .iter()
+                .find(|binding| binding.id == check.binding)
+                .is_some_and(|binding| {
+                    matches!(check.mode, DeleteCheckModeV1::Restrict { .. })
+                        == binding.restriction_failure.is_some()
+                })
+        })
     }
     /// Outcomes in stable-ID order.
     #[must_use]

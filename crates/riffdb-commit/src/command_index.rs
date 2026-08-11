@@ -8,7 +8,8 @@ use std::collections::BTreeSet;
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
     BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V5,
-    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V5, IndexSchema,
+    EXECUTABLE_IR_VERSION_V6, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V5,
+    GRAMMAR_VERSION_V6, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -819,6 +820,7 @@ fn derive_grammar_v1_indexes(
         (bundle.grammar_version(), bundle.ir_version()),
         (GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
             | (GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
+            | (GRAMMAR_VERSION_V6, EXECUTABLE_IR_VERSION_V6)
     ) || plan.execution_class() != ExecutionClass::IdempotentMutation
         || resolved.reference() != evaluated.plan()
         || request.plan() != evaluated.plan()
@@ -828,8 +830,6 @@ fn derive_grammar_v1_indexes(
         || facts.binding_entity_keys().len() != mutation_positions.len()
         || facts.root_validation_entity_keys().len() != request.root_validation_targets().len()
         || facts.root_validation_entity_keys().len() != current.root_validations().len()
-        || !request.range_targets().is_empty()
-        || !current.ranges().is_empty()
     {
         return Err(CommandIndexError::internal_defect());
     }
@@ -1188,7 +1188,7 @@ contract DeleteRestrict version 1 {
     input parent_ids: list<uuid, 1..8>
     idempotency_key request_id
     for parent_id in parent_ids {
-      delete Parent(tenant_id, parent_id) as parent else Missing {}
+      delete Parent(tenant_id, parent_id) as parent else Missing {} restrict Referenced {}
     }
     return Deleted {}
   }

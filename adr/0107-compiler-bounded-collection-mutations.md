@@ -104,6 +104,24 @@ The first release permits:
 - `restrict`, backed by a compiler-proved bounded reverse-reference index and
   an exact empty dependency revalidated at commit.
 
+An indexed-restrict delete declares a second business outcome distinct from
+the ordinary absent-row outcome:
+
+```riff
+delete Parent(tenant_id, parent_id) as parent
+    else Missing {}
+    restrict Referenced {}
+```
+
+The compiler requires this clause exactly for `restrict` policies and permits
+at most one indexed-restrict delete template in the first bounded-command
+format. A reference present in the evaluation snapshot selects and durably
+persists `Referenced` with zero mutations. A reference appearing after an
+initial empty observation invalidates the transaction-current dependency and
+causes bounded whole-command reevaluation; that reevaluation then selects the
+same declared outcome. A stable reference is never treated as an
+infrastructure failure and never consumes the retry budget indefinitely.
+
 Cascade, set-null, orphaning, cross-partition delete, unindexed inbound
 reference discovery, history purge, and physical erasure are rejected. A
 delete removes current entity/index state atomically while immutable commands,
@@ -177,11 +195,12 @@ from a partial element checkpoint.
 
 ## Compatibility
 
-Grammar, command IR, plan hash, generated schemas, protocol values, and durable
+Grammar v6, executable/bundle IR v6, plan hash, generated schemas, protocol values, and durable
 command-graph formats require additive successors and golden fixtures. Existing
 ordinary commands, public batches, outcomes, and stored history retain their
 exact meanings. A contract using bulk or delete requires the new language/IR
-version and cannot be silently downcompiled.
+version and cannot be silently downcompiled. Existing v5 no-inbound delete
+plans remain decodable; a newly compiled indexed-restrict delete requires v6.
 
 ## Security
 

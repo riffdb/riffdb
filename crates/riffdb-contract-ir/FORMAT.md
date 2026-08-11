@@ -472,9 +472,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `magic` | ASCII `RIFFDB-BUNDLE\0` |
-| 2 | `bundle_format_version` | u32 = 1, 2, 3, 4, or 5 |
-| 3 | `grammar_version` | u32 = 1, 2, 3, 4, or 5; must equal the bundle version |
-| 4 | `executable_ir_version` | u32 = 1, 2, 3, 4, or 5; must equal the bundle version |
+| 2 | `bundle_format_version` | u32 = 1, 2, 3, 4, 5, or 6 |
+| 3 | `grammar_version` | u32 = 1, 2, 3, 4, 5, or 6; must equal the bundle version |
+| 4 | `executable_ir_version` | u32 = 1, 2, 3, 4, 5, or 6; must equal the bundle version |
 | 5 | `compiler_version` | nonempty ASCII compiler semantic-version identity string, <=64 bytes |
 | 6 | `contract_lineage` | string |
 | 7 | `contract_version` | u64 |
@@ -810,6 +810,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 7 | `accessed_fields` | u32 count + FieldId[] |
 | 8 | `complete_record_access` | Boolean |
 | 9 | `failure` | OutcomeConstruction |
+| 10 | `restriction_failure` | IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5 |
 
 ### RootValidationReadPlan
 

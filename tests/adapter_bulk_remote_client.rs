@@ -226,11 +226,28 @@ async fn run_async() -> TestResult<()> {
             parent_ids: vec![parent_a.parent_id.clone()],
             request_id: id(56),
         })
-        .await
-        .expect_err("inbound child must restrict parent deletion");
+        .await?;
     expect(
-        restricted.semantic_error().is_some(),
-        "delete restrict typed error",
+        matches!(
+            restricted.outcome,
+            generated::DeleteRestrictParentsOutcome::ParentReferenced
+        ),
+        "delete restrict declared outcome",
+    )?;
+    let restricted_replay = client
+        .delete_restrict_parents(generated::DeleteRestrictParentsInput {
+            tenant_id: tenant.clone(),
+            parent_ids: vec![parent_a.parent_id.clone()],
+            request_id: id(56),
+        })
+        .await?;
+    expect(
+        restricted_replay.replayed
+            && matches!(
+                restricted_replay.outcome,
+                generated::DeleteRestrictParentsOutcome::ParentReferenced
+            ),
+        "delete restrict outcome replay",
     )?;
     let retained = client
         .create_restrict_parents(generated::CreateRestrictParentsInput {

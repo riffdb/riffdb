@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "AdapterBulkConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "e643984f4b8c799794265d21e817f29355b6b6e9f234c5f23eeb44bcaa92fb31"
-QUERY_MODULE_HASH: Final[str] = "e9377fdf1d7bda17e3f068a3e89d6b951a5e8a15efdb218a7154bfad0300987f"
+CONTRACT_BUNDLE_HASH: Final[str] = "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1"
+QUERY_MODULE_HASH: Final[str] = "42bc762077726e0b077b8c936aafe13fcca696b8efe1cda05aa46bf3a8054e16"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metric:
@@ -89,7 +89,7 @@ class PipelineGraphInput:
     pipeline_id: UUID
     organization_id: UUID
 
-GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "4458fd1e529db8d67b424a5df90a8a75b44659e6c0a465715cdcb754389fde3b"
+GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "ac28dc6f793848f268b840ee57db4bfca36d132f7df9e06053c0f1d8f228851c"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetFgaTupleParams:
@@ -197,16 +197,20 @@ class DeleteRestrictParentsInput:
     parent_ids: tuple[UUID, ...]
     request_id: UUID
 
-DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "68911c92dfddadef488c4dbf779240f8f0e9e6bfbae9d140e469889455b0288b"
+DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "ad9d08a9791fed072ade420cec9baad7ed7c18516e5eee0927704689c5c2748f"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteRestrictParentsParentMissing:
     outcome: Literal["ParentMissing"] = field(default="ParentMissing", init=False)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class DeleteRestrictParentsParentReferenced:
+    outcome: Literal["ParentReferenced"] = field(default="ParentReferenced", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteRestrictParentsRestrictParentsDeleted:
     outcome: Literal["RestrictParentsDeleted"] = field(default="RestrictParentsDeleted", init=False)
 
-DeleteRestrictParentsOutcome: TypeAlias = DeleteRestrictParentsParentMissing | DeleteRestrictParentsRestrictParentsDeleted
+DeleteRestrictParentsOutcome: TypeAlias = DeleteRestrictParentsParentMissing | DeleteRestrictParentsParentReferenced | DeleteRestrictParentsRestrictParentsDeleted
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsInput:
@@ -363,6 +367,7 @@ class AdapterBulkConformanceClient:
         )
         outcomes = {
             "ParentMissing": DeleteRestrictParentsParentMissing,
+            "ParentReferenced": DeleteRestrictParentsParentReferenced,
             "RestrictParentsDeleted": DeleteRestrictParentsRestrictParentsDeleted,
         }
         return raw._map_outcome(lambda value: decode_variant(outcomes, value))
@@ -545,6 +550,7 @@ class AsyncAdapterBulkConformanceClient:
         )
         outcomes = {
             "ParentMissing": DeleteRestrictParentsParentMissing,
+            "ParentReferenced": DeleteRestrictParentsParentReferenced,
             "RestrictParentsDeleted": DeleteRestrictParentsRestrictParentsDeleted,
         }
         return raw._map_outcome(lambda value: decode_variant(outcomes, value))

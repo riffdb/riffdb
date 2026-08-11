@@ -171,7 +171,7 @@ contract AdapterBulkConformance version 1 {
     input parent_ids: list<uuid, 1..8>
     idempotency_key request_id
     for parent_id in parent_ids {
-      delete RestrictParent(tenant_id, parent_id) as parent else ParentMissing {}
+      delete RestrictParent(tenant_id, parent_id) as parent else ParentMissing {} restrict ParentReferenced {}
     }
     return RestrictParentsDeleted {}
   }

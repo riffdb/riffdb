@@ -533,6 +533,11 @@ pub struct EntityBinding {
     pub binding: Spanned<String>,
     /// The outcome returned when an existing entity is absent or a new entity exists.
     pub failure: Spanned<OutcomeExpression>,
+    /// The outcome returned when a checked delete is blocked by an inbound reference.
+    ///
+    /// This clause is accepted only on a delete binding whose entity declares a
+    /// `restrict` deletion policy. Semantic validation rejects it everywhere else.
+    pub restriction_failure: Option<Spanned<OutcomeExpression>>,
 }
 
 /// A named business precondition and rejection outcome.

@@ -961,9 +961,9 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
 
 layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "magic" => "ASCII `RIFFDB-BUNDLE\\0`",
-    "bundle_format_version" => "u32 = 1, 2, 3, 4, or 5",
-    "grammar_version" => "u32 = 1, 2, 3, 4, or 5; must equal the bundle version",
-    "executable_ir_version" => "u32 = 1, 2, 3, 4, or 5; must equal the bundle version",
+    "bundle_format_version" => "u32 = 1, 2, 3, 4, 5, or 6",
+    "grammar_version" => "u32 = 1, 2, 3, 4, 5, or 6; must equal the bundle version",
+    "executable_ir_version" => "u32 = 1, 2, 3, 4, 5, or 6; must equal the bundle version",
     "compiler_version" => "nonempty ASCII compiler semantic-version identity string, <=64 bytes",
     "contract_lineage" => "string",
     "contract_version" => "u64",
@@ -1214,6 +1214,7 @@ layout!(BINDING_LAYOUT, "BindingPlan", {
     "accessed_fields" => "u32 count + FieldId[]",
     "complete_record_access" => "Boolean",
     "failure" => "OutcomeConstruction",
+    "restriction_failure" => "IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5",
 });
 layout!(ROOT_READ_LAYOUT, "RootValidationReadPlan", {
     "id" => "RootValidationReadId",

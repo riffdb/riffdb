@@ -197,36 +197,36 @@ fn lower_command(
         .map_err(|_| vec![ir_diagnostic(command.span)])?;
 
     let mut hir_expressions = command.expressions.clone();
-    let occurrences = command
-        .bindings
-        .iter()
-        .map(|binding| &binding.failure)
-        .chain(
-            command
-                .requirements
-                .iter()
-                .map(|requirement| &requirement.rejection),
-        )
-        .chain(command.effects.iter().flat_map(|effect| match effect {
-            HirEffect::WorkflowTransition { stale, illegal, .. } => vec![stale, illegal],
-            HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation),
-            HirEffect::Set { .. } | HirEffect::Emit { .. } => Vec::new(),
-        }))
-        .chain(std::iter::once(&command.success))
-        .collect::<Vec<_>>();
+    let mut failure_occurrence = BTreeMap::new();
+    let mut restriction_failure_occurrence = BTreeMap::new();
+    let mut occurrences = Vec::new();
+    for binding in &command.bindings {
+        failure_occurrence.insert(binding.id, occurrences.len());
+        occurrences.push(&binding.failure);
+        if let Some(failure) = &binding.restriction_failure {
+            restriction_failure_occurrence.insert(binding.id, occurrences.len());
+            occurrences.push(failure);
+        }
+    }
+    let rejection_base = occurrences.len();
+    occurrences.extend(
+        command
+            .requirements
+            .iter()
+            .map(|requirement| &requirement.rejection),
+    );
+    occurrences.extend(command.effects.iter().flat_map(|effect| match effect {
+        HirEffect::WorkflowTransition { stale, illegal, .. } => vec![stale, illegal],
+        HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation),
+        HirEffect::Set { .. } | HirEffect::Emit { .. } => Vec::new(),
+    }));
+    occurrences.push(&command.success);
     let (outcome_schemas, normalized_outcomes) = normalize_outcomes(
         command,
         &occurrences,
         &mut hir_expressions,
         &mut diagnostics,
     );
-    let failure_occurrence = command
-        .bindings
-        .iter()
-        .enumerate()
-        .map(|(index, binding)| (binding.id, index))
-        .collect::<BTreeMap<_, _>>();
-    let rejection_base = command.bindings.len();
     let effect_outcome_count = command
         .effects
         .iter()
@@ -337,7 +337,7 @@ fn lower_command(
             let entity = schema
                 .entity(binding.entity_id)
                 .ok_or_else(|| ir_diagnostic(binding.entity_span))?;
-            BindingPlan::new(
+            BindingPlan::new_with_restriction_failure(
                 binding.id,
                 binding.name.clone(),
                 binding.mode,
@@ -354,6 +354,9 @@ fn lower_command(
                     .get(&binding.id)
                     .expect("binding occurrence")]
                 .clone(),
+                restriction_failure_occurrence
+                    .get(&binding.id)
+                    .map(|occurrence| constructions[*occurrence].clone()),
             )
             .map_err(|_| ir_diagnostic(binding.name_span))
         })
@@ -1179,7 +1182,11 @@ fn command_instructions(
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> (Vec<RawInstruction>, Option<(u32, usize)>) {
     let mut requirements = Vec::new();
-    let rejection_base = command.bindings.len();
+    let rejection_base: usize = command
+        .bindings
+        .iter()
+        .map(|binding| 1usize + usize::from(binding.restriction_failure.is_some()))
+        .sum();
     for (index, requirement) in command.requirements.iter().enumerate() {
         let Ok(requirement_index) = u32::try_from(index) else {
             diagnostics.push(CompilerDiagnostic::new(

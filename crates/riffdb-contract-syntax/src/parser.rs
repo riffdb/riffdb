@@ -1191,7 +1191,11 @@ impl NodeCounter {
         self.name(&binding.entity)?;
         self.expressions(&binding.arguments, span)?;
         self.name(&binding.binding)?;
-        self.outcome(&binding.failure)
+        self.outcome(&binding.failure)?;
+        if let Some(failure) = &binding.restriction_failure {
+            self.outcome(failure)?;
+        }
+        Ok(())
     }
 
     fn outcome(&mut self, outcome: &Spanned<OutcomeExpression>) -> Result<(), SyntaxDiagnostic> {

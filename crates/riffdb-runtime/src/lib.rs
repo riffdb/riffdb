@@ -879,6 +879,30 @@ fn execute_collection_command(
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
     let mut mutations = Vec::new();
     let mut events = Vec::new();
+    if snapshot
+        .ranges()
+        .iter()
+        .any(|observation| !observation.entries().is_empty())
+    {
+        let failure = plan
+            .bindings()
+            .iter()
+            .find_map(|binding| binding.restriction_failure())
+            .ok_or(ExecutionFault::Integrity)?;
+        let empty_records = vec![None; plan.bindings().len()];
+        let values = RuntimeValues {
+            schema: bundle.schema(),
+            plan,
+            input,
+            records: &empty_records,
+            roots: &[],
+            tx_time: context.tx_time(),
+            service_values: context.service_values(),
+        };
+        let mut evaluation = evaluator.batch(&values);
+        let outcome = construct_outcome(failure, &mut evaluation)?;
+        return finish_declared(plan, snapshot, budget, outcome, mutations, events);
+    }
     for (element_ordinal, element) in elements.values().iter().enumerate() {
         let ordinal = u16::try_from(element_ordinal).map_err(|_| ExecutionFault::ResourceLimit)?;
         let mut records = vec![None; plan.bindings().len()];

@@ -290,6 +290,7 @@ pub(crate) struct HirBinding {
     pub(crate) span: Span,
     pub(crate) arguments: Vec<HirExpressionRoot>,
     pub(crate) failure: HirOutcome,
+    pub(crate) restriction_failure: Option<HirOutcome>,
     pub(crate) collection_local: bool,
 }
 
@@ -1656,6 +1657,37 @@ fn lower_commands(
             ) else {
                 continue;
             };
+            let requires_restriction_failure = mode == BindingMode::Delete
+                && matches!(
+                    entity.delete_policy.as_ref(),
+                    Some(HirDeletePolicy::Restrict { .. })
+                );
+            if requires_restriction_failure != binding.restriction_failure.is_some() {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidDeletePolicy,
+                    binding
+                        .restriction_failure
+                        .as_ref()
+                        .map_or(binding.entity.span, |outcome| outcome.span),
+                ));
+                continue;
+            }
+            let restriction_failure = match &binding.restriction_failure {
+                Some(source) => {
+                    let Some(outcome) = lower_outcome(
+                        command_id,
+                        source,
+                        symbols,
+                        &mut resolver,
+                        true,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    Some(outcome)
+                }
+                None => None,
+            };
             bindings.push(HirBinding {
                 id: binding_id,
                 mode,
@@ -1663,9 +1695,14 @@ fn lower_commands(
                 entity_span: binding.entity.span,
                 name: binding.binding.value.clone(),
                 name_span: binding.binding.span,
-                span: binding.failure.span.cover(binding.entity.span),
+                span: binding
+                    .restriction_failure
+                    .as_ref()
+                    .map_or(binding.failure.span, |outcome| outcome.span)
+                    .cover(binding.entity.span),
                 arguments,
                 failure,
+                restriction_failure,
                 collection_local,
             });
         }
