@@ -9,7 +9,6 @@ use std::io::{self, Write};
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use riffdb_catalog::{
@@ -796,42 +795,30 @@ fn test_failure(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::other(message.into()))
 }
 
-struct TemporaryDirectory(PathBuf);
+/// Whole-directory scope backed by the canonical testkit guard: removed on
+/// `Drop` — pass, fail, or panic — with a dead-pid sweep for directories
+/// orphaned by a killed harness. `RIFFDB_WP408_FIXTURE_ROOT` still selects
+/// the root and `RIFFDB_WP408_KEEP_FIXTURE` still retains the directory.
+struct TemporaryDirectory(riffdb_testkit::scratch::ScratchDir);
 
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        for _ in 0..1_024 {
-            let root = std::env::var_os("RIFFDB_WP408_FIXTURE_ROOT")
-                .map_or_else(std::env::temp_dir, PathBuf::from);
-            let path = root.join(format!(
-                "riffdb-wp408-recovery-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not reserve a unique WP-408 test directory",
-        ))
+        let root = std::env::var_os("RIFFDB_WP408_FIXTURE_ROOT")
+            .map_or_else(std::env::temp_dir, PathBuf::from);
+        riffdb_testkit::scratch::ScratchDir::new_in(root, "wp408-recovery").map(Self)
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        self.0.path()
     }
 }
 
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
-        if std::env::var_os("RIFFDB_WP408_KEEP_FIXTURE").is_none() {
-            let _ = fs::remove_dir_all(&self.0);
-        } else {
-            eprintln!("retained WP-408 fixture at {}", self.0.display());
+        if std::env::var_os("RIFFDB_WP408_KEEP_FIXTURE").is_some() {
+            eprintln!("retained WP-408 fixture at {}", self.0.path().display());
+            // Disarm the inner guard so the fixture survives.
+            self.0.keep();
         }
     }
 }

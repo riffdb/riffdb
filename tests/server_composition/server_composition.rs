@@ -4,15 +4,14 @@
 //! Real-process WP-185 composition evidence for gRPC and hosted MCP.
 
 use std::error::Error;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -857,40 +856,22 @@ fn test_failure(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::other(message.into()))
 }
 
+/// Whole-directory scope backed by the canonical testkit guard: removed on
+/// `Drop` — pass, fail, or panic. This harness runs riffdbd children, so
+/// directories orphaned when the harness itself is killed embed the harness
+/// pid and are swept by the next run.
 struct TemporaryDirectory {
-    path: PathBuf,
+    scratch: riffdb_testkit::scratch::ScratchDir,
 }
 
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-        for _ in 0..1_024 {
-            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-p2-server-composition-{}-{ordinal}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique P2 test directory",
-        ))
+        riffdb_testkit::scratch::ScratchDir::new("p2-server-composition")
+            .map(|scratch| Self { scratch })
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        self.scratch.path()
     }
 }
 

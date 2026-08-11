@@ -54,6 +54,7 @@ riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", defa
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
+tempfile = { workspace = true }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
 
 [[test]]

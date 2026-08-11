@@ -637,14 +637,14 @@ contract AdapterBoard version 1 {
 }
 "#;
 
-    static NEXT_ADAPTER_PATH: AtomicU64 = AtomicU64::new(1);
-
-    fn adapter_temp_path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "riffdb-columnar-adapter-{label}-{}-{}",
-            std::process::id(),
-            NEXT_ADAPTER_PATH.fetch_add(1, Ordering::Relaxed)
-        ))
+    /// Whole-directory scope for one adapter test: database, its journal
+    /// side files, and the projections root all live inside it and are
+    /// removed on `Drop` — pass, fail, or panic.
+    fn adapter_scope(label: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("riffdb-columnar-adapter-{label}-"))
+            .tempdir()
+            .expect("create adapter test scope directory")
     }
 
     fn uuid_bytes(seed: u8) -> [u8; 16] {
@@ -699,9 +699,10 @@ contract AdapterBoard version 1 {
             .expect("activate checked adapter ports")
     }
 
-    fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, PathBuf, PathBuf) {
-        let database_path = adapter_temp_path(&format!("{label}-db"));
-        let projections_root = adapter_temp_path(&format!("{label}-proj"));
+    fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
+        let scope = adapter_scope(label);
+        let database_path = scope.path().join("db.redb");
+        let projections_root = scope.path().join("projections");
         std::fs::create_dir_all(&projections_root).expect("create projections root");
         let mut store = RedbStore::open(&database_path).expect("create adapter database");
         let database_id = DatabaseId::from_bytes(uuid_bytes(0x11)).expect("database id");
@@ -753,7 +754,7 @@ contract AdapterBoard version 1 {
         );
         let runtime = ColumnarRuntime::open(storage, &[projection], &projections_root, 1)
             .expect("open adapter columnar runtime");
-        (runtime, database_path, projections_root)
+        (runtime, scope)
     }
 
     fn board_query() -> ColumnarQueryRequest {
@@ -784,7 +785,7 @@ contract AdapterBoard version 1 {
     /// bounded handshakes below and fails on `recv_timeout`.
     #[test]
     fn held_observation_and_running_queries_never_block_apply_or_checkpoint() {
-        let (runtime, database_path, projections_root) = board_runtime("lockfree");
+        let (runtime, _scope) = board_runtime("lockfree");
         // First worker pass publishes the (empty) snapshot.
         {
             let slot = runtime.engines().get("ticket_board").expect("board slot");
@@ -879,8 +880,6 @@ contract AdapterBoard version 1 {
         drop(port);
         drop(observation);
         drop(runtime);
-        let _ = std::fs::remove_file(&database_path);
-        let _ = std::fs::remove_dir_all(&projections_root);
     }
 
     #[test]

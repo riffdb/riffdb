@@ -1711,34 +1711,26 @@ fn map_observation_error(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::OfflineMaintenanceReceiptV1;
     use riffdb_types::{ActorId, BackupNameV1, CapabilityId, DatabaseId};
 
     use super::*;
 
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    struct TestDirectory(PathBuf);
+    /// Whole-directory scope: `.0` is the directory path inside a
+    /// [`tempfile::TempDir`] removed on drop — pass, fail, or panic.
+    struct TestDirectory(
+        PathBuf,
+        // Held only so `Drop` removes the whole scope.
+        #[allow(dead_code)] tempfile::TempDir,
+    );
 
     impl TestDirectory {
         fn new() -> Self {
-            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-maintenance-adapter-{}-{sequence}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).expect("create test directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let scope = tempfile::TempDir::with_prefix("riffdb-maintenance-adapter-")
+                .expect("create test directory");
+            Self(scope.path().to_path_buf(), scope)
         }
     }
 
