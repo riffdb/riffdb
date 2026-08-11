@@ -35,6 +35,11 @@ files
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
     import riffdb/storage/v1/event_references_v2.proto
+  riffdb/storage/v1/entity_transitions_v4.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
+    import riffdb/storage/v1/workflow_service_values_v3.proto
   riffdb/storage/v1/envelope.proto
   riffdb/storage/v1/event_references_v2.proto
     import riffdb/storage/v1/application.proto
@@ -715,6 +720,14 @@ messages
     5 previous_active optional .riffdb.storage.v1.ActiveCatalogPointerV1
     6 activated optional .riffdb.storage.v1.ActiveCatalogPointerV1
     7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredChangelogV2RotationReceiptV1 fields=7
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_application_frontier optional uint64 proto3-optional oneof=_predecessor_application_frontier
+    4 predecessor_administration_frontier optional uint64 proto3-optional oneof=_predecessor_administration_frontier
+    5 terminal_v1_frame_hash optional bytes
+    6 v2_chain_anchor optional bytes
+    7 receipt_hash optional bytes
   riffdb.storage.v1.StoredCommandAuditInvocationV1 fields=10
     1 request_id optional bytes
     2 operation optional .riffdb.storage.v1.ServiceOperationV1
@@ -757,6 +770,9 @@ messages
   riffdb.storage.v1.StoredCommandCapsuleV3 fields=2
     1 base optional .riffdb.storage.v1.StoredCommandCapsuleV2
     2 canonical_service_values optional bytes
+  riffdb.storage.v1.StoredCommandCapsuleV4 fields=2
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV3
+    2 entity_transitions repeated .riffdb.storage.v1.StoredCommittedEntityTransitionV1
   riffdb.storage.v1.StoredCommandCausationV1 fields=2
     1 causing_event_id optional .riffdb.storage.v1.EventIdV1
     2 root_request_id optional bytes
@@ -790,11 +806,24 @@ messages
     7 last_administration_sequence optional uint64
     8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV3
     9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentBodyV3 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV4
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
   riffdb.storage.v1.StoredCommandSegmentV1 fields=2
     1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV1
     2 segment_digest optional bytes
   riffdb.storage.v1.StoredCommandSegmentV2 fields=2
     1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV2
+    2 segment_digest optional bytes
+  riffdb.storage.v1.StoredCommandSegmentV3 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV3
     2 segment_digest optional bytes
   riffdb.storage.v1.StoredCommitRecordV1 fields=15
     1 commit_sequence optional uint64
@@ -844,6 +873,15 @@ messages
     13 provenance_id optional bytes
     14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
     15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+  riffdb.storage.v1.StoredCommittedEntityTransitionV1 fields=8
+    1 command_sequence optional uint64
+    2 mutation_ordinal optional uint32
+    3 target optional .riffdb.storage.v1.EntityTargetV1
+    4 prior_state optional .riffdb.storage.v1.StoredEntityChainStateV1
+    5 prior_chain_revision optional uint64
+    6 prior_transition_hash optional bytes proto3-optional oneof=_prior_transition_hash
+    7 next_state optional .riffdb.storage.v1.StoredEntityChainStateV1
+    8 transition_hash optional bytes
   riffdb.storage.v1.StoredContractBundleV1 fields=4
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -893,6 +931,16 @@ messages
     2 event_type_id optional uint32
     3 canonical_payload optional bytes
     4 event_hash optional bytes
+  riffdb.storage.v1.StoredEntityChainHeadV1 fields=5
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 chain_revision optional uint64
+    3 state optional .riffdb.storage.v1.StoredEntityChainStateV1
+    4 last_command_sequence optional uint64
+    5 last_transition_hash optional bytes
+  riffdb.storage.v1.StoredEntityChainStateV1 fields=3
+    1 kind optional .riffdb.storage.v1.EntityChainStateKindV1
+    2 entity_version optional uint64 proto3-optional oneof=_entity_version
+    3 value_hash optional bytes
   riffdb.storage.v1.StoredEntityRecordV1 fields=5
     1 target optional .riffdb.storage.v1.EntityTargetV1
     2 entity_version optional uint64
@@ -1135,6 +1183,13 @@ messages
     19 previous_checkpoint_hash optional bytes proto3-optional oneof=_previous_checkpoint_hash
     20 checkpoint_hash optional bytes
     21 retention_watermark_sequence optional uint64
+  riffdb.storage.v1.StoredValidatedPrefixCheckpointV2 fields=6
+    1 base optional .riffdb.storage.v1.StoredValidatedPrefixCheckpointV1
+    2 live_entity_count optional uint64
+    3 deleted_entity_count optional uint64
+    4 entity_transition_count optional uint64
+    5 entity_transition_fingerprint optional bytes
+    6 checkpoint_hash optional bytes
   riffdb.storage.v1.TenantScopeV1 fields=2
     1 global optional .riffdb.storage.v1.UnitV1 oneof=scope
     2 tenant_id optional string oneof=scope
@@ -2453,6 +2508,11 @@ enums
     1 DURABILITY_MODE_SYNC
     2 DURABILITY_MODE_GROUP
     3 DURABILITY_MODE_MEMORY
+  riffdb.storage.v1.EntityChainStateKindV1 values=4
+    0 ENTITY_CHAIN_STATE_KIND_UNSPECIFIED
+    1 ENTITY_CHAIN_STATE_KIND_NEVER_EXISTED
+    2 ENTITY_CHAIN_STATE_KIND_LIVE
+    3 ENTITY_CHAIN_STATE_KIND_DELETED
   riffdb.storage.v1.ExecutionFailureCodeV1 values=4
     0 EXECUTION_FAILURE_CODE_UNSPECIFIED
     1 EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT

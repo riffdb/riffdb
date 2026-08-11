@@ -14,10 +14,11 @@ use redb::{
     ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle, WriteTransaction,
 };
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, CommandSegmentDigestV1, DatabaseIdentityProbe,
-    DatabaseIdentityProbePort, DatabaseInitializationPort, DatabaseInitializationResult,
-    DeferredCommandFence, HISTORY_INCARNATION_INITIAL, StorageError, StorageErrorKind,
-    StorageFormatVersion, StoredIndexEpochV1,
+    ApplicationSequenceAllocator, CommandSegmentDigestV1, CommittedEntityTransitionV1,
+    DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
+    DatabaseInitializationResult, DeferredCommandFence, EntityChainHeadV1, EntityChainStateV1,
+    HISTORY_INCARNATION_INITIAL, StorageError, StorageErrorKind, StorageFormatVersion,
+    StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
         decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
@@ -28,12 +29,13 @@ use riffdb_storage_api::{
     },
 };
 use riffdb_types::{
-    AdministrationSequence, CommitSequence, DatabaseId, IndexEpoch, IndexId, SchemaHash,
+    AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, IndexEpoch, IndexId,
+    SchemaHash,
 };
 
 use crate::codec::{
     decode_administration_audit_with_command_tables, decode_commit_with_event_table,
-    decode_event_route_v1, decode_index_entry_v2, decode_index_epoch_v1,
+    decode_entity_record_v1, decode_event_route_v1, decode_index_entry_v2, decode_index_epoch_v1,
     decode_legacy_index_epoch_v1, decode_outbox_with_event_table,
     decode_service_audit_request_index_v1, encode_commit_record_v1, encode_event_route_v1,
     encode_index_epoch_v1, encode_outbox_intent_v1, encode_service_audit_request_index_v1,
@@ -55,12 +57,12 @@ use crate::keys::{
     encode_audit_by_request_prefix, encode_event_route_key, encode_partition_index_key,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, META,
-    META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
-    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES,
-    TABLE_NAMES, create_all_tables,
+    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES,
+    EVENTS, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
+    META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_DATABASE_ID,
+    META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS,
+    META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -756,6 +758,7 @@ enum RegistryMigration {
     RetentionWatermark,
     ReactiveConsumers,
     ApplicationInstallationCampaign,
+    EntityTransitions,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -817,6 +820,11 @@ pub(crate) const PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST: [u8; 32] = [
     0xe6, 0x50, 0x78, 0x74, 0xb8, 0x90, 0x77, 0x1f, 0xe7, 0x1c, 0xd6, 0xe2, 0x73, 0x08, 0x2d, 0xc3,
     0xdd, 0x22, 0xd5, 0xd3, 0x4d, 0xa4, 0x0a, 0x4e, 0x47, 0x11, 0x1f, 0xfa, 0x39, 0xaf, 0xec, 0x24,
+];
+/// Registry digest immediately before delete-aware entity transitions became current.
+pub(crate) const PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST: [u8; 32] = [
+    0x2f, 0x0c, 0x23, 0xfd, 0x25, 0x65, 0x64, 0x42, 0xcf, 0x6a, 0x43, 0x8b, 0x39, 0x09, 0x5b, 0x92,
+    0xa2, 0xf9, 0x56, 0xcd, 0x89, 0x8b, 0x95, 0x27, 0xde, 0x8f, 0x56, 0xa9, 0xbb, 0x08, 0x72, 0xa7,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1249,6 +1257,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST)
                 {
                     RegistryMigration::ApplicationInstallationCampaign
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::EntityTransitions
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1431,6 +1443,19 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST),
+            )?;
+        }
+
+        if format == StorageFormatVersion::V2
+            && (matches!(registry_migration, RegistryMigration::EntityTransitions)
+                || observed_registry_digest(&self.shared)?
+                    == SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST))
+        {
+            migrate_entity_transition_heads(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -1551,6 +1576,24 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST),
+            )?;
+            install_reactive_consumer_tables(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST),
+            )?;
+            install_application_installation_campaign_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST),
+            )?;
+            migrate_entity_transition_heads(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -2529,6 +2572,151 @@ fn publish_record_registry(
         .insert(META_RECORD_REGISTRY, current.as_bytes())
         .map_err(precommit_storage_error)?;
     drop(metadata);
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
+}
+
+fn observed_registry_digest(shared: &SharedRedb) -> Result<SchemaHash, StorageError> {
+    let transaction = shared.database.begin_read().map_err(transaction_error)?;
+    let metadata = transaction.open_table(META).map_err(table_error)?;
+    let encoded = metadata
+        .get(META_RECORD_REGISTRY)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    Ok(*decode_record_registry_v2(encoded.value())
+        .map_err(crate::error::codec_error)?
+        .value())
+}
+
+/// Bootstraps the delete-aware entity-chain catalog at one exact predecessor
+/// frontier. The heads, receipt, and retirement of the old checkpoint publish
+/// atomically; the registry digest advances only in the following transaction.
+fn migrate_entity_transition_heads(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    create_all_tables(&transaction).map_err(table_error)?;
+
+    let (database_id, history_incarnation) = {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let identity = meta
+            .get(META_DATABASE_ID)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let history = meta
+            .get(META_HISTORY_INCARNATION)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        (
+            *decode_database_identity_v1(identity.value())
+                .map_err(crate::error::codec_error)?
+                .value(),
+            *decode_history_incarnation_v1(history.value())
+                .map_err(crate::error::codec_error)?
+                .value(),
+        )
+    };
+    let application_frontier = {
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        commits
+            .last()
+            .map_err(precommit_storage_error)?
+            .map(|(key, _)| {
+                crate::keys::decode_application_sequence_key(key.value())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))
+            })
+            .transpose()?
+    };
+    let administration_frontier = {
+        let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+        audit
+            .last()
+            .map_err(precommit_storage_error)?
+            .map(|(key, _)| {
+                decode_audit_key(key.value())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))
+            })
+            .transpose()?
+    };
+    let predecessor = DualFrontier::new(application_frontier, administration_frontier);
+    let receipt = riffdb_storage_api::ChangelogV2RotationReceipt::new(
+        database_id,
+        history_incarnation,
+        predecessor,
+        [0; 32],
+    )
+    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+
+    {
+        let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+        let mut heads = transaction
+            .open_table(ENTITY_CHAIN_HEADS)
+            .map_err(table_error)?;
+        if !heads.is_empty().map_err(precommit_storage_error)? {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let mut ordinal = 0_u32;
+        for row in entities.iter().map_err(precommit_storage_error)? {
+            let (key, value) = row.map_err(precommit_storage_error)?;
+            let entity = decode_entity_record_v1(value.value())?.into_parts().0;
+            if entity.target().key().as_bytes() != key.value() {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let sequence =
+                application_frontier.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let transition = CommittedEntityTransitionV1::new(
+                sequence,
+                ordinal,
+                entity.target().clone(),
+                EntityChainStateV1::NeverExisted,
+                0,
+                None,
+                EntityChainStateV1::Live {
+                    version: entity.entity_version(),
+                    value_hash: riffdb_storage_api::derive_entity_record_hash_v1(&entity)
+                        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?,
+                },
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let head = EntityChainHeadV1::from_genesis(&transition)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let encoded = riffdb_storage_api::encode_entity_chain_head_v1(&head)
+                .map_err(crate::error::codec_error)?;
+            heads
+                .insert(key.value(), encoded.as_bytes())
+                .map_err(precommit_storage_error)?;
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        }
+    }
+    {
+        let mut meta = transaction.open_table(META).map_err(table_error)?;
+        let receipt_status = meta
+            .get(META_CHANGELOG_V2_ROTATION_RECEIPT)
+            .map_err(precommit_storage_error)?
+            .map(|existing| {
+                riffdb_storage_api::decode_changelog_v2_rotation_receipt_v1(existing.value())
+                    .map(|decoded| decoded.value() == &receipt)
+                    .map_err(crate::error::codec_error)
+            })
+            .transpose()?;
+        match receipt_status {
+            Some(true) => {}
+            Some(false) => return Err(storage_error(StorageErrorKind::CorruptData)),
+            None => {
+                let encoded = riffdb_storage_api::encode_changelog_v2_rotation_receipt_v1(receipt)
+                    .map_err(crate::error::codec_error)?;
+                meta.insert(META_CHANGELOG_V2_ROTATION_RECEIPT, encoded.as_bytes())
+                    .map_err(precommit_storage_error)?;
+            }
+        }
+        meta.remove(META_VALIDATED_PREFIX_CHECKPOINT)
+            .map_err(precommit_storage_error)?;
+    }
     shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
     shared.commit_durable(transaction)?;
     shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
@@ -5946,8 +6134,14 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
+    // The immediate predecessor lacks only delete-aware entity-chain heads.
+    let mut pre_entity_transitions = expected.clone();
+    pre_entity_transitions.remove("entity_chain_heads");
+    if tables == pre_entity_transitions {
+        return Ok(LayoutState::Initialized);
+    }
     // Pre-retention layout: missing history_tombstones is migration-eligible.
-    let mut pre_retention = expected.clone();
+    let mut pre_retention = pre_entity_transitions;
     pre_retention.remove("history_tombstones");
     if tables == pre_retention {
         return Ok(LayoutState::Initialized);
@@ -5991,6 +6185,15 @@ fn write_initial_metadata(
     .map_err(crate::error::codec_error)?;
     let history = encode_history_incarnation_v1(HISTORY_INCARNATION_INITIAL)
         .map_err(crate::error::codec_error)?;
+    let rotation = riffdb_storage_api::ChangelogV2RotationReceipt::new(
+        database_id,
+        HISTORY_INCARNATION_INITIAL,
+        DualFrontier::INITIAL,
+        [0; 32],
+    )
+    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let rotation = riffdb_storage_api::encode_changelog_v2_rotation_receipt_v1(rotation)
+        .map_err(crate::error::codec_error)?;
 
     let mut table = transaction.open_table(META).map_err(table_error)?;
     table
@@ -6010,6 +6213,9 @@ fn write_initial_metadata(
         .map_err(precommit_storage_error)?;
     table
         .insert(META_HISTORY_INCARNATION, history.as_bytes())
+        .map_err(precommit_storage_error)?;
+    table
+        .insert(META_CHANGELOG_V2_ROTATION_RECEIPT, rotation.as_bytes())
         .map_err(precommit_storage_error)?;
     // Fresh databases never hold legacy INDEX_EPOCHS rows.
     table
@@ -6089,7 +6295,7 @@ where
                 // Optional proof-carrying checkpoint. Decode failures are NOT open
                 // errors: startup ignores an invalid checkpoint and runs full
                 // validation (fail-closed = full validation, never blocks open).
-                let _ = riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v1(
+                let _ = riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v2(
                     value.value(),
                 );
             }
@@ -6100,6 +6306,10 @@ where
             }
             META_RETENTION_HOLDS => {
                 let _ = riffdb_storage_api::proto_codec::decode_retention_holds_v1(value.value());
+            }
+            META_CHANGELOG_V2_ROTATION_RECEIPT => {
+                riffdb_storage_api::decode_changelog_v2_rotation_receipt_v1(value.value())
+                    .map_err(crate::error::codec_error)?;
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
@@ -6152,6 +6362,26 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
+
+    fn pin_predecessor_registry(
+        transaction: &redb::WriteTransaction,
+        predecessor: &riffdb_storage_api::CanonicalStoredEnvelopeV1,
+    ) {
+        let mut meta = transaction.open_table(META).expect("open metadata");
+        meta.insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor registry");
+        meta.remove(META_CHANGELOG_V2_ROTATION_RECEIPT)
+            .expect("remove successor rotation receipt");
+        drop(meta);
+        assert!(
+            transaction
+                .open_table(ENTITY_CHAIN_HEADS)
+                .expect("entity chain heads")
+                .is_empty()
+                .expect("head table length"),
+            "a predecessor fixture must not retain successor chain heads"
+        );
+    }
 
     #[test]
     fn async_checkpoint_starts_half_full_and_reserves_one_maximum_physical_frame() {
@@ -6447,11 +6677,7 @@ mod tests {
                 encoded_legacy.as_bytes(),
             )
             .expect("insert legacy generation");
-        transaction
-            .open_table(META)
-            .expect("open metadata")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor registry");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit generation fixture");
     }
 
@@ -6591,6 +6817,9 @@ mod tests {
         metadata
             .remove(META_RECORD_REGISTRY)
             .expect("remove final registry marker");
+        metadata
+            .remove(META_CHANGELOG_V2_ROTATION_RECEIPT)
+            .expect("remove successor rotation receipt");
         drop(metadata);
         transaction.commit().expect("commit mixed fixture");
         drop(store);
@@ -6692,11 +6921,7 @@ mod tests {
         let predecessor =
             encode_record_registry_v2(SchemaHash::from_bytes(PRE_EVENT_REFERENCE_REGISTRY_DIGEST))
                 .expect("encode predecessor registry");
-        transaction
-            .open_table(META)
-            .expect("open metadata")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor registry");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit WP-373 fixture");
         drop(store);
 
@@ -6802,11 +7027,7 @@ mod tests {
         let predecessor =
             encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
                 .expect("encode predecessor registry");
-        transaction
-            .open_table(META)
-            .expect("open metadata")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor registry");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction
             .commit()
             .expect("commit entity-reference fixture");
@@ -6904,11 +7125,7 @@ mod tests {
             PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST,
         ))
         .expect("encode pre-audit registry");
-        transaction
-            .open_table(META)
-            .expect("meta")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install pre-audit registry");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit fixture");
         drop(store);
 
@@ -6956,11 +7173,7 @@ mod tests {
         let predecessor =
             encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
                 .expect("encode predecessor");
-        transaction
-            .open_table(META)
-            .expect("meta")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit fixture");
         drop(store);
 
@@ -7017,11 +7230,7 @@ mod tests {
         let predecessor =
             encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
                 .expect("encode predecessor");
-        transaction
-            .open_table(META)
-            .expect("meta")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit 501-row fixture");
         drop(store);
 
@@ -7075,11 +7284,7 @@ mod tests {
             encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
                 .expect("encode predecessor");
         let transaction = store.shared.database.begin_write().expect("write");
-        transaction
-            .open_table(META)
-            .expect("meta")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit predecessor");
         drop(store);
         let migrated = RedbStore::open(&path.0).expect("empty path migrates");
@@ -7132,11 +7337,7 @@ mod tests {
             .expect("open commits")
             .insert(commit_key.as_slice(), commit.as_slice())
             .expect("insert historical commit");
-        transaction
-            .open_table(META)
-            .expect("open metadata")
-            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
-            .expect("install predecessor registry");
+        pin_predecessor_registry(&transaction, &predecessor);
         transaction.commit().expect("commit predecessor fixture");
         drop(store);
 
@@ -7377,6 +7578,8 @@ mod tests {
                 .expect("encode predecessor");
                 meta.insert(META_RECORD_REGISTRY, predecessor.as_bytes())
                     .expect("install predecessor");
+                meta.remove(META_CHANGELOG_V2_ROTATION_RECEIPT)
+                    .expect("remove successor rotation receipt");
             }
             transaction.commit().expect("commit pre-fence fixture");
         }

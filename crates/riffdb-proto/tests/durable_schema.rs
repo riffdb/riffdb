@@ -217,6 +217,15 @@ fn storage_source_import_and_type_inventory_is_exact() {
                     "riffdb/storage/v1/event_references_v2.proto",
                 ],
             ),
+            (
+                "riffdb/storage/v1/entity_transitions_v4.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/application.proto",
+                    "riffdb/storage/v1/command_segment_v1.proto",
+                    "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
+                    "riffdb/storage/v1/workflow_service_values_v3.proto",
+                ],
+            ),
             ("riffdb/storage/v1/envelope.proto".to_owned(), vec![]),
             (
                 "riffdb/storage/v1/event_references_v2.proto".to_owned(),
@@ -311,8 +320,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        139,
-        "138 semantic messages plus the unchanged StoredEnvelope"
+        147,
+        "146 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -320,7 +329,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.enum_type.len())
             .sum::<usize>(),
-        18
+        19
     );
     assert!(
         descriptors
@@ -341,9 +350,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 54);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 74);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 54);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 56);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 79);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 56);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -406,6 +415,11 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV3".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredApplicationInstallationCampaignV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredEntityChainHeadV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredChangelogV2RotationReceiptV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV4".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandSegmentV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -434,7 +448,6 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredContractWriteRetirementV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRetiredEntityRecordV1".to_owned());
     writable_names.push("riffdb.storage.v1.CapabilityRecordV2".to_owned());
-    writable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRetentionWatermarkV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
@@ -447,10 +460,13 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandLocatorV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandAuditLocatorV1".to_owned());
-    writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV3".to_owned());
-    writable_names.push("riffdb.storage.v1.StoredCommandSegmentV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredApplicationInstallationCampaignV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredEntityChainHeadV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredChangelogV2RotationReceiptV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV4".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandSegmentV3".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -579,8 +595,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 74);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 54);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 79);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 56);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -630,12 +646,12 @@ fn canonical_command_capsule_records_are_closed_current_schemas() {
     for (legacy, current, compact_tag) in [
         (
             "riffdb.storage.v1.StoredCommandCapsuleV2",
-            "riffdb.storage.v1.StoredCommandCapsuleV3",
+            "riffdb.storage.v1.StoredCommandCapsuleV4",
             54,
         ),
         (
             "riffdb.storage.v1.StoredCommandSegmentV1",
-            "riffdb.storage.v1.StoredCommandSegmentV2",
+            "riffdb.storage.v1.StoredCommandSegmentV3",
             55,
         ),
     ] {
@@ -644,7 +660,7 @@ fn canonical_command_capsule_records_are_closed_current_schemas() {
         let schema = writable_record_schema(current)
             .unwrap_or_else(|| panic!("{current} must be current writable"));
         assert_eq!(schema.compact_tag(), compact_tag, "{current}");
-        assert_eq!(schema.schema_revision(), 2, "{current}");
+        assert_eq!(schema.schema_revision(), 3, "{current}");
     }
 }
 
@@ -670,16 +686,16 @@ fn service_value_successors_preserve_compact_record_roles() {
             3,
         ),
         (
-            "riffdb.storage.v1.StoredCommandCapsuleV2",
             "riffdb.storage.v1.StoredCommandCapsuleV3",
+            "riffdb.storage.v1.StoredCommandCapsuleV4",
             54,
-            2,
+            3,
         ),
         (
-            "riffdb.storage.v1.StoredCommandSegmentV1",
             "riffdb.storage.v1.StoredCommandSegmentV2",
+            "riffdb.storage.v1.StoredCommandSegmentV3",
             55,
-            2,
+            3,
         ),
     ] {
         let legacy_schema = readable_record_schema(legacy)
@@ -822,6 +838,9 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredAdmittedProvenanceClaimsV1.source_commit",
         "StoredAdmittedProvenanceClaimsV1.source_repository",
         "StoredCatalogAdministrationV1.approval_id",
+        "StoredChangelogV2RotationReceiptV1.predecessor_administration_frontier",
+        "StoredChangelogV2RotationReceiptV1.predecessor_application_frontier",
+        "StoredCommittedEntityTransitionV1.prior_transition_hash",
         "StoredCommandAuditInvocationV1.approval_id",
         "StoredContractMigrationJournalV1.exclusive_cursor",
         "StoredContractMigrationJournalV1.frozen_application_frontier",
@@ -834,6 +853,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredProjectionControlV1.published_apply_mode",
         "StoredQueryModuleAdministrationV1.approval_id",
         "StoredEventConsumerV1.checkpoint",
+        "StoredEntityChainStateV1.entity_version",
         "StoredReactiveModuleAdministrationV1.approval_id",
         "StoredRetentionWatermarkV1.chain_root_registry_digest",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
@@ -999,6 +1019,7 @@ fn closed_oneof_and_enum_registries_are_exact() {
             ("CommandDerivedMemberV1", "COMMAND_DERIVED_MEMBER_UNSPECIFIED=0,COMMAND_DERIVED_MEMBER_COMMAND=1,COMMAND_DERIVED_MEMBER_AUDIT_STARTED=2,COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL=3,COMMAND_DERIVED_MEMBER_EVENT=4"),
             ("ContractMigrationJournalStepV1", "CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED=0,CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING=1,CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS=2,CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING=3,CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER=4,CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE=5"),
             ("DurabilityModeV1", "DURABILITY_MODE_UNSPECIFIED=0,DURABILITY_MODE_SYNC=1,DURABILITY_MODE_GROUP=2,DURABILITY_MODE_MEMORY=3"),
+            ("EntityChainStateKindV1", "ENTITY_CHAIN_STATE_KIND_UNSPECIFIED=0,ENTITY_CHAIN_STATE_KIND_NEVER_EXISTED=1,ENTITY_CHAIN_STATE_KIND_LIVE=2,ENTITY_CHAIN_STATE_KIND_DELETED=3"),
             ("ExecutionFailureCodeV1", "EXECUTION_FAILURE_CODE_UNSPECIFIED=0,EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT=1,EXECUTION_FAILURE_CODE_RESOURCE_LIMIT=2,EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT=3"),
             ("ProjectionFailureCodeV1", "PROJECTION_FAILURE_CODE_UNSPECIFIED=0,PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW=1,PROJECTION_FAILURE_CODE_MALFORMED_DURABLE_EVENT=2,PROJECTION_FAILURE_CODE_MISSING_COMMIT=3,PROJECTION_FAILURE_CODE_PLAN_OR_SCHEMA_UNAVAILABLE=4,PROJECTION_FAILURE_CODE_PROJECTION_STATE_INTEGRITY=5,PROJECTION_FAILURE_CODE_HARD_LIMIT_EXCEEDED=6"),
             ("ProjectionLifecycleV1", "PROJECTION_LIFECYCLE_UNSPECIFIED=0,PROJECTION_LIFECYCLE_BUILDING=1,PROJECTION_LIFECYCLE_CATCHING_UP=2,PROJECTION_LIFECYCLE_READY=3,PROJECTION_LIFECYCLE_DEGRADED=4,PROJECTION_LIFECYCLE_REBUILDING=5,PROJECTION_LIFECYCLE_INVALID=6"),

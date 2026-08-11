@@ -30,8 +30,8 @@ use crate::media::{JournalMedia, MediaFile, RealJournalMedia};
 
 use crate::keys::{decode_application_sequence_key, decode_audit_key};
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
-    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, PROVENANCE, SECONDARY_INDEXES,
+    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
+    IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, PROVENANCE, SECONDARY_INDEXES,
 };
 
 const FILE_MAGIC: [u8; 8] = *b"RDBJRN01";
@@ -84,6 +84,7 @@ pub(crate) enum JournalTable {
     Commits = 11,
     Audit = 12,
     AuditByRequest = 13,
+    EntityChainHeads = 14,
 }
 
 impl JournalTable {
@@ -102,6 +103,7 @@ impl JournalTable {
             11 => Ok(Self::Commits),
             12 => Ok(Self::Audit),
             13 => Ok(Self::AuditByRequest),
+            14 => Ok(Self::EntityChainHeads),
             _ => Err(JournalCodecError::UnknownTable),
         }
     }
@@ -121,6 +123,7 @@ impl JournalTable {
             Self::Commits => riffdb_storage_api::CompositeTableV1::Commits,
             Self::Audit => riffdb_storage_api::CompositeTableV1::Audit,
             Self::AuditByRequest => riffdb_storage_api::CompositeTableV1::AuditByRequest,
+            Self::EntityChainHeads => riffdb_storage_api::CompositeTableV1::EntityChainHeads,
         }
     }
 }
@@ -610,7 +613,8 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
         | JournalTable::EventRoutes
         | JournalTable::Outbox
         | JournalTable::Provenance
-        | JournalTable::Commits => false,
+        | JournalTable::Commits
+        | JournalTable::EntityChainHeads => false,
     }
 }
 
@@ -2433,6 +2437,9 @@ pub(crate) fn apply_mutation(
         JournalTable::AuditByRequest => {
             apply_byte_mutation(transaction, AUDIT_BY_REQUEST, mutation)
         }
+        JournalTable::EntityChainHeads => {
+            apply_byte_mutation(transaction, ENTITY_CHAIN_HEADS, mutation)
+        }
     }
 }
 
@@ -2535,6 +2542,7 @@ pub(crate) fn read_value(
         JournalTable::Commits => COMMITS,
         JournalTable::Audit => AUDIT,
         JournalTable::AuditByRequest => AUDIT_BY_REQUEST,
+        JournalTable::EntityChainHeads => ENTITY_CHAIN_HEADS,
     };
     transaction
         .open_table(definition)
@@ -2572,6 +2580,7 @@ pub(crate) fn read_write_value(
         JournalTable::Commits => COMMITS,
         JournalTable::Audit => AUDIT,
         JournalTable::AuditByRequest => AUDIT_BY_REQUEST,
+        JournalTable::EntityChainHeads => ENTITY_CHAIN_HEADS,
     };
     transaction
         .open_table(definition)
@@ -2598,6 +2607,7 @@ pub(crate) const fn byte_table_definition(
         JournalTable::Commits => Some(COMMITS),
         JournalTable::Audit => Some(AUDIT),
         JournalTable::AuditByRequest => Some(AUDIT_BY_REQUEST),
+        JournalTable::EntityChainHeads => Some(ENTITY_CHAIN_HEADS),
     }
 }
 

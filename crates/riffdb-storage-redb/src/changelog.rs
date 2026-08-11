@@ -133,6 +133,7 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
         CompositeTableV1::Commits => crate::journal::JournalTable::Commits,
         CompositeTableV1::Audit => crate::journal::JournalTable::Audit,
         CompositeTableV1::AuditByRequest => crate::journal::JournalTable::AuditByRequest,
+        CompositeTableV1::EntityChainHeads => crate::journal::JournalTable::EntityChainHeads,
     }
 }
 

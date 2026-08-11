@@ -25,12 +25,13 @@
 use redb::{Durability, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata};
 
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, EntityChainFingerprint, EntityTarget, StorageError,
-    StorageErrorKind, StoredValidatedPrefixCheckpointV1, ValidatedPrefixRetainedSnapshot,
-    ValidatedPrefixSequenceCounts,
+    ApplicationSequenceAllocator, EntityChainFingerprint, EntityTarget,
+    EntityTransitionFingerprint, StorageError, StorageErrorKind, StoredValidatedPrefixCheckpointV1,
+    StoredValidatedPrefixCheckpointV2, ValidatedPrefixEntityTransitionCounts,
+    ValidatedPrefixRetainedSnapshot, ValidatedPrefixSequenceCounts,
     proto_codec::{
-        current_record_registry_digest, decode_validated_prefix_checkpoint_v1,
-        encode_validated_prefix_checkpoint_v1,
+        current_record_registry_digest, decode_validated_prefix_checkpoint_v2,
+        encode_validated_prefix_checkpoint_v2,
     },
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, EntityVersion, EventId};
@@ -41,8 +42,8 @@ use crate::error::{precommit_storage_error, storage_error, table_error, transact
 use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, META,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
+    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
+    IDEMPOTENCY, META, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
 };
 use crate::store::SharedRedb;
 
@@ -174,7 +175,7 @@ pub(crate) fn write_validated_prefix_checkpoint(
     shared.note_checkpoint_count_rows_walked(rows_walked);
 
     let encoded =
-        encode_validated_prefix_checkpoint_v1(&checkpoint).map_err(crate::error::codec_error)?;
+        encode_validated_prefix_checkpoint_v2(&checkpoint).map_err(crate::error::codec_error)?;
     let mut write = shared.database.begin_write().map_err(transaction_error)?;
     write.set_two_phase_commit(true);
     write
@@ -204,7 +205,7 @@ pub(crate) fn build_checkpoint_from_snapshot(
     retained: &riffdb_storage_api::RetainedMetadataV1,
     source: CheckpointCountSource,
     rows_walked: &mut u64,
-) -> Result<StoredValidatedPrefixCheckpointV1, StorageError> {
+) -> Result<StoredValidatedPrefixCheckpointV2, StorageError> {
     let database_id = retained.database_id();
     let history_incarnation = retained.history_incarnation();
     let registry_digest = current_record_registry_digest();
@@ -243,7 +244,7 @@ pub(crate) fn build_checkpoint_from_snapshot(
 
     let retention_watermark_sequence = load_retention_watermark_sequence(transaction)?;
 
-    StoredValidatedPrefixCheckpointV1::new(
+    let base = StoredValidatedPrefixCheckpointV1::new(
         database_id,
         history_incarnation,
         registry_digest,
@@ -255,7 +256,85 @@ pub(crate) fn build_checkpoint_from_snapshot(
         previous,
         retention_watermark_sequence,
     )
-    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let (entity_counts, entity_transition_fingerprint) = entity_transition_proof(transaction)?;
+    StoredValidatedPrefixCheckpointV2::new(base, entity_counts, entity_transition_fingerprint)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+}
+
+fn entity_transition_proof(
+    transaction: &ReadTransaction,
+) -> Result<
+    (
+        ValidatedPrefixEntityTransitionCounts,
+        EntityTransitionFingerprint,
+    ),
+    StorageError,
+> {
+    let table = transaction
+        .open_table(ENTITY_CHAIN_HEADS)
+        .map_err(table_error)?;
+    let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+    let mut heads = Vec::new();
+    let mut live_entity_count = 0_u64;
+    let mut deleted_entity_count = 0_u64;
+    let mut entity_transition_count = 0_u64;
+    for row in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        let head = riffdb_storage_api::decode_entity_chain_head_v1(value.value())
+            .map_err(crate::error::codec_error)?
+            .into_parts()
+            .0;
+        if head.target().key().as_bytes() != key.value() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        entity_transition_count = entity_transition_count
+            .checked_add(head.chain_revision())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        match head.state() {
+            riffdb_storage_api::EntityChainStateV1::Live { .. } => {
+                if entities
+                    .get(key.value())
+                    .map_err(precommit_storage_error)?
+                    .is_none()
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                live_entity_count = live_entity_count
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            riffdb_storage_api::EntityChainStateV1::Deleted => {
+                if entities
+                    .get(key.value())
+                    .map_err(precommit_storage_error)?
+                    .is_some()
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                deleted_entity_count = deleted_entity_count
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            riffdb_storage_api::EntityChainStateV1::NeverExisted => {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+        }
+        heads.push(head);
+    }
+    if entities.len().map_err(precommit_storage_error)? != live_entity_count {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let fingerprint = EntityTransitionFingerprint::from_sorted_heads(heads.iter())
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    Ok((
+        ValidatedPrefixEntityTransitionCounts {
+            live_entity_count,
+            deleted_entity_count,
+            entity_transition_count,
+        },
+        fingerprint,
+    ))
 }
 
 /// Reference definition of the eight below-S counts: one full pass per class.
@@ -413,8 +492,8 @@ fn load_previous_hash(
     else {
         return Ok(None);
     };
-    match decode_validated_prefix_checkpoint_v1(value.value()) {
-        Ok(item) => Ok(Some(item.into_parts().0.checkpoint_hash())),
+    match decode_validated_prefix_checkpoint_v2(value.value()) {
+        Ok(item) => Ok(Some(item.into_parts().0.base().checkpoint_hash())),
         Err(_) => Ok(None),
     }
 }
@@ -435,10 +514,11 @@ pub(crate) fn load_active_checkpoint(
     else {
         return Err(CheckpointIgnoreReason::Absent);
     };
-    let checkpoint = match decode_validated_prefix_checkpoint_v1(value.value()) {
+    let checkpoint_v2 = match decode_validated_prefix_checkpoint_v2(value.value()) {
         Ok(item) => item.into_parts().0,
         Err(_) => return Err(CheckpointIgnoreReason::DecodeFailed),
     };
+    let checkpoint = checkpoint_v2.base();
     // from_stored_parts already rechecked self-hash; recompute for belt-and-suspenders.
     let computed = checkpoint
         .computed_hash()
@@ -480,6 +560,13 @@ pub(crate) fn load_active_checkpoint(
         || counts.audit_by_request_count > full_counts[22]
     {
         return Err(CheckpointIgnoreReason::CountImpossible);
+    }
+    let (entity_counts, entity_transition_fingerprint) = entity_transition_proof(transaction)
+        .map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?;
+    if entity_counts != checkpoint_v2.entity_counts()
+        || entity_transition_fingerprint != checkpoint_v2.entity_transition_fingerprint()
+    {
+        return Err(CheckpointIgnoreReason::EntityChainMismatch);
     }
     // Entity-chain fingerprint must match the reconstructed-at-S map from current
     // ENTITIES adjusted by suffix. Mismatch → full validation. Contract-migration

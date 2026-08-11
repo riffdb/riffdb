@@ -281,6 +281,28 @@ impl ChangelogV2RotationReceipt {
         })
     }
 
+    /// Reconstructs a durable receipt and verifies both derived hashes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_stored_parts(
+        database_id: DatabaseId,
+        history_incarnation: u64,
+        predecessor: DualFrontier,
+        v1_terminal_hash: [u8; HASH_BYTES],
+        v2_chain_anchor: [u8; HASH_BYTES],
+        receipt_hash: [u8; HASH_BYTES],
+    ) -> Result<Self, ChangelogFrameV2Error> {
+        let value = Self::new(
+            database_id,
+            history_incarnation,
+            predecessor,
+            v1_terminal_hash,
+        )?;
+        if value.v2_chain_anchor != v2_chain_anchor || value.receipt_hash != receipt_hash {
+            return Err(ChangelogFrameV2Error::ChecksumMismatch);
+        }
+        Ok(value)
+    }
+
     /// Database identity at rotation.
     #[must_use]
     pub const fn database_id(self) -> DatabaseId {

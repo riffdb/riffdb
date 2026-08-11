@@ -25,7 +25,7 @@ pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative per-entry ordered-map and enum overhead charge.
 const OVERLAY_ENTRY_OVERHEAD: usize = 64;
-const TABLE_COUNT: usize = 13;
+const TABLE_COUNT: usize = 14;
 
 /// Closed authoritative table catalog shared by journal overlays.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -57,6 +57,8 @@ pub enum CompositeTableV1 {
     Audit = 12,
     /// Service-audit request lookup rows.
     AuditByRequest = 13,
+    /// Authoritative delete-aware entity-chain heads.
+    EntityChainHeads = 14,
 }
 
 impl CompositeTableV1 {
@@ -75,6 +77,7 @@ impl CompositeTableV1 {
         Self::Commits,
         Self::Audit,
         Self::AuditByRequest,
+        Self::EntityChainHeads,
     ];
 
     const fn index(self) -> usize {

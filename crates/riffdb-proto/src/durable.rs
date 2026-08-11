@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 74;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 79;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 54;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 56;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -202,6 +202,14 @@ const INSTALLATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const INSTALLATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-installation-v1-record-bound.bin"
+));
+const ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin"
+));
+const ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES: &[u8; 40] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-entity-transitions-v4-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -1063,6 +1071,76 @@ const APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA: RecordSchema<'static> 
     )
     .with_compact_identity(57, 1);
 
+const fn entity_transitions_v4_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn entity_transitions_v4_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES[start],
+        ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES[start + 1],
+        ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES[start + 2],
+        ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! entity_transitions_v4_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal, $revision:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            entity_transitions_v4_schema_hash($index),
+            entity_transitions_v4_record_bound($index, 0),
+            entity_transitions_v4_record_bound($index, 4),
+            preflight_payload::<{ 69 + $index }>,
+            validate_payload::<{ 69 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, $revision)
+    };
+}
+
+const ENTITY_CHAIN_HEAD_V1_RECORD_SCHEMA: RecordSchema<'static> = entity_transitions_v4_schema!(
+    0,
+    "StoredEntityChainHeadV1",
+    v1::StoredEntityChainHeadV1,
+    58,
+    1
+);
+const CHANGELOG_V2_ROTATION_RECEIPT_V1_RECORD_SCHEMA: RecordSchema<'static> = entity_transitions_v4_schema!(
+    1,
+    "StoredChangelogV2RotationReceiptV1",
+    v1::StoredChangelogV2RotationReceiptV1,
+    59,
+    1
+);
+const COMMAND_CAPSULE_V4_RECORD_SCHEMA: RecordSchema<'static> = entity_transitions_v4_schema!(
+    2,
+    "StoredCommandCapsuleV4",
+    v1::StoredCommandCapsuleV4,
+    54,
+    3
+);
+const COMMAND_SEGMENT_V3_RECORD_SCHEMA: RecordSchema<'static> = entity_transitions_v4_schema!(
+    3,
+    "StoredCommandSegmentV3",
+    v1::StoredCommandSegmentV3,
+    55,
+    3
+);
+const VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA: RecordSchema<'static> = entity_transitions_v4_schema!(
+    4,
+    "StoredValidatedPrefixCheckpointV2",
+    v1::StoredValidatedPrefixCheckpointV2,
+    38,
+    2
+);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1251,6 +1329,20 @@ readable_message!(
     v1::StoredApplicationInstallationCampaignV1,
     APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA
 );
+readable_message!(
+    v1::StoredEntityChainHeadV1,
+    ENTITY_CHAIN_HEAD_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredChangelogV2RotationReceiptV1,
+    CHANGELOG_V2_ROTATION_RECEIPT_V1_RECORD_SCHEMA
+);
+readable_message!(v1::StoredCommandCapsuleV4, COMMAND_CAPSULE_V4_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandSegmentV3, COMMAND_SEGMENT_V3_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredValidatedPrefixCheckpointV2,
+    VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -1285,7 +1377,6 @@ writable_message!(v1::StoredContractMigrationRecordV1);
 writable_message!(v1::StoredContractWriteRetirementV1);
 writable_message!(v1::StoredRetiredEntityRecordV1);
 writable_message!(v1::CapabilityRecordV2);
-writable_message!(v1::StoredValidatedPrefixCheckpointV1);
 writable_message!(v1::StoredRetentionWatermarkV1);
 writable_message!(v1::StoredRetentionHoldsV1);
 writable_message!(v1::StoredHistoryTombstoneV1);
@@ -1303,9 +1394,12 @@ writable_message!(v1::StoredCommandDerivedIndexCheckpointV1);
 writable_message!(v1::StoredPendingAdmissionV3);
 writable_message!(v1::StoredExecutionFailedV3);
 writable_message!(v1::StoredOutcomeV3);
-writable_message!(v1::StoredCommandCapsuleV3);
-writable_message!(v1::StoredCommandSegmentV2);
 writable_message!(v1::StoredApplicationInstallationCampaignV1);
+writable_message!(v1::StoredEntityChainHeadV1);
+writable_message!(v1::StoredChangelogV2RotationReceiptV1);
+writable_message!(v1::StoredCommandCapsuleV4);
+writable_message!(v1::StoredCommandSegmentV3);
+writable_message!(v1::StoredValidatedPrefixCheckpointV2);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -1472,6 +1566,11 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_CAPSULE_V3_RECORD_SCHEMA,
     COMMAND_SEGMENT_V2_RECORD_SCHEMA,
     APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA,
+    ENTITY_CHAIN_HEAD_V1_RECORD_SCHEMA,
+    CHANGELOG_V2_ROTATION_RECEIPT_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V4_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V3_RECORD_SCHEMA,
+    VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1518,7 +1617,6 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA,
     RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA,
     CAPABILITY_V2_RECORD_SCHEMA,
-    VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA,
     RETENTION_WATERMARK_V1_RECORD_SCHEMA,
     RETENTION_HOLDS_V1_RECORD_SCHEMA,
     HISTORY_TOMBSTONE_V1_RECORD_SCHEMA,
@@ -1530,10 +1628,13 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_CAPSULE_V1_RECORD_SCHEMA,
     COMMAND_LOCATOR_V1_RECORD_SCHEMA,
     COMMAND_AUDIT_LOCATOR_V1_RECORD_SCHEMA,
-    COMMAND_CAPSULE_V3_RECORD_SCHEMA,
-    COMMAND_SEGMENT_V2_RECORD_SCHEMA,
     COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA,
     APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA,
+    ENTITY_CHAIN_HEAD_V1_RECORD_SCHEMA,
+    CHANGELOG_V2_ROTATION_RECEIPT_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V4_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V3_RECORD_SCHEMA,
+    VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 
