@@ -79,6 +79,53 @@ next action, typed safe failure, and a redacted terminal receipt. It never
 returns bearer credentials, host paths, seed values, numeric schema IDs, or
 durable storage encodings.
 
+## Execute the reviewed deployment
+
+`application deploy` can bind its existing exact deployment executor to the
+same immutable plan and campaign:
+
+```bash
+riffdb --config operator.toml application deploy \
+  --installation-plan installation-plan.json \
+  --installation-campaign-id 018f2f85-3c20-7a31-8f11-112233445566 \
+  --provision-role AppRole
+```
+
+Both flags are required together. Before opening a transport, the CLI strictly
+decodes the source, exact lock, generated artifacts, manifest, query/reactive
+modules, selected role, seed inputs, target database/environment/lineage, and
+plan. Any mismatch fails locally and makes no remote application mutation. The
+campaign is resumed immediately before deployment so conflicting remote state
+also stops the invocation before the existing deploy executor runs.
+
+The reviewed successor capability ID comes from the plan's credential
+destination. The deployer never substitutes a freshly generated capability ID
+for a plan-bound install or rotation. Existing local deployment state must be
+empty, already name that successor, or name the plan's exact predecessor with
+explicit `--replace-role-credential`.
+
+Driver proof remains an external observation and therefore splits a seeded
+installation into honest phases:
+
+1. Run plan-bound `application deploy` without `--seed`.
+2. Exercise every declared generated driver, then submit the complete
+   `--driver-proof` set with `application install`.
+3. Resume the same plan-bound deploy with `--seed`. Each seed remains an
+   ordinary resumable command batch; the CLI submits only its value-free
+   terminal counters to the campaign.
+
+The final deploy output includes `installation_campaign_id`,
+`installation_plan_hash`, `installation_phase`, and
+`installation_next_action`. A running campaign is never labeled installed.
+Only the server-sealed receipt yields `installation_phase: installed`.
+
+The v1 local artifact inventory uses fixed symbolic singleton names
+`manifest`, `contract`, `rust`, `typescript`, `go`, `python`, `mcp`, and
+`migration`; query and reactive artifacts use their declared module names.
+Manifest seed inputs use `seed-001`, `seed-002`, and so on in manifest order,
+with the domain-separated content hash and exact nonempty command count. Host
+paths never enter the plan.
+
 ## Durable and authorization behavior
 
 - Campaign state lives inside the selected RiffDB database in a versioned,
@@ -119,9 +166,24 @@ driver identity handshake and each seed through ordinary compiled commands.
 The attestation does not grant application-write authority and does not turn
 seed execution into a privileged bulk-write path.
 
-The existing `application deploy`, migration, role, credential, driver, and
-seed operations remain the available executors. The current CLI `application
-install` command starts, observes, and accepts exact driver/seed completion,
-but does not yet invoke those executors automatically. Until that controller
-composition lands, do not interpret a `running` campaign as a completed
-application deployment.
+Plan-bound deployment composes the existing exact migration and selected-role
+deploy shapes. When the campaign reaches `apply_migration`, deployment submits
+the plan's locked migration bundle and confirmation under a deterministic
+migration operation ID derived from the campaign ID. A running migration
+returns `migration_running` with its phase and `resume_application_deploy`;
+the invocation does not continue into contract, module, role, or seed work.
+Rerunning the identical command resumes the retained operation, rechecks its
+parent, successor, and migration identities, and advances only after the
+migration reports `succeeded`. Failed-closed or substituted operations never
+advance the campaign.
+
+Every
+role and credential destination remains present in the immutable plan and is
+verified by the server; a multi-role application invokes the same plan-bound
+deploy once per role. Each destination gets a disjoint protected deployment
+state and credential directory, so one role cannot overwrite or silently
+replace another. The seed invocation must select a planned role authorized for
+every declared seed command. Installation never invents migration confirmation,
+backup policy, or downtime approval: all three are exact, reviewed inputs of
+the immutable plan and the underlying migration operation retains its existing
+backup and offline-exclusive owners.

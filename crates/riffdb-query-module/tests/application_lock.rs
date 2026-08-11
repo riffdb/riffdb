@@ -119,12 +119,12 @@ fn lock_covers_every_compiler_owned_identity_and_generated_artifact() {
     }
     assert!(!text.contains("tenant_id"));
     assert!(!text.contains("credential"));
-    assert_eq!(
-        ApplicationLock::decode_canonical(lock.canonical_bytes())
-            .expect("strict round trip")
-            .identity(),
-        lock.identity()
-    );
+    let decoded =
+        ApplicationLock::decode_canonical(lock.canonical_bytes()).expect("strict round trip");
+    assert_eq!(decoded.identity(), lock.identity());
+    let mut expected_artifacts = artifacts.to_vec();
+    expected_artifacts.sort_by(|left, right| left.path().cmp(right.path()));
+    assert_eq!(decoded.artifacts(), expected_artifacts);
 }
 
 #[test]

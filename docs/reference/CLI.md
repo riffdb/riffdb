@@ -655,19 +655,37 @@ Arguments:
 
 Options:
       --config <PATH>
-      --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
+
+      --lock <APPLICATION_LOCK>
+          [default: riffdb.application.lock.json]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --provision-role <ROLE>
+
       --database <DATABASE>
+
       --tenant <TENANT>
-      --lifetime-seconds <SECONDS>         [default: 28800]
-      --output <human|json>                [possible values: human, json]
+
+      --lifetime-seconds <SECONDS>
+          [default: 28800]
+      --output <human|json>
+          [possible values: human, json]
       --max-attempts <1..10>
+
       --seed
+
       --credential-file <PATH>
-      --seed-concurrency <1..32>           [default: 8]
+
+      --seed-concurrency <1..32>
+          [default: 8]
       --replace-role-credential
-  -h, --help                               Print help
+
+      --installation-plan <CANONICAL_PLAN>
+          Binds deployment to one exact installation plan and campaign
+      --installation-campaign-id <UUID_V7>
+          Caller-stable campaign resumed before and after remote deployment
+  -h, --help
+          Print help
 ```
 
 #### `riffdb application bind-dev-role`

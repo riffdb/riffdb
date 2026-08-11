@@ -10681,6 +10681,7 @@ work_packages:
   allowed_paths: [Cargo.lock, Cargo.toml, SPEC.md, work_packages.yaml, adr/**, proto/**,
     fixtures/proto/**, fixtures/application-manifests/**, fixtures/application-locks/**,
     fixtures/installation/**, crates/riffdb-types/**, crates/riffdb-application/**,
+    crates/riffdb-query-module/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
     crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-proto/examples/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,

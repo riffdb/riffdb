@@ -184,6 +184,20 @@ impl GeneratedApplicationArtifactKind {
             Self::ReactiveModule => "reactive_module",
         }
     }
+
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "manifest" => Self::Manifest,
+            "rust" => Self::Rust,
+            "typescript" => Self::TypeScript,
+            "go" => Self::Go,
+            "python" => Self::Python,
+            "mcp" => Self::Mcp,
+            "contract_bundle" => Self::ContractBundle,
+            "reactive_module" => Self::ReactiveModule,
+            _ => return None,
+        })
+    }
 }
 
 /// One generated output supplied to lock compilation.
@@ -246,6 +260,7 @@ pub struct ApplicationLock {
     manifest_hash: ApplicationManifestHash,
     canonical_bytes: Vec<u8>,
     identity: ApplicationLockHash,
+    artifacts: Vec<GeneratedApplicationArtifact>,
     contract_bundle_artifact: Option<GeneratedApplicationArtifact>,
     migrations: Vec<LockedApplicationMigration>,
 }
@@ -701,6 +716,7 @@ impl ApplicationLock {
             manifest_hash: manifest.identity(),
             identity: hash_application_lock(&canonical_bytes),
             canonical_bytes,
+            artifacts,
             contract_bundle_artifact,
             migrations,
         })
@@ -733,41 +749,28 @@ impl ApplicationLock {
             object,
             "exact_manifest_hash",
         )?)?);
-        let contract_bundle_artifact = if matches!(
+        let artifacts = required(object, "artifacts")?
+            .as_array()
+            .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
+            .iter()
+            .map(decode_generated_artifact)
+            .collect::<Result<Vec<_>, _>>()?;
+        let contract_bundle_artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.kind == GeneratedApplicationArtifactKind::ContractBundle)
+            .cloned();
+        if matches!(
             schema,
             APPLICATION_LOCK_SCHEMA_V3
                 | APPLICATION_LOCK_SCHEMA_V4
                 | APPLICATION_LOCK_SCHEMA_V5
                 | APPLICATION_LOCK_SCHEMA_V6
-        ) {
-            let artifacts = required(object, "artifacts")?
-                .as_array()
-                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
-            let value = artifacts
-                .iter()
-                .find(|artifact| {
-                    artifact.get("kind").and_then(Value::as_str) == Some("contract_bundle")
-                })
-                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
-            let artifact = value
-                .as_object()
-                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
-            Some(GeneratedApplicationArtifact {
-                kind: GeneratedApplicationArtifactKind::ContractBundle,
-                path: required(artifact, "path")?
-                    .as_str()
-                    .ok_or_else(|| {
-                        ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape)
-                    })?
-                    .to_owned(),
-                content_hash: GeneratedArtifactHash::from_bytes(parse_hash(required(
-                    artifact,
-                    "content_hash",
-                )?)?),
-            })
-        } else {
-            None
-        };
+        ) && contract_bundle_artifact.is_none()
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
+            ));
+        }
         let migrations = if matches!(
             schema,
             APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5 | APPLICATION_LOCK_SCHEMA_V6
@@ -787,6 +790,7 @@ impl ApplicationLock {
             manifest_hash,
             identity: hash_application_lock(&canonical),
             canonical_bytes: canonical,
+            artifacts,
             contract_bundle_artifact,
             migrations,
         })
@@ -814,6 +818,12 @@ impl ApplicationLock {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_bytes
+    }
+
+    /// Exact compiler-generated artifact inventory retained by this lock.
+    #[must_use]
+    pub fn artifacts(&self) -> &[GeneratedApplicationArtifact] {
+        &self.artifacts
     }
 
     /// Domain-separated lock identity.
@@ -919,6 +929,29 @@ fn migration_value(migration: &LockedApplicationMigration) -> Value {
             "path": migration.source_path,
             "source_hash": hex(migration.source_hash.as_bytes()),
         },
+    })
+}
+
+fn decode_generated_artifact(
+    value: &Value,
+) -> Result<GeneratedApplicationArtifact, ApplicationLockError> {
+    let artifact = value
+        .as_object()
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+    let kind = required(artifact, "kind")?
+        .as_str()
+        .and_then(GeneratedApplicationArtifactKind::parse)
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+    Ok(GeneratedApplicationArtifact {
+        kind,
+        path: required(artifact, "path")?
+            .as_str()
+            .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
+            .to_owned(),
+        content_hash: GeneratedArtifactHash::from_bytes(parse_hash(required(
+            artifact,
+            "content_hash",
+        )?)?),
     })
 }
 

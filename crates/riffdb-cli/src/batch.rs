@@ -57,6 +57,12 @@ pub(crate) struct BatchSource {
     items: Vec<BatchItem>,
 }
 
+impl BatchSource {
+    pub(crate) fn item_count(&self) -> usize {
+        self.items.len()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BatchOptions {
     pub(crate) command_name: String,
