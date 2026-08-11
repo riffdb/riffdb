@@ -78,8 +78,10 @@ use riffdb_service::{
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationInstallationCampaignId,
     ApplicationRoleHash, Audience, BackupNameV1, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommandId,
-    CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationApplyConfirmation,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+    CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
+    ContractBundleHash, ContractLineage, ContractMigrationApplyConfirmation,
     ContractMigrationOperationId, ContractMigrationOperationKind, ContractVersion, CurrencyCode,
     Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId,
     EventConsumerName, EventLeaseToken, FieldId, FrontierPosition, GeneratedArtifactHash,
@@ -87,8 +89,8 @@ use riffdb_types::{
     OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
     OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
     ProvenanceId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
-    RequestId, RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope,
-    Timestamp,
+    RequestId, RevocationReasonCodeV1, RowPolicyName, SchemaHash, ScopedPartitionV1, TenantId,
+    TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -4244,6 +4246,7 @@ pub fn bootstrap_capability_request_from_proto(
 pub fn capability_grant_from_proto(
     grant: v1::CapabilityGrant,
 ) -> Result<CapabilityGrantV1, Status> {
+    let row_policy = grant.row_policy;
     let tenant_scope = tenant_scope_from_proto(grant.tenant_scope.ok_or_else(invalid_request)?)?;
     let partition_scope =
         partition_scope_from_proto(grant.partition_scope.ok_or_else(invalid_request)?)?;
@@ -4278,7 +4281,7 @@ pub fn capability_grant_from_proto(
         .into_iter()
         .map(capability_permission_kind_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    CapabilityGrantV1::new(
+    let grant = CapabilityGrantV1::new(
         tenant_scope,
         partition_scope,
         permissions,
@@ -4286,7 +4289,74 @@ pub fn capability_grant_from_proto(
         max_scan_rows,
         approval_required,
     )
-    .map_err(|_| invalid_request())
+    .map_err(|_| invalid_request())?;
+    let Some(row_policy) = row_policy else {
+        return Ok(grant);
+    };
+    let role_hash = ApplicationRoleHash::from_bytes(
+        row_policy
+            .application_role_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| invalid_request())?,
+    );
+    let principal_facts = CapabilityPrincipalFactsV1::new(
+        row_policy
+            .principal_facts
+            .into_iter()
+            .map(|fact| {
+                CapabilityPrincipalFactV1::new(
+                    fact.name,
+                    canonical_value_from_proto(fact.value.ok_or_else(invalid_request)?)
+                        .map_err(|_| invalid_request())?,
+                )
+                .map_err(|_| invalid_request())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    )
+    .map_err(|_| invalid_request())?;
+    let bindings = row_policy
+        .policies
+        .into_iter()
+        .map(|binding| {
+            let operations = binding
+                .operations
+                .into_iter()
+                .map(|operation| {
+                    match v1::CapabilityRowPolicyOperation::try_from(operation)
+                        .map_err(|_| invalid_request())?
+                    {
+                        v1::CapabilityRowPolicyOperation::Read => {
+                            Ok(CapabilityRowPolicyOperationV1::Read)
+                        }
+                        v1::CapabilityRowPolicyOperation::Create => {
+                            Ok(CapabilityRowPolicyOperationV1::Create)
+                        }
+                        v1::CapabilityRowPolicyOperation::Update => {
+                            Ok(CapabilityRowPolicyOperationV1::Update)
+                        }
+                        v1::CapabilityRowPolicyOperation::Delete => {
+                            Ok(CapabilityRowPolicyOperationV1::Delete)
+                        }
+                        v1::CapabilityRowPolicyOperation::Unspecified => Err(invalid_request()),
+                    }
+                })
+                .collect::<Result<Vec<_>, Status>>()?;
+            CapabilityRowPolicyBindingV1::new(
+                ContractLineage::new(binding.contract_lineage).map_err(|_| invalid_request())?,
+                RowPolicyName::new(binding.policy_name).map_err(|_| invalid_request())?,
+                EntityTypeId::new(binding.entity_type_id).ok_or_else(invalid_request)?,
+                operations,
+            )
+            .map_err(|_| invalid_request())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    grant
+        .with_row_policy(
+            CapabilityRowPolicyGrantV1::new(role_hash, principal_facts, bindings)
+                .map_err(|_| invalid_request())?,
+        )
+        .map_err(|_| invalid_request())
 }
 
 /// Converts all closed normal and bootstrap capability-create results.
@@ -5222,6 +5292,57 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn row_policy_capability_crosses_public_transport_only_when_role_bound() {
+        let role_hash = vec![0x42; 32];
+        let request = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: vec![v1::CapabilityPermission {
+                permission: Some(
+                    v1::capability_permission::Permission::ApplicationRoleIdentity(
+                        role_hash.clone(),
+                    ),
+                ),
+            }],
+            field_visibility: Vec::new(),
+            max_scan_rows: 1,
+            approval_required: Vec::new(),
+            row_policy: Some(v1::CapabilityRowPolicyGrant {
+                application_role_hash: role_hash,
+                principal_facts: vec![v1::CapabilityPrincipalFact {
+                    name: "team_id".to_owned(),
+                    value: Some(v1::Value {
+                        kind: Some(v1::value::Kind::UuidValue(vec![7; 16])),
+                    }),
+                }],
+                policies: vec![v1::CapabilityRowPolicyBinding {
+                    contract_lineage: "PolicySurface".to_owned(),
+                    policy_name: "DocumentAccess".to_owned(),
+                    entity_type_id: 1,
+                    operations: vec![v1::CapabilityRowPolicyOperation::Read as i32],
+                }],
+            }),
+        };
+        let grant = capability_grant_from_proto(request.clone()).expect("checked public V4 grant");
+
+        let row_policy = grant.internal_row_policy().expect("V4 extension");
+        assert_eq!(row_policy.bindings().len(), 1);
+        assert_eq!(row_policy.internal_principal_facts().names().count(), 1);
+
+        let mut substituted = request;
+        substituted
+            .row_policy
+            .as_mut()
+            .expect("row policy")
+            .application_role_hash = vec![0x24; 32];
+        assert!(capability_grant_from_proto(substituted).is_err());
+    }
 
     #[test]
     fn installation_conversion_preserves_only_exact_plan_bound_external_evidence() {

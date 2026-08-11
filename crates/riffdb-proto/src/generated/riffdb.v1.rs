@@ -231,6 +231,33 @@ pub struct EntityFieldVisibility {
     pub field_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityPrincipalFact {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<Value>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityRowPolicyBinding {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub policy_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub entity_type_id: u32,
+    #[prost(enumeration = "CapabilityRowPolicyOperation", repeated, tag = "4")]
+    pub operations: ::prost::alloc::vec::Vec<i32>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityRowPolicyGrant {
+    #[prost(bytes = "vec", tag = "1")]
+    pub application_role_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub principal_facts: ::prost::alloc::vec::Vec<CapabilityPrincipalFact>,
+    #[prost(message, repeated, tag = "3")]
+    pub policies: ::prost::alloc::vec::Vec<CapabilityRowPolicyBinding>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityGrant {
     #[prost(message, optional, tag = "1")]
     pub tenant_scope: ::core::option::Option<TenantScope>,
@@ -244,6 +271,8 @@ pub struct CapabilityGrant {
     pub max_scan_rows: u32,
     #[prost(enumeration = "CapabilityPermissionKind", repeated, tag = "6")]
     pub approval_required: ::prost::alloc::vec::Vec<i32>,
+    #[prost(message, optional, tag = "7")]
+    pub row_policy: ::core::option::Option<CapabilityRowPolicyGrant>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateCapabilityRequest {
@@ -989,6 +1018,41 @@ impl CapabilityPermissionKind {
             "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION" => {
                 Some(Self::InstallApplication)
             }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CapabilityRowPolicyOperation {
+    Unspecified = 0,
+    Read = 1,
+    Create = 2,
+    Update = 3,
+    Delete = 4,
+}
+impl CapabilityRowPolicyOperation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED",
+            Self::Read => "CAPABILITY_ROW_POLICY_OPERATION_READ",
+            Self::Create => "CAPABILITY_ROW_POLICY_OPERATION_CREATE",
+            Self::Update => "CAPABILITY_ROW_POLICY_OPERATION_UPDATE",
+            Self::Delete => "CAPABILITY_ROW_POLICY_OPERATION_DELETE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED" => Some(Self::Unspecified),
+            "CAPABILITY_ROW_POLICY_OPERATION_READ" => Some(Self::Read),
+            "CAPABILITY_ROW_POLICY_OPERATION_CREATE" => Some(Self::Create),
+            "CAPABILITY_ROW_POLICY_OPERATION_UPDATE" => Some(Self::Update),
+            "CAPABILITY_ROW_POLICY_OPERATION_DELETE" => Some(Self::Delete),
             _ => None,
         }
     }

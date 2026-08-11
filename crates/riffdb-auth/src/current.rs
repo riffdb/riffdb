@@ -8,7 +8,7 @@ use riffdb_types::{
     Timestamp,
 };
 
-use crate::AuthenticatedPrincipal;
+use crate::{AuthenticatedPrincipal, PrincipalFactBindingError, PrincipalFactBindingV1};
 
 /// Current irreversible lifecycle activity relevant to policy evaluation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -123,6 +123,30 @@ impl CurrentCapability {
     #[must_use]
     pub const fn grant(&self) -> &CapabilityGrantV1 {
         &self.grant
+    }
+
+    /// Reconstructs the only trusted principal-fact binding for a V4 capability.
+    ///
+    /// The fact set is loaded from the transaction-current durable record; no
+    /// request or cached authentication result can supply or override it.
+    pub fn row_policy_principal_binding(
+        &self,
+    ) -> Option<Result<PrincipalFactBindingV1, PrincipalFactBindingError>> {
+        self.grant.internal_row_policy().map(|extension| {
+            PrincipalFactBindingV1::new(
+                self.capability_id,
+                self.revision,
+                self.database_id,
+                self.environment.clone(),
+                self.principal_id.clone(),
+                self.actor_kind,
+                self.audiences.clone(),
+                self.grant.tenant_scope().clone(),
+                self.issued_at,
+                self.expires_at,
+                extension.internal_principal_facts().clone(),
+            )
+        })
     }
 }
 

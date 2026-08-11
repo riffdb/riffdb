@@ -3,9 +3,9 @@
 use std::{error::Error, fmt, num::NonZeroU16, sync::Arc};
 
 use crate::{
-    ApplicationRoleHash, CommandId, ContractLineage, EntityTypeId, FieldId, IndexId, PartitionKey,
-    ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
-    TenantScope,
+    ApplicationRoleHash, CapabilityPrincipalFactsV1, CommandId, ContractLineage, EntityTypeId,
+    FieldId, IndexId, PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName,
+    ReactiveModuleHash, ReactiveOperationName, RowPolicyName, TenantScope,
 };
 
 /// Maximum explicit partition entries retained by one grant.
@@ -14,6 +14,8 @@ pub const MAX_CAPABILITY_PARTITIONS: usize = 1_024;
 pub const MAX_CAPABILITY_PERMISSIONS: usize = 8_192;
 /// Maximum field-visibility entries and total listed fields.
 pub const MAX_CAPABILITY_FIELD_VISIBILITY: usize = 65_535;
+/// Maximum compiler-selected row-policy bindings carried by one capability.
+pub const MAX_CAPABILITY_ROW_POLICY_BINDINGS: usize = 1_024;
 /// Maximum semantic bytes in one complete durable capability payload.
 pub const MAX_CAPABILITY_PAYLOAD_BYTES: usize = 1024 * 1024;
 
@@ -549,6 +551,204 @@ impl EntityFieldVisibilityV1 {
     }
 }
 
+/// Closed operation classes that one durable row-policy binding may authorize.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum CapabilityRowPolicyOperationV1 {
+    /// Read one protected row.
+    Read = 1,
+    /// Create one protected row from proposed state.
+    Create = 2,
+    /// Update one protected row after checking current and successor state.
+    Update = 3,
+    /// Delete one protected transaction-current row.
+    Delete = 4,
+}
+
+impl CapabilityRowPolicyOperationV1 {
+    /// Decodes one closed durable operation tag.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::Read),
+            2 => Some(Self::Create),
+            3 => Some(Self::Update),
+            4 => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    /// Returns the stable durable operation tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        self as u8
+    }
+}
+
+/// One exact compiler-selected row policy for one protected entity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityRowPolicyBindingV1 {
+    lineage: ContractLineage,
+    policy_name: RowPolicyName,
+    entity_type: EntityTypeId,
+    operations: Arc<[CapabilityRowPolicyOperationV1]>,
+}
+
+impl CapabilityRowPolicyBindingV1 {
+    /// Constructs one canonical nonempty operation binding.
+    pub fn new(
+        lineage: ContractLineage,
+        policy_name: RowPolicyName,
+        entity_type: EntityTypeId,
+        mut operations: Vec<CapabilityRowPolicyOperationV1>,
+    ) -> Result<Self, CapabilityGrantError> {
+        if operations.is_empty() {
+            return Err(CapabilityGrantError::Empty);
+        }
+        if operations.len() > 4 {
+            return Err(CapabilityGrantError::LimitExceeded);
+        }
+        operations.sort_unstable();
+        if operations.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(CapabilityGrantError::Duplicate);
+        }
+        Ok(Self {
+            lineage,
+            policy_name,
+            entity_type,
+            operations: operations.into(),
+        })
+    }
+
+    fn canonical_key(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_lineage(&mut bytes, &self.lineage);
+        bytes.extend_from_slice(&self.entity_type.to_be_bytes());
+        bytes.extend_from_slice(self.policy_name.as_str().as_bytes());
+        bytes
+    }
+
+    fn entity_key(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_lineage(&mut bytes, &self.lineage);
+        bytes.extend_from_slice(&self.entity_type.to_be_bytes());
+        bytes
+    }
+
+    /// Exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Exact symbolic policy name.
+    #[must_use]
+    pub const fn policy_name(&self) -> &RowPolicyName {
+        &self.policy_name
+    }
+
+    /// Protected stable entity identity.
+    #[must_use]
+    pub const fn entity_type(&self) -> EntityTypeId {
+        self.entity_type
+    }
+
+    /// Strictly increasing nonempty operation set.
+    #[must_use]
+    pub fn operations(&self) -> &[CapabilityRowPolicyOperationV1] {
+        &self.operations
+    }
+}
+
+/// Complete V1 row-policy authority extension carried only by CapabilityRecordV4.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CapabilityRowPolicyGrantV1 {
+    application_role_hash: ApplicationRoleHash,
+    principal_facts: CapabilityPrincipalFactsV1,
+    bindings: Arc<[CapabilityRowPolicyBindingV1]>,
+}
+
+impl CapabilityRowPolicyGrantV1 {
+    /// Constructs a canonical complete role/fact/policy selection.
+    pub fn new(
+        application_role_hash: ApplicationRoleHash,
+        principal_facts: CapabilityPrincipalFactsV1,
+        mut bindings: Vec<CapabilityRowPolicyBindingV1>,
+    ) -> Result<Self, CapabilityGrantError> {
+        if bindings.is_empty() {
+            return Err(CapabilityGrantError::Empty);
+        }
+        if bindings.len() > MAX_CAPABILITY_ROW_POLICY_BINDINGS {
+            return Err(CapabilityGrantError::LimitExceeded);
+        }
+        bindings.sort_by_key(CapabilityRowPolicyBindingV1::canonical_key);
+        if bindings
+            .windows(2)
+            .any(|pair| pair[0].entity_key() == pair[1].entity_key())
+        {
+            return Err(CapabilityGrantError::Duplicate);
+        }
+        Ok(Self {
+            application_role_hash,
+            principal_facts,
+            bindings: bindings.into(),
+        })
+    }
+
+    /// Exact compiled application-role identity.
+    #[must_use]
+    pub const fn application_role_hash(&self) -> ApplicationRoleHash {
+        self.application_role_hash
+    }
+
+    /// Complete canonical current principal facts. Formatting remains redacted.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_principal_facts(&self) -> &CapabilityPrincipalFactsV1 {
+        &self.principal_facts
+    }
+
+    /// Canonical compiler-selected policy bindings.
+    #[must_use]
+    pub fn bindings(&self) -> &[CapabilityRowPolicyBindingV1] {
+        &self.bindings
+    }
+
+    /// True only when facts, policies, and operation classes hold or narrow.
+    #[must_use]
+    pub fn is_narrowing_of(&self, parent: &Self) -> bool {
+        self.application_role_hash == parent.application_role_hash
+            && self
+                .principal_facts
+                .is_narrowing_of(&parent.principal_facts)
+            && self.bindings.iter().all(|child| {
+                parent
+                    .bindings
+                    .binary_search_by_key(&child.canonical_key(), |binding| binding.canonical_key())
+                    .ok()
+                    .is_some_and(|index| {
+                        child.operations.iter().all(|operation| {
+                            parent.bindings[index]
+                                .operations
+                                .binary_search(operation)
+                                .is_ok()
+                        })
+                    })
+            })
+    }
+}
+
+impl fmt::Debug for CapabilityRowPolicyGrantV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityRowPolicyGrantV1")
+            .field("application_role_hash", &self.application_role_hash)
+            .field("principal_facts", &"[REDACTED]")
+            .field("binding_count", &self.bindings.len())
+            .finish()
+    }
+}
+
 /// Complete bounded v1 grant persisted with a capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityGrantV1 {
@@ -558,6 +758,7 @@ pub struct CapabilityGrantV1 {
     field_visibility: Arc<[EntityFieldVisibilityV1]>,
     max_scan_rows: NonZeroU16,
     approval_required: Arc<[CapabilityPermissionKindV1]>,
+    row_policy: Option<CapabilityRowPolicyGrantV1>,
 }
 
 impl CapabilityGrantV1 {
@@ -610,6 +811,7 @@ impl CapabilityGrantV1 {
             field_visibility: field_visibility.into(),
             max_scan_rows,
             approval_required: approval_required.into(),
+            row_policy: None,
         };
         validate_capability_payload_bytes(value.semantic_bytes()?)?;
         Ok(value)
@@ -651,16 +853,86 @@ impl CapabilityGrantV1 {
         &self.approval_required
     }
 
+    /// Adds the exact V4 row-policy extension after checking the matching role identity.
+    pub fn with_row_policy(
+        mut self,
+        row_policy: CapabilityRowPolicyGrantV1,
+    ) -> Result<Self, CapabilityGrantError> {
+        if self.row_policy.is_some() {
+            return Err(CapabilityGrantError::Duplicate);
+        }
+        let matching_roles = self
+            .permissions
+            .as_slice()
+            .iter()
+            .filter(|permission| {
+                matches!(
+                    permission,
+                    CapabilityPermissionV1::ApplicationRoleIdentity(hash)
+                        if *hash == row_policy.application_role_hash
+                )
+            })
+            .count();
+        let all_roles = self
+            .permissions
+            .as_slice()
+            .iter()
+            .filter(|permission| {
+                matches!(
+                    permission,
+                    CapabilityPermissionV1::ApplicationRoleIdentity(_)
+                )
+            })
+            .count();
+        if matching_roles != 1 || all_roles != 1 {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        self.row_policy = Some(row_policy);
+        validate_capability_payload_bytes(self.semantic_bytes()?)?;
+        Ok(self)
+    }
+
+    /// Exact trusted row-policy extension, absent for V1/V2/V3 capabilities.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_row_policy(&self) -> Option<&CapabilityRowPolicyGrantV1> {
+        self.row_policy.as_ref()
+    }
+
     /// Returns the complete checked v1 semantic grant byte count.
     pub fn semantic_bytes(&self) -> Result<usize, CapabilityGrantError> {
-        capability_grant_semantic_bytes_parts(
+        let base = capability_grant_semantic_bytes_parts(
             &self.tenant_scope,
             &self.partition_scope,
             &self.permissions,
             &self.field_visibility,
             &self.approval_required,
-        )
+        )?;
+        match &self.row_policy {
+            Some(extension) => base
+                .checked_add(row_policy_semantic_bytes(extension)?)
+                .ok_or(CapabilityGrantError::SizeOverflow),
+            None => Ok(base),
+        }
     }
+}
+
+fn row_policy_semantic_bytes(
+    extension: &CapabilityRowPolicyGrantV1,
+) -> Result<usize, CapabilityGrantError> {
+    extension.bindings.iter().try_fold(
+        32usize
+            .checked_add(extension.principal_facts.internal_canonical_bytes().len())
+            .and_then(|value| value.checked_add(4))
+            .ok_or(CapabilityGrantError::SizeOverflow)?,
+        |total, binding| {
+            total
+                .checked_add(binding.lineage.as_bytes().len())
+                .and_then(|value| value.checked_add(binding.policy_name.as_str().len()))
+                .and_then(|value| value.checked_add(4 + 4 + binding.operations.len()))
+                .ok_or(CapabilityGrantError::SizeOverflow)
+        },
+    )
 }
 
 fn permission_set_semantic_bytes(
@@ -1034,6 +1306,106 @@ mod tests {
         assert_eq!(
             validate_capability_payload_bytes(MAX_CAPABILITY_PAYLOAD_BYTES + 1),
             Err(CapabilityGrantError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn row_policy_grants_are_role_bound_canonical_and_narrowing_only() {
+        fn facts(groups: &[&str]) -> CapabilityPrincipalFactsV1 {
+            CapabilityPrincipalFactsV1::new(vec![
+                crate::CapabilityPrincipalFactV1::new(
+                    "groups",
+                    crate::CanonicalValue::list(
+                        groups
+                            .iter()
+                            .map(|group| crate::CanonicalValue::string(*group).expect("text"))
+                            .collect(),
+                    )
+                    .expect("list"),
+                )
+                .expect("fact"),
+            ])
+            .expect("facts")
+        }
+
+        let role = ApplicationRoleHash::from_bytes([0x51; 32]);
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let parent_binding = CapabilityRowPolicyBindingV1::new(
+            lineage.clone(),
+            RowPolicyName::new("TicketVisible").expect("policy"),
+            EntityTypeId::first(),
+            vec![
+                CapabilityRowPolicyOperationV1::Update,
+                CapabilityRowPolicyOperationV1::Read,
+            ],
+        )
+        .expect("binding");
+        assert_eq!(
+            parent_binding.operations(),
+            [
+                CapabilityRowPolicyOperationV1::Read,
+                CapabilityRowPolicyOperationV1::Update,
+            ]
+        );
+        let parent = CapabilityRowPolicyGrantV1::new(
+            role,
+            facts(&["authors", "operators"]),
+            vec![parent_binding],
+        )
+        .expect("parent extension");
+        let child = CapabilityRowPolicyGrantV1::new(
+            role,
+            facts(&["authors"]),
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    lineage.clone(),
+                    RowPolicyName::new("TicketVisible").expect("policy"),
+                    EntityTypeId::first(),
+                    vec![CapabilityRowPolicyOperationV1::Read],
+                )
+                .expect("binding"),
+            ],
+        )
+        .expect("child extension");
+        assert!(child.is_narrowing_of(&parent));
+
+        let duplicate_entity = CapabilityRowPolicyGrantV1::new(
+            role,
+            CapabilityPrincipalFactsV1::empty(),
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    lineage.clone(),
+                    RowPolicyName::new("TicketVisible").expect("policy"),
+                    EntityTypeId::first(),
+                    vec![CapabilityRowPolicyOperationV1::Read],
+                )
+                .expect("binding"),
+                CapabilityRowPolicyBindingV1::new(
+                    lineage,
+                    RowPolicyName::new("TicketOwned").expect("policy"),
+                    EntityTypeId::first(),
+                    vec![CapabilityRowPolicyOperationV1::Read],
+                )
+                .expect("binding"),
+            ],
+        );
+        assert_eq!(duplicate_entity, Err(CapabilityGrantError::Duplicate));
+
+        let base = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(vec![CapabilityPermissionV1::ApplicationRoleIdentity(
+                ApplicationRoleHash::from_bytes([0x52; 32]),
+            )])
+            .expect("permissions"),
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("grant");
+        assert_eq!(
+            base.with_row_policy(parent),
+            Err(CapabilityGrantError::InvalidShape)
         );
     }
 }

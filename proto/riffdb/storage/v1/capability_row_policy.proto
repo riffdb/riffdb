@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/capability.proto";
+import "riffdb/storage/v1/capability_installation.proto";
+import "riffdb/storage/v1/capability_migration.proto";
+
+// Closed row-policy operation vocabulary bound into one durable role grant.
+enum CapabilityRowPolicyOperationV1 {
+  CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED = 0;
+  CAPABILITY_ROW_POLICY_OPERATION_READ = 1;
+  CAPABILITY_ROW_POLICY_OPERATION_CREATE = 2;
+  CAPABILITY_ROW_POLICY_OPERATION_UPDATE = 3;
+  CAPABILITY_ROW_POLICY_OPERATION_DELETE = 4;
+}
+
+// One exact compiler-selected policy for one protected entity.
+message CapabilityRowPolicyBindingV1 {
+  string contract_lineage = 1;
+  string policy_name = 2;
+  uint32 entity_type_id = 3;
+  repeated CapabilityRowPolicyOperationV1 operations = 4 [packed = true];
+}
+
+// Complete current principal facts and policy selection for one application role.
+message CapabilityRowPolicyGrantExtensionV1 {
+  bytes application_role_hash = 1;
+  bytes canonical_principal_facts = 2;
+  repeated CapabilityRowPolicyBindingV1 policies = 3;
+}
+
+// Additive row-policy successor; V1, V2, and V3 remain frozen.
+message CapabilityRecordV4 {
+  CapabilityRecordV1 base = 1;
+  CapabilityMigrationGrantExtensionV1 migration = 2;
+  CapabilityInstallationGrantExtensionV1 installation = 3;
+  CapabilityRowPolicyGrantExtensionV1 row_policy = 4;
+}

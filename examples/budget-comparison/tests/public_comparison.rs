@@ -700,6 +700,7 @@ fn bootstrap_request(
             }],
             max_scan_rows: 1,
             approval_required: Vec::new(),
+            row_policy: None,
         }),
     })
 }
@@ -783,6 +784,7 @@ fn normal_capability_request(
             }],
             max_scan_rows: 1,
             approval_required: Vec::new(),
+            row_policy: None,
         }),
     })
 }

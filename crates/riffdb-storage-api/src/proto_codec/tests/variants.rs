@@ -142,6 +142,43 @@ fn installation_authority_uses_additive_capability_v3_only() {
 }
 
 #[test]
+fn row_policy_authority_uses_additive_capability_v4_only() {
+    let capability = sample::capability_record_with_row_policy_authority();
+    let encoded = assert_round_trip(
+        capability.clone(),
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("row-policy capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV4"
+    );
+    let record = wire::CapabilityRecordV4::decode(envelope.payload()).expect("capability V4");
+    assert!(record.migration.is_none());
+    assert!(record.installation.is_none());
+    let extension = record.row_policy.expect("V4 row-policy extension");
+    assert_eq!(extension.application_role_hash, vec![0x42; 32]);
+    assert!(!extension.canonical_principal_facts.is_empty());
+    assert_eq!(extension.policies.len(), 1);
+    assert_eq!(extension.policies[0].contract_lineage, "ticketdesk");
+    assert_eq!(extension.policies[0].policy_name, "TicketVisible");
+    assert_eq!(extension.policies[0].entity_type_id, 1);
+    assert_eq!(extension.policies[0].operations, [1, 3]);
+    assert_eq!(
+        capability
+            .grant()
+            .internal_row_policy()
+            .expect("policy grant")
+            .bindings()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn allocator_variants_include_maximum_and_exhausted_states() {
     let maximum_commit = CommitSequence::new(u64::MAX).expect("maximum commit sequence");
     let maximum_administration =

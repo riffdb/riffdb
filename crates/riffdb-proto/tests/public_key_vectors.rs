@@ -164,6 +164,7 @@ fn contextual_result(kind: &str, bytes: Vec<u8>, owner: u32) -> bool {
                 field_visibility: Vec::new(),
                 max_scan_rows: 1,
                 approval_required: Vec::new(),
+                row_policy: None,
             }),
         })
         .is_ok(),
