@@ -22,7 +22,9 @@ V4 grant. Cross-surface execution remains closed until the rest of WP-572 wires
 the shared evaluator before shaping and into the final commit safe point. Do
 not implement a temporary middleware filter or weaken this refusal.
 Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
-not silently drop an unknown fact or substitute a default value.
+not silently drop an unknown fact or substitute a default value. A role whose
+selected policy reads `principal.id` also rejects a principal that is not
+canonical lowercase UUID text before capability creation.
 
 ## Contract declarations
 

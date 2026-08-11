@@ -10,12 +10,12 @@ use riffdb_contract_ir::{
 };
 use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
-    ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1, CapabilityPermissionKindV1,
-    CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityPrincipalFactsV1,
-    CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
-    ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1, Environment,
-    PartitionScopeV1, QueryModuleHash, QueryOperationName, ReactiveModuleHash, RowPolicyName,
-    TenantId, TenantScope, hash_application_role,
+    ActorId, ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1,
+    CapabilityRowPolicyOperationV1, ContractBundleHash, ContractLineage, ContractVersion,
+    EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash, QueryOperationName,
+    ReactiveModuleHash, RowPolicyName, TenantId, TenantScope, hash_application_role,
 };
 
 use crate::{ApplicationManifest, ManifestRole, ManifestTenantScope, QueryModule};
@@ -128,6 +128,7 @@ pub struct CompiledApplicationRole {
     row_policies: Vec<ApplicationRolePolicy>,
     principal_fact_schemas: Vec<ApplicationRoleFactSchema>,
     principal_fact_plans: Vec<PrincipalFactSchemaV1>,
+    requires_uuid_principal: bool,
     policy_bindings: Vec<CapabilityRowPolicyBindingV1>,
     bound_permissions: CapabilityPermissionsV1,
     identity: ApplicationRoleHash,
@@ -231,11 +232,13 @@ impl CompiledApplicationRole {
     /// compiler-retained schemas, and protected operation permissions become
     /// available only in the returned V4 grant that carries the matching role,
     /// fact, and policy identities.
-    pub fn bind_principal_facts(
+    pub fn bind_principal_facts_for(
         &self,
+        principal_id: &ActorId,
         facts: CapabilityPrincipalFactsV1,
     ) -> Result<CapabilityGrantV1, ApplicationRoleError> {
-        if self.principal_fact_plans.len() != facts.names().len()
+        if (self.requires_uuid_principal && !is_canonical_uuid(principal_id.as_str()))
+            || self.principal_fact_plans.len() != facts.names().len()
             || self
                 .principal_fact_plans
                 .iter()
@@ -403,8 +406,13 @@ fn compile_application_role_inner(
     let environment = Environment::new(role.environment())
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     let module_by_query = validate_modules(manifest, contract, modules)?;
-    let (selected_policies, row_policies, principal_fact_schemas, principal_fact_plans) =
-        compile_role_policies(manifest, role, contract)?;
+    let (
+        selected_policies,
+        row_policies,
+        principal_fact_schemas,
+        principal_fact_plans,
+        requires_uuid_principal,
+    ) = compile_role_policies(manifest, role, contract)?;
 
     let lineage = contract.lineage().clone();
     // ADR-0056 makes contract-description access a compiler-derived part of
@@ -689,6 +697,7 @@ fn compile_application_role_inner(
         row_policies,
         principal_fact_schemas,
         principal_fact_plans,
+        requires_uuid_principal,
         policy_bindings,
         bound_permissions,
         identity,
@@ -708,6 +717,7 @@ fn compile_role_policies<'a>(
         Vec<ApplicationRolePolicy>,
         Vec<ApplicationRoleFactSchema>,
         Vec<PrincipalFactSchemaV1>,
+        bool,
     ),
     ApplicationRoleError,
 > {
@@ -718,7 +728,7 @@ fn compile_role_policies<'a>(
                 ApplicationRoleErrorKind::ContractMismatch,
             ));
         }
-        return Ok((BTreeMap::new(), Vec::new(), Vec::new(), Vec::new()));
+        return Ok((BTreeMap::new(), Vec::new(), Vec::new(), Vec::new(), false));
     }
 
     let mut selected = BTreeMap::new();
@@ -769,12 +779,39 @@ fn compile_role_policies<'a>(
         })
         .collect::<Result<Vec<_>, ApplicationRoleError>>()?;
     let (principal_fact_schemas, principal_fact_plans) = principal_facts.into_iter().unzip();
+    let requires_uuid_principal = selected.values().any(|policy| {
+        policy.rules().iter().any(|rule| {
+            rule.nodes().iter().any(|node| match node {
+                RowPolicyExpressionNodeV1::Operand(operand) => {
+                    matches!(operand.source(), RowPolicyValueSourceV1::PrincipalId)
+                }
+                RowPolicyExpressionNodeV1::IndexedExists { arguments, .. } => {
+                    arguments.iter().any(|argument| {
+                        matches!(argument.source(), RowPolicyValueSourceV1::PrincipalId)
+                    })
+                }
+                _ => false,
+            })
+        })
+    });
     Ok((
         selected,
         descriptions,
         principal_fact_schemas,
         principal_fact_plans,
+        requires_uuid_principal,
     ))
+}
+
+fn is_canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+            }
+        })
 }
 
 fn compile_policy_bindings(
