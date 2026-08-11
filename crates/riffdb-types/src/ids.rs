@@ -357,6 +357,18 @@ hash_id!(
     ScheduledAttemptHash
 );
 hash_id!(
+    /// The identity of one exact application installation plan.
+    ApplicationInstallationPlanHash
+);
+hash_id!(
+    /// The identity of one terminal application installation receipt.
+    ApplicationInstallationReceiptHash
+);
+hash_id!(
+    /// The identity of one exact adapter conformance manifest.
+    AdapterConformanceManifestHash
+);
+hash_id!(
     /// The identity of one canonical application manifest.
     ApplicationManifestHash
 );
@@ -636,6 +648,10 @@ uuid_v7_id!(
 uuid_v7_id!(
     /// The caller-stable identifier of one contract migration operation.
     ContractMigrationOperationId
+);
+uuid_v7_id!(
+    /// The caller-stable identifier of one application installation campaign.
+    ApplicationInstallationCampaignId
 );
 
 /// A safe validation failure for a bounded textual identifier.

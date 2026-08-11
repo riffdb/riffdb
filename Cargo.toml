@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/riffdb-api-grpc",
     "crates/riffdb-api-mcp",
+    "crates/riffdb-application",
     "crates/riffdb-auth",
     "crates/riffdb-bench-root",
     "crates/riffdb-catalog",
