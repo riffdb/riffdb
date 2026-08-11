@@ -14,7 +14,7 @@ use riffdb_types::{
     hash_canonical_value,
 };
 
-use crate::AuthorizedApplicationQuery;
+use crate::{AuthorizedApplicationQuery, AuthorizedCommandExecution, AuthorizedRowPolicyAuthority};
 
 /// Failure to reconstruct exact compiler-owned row-policy execution authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +23,17 @@ pub enum QueryRowPolicyContextErrorV1 {
     StaleOrInconsistentAuthority,
     /// A protected query access has no exact read binding.
     MissingReadBinding,
+    /// A compiler-declared local relationship schema is unavailable.
+    InvalidRelationshipPlan,
+}
+
+/// Failure to reconstruct compiler-owned policy authority for a command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandRowPolicyContextErrorV1 {
+    /// The current capability extension and active contract do not agree.
+    StaleOrInconsistentAuthority,
+    /// A protected mutation has no binding for its exact operation.
+    MissingOperationBinding,
     /// A compiler-declared local relationship schema is unavailable.
     InvalidRelationshipPlan,
 }
@@ -93,6 +104,144 @@ struct AuthorizedRelationshipPlanV1 {
 struct AuthorizedEntityPolicyV1 {
     policy: RowPolicyPlanV1,
     relationships: BTreeMap<(EntityTypeId, IndexId), AuthorizedRelationshipPlanV1>,
+}
+
+/// Move-only transaction-current policy authority retained by the command lane.
+///
+/// The context contains no caller-provided predicate. It is resolved from one
+/// fresh command authorization proof and the exact executable contract bundle.
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedCommandRowPolicyContextV1 {
+    authority: AuthorizedRowPolicyAuthority,
+    policies: BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>,
+}
+
+impl std::fmt::Debug for AuthorizedCommandRowPolicyContextV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedCommandRowPolicyContextV1")
+            .field(
+                "protected_entities",
+                &self.policies.keys().collect::<Vec<_>>(),
+            )
+            .field("authority", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl AuthorizedCommandRowPolicyContextV1 {
+    /// Exact transaction-current authority used to construct this context.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_authority(&self) -> &AuthorizedRowPolicyAuthority {
+        &self.authority
+    }
+
+    /// Whether an entity is protected by the active contract.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn protects(&self, entity: EntityTypeId) -> bool {
+        self.policies.contains_key(&entity)
+    }
+
+    /// Derives every exact relationship lookup needed for current and successor rows.
+    #[doc(hidden)]
+    pub fn relationship_lookups(
+        &self,
+        entity: EntityTypeId,
+        operation: RowPolicyOperationV1,
+        current: Option<&CanonicalRecord>,
+        successor: Option<&CanonicalRecord>,
+    ) -> Result<Vec<AuthorizedIndexedRelationshipLookupV1>, CommandRowPolicyContextErrorV1> {
+        let selected = self.selection(entity, operation)?;
+        let rows = transition_rows(operation, current, successor)
+            .ok_or(CommandRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+        let mut lookups = Vec::new();
+        for row in rows {
+            let probes = required_indexed_relationship_probes(
+                &selected.policy,
+                operation,
+                row,
+                self.authority.internal_principal(),
+            )
+            .map_err(|_| CommandRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+            for probe in probes {
+                lookups.push(lookup_from_probe(selected, probe)?);
+            }
+        }
+        Ok(lookups)
+    }
+
+    /// Evaluates one exact transaction-current mutation transition.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn allows_transition(
+        &self,
+        entity: EntityTypeId,
+        operation: RowPolicyOperationV1,
+        current: Option<&CanonicalRecord>,
+        successor: Option<&CanonicalRecord>,
+        relationship_exists: &[bool],
+    ) -> bool {
+        let Ok(selected) = self.selection(entity, operation) else {
+            return false;
+        };
+        let Some(rows) = transition_rows(operation, current, successor) else {
+            return false;
+        };
+        let mut probes = Vec::new();
+        for row in rows {
+            let Ok(required) = required_indexed_relationship_probes(
+                &selected.policy,
+                operation,
+                row,
+                self.authority.internal_principal(),
+            ) else {
+                return false;
+            };
+            probes.extend(required);
+        }
+        if probes.len() != relationship_exists.len() {
+            return false;
+        }
+        let evidence = probes
+            .into_iter()
+            .zip(relationship_exists)
+            .map(|(probe, exists)| probe.into_evidence(*exists))
+            .collect::<Vec<_>>();
+        evaluate_row_transition(
+            &selected.policy,
+            operation,
+            current,
+            successor,
+            self.authority.internal_principal(),
+            &evidence,
+        )
+        .is_allowed()
+    }
+
+    fn selection(
+        &self,
+        entity: EntityTypeId,
+        operation: RowPolicyOperationV1,
+    ) -> Result<&AuthorizedEntityPolicyV1, CommandRowPolicyContextErrorV1> {
+        let selected = self
+            .policies
+            .get(&entity)
+            .ok_or(CommandRowPolicyContextErrorV1::MissingOperationBinding)?;
+        let required = capability_operation(operation);
+        let binding = self
+            .authority
+            .internal_grant()
+            .bindings()
+            .iter()
+            .find(|binding| binding.entity_type() == entity)
+            .ok_or(CommandRowPolicyContextErrorV1::MissingOperationBinding)?;
+        if !binding.operations().contains(&required) {
+            return Err(CommandRowPolicyContextErrorV1::MissingOperationBinding);
+        }
+        Ok(selected)
+    }
 }
 
 /// Move-only transaction-current policy context for one authorized query.
@@ -357,6 +506,165 @@ pub fn resolve_authorized_query_row_policy_context(
         principal: authority.internal_principal().clone(),
         policies,
     }))
+}
+
+/// Resolves exact command policy authority from a fresh authorization proof.
+///
+/// `None` preserves the existing unprotected command path. A V4 authority is
+/// accepted only when every selected binding resolves in the exact active
+/// contract; the later commit verifier still checks the operation required by
+/// each concrete mutation.
+#[doc(hidden)]
+pub fn resolve_authorized_command_row_policy_context(
+    authorization: &AuthorizedCommandExecution,
+    bundle: &ContractBundle,
+) -> Result<Option<AuthorizedCommandRowPolicyContextV1>, CommandRowPolicyContextErrorV1> {
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return Ok(None);
+    };
+    if authorization.lineage() != bundle.lineage()
+        || authorization.version() != bundle.contract_version()
+    {
+        return Err(CommandRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let mut policies = BTreeMap::new();
+    for binding in authority
+        .internal_grant()
+        .bindings()
+        .iter()
+        .filter(|binding| binding.lineage() == bundle.lineage())
+    {
+        let policy = bundle
+            .row_policies()
+            .policies()
+            .iter()
+            .find(|policy| {
+                policy.name() == binding.policy_name().as_str()
+                    && policy.entity() == binding.entity_type()
+            })
+            .cloned()
+            .ok_or(CommandRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+        let relationships = relationship_plans(bundle, &policy)
+            .map_err(|_| CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+        if policies
+            .insert(
+                binding.entity_type(),
+                AuthorizedEntityPolicyV1 {
+                    policy,
+                    relationships,
+                },
+            )
+            .is_some()
+        {
+            return Err(CommandRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+        }
+    }
+    Ok(Some(AuthorizedCommandRowPolicyContextV1 {
+        authority: authority.clone(),
+        policies,
+    }))
+}
+
+fn relationship_plans(
+    bundle: &ContractBundle,
+    policy: &RowPolicyPlanV1,
+) -> Result<
+    BTreeMap<(EntityTypeId, IndexId), AuthorizedRelationshipPlanV1>,
+    CommandRowPolicyContextErrorV1,
+> {
+    let mut relationships = BTreeMap::new();
+    for rule in policy.rules() {
+        for node in rule.nodes() {
+            let RowPolicyExpressionNodeV1::IndexedExists {
+                target_entity,
+                index_id,
+                ..
+            } = node
+            else {
+                continue;
+            };
+            let target = bundle
+                .schema()
+                .entity(*target_entity)
+                .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let index = target
+                .indexes()
+                .iter()
+                .find(|index| index.id() == *index_id)
+                .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let aggregate = bundle
+                .schema()
+                .aggregate_for_entity(*target_entity)
+                .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let root = bundle
+                .schema()
+                .entity(aggregate.root())
+                .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            relationships.insert(
+                (*target_entity, *index_id),
+                AuthorizedRelationshipPlanV1 {
+                    target_entity: *target_entity,
+                    index_id: *index_id,
+                    index_schema: index.key_schema().clone(),
+                    partition_schema: aggregate.keys().partition_schema().clone(),
+                    partition_width: root.primary_key_fields().len(),
+                },
+            );
+        }
+    }
+    Ok(relationships)
+}
+
+fn lookup_from_probe(
+    selected: &AuthorizedEntityPolicyV1,
+    probe: IndexedRelationshipProbeV1,
+) -> Result<AuthorizedIndexedRelationshipLookupV1, CommandRowPolicyContextErrorV1> {
+    let relation = selected
+        .relationships
+        .get(&(probe.target_entity(), probe.index_id()))
+        .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+    let partition = relation
+        .partition_schema
+        .encode_partition(
+            probe
+                .arguments()
+                .get(..relation.partition_width)
+                .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?,
+        )
+        .map_err(|_| CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+    let index_prefix = relation
+        .index_schema
+        .encode_index_prefix(probe.arguments())
+        .map_err(|_| CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?
+        .as_bytes()
+        .to_vec();
+    Ok(AuthorizedIndexedRelationshipLookupV1 {
+        target_entity: relation.target_entity,
+        index_id: relation.index_id,
+        partition,
+        index_prefix,
+    })
+}
+
+fn transition_rows<'a>(
+    operation: RowPolicyOperationV1,
+    current: Option<&'a CanonicalRecord>,
+    successor: Option<&'a CanonicalRecord>,
+) -> Option<Vec<&'a CanonicalRecord>> {
+    match operation {
+        RowPolicyOperationV1::Read | RowPolicyOperationV1::Delete => current.map(|row| vec![row]),
+        RowPolicyOperationV1::Create => successor.map(|row| vec![row]),
+        RowPolicyOperationV1::Update => Some(vec![current?, successor?]),
+    }
+}
+
+const fn capability_operation(operation: RowPolicyOperationV1) -> CapabilityRowPolicyOperationV1 {
+    match operation {
+        RowPolicyOperationV1::Read => CapabilityRowPolicyOperationV1::Read,
+        RowPolicyOperationV1::Create => CapabilityRowPolicyOperationV1::Create,
+        RowPolicyOperationV1::Update => CapabilityRowPolicyOperationV1::Update,
+        RowPolicyOperationV1::Delete => CapabilityRowPolicyOperationV1::Delete,
+    }
 }
 
 /// One checked observation for the single indexed relationship probe allowed by policy V1.

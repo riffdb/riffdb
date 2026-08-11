@@ -918,7 +918,7 @@ impl AuthorizedOperation {
             obligations,
             identity,
             discovery_authority,
-            row_policy_authority: _,
+            row_policy_authority,
         } = self;
         if discovery_authority.is_some() {
             return Err(CommandAuthorizationBindingError::OperationMismatch);
@@ -932,6 +932,7 @@ impl AuthorizedOperation {
             identity.actor_kind,
             claims,
             agent_session_policy,
+            row_policy_authority,
         )
     }
 

@@ -5,10 +5,13 @@ use riffdb_storage_api::{
     DatabaseIdentityProbe, IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyKeyDigest,
     IndexEpochPosition, OpenSessionId, ReadableCapabilityDigestInventory, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind,
+    TransactionCurrentPolicyLookupV1, TransactionCurrentPolicyRequestV1,
+    TransactionCurrentPolicyStateV1,
 };
 use riffdb_types::{
-    ActorId, CommandId, CommitSequence, ContractLineage, DatabaseId, DigestKeyId, Environment,
-    IndexEpoch, TenantId, TenantScope,
+    ActorId, AggregateTypeId, CapabilityId, CommandId, CommitSequence, ContractLineage, DatabaseId,
+    DigestKeyId, EntityTypeId, Environment, IndexEpoch, IndexId, PartitionKeyBuilder, TenantId,
+    TenantScope,
 };
 
 fn database_id() -> DatabaseId {
@@ -120,6 +123,7 @@ fn candidate_validation_rejections_are_distinct_non_durable_controls() {
             CandidateValidationRejection::CommitCheckArithmeticFault => 3,
             CandidateValidationRejection::MutationPreconditionChanged => 4,
             CandidateValidationRejection::UniqueConflict => 5,
+            CandidateValidationRejection::RowPolicyDenied => 6,
         }
     }
 
@@ -133,5 +137,53 @@ fn candidate_validation_rejections_are_distinct_non_durable_controls() {
         ]
         .map(fixture_tag),
         [1, 2, 3, 4, 5]
+    );
+}
+
+#[test]
+fn transaction_current_policy_requests_are_bounded_and_positionally_exact() {
+    let capability_id =
+        CapabilityId::from_unix_milliseconds_and_random(1, [0x41; 10]).expect("capability");
+    let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+    partition.push_u64(7).expect("partition component");
+    let lookup = TransactionCurrentPolicyLookupV1::new(
+        EntityTypeId::first(),
+        IndexId::first(),
+        partition.finish().expect("partition"),
+        vec![0x51, 0x52],
+    )
+    .expect("bounded exact relationship lookup");
+    assert!(format!("{lookup:?}").contains("[REDACTED]"));
+    assert!(!format!("{lookup:?}").contains("81"));
+
+    let request =
+        TransactionCurrentPolicyRequestV1::new(capability_id, vec![lookup.clone(), lookup.clone()])
+            .expect("bounded policy request");
+    assert!(
+        TransactionCurrentPolicyStateV1::new(&request, None, vec![true]).is_err(),
+        "relationship evidence cannot be truncated or reordered"
+    );
+    let state = TransactionCurrentPolicyStateV1::new(&request, None, vec![true, false])
+        .expect("complete positional evidence");
+    assert!(state.capability().is_none());
+    assert_eq!(state.relationship_exists(), &[true, false]);
+
+    assert!(
+        TransactionCurrentPolicyLookupV1::new(
+            EntityTypeId::first(),
+            IndexId::first(),
+            lookup.partition().clone(),
+            Vec::new(),
+        )
+        .is_err(),
+        "an empty prefix must not broaden an exact relationship probe"
+    );
+    assert!(
+        TransactionCurrentPolicyRequestV1::new(
+            capability_id,
+            vec![lookup; riffdb_storage_api::MAX_VALIDATION_TARGETS + 1],
+        )
+        .is_err(),
+        "policy evidence shares the authoritative validation-target ceiling"
     );
 }

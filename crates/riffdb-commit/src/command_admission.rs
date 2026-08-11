@@ -10,6 +10,7 @@ use riffdb_idempotency::{
 };
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::AuthorizedCommandExecution;
+use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
     AuditedAdmissionRepository, EntityTarget, IdempotencyLookupCandidatesV1,
@@ -219,6 +220,7 @@ pub(crate) struct CommandExecutionCandidate {
     terminal_admission: bool,
     lookup_candidates: IdempotencyLookupCandidatesV1,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
 }
 
 pub(crate) struct CommandExecutionCandidateParts {
@@ -234,6 +236,7 @@ pub(crate) struct CommandExecutionCandidateParts {
     pub(crate) terminal_admission: bool,
     pub(crate) lookup_candidates: IdempotencyLookupCandidatesV1,
     pub(crate) post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    pub(crate) row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
 }
 
 impl CommandExecutionCandidate {
@@ -280,6 +283,7 @@ impl CommandExecutionCandidate {
             terminal_admission: self.terminal_admission,
             lookup_candidates: self.lookup_candidates,
             post_evaluation_authorizer: self.post_evaluation_authorizer,
+            row_policy: self.row_policy,
         }
     }
 
@@ -331,6 +335,7 @@ struct LoweredPreparation {
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
 }
 
@@ -344,6 +349,7 @@ struct AdmissionPreparationParts {
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
 }
 
@@ -534,6 +540,7 @@ fn prepare_command_admission_with_hash(
         idempotency,
         input_facts,
         authorization,
+        row_policy,
         request_id,
         deadline,
         cancellation,
@@ -546,6 +553,7 @@ fn prepare_command_admission_with_hash(
         normalized_input,
         input_facts,
         authorization,
+        row_policy,
         request_id,
         deadline,
         cancellation,
@@ -835,6 +843,7 @@ fn lower_preparation(
         cancellation: parts.cancellation,
         audited_lifecycle: parts.audited_lifecycle,
         post_evaluation_authorizer: parts.post_evaluation_authorizer,
+        row_policy: parts.row_policy,
         causation: parts.causation,
     })
 }
@@ -858,6 +867,7 @@ fn candidate(
         terminal_admission,
         lookup_candidates,
         post_evaluation_authorizer: lowered.post_evaluation_authorizer,
+        row_policy: lowered.row_policy,
     }
 }
 

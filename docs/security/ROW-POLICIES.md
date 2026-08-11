@@ -29,10 +29,19 @@ and reauthorizes the capability immediately before response release. A missing
 binding, stale policy name, wrong operation class, invalid relationship plan,
 or adapter without the policy-aware execution port fails closed.
 
-Commands, projections/search, live queries, event/contextual subscriptions,
-reactions, and export remain deliberately closed for V4 credentials until
-their respective WP-572 safe points consume the same authority. Do not
-implement a temporary middleware filter or weaken this refusal.
+Compiled commands now carry the same move-only V4 authority through admission
+and deterministic evaluation. Before sequence assignment, the authoritative
+write transaction reloads the exact capability revision and every bounded,
+compiler-derived relationship lookup. Create checks the proposed row, update
+checks both transaction-current and successor rows, and delete checks the
+transaction-current row. Any stale capability, missing relationship evidence,
+or denied transition rolls back without mutation and returns only the ordinary
+authorization-denied class.
+
+Projections/search, live queries, event/contextual subscriptions, reactions,
+and export remain deliberately closed for V4 credentials until their
+respective WP-572 safe points consume the same authority. Do not implement a
+temporary middleware filter or weaken this refusal.
 Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
 not silently drop an unknown fact or substitute a default value. A role whose
 selected policy reads `principal.id` also rejects a principal that is not
@@ -133,6 +142,6 @@ installation-only V3 remain byte-exact. V4 is selected only for a checked
 row-policy extension, and its decoder rejects missing extensions, noncanonical
 fact or binding order, duplicate entity selection, unknown operation tags, and
 role-identity substitution. Current authorization reconstructs facts only from
-the transaction-current retained record. The authoritative RiffQL path is the
-first enabled protected surface; all other protected surfaces remain
+the transaction-current retained record. Authoritative RiffQL and compiled
+commands are the enabled protected surfaces; other protected surfaces remain
 unavailable until their shared policy and final-safe-point enforcement lands.

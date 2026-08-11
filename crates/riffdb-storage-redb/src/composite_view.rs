@@ -138,6 +138,24 @@ impl RedbCompositeMutationStage {
             .map_err(corrupt_value)
     }
 
+    /// Reads one capability from the immutable root paired with this private
+    /// application overlay. Capability rows are not journal tables, and the
+    /// global mutation gate prevents administration from changing them while
+    /// the owning command epoch is open.
+    pub(crate) fn read_capability_bytes(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let table = self
+            .root
+            .open_table(crate::layout::CAPABILITIES)
+            .map_err(crate::error::table_error)?;
+        table
+            .get(key)
+            .map_err(crate::error::precommit_storage_error)
+            .map(|value| value.map(|value| value.value().to_vec()))
+    }
+
     pub(crate) fn mutation_count(&self) -> usize {
         self.stage.mutation_count()
     }

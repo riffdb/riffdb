@@ -541,8 +541,7 @@ fn evaluate(
     if current.grant.internal_row_policy().is_some()
         && matches!(
             request.operation(),
-            ServiceOperationV1::ExecuteCommand
-                | ServiceOperationV1::ExecuteProjectedQuery
+            ServiceOperationV1::ExecuteProjectedQuery
                 | ServiceOperationV1::ConsumeEventStream
                 | ServiceOperationV1::WatchNamedQuery
                 | ServiceOperationV1::ConsumeContextualSubscription
@@ -964,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_row_policy_query_authority_reaches_the_policy_consuming_service() {
+    fn persisted_row_policy_authority_reaches_query_and_command_consumers() {
         let role = ApplicationRoleHash::from_bytes([0x44; 32]);
         let base = grant(
             TenantScope::Global,
@@ -973,6 +972,7 @@ mod tests {
                 CapabilityPermissionV1::Unparameterized(
                     CapabilityPermissionKindV1::ExecuteAdHocQuery,
                 ),
+                CapabilityPermissionV1::InvokeCommand(lineage(), CommandId::first()),
                 CapabilityPermissionV1::ApplicationRoleIdentity(role),
             ],
             vec![
@@ -996,7 +996,10 @@ mod tests {
                             lineage(),
                             RowPolicyName::new("DocumentAccess").expect("policy"),
                             EntityTypeId::first(),
-                            vec![CapabilityRowPolicyOperationV1::Read],
+                            vec![
+                                CapabilityRowPolicyOperationV1::Read,
+                                CapabilityRowPolicyOperationV1::Create,
+                            ],
                         )
                         .expect("binding"),
                     ],
@@ -1014,6 +1017,21 @@ mod tests {
             &OperationRequest::execute_ad_hoc_query(application_query_target()),
         );
         assert!(allowed_to_service.is_ok());
+        let allowed_to_commit = evaluate(
+            &principal,
+            &current,
+            database_id(),
+            &environment,
+            timestamp(15),
+            &OperationRequest::execute_command(
+                lineage(),
+                ContractVersion::new(1).expect("version"),
+                CommandId::first(),
+                CommandExecutionClass::Mutation,
+                partition(),
+            ),
+        );
+        assert!(allowed_to_commit.is_ok());
     }
 
     #[test]
