@@ -10,7 +10,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_application::{
-    ApplicationInstallationPlan, InstallationDriver, InstallationSymbol, InstalledSeedEvidence,
+    ApplicationInstallationPlan, InstallationArtifact, InstallationArtifactKind,
+    InstallationDriver, InstallationSeed, InstallationSymbol, InstalledSeedEvidence,
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
@@ -28,14 +29,14 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
 use riffdb_query_module::{
     ApplicationManifest, ApplicationRoleOperationKind, CompiledApplicationRole,
-    ManifestTenantScope, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
-    QueryModuleVersion, compile_application_role, compile_application_role_v2,
-    compile_reactive_source,
+    GeneratedApplicationArtifactKind, ManifestTenantScope, NamedQuerySource, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
+    compile_application_role_v2, compile_reactive_source,
 };
 use riffdb_types::{
-    ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1,
+    ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, GeneratedArtifactHash, PartitionScopeV1,
-    TenantId, TenantScope,
+    TenantId, TenantScope, hash_generated_artifact,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -268,11 +269,12 @@ fn application_seed_guidance(seed_input_count: usize) -> String {
 }
 
 use crate::scaffold::{
-    ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
-    application_contract_version, check_application, check_application_lock,
-    check_application_sources, create_application, generate_application, load_locked_application,
-    load_locked_migration_submission, migrate_application_source_v2, plan_application_migrations,
-    preview_application_lock, refresh_application_lock_from_pinned_bundle, write_application_lock,
+    ApplicationCheckStatus, LockedApplication, PinnedLockRefresh, ScaffoldLanguage,
+    application_contract_source, application_contract_version, check_application,
+    check_application_lock, check_application_sources, create_application, generate_application,
+    load_locked_application, load_locked_migration_submission, migrate_application_source_v2,
+    plan_application_migrations, preview_application_lock,
+    refresh_application_lock_from_pinned_bundle, write_application_lock,
     write_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
@@ -934,7 +936,7 @@ async fn application_command(
     command: ApplicationCommand,
     config: &EffectiveConfig,
     environment: &dyn Environment,
-    stdin: &mut dyn Read,
+    _stdin: &mut dyn Read,
 ) -> Terminal {
     let command = match command {
         ApplicationCommand::Install {
@@ -977,6 +979,8 @@ async fn application_command(
         seed,
         seed_concurrency,
         replace_expired_credential,
+        installation_plan,
+        installation_campaign_id,
     ) = match command {
         ApplicationCommand::Deploy {
             source,
@@ -987,6 +991,8 @@ async fn application_command(
             seed,
             seed_concurrency,
             replace_expired_credential,
+            installation_plan,
+            installation_campaign_id,
         } => (
             CommandIdentity::ApplicationDeploy,
             source,
@@ -997,6 +1003,8 @@ async fn application_command(
             seed,
             seed_concurrency,
             replace_expired_credential,
+            installation_plan,
+            installation_campaign_id,
         ),
         ApplicationCommand::BindDevRole {
             source,
@@ -1015,6 +1023,8 @@ async fn application_command(
             false,
             "8".to_owned(),
             replace_expired_credential,
+            None,
+            None,
         ),
         ApplicationCommand::Check { .. }
         | ApplicationCommand::Migrate { .. }
@@ -1089,7 +1099,29 @@ async fn application_command(
         }
         None => None,
     };
-    let deployment_root = match prepare_deployment_root(locked.root(), config.database.as_str()) {
+    let deployment_installation = match load_deployment_installation(
+        installation_plan.as_deref(),
+        installation_campaign_id.as_deref(),
+        &locked,
+        config,
+        prepared_role.as_ref(),
+    ) {
+        Ok(installation) => installation,
+        Err(code) => {
+            return local_error(
+                identity,
+                code,
+                "the installation plan does not exactly match the locked application deployment",
+            );
+        }
+    };
+    let deployment_root = match prepare_deployment_root(
+        locked.root(),
+        config.database.as_str(),
+        deployment_installation
+            .as_ref()
+            .and_then(|installation| installation.credential_destination.as_deref()),
+    ) {
         Ok(root) => root,
         Err(()) => {
             return local_error(
@@ -1146,6 +1178,45 @@ async fn application_command(
         state.reactive_module_identities.clear();
         state.seeds_completed.clear();
     }
+    if let Some(installation) = deployment_installation.as_ref()
+        && let Some(successor) = installation.credential_successor
+    {
+        let successor = capability_id_text(successor);
+        let expected_current = installation
+            .credential_expected_current
+            .map(capability_id_text);
+        match state.role.as_ref() {
+            Some(retained) if retained.capability_id == successor => {}
+            Some(retained)
+                if expected_current.as_deref() == Some(retained.capability_id.as_str())
+                    && replace_expired_credential => {}
+            Some(_) => {
+                return local_error(
+                    identity,
+                    "installation_credential_predecessor_mismatch",
+                    "the retained application credential does not match the plan's exact predecessor and successor",
+                );
+            }
+            None if expected_current.is_none() && !replace_expired_credential => {}
+            None => {
+                return local_error(
+                    identity,
+                    "installation_credential_slot_mismatch",
+                    "the installation plan's credential destination does not match the empty local deployment slot",
+                );
+            }
+        }
+        if state.credential_rotation.as_ref().is_some_and(|rotation| {
+            rotation.successor_capability_id != successor
+                || expected_current.as_deref() != Some(rotation.predecessor_capability_id.as_str())
+        }) {
+            return local_error(
+                identity,
+                "installation_credential_rotation_mismatch",
+                "the retained credential rotation does not match the exact installation plan",
+            );
+        }
+    }
     let metadata = match required_metadata(identity, config, environment) {
         Ok(metadata) => metadata,
         Err(terminal) => return terminal,
@@ -1154,6 +1225,83 @@ async fn application_command(
         Ok(client) => client,
         Err(error) => return client_error(identity, &error),
     };
+    let mut installation_was_installed = false;
+    if let Some(installation) = deployment_installation.as_ref() {
+        let mut progress = match reconcile_deployment_installation(
+            installation,
+            identity,
+            config,
+            &mut client,
+            &metadata,
+            None,
+        )
+        .await
+        {
+            Ok(progress) => progress,
+            Err(terminal) => return terminal,
+        };
+        if progress.phase != "installed" && progress.next_action == "apply_migration" {
+            match apply_deployment_installation_migration(
+                installation,
+                Path::new(&source),
+                Path::new(&lock),
+                identity,
+                config,
+                &mut client,
+                &metadata,
+            )
+            .await
+            {
+                Ok(InstallationMigrationExecution::Complete) => {
+                    progress = match reconcile_deployment_installation(
+                        installation,
+                        identity,
+                        config,
+                        &mut client,
+                        &metadata,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(progress) => progress,
+                        Err(terminal) => return terminal,
+                    };
+                }
+                Ok(InstallationMigrationExecution::Pending {
+                    operation_id,
+                    phase,
+                }) => {
+                    return success(
+                        identity,
+                        "migration_running",
+                        &serde_json::json!({
+                            "application": locked.manifest().application_name(),
+                            "database": config.database.as_str(),
+                            "installation_campaign_id": installation.campaign_id.to_string(),
+                            "installation_plan_hash": hex(installation.plan.identity().as_bytes()),
+                            "migration_operation_id": operation_id.to_string(),
+                            "migration_phase": phase,
+                            "installation_phase": "running",
+                            "installation_next_action": "resume_application_deploy",
+                        }),
+                    );
+                }
+                Err(terminal) => return terminal,
+            }
+        }
+        installation_was_installed = progress.phase == "installed";
+        if seed
+            && !installation.plan.input().seeds.is_empty()
+            && progress.phase != "installed"
+            && progress.next_action != "run_seeds"
+        {
+            return local_error(
+                identity,
+                "installation_seed_stage_not_ready",
+                "plan-bound seeds may run only after the campaign has exact driver proof; deploy without --seed, prove drivers, then resume with --seed",
+            );
+        }
+    }
     let contract_source_path = locked.root().join(locked.manifest().contract().source());
     let contract_source = match read_file(&contract_source_path, MAX_INPUT_BYTES).and_then(utf8) {
         Ok(source) => source,
@@ -1697,6 +1845,9 @@ async fn application_command(
                 environment,
                 &mut client,
                 &metadata,
+                deployment_installation
+                    .as_ref()
+                    .and_then(|installation| installation.credential_successor),
             )
             .await
             {
@@ -1722,17 +1873,25 @@ async fn application_command(
             let capability_id = match state.role.as_ref() {
                 Some(retained) => retained.capability_id.clone(),
                 None => {
-                    let generated = match generate_capability_id() {
-                        Ok(value) => value.into_bytes(),
-                        Err(error) => {
-                            return client_error(
-                                identity,
-                                &ClientError::IdentifierGeneration(error),
-                            );
-                        }
-                    };
-                    let Some(capability_id) = format_uuid(&generated) else {
-                        return invalid_input(identity);
+                    let capability_id = if let Some(successor) = deployment_installation
+                        .as_ref()
+                        .and_then(|installation| installation.credential_successor)
+                    {
+                        capability_id_text(successor)
+                    } else {
+                        let generated = match generate_capability_id() {
+                            Ok(value) => value.into_bytes(),
+                            Err(error) => {
+                                return client_error(
+                                    identity,
+                                    &ClientError::IdentifierGeneration(error),
+                                );
+                            }
+                        };
+                        let Some(capability_id) = format_uuid(&generated) else {
+                            return invalid_input(identity);
+                        };
+                        capability_id
                     };
                     state.role = Some(ApplicationDeploymentRoleState {
                         role_name: role.clone(),
@@ -1821,7 +1980,8 @@ async fn application_command(
         application_credential = Some(credential_path);
     }
 
-    if seed {
+    let mut installation_seed_evidence = Vec::new();
+    if seed && !installation_was_installed {
         let Some(credential_path) = application_credential.as_ref() else {
             return invalid_input(identity);
         };
@@ -1844,24 +2004,36 @@ async fn application_command(
                 index,
                 locked.manifest().contract().version(),
             );
-            let terminal = command_command(
-                CommandCommand::Batch {
-                    command_name: command_name.to_owned(),
-                    input: path.into_os_string(),
-                    expected_version: Some(locked.manifest().contract().version().to_string()),
-                    concurrency: seed_concurrency.to_string(),
-                    idempotency_field: "idempotency_key".to_owned(),
-                    checkpoint: Some(checkpoint.into_os_string()),
-                    error_outcomes: Vec::new(),
-                    progress: true,
-                },
+            let report = match execute_application_seed_batch(
+                &path,
+                command_name,
+                locked.manifest().contract().version(),
+                seed_concurrency,
+                checkpoint,
                 &application_config,
                 environment,
-                stdin,
             )
-            .await;
-            if terminal.failed() {
-                return terminal;
+            .await
+            {
+                Ok(report) if report.is_complete() && !report.has_rejections() => report,
+                Ok(report) => return render_batch_report(report),
+                Err(terminal) => return terminal,
+            };
+            if let Some(installation) = deployment_installation.as_ref() {
+                let Some(planned_seed) = installation.plan.input().seeds.get(index) else {
+                    return local_error(
+                        identity,
+                        "installation_plan_seed_identity_mismatch",
+                        "the installation plan seed inventory changed after local preflight",
+                    );
+                };
+                let succeeded = report.succeeded.saturating_sub(report.resumed);
+                installation_seed_evidence.push(InstalledSeedEvidence::new(
+                    planned_seed.name().clone(),
+                    planned_seed.content_hash(),
+                    succeeded as u64,
+                    report.resumed as u64,
+                ));
             }
             interrupt_application_deployment_after(environment, "seed_remote");
             if !state.seeds_completed.iter().any(|item| item == source) {
@@ -1878,6 +2050,26 @@ async fn application_command(
         }
     }
 
+    let installation_progress = if let Some(installation) = deployment_installation.as_ref() {
+        let seed_evidence =
+            (!installation_seed_evidence.is_empty()).then_some(installation_seed_evidence);
+        match reconcile_deployment_installation(
+            installation,
+            identity,
+            config,
+            &mut client,
+            &metadata,
+            seed_evidence,
+        )
+        .await
+        {
+            Ok(progress) => Some(progress),
+            Err(terminal) => return terminal,
+        }
+    } else {
+        None
+    };
+
     success(
         identity,
         "deployed",
@@ -1889,7 +2081,567 @@ async fn application_command(
             "lock_hash": hex(locked.lock_identity().as_bytes()),
             "provisioned": application_credential.is_some(),
             "seeded": seed,
+            "installation_campaign_id": deployment_installation.as_ref().map(|installation| installation.campaign_id.to_string()),
+            "installation_plan_hash": deployment_installation.as_ref().map(|installation| hex(installation.plan.identity().as_bytes())),
+            "installation_phase": installation_progress.map(|progress| progress.phase),
+            "installation_next_action": installation_progress.map(|progress| progress.next_action),
         }),
+    )
+}
+
+#[derive(Clone)]
+struct DeploymentInstallation {
+    plan: ApplicationInstallationPlan,
+    campaign_id: ApplicationInstallationCampaignId,
+    credential_destination: Option<String>,
+    credential_expected_current: Option<CapabilityId>,
+    credential_successor: Option<CapabilityId>,
+}
+
+fn load_deployment_installation(
+    plan_path: Option<&OsStr>,
+    campaign_id: Option<&str>,
+    locked: &LockedApplication,
+    config: &EffectiveConfig,
+    prepared_role: Option<&CompiledApplicationRole>,
+) -> Result<Option<DeploymentInstallation>, &'static str> {
+    let (Some(plan_path), Some(campaign_id)) = (plan_path, campaign_id) else {
+        return if plan_path.is_none() && campaign_id.is_none() {
+            Ok(None)
+        } else {
+            Err("installation_deployment_identity_incomplete")
+        };
+    };
+    let campaign_id = parse_application_installation_campaign_id(campaign_id)
+        .map_err(|()| "installation_campaign_id_invalid")?;
+    let bytes = read_file(Path::new(plan_path), MAX_INPUT_BYTES)
+        .map_err(|_| "installation_plan_unreadable")?;
+    let plan = ApplicationInstallationPlan::decode_canonical(&bytes)
+        .map_err(|_| "installation_plan_invalid")?;
+    validate_deployment_installation_plan(&plan, locked, config, prepared_role)?;
+    let (credential_destination, credential_expected_current, credential_successor) = prepared_role
+        .map_or(Ok((None, None, None)), |role| {
+            let mut destinations = plan
+                .input()
+                .credential_destinations
+                .iter()
+                .filter(|destination| destination.role().as_str() == role.role_name());
+            let destination = destinations
+                .next()
+                .ok_or("installation_credential_destination_absent")?;
+            if destinations.next().is_some() {
+                return Err("installation_credential_destination_ambiguous");
+            }
+            Ok((
+                Some(destination.name().as_str().to_owned()),
+                destination.expected_current(),
+                Some(destination.successor()),
+            ))
+        })?;
+    Ok(Some(DeploymentInstallation {
+        plan,
+        campaign_id,
+        credential_destination,
+        credential_expected_current,
+        credential_successor,
+    }))
+}
+
+fn validate_deployment_installation_plan(
+    plan: &ApplicationInstallationPlan,
+    locked: &LockedApplication,
+    config: &EffectiveConfig,
+    prepared_role: Option<&CompiledApplicationRole>,
+) -> Result<(), &'static str> {
+    let input = plan.input();
+    if input.application.as_str() != locked.manifest().application_name()
+        || input.source_hash != locked.lock().source_hash()
+        || input.lock_hash != locked.lock().identity()
+        || input.manifest_hash != locked.lock().manifest_hash()
+        || input.manifest_hash != locked.manifest().identity()
+        || input.target.database().as_str() != config.database.as_str()
+        || input.target.lineage().as_str() != locked.manifest().contract().lineage()
+        || input.contract.version().get() != locked.manifest().contract().version()
+        || input.contract.bundle_hash() != locked.manifest().contract().bundle_hash()
+    {
+        return Err("installation_plan_local_identity_mismatch");
+    }
+
+    let expected_role_names = locked
+        .manifest()
+        .roles()
+        .iter()
+        .filter(|role| role.environment() == input.target.environment().as_str())
+        .map(|role| role.name())
+        .collect::<BTreeSet<_>>();
+    let planned_role_names = input
+        .roles
+        .iter()
+        .map(|role| role.name().as_str())
+        .collect::<BTreeSet<_>>();
+    if expected_role_names != planned_role_names
+        || input.credential_destinations.len() != input.roles.len()
+        || input.roles.iter().any(|role| {
+            input
+                .credential_destinations
+                .iter()
+                .filter(|destination| destination.role() == role.name())
+                .count()
+                != 1
+        })
+    {
+        return Err("installation_plan_local_role_set_mismatch");
+    }
+    if let Some(role) = prepared_role {
+        let planned = input
+            .roles
+            .iter()
+            .find(|planned| planned.name().as_str() == role.role_name())
+            .ok_or("installation_plan_role_absent")?;
+        if planned.role_hash() != role.identity()
+            || input.target.environment() != role.environment()
+            || role.manifest_hash() != locked.manifest().identity()
+        {
+            return Err("installation_plan_role_identity_mismatch");
+        }
+    }
+    if input.adapter_manifest_hash.is_some() {
+        return Err("installation_adapter_manifest_preflight_required");
+    }
+
+    let (mut expected_artifacts, expected_seeds) =
+        deployment_installation_artifacts(locked, input.migration)?;
+    if input.seeds != expected_seeds {
+        return Err("installation_plan_seed_identity_mismatch");
+    }
+    expected_artifacts.sort();
+    if input.artifacts != expected_artifacts {
+        return Err("installation_plan_local_artifact_mismatch");
+    }
+    Ok(())
+}
+
+fn deployment_installation_artifacts(
+    locked: &LockedApplication,
+    migration: Option<riffdb_application::InstallationMigration>,
+) -> Result<(Vec<InstallationArtifact>, Vec<InstallationSeed>), &'static str> {
+    let mut expected = Vec::new();
+    for artifact in locked.lock().artifacts() {
+        let (kind, name) = match artifact.kind() {
+            GeneratedApplicationArtifactKind::Manifest => {
+                (InstallationArtifactKind::Manifest, "manifest")
+            }
+            GeneratedApplicationArtifactKind::ContractBundle => {
+                (InstallationArtifactKind::ContractBundle, "contract")
+            }
+            GeneratedApplicationArtifactKind::Rust => (InstallationArtifactKind::Rust, "rust"),
+            GeneratedApplicationArtifactKind::TypeScript => {
+                (InstallationArtifactKind::TypeScript, "typescript")
+            }
+            GeneratedApplicationArtifactKind::Go => (InstallationArtifactKind::Go, "go"),
+            GeneratedApplicationArtifactKind::Python => {
+                (InstallationArtifactKind::Python, "python")
+            }
+            GeneratedApplicationArtifactKind::Mcp => (InstallationArtifactKind::Mcp, "mcp"),
+            GeneratedApplicationArtifactKind::ReactiveModule => continue,
+        };
+        expected.push(installation_artifact(kind, name, artifact.content_hash())?);
+    }
+    for module in locked.manifest().query_modules() {
+        expected.push(installation_artifact(
+            InstallationArtifactKind::QueryModule,
+            module.name(),
+            GeneratedArtifactHash::from_bytes(*module.module_hash().as_bytes()),
+        )?);
+    }
+    for module in locked.manifest().reactive_modules() {
+        expected.push(installation_artifact(
+            InstallationArtifactKind::ReactiveModule,
+            module.name(),
+            GeneratedArtifactHash::from_bytes(*module.module_hash().as_bytes()),
+        )?);
+    }
+    if let Some(migration) = migration {
+        let retained = locked
+            .lock()
+            .migrations()
+            .iter()
+            .find(|retained| {
+                retained.parent_version() == migration.parent_version()
+                    && retained.parent_bundle_hash() == migration.parent_bundle_hash()
+                    && retained.migration_bundle_hash() == migration.migration_hash()
+            })
+            .ok_or("installation_plan_migration_identity_mismatch")?;
+        expected.push(installation_artifact(
+            InstallationArtifactKind::MigrationBundle,
+            "migration",
+            GeneratedArtifactHash::from_bytes(*retained.migration_bundle_hash().as_bytes()),
+        )?);
+    }
+
+    let mut expected_seeds = Vec::new();
+    for (index, source) in locked.manifest().seed_inputs().iter().enumerate() {
+        let bytes = read_file(&locked.root().join(source), MAX_BATCH_SOURCE_BYTES)
+            .map_err(|_| "installation_seed_input_invalid")?;
+        let command_name =
+            seed_command_name(Path::new(source)).ok_or("installation_seed_input_invalid")?;
+        let batch = parse_batch_source(
+            &bytes,
+            command_name,
+            Some(locked.manifest().contract().version()),
+            "idempotency_key",
+        )
+        .map_err(|_| "installation_seed_input_invalid")?;
+        let name = InstallationSymbol::new(format!("seed-{:03}", index + 1))
+            .map_err(|_| "installation_seed_input_invalid")?;
+        let content_hash = hash_generated_artifact(&bytes);
+        expected.push(InstallationArtifact::new(
+            InstallationArtifactKind::SeedInput,
+            name.clone(),
+            content_hash,
+        ));
+        expected_seeds.push(
+            InstallationSeed::new(name, content_hash, batch.item_count() as u64)
+                .map_err(|_| "installation_seed_input_invalid")?,
+        );
+    }
+    Ok((expected, expected_seeds))
+}
+
+fn installation_artifact(
+    kind: InstallationArtifactKind,
+    name: &str,
+    content_hash: GeneratedArtifactHash,
+) -> Result<InstallationArtifact, &'static str> {
+    Ok(InstallationArtifact::new(
+        kind,
+        InstallationSymbol::new(name).map_err(|_| "installation_plan_local_artifact_mismatch")?,
+        content_hash,
+    ))
+}
+
+fn seed_command_name(path: &Path) -> Option<&str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".jsonl"))
+        .and_then(|name| name.split_once('-').map(|(_, command)| command))
+        .filter(|name| !name.is_empty())
+}
+
+fn capability_id_text(capability_id: CapabilityId) -> String {
+    let bytes = capability_id.into_bytes();
+    format_uuid(&bytes).unwrap_or_else(|| hex(&bytes))
+}
+
+#[derive(Clone, Copy)]
+struct DeploymentInstallationProgress {
+    phase: &'static str,
+    next_action: &'static str,
+}
+
+enum InstallationMigrationExecution {
+    Complete,
+    Pending {
+        operation_id: ContractMigrationOperationId,
+        phase: &'static str,
+    },
+}
+
+async fn reconcile_deployment_installation(
+    installation: &DeploymentInstallation,
+    identity: CommandIdentity,
+    config: &EffectiveConfig,
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+    seed_evidence: Option<Vec<InstalledSeedEvidence>>,
+) -> Result<DeploymentInstallationProgress, Terminal> {
+    let mut start =
+        StartApplicationInstallation::new(installation.campaign_id, installation.plan.clone());
+    if let Some(seed_evidence) = seed_evidence {
+        start = start.with_seed_receipts(seed_evidence).map_err(|_| {
+            local_error(
+                identity,
+                "installation_seed_receipts_mismatch",
+                "the completed seed batches do not exactly match the immutable installation plan",
+            )
+        })?;
+    }
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    let response = client
+        .start_application_installation_with_retry(&start, attempts, metadata)
+        .await
+        .map_err(|error| match error {
+            ClientError::OutcomeUnknown(_) => {
+                crate::output::installation_uncertain(identity, installation.campaign_id)
+            }
+            error => client_error(identity, &error),
+        })?;
+    let observation = response.observation.as_ref().ok_or_else(|| {
+        local_error(
+            identity,
+            "installation_campaign_observation_absent",
+            "the installation campaign returned no exact progress observation",
+        )
+    })?;
+    if observation.campaign_id.as_slice() != installation.campaign_id.as_bytes()
+        || observation.plan_hash.as_slice() != installation.plan.identity().as_bytes()
+        || observation.contract_lineage != installation.plan.input().target.lineage().as_str()
+    {
+        return Err(local_error(
+            identity,
+            "installation_campaign_identity_mismatch",
+            "the installation campaign observation does not match the exact local plan",
+        ));
+    }
+    let phase = match v1::ApplicationInstallationPhase::try_from(observation.phase).ok() {
+        Some(v1::ApplicationInstallationPhase::Running) => "running",
+        Some(v1::ApplicationInstallationPhase::Installed) => "installed",
+        Some(v1::ApplicationInstallationPhase::Partial) => {
+            return Err(local_error(
+                identity,
+                "installation_campaign_partial",
+                "the installation campaign is partial and must be resumed from its reported next action",
+            ));
+        }
+        Some(v1::ApplicationInstallationPhase::Unspecified) | None => {
+            return Err(local_error(
+                identity,
+                "installation_campaign_phase_invalid",
+                "the installation campaign returned an invalid phase",
+            ));
+        }
+    };
+    let next_action = installation_next_action(observation.next_action).ok_or_else(|| {
+        local_error(
+            identity,
+            "installation_campaign_next_action_invalid",
+            "the installation campaign returned an invalid next action",
+        )
+    })?;
+    Ok(DeploymentInstallationProgress { phase, next_action })
+}
+
+async fn apply_deployment_installation_migration(
+    installation: &DeploymentInstallation,
+    source_path: &Path,
+    lock_path: &Path,
+    identity: CommandIdentity,
+    config: &EffectiveConfig,
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+) -> Result<InstallationMigrationExecution, Terminal> {
+    let Some(migration) = installation.plan.input().migration else {
+        return Err(local_error(
+            identity,
+            "installation_migration_plan_absent",
+            "the campaign requested migration without one exact confirmed migration in its plan",
+        ));
+    };
+    let submission = load_locked_migration_submission(
+        source_path,
+        Some(lock_path),
+        Some(migration.confirmation()),
+    )
+    .map_err(|_| {
+        local_error(
+            identity,
+            "installation_migration_artifact_mismatch",
+            "the exact locked migration artifacts no longer match the immutable installation plan",
+        )
+    })?;
+    let (candidate, migration_bundle, migration_hash) = submission.into_parts();
+    if migration_hash != migration.migration_hash() {
+        return Err(local_error(
+            identity,
+            "installation_migration_identity_mismatch",
+            "the exact locked migration identity does not match the immutable installation plan",
+        ));
+    }
+    let operation_id = ContractMigrationOperationId::from_bytes(
+        installation.campaign_id.into_bytes(),
+    )
+    .map_err(|_| {
+        local_error(
+            identity,
+            "installation_migration_operation_identity_invalid",
+            "the campaign identity cannot bind the exact migration operation",
+        )
+    })?;
+    let apply = ApplyContractMigration::new(
+        operation_id,
+        candidate,
+        migration_bundle,
+        migration.confirmation(),
+    )
+    .map_err(|_| {
+        local_error(
+            identity,
+            "installation_migration_artifact_invalid",
+            "the exact migration artifacts exceed the public operation bounds",
+        )
+    })?;
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    let response = client
+        .apply_contract_migration_with_retry(&apply, attempts, metadata)
+        .await
+        .map_err(|error| match error {
+            ClientError::OutcomeUnknown(_) => {
+                crate::output::migration_uncertain(identity, operation_id)
+            }
+            error => client_error(identity, &error),
+        })?;
+    classify_installation_migration_response(
+        installation,
+        operation_id,
+        response.operation.as_ref(),
+        identity,
+    )
+}
+
+fn classify_installation_migration_response(
+    installation: &DeploymentInstallation,
+    operation_id: ContractMigrationOperationId,
+    operation: Option<&v1::ContractMigrationOperation>,
+    identity: CommandIdentity,
+) -> Result<InstallationMigrationExecution, Terminal> {
+    let Some(migration) = installation.plan.input().migration else {
+        return Err(local_error(
+            identity,
+            "installation_migration_plan_absent",
+            "the campaign requested migration without one exact confirmed migration in its plan",
+        ));
+    };
+    let Some(operation) = operation else {
+        return Err(local_error(
+            identity,
+            "installation_migration_operation_absent",
+            "migration submission returned no exact observable operation",
+        ));
+    };
+    if operation.operation_id.as_slice() != operation_id.as_bytes()
+        || operation.kind != v1::ContractMigrationOperationKind::Apply as i32
+        || operation.contract_lineage != installation.plan.input().target.lineage().as_str()
+        || operation.parent_bundle_hash.as_slice() != migration.parent_bundle_hash().as_bytes()
+        || operation.candidate_bundle_hash.as_slice()
+            != migration.successor_bundle_hash().as_bytes()
+        || operation.migration_bundle_hash.as_slice() != migration.migration_hash().as_bytes()
+    {
+        return Err(local_error(
+            identity,
+            "installation_migration_operation_mismatch",
+            "the retained migration operation does not match the immutable installation plan",
+        ));
+    }
+    let phase = v1::ContractMigrationPhase::try_from(operation.phase).map_err(|_| {
+        local_error(
+            identity,
+            "installation_migration_phase_invalid",
+            "the migration operation returned an invalid phase",
+        )
+    })?;
+    match phase {
+        v1::ContractMigrationPhase::Succeeded => Ok(InstallationMigrationExecution::Complete),
+        v1::ContractMigrationPhase::FailedClosed | v1::ContractMigrationPhase::FailedRolledBack => {
+            Err(local_error(
+                identity,
+                "installation_migration_failed",
+                "the exact installation migration failed closed; inspect the retained migration operation before retrying",
+            ))
+        }
+        v1::ContractMigrationPhase::Unspecified => Err(local_error(
+            identity,
+            "installation_migration_phase_invalid",
+            "the migration operation returned an invalid phase",
+        )),
+        phase => Ok(InstallationMigrationExecution::Pending {
+            operation_id,
+            phase: contract_migration_phase_name(phase),
+        }),
+    }
+}
+
+const fn contract_migration_phase_name(phase: v1::ContractMigrationPhase) -> &'static str {
+    match phase {
+        v1::ContractMigrationPhase::Accepted => "accepted",
+        v1::ContractMigrationPhase::Draining => "draining",
+        v1::ContractMigrationPhase::Preflight => "preflight",
+        v1::ContractMigrationPhase::BackupPublished => "backup_published",
+        v1::ContractMigrationPhase::Staging => "staging",
+        v1::ContractMigrationPhase::Transforming => "transforming",
+        v1::ContractMigrationPhase::RebuildingProjections => "rebuilding_projections",
+        v1::ContractMigrationPhase::ValidatingStage => "validating_stage",
+        v1::ContractMigrationPhase::Publishing => "publishing",
+        v1::ContractMigrationPhase::ValidatingPublished => "validating_published",
+        v1::ContractMigrationPhase::RollingBack => "rolling_back",
+        v1::ContractMigrationPhase::Succeeded => "succeeded",
+        v1::ContractMigrationPhase::FailedClosed => "failed_closed",
+        v1::ContractMigrationPhase::FailedRolledBack => "failed_rolled_back",
+        v1::ContractMigrationPhase::Unspecified => "unspecified",
+    }
+}
+
+async fn execute_application_seed_batch(
+    path: &Path,
+    command_name: &str,
+    contract_version: u64,
+    concurrency: usize,
+    checkpoint: PathBuf,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Result<BatchReport, Terminal> {
+    let source = read_file(path, MAX_BATCH_SOURCE_BYTES)
+        .map_err(|error| input_terminal(CommandIdentity::CommandBatch, error))?;
+    let source = parse_batch_source(
+        &source,
+        command_name,
+        Some(contract_version),
+        "idempotency_key",
+    )
+    .map_err(batch_error_terminal)?;
+    let metadata = required_metadata(CommandIdentity::CommandBatch, config, environment)?;
+    let client = connect(config)
+        .await
+        .map_err(|error| client_error(CommandIdentity::CommandBatch, &error))?;
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    execute_batch(
+        source,
+        BatchOptions {
+            command_name: command_name.to_owned(),
+            expected_contract_version: Some(contract_version),
+            concurrency,
+            idempotency_field: "idempotency_key".to_owned(),
+            error_outcomes: BTreeSet::new(),
+            checkpoint_path: Some(checkpoint),
+            progress: true,
+        },
+        client,
+        attempts,
+        metadata,
+    )
+    .await
+    .map_err(batch_error_terminal)
+}
+
+fn installation_next_action(value: i32) -> Option<&'static str> {
+    Some(
+        match v1::ApplicationInstallationNextAction::try_from(value).ok()? {
+            v1::ApplicationInstallationNextAction::ValidateLocalArtifacts => {
+                "validate_local_artifacts"
+            }
+            v1::ApplicationInstallationNextAction::DeployContract => "deploy_contract",
+            v1::ApplicationInstallationNextAction::ApplyMigration => "apply_migration",
+            v1::ApplicationInstallationNextAction::DeployQueryModules => "deploy_query_modules",
+            v1::ApplicationInstallationNextAction::DeployReactiveModules => {
+                "deploy_reactive_modules"
+            }
+            v1::ApplicationInstallationNextAction::ReconcileRoles => "reconcile_roles",
+            v1::ApplicationInstallationNextAction::RotateCredentials => "rotate_credentials",
+            v1::ApplicationInstallationNextAction::ProveDrivers => "prove_drivers",
+            v1::ApplicationInstallationNextAction::RunSeeds => "run_seeds",
+            v1::ApplicationInstallationNextAction::SealReceipt => "seal_receipt",
+            v1::ApplicationInstallationNextAction::None => "none",
+            v1::ApplicationInstallationNextAction::Unspecified => return None,
+        },
     )
 }
 
@@ -2167,11 +2919,20 @@ async fn write_successor_application_lock(
     }
 }
 
-fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
+fn prepare_deployment_root(
+    root: &Path,
+    database: &str,
+    credential_destination: Option<&str>,
+) -> Result<PathBuf, ()> {
     let private = root.join(".riffdb");
     let deployments = private.join("deployments");
     let selected = deployments.join(database);
-    for directory in [&private, &deployments, &selected] {
+    let destination = credential_destination.map(|destination| selected.join(destination));
+    let mut directories = vec![&private, &deployments, &selected];
+    if let Some(destination) = destination.as_ref() {
+        directories.push(destination);
+    }
+    for directory in directories {
         match fs::symlink_metadata(directory) {
             Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
             }
@@ -2183,7 +2944,7 @@ fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
         }
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|_| ())?;
     }
-    Ok(selected)
+    Ok(destination.unwrap_or(selected))
 }
 
 fn seed_checkpoint_path(root: &Path, index: usize, contract_version: u64) -> PathBuf {
@@ -5424,6 +6185,7 @@ async fn rotate_application_credential(
     environment: &dyn Environment,
     operator_client: &mut RiffDbClient,
     operator_metadata: &CallMetadata,
+    planned_successor: Option<CapabilityId>,
 ) -> Result<PathBuf, Terminal> {
     let expected_role_identity = hex(role.identity().as_bytes());
     if state.credential_rotation.is_none() {
@@ -5434,10 +6196,15 @@ async fn rotate_application_credential(
                 "credential replacement requires the retained predecessor identity",
             )
         })?;
-        let successor = generate_capability_id()
-            .map_err(|error| client_error(identity, &ClientError::IdentifierGeneration(error)))?;
-        let successor =
-            format_uuid(&successor.into_bytes()).ok_or_else(|| invalid_input(identity))?;
+        let successor = match planned_successor {
+            Some(successor) => capability_id_text(successor),
+            None => {
+                let successor = generate_capability_id().map_err(|error| {
+                    client_error(identity, &ClientError::IdentifierGeneration(error))
+                })?;
+                format_uuid(&successor.into_bytes()).ok_or_else(|| invalid_input(identity))?
+            }
+        };
         state.credential_rotation = Some(ApplicationCredentialRotationState {
             predecessor_capability_id: predecessor.capability_id.clone(),
             successor_credential_file: format!("application-{successor}.credential"),
@@ -5467,6 +6234,9 @@ async fn rotate_application_credential(
     if rotation.target_role_name != role.role_name()
         || rotation.target_role_identity != expected_role_identity
         || rotation.authentication_audience != authentication_audience
+        || planned_successor
+            .map(capability_id_text)
+            .is_some_and(|planned| planned != rotation.successor_capability_id)
     {
         return Err(local_error(
             identity,
@@ -8931,6 +9701,121 @@ mod tests {
     }
 
     #[test]
+    fn exact_installation_plan_matches_every_locked_local_artifact_and_role() {
+        let directory = std::env::temp_dir().join(format!(
+            "riffdb-cli-installation-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        crate::scaffold::create_application(
+            "installation-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            &directory,
+        )
+        .expect("scaffold installation application");
+        let source = directory.join("riffdb.application.json");
+        let locked =
+            load_locked_application(&source, Some(Path::new("riffdb.application.lock.json")))
+                .expect("exact locked application");
+        let manifest_role = locked.manifest().roles().first().expect("scaffold role");
+        let manifest_path = locked.manifest_path().as_os_str().to_owned();
+        let role = compile_role_from_workspace(&manifest_path, manifest_role.name(), None)
+            .expect("compiled application role");
+        let operations = role
+            .operations()
+            .iter()
+            .map(|operation| {
+                let kind = match operation.kind() {
+                    ApplicationRoleOperationKind::Query => {
+                        riffdb_application::RoleOperationKind::Query
+                    }
+                    ApplicationRoleOperationKind::Command => {
+                        riffdb_application::RoleOperationKind::Command
+                    }
+                    ApplicationRoleOperationKind::EventStream => {
+                        riffdb_application::RoleOperationKind::EventStream
+                    }
+                    ApplicationRoleOperationKind::QueryWatch => {
+                        riffdb_application::RoleOperationKind::QueryWatch
+                    }
+                    ApplicationRoleOperationKind::AgentSubscription => {
+                        riffdb_application::RoleOperationKind::AgentSubscription
+                    }
+                };
+                riffdb_application::RoleOperation::new(
+                    kind,
+                    InstallationSymbol::new(operation.name()).expect("operation symbol"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let installation_role = riffdb_application::InstallationRole::new(
+            InstallationSymbol::new(role.role_name()).expect("role symbol"),
+            role.identity(),
+            None,
+            operations,
+            Vec::new(),
+            None,
+        )
+        .expect("initial role");
+        let successor =
+            CapabilityId::from_bytes([0, 0, 0, 0, 0, 3, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1])
+                .expect("capability UUIDv7");
+        let credential = riffdb_application::CredentialDestination::new(
+            InstallationSymbol::new("app-runtime").expect("destination"),
+            InstallationSymbol::new(role.role_name()).expect("role symbol"),
+            None,
+            successor,
+        )
+        .expect("credential destination");
+        let (mut artifacts, seeds) =
+            deployment_installation_artifacts(&locked, None).expect("local artifacts");
+        artifacts.sort();
+        let config = test_config();
+        let input = riffdb_application::ApplicationInstallationPlanInput {
+            application: InstallationSymbol::new(locked.manifest().application_name())
+                .expect("application symbol"),
+            source_hash: locked.lock().source_hash(),
+            lock_hash: locked.lock().identity(),
+            manifest_hash: locked.manifest().identity(),
+            target: riffdb_application::InstallationTarget::new(
+                config.database.clone(),
+                role.environment().clone(),
+                role.contract_lineage().clone(),
+            ),
+            contract: riffdb_application::InstallationContract::new(
+                role.contract_version(),
+                role.contract_hash(),
+            ),
+            artifacts,
+            migration: None,
+            roles: vec![installation_role],
+            credential_destinations: vec![credential],
+            drivers: vec![InstallationDriver::Rust],
+            seeds,
+            required_features: vec![riffdb_application::InstallationFeature::InstallationCampaigns],
+            adapter_manifest_hash: None,
+        };
+        let plan = ApplicationInstallationPlan::compile(input).expect("installation plan");
+        validate_deployment_installation_plan(&plan, &locked, &config, Some(&role))
+            .expect("exact plan matches local application");
+
+        let plan_path = directory.join("installation-plan.json");
+        fs::write(&plan_path, plan.canonical_bytes()).expect("canonical plan fixture");
+        let prepared = load_deployment_installation(
+            Some(plan_path.as_os_str()),
+            Some("018f2f85-3c20-7a31-8f11-112233445566"),
+            &locked,
+            &config,
+            Some(&role),
+        )
+        .expect("prepared exact deployment")
+        .expect("installation context");
+        assert_eq!(prepared.plan.identity(), plan.identity());
+        assert_eq!(prepared.credential_successor, Some(successor));
+        fs::remove_dir_all(directory).expect("installation fixture cleanup");
+    }
+
+    #[test]
     fn named_query_json_preserves_the_exact_returned_module_identity() {
         let response = app_v1::ExecuteQueryResponse {
             identity: Some(app_v1::QueryIdentity {
@@ -8988,6 +9873,103 @@ mod tests {
         assert_eq!(legacy_path, inline);
         assert_eq!(stdin, inline);
         fs::remove_dir_all(directory).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn installation_migration_observation_is_exact_plan_bound_and_resumable() {
+        let base = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+            "../../../fixtures/installation/application-installation-plan-v1.json"
+        ))
+        .expect("base installation plan");
+        let mut input = base.input().clone();
+        let parent = input.contract;
+        let successor_version = riffdb_types::ContractVersion::new(2).expect("successor");
+        let successor_hash = riffdb_types::ContractBundleHash::from_bytes([0x42; 32]);
+        let migration_hash = MigrationBundleHash::from_bytes([0x43; 32]);
+        input.contract =
+            riffdb_application::InstallationContract::new(successor_version, successor_hash);
+        input.migration = Some(
+            riffdb_application::InstallationMigration::new(
+                parent.version(),
+                parent.bundle_hash(),
+                successor_version,
+                successor_hash,
+                migration_hash,
+                migration_hash,
+            )
+            .expect("exact migration gate"),
+        );
+        input.artifacts.push(InstallationArtifact::new(
+            InstallationArtifactKind::MigrationBundle,
+            InstallationSymbol::new("migration").expect("migration symbol"),
+            GeneratedArtifactHash::from_bytes(*migration_hash.as_bytes()),
+        ));
+        let plan = ApplicationInstallationPlan::compile(input).expect("migration plan");
+        let campaign_id =
+            ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(19, [0x19; 10])
+                .expect("campaign ID");
+        let operation_id =
+            ContractMigrationOperationId::from_bytes(campaign_id.into_bytes()).expect("operation");
+        let installation = DeploymentInstallation {
+            plan: plan.clone(),
+            campaign_id,
+            credential_destination: None,
+            credential_expected_current: None,
+            credential_successor: None,
+        };
+        let operation = |phase| v1::ContractMigrationOperation {
+            operation_id: operation_id.into_bytes().to_vec(),
+            kind: v1::ContractMigrationOperationKind::Apply as i32,
+            contract_lineage: plan.input().target.lineage().as_str().to_owned(),
+            input_hash: vec![0x55; 32],
+            parent_bundle_hash: parent.bundle_hash().as_bytes().to_vec(),
+            candidate_bundle_hash: successor_hash.as_bytes().to_vec(),
+            migration_bundle_hash: migration_hash.as_bytes().to_vec(),
+            phase: phase as i32,
+            failure: v1::ContractMigrationFailureClass::Unspecified as i32,
+            backup_name: String::new(),
+            backup_manifest_hash: Vec::new(),
+        };
+
+        let Ok(running) = classify_installation_migration_response(
+            &installation,
+            operation_id,
+            Some(&operation(v1::ContractMigrationPhase::Transforming)),
+            CommandIdentity::ApplicationDeploy,
+        ) else {
+            panic!("running exact migration was rejected");
+        };
+        assert!(matches!(
+            running,
+            InstallationMigrationExecution::Pending {
+                phase: "transforming",
+                ..
+            }
+        ));
+        let Ok(completed) = classify_installation_migration_response(
+            &installation,
+            operation_id,
+            Some(&operation(v1::ContractMigrationPhase::Succeeded)),
+            CommandIdentity::ApplicationDeploy,
+        ) else {
+            panic!("completed exact migration was rejected");
+        };
+        assert!(matches!(
+            completed,
+            InstallationMigrationExecution::Complete
+        ));
+        let mut substituted = operation(v1::ContractMigrationPhase::Succeeded);
+        substituted.candidate_bundle_hash = vec![0x99; 32];
+        assert!(
+            classify_installation_migration_response(
+                &installation,
+                operation_id,
+                Some(&substituted),
+                CommandIdentity::ApplicationDeploy,
+            )
+            .is_err(),
+            "a successful but inexact operation cannot advance the campaign"
+        );
     }
 
     #[test]
@@ -9079,6 +10061,46 @@ mod tests {
         assert!(legacy.reactive_modules_deployed.is_empty());
         assert!(legacy.reactive_module_identities.is_empty());
         assert!(legacy.credential_rotation.is_none());
+        fs::remove_dir_all(directory).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn plan_bound_credential_destinations_have_disjoint_private_state_roots() {
+        let directory = std::env::temp_dir().join(format!(
+            "riffdb-cli-installation-destinations-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("fixture directory");
+
+        let reader = prepare_deployment_root(&directory, "ea", Some("reader-runtime"))
+            .expect("reader destination");
+        let writer = prepare_deployment_root(&directory, "ea", Some("writer-runtime"))
+            .expect("writer destination");
+        let unbound =
+            prepare_deployment_root(&directory, "ea", None).expect("unbound deployment root");
+
+        assert_eq!(
+            reader,
+            directory.join(".riffdb/deployments/ea/reader-runtime")
+        );
+        assert_eq!(
+            writer,
+            directory.join(".riffdb/deployments/ea/writer-runtime")
+        );
+        assert_eq!(unbound, directory.join(".riffdb/deployments/ea"));
+        assert_ne!(reader, writer);
+        for root in [&reader, &writer, &unbound] {
+            assert_eq!(
+                fs::metadata(root)
+                    .expect("root metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+
         fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
@@ -9597,6 +10619,8 @@ mod tests {
                     seed: false,
                     seed_concurrency: "8".to_owned(),
                     replace_expired_credential: false,
+                    installation_plan: None,
+                    installation_campaign_id: None,
                 },
             },
             &config,
@@ -9617,6 +10641,40 @@ mod tests {
             &stdout,
             b"\"file_change\":\"no_files_changed\""
         ));
+        assert_listener_unused(&listener);
+
+        let mismatched_installation = dispatch(
+            TopLevel::Application {
+                command: ApplicationCommand::Deploy {
+                    source: directory.join("riffdb.application.json").into_os_string(),
+                    lock: OsString::from("riffdb.application.lock.json"),
+                    provision_role: None,
+                    tenant: None,
+                    lifetime_seconds: "28800".to_owned(),
+                    seed: false,
+                    seed_concurrency: "8".to_owned(),
+                    replace_expired_credential: false,
+                    installation_plan: Some(
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join(
+                                "../../fixtures/installation/application-installation-plan-v1.json",
+                            )
+                            .into_os_string(),
+                    ),
+                    installation_campaign_id: Some(
+                        "018f2f85-3c20-7a31-8f11-112233445566".to_owned(),
+                    ),
+                },
+            },
+            &config,
+            &environment,
+            &mut Cursor::new(Vec::new()),
+        )
+        .await;
+        assert_local_code(
+            mismatched_installation,
+            "installation_plan_local_identity_mismatch",
+        );
         assert_listener_unused(&listener);
         fs::remove_dir_all(directory).expect("preflight fixture cleanup");
     }

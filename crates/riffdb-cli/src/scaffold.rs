@@ -241,7 +241,7 @@ pub(crate) struct LockedApplication {
     root: PathBuf,
     manifest_path: PathBuf,
     manifest: ApplicationManifest,
-    lock_identity: riffdb_types::ApplicationLockHash,
+    lock: ApplicationLock,
     contract: ContractBundle,
 }
 
@@ -258,8 +258,12 @@ impl LockedApplication {
         &self.manifest
     }
 
+    pub(crate) const fn lock(&self) -> &ApplicationLock {
+        &self.lock
+    }
+
     pub(crate) const fn lock_identity(&self) -> riffdb_types::ApplicationLockHash {
-        self.lock_identity
+        self.lock.identity()
     }
 
     pub(crate) const fn contract(&self) -> &ContractBundle {
@@ -685,7 +689,7 @@ pub(crate) fn load_locked_application(
         root: root.to_path_buf(),
         manifest_path,
         manifest,
-        lock_identity: lock.identity(),
+        lock,
         contract,
     })
 }

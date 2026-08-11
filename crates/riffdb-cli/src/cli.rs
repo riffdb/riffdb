@@ -317,6 +317,16 @@ pub(crate) enum ApplicationCommand {
             requires = "provision_role"
         )]
         replace_expired_credential: bool,
+        /// Binds deployment to one exact installation plan and campaign.
+        #[arg(
+            long,
+            value_name = "CANONICAL_PLAN",
+            requires = "installation_campaign_id"
+        )]
+        installation_plan: Option<OsString>,
+        /// Caller-stable campaign resumed before and after remote deployment.
+        #[arg(long, value_name = "UUID_V7", requires = "installation_plan")]
+        installation_campaign_id: Option<String>,
     },
     /// Idempotently deploys and binds one explicit short-lived application role.
     BindDevRole {
@@ -1522,6 +1532,10 @@ mod tests {
                 "--seed-concurrency",
                 "16",
                 "--replace-role-credential",
+                "--installation-plan",
+                "installation-plan.json",
+                "--installation-campaign-id",
+                "018f2f85-3c20-7a31-8f11-112233445566",
             ])
             .expect("locked installed deployment")
             .command,
@@ -1532,12 +1546,36 @@ mod tests {
                     seed: true,
                     seed_concurrency,
                     replace_expired_credential: true,
+                    installation_plan: Some(installation_plan),
+                    installation_campaign_id: Some(installation_campaign_id),
                     ..
                 }
             } if role == "TicketDeskAgent"
                 && tenant == "organization_acme"
                 && seed_concurrency == "16"
+                && installation_plan == "installation-plan.json"
+                && installation_campaign_id == "018f2f85-3c20-7a31-8f11-112233445566"
         ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "deploy",
+                "--installation-plan",
+                "installation-plan.json",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "deploy",
+                "--installation-campaign-id",
+                "018f2f85-3c20-7a31-8f11-112233445566",
+            ])
+            .is_err()
+        );
         assert!(matches!(
             Cli::try_parse_from([
                 "riffdb",

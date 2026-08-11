@@ -1072,10 +1072,6 @@ fn error_with_exit<T: Serialize>(
 }
 
 impl Terminal {
-    pub(crate) const fn failed(&self) -> bool {
-        self.failed
-    }
-
     fn new<T: Serialize>(
         command: CommandIdentity,
         ok: bool,
