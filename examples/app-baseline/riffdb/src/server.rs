@@ -739,6 +739,7 @@ fn bootstrap_request(
             field_visibility: Vec::new(),
             max_scan_rows: 1,
             approval_required: Vec::new(),
+            row_policy: None,
         }),
     })
 }
@@ -833,6 +834,7 @@ fn application_role_grant_to_proto(
             .collect(),
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
         approval_required: Vec::new(),
+        row_policy: None,
     })
 }
 

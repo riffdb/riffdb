@@ -5,15 +5,17 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_contract_ir::{
-    BindingMode, ContractBundle, RowPolicyExpressionNodeV1, RowPolicyOperationV1, RowPolicyPlanV1,
-    RowPolicyValueSourceV1,
+    BindingMode, ContractBundle, PrincipalFactSchemaV1, RowPolicyExpressionNodeV1,
+    RowPolicyOperationV1, RowPolicyPlanV1, RowPolicyValueSourceV1,
 };
 use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
-    ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1, CapabilityPermissionKindV1,
-    CapabilityPermissionV1, CapabilityPermissionsV1, ContractBundleHash, ContractLineage,
-    ContractVersion, EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash,
-    QueryOperationName, ReactiveModuleHash, TenantId, TenantScope, hash_application_role,
+    ActorId, ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1,
+    CapabilityRowPolicyOperationV1, ContractBundleHash, ContractLineage, ContractVersion,
+    EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash, QueryOperationName,
+    ReactiveModuleHash, RowPolicyName, TenantId, TenantScope, hash_application_role,
 };
 
 use crate::{ApplicationManifest, ManifestRole, ManifestTenantScope, QueryModule};
@@ -125,6 +127,10 @@ pub struct CompiledApplicationRole {
     operations: Vec<ApplicationRoleOperation>,
     row_policies: Vec<ApplicationRolePolicy>,
     principal_fact_schemas: Vec<ApplicationRoleFactSchema>,
+    principal_fact_plans: Vec<PrincipalFactSchemaV1>,
+    requires_uuid_principal: bool,
+    policy_bindings: Vec<CapabilityRowPolicyBindingV1>,
+    bound_permissions: CapabilityPermissionsV1,
     identity: ApplicationRoleHash,
     grant: CapabilityGrantV1,
 }
@@ -219,6 +225,60 @@ impl CompiledApplicationRole {
     pub const fn internal_grant(&self) -> &CapabilityGrantV1 {
         &self.grant
     }
+
+    /// Binds operator-supplied facts to this exact compiled role.
+    ///
+    /// This is a trusted provisioning operation: facts are checked against the
+    /// compiler-retained schemas, and protected operation permissions become
+    /// available only in the returned V4 grant that carries the matching role,
+    /// fact, and policy identities.
+    pub fn bind_principal_facts_for(
+        &self,
+        principal_id: &ActorId,
+        facts: CapabilityPrincipalFactsV1,
+    ) -> Result<CapabilityGrantV1, ApplicationRoleError> {
+        if (self.requires_uuid_principal && !is_canonical_uuid(principal_id.as_str()))
+            || self.principal_fact_plans.len() != facts.names().len()
+            || self
+                .principal_fact_plans
+                .iter()
+                .map(PrincipalFactSchemaV1::name)
+                .ne(facts.names())
+            || self.principal_fact_plans.iter().any(|schema| {
+                facts.internal_fact(schema.name()).is_none_or(|fact| {
+                    schema
+                        .value_type()
+                        .validate_value(fact.internal_value())
+                        .is_err()
+                })
+            })
+        {
+            return Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::PrincipalFacts,
+            ));
+        }
+
+        let grant = CapabilityGrantV1::new(
+            self.tenant_scope.clone(),
+            PartitionScopeV1::All,
+            self.bound_permissions.clone(),
+            self.grant.field_visibility().to_vec(),
+            self.grant.max_scan_rows(),
+            Vec::new(),
+        )
+        .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
+        if self.policy_bindings.is_empty() {
+            return Ok(grant);
+        }
+        let row_policy =
+            CapabilityRowPolicyGrantV1::new(self.identity, facts, self.policy_bindings.clone())
+                .map_err(|_| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit)
+                })?;
+        grant
+            .with_row_policy(row_policy)
+            .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))
+    }
 }
 
 /// Closed role compilation failure.
@@ -238,6 +298,8 @@ pub enum ApplicationRoleErrorKind {
     UnknownPolicy,
     /// One protected operation has no selected policy rule.
     PolicyCoverage,
+    /// Bound principal facts are missing, extra, or do not match the compiled schemas.
+    PrincipalFacts,
     /// A compiler-owned authority or cost bound cannot be represented safely.
     RequirementLimit,
 }
@@ -283,6 +345,9 @@ impl fmt::Display for ApplicationRoleError {
             }
             ApplicationRoleErrorKind::PolicyCoverage => {
                 "application role row policy does not cover a protected operation"
+            }
+            ApplicationRoleErrorKind::PrincipalFacts => {
+                "application role principal facts do not match the compiled schemas"
             }
             ApplicationRoleErrorKind::RequirementLimit => {
                 "application role derived authority exceeds a hard safety bound"
@@ -341,8 +406,13 @@ fn compile_application_role_inner(
     let environment = Environment::new(role.environment())
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     let module_by_query = validate_modules(manifest, contract, modules)?;
-    let (selected_policies, row_policies, principal_fact_schemas) =
-        compile_role_policies(manifest, role, contract)?;
+    let (
+        selected_policies,
+        row_policies,
+        principal_fact_schemas,
+        principal_fact_plans,
+        requires_uuid_principal,
+    ) = compile_role_policies(manifest, role, contract)?;
 
     let lineage = contract.lineage().clone();
     // ADR-0056 makes contract-description access a compiler-derived part of
@@ -350,9 +420,10 @@ fn compile_application_role_inner(
     // driver to prove the exact active lineage/version/bundle before exposing
     // its generated operation catalog; callers never assemble this grant.
     let mut permissions = Vec::with_capacity(role.queries().len() + role.commands().len() + 1);
-    permissions.push(CapabilityPermissionV1::Unparameterized(
-        CapabilityPermissionKindV1::ReadContract,
-    ));
+    let read_contract =
+        CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::ReadContract);
+    permissions.push(read_contract.clone());
+    let mut bound_permissions = vec![read_contract];
     let mut fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
     let mut maximum_rows = 1_u64;
     let mut operations = Vec::with_capacity(role.queries().len() + role.commands().len());
@@ -406,12 +477,14 @@ fn compile_application_role_inner(
         // the ordinary operation permission would allow the existing runtime
         // to execute without the policy. Withhold it so partial rollout is a
         // closed authorization failure, never an application-side check.
+        let permission = CapabilityPermissionV1::ExecuteNamedQuery(
+            lineage.clone(),
+            module.identity(),
+            operation_name,
+        );
+        bound_permissions.push(permission.clone());
         if !requires_row_policy {
-            permissions.push(CapabilityPermissionV1::ExecuteNamedQuery(
-                lineage.clone(),
-                module.identity(),
-                operation_name,
-            ));
+            permissions.push(permission);
         }
         operations.push(ApplicationRoleOperation {
             kind: ApplicationRoleOperationKind::Query,
@@ -445,11 +518,11 @@ fn compile_application_role_inner(
                 .iter()
                 .any(|policy| policy.entity() == binding.entity_type());
         }
+        let permission =
+            CapabilityPermissionV1::InvokeCommand(lineage.clone(), command.command_id());
+        bound_permissions.push(permission.clone());
         if !requires_row_policy {
-            permissions.push(CapabilityPermissionV1::InvokeCommand(
-                lineage.clone(),
-                command.command_id(),
-            ));
+            permissions.push(permission);
         }
         operations.push(ApplicationRoleOperation {
             kind: ApplicationRoleOperationKind::Command,
@@ -525,6 +598,7 @@ fn compile_application_role_inner(
             // Reactive plans can disclose or hydrate protected rows. WP-572
             // owns their shared pre-shape enforcement, so a policy-bearing
             // contract cannot receive reactive execution authority early.
+            bound_permissions.push(permission.clone());
             if contract.row_policies().is_empty() {
                 permissions.push(permission);
             }
@@ -594,6 +668,9 @@ fn compile_application_role_inner(
     let identity = hash_application_role(&canonical);
     let mut final_permissions = base_grant.permissions().as_slice().to_vec();
     final_permissions.push(CapabilityPermissionV1::ApplicationRoleIdentity(identity));
+    bound_permissions.push(CapabilityPermissionV1::ApplicationRoleIdentity(identity));
+    let bound_permissions = CapabilityPermissionsV1::new(bound_permissions)
+        .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     let grant = CapabilityGrantV1::new(
         tenant_scope.clone(),
         PartitionScopeV1::All,
@@ -604,6 +681,7 @@ fn compile_application_role_inner(
         Vec::new(),
     )
     .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
+    let policy_bindings = compile_policy_bindings(&selected_policies, &lineage)?;
     Ok(CompiledApplicationRole {
         application_name: manifest.application_name().to_owned(),
         role_name: role.name().to_owned(),
@@ -618,25 +696,29 @@ fn compile_application_role_inner(
         operations,
         row_policies,
         principal_fact_schemas,
+        principal_fact_plans,
+        requires_uuid_principal,
+        policy_bindings,
+        bound_permissions,
         identity,
         grant,
     })
 }
 
 type SelectedPolicyMap<'a> = BTreeMap<riffdb_types::EntityTypeId, &'a RowPolicyPlanV1>;
+type CompiledRolePolicies<'a> = (
+    SelectedPolicyMap<'a>,
+    Vec<ApplicationRolePolicy>,
+    Vec<ApplicationRoleFactSchema>,
+    Vec<PrincipalFactSchemaV1>,
+    bool,
+);
 
 fn compile_role_policies<'a>(
     manifest: &ApplicationManifest,
     role: &ManifestRole,
     contract: &'a ContractBundle,
-) -> Result<
-    (
-        SelectedPolicyMap<'a>,
-        Vec<ApplicationRolePolicy>,
-        Vec<ApplicationRoleFactSchema>,
-    ),
-    ApplicationRoleError,
-> {
+) -> Result<CompiledRolePolicies<'a>, ApplicationRoleError> {
     let catalog = contract.row_policies();
     if manifest.schema() != crate::APPLICATION_MANIFEST_SCHEMA_V4 {
         if !catalog.is_empty() {
@@ -644,7 +726,7 @@ fn compile_role_policies<'a>(
                 ApplicationRoleErrorKind::ContractMismatch,
             ));
         }
-        return Ok((BTreeMap::new(), Vec::new(), Vec::new()));
+        return Ok((BTreeMap::new(), Vec::new(), Vec::new(), Vec::new(), false));
     }
 
     let mut selected = BTreeMap::new();
@@ -679,19 +761,85 @@ fn compile_role_policies<'a>(
         .iter()
         .map(|fact| (fact.name(), fact))
         .collect::<BTreeMap<_, _>>();
-    let principal_fact_schemas = fact_names
+    let principal_facts = fact_names
         .into_iter()
         .map(|name| {
             let fact = facts_by_name.get(name.as_str()).ok_or_else(|| {
                 ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
             })?;
-            Ok(ApplicationRoleFactSchema {
-                name,
-                value_type: render_fact_type(fact, contract)?,
-            })
+            Ok((
+                ApplicationRoleFactSchema {
+                    name,
+                    value_type: render_fact_type(fact, contract)?,
+                },
+                (*fact).clone(),
+            ))
         })
         .collect::<Result<Vec<_>, ApplicationRoleError>>()?;
-    Ok((selected, descriptions, principal_fact_schemas))
+    let (principal_fact_schemas, principal_fact_plans) = principal_facts.into_iter().unzip();
+    let requires_uuid_principal = selected.values().any(|policy| {
+        policy.rules().iter().any(|rule| {
+            rule.nodes().iter().any(|node| match node {
+                RowPolicyExpressionNodeV1::Operand(operand) => {
+                    matches!(operand.source(), RowPolicyValueSourceV1::PrincipalId)
+                }
+                RowPolicyExpressionNodeV1::IndexedExists { arguments, .. } => {
+                    arguments.iter().any(|argument| {
+                        matches!(argument.source(), RowPolicyValueSourceV1::PrincipalId)
+                    })
+                }
+                _ => false,
+            })
+        })
+    });
+    Ok((
+        selected,
+        descriptions,
+        principal_fact_schemas,
+        principal_fact_plans,
+        requires_uuid_principal,
+    ))
+}
+
+fn is_canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+            }
+        })
+}
+
+fn compile_policy_bindings(
+    selected: &SelectedPolicyMap<'_>,
+    lineage: &ContractLineage,
+) -> Result<Vec<CapabilityRowPolicyBindingV1>, ApplicationRoleError> {
+    selected
+        .values()
+        .map(|policy| {
+            let operations = policy
+                .rules()
+                .iter()
+                .map(|rule| match rule.operation() {
+                    RowPolicyOperationV1::Read => CapabilityRowPolicyOperationV1::Read,
+                    RowPolicyOperationV1::Create => CapabilityRowPolicyOperationV1::Create,
+                    RowPolicyOperationV1::Update => CapabilityRowPolicyOperationV1::Update,
+                    RowPolicyOperationV1::Delete => CapabilityRowPolicyOperationV1::Delete,
+                })
+                .collect();
+            CapabilityRowPolicyBindingV1::new(
+                lineage.clone(),
+                RowPolicyName::new(policy.name()).map_err(|_| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
+                })?,
+                policy.entity(),
+                operations,
+            )
+            .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))
+        })
+        .collect()
 }
 
 fn collect_policy_fact_names(policy: &RowPolicyPlanV1, names: &mut BTreeSet<String>) {

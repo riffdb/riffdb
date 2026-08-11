@@ -991,7 +991,8 @@ static_registry!(
         ApplicationRoleErrorKind::UnknownOperation => ("RDB-AR005", "application role names an unknown operation", AuthoringCause::UnknownSymbol, AuthoringFix::CorrectSymbol),
         ApplicationRoleErrorKind::RequirementLimit => ("RDB-AR006", "application role derived authority exceeds a hard bound", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole),
         ApplicationRoleErrorKind::UnknownPolicy => ("RDB-AR008", "application role names an unknown or ambiguous row policy", AuthoringCause::UnknownSymbol, AuthoringFix::CorrectSymbol),
-        ApplicationRoleErrorKind::PolicyCoverage => ("RDB-AR009", "application role does not select a row policy for every protected operation", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole)
+        ApplicationRoleErrorKind::PolicyCoverage => ("RDB-AR009", "application role does not select a row policy for every protected operation", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole),
+        ApplicationRoleErrorKind::PrincipalFacts => ("RDB-AR010", "application role principal facts do not match the compiled schemas", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole)
     }
 );
 

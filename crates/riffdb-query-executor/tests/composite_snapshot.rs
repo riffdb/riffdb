@@ -162,6 +162,7 @@ impl QueryReadView for FakeView {
         &mut self,
         step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         self.point_calls += 1;
         Ok(self
@@ -175,6 +176,7 @@ impl QueryReadView for FakeView {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         self.batch_calls += 1;
         if self.missing_batch_target {
@@ -196,6 +198,7 @@ impl QueryReadView for FakeView {
         _predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         self.scan_calls += 1;
         self.last_limit = Some(limit);
@@ -213,6 +216,7 @@ impl QueryReadView for FakeView {
         step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
         let scanned_rows = rows.len() as u64;
@@ -595,6 +599,7 @@ impl QueryReadView for ReportedWorkView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         Err(())
     }
@@ -603,6 +608,7 @@ impl QueryReadView for ReportedWorkView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         Err(())
     }
@@ -613,6 +619,7 @@ impl QueryReadView for ReportedWorkView {
         _predicates: &[BoundPredicate],
         _limit: u64,
         _after: Option<&[u8]>,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         QueryScanPage::reported(
             vec![self.row.clone()],
@@ -629,6 +636,7 @@ impl QueryReadView for ReportedWorkView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         Err(())
     }
@@ -773,6 +781,7 @@ impl QueryReadView for ProbeScanView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         Err(())
     }
@@ -781,6 +790,7 @@ impl QueryReadView for ProbeScanView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         Err(())
     }
@@ -791,6 +801,7 @@ impl QueryReadView for ProbeScanView {
         _predicates: &[BoundPredicate],
         limit: u64,
         _after: Option<&[u8]>,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         self.scan_calls += 1;
         let page_limit = usize::try_from(limit).expect("limit fits usize");
@@ -833,6 +844,7 @@ impl QueryReadView for ProbeScanView {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         Err(())
     }

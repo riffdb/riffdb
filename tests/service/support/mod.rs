@@ -4624,6 +4624,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 &mut self,
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
                 Ok(None)
             }
@@ -4632,6 +4633,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 &mut self,
                 _step: &riffdb_query_ir::QueryAccessStep,
                 predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
                 Ok(vec![None; predicates.len()])
             }
@@ -4642,6 +4644,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::exact_end(
                     Vec::new(),
@@ -4654,6 +4657,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _k: u32,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryNearestPage {
                     rows: Vec::new(),
@@ -4687,6 +4691,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 &mut self,
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
                 Ok(None)
             }
@@ -4695,6 +4700,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 &mut self,
                 _step: &riffdb_query_ir::QueryAccessStep,
                 predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
                 Ok(vec![None; predicates.len()])
             }
@@ -4705,6 +4711,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::exact_end(
                     Vec::new(),
@@ -4717,6 +4724,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _k: u32,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryNearestPage {
                     rows: Vec::new(),
@@ -4763,6 +4771,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 &mut self,
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
                 Ok(None)
             }
@@ -4771,6 +4780,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 &mut self,
                 _step: &riffdb_query_ir::QueryAccessStep,
                 predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
                 Ok(vec![None; predicates.len()])
             }
@@ -4781,6 +4791,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::exact_end(
                     Vec::new(),
@@ -4793,6 +4804,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _step: &riffdb_query_ir::QueryAccessStep,
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _k: u32,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryNearestPage {
                     rows: Vec::new(),

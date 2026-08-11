@@ -2010,8 +2010,10 @@ dependencies = [
 name = "riffdb-query-executor"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-policy",
  "riffdb-query-compiler",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
@@ -2178,8 +2180,11 @@ dependencies = [
 name = "riffdb-storage-memory"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
  "riffdb-catalog",
  "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-policy",
  "riffdb-query-compiler",
  "riffdb-query-executor",
  "riffdb-query-ir",
@@ -2197,6 +2202,7 @@ dependencies = [
  "redb",
  "riffdb-catalog",
  "riffdb-contract-compiler",
+ "riffdb-policy",
  "riffdb-query-compiler",
  "riffdb-query-executor",
  "riffdb-query-ir",

@@ -2,15 +2,17 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_types::{
-    ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId, ApprovalId,
-    Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityId,
-    CapabilityTokenDigest, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
-    Environment, EventId, EventTypeId, FieldId, IndexEntryKeyBuilder, IndexEpoch, IndexId,
-    LogicalTime, OutcomeId, PartitionKey, PartitionKeyBuilder, PlanHash, ProjectionApplyHash,
-    ProjectionApplyKey, ProjectionGeneration, ProjectionId, ProvenanceId, RequestId,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp, hash_partition_key,
+    ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
+    ApplicationRoleHash, ApprovalId, Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue,
+    CapabilityId, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+    CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CapabilityTokenDigest, CommandId,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, DigestKeyId,
+    EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventId, EventTypeId, FieldId,
+    IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKey,
+    PartitionKeyBuilder, PlanHash, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration,
+    ProjectionId, ProvenanceId, RequestId, RowPolicyName, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantId, TenantScope, Timestamp, hash_partition_key,
 };
 
 use crate::{
@@ -610,6 +612,60 @@ pub(super) fn capability_record_with_installation_authority() -> StoredCapabilit
         base.lifecycle().clone(),
     )
     .expect("installation capability")
+}
+
+pub(super) fn capability_record_with_row_policy_authority() -> StoredCapabilityRecordV1 {
+    let (base, _, _, _) = capability_records();
+    let role_hash = ApplicationRoleHash::from_bytes([0x42; 32]);
+    let mut permissions = base.grant().permissions().as_slice().to_vec();
+    permissions.push(CapabilityPermissionV1::ApplicationRoleIdentity(role_hash));
+    let permissions = CapabilityPermissionsV1::new(permissions).expect("policy permissions");
+    let grant = CapabilityGrantV1::new(
+        base.grant().tenant_scope().clone(),
+        base.grant().partition_scope().clone(),
+        permissions,
+        base.grant().field_visibility().to_vec(),
+        base.grant().max_scan_rows(),
+        base.grant().approval_required().to_vec(),
+    )
+    .expect("base policy grant")
+    .with_row_policy(
+        CapabilityRowPolicyGrantV1::new(
+            role_hash,
+            CapabilityPrincipalFactsV1::empty(),
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    ContractLineage::new("ticketdesk").expect("policy lineage"),
+                    RowPolicyName::new("TicketVisible").expect("policy name"),
+                    EntityTypeId::first(),
+                    vec![
+                        CapabilityRowPolicyOperationV1::Read,
+                        CapabilityRowPolicyOperationV1::Update,
+                    ],
+                )
+                .expect("policy binding"),
+            ],
+        )
+        .expect("policy extension"),
+    )
+    .expect("policy grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("row-policy capability")
 }
 
 pub(super) fn service_audit_record() -> StoredServiceAuditRecordV1 {

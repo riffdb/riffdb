@@ -5,11 +5,13 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use riffdb_policy::{AuthorizedIndexedRelationshipLookupV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
     QueryExecutionRequest, QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView,
     QueryRow, QueryScanPage, execute_in_snapshot, execute_operational_page_in_snapshot,
-    execute_page_in_snapshot, validate_query_execution_group,
+    execute_page_in_snapshot, execute_policy_operational_page_in_snapshot,
+    execute_policy_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, OperationalAggregateV1, QueryAccessKind, QueryAccessProgramV1,
@@ -81,6 +83,47 @@ impl QueryExecutionPort for MemoryOperationalPorts {
         })
         .map_err(map_storage_query_error)?
     }
+
+    fn execute_policy_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        self.read(|state| {
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
+            Ok(execute_policy_page_in_snapshot(
+                program, parameters, prior, &mut view, policy,
+            ))
+        })
+        .map_err(map_storage_query_error)?
+    }
+
+    fn execute_policy_operational_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        aggregates: &[OperationalAggregateV1],
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        self.read(|state| {
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
+            Ok(execute_policy_operational_page_in_snapshot(
+                program, aggregates, parameters, prior, &mut view, policy,
+            ))
+        })
+        .map_err(map_storage_query_error)?
+    }
 }
 
 fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
@@ -129,15 +172,17 @@ impl QueryReadView for MemoryQueryView<'_> {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
         let plan = RowMaterializePlan::for_step(self.program, step)?;
-        self.point_with_plan(step, predicates, &plan)
+        self.point_with_plan(step, predicates, &plan, policy)
     }
 
     fn dependent_point_batch(
         &mut self,
         step: &QueryAccessStep,
         predicates: &[Vec<BoundPredicate>],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -146,7 +191,7 @@ impl QueryReadView for MemoryQueryView<'_> {
         let plan = RowMaterializePlan::for_step(self.program, step)?;
         predicates
             .iter()
-            .map(|predicates| self.point_with_plan(step, predicates, &plan))
+            .map(|predicates| self.point_with_plan(step, predicates, &plan, policy))
             .collect()
     }
 
@@ -156,6 +201,7 @@ impl QueryReadView for MemoryQueryView<'_> {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         let QueryAccessKind::Index { direction, .. } = step.access() else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -197,7 +243,11 @@ impl QueryReadView for MemoryQueryView<'_> {
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
-        let mut entries = Vec::<(&MemoryIndexEntry, IndexEntryKey)>::new();
+        let mut entries = Vec::<(IndexEntryKey, QueryRow)>::new();
+        let mut inspected = 0usize;
+        let scan_ceiling = usize::try_from(riffdb_query_executor::MAX_QUERY_SCANNED_ROWS)
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         'prefixes: for prefix in prefixes {
             let upper = exclusive_prefix_end(prefix.as_slice())
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
@@ -244,7 +294,23 @@ impl QueryReadView for MemoryQueryView<'_> {
                         {
                             continue;
                         }
-                        entries.push((entry, entry.key().clone()));
+                        inspected = inspected
+                            .checked_add(1)
+                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                        if inspected > scan_ceiling {
+                            return Err(storage_error(StorageErrorKind::LimitExceeded));
+                        }
+                        let row = self.materialize_policy_index_row(
+                            step,
+                            schema,
+                            entry.key(),
+                            &plan,
+                            policy,
+                        )?;
+                        let Some(row) = row else {
+                            continue;
+                        };
+                        entries.push((entry.key().clone(), row));
                         if entries.len() == fetch_limit {
                             break 'prefixes;
                         }
@@ -259,7 +325,23 @@ impl QueryReadView for MemoryQueryView<'_> {
                         {
                             continue;
                         }
-                        entries.push((entry, entry.key().clone()));
+                        inspected = inspected
+                            .checked_add(1)
+                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                        if inspected > scan_ceiling {
+                            return Err(storage_error(StorageErrorKind::LimitExceeded));
+                        }
+                        let row = self.materialize_policy_index_row(
+                            step,
+                            schema,
+                            entry.key(),
+                            &plan,
+                            policy,
+                        )?;
+                        let Some(row) = row else {
+                            continue;
+                        };
+                        entries.push((entry.key().clone(), row));
                         if entries.len() == fetch_limit {
                             break 'prefixes;
                         }
@@ -271,40 +353,23 @@ impl QueryReadView for MemoryQueryView<'_> {
         // the last included key; the peeked row is never returned.
         // Charge the peeked row to scanned_rows so fuel accounts for the extra
         // observation that decides continuation minting.
-        let scanned = entries.len();
-        let has_more = scanned > page_limit;
+        let has_more = entries.len() > page_limit;
         if has_more {
             entries.truncate(page_limit);
         }
         let scanned_rows =
-            u64::try_from(scanned).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            u64::try_from(inspected).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let continuation = has_more
-            .then(|| entries.last().map(|entry| entry.1.as_bytes().to_vec()))
+            .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
             .flatten();
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
-        let rows = entries
-            .into_iter()
-            .map(|(entry, _)| {
-                let decoded = schema
-                    .decode_index(entry.key())
-                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-                let target =
-                    EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
-                        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-                match unique_binary_search_by(&self.state.entities, |record| {
-                    record.target().cmp(&target)
-                })? {
-                    Ok(index) => plan.materialize(&self.state.entities[index]),
-                    Err(_) => Err(storage_error(StorageErrorKind::CorruptData)),
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = entries.into_iter().map(|(_, row)| row).collect();
         match continuation {
             Some(continuation) => {
                 QueryScanPage::continued(rows, epoch, scanned_rows.max(1), continuation)
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
             }
-            None => Ok(QueryScanPage::exact_end(rows, epoch)),
+            None => QueryScanPage::policy_exact_end(rows, epoch, scanned_rows)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation)),
         }
     }
 
@@ -313,6 +378,7 @@ impl QueryReadView for MemoryQueryView<'_> {
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
         _k: u32,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         // Row-store does not support vector nearest-neighbor search (ADR-0091).
         // Nearest queries must be routed through the columnar projection engine.
@@ -326,6 +392,7 @@ impl MemoryQueryView<'_> {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         plan: &RowMaterializePlan,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, StorageError> {
         let key_fields = match step.access() {
             QueryAccessKind::Point { key_fields }
@@ -355,9 +422,94 @@ impl MemoryQueryView<'_> {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         match unique_binary_search_by(&self.state.entities, |record| record.target().cmp(&target))?
         {
-            Ok(index) => plan.materialize(&self.state.entities[index]).map(Some),
+            Ok(index) => {
+                let record = &self.state.entities[index];
+                if !self.allows_policy_record(policy, step.internal_entity_id(), record.fields())? {
+                    return Ok(None);
+                }
+                plan.materialize(record).map(Some)
+            }
             Err(_) => Ok(None),
         }
+    }
+
+    fn materialize_policy_index_row(
+        &self,
+        step: &QueryAccessStep,
+        schema: &riffdb_contract_ir::KeySchema,
+        key: &IndexEntryKey,
+        plan: &RowMaterializePlan,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<QueryRow>, StorageError> {
+        let decoded = schema
+            .decode_index(key)
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let target = EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let index =
+            unique_binary_search_by(&self.state.entities, |record| record.target().cmp(&target))?
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let record = &self.state.entities[index];
+        if !self.allows_policy_record(policy, step.internal_entity_id(), record.fields())? {
+            return Ok(None);
+        }
+        plan.materialize(record).map(Some)
+    }
+
+    fn allows_policy_record(
+        &self,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        entity: riffdb_types::EntityTypeId,
+        row: &riffdb_types::CanonicalRecord,
+    ) -> Result<bool, StorageError> {
+        let Some(policy) = policy else {
+            return Ok(true);
+        };
+        if !policy.protects(entity) {
+            return Ok(true);
+        }
+        let lookups = policy
+            .relationship_lookups(entity, row)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let evidence = lookups
+            .iter()
+            .map(|lookup| self.indexed_relationship_exists(lookup))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(policy.allows(entity, row, &evidence))
+    }
+
+    fn indexed_relationship_exists(
+        &self,
+        lookup: &AuthorizedIndexedRelationshipLookupV1,
+    ) -> Result<bool, StorageError> {
+        let upper = exclusive_prefix_end(lookup.index_prefix())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let start = self
+            .state
+            .index_entries
+            .partition_point(|entry| entry.key().as_bytes() < lookup.index_prefix());
+        let end = self
+            .state
+            .index_entries
+            .partition_point(|entry| entry.key().as_bytes() < upper.as_slice());
+        let matching = self
+            .state
+            .index_entries
+            .get(start..end)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if matching.len() >= riffdb_query_executor::MAX_QUERY_SCANNED_ROWS as usize {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        for entry in matching {
+            checked_current(entry)?;
+            if entry
+                .current_record()
+                .is_some_and(|current| current.partition_key() == lookup.partition())
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -465,11 +617,18 @@ fn materialize_plan_builds() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
+    use riffdb_auth::PrincipalFactBindingV1;
     use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_contract_ir::{
+        RowPolicyExpressionNodeV1, RowPolicyOperandV1, RowPolicyOperationV1, RowPolicyPlanV1,
+        RowPolicyRuleV1, RowPolicyValueSourceV1, ValueType,
+    };
     use riffdb_query_compiler::compile_query;
     use riffdb_query_executor::{
         QueryContinuation, QueryParameters, QueryResultValue, execute_in_snapshot,
-        execute_page_in_snapshot,
+        execute_page_in_snapshot, execute_policy_page_in_snapshot,
     };
     use riffdb_query_ir::SymbolicCatalog;
     use riffdb_riffql_syntax::parse_query;
@@ -478,7 +637,9 @@ mod tests {
         StoredIndexEntryV2, encode_index_entry_v2,
     };
     use riffdb_types::{
-        AggregateTypeId, CanonicalRecord, CanonicalValue, EntityVersion, PartitionKeyBuilder,
+        ActorId, ActorKind, AggregateTypeId, Audience, CanonicalRecord, CanonicalValue,
+        CapabilityId, CapabilityPrincipalFactsV1, DatabaseId, EntityVersion, Environment,
+        PartitionKeyBuilder, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -725,6 +886,68 @@ query ProjectMembers(
                 }),
             first_user.as_ref()
         );
+
+        // A policy-hidden first row cannot consume `take 1` or become the
+        // continuation identity. Only user 4 is authorized, so the same scan
+        // must pass user 3 and return user 4 as an exact-end page.
+        let user_field = access.internal_field_id("user_id").expect("user field");
+        let rule = RowPolicyRuleV1::new(
+            RowPolicyOperationV1::Read,
+            vec![
+                RowPolicyExpressionNodeV1::Operand(RowPolicyOperandV1::new(
+                    RowPolicyValueSourceV1::RowField(user_field),
+                    ValueType::uuid(),
+                )),
+                RowPolicyExpressionNodeV1::Operand(RowPolicyOperandV1::new(
+                    RowPolicyValueSourceV1::Constant(CanonicalValue::Uuid([4; 16])),
+                    ValueType::uuid(),
+                )),
+                RowPolicyExpressionNodeV1::Equal { left: 0, right: 1 },
+            ],
+            2,
+            step.internal_entity_id(),
+            bundle.schema(),
+            &BTreeMap::new(),
+        )
+        .expect("read policy rule");
+        let policy = RowPolicyPlanV1::new(
+            "OnlyLastMember",
+            step.internal_entity_id(),
+            vec![rule],
+            bundle.schema(),
+        )
+        .expect("row policy");
+        let principal = PrincipalFactBindingV1::new(
+            CapabilityId::from_unix_milliseconds_and_random(1, [0x41; 10]).expect("capability"),
+            NonZeroU64::new(1).expect("revision"),
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x42; 10]).expect("database"),
+            Environment::new("test").expect("environment"),
+            ActorId::new("policy-test").expect("actor"),
+            ActorKind::Service,
+            vec![Audience::new("riffdb-policy-test").expect("audience")],
+            TenantScope::Global,
+            Timestamp::new(1, 0).expect("issued"),
+            Timestamp::new(10, 0).expect("expires"),
+            CapabilityPrincipalFactsV1::empty(),
+        )
+        .expect("principal facts");
+        let policy = AuthorizedQueryRowPolicyContextV1::test_fixture(principal, vec![policy])
+            .expect("policy context");
+        let mut policy_view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &parameters,
+        };
+        let filtered =
+            execute_policy_page_in_snapshot(&program, &parameters, None, &mut policy_view, &policy)
+                .expect("policy-filtered page");
+        assert!(matches!(
+            filtered.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1
+                    && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
+        ));
+        assert!(filtered.continuation().is_none());
     }
 
     #[test]
@@ -900,7 +1123,7 @@ query list_members_exact(
         };
         reset_materialize_plan_builds();
         let rows = view
-            .dependent_point_batch(step, &batch)
+            .dependent_point_batch(step, &batch, None)
             .expect("batch executes");
         assert_eq!(rows.len(), 3);
         assert_eq!(

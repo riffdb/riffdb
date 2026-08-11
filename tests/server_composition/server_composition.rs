@@ -755,6 +755,7 @@ fn bootstrap_request(
             field_visibility: Vec::new(),
             max_scan_rows: 100,
             approval_required: Vec::new(),
+            row_policy: None,
         }),
     })
 }

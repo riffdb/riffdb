@@ -15,11 +15,12 @@ use crate::operation::PartitionRequirement;
 use crate::{
     AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
     AuthorizedCapabilityMutationPreparation, AuthorizedContractMigration,
-    AuthorizedOfflineMaintenance, AuthorizedOperation, CapabilityActivity,
-    CapabilityMutationRequest, CheckedCapabilityValidity, ContractMigrationAuthorizationRequest,
-    ContractMigrationDecision, CurrentAuthorizationIdentity, Decision, Obligations,
-    OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
-    OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
+    AuthorizedOfflineMaintenance, AuthorizedOperation, AuthorizedRowPolicyAuthority,
+    CapabilityActivity, CapabilityMutationRequest, CheckedCapabilityValidity,
+    ContractMigrationAuthorizationRequest, ContractMigrationDecision, CurrentAuthorizationIdentity,
+    Decision, Obligations, OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision,
+    OperationRequest, OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts,
+    TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -211,6 +212,21 @@ where
             ));
             AuthorizationError::ClockUnavailable
         })?;
+        let row_policy_authority = match (
+            current.row_policy_principal_binding(),
+            current.grant().internal_row_policy(),
+        ) {
+            (None, None) => None,
+            (Some(Ok(principal)), Some(grant)) => {
+                Some(AuthorizedRowPolicyAuthority::new(principal, grant.clone()))
+            }
+            (Some(Err(_)), Some(_)) | (None, Some(_)) | (Some(_), None) => {
+                self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                    AuthorizationDefect::CurrentCapabilityUnavailable,
+                ));
+                return Err(AuthorizationError::CurrentCapabilityUnavailable);
+            }
+        };
 
         let principal_facts = PrincipalFacts::from(principal);
         let current_facts = CurrentFacts::from(&current);
@@ -252,7 +268,7 @@ where
                     // exact same time clause without reloading the record.
                     current_validity(&current_facts),
                 );
-                let proof = if request.permission_requirement().is_none()
+                let mut proof = if request.permission_requirement().is_none()
                     || request.operation() == ServiceOperationV1::DescribeContract
                 {
                     AuthorizedOperation::new_discovery(
@@ -272,6 +288,7 @@ where
                         identity,
                     )
                 };
+                proof.bind_row_policy_authority(row_policy_authority);
                 Ok(Decision::Allow(Box::new(proof)))
             }
             Err(code) => {
@@ -517,6 +534,24 @@ fn evaluate(
         now,
     )?;
 
+    // WP-572 staged rollout: V4 can be persisted and reloaded before any
+    // protected surface is enabled. Each arm is removed only when that surface
+    // consumes the transaction-current policy authority before disclosure or
+    // at the final commit safe point.
+    if current.grant.internal_row_policy().is_some()
+        && matches!(
+            request.operation(),
+            ServiceOperationV1::ExecuteCommand
+                | ServiceOperationV1::ExecuteProjectedQuery
+                | ServiceOperationV1::ConsumeEventStream
+                | ServiceOperationV1::WatchNamedQuery
+                | ServiceOperationV1::ConsumeContextualSubscription
+                | ServiceOperationV1::ExecuteContextualReaction
+        )
+    {
+        return Err(PolicyCode::MissingPermission);
+    }
+
     if let Some(requirement) = request.permission_requirement() {
         match check_permission(&current.grant, &requirement) {
             PermissionCheck::Missing => return Err(PolicyCode::MissingPermission),
@@ -653,12 +688,13 @@ mod tests {
         AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
     };
     use riffdb_types::{
-        AggregateTypeId, CapabilityPermissionKindV1, CapabilityPermissionV1,
-        CapabilityPermissionsV1, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-        ContractVersion, EntityFieldVisibilityV1, EntityTypeId, FieldId, IndexId,
-        PartitionKeyBuilder, ProjectionId, ProjectionIdentity, ProjectionPlanHash, QueryModuleHash,
-        QueryOperationName, QueryPlanHash, RequestId, ScopedPartitionV1, ServiceIngressKindV1,
-        TenantId,
+        AggregateTypeId, ApplicationRoleHash, CapabilityPermissionKindV1, CapabilityPermissionV1,
+        CapabilityPermissionsV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
+        ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1,
+        EntityTypeId, FieldId, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
+        ProjectionPlanHash, QueryModuleHash, QueryOperationName, QueryPlanHash, RequestId,
+        RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1, TenantId,
     };
 
     use super::*;
@@ -925,6 +961,59 @@ mod tests {
             ),
             Err(PolicyCode::MissingPermission)
         );
+    }
+
+    #[test]
+    fn persisted_row_policy_query_authority_reaches_the_policy_consuming_service() {
+        let role = ApplicationRoleHash::from_bytes([0x44; 32]);
+        let base = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::Unparameterized(
+                    CapabilityPermissionKindV1::ExecuteAdHocQuery,
+                ),
+                CapabilityPermissionV1::ApplicationRoleIdentity(role),
+            ],
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                )
+                .expect("visibility"),
+            ],
+            100,
+            Vec::new(),
+        );
+        let protected = base
+            .with_row_policy(
+                CapabilityRowPolicyGrantV1::new(
+                    role,
+                    CapabilityPrincipalFactsV1::empty(),
+                    vec![
+                        CapabilityRowPolicyBindingV1::new(
+                            lineage(),
+                            RowPolicyName::new("DocumentAccess").expect("policy"),
+                            EntityTypeId::first(),
+                            vec![CapabilityRowPolicyOperationV1::Read],
+                        )
+                        .expect("binding"),
+                    ],
+                )
+                .expect("row policy authority"),
+            )
+            .expect("V4 grant");
+        let (principal, current, environment) = facts(protected);
+        let allowed_to_service = evaluate(
+            &principal,
+            &current,
+            database_id(),
+            &environment,
+            timestamp(15),
+            &OperationRequest::execute_ad_hoc_query(application_query_target()),
+        );
+        assert!(allowed_to_service.is_ok());
     }
 
     #[test]
