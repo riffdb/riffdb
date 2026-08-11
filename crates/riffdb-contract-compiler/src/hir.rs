@@ -586,8 +586,7 @@ fn lower_entities(
                         &vector_field.name,
                         vector_field.dimension.span,
                         field_id,
-                        field_id
-                            .and_then(|field_id| types.entity_fields.get(&(id, field_id))),
+                        field_id.and_then(|field_id| types.entity_fields.get(&(id, field_id))),
                     ) {
                         fields.push(lowered);
                     }

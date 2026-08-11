@@ -789,10 +789,10 @@ fn decode_identity_prefix(bytes: &[u8]) -> Result<(ProjectionIdentity, usize), P
 
 fn projection_scalar_encoded_length(value: &CanonicalValue) -> Result<usize, ProjectionKeyError> {
     match value {
-        CanonicalValue::Null | CanonicalValue::List(_) | CanonicalValue::Record(_)
-        | CanonicalValue::Vector(_) => {
-            Err(ProjectionKeyError::NonScalarComponent)
-        }
+        CanonicalValue::Null
+        | CanonicalValue::List(_)
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => Err(ProjectionKeyError::NonScalarComponent),
         CanonicalValue::Bool(_) => Ok(3),
         CanonicalValue::I64(_) | CanonicalValue::U64(_) => Ok(10),
         CanonicalValue::Decimal(_) => Ok(20),

@@ -3474,7 +3474,10 @@ fn render_contract_type(
         }
         ValueTypeTag::Record => "record".to_owned(),
         ValueTypeTag::Vector => {
-            format!("vector<{}>", value.vector_dimension().expect("tag checked").get())
+            format!(
+                "vector<{}>",
+                value.vector_dimension().expect("tag checked").get()
+            )
         }
     }
 }

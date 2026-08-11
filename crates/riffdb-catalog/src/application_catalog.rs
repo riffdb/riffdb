@@ -898,7 +898,10 @@ fn render_value_type(
         ValueTypeTag::Vector => {
             format!(
                 "vector<{}>",
-                value_type.vector_dimension().ok_or(ApplicationCatalogError)?.get()
+                value_type
+                    .vector_dimension()
+                    .ok_or(ApplicationCatalogError)?
+                    .get()
             )
         }
     };

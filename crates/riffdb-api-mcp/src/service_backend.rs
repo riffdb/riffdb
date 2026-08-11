@@ -4368,7 +4368,9 @@ fn named_query_value(
             .map(|value| named_query_value(result, value))
             .collect::<Result<Vec<_>, _>>()
             .map(serde_json::Value::Array),
-        CanonicalValue::Record(_) | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
+        CanonicalValue::Record(_) | CanonicalValue::Vector(_) => {
+            Err(McpBackendError::InvalidResponse)
+        }
     }
 }
 
@@ -4493,9 +4495,10 @@ fn canonical_natural_value(value: &CanonicalValue) -> Result<serde_json::Value, 
             "days_since_unix_epoch": value.days_since_unix_epoch(),
         })),
         CanonicalValue::Uuid(value) => Ok(serde_json::Value::String(format_uuid(*value))),
-        CanonicalValue::Enum { .. } | CanonicalValue::List(_) | CanonicalValue::Record(_) | CanonicalValue::Vector(_) => {
-            Err(McpBackendError::InvalidResponse)
-        }
+        CanonicalValue::Enum { .. }
+        | CanonicalValue::List(_)
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
     }
 }
 
@@ -4772,7 +4775,8 @@ fn schema_bound_scalar(value: &CanonicalValue) -> Result<McpSchemaBoundValue, Mc
         CanonicalValue::Null
         | CanonicalValue::Enum { .. }
         | CanonicalValue::List(_)
-        | CanonicalValue::Record(_) | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
     }
 }
 
@@ -4971,7 +4975,11 @@ fn presented_value(value: &CanonicalValue) -> Result<McpPresentedValue, McpBacke
         }),
         CanonicalValue::Record(record) => presented_record(record),
         CanonicalValue::Vector(vector) => Ok(McpPresentedValue::String {
-            value: format!("vector(dim={},bytes={})", vector.dimension(), vector.byte_size()),
+            value: format!(
+                "vector(dim={},bytes={})",
+                vector.dimension(),
+                vector.byte_size()
+            ),
         }),
     }
 }
