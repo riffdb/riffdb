@@ -5,14 +5,21 @@ application roles. They are intended to make a forgotten application-side row
 check impossible: a request carries ordinary operation values only, while the
 compiler and authorization path own the exact policy proof.
 
-The current WP-570 build freezes authoring, IR, identities, and capability-fact
-delegation. It does **not** yet execute protected operations. Role compilation
-withholds the ordinary operation permission whenever a query or command touches
-a protected entity, and withholds reactive permissions for a policy-bearing
-contract. WP-572 must install the shared transaction-current evaluator before
-those permissions become executable. Do not implement a temporary middleware
-filter or treat the expected authorization refusal as a reason to weaken a
-role.
+WP-570 freezes authoring, IR, identities, and capability-fact delegation. The
+first WP-572 increment adds the shared pure evaluator: it denies missing rules,
+facts, rows, and exact relationship evidence; evaluates read/create/delete
+against the required row; evaluates update against both transaction-current and
+successor state; and issues a move-only proof bound to the exact capability
+revision and row hashes. The same evaluator filters rows before limits and
+aggregates, and its final-safe-point recheck rejects capability or row drift.
+
+Protected operations are still deliberately unavailable while role compilation
+withholds their ordinary permission. Enabling them requires the reviewed
+versioned durable capability successor that persists principal facts and exact
+policy selection, followed by wiring the evaluator through every application
+surface. Do not add fields to the schema-hash-bound V1 capability envelope,
+implement a temporary middleware filter, or weaken the expected authorization
+refusal.
 
 ## Contract declarations
 
@@ -104,6 +111,7 @@ an equal scalar, or reduce a set-valued fact to a subset. Adding or changing a
 scalar fact, adding a set member, changing a tenant, widening an audience, or
 extending expiry is rejected.
 
-WP-572 will persist these facts in the current capability record and revalidate
-the exact capability revision before protected release and commit. Until that
-work lands, no protected application operation is executable.
+The remaining WP-572 durable increment will persist these facts in a versioned
+successor capability record and revalidate the exact capability revision before
+protected release and commit. Until that successor and the cross-surface wiring
+land, no protected application operation is executable.

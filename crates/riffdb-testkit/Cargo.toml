@@ -155,5 +155,13 @@ path = "../../tests/bulk_command_recovery.rs"
 name = "projection_semantics"
 path = "../../tests/projection_semantics.rs"
 
+[[test]]
+name = "row_policy_conformance"
+path = "../../tests/row_policy_conformance.rs"
+
+[[test]]
+name = "row_policy_inference"
+path = "../../tests/row_policy_inference.rs"
+
 [lints]
 workspace = true

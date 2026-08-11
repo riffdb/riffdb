@@ -1962,6 +1962,7 @@ name = "riffdb-policy"
 version = "0.1.0"
 dependencies = [
  "riffdb-auth",
+ "riffdb-contract-ir",
  "riffdb-testkit",
  "riffdb-types",
 ]
