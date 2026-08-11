@@ -7,8 +7,8 @@ use riffdb_contract_ir::{
 };
 use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
-    AggregateItem, Aggregation, Binding, Declaration, Effect, EntityItem, Expression,
-    ObjectLiteral, OutcomeExpression, Path, ServiceValueKind,
+    AggregateItem, Aggregation, Binding, CommandKind, Declaration, Effect, EntityItem, Expression,
+    ObjectLiteral, OutcomeExpression, Path, ServiceValueKind, TypeExpression,
     WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::{ContractDocument, Spanned};
@@ -18,7 +18,9 @@ use riffdb_types::{
 };
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
-use crate::expression_lowering::{BindingExpressionScope, ExpressionLowerer, ExpressionScope};
+use crate::expression_lowering::{
+    BindingExpressionScope, CollectionElementExpressionScope, ExpressionLowerer, ExpressionScope,
+};
 use crate::symbols::GenesisSymbols;
 use crate::typecheck::ResolvedTypes;
 
@@ -267,6 +269,7 @@ pub(crate) struct HirBinding {
     pub(crate) span: Span,
     pub(crate) arguments: Vec<HirExpressionRoot>,
     pub(crate) failure: HirOutcome,
+    pub(crate) collection_local: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -368,6 +371,20 @@ pub(crate) struct HirCommand {
     pub(crate) effects: Vec<HirEffect>,
     pub(crate) success: HirOutcome,
     pub(crate) expressions: HirExpressionArena,
+    pub(crate) collection_expansion: Option<HirCollectionExpansion>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirCollectionExpansion {
+    pub(crate) input_field: FieldId,
+    pub(crate) minimum_elements: usize,
+    pub(crate) maximum_elements: usize,
+    pub(crate) element_type: ValueType,
+    pub(crate) first_binding: BindingId,
+    pub(crate) binding_count: usize,
+    pub(crate) repeated_requirement_count: usize,
+    pub(crate) repeated_effect_count: usize,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -1345,15 +1362,130 @@ fn lower_commands(
                 )
             })
             .collect();
+        let mut collection_element_scope = None;
+        let mut collection_bounds = None;
+        match (source.kind, source.bulk_iteration.as_ref()) {
+            (CommandKind::Ordinary, None) => {}
+            (CommandKind::Ordinary, Some(iteration)) => diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidExpression,
+                iteration.span,
+            )),
+            (CommandKind::Bulk, None) => diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::MissingDeclaration,
+                source.name.span,
+            )),
+            (CommandKind::Bulk, Some(iteration)) => {
+                let matching_source = source
+                    .inputs
+                    .iter()
+                    .find(|input| input.value.field.name.value == iteration.value.collection.value);
+                let matching_hir = inputs
+                    .iter()
+                    .find(|input| input.field.name == iteration.value.collection.value);
+                match (matching_source, matching_hir) {
+                    (Some(source_input), Some(input)) => {
+                        let TypeExpression::List {
+                            element: _,
+                            minimum,
+                            maximum: source_maximum,
+                        } = &source_input.value.field.ty.value
+                        else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidType,
+                                source_input.value.field.ty.span,
+                            ));
+                            continue;
+                        };
+                        let Some((element_type, maximum)) = input.field.value_type.list_parts()
+                        else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidType,
+                                source_input.value.field.ty.span,
+                            ));
+                            continue;
+                        };
+                        let parsed_minimum = minimum
+                            .as_ref()
+                            .and_then(|minimum| minimum.value.parse::<usize>().ok());
+                        let source_maximum = source_maximum.value.parse::<usize>().ok();
+                        let Some(minimum) = parsed_minimum else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidType,
+                                source_input.value.field.ty.span,
+                            ));
+                            continue;
+                        };
+                        if source_maximum != Some(maximum)
+                            || minimum == 0
+                            || minimum > maximum
+                            || maximum > riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V1
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::BoundExceeded,
+                                source_input.value.field.ty.span,
+                            ));
+                            continue;
+                        }
+                        if inputs
+                            .iter()
+                            .filter(|candidate| candidate.field.value_type.list_parts().is_some())
+                            .count()
+                            != 1
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidType,
+                                source.name.span,
+                            ));
+                            continue;
+                        }
+                        let fields = element_type
+                            .record_ref()
+                            .and_then(|record| match record {
+                                riffdb_contract_ir::RecordTypeRef::Entity(entity_id) => entities
+                                    .iter()
+                                    .find(|entity| entity.id == *entity_id)
+                                    .map(HirEntity::fields_by_name),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        collection_element_scope = Some(CollectionElementExpressionScope {
+                            name: iteration.value.element.value.clone(),
+                            value_type: element_type.clone(),
+                            fields,
+                        });
+                        collection_bounds = Some((
+                            input.field.id,
+                            minimum,
+                            maximum,
+                            element_type.clone(),
+                            iteration.span,
+                        ));
+                    }
+                    _ => diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        iteration.value.collection.span,
+                    )),
+                }
+            }
+        }
         let mut binding_descriptors = Vec::new();
-        for (index, binding) in source.bindings.iter().enumerate() {
+        let top_level_binding_count = source.bindings.len();
+        let collection_bindings = source
+            .bulk_iteration
+            .as_ref()
+            .map_or(&[][..], |iteration| iteration.value.bindings.as_slice());
+        for (index, (binding, collection_local)) in source
+            .bindings
+            .iter()
+            .map(|binding| (binding, false))
+            .chain(collection_bindings.iter().map(|binding| (binding, true)))
+            .enumerate()
+        {
             let (binding, mode) = match &binding.value {
                 Binding::Read(binding) => (binding, BindingMode::Read),
                 Binding::Mutate(binding) => (binding, BindingMode::Mutate),
                 Binding::Create(binding) => (binding, BindingMode::Create),
-                // The compiler entry gate rejects this until the successor IR
-                // owns a distinct checked-delete mode.
-                Binding::Delete(binding) => (binding, BindingMode::Mutate),
+                Binding::Delete(binding) => (binding, BindingMode::Delete),
             };
             let Some(entity_id) = symbols.entities.get(&binding.entity.value).copied() else {
                 diagnostics.push(CompilerDiagnostic::new(
@@ -1376,17 +1508,24 @@ fn lower_commands(
                 ));
                 continue;
             };
-            binding_descriptors.push((binding, BindingId::new(index), mode, entity));
+            binding_descriptors.push((
+                binding,
+                BindingId::new(index),
+                mode,
+                entity,
+                collection_local,
+            ));
         }
         let binding_scope = binding_descriptors
             .iter()
-            .map(|(source, id, _, entity)| {
+            .map(|(source, id, _, entity, collection_local)| {
                 (
                     source.binding.value.clone(),
                     BindingExpressionScope {
                         id: *id,
                         entity_id: entity.id,
                         fields: entity.fields_by_name(),
+                        collection_local: *collection_local,
                     },
                 )
             })
@@ -1396,6 +1535,7 @@ fn lower_commands(
             inputs: input_scope,
             service_values: service_value_scope,
             bindings: binding_scope,
+            collection_element: collection_element_scope,
         };
         let idempotency = source.idempotency.as_ref().and_then(|idempotency| {
             let mut resolver = ExpressionLowerer::new(symbols, scope.clone());
@@ -1417,7 +1557,8 @@ fn lower_commands(
         });
         let mut resolver = ExpressionLowerer::new(symbols, scope);
         let mut bindings = Vec::new();
-        for (binding, binding_id, mode, entity) in binding_descriptors {
+        for (binding, binding_id, mode, entity, collection_local) in binding_descriptors {
+            resolver.set_collection_context(collection_local);
             if binding.arguments.len() != entity.key_fields.len() {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidBinding,
@@ -1458,10 +1599,26 @@ fn lower_commands(
                 span: binding.failure.span.cover(binding.entity.span),
                 arguments,
                 failure,
+                collection_local,
             });
         }
         let mut requirements = Vec::new();
-        for requirement in &source.requirements {
+        let collection_requirements = source
+            .bulk_iteration
+            .as_ref()
+            .map_or(&[][..], |iteration| iteration.value.requirements.as_slice());
+        let repeated_requirement_count = collection_requirements.len();
+        for (requirement, collection_local) in collection_requirements
+            .iter()
+            .map(|requirement| (requirement, true))
+            .chain(
+                source
+                    .requirements
+                    .iter()
+                    .map(|requirement| (requirement, false)),
+            )
+        {
+            resolver.set_collection_context(collection_local);
             let Some(condition) = lower_root(
                 &mut resolver,
                 &requirement.value.condition,
@@ -1494,7 +1651,17 @@ fn lower_commands(
         let mut effects = Vec::new();
         let mut transitioned_bindings = BTreeSet::new();
         let mut leased_bindings = BTreeSet::new();
-        for effect in &source.effects {
+        let collection_effects = source
+            .bulk_iteration
+            .as_ref()
+            .map_or(&[][..], |iteration| iteration.value.effects.as_slice());
+        let repeated_effect_count = collection_effects.len();
+        for (effect, collection_local) in collection_effects
+            .iter()
+            .map(|effect| (effect, true))
+            .chain(source.effects.iter().map(|effect| (effect, false)))
+        {
+            resolver.set_collection_context(collection_local);
             match &effect.value {
                 Effect::Set(set) => {
                     let Some((binding_name, field_name)) = path_pair(&set.target.value) else {
@@ -1511,6 +1678,13 @@ fn lower_commands(
                         ));
                         continue;
                     };
+                    if binding.collection_local && !collection_local {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            set.target.span,
+                        ));
+                        continue;
+                    }
                     let Some(entity) = entities
                         .iter()
                         .find(|entity| entity.id == binding.entity_id)
@@ -1585,6 +1759,13 @@ fn lower_commands(
                         ));
                         continue;
                     };
+                    if binding.collection_local && !collection_local {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            transition.binding.span,
+                        ));
+                        continue;
+                    }
                     if binding.mode != BindingMode::Mutate {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowTransition,
@@ -1671,6 +1852,13 @@ fn lower_commands(
                         ));
                         continue;
                     };
+                    if binding.collection_local && !collection_local {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowLease,
+                            effect_source.binding.span,
+                        ));
+                        continue;
+                    }
                     let Some(lease) = workflows
                         .iter()
                         .find(|workflow| workflow.entity_id == binding.entity_id)
@@ -1809,6 +1997,7 @@ fn lower_commands(
                 }
             }
         }
+        resolver.set_collection_context(false);
         let Some(success) = lower_outcome(
             command_id,
             &source.return_clause.value.outcome,
@@ -1890,6 +2079,40 @@ fn lower_commands(
                 diagnostics.push(CompilerDiagnostic::new(code, span));
             }
         }
+        let collection_expansion = collection_bounds.and_then(
+            |(input_field, minimum_elements, maximum_elements, element_type, span)| {
+                let binding_count = bindings
+                    .iter()
+                    .filter(|binding| binding.collection_local)
+                    .count();
+                if binding_count == 0 || binding_count != collection_bindings.len() {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidBinding,
+                        span,
+                    ));
+                    return None;
+                }
+                let first_binding = u32::try_from(top_level_binding_count).ok();
+                let Some(first_binding) = first_binding else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::BoundExceeded,
+                        span,
+                    ));
+                    return None;
+                };
+                Some(HirCollectionExpansion {
+                    input_field,
+                    minimum_elements,
+                    maximum_elements,
+                    element_type,
+                    first_binding: BindingId::new(first_binding),
+                    binding_count,
+                    repeated_requirement_count,
+                    repeated_effect_count,
+                    span,
+                })
+            },
+        );
         result.push(HirCommand {
             id: command_id,
             name: source.name.value.clone(),
@@ -1902,6 +2125,7 @@ fn lower_commands(
             effects,
             success,
             expressions,
+            collection_expansion,
         });
     }
     result

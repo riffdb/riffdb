@@ -213,7 +213,7 @@ fn compile(
 fn reject_unlowered_collection_mutations(
     document: &riffdb_contract_syntax::ContractDocument,
 ) -> Result<(), CompilationError> {
-    use riffdb_contract_syntax::ast::{Binding, CommandKind, Declaration, EntityItem};
+    use riffdb_contract_syntax::ast::{Binding, Declaration, EntityItem};
 
     let mut diagnostics = Vec::new();
     for declaration in &document.contract.value.declarations {
@@ -231,19 +231,15 @@ fn reject_unlowered_collection_mutations(
         let Declaration::Command(command) = &declaration.value else {
             continue;
         };
-        if command.kind == CommandKind::Bulk || command.bulk_iteration.is_some() {
-            diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::UnsupportedCollectionMutation,
-                command
-                    .bulk_iteration
-                    .as_ref()
-                    .map_or(command.name.span, |iteration| iteration.span),
-            ));
-            continue;
-        }
         if let Some(binding) = command
             .bindings
             .iter()
+            .chain(
+                command
+                    .bulk_iteration
+                    .iter()
+                    .flat_map(|iteration| iteration.value.bindings.iter()),
+            )
             .find(|binding| matches!(binding.value, Binding::Delete(_)))
         {
             diagnostics.push(CompilerDiagnostic::new(
@@ -366,7 +362,7 @@ contract BulkGate version 1 {
         assert_semantic_diagnostic_at(
             bulk,
             CompilerDiagnosticCode::UnsupportedCollectionMutation,
-            "for row_id in row_ids {\n      delete Row(tenant_id, row_id) as row else Missing {}\n    }",
+            "delete Row(tenant_id, row_id) as row else Missing {}",
         );
 
         let policy = r#"
@@ -382,6 +378,49 @@ contract DeletePolicyGate version 1 {
             CompilerDiagnosticCode::UnsupportedCollectionMutation,
             "delete_policy no_inbound",
         );
+    }
+
+    #[test]
+    fn bounded_collection_create_lowers_to_one_v5_plan() {
+        let source = r#"
+contract BulkCreate version 1 {
+  entity TupleInput {
+    key (tenant_id: uuid, tuple_id: uuid)
+    field relation: string<32>
+  }
+  aggregate Tuples {
+    root TupleInput
+    partition_by tenant_id
+    conflict_key (tenant_id, tuple_id)
+  }
+  bulk command PutTuples {
+    input request_id: uuid
+    input tuples: list<TupleInput, 1..8>
+    idempotency_key request_id
+    for tuple in tuples {
+      create TupleInput(tuple.tenant_id, tuple.tuple_id) as row else Exists {}
+      set row.relation = tuple.relation
+    }
+    return Written {}
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("bounded collection compiles");
+        let plan = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "PutTuples")
+            .expect("bulk command");
+        let expansion = plan.collection_expansion().expect("collection expansion");
+        assert_eq!(bundle.ir_version(), 5);
+        assert_eq!(expansion.minimum_elements(), 1);
+        assert_eq!(expansion.maximum_elements(), 8);
+        assert_eq!(expansion.binding_count(), 1);
+        assert_eq!(expansion.instruction_count(), 1);
+        assert!(plan.expressions().nodes().iter().any(|node| matches!(
+            node.kind(),
+            riffdb_contract_ir::ExpressionKind::CollectionElementField(_)
+        )));
     }
 
     #[test]
