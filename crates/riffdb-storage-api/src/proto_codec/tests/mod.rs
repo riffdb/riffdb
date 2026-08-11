@@ -417,6 +417,304 @@ fn sample_command_capsule_v1_from_atomic(
     .expect("reciprocal capsule")
 }
 
+fn delete_command_segment_fixture(
+    transition: crate::CommittedEntityTransitionV1,
+) -> CanonicalStoredEnvelopeV1 {
+    let sequence = transition.command_sequence();
+    let atomic = sample::atomic_record_set_at(
+        sequence,
+        riffdb_types::RequestId::from_bytes(sample::uuid_v7(0x81)).expect("delete request"),
+        riffdb_types::ProvenanceId::from_bytes(sample::uuid_v7(0x82)).expect("delete provenance"),
+    );
+    let base = sample_command_capsule_v1_from_atomic(
+        &atomic,
+        AdministrationSequence::new(3).expect("delete started audit"),
+    );
+    let (outcome, provenance, commit, started, terminal) = base.into_parts();
+    let dependencies = crate::StoredReadDependenciesV1::new(vec![
+        crate::StoredReadDependencyV1::EntityObservation {
+            target: transition.target().clone(),
+            expected: crate::ExpectedEntityState::Present(match transition.prior_state() {
+                crate::EntityChainStateV1::Live { version, .. } => version,
+                _ => panic!("delete fixture requires a live prior"),
+            }),
+        },
+    ])
+    .expect("delete read dependency");
+    let delete_commit = crate::StoredCommitRecordV1::new(
+        commit.commit_sequence(),
+        commit.admission_request_id(),
+        commit.plan().clone(),
+        commit.canonical_input_hash(),
+        commit.actor().clone(),
+        commit.logical_time(),
+        commit.partition_hash(),
+        commit.conflict_hashes().to_vec(),
+        dependencies,
+        Vec::new(),
+        commit.events().to_vec(),
+        commit.declared_outcome().clone(),
+        commit.provenance_id(),
+        commit.outbox_event_ids().to_vec(),
+        commit.durability_mode(),
+    )
+    .expect("delete commit");
+    let delete_provenance = crate::StoredProvenanceRecordV1::new_with_causation(
+        provenance.provenance_id(),
+        provenance.commit_sequence(),
+        provenance.identity().clone(),
+        provenance.admission_request_id(),
+        provenance.plan().clone(),
+        provenance.canonical_input_hash(),
+        provenance.actor().clone(),
+        provenance.logical_time(),
+        provenance.partition_hash(),
+        provenance.conflict_hashes().to_vec(),
+        provenance.outcome_id(),
+        Vec::new(),
+        provenance.event_ids().to_vec(),
+        provenance.admitted_claims().clone(),
+        provenance.causation(),
+    )
+    .expect("delete provenance");
+    let delete_base = crate::StoredCommandCapsuleV1::new(
+        outcome,
+        delete_provenance,
+        delete_commit,
+        started,
+        terminal,
+    )
+    .expect("reciprocal delete capsule");
+    let capsule = crate::StoredCommandCapsuleV2::from_base_with_entity_transitions(
+        delete_base,
+        Vec::new(),
+        vec![transition],
+    )
+    .expect("delete transition capsule");
+    let manifest = crate::CommandSegmentManifestV1::new(vec![
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::Idempotency,
+            crate::CommandDerivedMemberV1::Command,
+            vec![0x81],
+            0,
+            0,
+            sequence,
+        )
+        .expect("delete segment manifest entry"),
+    ])
+    .expect("delete segment manifest");
+    let draft = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        None,
+        vec![capsule],
+        manifest,
+        crate::CommandSegmentDigestV1::from_bytes([0; 32]),
+    )
+    .expect("delete segment draft");
+    seal_and_encode_command_segment_v1(draft)
+        .expect("seal delete segment")
+        .1
+}
+
+#[test]
+fn delete_aware_follower_requires_exact_tombstone_reciprocity_before_apply() {
+    let create_atomic = sample::atomic_record_set();
+    let entity = create_atomic.entities()[0].post_image().clone();
+    let value_hash = crate::derive_entity_record_hash_v1(&entity).expect("entity hash");
+    let create = crate::CommittedEntityTransitionV1::new(
+        CommitSequence::first(),
+        0,
+        entity.target().clone(),
+        crate::EntityChainStateV1::NeverExisted,
+        0,
+        None,
+        crate::EntityChainStateV1::Live {
+            version: entity.entity_version(),
+            value_hash,
+        },
+    )
+    .expect("create transition");
+    let prior_head = crate::EntityChainHeadV1::from_genesis(&create).expect("prior live head");
+    let delete_sequence = CommitSequence::new(2).expect("delete sequence");
+    let deletion = crate::CommittedEntityTransitionV1::new(
+        delete_sequence,
+        0,
+        entity.target().clone(),
+        prior_head.state(),
+        prior_head.chain_revision(),
+        Some(prior_head.last_transition_hash()),
+        crate::EntityChainStateV1::Deleted,
+    )
+    .expect("delete transition");
+    let deleted_head = prior_head.apply(&deletion).expect("deleted head");
+
+    let predecessor = riffdb_types::DualFrontier::new(Some(CommitSequence::first()), None);
+    let receipt = crate::ChangelogV2RotationReceipt::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        predecessor,
+        [0x31; 32],
+    )
+    .expect("rotation receipt");
+    let manifest = crate::EntityReplicaBootstrapManifestV2::new(
+        receipt,
+        predecessor,
+        receipt.v2_chain_anchor(),
+        crate::ValidatedPrefixEntityTransitionCounts {
+            live_entity_count: 1,
+            deleted_entity_count: 0,
+            entity_transition_count: 1,
+        },
+        crate::EntityTransitionFingerprint::from_sorted_heads([&prior_head])
+            .expect("prior head fingerprint"),
+    )
+    .expect("bootstrap manifest");
+    let encoded_entity = encode_entity_record_v1(&entity).expect("encode entity");
+    let encoded_prior_head = encode_entity_chain_head_v1(&prior_head).expect("encode prior head");
+    let bootstrap_follower = || {
+        let bootstrap_row = crate::EntityReplicaBootstrapRowV2::new(
+            entity.target().key().as_bytes(),
+            Some(encoded_entity.as_bytes()),
+            encoded_prior_head.as_bytes(),
+        )
+        .expect("bootstrap row");
+        let mut follower = crate::DeleteAwareEntityFollowerV2::from_bootstrap(receipt, manifest)
+            .expect("matching bootstrap");
+        follower
+            .install_bootstrap_page(vec![bootstrap_row], true)
+            .expect("install prior live state");
+        follower
+    };
+    let mut follower = bootstrap_follower();
+
+    let commit = delete_command_segment_fixture(deletion.clone());
+    let head = encode_entity_chain_head_v1(&deleted_head).expect("encode deleted head");
+    let entries = vec![
+        crate::ChangelogEntryV2::put(
+            crate::ChangelogEntryClassV2::Commit,
+            delete_sequence.to_be_bytes(),
+            commit.as_bytes(),
+        )
+        .expect("commit entry"),
+        crate::ChangelogEntryV2::entity_delete_tombstone(deletion.clone()).expect("tombstone"),
+        crate::ChangelogEntryV2::put(
+            crate::ChangelogEntryClassV2::EntityChainHead,
+            entity.target().key().as_bytes(),
+            head.as_bytes(),
+        )
+        .expect("head entry"),
+    ];
+    let binding = crate::ChangelogFrameBindingV2 {
+        database_id: sample::database_id(),
+        history_incarnation: crate::HISTORY_INCARNATION_INITIAL,
+        chain_hash: receipt.v2_chain_anchor(),
+        journal_frame_hash: [0x41; 32],
+        journaled: true,
+    };
+    let covered = riffdb_types::DualFrontier::new(Some(delete_sequence), None);
+    let missing = crate::ChangelogFrameV2::new(
+        binding,
+        predecessor,
+        covered,
+        vec![entries[0].clone(), entries[2].clone()],
+    )
+    .expect("structural frame missing tombstone")
+    .encode()
+    .expect("encode missing frame");
+    assert_eq!(
+        follower.apply_encoded(missing.as_bytes()),
+        Err(crate::ChangelogFrameV2Error::InvalidEntry)
+    );
+    assert!(
+        follower
+            .entity_value(entity.target().key().as_bytes())
+            .is_some()
+    );
+    assert_eq!(follower.applied_frontier(), predecessor);
+
+    let complete = crate::ChangelogFrameV2::new(binding, predecessor, covered, entries)
+        .expect("complete delete frame")
+        .encode()
+        .expect("encode complete frame");
+    assert_eq!(follower.apply_encoded(complete.as_bytes()), Ok(covered));
+    assert!(
+        follower
+            .entity_value(entity.target().key().as_bytes())
+            .is_none()
+    );
+    assert_eq!(
+        follower.chain_head_value(entity.target().key().as_bytes()),
+        Some(head.as_bytes())
+    );
+    assert_eq!(
+        follower.apply_encoded(complete.as_bytes()),
+        Err(crate::ChangelogFrameV2Error::Gap)
+    );
+
+    for stale in [
+        crate::CommittedEntityTransitionV1::new(
+            delete_sequence,
+            0,
+            entity.target().clone(),
+            crate::EntityChainStateV1::Live {
+                version: entity.entity_version(),
+                value_hash: riffdb_types::EntityRecordHash::from_bytes([0x91; 32]),
+            },
+            prior_head.chain_revision(),
+            Some(prior_head.last_transition_hash()),
+            crate::EntityChainStateV1::Deleted,
+        )
+        .expect("prior-value-substituted transition"),
+        crate::CommittedEntityTransitionV1::new(
+            delete_sequence,
+            0,
+            entity.target().clone(),
+            prior_head.state(),
+            prior_head.chain_revision(),
+            Some(riffdb_types::EntityTransitionHash::from_bytes([0x92; 32])),
+            crate::EntityChainStateV1::Deleted,
+        )
+        .expect("prior-transition-substituted transition"),
+    ] {
+        let stale_commit = delete_command_segment_fixture(stale.clone());
+        let stale_frame = crate::ChangelogFrameV2::new(
+            binding,
+            predecessor,
+            covered,
+            vec![
+                crate::ChangelogEntryV2::put(
+                    crate::ChangelogEntryClassV2::Commit,
+                    delete_sequence.to_be_bytes(),
+                    stale_commit.as_bytes(),
+                )
+                .expect("stale commit entry"),
+                crate::ChangelogEntryV2::entity_delete_tombstone(stale).expect("stale tombstone"),
+                crate::ChangelogEntryV2::put(
+                    crate::ChangelogEntryClassV2::EntityChainHead,
+                    entity.target().key().as_bytes(),
+                    head.as_bytes(),
+                )
+                .expect("final head entry"),
+            ],
+        )
+        .expect("structural stale frame")
+        .encode()
+        .expect("encode stale frame");
+        let mut follower = bootstrap_follower();
+        assert_eq!(
+            follower.apply_encoded(stale_frame.as_bytes()),
+            Err(crate::ChangelogFrameV2Error::InvalidEntry)
+        );
+        assert!(
+            follower
+                .entity_value(entity.target().key().as_bytes())
+                .is_some()
+        );
+        assert_eq!(follower.applied_frontier(), predecessor);
+    }
+}
+
 #[test]
 fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fields() {
     let first_atomic = sample::atomic_record_set();
