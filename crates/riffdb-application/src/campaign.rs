@@ -18,8 +18,13 @@ use crate::{
 /// Canonical schema version for terminal installation receipts.
 pub const APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V1: &str =
     "riffdb.application-installation-receipt/v1";
+/// Canonical schema version for durable resumable campaign state.
+pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1: &str =
+    "riffdb.application-installation-campaign-state/v1";
 /// Maximum canonical bytes in one redacted terminal receipt.
 pub const MAX_INSTALLATION_RECEIPT_BYTES: usize = 2 * 1_024 * 1_024;
+/// Maximum canonical bytes in one exact plan-plus-campaign durable record.
+pub const MAX_INSTALLATION_CAMPAIGN_STATE_BYTES: usize = 8 * 1_024 * 1_024;
 
 /// Closed, dependency-ordered stages in one application installation campaign.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -649,6 +654,101 @@ impl fmt::Debug for ApplicationInstallationCampaign {
     }
 }
 
+/// One canonical durable plan-plus-campaign record.
+///
+/// The complete exact plan is retained with stage evidence so restart recovery
+/// never infers intent from whichever application files happen to be present.
+/// This value contains no bearer credentials, seed values, or host paths.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ApplicationInstallationCampaignState {
+    plan: ApplicationInstallationPlan,
+    campaign: ApplicationInstallationCampaign,
+    canonical_bytes: Vec<u8>,
+}
+
+impl ApplicationInstallationCampaignState {
+    /// Captures one fully validated canonical durable state record.
+    pub fn capture(
+        campaign: &ApplicationInstallationCampaign,
+        plan: &ApplicationInstallationPlan,
+    ) -> Result<Self, InstallationCampaignError> {
+        validate_campaign_state(campaign, plan)?;
+        let dto = CampaignStateDto::from_parts(campaign, plan);
+        let canonical_bytes = encode_campaign_state_dto(&dto)?;
+        Ok(Self {
+            plan: plan.clone(),
+            campaign: campaign.clone(),
+            canonical_bytes,
+        })
+    }
+
+    /// Strictly decodes, canonicalizes, and semantically revalidates durable state.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, InstallationCampaignError> {
+        if bytes.is_empty() || bytes.len() > MAX_INSTALLATION_CAMPAIGN_STATE_BYTES {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::LimitExceeded,
+            ));
+        }
+        let dto: CampaignStateDto = serde_json::from_slice(bytes).map_err(|_| {
+            InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding)
+        })?;
+        if dto.schema != APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1 {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::UnsupportedVersion,
+            ));
+        }
+        let plan = ApplicationInstallationPlan::decode_canonical(dto.plan.as_bytes())
+            .map_err(InstallationCampaignError::from_plan_error)?;
+        let campaign = dto.to_campaign(&plan)?;
+        validate_campaign_state(&campaign, &plan)?;
+        let canonical_bytes = encode_campaign_state_dto(&dto)?;
+        if canonical_bytes != bytes {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::NonCanonical,
+            ));
+        }
+        Ok(Self {
+            plan,
+            campaign,
+            canonical_bytes,
+        })
+    }
+
+    /// Exact immutable plan recovered with the campaign.
+    #[must_use]
+    pub const fn plan(&self) -> &ApplicationInstallationPlan {
+        &self.plan
+    }
+
+    /// Exact resumable campaign state.
+    #[must_use]
+    pub const fn campaign(&self) -> &ApplicationInstallationCampaign {
+        &self.campaign
+    }
+
+    /// Canonical durable bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Consumes the record into its exact plan and campaign state.
+    #[must_use]
+    pub fn into_parts(self) -> (ApplicationInstallationPlan, ApplicationInstallationCampaign) {
+        (self.plan, self.campaign)
+    }
+}
+
+impl fmt::Debug for ApplicationInstallationCampaignState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApplicationInstallationCampaignState")
+            .field("plan_hash", &self.plan.identity())
+            .field("campaign", &self.campaign)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Terminal, redacted, content-addressed installation receipt.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationInstallationReceipt {
@@ -981,6 +1081,538 @@ fn artifacts_for(
         .filter(|artifact| artifact.kind() == kind)
         .cloned()
         .collect()
+}
+
+fn validate_campaign_state(
+    campaign: &ApplicationInstallationCampaign,
+    plan: &ApplicationInstallationPlan,
+) -> Result<(), InstallationCampaignError> {
+    campaign.verify_plan(plan)?;
+    if campaign.completed.len() > InstallationStage::ALL.len() {
+        return Err(InstallationCampaignError::new(
+            InstallationCampaignErrorKind::StageOutOfOrder,
+        ));
+    }
+    for (index, evidence) in campaign.completed.iter().enumerate() {
+        let expected = InstallationStage::ALL[index];
+        if evidence.stage() != expected {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::StageOutOfOrder,
+            ));
+        }
+        match evidence {
+            InstallationStageEvidence::Receipt(hash) => {
+                if index + 1 != InstallationStage::ALL.len() {
+                    return Err(InstallationCampaignError::new(
+                        InstallationCampaignErrorKind::StageOutOfOrder,
+                    ));
+                }
+                let prefix = ApplicationInstallationCampaign {
+                    campaign_id: campaign.campaign_id,
+                    plan_hash: campaign.plan_hash,
+                    completed: campaign.completed[..index].to_vec(),
+                    failure: None,
+                };
+                let receipt = ApplicationInstallationReceipt::seal(&prefix, plan)?;
+                if receipt.identity() != *hash {
+                    return Err(InstallationCampaignError::new(
+                        InstallationCampaignErrorKind::EvidenceMismatch,
+                    ));
+                }
+            }
+            _ => validate_stage_evidence(plan, evidence)?,
+        }
+    }
+    match campaign.failure {
+        None => Ok(()),
+        Some(failure) => {
+            let Some(stage) = campaign.next_stage() else {
+                return Err(InstallationCampaignError::new(
+                    InstallationCampaignErrorKind::EvidenceMismatch,
+                ));
+            };
+            if failure.stage != stage
+                || failure.next_action != InstallationNextAction::for_stage(stage)
+            {
+                return Err(InstallationCampaignError::new(
+                    InstallationCampaignErrorKind::EvidenceMismatch,
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn encode_campaign_state_dto(dto: &CampaignStateDto) -> Result<Vec<u8>, InstallationCampaignError> {
+    let mut bytes = serde_json::to_vec(dto).map_err(|_| {
+        InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding)
+    })?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_INSTALLATION_CAMPAIGN_STATE_BYTES {
+        return Err(InstallationCampaignError::new(
+            InstallationCampaignErrorKind::LimitExceeded,
+        ));
+    }
+    Ok(bytes)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignStateDto {
+    schema: String,
+    campaign_id: String,
+    plan_hash: String,
+    plan: String,
+    completed: Vec<CampaignEvidenceDto>,
+    failure: Option<CampaignFailureDto>,
+}
+
+impl CampaignStateDto {
+    fn from_parts(
+        campaign: &ApplicationInstallationCampaign,
+        plan: &ApplicationInstallationPlan,
+    ) -> Self {
+        Self {
+            schema: APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1.to_owned(),
+            campaign_id: hex16(campaign.campaign_id.as_bytes()),
+            plan_hash: hex32(campaign.plan_hash.as_bytes()),
+            plan: String::from_utf8(plan.canonical_bytes().to_vec())
+                .expect("canonical installation plans are JSON UTF-8"),
+            completed: campaign
+                .completed
+                .iter()
+                .map(CampaignEvidenceDto::from_evidence)
+                .collect(),
+            failure: campaign.failure.map(CampaignFailureDto::from_failure),
+        }
+    }
+
+    fn to_campaign(
+        &self,
+        plan: &ApplicationInstallationPlan,
+    ) -> Result<ApplicationInstallationCampaign, InstallationCampaignError> {
+        let invalid =
+            || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
+        let campaign_id = ApplicationInstallationCampaignId::from_bytes(
+            parse_hex16(&self.campaign_id).map_err(InstallationCampaignError::from_plan_error)?,
+        )
+        .map_err(|_| invalid())?;
+        let plan_hash = ApplicationInstallationPlanHash::from_bytes(
+            parse_hex32(&self.plan_hash).map_err(InstallationCampaignError::from_plan_error)?,
+        );
+        if plan_hash != plan.identity() {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::PlanIdentityMismatch,
+            ));
+        }
+        let completed = self
+            .completed
+            .iter()
+            .map(CampaignEvidenceDto::to_evidence)
+            .collect::<Result<Vec<_>, _>>()?;
+        let failure = self
+            .failure
+            .as_ref()
+            .map(CampaignFailureDto::to_failure)
+            .transpose()?;
+        Ok(ApplicationInstallationCampaign {
+            campaign_id,
+            plan_hash,
+            completed,
+            failure,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
+enum CampaignEvidenceDto {
+    Preflight {
+        source_hash: String,
+        lock_hash: String,
+        manifest_hash: String,
+    },
+    Contract {
+        version: u64,
+        bundle_hash: String,
+    },
+    Migration {
+        migration_hash: Option<String>,
+    },
+    QueryModules {
+        artifacts: Vec<CampaignArtifactDto>,
+    },
+    ReactiveModules {
+        artifacts: Vec<CampaignArtifactDto>,
+    },
+    Roles {
+        roles: Vec<CampaignRoleDto>,
+    },
+    Credentials {
+        credentials: Vec<CampaignCredentialDto>,
+    },
+    DriverProof {
+        drivers: Vec<String>,
+    },
+    Seeds {
+        seeds: Vec<CampaignSeedDto>,
+    },
+    Receipt {
+        receipt_hash: String,
+    },
+}
+
+impl CampaignEvidenceDto {
+    fn from_evidence(evidence: &InstallationStageEvidence) -> Self {
+        match evidence {
+            InstallationStageEvidence::Preflight {
+                source_hash,
+                lock_hash,
+                manifest_hash,
+            } => Self::Preflight {
+                source_hash: hex32(source_hash.as_bytes()),
+                lock_hash: hex32(lock_hash.as_bytes()),
+                manifest_hash: hex32(manifest_hash.as_bytes()),
+            },
+            InstallationStageEvidence::Contract {
+                version,
+                bundle_hash,
+            } => Self::Contract {
+                version: version.get(),
+                bundle_hash: hex32(bundle_hash.as_bytes()),
+            },
+            InstallationStageEvidence::Migration { migration_hash } => Self::Migration {
+                migration_hash: migration_hash.map(|hash| hex32(hash.as_bytes())),
+            },
+            InstallationStageEvidence::QueryModules(artifacts) => Self::QueryModules {
+                artifacts: artifacts.iter().map(CampaignArtifactDto::from).collect(),
+            },
+            InstallationStageEvidence::ReactiveModules(artifacts) => Self::ReactiveModules {
+                artifacts: artifacts.iter().map(CampaignArtifactDto::from).collect(),
+            },
+            InstallationStageEvidence::Roles(roles) => Self::Roles {
+                roles: roles.iter().map(CampaignRoleDto::from).collect(),
+            },
+            InstallationStageEvidence::Credentials(credentials) => Self::Credentials {
+                credentials: credentials
+                    .iter()
+                    .map(CampaignCredentialDto::from)
+                    .collect(),
+            },
+            InstallationStageEvidence::DriverProof(drivers) => Self::DriverProof {
+                drivers: drivers
+                    .iter()
+                    .map(|driver| driver.tag().to_owned())
+                    .collect(),
+            },
+            InstallationStageEvidence::Seeds(seeds) => Self::Seeds {
+                seeds: seeds.iter().map(CampaignSeedDto::from).collect(),
+            },
+            InstallationStageEvidence::Receipt(hash) => Self::Receipt {
+                receipt_hash: hex32(hash.as_bytes()),
+            },
+        }
+    }
+
+    fn to_evidence(&self) -> Result<InstallationStageEvidence, InstallationCampaignError> {
+        let invalid =
+            || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
+        let hex =
+            |value: &str| parse_hex32(value).map_err(InstallationCampaignError::from_plan_error);
+        Ok(match self {
+            Self::Preflight {
+                source_hash,
+                lock_hash,
+                manifest_hash,
+            } => InstallationStageEvidence::Preflight {
+                source_hash: ApplicationSourceHash::from_bytes(hex(source_hash)?),
+                lock_hash: ApplicationLockHash::from_bytes(hex(lock_hash)?),
+                manifest_hash: ApplicationManifestHash::from_bytes(hex(manifest_hash)?),
+            },
+            Self::Contract {
+                version,
+                bundle_hash,
+            } => InstallationStageEvidence::Contract {
+                version: ContractVersion::new(*version).ok_or_else(invalid)?,
+                bundle_hash: ContractBundleHash::from_bytes(hex(bundle_hash)?),
+            },
+            Self::Migration { migration_hash } => InstallationStageEvidence::Migration {
+                migration_hash: migration_hash
+                    .as_deref()
+                    .map(hex)
+                    .transpose()?
+                    .map(MigrationBundleHash::from_bytes),
+            },
+            Self::QueryModules { artifacts } => InstallationStageEvidence::QueryModules(
+                artifacts
+                    .iter()
+                    .map(CampaignArtifactDto::to_artifact)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::ReactiveModules { artifacts } => InstallationStageEvidence::ReactiveModules(
+                artifacts
+                    .iter()
+                    .map(CampaignArtifactDto::to_artifact)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::Roles { roles } => InstallationStageEvidence::Roles(
+                roles
+                    .iter()
+                    .map(CampaignRoleDto::to_role)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::Credentials { credentials } => InstallationStageEvidence::Credentials(
+                credentials
+                    .iter()
+                    .map(CampaignCredentialDto::to_credential)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::DriverProof { drivers } => InstallationStageEvidence::DriverProof(
+                drivers
+                    .iter()
+                    .map(|driver| InstallationDriver::parse(driver).ok_or_else(invalid))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::Seeds { seeds } => InstallationStageEvidence::Seeds(
+                seeds
+                    .iter()
+                    .map(CampaignSeedDto::to_seed)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::Receipt { receipt_hash } => InstallationStageEvidence::Receipt(
+                ApplicationInstallationReceiptHash::from_bytes(hex(receipt_hash)?),
+            ),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignArtifactDto {
+    kind: String,
+    name: String,
+    content_hash: String,
+}
+
+impl From<&InstallationArtifact> for CampaignArtifactDto {
+    fn from(artifact: &InstallationArtifact) -> Self {
+        Self {
+            kind: artifact.kind().tag().to_owned(),
+            name: artifact.name().as_str().to_owned(),
+            content_hash: hex32(artifact.content_hash().as_bytes()),
+        }
+    }
+}
+
+impl CampaignArtifactDto {
+    fn to_artifact(&self) -> Result<InstallationArtifact, InstallationCampaignError> {
+        let invalid =
+            || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
+        Ok(InstallationArtifact::new(
+            InstallationArtifactKind::parse(&self.kind).ok_or_else(invalid)?,
+            InstallationSymbol::new(self.name.clone())
+                .map_err(InstallationCampaignError::from_plan_error)?,
+            GeneratedArtifactHash::from_bytes(
+                parse_hex32(&self.content_hash)
+                    .map_err(InstallationCampaignError::from_plan_error)?,
+            ),
+        ))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignRoleDto {
+    name: String,
+    role_hash: String,
+}
+
+impl From<&InstalledRoleEvidence> for CampaignRoleDto {
+    fn from(role: &InstalledRoleEvidence) -> Self {
+        Self {
+            name: role.name().as_str().to_owned(),
+            role_hash: hex32(role.role_hash().as_bytes()),
+        }
+    }
+}
+
+impl CampaignRoleDto {
+    fn to_role(&self) -> Result<InstalledRoleEvidence, InstallationCampaignError> {
+        Ok(InstalledRoleEvidence::new(
+            InstallationSymbol::new(self.name.clone())
+                .map_err(InstallationCampaignError::from_plan_error)?,
+            ApplicationRoleHash::from_bytes(
+                parse_hex32(&self.role_hash).map_err(InstallationCampaignError::from_plan_error)?,
+            ),
+        ))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignCredentialDto {
+    destination: String,
+    capability_id: String,
+}
+
+impl From<&InstalledCredentialEvidence> for CampaignCredentialDto {
+    fn from(credential: &InstalledCredentialEvidence) -> Self {
+        Self {
+            destination: credential.destination().as_str().to_owned(),
+            capability_id: hex16(credential.capability_id().as_bytes()),
+        }
+    }
+}
+
+impl CampaignCredentialDto {
+    fn to_credential(&self) -> Result<InstalledCredentialEvidence, InstallationCampaignError> {
+        let invalid =
+            || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
+        Ok(InstalledCredentialEvidence::new(
+            InstallationSymbol::new(self.destination.clone())
+                .map_err(InstallationCampaignError::from_plan_error)?,
+            CapabilityId::from_bytes(
+                parse_hex16(&self.capability_id)
+                    .map_err(InstallationCampaignError::from_plan_error)?,
+            )
+            .map_err(|_| invalid())?,
+        ))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignSeedDto {
+    name: String,
+    content_hash: String,
+    succeeded: u64,
+    replayed: u64,
+}
+
+impl From<&InstalledSeedEvidence> for CampaignSeedDto {
+    fn from(seed: &InstalledSeedEvidence) -> Self {
+        Self {
+            name: seed.name().as_str().to_owned(),
+            content_hash: hex32(seed.content_hash().as_bytes()),
+            succeeded: seed.succeeded(),
+            replayed: seed.replayed(),
+        }
+    }
+}
+
+impl CampaignSeedDto {
+    fn to_seed(&self) -> Result<InstalledSeedEvidence, InstallationCampaignError> {
+        Ok(InstalledSeedEvidence::new(
+            InstallationSymbol::new(self.name.clone())
+                .map_err(InstallationCampaignError::from_plan_error)?,
+            GeneratedArtifactHash::from_bytes(
+                parse_hex32(&self.content_hash)
+                    .map_err(InstallationCampaignError::from_plan_error)?,
+            ),
+            self.succeeded,
+            self.replayed,
+        ))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CampaignFailureDto {
+    stage: String,
+    code: String,
+    next_action: String,
+}
+
+impl CampaignFailureDto {
+    fn from_failure(failure: InstallationFailure) -> Self {
+        Self {
+            stage: failure.stage().as_str().to_owned(),
+            code: installation_failure_code_tag(failure.code()).to_owned(),
+            next_action: installation_next_action_tag(failure.next_action()).to_owned(),
+        }
+    }
+
+    fn to_failure(&self) -> Result<InstallationFailure, InstallationCampaignError> {
+        let invalid =
+            || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
+        Ok(InstallationFailure {
+            stage: parse_installation_stage(&self.stage).ok_or_else(invalid)?,
+            code: parse_installation_failure_code(&self.code).ok_or_else(invalid)?,
+            next_action: parse_installation_next_action(&self.next_action).ok_or_else(invalid)?,
+        })
+    }
+}
+
+const fn installation_failure_code_tag(code: InstallationFailureCode) -> &'static str {
+    match code {
+        InstallationFailureCode::LocalArtifactMismatch => "local_artifact_mismatch",
+        InstallationFailureCode::RemoteIdentityMismatch => "remote_identity_mismatch",
+        InstallationFailureCode::MigrationGateRequired => "migration_gate_required",
+        InstallationFailureCode::RoleWideningApprovalRequired => "role_widening_approval_required",
+        InstallationFailureCode::CredentialDestinationOccupied => "credential_destination_occupied",
+        InstallationFailureCode::DriverProofFailed => "driver_proof_failed",
+        InstallationFailureCode::SeedPartial => "seed_partial",
+        InstallationFailureCode::AuthorizationDenied => "authorization_denied",
+        InstallationFailureCode::ServiceUnavailable => "service_unavailable",
+    }
+}
+
+fn parse_installation_failure_code(value: &str) -> Option<InstallationFailureCode> {
+    match value {
+        "local_artifact_mismatch" => Some(InstallationFailureCode::LocalArtifactMismatch),
+        "remote_identity_mismatch" => Some(InstallationFailureCode::RemoteIdentityMismatch),
+        "migration_gate_required" => Some(InstallationFailureCode::MigrationGateRequired),
+        "role_widening_approval_required" => {
+            Some(InstallationFailureCode::RoleWideningApprovalRequired)
+        }
+        "credential_destination_occupied" => {
+            Some(InstallationFailureCode::CredentialDestinationOccupied)
+        }
+        "driver_proof_failed" => Some(InstallationFailureCode::DriverProofFailed),
+        "seed_partial" => Some(InstallationFailureCode::SeedPartial),
+        "authorization_denied" => Some(InstallationFailureCode::AuthorizationDenied),
+        "service_unavailable" => Some(InstallationFailureCode::ServiceUnavailable),
+        _ => None,
+    }
+}
+
+const fn installation_next_action_tag(action: InstallationNextAction) -> &'static str {
+    match action {
+        InstallationNextAction::ValidateLocalArtifacts => "validate_local_artifacts",
+        InstallationNextAction::DeployContract => "deploy_contract",
+        InstallationNextAction::ApplyMigration => "apply_migration",
+        InstallationNextAction::DeployQueryModules => "deploy_query_modules",
+        InstallationNextAction::DeployReactiveModules => "deploy_reactive_modules",
+        InstallationNextAction::ReconcileRoles => "reconcile_roles",
+        InstallationNextAction::RotateCredentials => "rotate_credentials",
+        InstallationNextAction::ProveDrivers => "prove_drivers",
+        InstallationNextAction::RunSeeds => "run_seeds",
+        InstallationNextAction::SealReceipt => "seal_receipt",
+        InstallationNextAction::None => "none",
+    }
+}
+
+fn parse_installation_next_action(value: &str) -> Option<InstallationNextAction> {
+    match value {
+        "validate_local_artifacts" => Some(InstallationNextAction::ValidateLocalArtifacts),
+        "deploy_contract" => Some(InstallationNextAction::DeployContract),
+        "apply_migration" => Some(InstallationNextAction::ApplyMigration),
+        "deploy_query_modules" => Some(InstallationNextAction::DeployQueryModules),
+        "deploy_reactive_modules" => Some(InstallationNextAction::DeployReactiveModules),
+        "reconcile_roles" => Some(InstallationNextAction::ReconcileRoles),
+        "rotate_credentials" => Some(InstallationNextAction::RotateCredentials),
+        "prove_drivers" => Some(InstallationNextAction::ProveDrivers),
+        "run_seeds" => Some(InstallationNextAction::RunSeeds),
+        "seal_receipt" => Some(InstallationNextAction::SealReceipt),
+        "none" => Some(InstallationNextAction::None),
+        _ => None,
+    }
+}
+
+fn parse_installation_stage(value: &str) -> Option<InstallationStage> {
+    InstallationStage::ALL
+        .into_iter()
+        .find(|stage| stage.as_str() == value)
 }
 
 #[derive(Serialize, Deserialize)]
