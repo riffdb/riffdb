@@ -5,6 +5,7 @@
 //! entity-chain-head puts. Negotiation and the receipted rotation boundary are
 //! explicit; no cursor crosses formats by inference.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -659,6 +660,7 @@ impl fmt::Debug for EncodedChangelogFrameV2 {
 }
 
 /// Stateful exact V2 stream validator anchored by one rotation receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChangelogStreamValidatorV2 {
     database_id: DatabaseId,
     history_incarnation: u64,
@@ -676,6 +678,18 @@ impl ChangelogStreamValidatorV2 {
             expected_predecessor: receipt.predecessor,
             expected_chain_hash: receipt.v2_chain_anchor,
         }
+    }
+
+    /// Returns the exact predecessor frontier required by the next frame.
+    #[must_use]
+    pub const fn expected_predecessor(&self) -> DualFrontier {
+        self.expected_predecessor
+    }
+
+    /// Returns the chain hash required by the next frame.
+    #[must_use]
+    pub const fn expected_chain_hash(&self) -> [u8; HASH_BYTES] {
+        self.expected_chain_hash
     }
 
     /// Validates and advances over exactly one frame.
@@ -697,6 +711,336 @@ impl ChangelogStreamValidatorV2 {
         self.expected_predecessor = frame.header.covered;
         self.expected_chain_hash = hash;
         Ok(frame)
+    }
+}
+
+/// In-process consumer of complete delete-aware changelog frames.
+///
+/// The emitter validates every frame against the receipted V2 chain before
+/// invoking this boundary. A consumer still has to apply each frame atomically
+/// and must retain its own durable applied frontier before acknowledging any
+/// remote carriage built on top of this interface.
+pub trait ChangelogFrameConsumerV2: Send + Sync {
+    /// Accepts one complete, already-validated V2 frame.
+    fn accept_frame(&self, frame: &ChangelogFrameV2, encoded: &EncodedChangelogFrameV2);
+
+    /// Observes a typed stream hole or derivation failure requiring bootstrap.
+    fn note_resync_required(&self, reason: crate::ChangelogResyncReasonV1);
+}
+
+/// One canonical entity/head pair from a V2 bootstrap snapshot page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntityReplicaBootstrapRowV2 {
+    key: Box<[u8]>,
+    entity_value: Option<Box<[u8]>>,
+    chain_head_value: Box<[u8]>,
+}
+
+impl EntityReplicaBootstrapRowV2 {
+    /// Constructs one bounded bootstrap row. Semantic equality is checked when
+    /// the row is installed into a follower.
+    pub fn new(
+        key: impl Into<Box<[u8]>>,
+        entity_value: Option<impl Into<Box<[u8]>>>,
+        chain_head_value: impl Into<Box<[u8]>>,
+    ) -> Result<Self, ChangelogFrameV2Error> {
+        let key = key.into();
+        let entity_value = entity_value.map(Into::into);
+        let chain_head_value = chain_head_value.into();
+        if key.is_empty()
+            || key.len() > u32::MAX as usize
+            || entity_value
+                .as_ref()
+                .is_some_and(|value| value.len() > u32::MAX as usize)
+            || chain_head_value.is_empty()
+            || chain_head_value.len() > u32::MAX as usize
+        {
+            return Err(ChangelogFrameV2Error::LimitExceeded);
+        }
+        Ok(Self {
+            key,
+            entity_value,
+            chain_head_value,
+        })
+    }
+}
+
+/// Engine-neutral delete-aware entity follower.
+///
+/// This component owns the semantic apply rule that storage engines must use:
+/// bootstrap pages are canonical and bounded, every V2 frame is validated on a
+/// cloned cursor, entity transitions are replayed against exact prior heads,
+/// delete tombstones are one-for-one with delete transitions, and final entity
+/// rows and chain-head puts must agree before any local state changes. It does
+/// not claim that the in-memory maps are a production follower database; they
+/// are the conformance oracle shared by follower adapters and recovery tests.
+pub struct DeleteAwareEntityFollowerV2 {
+    validator: ChangelogStreamValidatorV2,
+    bootstrap_complete: bool,
+    last_bootstrap_key: Option<Box<[u8]>>,
+    entities: BTreeMap<Box<[u8]>, Box<[u8]>>,
+    chain_head_values: BTreeMap<Box<[u8]>, Box<[u8]>>,
+    chain_heads: BTreeMap<Box<[u8]>, crate::EntityChainHeadV1>,
+}
+
+impl DeleteAwareEntityFollowerV2 {
+    /// Starts an empty follower at the exact receipted rotation boundary.
+    #[must_use]
+    pub fn from_rotation(receipt: ChangelogV2RotationReceipt) -> Self {
+        Self {
+            validator: ChangelogStreamValidatorV2::from_rotation(receipt),
+            bootstrap_complete: false,
+            last_bootstrap_key: None,
+            entities: BTreeMap::new(),
+            chain_head_values: BTreeMap::new(),
+            chain_heads: BTreeMap::new(),
+        }
+    }
+
+    /// Installs one canonical bounded bootstrap page.
+    ///
+    /// Pages must be globally ascending and disjoint. `final_page` seals the
+    /// snapshot; no tail frame is accepted before that seal and no later page
+    /// can mutate the anchor.
+    pub fn install_bootstrap_page(
+        &mut self,
+        rows: Vec<EntityReplicaBootstrapRowV2>,
+        final_page: bool,
+    ) -> Result<(), ChangelogFrameV2Error> {
+        if self.bootstrap_complete || rows.len() > MAX_CHANGELOG_FRAME_ENTRIES {
+            return Err(ChangelogFrameV2Error::InvalidBinding);
+        }
+        let mut staged = Vec::with_capacity(rows.len());
+        let mut prior = self.last_bootstrap_key.clone();
+        for row in rows {
+            if prior
+                .as_deref()
+                .is_some_and(|prior| prior >= row.key.as_ref())
+            {
+                return Err(ChangelogFrameV2Error::NonCanonicalOrder);
+            }
+            let head = crate::decode_entity_chain_head_v1(&row.chain_head_value)
+                .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?
+                .into_parts()
+                .0;
+            if head.target().key().as_bytes() != row.key.as_ref() {
+                return Err(ChangelogFrameV2Error::InvalidEntry);
+            }
+            match (head.state(), row.entity_value.as_deref()) {
+                (
+                    crate::EntityChainStateV1::Live {
+                        version,
+                        value_hash,
+                    },
+                    Some(encoded),
+                ) => {
+                    let entity = crate::decode_entity_record_v1(encoded)
+                        .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?
+                        .into_parts()
+                        .0;
+                    if entity.target() != head.target()
+                        || entity.entity_version() != version
+                        || crate::derive_entity_record_hash_v1(&entity)
+                            .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?
+                            != value_hash
+                    {
+                        return Err(ChangelogFrameV2Error::InvalidEntry);
+                    }
+                }
+                (crate::EntityChainStateV1::Deleted, None) => {}
+                _ => return Err(ChangelogFrameV2Error::InvalidEntry),
+            }
+            prior = Some(row.key.clone());
+            staged.push((row, head));
+        }
+        for (row, head) in staged {
+            if let Some(entity) = row.entity_value {
+                self.entities.insert(row.key.clone(), entity);
+            }
+            self.chain_head_values
+                .insert(row.key.clone(), row.chain_head_value);
+            self.chain_heads.insert(row.key.clone(), head);
+            self.last_bootstrap_key = Some(row.key);
+        }
+        self.bootstrap_complete = final_page;
+        Ok(())
+    }
+
+    /// Validates and atomically applies one encoded V2 frame.
+    pub fn apply_encoded(&mut self, encoded: &[u8]) -> Result<DualFrontier, ChangelogFrameV2Error> {
+        if !self.bootstrap_complete {
+            return Err(ChangelogFrameV2Error::InvalidBinding);
+        }
+        let mut candidate_validator = self.validator.clone();
+        let frame = candidate_validator.accept(encoded)?;
+        let predecessor = frame.header().predecessor();
+        let covered = frame.header().covered();
+
+        let mut transitions = Vec::new();
+        let mut delete_hashes = Vec::new();
+        let mut entity_puts: BTreeMap<Box<[u8]>, Box<[u8]>> = BTreeMap::new();
+        let mut head_puts: BTreeMap<Box<[u8]>, Box<[u8]>> = BTreeMap::new();
+        for entry in frame.entries() {
+            match entry {
+                ChangelogEntryV2::EntityDeleteTombstone(transition) => {
+                    delete_hashes.push(transition.transition_hash());
+                }
+                ChangelogEntryV2::Put { class, key, value } => match class {
+                    ChangelogEntryClassV2::Commit => {
+                        match crate::decode_command_segment_v1(value) {
+                            Ok(segment) => {
+                                for capsule in segment.value().commands() {
+                                    transitions
+                                        .extend(capsule.entity_transitions().iter().cloned());
+                                }
+                            }
+                            Err(error)
+                                if error.kind()
+                                    == crate::DurableCodecErrorKind::UnexpectedRecordType => {}
+                            Err(_) => return Err(ChangelogFrameV2Error::InvalidEntry),
+                        }
+                    }
+                    ChangelogEntryClassV2::Entity
+                        if entity_puts.insert(key.clone(), value.clone()).is_some() =>
+                    {
+                        return Err(ChangelogFrameV2Error::InvalidEntry);
+                    }
+                    ChangelogEntryClassV2::Entity => {}
+                    ChangelogEntryClassV2::EntityChainHead
+                        if head_puts.insert(key.clone(), value.clone()).is_some() =>
+                    {
+                        return Err(ChangelogFrameV2Error::InvalidEntry);
+                    }
+                    ChangelogEntryClassV2::EntityChainHead => {}
+                    _ => {}
+                },
+            }
+        }
+
+        let mut expected_deletes = Vec::new();
+        let mut staged_heads: BTreeMap<Box<[u8]>, crate::EntityChainHeadV1> = BTreeMap::new();
+        let mut prior_position = None;
+        for transition in &transitions {
+            let position = (transition.command_sequence(), transition.mutation_ordinal());
+            if prior_position.is_some_and(|prior| prior >= position)
+                || predecessor
+                    .application()
+                    .is_some_and(|prior| transition.command_sequence() <= prior)
+                || covered
+                    .application()
+                    .is_none_or(|last| transition.command_sequence() > last)
+            {
+                return Err(ChangelogFrameV2Error::InvalidEntry);
+            }
+            prior_position = Some(position);
+            let key: Box<[u8]> = transition.target().key().as_bytes().into();
+            let next = match staged_heads
+                .get(&key)
+                .or_else(|| self.chain_heads.get(&key))
+            {
+                Some(head) => head
+                    .apply(transition)
+                    .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?,
+                None => crate::EntityChainHeadV1::from_genesis(transition)
+                    .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?,
+            };
+            if transition.next_state() == crate::EntityChainStateV1::Deleted {
+                expected_deletes.push(transition.transition_hash());
+            }
+            staged_heads.insert(key, next);
+        }
+        if delete_hashes != expected_deletes
+            || entity_puts
+                .keys()
+                .any(|key| !staged_heads.contains_key(key))
+            || head_puts.len() != staged_heads.len()
+            || head_puts.keys().any(|key| !staged_heads.contains_key(key))
+        {
+            return Err(ChangelogFrameV2Error::InvalidEntry);
+        }
+
+        let mut applies = Vec::with_capacity(staged_heads.len());
+        for (key, expected_head) in &staged_heads {
+            let encoded_head = head_puts
+                .get(key)
+                .ok_or(ChangelogFrameV2Error::InvalidEntry)?;
+            let observed_head = crate::decode_entity_chain_head_v1(encoded_head)
+                .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?
+                .into_parts()
+                .0;
+            if &observed_head != expected_head || observed_head.target().key().as_bytes() != &**key
+            {
+                return Err(ChangelogFrameV2Error::InvalidEntry);
+            }
+            let entity_value = match expected_head.state() {
+                crate::EntityChainStateV1::Live {
+                    version,
+                    value_hash,
+                } => {
+                    let encoded_entity = entity_puts
+                        .get(key)
+                        .ok_or(ChangelogFrameV2Error::InvalidEntry)?;
+                    let entity = crate::decode_entity_record_v1(encoded_entity)
+                        .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?
+                        .into_parts()
+                        .0;
+                    if entity.target() != expected_head.target()
+                        || entity.entity_version() != version
+                        || crate::derive_entity_record_hash_v1(&entity)
+                            .map_err(|_| ChangelogFrameV2Error::InvalidEntry)?
+                            != value_hash
+                    {
+                        return Err(ChangelogFrameV2Error::InvalidEntry);
+                    }
+                    Some(encoded_entity.clone())
+                }
+                crate::EntityChainStateV1::Deleted => {
+                    if entity_puts.contains_key(key) {
+                        return Err(ChangelogFrameV2Error::InvalidEntry);
+                    }
+                    None
+                }
+                crate::EntityChainStateV1::NeverExisted => {
+                    return Err(ChangelogFrameV2Error::InvalidEntry);
+                }
+            };
+            applies.push((
+                key.clone(),
+                expected_head.clone(),
+                encoded_head.clone(),
+                entity_value,
+            ));
+        }
+
+        for (key, head, encoded_head, entity_value) in applies {
+            if let Some(entity_value) = entity_value {
+                self.entities.insert(key.clone(), entity_value);
+            } else {
+                self.entities.remove(&key);
+            }
+            self.chain_head_values.insert(key.clone(), encoded_head);
+            self.chain_heads.insert(key, head);
+        }
+        self.validator = candidate_validator;
+        Ok(covered)
+    }
+
+    /// Returns the exact applied V2 frontier.
+    #[must_use]
+    pub const fn applied_frontier(&self) -> DualFrontier {
+        self.validator.expected_predecessor()
+    }
+
+    /// Borrows one exact materialized entity value.
+    #[must_use]
+    pub fn entity_value(&self, key: &[u8]) -> Option<&[u8]> {
+        self.entities.get(key).map(AsRef::as_ref)
+    }
+
+    /// Borrows one exact current chain-head value.
+    #[must_use]
+    pub fn chain_head_value(&self, key: &[u8]) -> Option<&[u8]> {
+        self.chain_head_values.get(key).map(AsRef::as_ref)
     }
 }
 

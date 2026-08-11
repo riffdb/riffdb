@@ -45,10 +45,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use riffdb_storage_api::{
-    ChangelogEmissionStateV1, ChangelogEntryClassV1, ChangelogEntryV1, ChangelogFrameConsumer,
-    ChangelogFrameV1, ChangelogPublicationPort, ChangelogResyncReasonV1,
-    ChangelogStreamValidatorV1, CompositeTableV1, MAX_CHANGELOG_FRAME_ENTRIES,
-    PublishedDurableSnapshot, PublishedFrontierAdvancement, StorageError, StorageErrorKind,
+    ChangelogEmissionStateV1, ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogEntryV1,
+    ChangelogEntryV2, ChangelogFrameBindingV2, ChangelogFrameConsumer, ChangelogFrameConsumerV2,
+    ChangelogFrameV1, ChangelogFrameV2, ChangelogPublicationPort, ChangelogResyncReasonV1,
+    ChangelogStreamValidatorV1, ChangelogStreamValidatorV2, ChangelogV2RotationReceipt,
+    CompositeTableV1, EntityChainStateV1, MAX_CHANGELOG_FRAME_ENTRIES, PublishedDurableSnapshot,
+    PublishedFrontierAdvancement, StorageError, StorageErrorKind,
 };
 use riffdb_types::{
     AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, EventId, PartitionKeyHash,
@@ -319,6 +321,33 @@ impl RedbChangelogEmitter {
             consumer.note_resync_required(reason);
         }
     }
+
+    fn enter_resync_v2(
+        &self,
+        reason: ChangelogResyncReasonV1,
+        consumer: &dyn ChangelogFrameConsumerV2,
+    ) {
+        if !self.state().is_streaming() {
+            return;
+        }
+        if !self.announced.swap(true, Ordering::AcqRel) {
+            consumer.note_resync_required(reason);
+        }
+        let mut progress = self.locked_progress();
+        if progress.state.is_streaming() {
+            progress.state = ChangelogEmissionStateV1::Resync(reason);
+        }
+        drop(progress);
+        self.signal.notify_all();
+    }
+
+    fn announce_recorded_resync_v2(&self, consumer: &dyn ChangelogFrameConsumerV2) {
+        if let ChangelogEmissionStateV1::Resync(reason) = self.state()
+            && !self.announced.swap(true, Ordering::AcqRel)
+        {
+            consumer.note_resync_required(reason);
+        }
+    }
 }
 
 /// An owning handle to a started emitter and its worker thread.
@@ -398,6 +427,48 @@ pub fn start_changelog_emitter(
     })
 }
 
+/// Starts the delete-aware emitter at one exact, durable V1-to-V2 rotation.
+///
+/// The first observed advancement must continue the receipt's predecessor
+/// frontier. Starting after that point without a retained V2 cursor is a typed
+/// gap and requires a new bootstrap; this function never guesses how much of
+/// the V2 chain a late consumer may have missed.
+pub fn start_changelog_emitter_v2(
+    consumer: Arc<dyn ChangelogFrameConsumerV2>,
+    receipt: ChangelogV2RotationReceipt,
+    buffered_advancements: usize,
+) -> Result<RedbChangelogEmitterHandle, StorageError> {
+    if buffered_advancements == 0 {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let (sender, receiver) = sync_channel(buffered_advancements);
+    let emitter = Arc::new(RedbChangelogEmitter {
+        sender,
+        stopping: AtomicBool::new(false),
+        announced: AtomicBool::new(false),
+        observed: AtomicU64::new(0),
+        progress: Mutex::new(EmitterProgress {
+            emitted: 0,
+            processed: 0,
+            state: ChangelogEmissionStateV1::Streaming,
+            covered: receipt.predecessor(),
+            chain_hash: receipt.v2_chain_anchor(),
+        }),
+        signal: Condvar::new(),
+    });
+    let worker_emitter = Arc::clone(&emitter);
+    let worker = std::thread::Builder::new()
+        .name("riffdb-changelog-v2".to_owned())
+        .spawn(move || {
+            run_emitter_v2(&worker_emitter, &receiver, consumer.as_ref(), receipt);
+        })
+        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+    Ok(RedbChangelogEmitterHandle {
+        emitter,
+        worker: Some(worker),
+    })
+}
+
 fn run_emitter(
     emitter: &Arc<RedbChangelogEmitter>,
     receiver: &Receiver<EmitterMessage>,
@@ -420,6 +491,35 @@ fn run_emitter(
         emitter.announce_recorded_resync(consumer);
         if emitter.state().is_streaming() {
             handle_advancement(emitter, consumer, &advancement, &mut anchor);
+        }
+        let mut progress = emitter.locked_progress();
+        progress.processed = progress.processed.saturating_add(1);
+        drop(progress);
+        emitter.signal.notify_all();
+    }
+}
+
+fn run_emitter_v2(
+    emitter: &Arc<RedbChangelogEmitter>,
+    receiver: &Receiver<EmitterMessage>,
+    consumer: &dyn ChangelogFrameConsumerV2,
+    receipt: ChangelogV2RotationReceipt,
+) {
+    let mut validator = ChangelogStreamValidatorV2::from_rotation(receipt);
+    loop {
+        if emitter.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(message) = receiver.recv() else {
+            return;
+        };
+        let advancement = match message {
+            EmitterMessage::Stop => return,
+            EmitterMessage::Advancement(advancement) => advancement,
+        };
+        emitter.announce_recorded_resync_v2(consumer);
+        if emitter.state().is_streaming() {
+            handle_advancement_v2(emitter, consumer, &advancement, receipt, &mut validator);
         }
         let mut progress = emitter.locked_progress();
         progress.processed = progress.processed.saturating_add(1);
@@ -491,6 +591,59 @@ fn handle_advancement(
     // a gap generator; this is the cheapest place to make that impossible.
     let Ok(validated) = anchor.validator.accept(encoded.as_bytes()) else {
         emitter.enter_resync(ChangelogResyncReasonV1::ValidationFailed, consumer);
+        return;
+    };
+    {
+        let mut progress = emitter.locked_progress();
+        progress.emitted = progress.emitted.saturating_add(1);
+        progress.covered = validated.header().covered();
+        progress.chain_hash = encoded.frame_hash();
+    }
+    consumer.accept_frame(&validated, &encoded);
+    emitter.signal.notify_all();
+}
+
+fn handle_advancement_v2(
+    emitter: &Arc<RedbChangelogEmitter>,
+    consumer: &dyn ChangelogFrameConsumerV2,
+    advancement: &PublishedFrontierAdvancement,
+    receipt: ChangelogV2RotationReceipt,
+    validator: &mut ChangelogStreamValidatorV2,
+) {
+    let snapshot = advancement.snapshot().as_ref();
+    let identity = match read_identity(snapshot) {
+        Ok(identity) => identity,
+        Err(reason) => {
+            emitter.enter_resync_v2(reason, consumer);
+            return;
+        }
+    };
+    if identity != (receipt.database_id(), receipt.history_incarnation()) {
+        emitter.enter_resync_v2(ChangelogResyncReasonV1::DerivationFailed, consumer);
+        return;
+    }
+    if advancement.predecessor() != validator.expected_predecessor() {
+        emitter.enter_resync_v2(ChangelogResyncReasonV1::FrontierGap, consumer);
+        return;
+    }
+    let frame = match derive_frame_v2(
+        advancement,
+        identity.0,
+        identity.1,
+        validator.expected_chain_hash(),
+    ) {
+        Ok(frame) => frame,
+        Err(reason) => {
+            emitter.enter_resync_v2(reason, consumer);
+            return;
+        }
+    };
+    let Ok(encoded) = frame.encode() else {
+        emitter.enter_resync_v2(ChangelogResyncReasonV1::FrameLimitExceeded, consumer);
+        return;
+    };
+    let Ok(validated) = validator.accept(encoded.as_bytes()) else {
+        emitter.enter_resync_v2(ChangelogResyncReasonV1::ValidationFailed, consumer);
         return;
     };
     {
@@ -619,6 +772,178 @@ pub(crate) fn derive_frame(
     .map_err(|_| ChangelogResyncReasonV1::FrameLimitExceeded)
 }
 
+/// Derives one delete-aware V2 frame from an exact published snapshot.
+///
+/// Every touched entity contributes its final materialized row when live, one
+/// semantic tombstone for each delete transition, and one required final chain
+/// head. The transitions themselves come only from the current command-segment
+/// record shipped in the same frame; an old segment that touched entities but
+/// cannot carry transitions is refused rather than inferred.
+pub(crate) fn derive_frame_v2(
+    advancement: &PublishedFrontierAdvancement,
+    database_id: DatabaseId,
+    history_incarnation: u64,
+    chain_hash: [u8; 32],
+) -> Result<ChangelogFrameV2, ChangelogResyncReasonV1> {
+    let predecessor = advancement.predecessor();
+    let covered = advancement.covered();
+    let snapshot = advancement.snapshot().as_ref();
+    assert_snapshot_is_the_published_frontier(snapshot, covered)?;
+
+    let mut entries = Vec::new();
+    let mut attribution = Attribution::default();
+
+    if let Some(covered_application) = covered.application() {
+        let start = sequence_key_start(predecessor.application());
+        let end = sequence_key_end(covered_application);
+        for (key, value) in range(snapshot, CompositeTableV1::Commits, &start, &end)? {
+            attribute_commit_row(&value, &mut attribution)?;
+            entries.push(v2_put(ChangelogEntryClassV2::Commit, key, value)?);
+        }
+        let start = event_key_start(predecessor.application());
+        let end = event_key_end(covered_application);
+        for (key, value) in range(snapshot, CompositeTableV1::Events, &start, &end)? {
+            entries.push(v2_put(ChangelogEntryClassV2::Event, key, value)?);
+        }
+        for (key, value) in range(snapshot, CompositeTableV1::Outbox, &start, &end)? {
+            entries.push(v2_put(ChangelogEntryClassV2::OutboxIntent, key, value)?);
+        }
+    }
+
+    if let Some(covered_administration) = covered.administration() {
+        let start = audit_key_start(predecessor.administration());
+        let end = audit_key_end(covered_administration);
+        for (key, value) in range(snapshot, CompositeTableV1::Audit, &start, &end)? {
+            attribute_audit_row(&value, &mut attribution)?;
+            entries.push(v2_put(
+                ChangelogEntryClassV2::AdministrationAudit,
+                key,
+                value,
+            )?);
+        }
+    }
+
+    if attribution.unrepresentable_entity_segment {
+        return Err(ChangelogResyncReasonV1::DerivationFailed);
+    }
+    let covered_application = covered.application();
+    let predecessor_application = predecessor.application();
+    let mut prior_transition_position = None;
+    for transition in &attribution.entity_transitions {
+        let position = (transition.command_sequence(), transition.mutation_ordinal());
+        if prior_transition_position.is_some_and(|prior| prior >= position)
+            || predecessor_application.is_some_and(|prior| transition.command_sequence() <= prior)
+            || covered_application.is_none_or(|last| transition.command_sequence() > last)
+        {
+            return Err(ChangelogResyncReasonV1::DerivationFailed);
+        }
+        prior_transition_position = Some(position);
+        attribution
+            .entities
+            .push(Box::from(crate::keys::encode_entity_key(
+                transition.target().key(),
+            )));
+        attribution
+            .entity_chain_heads
+            .push(Box::from(crate::keys::encode_entity_key(
+                transition.target().key(),
+            )));
+        if transition.next_state() == EntityChainStateV1::Deleted {
+            entries.push(
+                ChangelogEntryV2::entity_delete_tombstone(transition.clone())
+                    .map_err(|_| ChangelogResyncReasonV1::DerivationFailed)?,
+            );
+        }
+    }
+
+    for (class, key) in attribution.into_v2_point_reads() {
+        let value = snapshot
+            .read_value(
+                class
+                    .legacy_put_table()
+                    .unwrap_or(CompositeTableV1::EntityChainHeads),
+                &key,
+            )
+            .map_err(|_| ChangelogResyncReasonV1::DerivationFailed)?;
+        match (class, value) {
+            (ChangelogEntryClassV2::EntityChainHead, None) => {
+                return Err(ChangelogResyncReasonV1::DerivationFailed);
+            }
+            (_, None) => {}
+            (_, Some(value)) => entries.push(v2_put(class, key, value.into_boxed_slice())?),
+        }
+    }
+
+    entries.sort_by(compare_v2_entries);
+    entries.dedup_by(|left, right| match (&*left, &*right) {
+        (
+            ChangelogEntryV2::Put {
+                class: left_class,
+                key: left_key,
+                ..
+            },
+            ChangelogEntryV2::Put {
+                class: right_class,
+                key: right_key,
+                ..
+            },
+        ) => left_class == right_class && left_key == right_key,
+        (
+            ChangelogEntryV2::EntityDeleteTombstone(left),
+            ChangelogEntryV2::EntityDeleteTombstone(right),
+        ) => left.transition_hash() == right.transition_hash(),
+        _ => false,
+    });
+    if entries.len() > MAX_CHANGELOG_FRAME_ENTRIES {
+        return Err(ChangelogResyncReasonV1::FrameLimitExceeded);
+    }
+
+    ChangelogFrameV2::new(
+        ChangelogFrameBindingV2 {
+            database_id,
+            history_incarnation,
+            chain_hash,
+            journal_frame_hash: advancement.frame_hash(),
+            journaled: advancement.journaled(),
+        },
+        predecessor,
+        covered,
+        entries,
+    )
+    .map_err(|_| ChangelogResyncReasonV1::FrameLimitExceeded)
+}
+
+fn v2_put(
+    class: ChangelogEntryClassV2,
+    key: impl Into<Box<[u8]>>,
+    value: impl Into<Box<[u8]>>,
+) -> Result<ChangelogEntryV2, ChangelogResyncReasonV1> {
+    ChangelogEntryV2::put(class, key, value)
+        .map_err(|_| ChangelogResyncReasonV1::FrameLimitExceeded)
+}
+
+fn compare_v2_entries(left: &ChangelogEntryV2, right: &ChangelogEntryV2) -> std::cmp::Ordering {
+    let class = left.class().cmp(&right.class());
+    if class != std::cmp::Ordering::Equal {
+        return class;
+    }
+    match (left.delete_transition(), right.delete_transition()) {
+        (Some(left), Some(right)) => (
+            left.command_sequence(),
+            left.mutation_ordinal(),
+            left.target().key().as_bytes(),
+        )
+            .cmp(&(
+                right.command_sequence(),
+                right.mutation_ordinal(),
+                right.target().key().as_bytes(),
+            )),
+        (None, None) => left.key().cmp(right.key()),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+    }
+}
+
 /// The ADR-0100 §2 gate, executable.
 ///
 /// A pinned published snapshot must be *exactly* the frontier the advancement
@@ -670,6 +995,9 @@ fn assert_snapshot_is_the_published_frontier(
 #[derive(Default)]
 struct Attribution {
     entities: Vec<Box<[u8]>>,
+    entity_chain_heads: Vec<Box<[u8]>>,
+    entity_transitions: Vec<riffdb_storage_api::CommittedEntityTransitionV1>,
+    unrepresentable_entity_segment: bool,
     provenance: Vec<Box<[u8]>>,
     event_routes: Vec<Box<[u8]>>,
     audit_by_request: Vec<Box<[u8]>>,
@@ -705,6 +1033,42 @@ impl Attribution {
         );
         reads
     }
+
+    fn into_v2_point_reads(self) -> Vec<(ChangelogEntryClassV2, Box<[u8]>)> {
+        let mut reads = Vec::with_capacity(
+            self.entities.len()
+                + self.entity_chain_heads.len()
+                + self.provenance.len()
+                + self.event_routes.len()
+                + self.audit_by_request.len(),
+        );
+        reads.extend(
+            self.entities
+                .into_iter()
+                .map(|key| (ChangelogEntryClassV2::Entity, key)),
+        );
+        reads.extend(
+            self.entity_chain_heads
+                .into_iter()
+                .map(|key| (ChangelogEntryClassV2::EntityChainHead, key)),
+        );
+        reads.extend(
+            self.provenance
+                .into_iter()
+                .map(|key| (ChangelogEntryClassV2::Provenance, key)),
+        );
+        reads.extend(
+            self.event_routes
+                .into_iter()
+                .map(|key| (ChangelogEntryClassV2::EventRoute, key)),
+        );
+        reads.extend(
+            self.audit_by_request
+                .into_iter()
+                .map(|key| (ChangelogEntryClassV2::ServiceAuditRequestIndex, key)),
+        );
+        reads
+    }
 }
 
 fn attribute_commit_row(
@@ -715,6 +1079,14 @@ fn attribute_commit_row(
         Ok(segment) => {
             for capsule in segment.value().commands() {
                 attribute_commit_record(capsule.base().commit(), attribution);
+                if !capsule.base().commit().entity_references().is_empty()
+                    && capsule.entity_transitions().is_empty()
+                {
+                    attribution.unrepresentable_entity_segment = true;
+                }
+                attribution
+                    .entity_transitions
+                    .extend(capsule.entity_transitions().iter().cloned());
                 for audit in [
                     capsule.base().started_audit(),
                     capsule.base().terminal_audit(),
@@ -738,6 +1110,9 @@ fn attribute_commit_row(
     // event references are both derivable without an event-table handle.
     let references = crate::codec::decode_commit_entity_references(encoded)
         .map_err(|_| ChangelogResyncReasonV1::DerivationFailed)?;
+    if !references.value().is_empty() {
+        attribution.unrepresentable_entity_segment = true;
+    }
     for reference in references.value() {
         attribution
             .entities

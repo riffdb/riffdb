@@ -26,32 +26,34 @@ use riffdb_storage_api::{
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
     CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
-    ChangelogEmissionStateV1, ChangelogEntryClassV1, ChangelogFrameConsumer, ChangelogFrameV1,
-    ChangelogResyncReasonV1, ChangelogStreamValidatorV1, CommandCandidateAdmission,
+    ChangelogEmissionStateV1, ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogFrameConsumer,
+    ChangelogFrameConsumerV2, ChangelogFrameV1, ChangelogFrameV2, ChangelogResyncReasonV1,
+    ChangelogStreamValidatorV1, ChangelogV2RotationReceipt, CommandCandidateAdmission,
     CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
     DatabaseInitializationPort, DeclaredOutcome, DeferredCommandEpoch, DeferredCommandEpochPort,
-    DeferredCommandFence, DeferredNonEmptyCommandBatch, DurabilityMode, DurableKeySchemaBindingV1,
-    EmptyCommandBatch, EncodedChangelogFrameV1, EncodedWriteSetUpperBoundResultV1, EntityMutation,
-    EntityObservation, EntityPostImage, EntityTarget, EvaluationBudget, EventIntent,
-    EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
-    EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
-    IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1,
-    IndexEpochPosition, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
-    MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit,
-    OutboxRepository, OutboxStatusObservationV1, OutboxStatusReadResultV1,
-    PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
-    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-    SnapshotReader, SnapshotRequest, StartupValidationInputs, StorageScanLimit,
-    StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
-    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
-    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructuralEvidenceCursor,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    DeferredCommandFence, DeferredNonEmptyCommandBatch, DeleteAwareEntityFollowerV2,
+    DurabilityMode, DurableKeySchemaBindingV1, EmptyCommandBatch, EncodedChangelogFrameV1,
+    EncodedChangelogFrameV2, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
+    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
+    ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
+    IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
+    NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
+    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
+    PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, SnapshotReader, SnapshotRequest,
+    StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StoredServiceAuditRecordV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
+    StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
     command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
     decode_index_migration_row, derive_event_hash_v1, encode_administration_sequence_allocator_v1,
     encode_index_entry_v1_fixture, encode_index_entry_v2, encode_record_registry_v2,
@@ -4883,6 +4885,40 @@ impl ChangelogFrameConsumer for RecordingChangelogConsumer {
     }
 }
 
+#[derive(Default)]
+struct RecordingChangelogConsumerV2 {
+    accepted: std::sync::Mutex<Vec<(ChangelogFrameV2, Vec<u8>)>>,
+    resyncs: std::sync::Mutex<Vec<ChangelogResyncReasonV1>>,
+}
+
+impl RecordingChangelogConsumerV2 {
+    fn encoded(&self) -> Vec<Vec<u8>> {
+        self.accepted
+            .lock()
+            .expect("V2 frame lock")
+            .iter()
+            .map(|(_, bytes)| bytes.clone())
+            .collect()
+    }
+
+    fn resyncs(&self) -> Vec<ChangelogResyncReasonV1> {
+        self.resyncs.lock().expect("V2 resync lock").clone()
+    }
+}
+
+impl ChangelogFrameConsumerV2 for RecordingChangelogConsumerV2 {
+    fn accept_frame(&self, frame: &ChangelogFrameV2, encoded: &EncodedChangelogFrameV2) {
+        self.accepted
+            .lock()
+            .expect("V2 frame lock")
+            .push((frame.clone(), encoded.as_bytes().to_vec()));
+    }
+
+    fn note_resync_required(&self, reason: ChangelogResyncReasonV1) {
+        self.resyncs.lock().expect("V2 resync lock").push(reason);
+    }
+}
+
 /// A port that forwards every advancement except one, to manufacture a gap.
 #[derive(Debug)]
 struct DroppingChangelogPort {
@@ -5091,6 +5127,152 @@ fn changelog_frames_reconstruct_the_published_snapshot_exactly() {
             "a frame always advances its dual frontier"
         );
     }
+}
+
+fn empty_entity_bootstrap_frontier(path: &Path) -> riffdb_types::DualFrontier {
+    drop(RedbStore::open(path).expect("materialize bootstrap boundary"));
+    let database = Database::open(path).expect("open bootstrap boundary");
+    let read = database.begin_read().expect("begin bootstrap read");
+    assert_eq!(
+        read.open_table(TableDefinition::<&[u8], &[u8]>::new("commits"))
+            .expect("open commits")
+            .len()
+            .expect("commits length"),
+        0,
+        "the V2 tail fixture starts before its first application command"
+    );
+    assert_eq!(
+        read.open_table(ENTITIES_RAW)
+            .expect("open entities")
+            .len()
+            .expect("entities length"),
+        0
+    );
+    assert_eq!(
+        read.open_table(TableDefinition::<&[u8], &[u8]>::new("entity_chain_heads",))
+            .expect("open entity heads")
+            .len()
+            .expect("entity-head length"),
+        0
+    );
+    let audit = read.open_table(AUDIT).expect("open audit");
+    let mut administration = None;
+    for row in audit.iter().expect("iterate audit") {
+        let key = row.expect("audit row").0.value().to_vec();
+        let sequence = u64::from_be_bytes(
+            key.get(key.len().saturating_sub(8)..)
+                .expect("audit key sequence")
+                .try_into()
+                .expect("eight-byte audit sequence"),
+        );
+        administration = AdministrationSequence::new(sequence);
+    }
+    riffdb_types::DualFrontier::new(None, administration)
+}
+
+fn read_raw_entity_state(path: &Path, key: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    drop(RedbStore::open(path).expect("materialize V2 final state"));
+    let database = Database::open(path).expect("open V2 final state");
+    let read = database.begin_read().expect("begin V2 final read");
+    let entity = read
+        .open_table(ENTITIES_RAW)
+        .expect("open final entities")
+        .get(key)
+        .expect("get final entity")
+        .expect("final entity present")
+        .value()
+        .to_vec();
+    let head = read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new("entity_chain_heads"))
+        .expect("open final entity heads")
+        .get(key)
+        .expect("get final entity head")
+        .expect("final entity head present")
+        .value()
+        .to_vec();
+    (entity, head)
+}
+
+#[test]
+fn v2_emitter_and_follower_resume_from_bootstrap_with_exact_entity_heads() {
+    let path = TestDatabasePath::new("changelog-v2-entity-tail");
+    prepare_command_database(&path.0);
+    let predecessor = empty_entity_bootstrap_frontier(&path.0);
+    let receipt = ChangelogV2RotationReceipt::new(database_id(), 1, predecessor, [0x52; 32])
+        .expect("V2 bootstrap boundary");
+    let consumer = std::sync::Arc::new(RecordingChangelogConsumerV2::default());
+    let emitter = riffdb_storage_redb::start_changelog_emitter_v2(
+        std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumerV2>,
+        receipt,
+        64,
+    )
+    .expect("start V2 emitter");
+
+    let first = command_fixture_at(1);
+    let second = superseding_command_fixture_at(2, 1, &first);
+    {
+        let ports = open_with_emitter(&path.0, emitter.port());
+        fence_deferred_epoch(&ports, std::slice::from_ref(&first));
+        fence_deferred_epoch(&ports, std::slice::from_ref(&second));
+        assert_eq!(
+            emitter.emitter().wait_for_emitted(2),
+            ChangelogEmissionStateV1::Streaming
+        );
+    }
+    assert!(consumer.resyncs().is_empty());
+    let encoded = consumer.encoded();
+    assert_eq!(encoded.len(), 2);
+
+    let mut follower = DeleteAwareEntityFollowerV2::from_rotation(receipt);
+    follower
+        .install_bootstrap_page(Vec::new(), true)
+        .expect("seal empty entity bootstrap");
+    let (first_frame, _) = ChangelogFrameV2::decode(&encoded[0]).expect("decode first V2 frame");
+    let incomplete = ChangelogFrameV2::new(
+        first_frame.header().binding(),
+        first_frame.header().predecessor(),
+        first_frame.header().covered(),
+        first_frame
+            .entries()
+            .iter()
+            .filter(|entry| entry.class() != ChangelogEntryClassV2::EntityChainHead)
+            .cloned()
+            .collect(),
+    )
+    .expect("structurally valid but semantically incomplete frame")
+    .encode()
+    .expect("encode incomplete frame");
+    assert_eq!(
+        follower.apply_encoded(incomplete.as_bytes()),
+        Err(riffdb_storage_api::ChangelogFrameV2Error::InvalidEntry)
+    );
+    assert_eq!(
+        follower.applied_frontier(),
+        predecessor,
+        "failed frame validation cannot advance the follower cursor"
+    );
+    assert!(
+        follower
+            .entity_value(expected_entity_row(&first).0.as_slice())
+            .is_none(),
+        "failed frame validation cannot expose a partial entity apply"
+    );
+    for frame in &encoded {
+        follower.apply_encoded(frame).expect("apply V2 frame");
+    }
+
+    let (key, expected_entity) = expected_entity_row(&second);
+    let (actual_entity, actual_head) = read_raw_entity_state(&path.0, &key);
+    assert_eq!(actual_entity, expected_entity);
+    assert_eq!(follower.entity_value(&key), Some(actual_entity.as_slice()));
+    assert_eq!(
+        follower.chain_head_value(&key),
+        Some(actual_head.as_slice())
+    );
+    assert_eq!(
+        follower.applied_frontier().application(),
+        CommitSequence::new(2)
+    );
 }
 
 #[test]
