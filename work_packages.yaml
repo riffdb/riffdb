@@ -11503,9 +11503,13 @@ work_packages:
     outcome expectations mapped to report counters and pinned non-vacuously) replayed per
     merge, seeded with the wedge entry plus three development-found interesting-territory
     seeds (heaviest torn recovery, the commit-present two-state resolution, deepest
-    crash-during-recovery chain); env-gated deep exploration (RIFFDB_SIM_EXPLORE_SEEDS) as the
-    open-ended budget, invocation documented in the module doc (no CI wiring exists on this
-    machine)
+    crash-during-recovery chain); an intentional durable-layout change that moves a physical
+    crash window uses a receipted rotation that retains and replays the historical coordinate,
+    names the exact causal commit and review date, appends a stable forward-only successor
+    chain ending in an active witness, and forbids a green pre-fix corpus without at least one
+    reproducing witness; env-gated deep
+    exploration (RIFFDB_SIM_EXPLORE_SEEDS) as the open-ended budget, invocation documented in
+    the module doc (no CI wiring exists on this machine)
   - SIM-006 subsumption; every RECOVERY_SCENARIOS row classified exactly once
     (campaign-covered pinned schedules for the command-commit and startup-initialization
     engine-commit arms with scouted, stability-rerun seeds; typed storage exclusions with
@@ -11539,9 +11543,10 @@ work_packages:
     pinned schedules completes its plan with the full startup-validation pass and the oracle
     holding at every recovered frontier; the sweep's aggregate counters prove crashes, torn
     recoveries, recovery-window crashes, and both commit two-state sides were exercised; the
-    corpus replays per merge including the wedge reproduction under the current pin; a new
-    RECOVERY_SCENARIOS row or a moved redb pin reds the guards until classified; and no
-    production crate changes.
+    corpus replays per merge including the wedge reproduction under the current pin (with any
+    physical-layout witness rotation retaining the old coordinate, exact causal receipt, and
+    forward-only successor chain ending in a stable active witness); a new RECOVERY_SCENARIOS
+    row or a moved redb pin reds the guards until classified; and no production crate changes.
   standing_design_tests:
     interface_safety: No application-facing surface changes; the generator, campaign, corpus,
       and classification live entirely in the dev-only simulator crate's test target and drive
