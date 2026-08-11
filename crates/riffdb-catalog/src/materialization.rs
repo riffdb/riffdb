@@ -5,14 +5,16 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_contract_ir::{
-    EntitySchema, KeySchema, MAX_DECLARATIONS_PER_KIND, RecordSchema, SchemaIr, ValueType,
+    BindingMode, DeleteCheckModeV1, EntitySchema, KeySchema, MAX_DECLARATIONS_PER_KIND,
+    RecordSchema, SchemaIr, ValueType,
 };
+use riffdb_invariant::derive_input_command_facts;
 use riffdb_storage_api::{
     EntityObservation, EntityObservationPosition, ReadDependencies, ReadDependency, ReadSnapshot,
     StorageValueError, StoredEntityRecordV1, TransactionCurrentState,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, MAX_CANONICAL_DOCUMENT_BYTES, MAX_RECORD_FIELDS,
+    CanonicalRecord, CanonicalValue, EntityKey, MAX_CANONICAL_DOCUMENT_BYTES, MAX_RECORD_FIELDS,
     encode_canonical_record,
 };
 
@@ -112,6 +114,7 @@ pub struct MaterializedCommandSnapshot {
     resolved_plan: ResolvedExecutablePlan,
     snapshot: ReadSnapshot,
     masks: SnapshotMasks,
+    positions: SnapshotPositionMap,
 }
 
 impl MaterializedCommandSnapshot {
@@ -135,8 +138,15 @@ impl MaterializedCommandSnapshot {
         if compare_current_dependencies(&self.snapshot, &raw)? {
             return Ok(TransactionCurrentMaterialization::DependencyChanged);
         }
-        verify_current_against_normalized(&self.resolved_plan, &self.snapshot, &self.masks, &raw)?;
-        let state = normalize_transaction_current(&self.resolved_plan, &self.masks, raw)?;
+        verify_current_against_normalized(
+            &self.resolved_plan,
+            &self.positions,
+            &self.snapshot,
+            &self.masks,
+            &raw,
+        )?;
+        let state =
+            normalize_transaction_current(&self.resolved_plan, &self.positions, &self.masks, raw)?;
         if state.bindings() != self.snapshot.bindings()
             || state.root_validations() != self.snapshot.root_validations()
         {
@@ -198,6 +208,7 @@ impl fmt::Debug for MaterializedTransactionCurrentState {
 pub struct CommandSnapshotResourceLimitEvidence {
     resolved_plan: ResolvedExecutablePlan,
     raw_snapshot: ReadSnapshot,
+    positions: SnapshotPositionMap,
 }
 
 impl CommandSnapshotResourceLimitEvidence {
@@ -222,8 +233,8 @@ impl CommandSnapshotResourceLimitEvidence {
             return Ok(ResourceLimitRecheck::DependencyChanged);
         }
         verify_current_against_raw(&self.raw_snapshot, &raw)?;
-        validate_snapshot_shape(&self.resolved_plan, &self.raw_snapshot)?;
-        match analyze_snapshot(&self.resolved_plan, &self.raw_snapshot)? {
+        validate_snapshot_shape(&self.resolved_plan, &self.positions, &self.raw_snapshot)?;
+        match analyze_snapshot(&self.resolved_plan, &self.positions, &self.raw_snapshot)? {
             SnapshotAnalysis::Ready(_) => Err(CommandSnapshotMaterializationError::integrity()),
             SnapshotAnalysis::ResourceLimit => Ok(ResourceLimitRecheck::Confirmed),
         }
@@ -251,15 +262,41 @@ impl ResolvedExecutablePlan {
         self,
         raw: ReadSnapshot,
     ) -> Result<CommandSnapshotMaterialization, CommandSnapshotMaterializationError> {
-        validate_snapshot_shape(&self, &raw)?;
-        match analyze_snapshot(&self, &raw)? {
+        let positions = SnapshotPositionMap::ordinary(&self);
+        self.materialize_command_snapshot_with_positions(positions, raw)
+    }
+
+    /// Validates and normalizes a mutation snapshot using its exact input-derived
+    /// concrete binding positions.
+    ///
+    /// Collection plans have one compiler template but many concrete snapshot
+    /// slots. The position map is re-derived here from the sealed plan and
+    /// canonical input; callers cannot submit binding indices, keys, or range
+    /// counts.
+    pub fn materialize_command_snapshot_for_input(
+        self,
+        input: &CanonicalRecord,
+        raw: ReadSnapshot,
+    ) -> Result<CommandSnapshotMaterialization, CommandSnapshotMaterializationError> {
+        let positions = SnapshotPositionMap::from_input(&self, input)?;
+        self.materialize_command_snapshot_with_positions(positions, raw)
+    }
+
+    fn materialize_command_snapshot_with_positions(
+        self,
+        positions: SnapshotPositionMap,
+        raw: ReadSnapshot,
+    ) -> Result<CommandSnapshotMaterialization, CommandSnapshotMaterializationError> {
+        validate_snapshot_shape(&self, &positions, &raw)?;
+        match analyze_snapshot(&self, &positions, &raw)? {
             SnapshotAnalysis::Ready(masks) => {
-                let snapshot = normalize_snapshot(&self, &masks, raw)?;
+                let snapshot = normalize_snapshot(&self, &positions, &masks, raw)?;
                 Ok(CommandSnapshotMaterialization::Ready(
                     MaterializedCommandSnapshot {
                         resolved_plan: self,
                         snapshot,
                         masks,
+                        positions,
                     },
                 ))
             }
@@ -267,6 +304,7 @@ impl ResolvedExecutablePlan {
                 CommandSnapshotResourceLimitEvidence {
                     resolved_plan: self,
                     raw_snapshot: raw,
+                    positions,
                 },
             )),
         }
@@ -343,6 +381,119 @@ enum SnapshotAnalysis {
     ResourceLimit,
 }
 
+struct SnapshotPositionMap {
+    binding_plan_indices: Box<[usize]>,
+    binding_keys: Option<Box<[EntityKey]>>,
+    root_plan_indices: Box<[usize]>,
+    root_keys: Option<Box<[EntityKey]>>,
+    expected_ranges: usize,
+}
+
+impl SnapshotPositionMap {
+    fn ordinary(resolved: &ResolvedExecutablePlan) -> Self {
+        Self {
+            binding_plan_indices: (0..resolved.plan().bindings().len()).collect(),
+            binding_keys: None,
+            root_plan_indices: (0..resolved.plan().root_validation_reads().len()).collect(),
+            root_keys: None,
+            expected_ranges: 0,
+        }
+    }
+
+    fn from_input(
+        resolved: &ResolvedExecutablePlan,
+        input: &CanonicalRecord,
+    ) -> Result<Self, CommandSnapshotMaterializationError> {
+        let facts = derive_input_command_facts(resolved.plan(), input.clone())
+            .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
+        if facts.binding_plan_indices().len() != facts.binding_entity_keys().len()
+            || facts.root_validation_plan_indices().len()
+                != facts.root_validation_entity_keys().len()
+        {
+            return Err(CommandSnapshotMaterializationError::integrity());
+        }
+        let binding_plan_indices = facts
+            .binding_plan_indices()
+            .iter()
+            .map(|index| {
+                usize::try_from(*index)
+                    .map_err(|_| CommandSnapshotMaterializationError::integrity())
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
+        let root_plan_indices = facts
+            .root_validation_plan_indices()
+            .iter()
+            .map(|index| {
+                usize::try_from(*index)
+                    .map_err(|_| CommandSnapshotMaterializationError::integrity())
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
+        let mut expected_ranges = 0usize;
+        for plan_index in &binding_plan_indices {
+            let binding = resolved
+                .plan()
+                .bindings()
+                .get(*plan_index)
+                .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+            if binding.mode() != BindingMode::Delete {
+                continue;
+            }
+            let check = resolved
+                .plan()
+                .delete_checks()
+                .iter()
+                .find(|check| check.binding() == binding.id())
+                .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+            if matches!(check.mode(), DeleteCheckModeV1::Restrict { .. }) {
+                expected_ranges = expected_ranges
+                    .checked_add(1)
+                    .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+            }
+        }
+        Ok(Self {
+            binding_plan_indices,
+            binding_keys: Some(facts.binding_entity_keys().to_vec().into_boxed_slice()),
+            root_plan_indices,
+            root_keys: Some(
+                facts
+                    .root_validation_entity_keys()
+                    .to_vec()
+                    .into_boxed_slice(),
+            ),
+            expected_ranges,
+        })
+    }
+
+    fn plan_index(
+        &self,
+        position: EntityObservationPosition,
+    ) -> Result<usize, CommandSnapshotMaterializationError> {
+        match position {
+            EntityObservationPosition::Binding(index) => self.binding_plan_indices.get(index),
+            EntityObservationPosition::RootValidation(index) => self.root_plan_indices.get(index),
+        }
+        .copied()
+        .ok_or_else(CommandSnapshotMaterializationError::integrity)
+    }
+
+    fn expected_key(&self, position: EntityObservationPosition) -> Option<&EntityKey> {
+        match position {
+            EntityObservationPosition::Binding(index) => {
+                self.binding_keys.as_ref().and_then(|keys| keys.get(index))
+            }
+            EntityObservationPosition::RootValidation(index) => {
+                self.root_keys.as_ref().and_then(|keys| keys.get(index))
+            }
+        }
+    }
+}
+
+impl fmt::Debug for SnapshotPositionMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SnapshotPositionMap([REDACTED])")
+    }
+}
+
 struct RecordAnalysis {
     mask: Option<InsertedNullMask>,
     inserted_fields: usize,
@@ -351,29 +502,44 @@ struct RecordAnalysis {
 
 fn validate_snapshot_shape(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     snapshot: &ReadSnapshot,
 ) -> Result<(), CommandSnapshotMaterializationError> {
     if snapshot.plan() != resolved.reference()
-        || snapshot.bindings().len() != resolved.plan().bindings().len()
-        || snapshot.root_validations().len() != resolved.plan().root_validation_reads().len()
-        || !snapshot.ranges().is_empty()
+        || snapshot.bindings().len() != positions.binding_plan_indices.len()
+        || snapshot.root_validations().len() != positions.root_plan_indices.len()
+        || snapshot.ranges().len() != positions.expected_ranges
     {
         return Err(CommandSnapshotMaterializationError::integrity());
     }
 
-    for (observation, binding) in snapshot.bindings().iter().zip(resolved.plan().bindings()) {
+    for (index, observation) in snapshot.bindings().iter().enumerate() {
+        let position = EntityObservationPosition::Binding(index);
+        let binding = resolved
+            .plan()
+            .bindings()
+            .get(positions.plan_index(position)?)
+            .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
         if observation.target().entity_type_id() != binding.entity_type()
+            || positions
+                .expected_key(position)
+                .is_some_and(|key| observation.target().key() != key)
             || executing_schema(resolved, binding.entity_type()).is_err()
         {
             return Err(CommandSnapshotMaterializationError::integrity());
         }
     }
-    for (observation, root) in snapshot
-        .root_validations()
-        .iter()
-        .zip(resolved.plan().root_validation_reads())
-    {
+    for (index, observation) in snapshot.root_validations().iter().enumerate() {
+        let position = EntityObservationPosition::RootValidation(index);
+        let root = resolved
+            .plan()
+            .root_validation_reads()
+            .get(positions.plan_index(position)?)
+            .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
         if observation.target().entity_type_id() != root.entity_type()
+            || positions
+                .expected_key(position)
+                .is_some_and(|key| observation.target().key() != key)
             || executing_schema(resolved, root.entity_type()).is_err()
         {
             return Err(CommandSnapshotMaterializationError::integrity());
@@ -409,6 +575,7 @@ fn validate_snapshot_shape(
 
 fn analyze_snapshot(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     snapshot: &ReadSnapshot,
 ) -> Result<SnapshotAnalysis, CommandSnapshotMaterializationError> {
     let mut binding_masks = Vec::with_capacity(snapshot.bindings().len());
@@ -420,6 +587,7 @@ fn analyze_snapshot(
     for (position, observation) in snapshot.bindings().iter().enumerate() {
         let analysis = analyze_observation(
             resolved,
+            positions,
             EntityObservationPosition::Binding(position),
             observation,
         )?;
@@ -435,6 +603,7 @@ fn analyze_snapshot(
     for (position, observation) in snapshot.root_validations().iter().enumerate() {
         let analysis = analyze_observation(
             resolved,
+            positions,
             EntityObservationPosition::RootValidation(position),
             observation,
         )?;
@@ -504,6 +673,7 @@ fn retain_analysis(
 
 fn analyze_observation(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
     observation: &EntityObservation,
 ) -> Result<RecordAnalysis, CommandSnapshotMaterializationError> {
@@ -517,12 +687,13 @@ fn analyze_observation(
             record_limit_exceeded: false,
         });
     };
-    let entity = entity_at_position(resolved, position)?;
-    analyze_record(resolved, position, entity, record)
+    let entity = entity_at_position(resolved, positions, position)?;
+    analyze_record(resolved, positions, position, entity, record)
 }
 
 fn analyze_record(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
     entity: &EntitySchema,
     record: &StoredEntityRecordV1,
@@ -575,7 +746,7 @@ fn analyze_record(
             )?;
         }
     }
-    validate_record_key(resolved, position, entity, record)?;
+    validate_record_key(resolved, positions, position, entity, record)?;
 
     let mask = if missing.is_empty() {
         None
@@ -652,11 +823,12 @@ pub(crate) fn validate_static_value(
 
 fn validate_record_key(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
     entity: &EntitySchema,
     record: &StoredEntityRecordV1,
 ) -> Result<(), CommandSnapshotMaterializationError> {
-    let key_schema = key_schema_at_position(resolved, position)?;
+    let key_schema = key_schema_at_position(resolved, positions, position)?;
     if key_schema != entity.primary_key() {
         return Err(CommandSnapshotMaterializationError::integrity());
     }
@@ -682,22 +854,24 @@ fn validate_record_key(
 
 fn normalize_snapshot(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     masks: &SnapshotMasks,
     raw: ReadSnapshot,
 ) -> Result<ReadSnapshot, CommandSnapshotMaterializationError> {
     raw.try_map_present_records(|position, record| {
-        let schema = schema_at_position(resolved, position)?;
+        let schema = schema_at_position(resolved, positions, position)?;
         normalize_record(record, schema, mask_at(masks, position)?)
     })
 }
 
 fn normalize_transaction_current(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     masks: &SnapshotMasks,
     raw: TransactionCurrentState,
 ) -> Result<TransactionCurrentState, CommandSnapshotMaterializationError> {
     raw.try_map_present_records(|position, record| {
-        let schema = schema_at_position(resolved, position)?;
+        let schema = schema_at_position(resolved, positions, position)?;
         normalize_record(record, schema, mask_at(masks, position)?)
     })
 }
@@ -841,6 +1015,7 @@ fn validate_current_shape(
 
 fn verify_current_against_normalized(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     snapshot: &ReadSnapshot,
     masks: &SnapshotMasks,
     current: &TransactionCurrentState,
@@ -853,6 +1028,7 @@ fn verify_current_against_normalized(
     {
         verify_raw_observation(
             resolved,
+            positions,
             EntityObservationPosition::Binding(position),
             retained,
             mask_at(masks, EntityObservationPosition::Binding(position))?,
@@ -867,6 +1043,7 @@ fn verify_current_against_normalized(
     {
         verify_raw_observation(
             resolved,
+            positions,
             EntityObservationPosition::RootValidation(position),
             retained,
             mask_at(masks, EntityObservationPosition::RootValidation(position))?,
@@ -878,6 +1055,7 @@ fn verify_current_against_normalized(
 
 fn verify_raw_observation(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
     retained: &EntityObservation,
     mask: Option<&InsertedNullMask>,
@@ -886,8 +1064,11 @@ fn verify_raw_observation(
     match retained {
         EntityObservation::Absent(_) if mask.is_none() && retained == raw => Ok(()),
         EntityObservation::Present(record) => {
-            let reconstructed =
-                reconstruct_raw_record(record, schema_at_position(resolved, position)?, mask)?;
+            let reconstructed = reconstruct_raw_record(
+                record,
+                schema_at_position(resolved, positions, position)?,
+                mask,
+            )?;
             if raw == &EntityObservation::Present(reconstructed) {
                 Ok(())
             } else {
@@ -923,18 +1104,20 @@ fn mask_at(
     .ok_or_else(CommandSnapshotMaterializationError::integrity)
 }
 
-fn schema_at_position(
-    resolved: &ResolvedExecutablePlan,
+fn schema_at_position<'a>(
+    resolved: &'a ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
-) -> Result<&RecordSchema, CommandSnapshotMaterializationError> {
-    Ok(entity_at_position(resolved, position)?.record())
+) -> Result<&'a RecordSchema, CommandSnapshotMaterializationError> {
+    Ok(entity_at_position(resolved, positions, position)?.record())
 }
 
-fn entity_at_position(
-    resolved: &ResolvedExecutablePlan,
+fn entity_at_position<'a>(
+    resolved: &'a ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
-) -> Result<&EntitySchema, CommandSnapshotMaterializationError> {
-    let entity_type = entity_type_at_position(resolved, position)?;
+) -> Result<&'a EntitySchema, CommandSnapshotMaterializationError> {
+    let entity_type = entity_type_at_position(resolved, positions, position)?;
     resolved
         .bundle()
         .bundle()
@@ -945,37 +1128,41 @@ fn entity_at_position(
 
 fn entity_type_at_position(
     resolved: &ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
 ) -> Result<riffdb_types::EntityTypeId, CommandSnapshotMaterializationError> {
+    let plan_index = positions.plan_index(position)?;
     match position {
-        EntityObservationPosition::Binding(index) => resolved
+        EntityObservationPosition::Binding(_) => resolved
             .plan()
             .bindings()
-            .get(index)
+            .get(plan_index)
             .map(riffdb_contract_ir::BindingPlan::entity_type),
-        EntityObservationPosition::RootValidation(index) => resolved
+        EntityObservationPosition::RootValidation(_) => resolved
             .plan()
             .root_validation_reads()
-            .get(index)
+            .get(plan_index)
             .map(riffdb_contract_ir::RootValidationReadPlan::entity_type),
     }
     .ok_or_else(CommandSnapshotMaterializationError::integrity)
 }
 
-fn key_schema_at_position(
-    resolved: &ResolvedExecutablePlan,
+fn key_schema_at_position<'a>(
+    resolved: &'a ResolvedExecutablePlan,
+    positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
-) -> Result<&KeySchema, CommandSnapshotMaterializationError> {
+) -> Result<&'a KeySchema, CommandSnapshotMaterializationError> {
+    let plan_index = positions.plan_index(position)?;
     match position {
-        EntityObservationPosition::Binding(index) => resolved
+        EntityObservationPosition::Binding(_) => resolved
             .plan()
             .bindings()
-            .get(index)
+            .get(plan_index)
             .map(riffdb_contract_ir::BindingPlan::key_schema),
-        EntityObservationPosition::RootValidation(index) => resolved
+        EntityObservationPosition::RootValidation(_) => resolved
             .plan()
             .root_validation_reads()
-            .get(index)
+            .get(plan_index)
             .map(riffdb_contract_ir::RootValidationReadPlan::key_schema),
     }
     .ok_or_else(CommandSnapshotMaterializationError::integrity)
@@ -1613,7 +1800,8 @@ contract SnapshotMaterialization version {version} {{
         .expect("stored record");
         let plan = resolved_at(bundles, 1);
         let raw = snapshot(&plan, vec![EntityObservation::Present(record)]);
-        let SnapshotAnalysis::Ready(masks) = analyze_snapshot(&plan, &raw).expect("analysis")
+        let SnapshotAnalysis::Ready(masks) =
+            analyze_snapshot(&plan, &SnapshotPositionMap::ordinary(&plan), &raw).expect("analysis")
         else {
             panic!("no insertion means no expansion limit");
         };
@@ -1644,7 +1832,8 @@ contract SnapshotMaterialization version {version} {{
             .len();
         let plan = resolved_at(bundles, 1);
         let raw = snapshot(&plan, vec![EntityObservation::Present(raw_record)]);
-        let SnapshotAnalysis::Ready(masks) = analyze_snapshot(&plan, &raw).expect("analysis")
+        let SnapshotAnalysis::Ready(masks) =
+            analyze_snapshot(&plan, &SnapshotPositionMap::ordinary(&plan), &raw).expect("analysis")
         else {
             panic!("small expansion fits");
         };
@@ -1909,7 +2098,8 @@ contract RootMaterialization version {version} {{
             Vec::new(),
         )
         .expect("raw snapshot");
-        let SnapshotAnalysis::Ready(masks) = analyze_snapshot(&plan, &raw).expect("analysis")
+        let SnapshotAnalysis::Ready(masks) =
+            analyze_snapshot(&plan, &SnapshotPositionMap::ordinary(&plan), &raw).expect("analysis")
         else {
             panic!("small root expansion fits");
         };

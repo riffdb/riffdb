@@ -230,6 +230,9 @@ mod tests {
                             ),
                         );
                     }
+                    EntityMutation::Delete { .. } => {
+                        panic!("budget history commands cannot produce delete effects")
+                    }
                 }
             }
             assert_runtime_state(bundle, &runtime, reference.budget, &target);

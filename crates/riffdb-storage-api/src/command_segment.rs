@@ -263,7 +263,47 @@ impl StoredCommandCapsuleV2 {
         {
             return Err(StorageValueError::IdentityMismatch);
         }
-        if !entity_transitions.is_empty() {
+        if entity_transitions.is_empty() {
+            if base.provenance().affected_entities().len()
+                != base.commit().entity_references().len()
+                || base
+                    .provenance()
+                    .affected_entities()
+                    .iter()
+                    .zip(base.commit().entity_references())
+                    .any(|(affected, reference)| {
+                        affected.target() != reference.target()
+                            || affected.entity_version() != reference.entity_version()
+                    })
+            {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+        } else {
+            if base.provenance().affected_entities().len() != entity_transitions.len()
+                || base
+                    .provenance()
+                    .affected_entities()
+                    .iter()
+                    .zip(&entity_transitions)
+                    .any(|(affected, transition)| {
+                        if affected.target() != transition.target() {
+                            return true;
+                        }
+                        let expected_version = match transition.next_state() {
+                            EntityChainStateV1::Live { version, .. } => Some(version),
+                            EntityChainStateV1::Deleted => match transition.prior_state() {
+                                EntityChainStateV1::Live { version, .. } => Some(version),
+                                EntityChainStateV1::Deleted | EntityChainStateV1::NeverExisted => {
+                                    None
+                                }
+                            },
+                            EntityChainStateV1::NeverExisted => None,
+                        };
+                        expected_version != Some(affected.entity_version())
+                    })
+            {
+                return Err(StorageValueError::IdentityMismatch);
+            }
             let live = entity_transitions
                 .iter()
                 .filter_map(|transition| match transition.next_state() {

@@ -144,7 +144,7 @@ impl fmt::Debug for PreparedCommandIdempotencyV1 {
 pub enum IdempotencyPreparationError {
     /// The declared caller-key field was absent from normalized input.
     MissingIdempotencyField,
-    /// The declared caller-key field was not a canonical string.
+    /// The declared caller-key field was neither a canonical string nor UUID.
     IdempotencyFieldNotString,
     /// The canonical field and separately checked caller key differed.
     IdempotencyKeyMismatch,
@@ -163,7 +163,7 @@ impl fmt::Display for IdempotencyPreparationError {
                 formatter.write_str("declared idempotency field is missing")
             }
             Self::IdempotencyFieldNotString => {
-                formatter.write_str("declared idempotency field must be a string")
+                formatter.write_str("declared idempotency field must be a string or UUID")
             }
             Self::IdempotencyKeyMismatch => {
                 formatter.write_str("declared idempotency key does not match checked input")
@@ -190,9 +190,10 @@ impl From<IdempotencyDigestError> for IdempotencyPreparationError {
 /// Prepares canonical input evidence and rotation-aware identities for a mutating command.
 ///
 /// The normalized record must contain the contract-declared caller-key field as
-/// an exact canonical string equal to `caller_key`. The field is omitted before
-/// canonical record encoding and v1 command-input hashing. Provider order is
-/// retained exactly; numeric digest-key IDs are never sorted.
+/// an exact canonical string, or a UUID whose canonical lowercase text, equals
+/// `caller_key`. The field is omitted before canonical record encoding and v1
+/// command-input hashing. Provider order is retained exactly; numeric digest-key
+/// IDs are never sorted.
 pub fn prepare_command_idempotency(
     scope: &CommandIdempotencyScopeV1,
     normalized_input: &CanonicalRecord,
@@ -245,7 +246,12 @@ pub fn confirm_command_idempotency(
 
     match &normalized_input.fields()[field_index].1 {
         CanonicalValue::String(value) if value.as_str() == caller_key.expose_secret() => {}
+        CanonicalValue::Uuid(value) if canonical_uuid_text(value) == caller_key.expose_secret() => {
+        }
         CanonicalValue::String(_) => {
+            return Err(IdempotencyPreparationError::IdempotencyKeyMismatch);
+        }
+        CanonicalValue::Uuid(_) => {
             return Err(IdempotencyPreparationError::IdempotencyKeyMismatch);
         }
         _ => return Err(IdempotencyPreparationError::IdempotencyFieldNotString),
@@ -270,6 +276,28 @@ pub fn confirm_command_idempotency(
         canonical_input_hash,
         lookup_candidates: lookup.lookup_candidates,
     })
+}
+
+fn canonical_uuid_text(bytes: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
 }
 
 fn map_lookup_candidate_error(_: StorageValueError) -> IdempotencyPreparationError {

@@ -431,13 +431,14 @@ fn delete_command_segment_fixture(
         AdministrationSequence::new(3).expect("delete started audit"),
     );
     let (outcome, provenance, commit, started, terminal) = base.into_parts();
+    let deleted_version = match transition.prior_state() {
+        crate::EntityChainStateV1::Live { version, .. } => version,
+        _ => panic!("delete fixture requires a live prior"),
+    };
     let dependencies = crate::StoredReadDependenciesV1::new(vec![
         crate::StoredReadDependencyV1::EntityObservation {
             target: transition.target().clone(),
-            expected: crate::ExpectedEntityState::Present(match transition.prior_state() {
-                crate::EntityChainStateV1::Live { version, .. } => version,
-                _ => panic!("delete fixture requires a live prior"),
-            }),
+            expected: crate::ExpectedEntityState::Present(deleted_version),
         },
     ])
     .expect("delete read dependency");
@@ -471,7 +472,10 @@ fn delete_command_segment_fixture(
         provenance.partition_hash(),
         provenance.conflict_hashes().to_vec(),
         provenance.outcome_id(),
-        Vec::new(),
+        vec![crate::AffectedEntityV1::from_stored_parts(
+            transition.target().clone(),
+            deleted_version,
+        )],
         provenance.event_ids().to_vec(),
         provenance.admitted_claims().clone(),
         provenance.causation(),

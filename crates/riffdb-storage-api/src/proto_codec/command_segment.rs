@@ -6,9 +6,11 @@ use riffdb_types::{
 };
 
 use crate::{
-    CommandDerivedIndexKindV1, CommandDerivedIndexManifestEntryV1, CommandDerivedMemberV1,
-    CommandSegmentDigestV1, CommandSegmentManifestV1, EncodedPageItem, IndexEpochAdvanceV1,
-    StoredCommandCapsuleV2, StoredCommandDerivedIndexCheckpointV1, StoredCommandSegmentV1,
+    AffectedEntityV1, CommandDerivedIndexKindV1, CommandDerivedIndexManifestEntryV1,
+    CommandDerivedMemberV1, CommandSegmentDigestV1, CommandSegmentManifestV1,
+    CommittedEntityTransitionV1, EncodedPageItem, EntityChainStateV1, IndexEpochAdvanceV1,
+    StoredCommandCapsuleV1, StoredCommandCapsuleV2, StoredCommandDerivedIndexCheckpointV1,
+    StoredCommandSegmentV1, StoredProvenanceRecordV1,
 };
 
 use super::{
@@ -375,10 +377,58 @@ fn capsule_v4_from_proto(
         .collect::<Result<Vec<_>, _>>()?;
     let capsule = capsule_v3_from_proto(require(value.base)?)?;
     let generations = capsule.index_generation_transitions().to_vec();
+    let base = base_with_entity_transition_provenance(capsule.base().clone(), &entity_transitions)?;
     storage_result(StoredCommandCapsuleV2::from_base_with_entity_transitions(
-        capsule.base().clone(),
+        base,
         generations,
         entity_transitions,
+    ))
+}
+
+fn base_with_entity_transition_provenance(
+    base: StoredCommandCapsuleV1,
+    transitions: &[CommittedEntityTransitionV1],
+) -> Result<StoredCommandCapsuleV1, DurableCodecError> {
+    if transitions.is_empty() {
+        return Ok(base);
+    }
+    let mut affected = Vec::with_capacity(transitions.len());
+    for transition in transitions {
+        let version = match transition.next_state() {
+            EntityChainStateV1::Live { version, .. } => version,
+            EntityChainStateV1::Deleted => match transition.prior_state() {
+                EntityChainStateV1::Live { version, .. } => version,
+                EntityChainStateV1::Deleted | EntityChainStateV1::NeverExisted => {
+                    return Err(DurableCodecError::corrupt());
+                }
+            },
+            EntityChainStateV1::NeverExisted => return Err(DurableCodecError::corrupt()),
+        };
+        affected.push(AffectedEntityV1::from_stored_parts(
+            transition.target().clone(),
+            version,
+        ));
+    }
+    let (outcome, provenance, commit, started, terminal) = base.into_parts();
+    let provenance = storage_result(StoredProvenanceRecordV1::new_with_causation(
+        provenance.provenance_id(),
+        provenance.commit_sequence(),
+        provenance.identity().clone(),
+        provenance.admission_request_id(),
+        provenance.plan().clone(),
+        provenance.canonical_input_hash(),
+        provenance.actor().clone(),
+        provenance.logical_time(),
+        provenance.partition_hash(),
+        provenance.conflict_hashes().to_vec(),
+        provenance.outcome_id(),
+        affected,
+        provenance.event_ids().to_vec(),
+        provenance.admitted_claims().clone(),
+        provenance.causation(),
+    ))?;
+    storage_result(StoredCommandCapsuleV1::new(
+        outcome, provenance, commit, started, terminal,
     ))
 }
 
