@@ -122,6 +122,11 @@ name = "adapter_operational_remote_client"
 path = "../../tests/adapter_operational_remote_client.rs"
 test = false
 
+[[example]]
+name = "generate_adapter_conformance"
+path = "../../tests/generate_adapter_conformance.rs"
+test = false
+
 [[test]]
 name = "operational_queries"
 path = "../../tests/operational_queries.rs"
@@ -133,6 +138,10 @@ path = "../../tests/workflow_concurrency.rs"
 [[test]]
 name = "application_installation"
 path = "../../tests/application_installation.rs"
+
+[[test]]
+name = "adapter_conformance"
+path = "../../tests/adapter_conformance.rs"
 
 [[test]]
 name = "scheduler_recovery"

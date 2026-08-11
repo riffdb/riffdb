@@ -153,8 +153,11 @@ receipt identity instead of silently rotating it.
 
 ## Adapter conformance manifests
 
-An adapter may bind a canonical
-`riffdb.adapter-conformance-manifest/v1` document to the installation plan.
+An adapter may bind a canonical adapter-conformance document to the
+installation plan. V1 remains readable as the initial compatibility format.
+Current V2 (`riffdb.adapter-conformance-manifest/v2`) requires an explicit
+`required`, `optional`, `degraded`, or `unavailable` disposition for every
+closed alpha feature, preventing omission from becoming a silent fallback.
 The document names one exact application manifest and lock, contract lineage,
 generated artifacts, symbolic roles and operations, first-party driver/runtime
 and platform identities, bounded conformance probes, feature dispositions, and
@@ -183,6 +186,24 @@ does not execute adapter tests supplied by the document; conformance probes are
 first-party symbolic operation identities and expected observation digests,
 not executable extension points. The release-owned adapter acceptance runner
 executes those operations through public clients.
+
+The release corpus owns OpenFGA-, MLflow-, Payload-, and Woodpecker-shaped V2
+manifests. Each binds both an empty-install plan and a populated compatible
+application-evolution plan. Compatible evolution can retain the exact contract
+version and bundle while generated artifacts, explicitly approved symbolic
+role authority, and credentials rotate; it is not permission to substitute a
+same-version contract bundle. The fixtures include terminal receipts, exact
+language-neutral operation observations, and immutable typed partial-campaign
+evidence. Run the complete corpus with:
+
+```bash
+./scripts/adapter-conformance --all-domains --all-languages
+```
+
+That gate invokes only public TLS application surfaces and generated Rust, Go,
+TypeScript, and Python clients. Unsupported required features and driver
+platforms are product/platform gaps; adapters may not emulate them with source
+inspection, handwritten transport, shell hooks, or kernel access.
 
 ## Current POC limit
 

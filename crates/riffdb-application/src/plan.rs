@@ -673,6 +673,17 @@ pub enum InstallationFeature {
 }
 
 impl InstallationFeature {
+    /// Complete closed alpha feature catalog in canonical order.
+    pub const ALL: [Self; 7] = [
+        Self::RemoteTls,
+        Self::BulkCommands,
+        Self::OperationalQueries,
+        Self::WorkflowConcurrency,
+        Self::RowPolicies,
+        Self::InstallationCampaigns,
+        Self::DataLifecycle,
+    ];
+
     pub(crate) const fn tag(self) -> &'static str {
         match self {
             Self::RemoteTls => "remote_tls",
