@@ -172,6 +172,14 @@ name = "endurance_harness"
 path = "../../tests/endurance_harness.rs"
 
 [[test]]
+name = "alpha_performance_evidence"
+path = "../../tests/alpha_performance_evidence.rs"
+
+[[test]]
+name = "deployable_alpha_gate"
+path = "../../tests/deployable_alpha_gate.rs"
+
+[[test]]
 name = "release_format_compatibility"
 path = "../../tests/release_format_compatibility.rs"
 

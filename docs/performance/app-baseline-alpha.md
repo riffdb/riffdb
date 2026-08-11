@@ -107,6 +107,11 @@ it is not a general PostgreSQL latency claim.
 
 The raw merged reports and their earlier typed `host_interference` refusal
 receipts are retained under `release/evidence/wp-552/` with SHA-256 hashes.
+The alpha release gate consumes them through
+`./scripts/check-alpha-performance-evidence --verify`; the verifier checks the
+content-addressed two-profile inventory and the full repetition/concurrency,
+duration, safe-app durability, idle-host, stability, and correctness contract.
+It does not treat a file hash alone as evidence eligibility.
 The refusal receipts remain useful proof that an interfered host cannot produce
 publishable evidence.
 
