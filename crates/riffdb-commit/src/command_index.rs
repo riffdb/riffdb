@@ -7,10 +7,10 @@ use std::collections::BTreeSet;
 
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
-    BindingMode, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V5, ExecutionClass,
-    GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V5, IndexSchema,
+    BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V5,
+    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V5, IndexSchema,
 };
-use riffdb_invariant::derive_input_command_facts;
+use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandCandidateAffectedEpochRead,
     CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
@@ -55,6 +55,85 @@ impl std::fmt::Debug for CommandIndexError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("CommandIndexError([REDACTED])")
     }
+}
+
+/// Derives every compiler-sealed reverse-index emptiness dependency.
+///
+/// The caller supplies only the move-only input proof. Index identities,
+/// component codecs, partition routing, and prefixes all come from the exact
+/// resolved plan and contract schema; no application range bytes cross this
+/// boundary.
+pub(super) fn derive_delete_restrict_ranges(
+    resolved: &ResolvedExecutablePlan,
+    facts: &InputDerivedCommandFacts,
+) -> Result<Vec<IndexRangeTarget>, CommandIndexError> {
+    let plan = resolved.plan();
+    if facts.binding_plan_indices().len() != facts.binding_entity_keys().len() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    let schema = resolved.bundle().bundle().schema();
+    let mut ranges = Vec::new();
+    for (plan_index, key) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+    {
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if binding.mode() != BindingMode::Delete {
+            continue;
+        }
+        let check = plan
+            .delete_checks()
+            .iter()
+            .find(|check| check.binding() == binding.id())
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let DeleteCheckModeV1::Restrict {
+            source_entity,
+            index_id,
+        } = check.mode()
+        else {
+            continue;
+        };
+        let source = schema
+            .entity(source_entity)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let index = source
+            .indexes()
+            .iter()
+            .find(|index| index.id() == index_id)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let values = binding
+            .key_schema()
+            .decode_entity(key)
+            .map_err(|_| CommandIndexError::internal_defect())?;
+        if values.is_empty() || values.len() > index.key_schema().components().len() {
+            return Err(CommandIndexError::internal_defect());
+        }
+        let mut storage_prefix = IndexRangePrefixBuilder::new(index_id);
+        for (component, value) in index.key_schema().components().iter().zip(&values) {
+            push_storage_prefix_component(&mut storage_prefix, component.codec(), value)?;
+        }
+        let storage_prefix = storage_prefix.finish();
+        let ir_prefix = index
+            .key_schema()
+            .encode_index_prefix(&values)
+            .map_err(|_| CommandIndexError::internal_defect())?;
+        if storage_prefix.as_bytes() != ir_prefix.as_bytes() {
+            return Err(CommandIndexError::internal_defect());
+        }
+        ranges.push(IndexRangeTarget::new(
+            facts.partition_key().clone(),
+            storage_prefix,
+        ));
+    }
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(CommandIndexError::internal_defect());
+    }
+    Ok(ranges)
 }
 
 struct DerivedCommandIndexes {
@@ -1008,8 +1087,8 @@ mod tests {
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
-        CanonicalValue, DatabaseId, Date, DigestKeyId, EntityVersion, Environment, FieldId,
-        IndexEntryKeyBuilder, IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
+        CanonicalList, CanonicalValue, DatabaseId, Date, DigestKeyId, EntityVersion, Environment,
+        FieldId, IndexEntryKeyBuilder, IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
         PartitionKeyBuilder, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
     };
 
@@ -1082,6 +1161,36 @@ contract OperationalIndexes version 1 {
     field title: string<32>
     index by_deleted (deleted_at, id) presence(deleted_at)
     index by_title (title, id) text_key(title, binary_utf8_v1)
+  }
+}
+"#;
+
+    const RESTRICT_DELETE_SOURCE: &str = r#"
+contract DeleteRestrict version 1 {
+  entity Parent {
+    key (tenant_id: uuid, parent_id: uuid)
+    delete_policy restrict Child.by_parent
+  }
+  entity Child {
+    key (tenant_id: uuid, parent_id: uuid, child_id: uuid)
+    index by_parent (tenant_id, parent_id)
+    reference parent (tenant_id, parent_id) -> Parent(tenant_id, parent_id)
+  }
+  aggregate Owned {
+    root Parent
+    child Child
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+  bulk command DeleteParents {
+    input request_id: uuid
+    input tenant_id: uuid
+    input parent_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for parent_id in parent_ids {
+      delete Parent(tenant_id, parent_id) as parent else Missing {}
+    }
+    return Deleted {}
   }
 }
 "#;
@@ -1740,6 +1849,77 @@ contract OperationalIndexes version 1 {
             actual_generation_ids(&derived),
             BTreeSet::from([index.id()])
         );
+    }
+
+    #[test]
+    fn restrict_delete_ranges_are_exact_per_element_reverse_index_prefixes() {
+        let compiled =
+            compile_contract_source(RESTRICT_DELETE_SOURCE).expect("restrict source compiles");
+        let bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("restrict bundle validates");
+        let plan = bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|command| command.name() == "DeleteParents")
+            .expect("delete command");
+        let reference = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let tenant = CanonicalValue::Uuid(uuid_bytes(0x11));
+        let parents = [
+            CanonicalValue::Uuid(uuid_bytes(0x21)),
+            CanonicalValue::Uuid(uuid_bytes(0x22)),
+        ];
+        let input = named_record(
+            plan.input().record(),
+            &[
+                ("request_id", CanonicalValue::Uuid(uuid_bytes(0x31))),
+                ("tenant_id", tenant.clone()),
+                (
+                    "parent_ids",
+                    CanonicalValue::List(
+                        CanonicalList::new(parents.to_vec()).expect("parent list"),
+                    ),
+                ),
+            ],
+        );
+        let facts = derive_input_command_facts(plan, input).expect("delete input facts");
+        let resolved = crate::test_support::resolve_genesis_plan(&bundle, &reference)
+            .expect("resolved delete plan");
+
+        let ranges = derive_delete_restrict_ranges(&resolved, &facts)
+            .expect("compiler-sealed restrict ranges");
+
+        assert_eq!(ranges.len(), 2);
+        let child = bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Child")
+            .expect("child entity");
+        let index = child
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_parent")
+            .expect("reverse index");
+        for (range, parent) in ranges.iter().zip(parents) {
+            let expected = index
+                .key_schema()
+                .encode_index_prefix(&[tenant.clone(), parent])
+                .expect("expected reverse prefix");
+            assert_eq!(range.prefix().index_id(), index.id());
+            assert_eq!(range.prefix().as_bytes(), expected.as_bytes());
+            assert_eq!(
+                range.generation_target().partition_key(),
+                facts.partition_key()
+            );
+        }
     }
 
     #[test]

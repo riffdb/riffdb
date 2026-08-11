@@ -948,12 +948,15 @@ fn lower_snapshot(
                 .ok_or(CommandAdmissionError::Integrity)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let range_targets = crate::command_index::derive_delete_restrict_ranges(resolved_plan, facts)
+        .map_err(|_| CommandAdmissionError::Integrity)?;
     lower_snapshot_parts(
         resolved_plan.reference(),
         &binding_types,
         facts.binding_entity_keys(),
         &root_types,
         facts.root_validation_entity_keys(),
+        range_targets,
     )
 }
 
@@ -963,6 +966,7 @@ fn lower_snapshot_parts(
     binding_keys: &[EntityKey],
     root_types: &[EntityTypeId],
     root_keys: &[EntityKey],
+    range_targets: Vec<riffdb_storage_api::IndexRangeTarget>,
 ) -> Result<CommandSnapshotRequestProof, CommandAdmissionError> {
     if binding_types.len() != binding_keys.len() || root_types.len() != root_keys.len() {
         return Err(CommandAdmissionError::Integrity);
@@ -985,7 +989,7 @@ fn lower_snapshot_parts(
         plan.clone(),
         binding_targets,
         root_validation_targets,
-        Vec::new(),
+        range_targets,
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
     Ok(CommandSnapshotRequestProof { request })
@@ -2261,6 +2265,7 @@ contract ServiceValues version 1 {
             &binding_keys,
             &[third, second],
             &root_keys,
+            Vec::new(),
         )
         .expect("snapshot lowering");
         let request = proof.request_for_attempt();
@@ -2290,6 +2295,7 @@ contract ServiceValues version 1 {
                 &binding_keys,
                 &[third, second],
                 &root_keys,
+                Vec::new(),
             ),
             Err(CommandAdmissionError::Integrity)
         ));
