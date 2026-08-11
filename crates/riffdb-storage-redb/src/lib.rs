@@ -48,7 +48,7 @@ pub use backup::{
 };
 pub use changelog::{
     DEFAULT_CHANGELOG_BUFFER_ADVANCEMENTS, RedbChangelogEmitter, RedbChangelogEmitterHandle,
-    start_changelog_emitter,
+    start_changelog_emitter, start_changelog_emitter_v2,
 };
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
