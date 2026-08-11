@@ -12,7 +12,7 @@ use riffdb_types::hash_source;
 use crate::bundle_lowering::{BundleParts, assemble_bundle};
 use crate::command_analysis::validate_commands;
 use crate::command_lowering::lower_commands;
-use crate::diagnostic::CompilerDiagnostics;
+use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::lower_contract_hir;
 use crate::locality::analyze_locality;
 use crate::mcp_name::build_command_tool_registry;
@@ -74,6 +74,7 @@ impl Error for CompilationError {}
 /// same phases before checked IR lowering.
 pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
     let document = parse_contract(source).map_err(CompilationError::Syntax)?;
+    reject_unlowered_collection_mutations(&document)?;
     let symbols = allocate_genesis_symbols(&document).map_err(CompilationError::Semantic)?;
     let types = resolve_declared_types(&document, &symbols).map_err(CompilationError::Semantic)?;
     let hir =
@@ -131,6 +132,7 @@ fn compile(
     renames: Vec<riffdb_contract_ir::StableIdentityRename>,
 ) -> Result<ContractBundle, CompilationError> {
     let document = parse_contract(source).map_err(CompilationError::Syntax)?;
+    reject_unlowered_collection_mutations(&document)?;
     let symbols = match parent {
         Some(parent) => {
             if parent.lineage().as_str() != document.contract.value.name.value {
@@ -201,6 +203,51 @@ fn compile(
         compatibility,
     )
     .map_err(|error| ir_compilation_error(error, document.contract.span))
+}
+
+/// Keeps newly parsed grammar fail-closed until its versioned IR is sealed.
+///
+/// This gate is intentionally source-spanned and runs before symbol allocation,
+/// so neither `bulk` nor `delete` can be silently interpreted as an ordinary
+/// mutation while WP-560 is landing interface-first.
+fn reject_unlowered_collection_mutations(
+    document: &riffdb_contract_syntax::ContractDocument,
+) -> Result<(), CompilationError> {
+    use riffdb_contract_syntax::ast::{Binding, CommandKind, Declaration};
+
+    let mut diagnostics = Vec::new();
+    for declaration in &document.contract.value.declarations {
+        let Declaration::Command(command) = &declaration.value else {
+            continue;
+        };
+        if command.kind == CommandKind::Bulk || command.bulk_iteration.is_some() {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnsupportedCollectionMutation,
+                command
+                    .bulk_iteration
+                    .as_ref()
+                    .map_or(command.name.span, |iteration| iteration.span),
+            ));
+            continue;
+        }
+        if let Some(binding) = command
+            .bindings
+            .iter()
+            .find(|binding| matches!(binding.value, Binding::Delete(_)))
+        {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnsupportedCollectionMutation,
+                binding.span,
+            ));
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(CompilationError::Semantic(
+            CompilerDiagnostics::new(diagnostics).expect("nonempty collection gate diagnostics"),
+        ))
+    }
 }
 
 fn ir_compilation_error(

@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use riffdb_contract_syntax::ast::{
-    BinaryOperator, Binding, Declaration, Effect, EntityItem, Expression, Literal,
+    BinaryOperator, Binding, CommandKind, Declaration, Effect, EntityItem, Expression, Literal,
     RowPolicyExpression, RowPolicyOperation, ServiceValueKind,
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
@@ -20,6 +20,43 @@ const WORKFLOW_SURFACE: &str =
     include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
 const ROW_POLICY_SURFACE: &str =
     include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff");
+
+#[test]
+fn parses_one_explicit_bulk_iteration_and_checked_delete_with_exact_spans() {
+    let source = r#"
+contract BulkSurface version 1 {
+  entity Item {
+    key (tenant_id: uuid, item_id: uuid)
+    field value: u64
+  }
+  bulk command ReplaceItems {
+    input tenant_id: uuid
+    input item_ids: list<uuid, 256>
+    idempotency_key tenant_id
+    for item_id in item_ids {
+      delete Item(tenant_id, item_id) as item else Missing { item_id: item_id }
+    }
+    return Replaced {}
+  }
+}
+"#;
+    let document = parse_contract(source).expect("bulk surface parses");
+    let Declaration::Command(command) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be bulk command");
+    };
+    assert_eq!(command.kind, CommandKind::Bulk);
+    let iteration = command.bulk_iteration.as_ref().expect("one iteration");
+    assert_eq!(iteration.value.element.value, "item_id");
+    assert_eq!(iteration.value.collection.value, "item_ids");
+    assert!(matches!(
+        iteration.value.bindings[0].value,
+        Binding::Delete(_)
+    ));
+    assert_eq!(
+        iteration.span.start() as usize,
+        source.find("for item_id").expect("iteration source")
+    );
+}
 
 #[test]
 fn parses_principal_facts_and_closed_row_policy_rules_with_exact_spans() {
@@ -336,6 +373,7 @@ fn every_binding_mode_has_one_explicit_failure_outcome() {
                     Binding::Read(binding) => ("read", binding),
                     Binding::Mutate(binding) => ("mutate", binding),
                     Binding::Create(binding) => ("create", binding),
+                    Binding::Delete(binding) => ("delete", binding),
                 };
                 observed.push((mode, binding.failure.value.name.value.as_str()));
             }

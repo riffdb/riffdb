@@ -97,6 +97,10 @@ pub(crate) enum Token {
     TransactionallyOrdered,
     #[token("command")]
     Command,
+    #[token("bulk")]
+    Bulk,
+    #[token("for")]
+    For,
     #[token("workflow")]
     Workflow,
     #[token("state")]

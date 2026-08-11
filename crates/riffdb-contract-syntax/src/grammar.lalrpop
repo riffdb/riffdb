@@ -310,24 +310,46 @@ TypeExpression: Spanned<TypeExpression> = {
 };
 
 CommandDeclaration: CommandDeclaration = {
-    "command" <name:Identifier> "{"
+    <kind:CommandKind> <name:Identifier> "{"
         <inputs:InputDeclaration*>
         <service_values:ServiceValueDeclaration*>
         <idempotency:IdempotencyClause?>
         <bindings:Binding*>
+        <bulk_iteration:BulkIteration?>
         <requirements:Requirement*>
         <effects:Effect*>
         <return_clause:ReturnClause>
     "}" => CommandDeclaration {
+        kind,
         name,
         inputs,
         service_values,
         idempotency,
         bindings,
+        bulk_iteration,
         requirements,
         effects,
         return_clause,
     },
+};
+
+CommandKind: CommandKind = {
+    "command" => CommandKind::Ordinary,
+    "bulk" "command" => CommandKind::Bulk,
+};
+
+BulkIteration: Spanned<BulkIteration> = {
+    <lo:@L> "for" <element:Identifier> "in" <collection:Identifier> "{"
+        <bindings:Binding*>
+        <requirements:Requirement*>
+        <effects:Effect*>
+    "}" <hi:@R> => parser::spanned(BulkIteration {
+        element,
+        collection,
+        bindings,
+        requirements,
+        effects,
+    }, lo, hi),
 };
 
 ServiceValueDeclaration: Spanned<ServiceValueDeclaration> = {
@@ -358,6 +380,8 @@ Binding: Spanned<Binding> = {
         => parser::spanned(Binding::Mutate(binding), lo, hi),
     <lo:@L> "create" <binding:EntityBinding> <hi:@R>
         => parser::spanned(Binding::Create(binding), lo, hi),
+    <lo:@L> "delete" <binding:EntityBinding> <hi:@R>
+        => parser::spanned(Binding::Delete(binding), lo, hi),
 };
 
 EntityBinding: EntityBinding = {
@@ -762,6 +786,8 @@ extern {
         "frontier" => Token::Frontier,
         "transactionally_ordered" => Token::TransactionallyOrdered,
         "command" => Token::Command,
+        "bulk" => Token::Bulk,
+        "for" => Token::For,
         "workflow" => Token::Workflow,
         "state" => Token::State,
         "transition" => Token::Transition,
