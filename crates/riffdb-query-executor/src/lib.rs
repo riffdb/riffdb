@@ -143,7 +143,8 @@ pub fn bind_live_query_dependencies(
                 }
                 QueryAccessKind::Point { .. }
                 | QueryAccessKind::DependentPointBatch { .. }
-                | QueryAccessKind::Index { .. } => None,
+                | QueryAccessKind::Index { .. }
+                | QueryAccessKind::Nearest { .. } => None,
             };
             Ok(BoundLiveQueryDependency {
                 entity_type_id: step.internal_entity_id(),
@@ -1113,6 +1114,16 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
                     continuation = page.continuation;
                 }
                 (page.rows, Some(predicates))
+            }
+            riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
+                // WP-593: exact KNN execution path. The columnar engine
+                // will scan all org-partitioned vectors, apply policy filter,
+                // then run exact_knn from crate::nearest. For now, return
+                // an empty result set (the nearest module has the algorithm;
+                // integration with the columnar store's row access is the
+                // remaining WP-593 work).
+                let predicates = bind_predicates(step, parameters, &bindings)?;
+                (Vec::new(), Some(predicates))
             }
         };
         fuel.intermediates(

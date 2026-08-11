@@ -548,6 +548,9 @@ impl<'a> Planner<'a> {
                 QueryAccessKind::Index { fields, .. } => {
                     predicate_fields.extend(fields.iter().cloned());
                 }
+                QueryAccessKind::Nearest { vector_field, .. } => {
+                    predicate_fields.insert(vector_field.clone());
+                }
             }
             let predicate_fields = predicate_fields.into_iter().collect::<Vec<_>>();
             let selected_fields = selected.into_iter().collect::<Vec<_>>();
@@ -593,6 +596,7 @@ impl<'a> Planner<'a> {
                     QueryAccessKind::Index { index, .. } => entity
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
+                    QueryAccessKind::Nearest { .. } => None,
                 },
             )
             .ok_or_else(internal)?;
@@ -934,6 +938,12 @@ impl QueryCostAccumulator {
                 self.scanned_index_rows =
                     checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+            }
+            QueryAccessKind::Nearest { .. } => {
+                // Exact KNN scans all org-partitioned rows; cost is bounded by
+                // the entity count within the partition, reported as scanned rows.
+                self.scanned_index_rows =
+                    checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
             }
         }
         self.intermediate_rows = checked_cost_add(self.intermediate_rows, rows, self.primary_span)?;

@@ -212,6 +212,19 @@ pub enum QueryAccessKind {
         /// Whole-index traversal direction.
         direction: AccessDirection,
     },
+    /// Nearest-neighbor search on a declared vector field (ADR-0091).
+    ///
+    /// Returns the top-K entities closest to a query vector by the field's
+    /// declared distance metric. The exact KNN scan is the reference path;
+    /// approximate structures engage only at WP-594.
+    Nearest {
+        /// The declared vector field name on the entity.
+        vector_field: String,
+        /// The query vector parameter name.
+        vector_parameter: String,
+        /// Maximum results (K). Mandatory and positive.
+        k: u32,
+    },
 }
 
 /// One ordered, bounded access in a closed program.
@@ -438,6 +451,16 @@ impl QueryAccessStep {
                         })
                         .count()
                         == 1
+            }
+            QueryAccessKind::Nearest {
+                vector_field,
+                vector_parameter,
+                k,
+            } => {
+                !vector_field.is_empty()
+                    && !vector_parameter.is_empty()
+                    && *k > 0
+                    && cardinality == Cardinality::Many
             }
         };
         if binding.is_empty()
@@ -848,6 +871,16 @@ fn encode_program(
                 write_text(&mut out, source_binding)?;
                 write_text(&mut out, source_field)?;
             }
+            QueryAccessKind::Nearest {
+                vector_field,
+                vector_parameter,
+                k,
+            } => {
+                out.push(4);
+                write_text(&mut out, vector_field)?;
+                write_text(&mut out, vector_parameter)?;
+                out.extend_from_slice(&k.to_be_bytes());
+            }
         }
         write_count(&mut out, step.predicates.len())?;
         for predicate in &step.predicates {
@@ -992,6 +1025,9 @@ fn build_explain(
                     AccessDirection::Reverse => "reverse",
                 }
             ),
+            QueryAccessKind::Nearest {
+                vector_field, k, ..
+            } => format!("nearest({vector_field}, k={k})"),
         };
         lines.push(format!(
             "{}: {} via {} max {}",
