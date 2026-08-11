@@ -16,6 +16,7 @@ use crate::{ClientError, RiffDbClient};
 
 const MAX_TRUST_ROOT_BYTES: u64 = 256 * 1_024;
 const MAX_TRUST_ROOT_CERTIFICATES: usize = 64;
+const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TrustRootFileIdentity {
@@ -165,6 +166,7 @@ async fn connect_with_trust_root(
     let endpoint = Endpoint::from_shared(config.endpoint().as_str().to_owned())
         .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?
         .connect_timeout(config.connect_timeout())
+        .timeout(DEFAULT_REQUEST_TIMEOUT)
         .http2_keep_alive_interval(config.keepalive_interval())
         .keep_alive_while_idle(true)
         .tls_config(tls)
@@ -298,6 +300,13 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn verified_tls_channels_have_a_bounded_request_lifetime() {
+        assert_eq!(DEFAULT_REQUEST_TIMEOUT, Duration::from_secs(30));
+        let source = include_str!("tls.rs");
+        assert!(source.contains(".timeout(DEFAULT_REQUEST_TIMEOUT)"));
+    }
 
     fn config(path: PathBuf) -> TlsClientConfig {
         TlsClientConfig::new(

@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+backup_restore=false
+if [[ "$#" -gt 1 ]]; then
+    printf 'usage: ./scripts/remote-compose-acceptance [--backup-restore]\n' >&2
+    exit 2
+fi
+if [[ "$#" -eq 1 ]]; then
+    [[ "$1" == "--backup-restore" ]] || {
+        printf 'usage: ./scripts/remote-compose-acceptance [--backup-restore]\n' >&2
+        exit 2
+    }
+    backup_restore=true
+fi
+
 fail() {
     printf 'remote Compose acceptance failed: %s\n' "$1" >&2
     exit 1
 }
 
-for tool in docker openssl ruby; do
+for tool in docker jq openssl ruby; do
     command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -25,13 +38,51 @@ project="riffdb-remote-$PPID-$$"
 proxy_port="$(ruby -rsocket -e 's = TCPServer.new("127.0.0.1", 0); puts s.addr[1]; s.close')"
 compose=(docker compose --project-name "$project" -f "$workspace/release/container/compose.yaml")
 
-cleanup() {
+compose_with_runtime() {
     RIFFDB_CONTAINER_ROOT="$runtime_root" \
     RIFFDB_CONTAINER_UID="$(id -u)" \
     RIFFDB_CONTAINER_GID="$(id -g)" \
     RIFFDB_IMAGE="$image" \
     RIFFDB_PROXY_PORT="$proxy_port" \
-        "${compose[@]}" down --timeout 25 >/dev/null 2>&1 || true
+        "${compose[@]}" "$@"
+}
+
+operator_cli() {
+    compose_with_runtime --profile operator run --rm operator-probe \
+        riffdb --config /etc/riffdb/operator.toml --max-attempts 1 "$@"
+}
+
+wait_for_maintenance_success() {
+    local operation_id="$1"
+    local output_path="$2"
+    local deadline=$((SECONDS + 180))
+    while (( SECONDS < deadline )); do
+        if "$cli" --config "$work_root/bootstrap-client.toml" \
+            backup operation "$operation_id" >"$output_path" 2>/dev/null \
+            && jq -e '.ok == true and .result.status == "found" and .result.phase == "succeeded"' \
+                "$output_path" >/dev/null; then
+            # The retained proof is fetched once more from the separate
+            # operator container; host polling only avoids constructing a new
+            # container while the selected database is intentionally offline.
+            operator_cli backup operation "$operation_id" >"$output_path"
+            jq -e '.ok == true and .result.status == "found" and .result.phase == "succeeded"' \
+                "$output_path" >/dev/null
+            return 0
+        fi
+        if [[ -s "$output_path" ]] \
+            && jq -e '.ok == true and .result.status == "found" and .result.phase == "failed_closed"' \
+                "$output_path" >/dev/null 2>&1; then
+            sed -n '1,20p' "$output_path" >&2
+            return 1
+        fi
+        sleep 0.25
+    done
+    [[ ! -s "$output_path" ]] || sed -n '1,20p' "$output_path" >&2
+    return 1
+}
+
+cleanup() {
+    compose_with_runtime down --timeout 25 >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -224,7 +275,75 @@ if "$cli" --config "$work_root/predecessor.toml" server health >/dev/null 2>&1; 
     fail "revoked application predecessor remained authorized"
 fi
 
+if [[ "$backup_restore" == true ]]; then
+    # Offline maintenance is intentionally unavailable while the database is
+    # still in DeploymentRequired. Publish one complete active catalog before
+    # proving the remote disaster boundary.
+    "$cli" --config "$work_root/bootstrap-client.toml" contract deploy \
+        "$workspace/contracts/examples/budget.riff" \
+        >"$work_root/contract-deploy.jsonl"
+    printf 'remote-compose phase=backup-create\n' >&2
+    if ! operator_cli backup create alpha-disaster >"$work_root/backup-start.jsonl"; then
+        jq -e '.ok == false and .error.type == "uncertain" and .error.recovery_action == "poll_maintenance_operation"' \
+            "$work_root/backup-start.jsonl" >/dev/null \
+            || fail "backup start failed without a pollable uncertain identity"
+    fi
+    backup_operation_id="$(jq -er '.result.maintenance_operation_id // .error.maintenance_operation_id' "$work_root/backup-start.jsonl")"
+    wait_for_maintenance_success "$backup_operation_id" "$work_root/backup-status.jsonl" \
+        || fail "remote operator backup did not succeed"
+
+    # Create one post-backup authority record whose disappearance distinguishes
+    # a real restore from merely reopening the same live database.
+    "$cli" --config "$work_root/bootstrap-client.toml" capability create \
+        --request "$work_root/application.json" \
+        --capability-id 01900000-0000-7000-8000-000000000003 \
+        --credential-output "$work_root/post-backup.credential" >/dev/null
+    chmod 0600 "$work_root/post-backup.credential"
+    sed "s#credential_file = .*#credential_file = \"$work_root/post-backup.credential\"#" \
+        "$work_root/bootstrap-client.toml" >"$work_root/post-backup.toml"
+    chmod 0600 "$work_root/post-backup.toml"
+    "$cli" --config "$work_root/post-backup.toml" server health >/dev/null \
+        || fail "post-backup authority was not active before volume loss"
+
+    printf 'remote-compose phase=destroy-volume\n' >&2
+    compose_with_runtime stop --timeout 25 riffdbd >/dev/null
+    expected_data_root="$work_root/runtime/data"
+    [[ "$runtime_root/data" == "$expected_data_root" && -d "$expected_data_root" ]] \
+        || fail "refusing to destroy an unexpected data root"
+    find "$expected_data_root" -mindepth 1 -delete
+    [[ -z "$(find "$expected_data_root" -mindepth 1 -print -quit)" ]] \
+        || fail "database volume was not emptied"
+    compose_with_runtime up -d --wait riffdbd riffdb-proxy >/dev/null
+
+    printf 'remote-compose phase=backup-restore\n' >&2
+    if ! operator_cli backup restore alpha-disaster --confirm-replace-current-database \
+        >"$work_root/restore-start.jsonl"; then
+        jq -e '.ok == false and .error.type == "uncertain" and .error.recovery_action == "poll_maintenance_operation"' \
+            "$work_root/restore-start.jsonl" >/dev/null \
+            || fail "restore start failed without a pollable uncertain identity"
+    fi
+    restore_operation_id="$(jq -er '.result.maintenance_operation_id // .error.maintenance_operation_id' "$work_root/restore-start.jsonl")"
+    wait_for_maintenance_success "$restore_operation_id" "$work_root/restore-status.jsonl" \
+        || fail "remote operator restore did not succeed"
+
+    "$cli" --config "$work_root/bootstrap-client.toml" server health >/dev/null \
+        || fail "restored operator authority is unavailable"
+    RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+    RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+        "${compose[@]}" --profile application run --rm application-probe >/dev/null \
+        || fail "restored application authority is unavailable"
+    if "$cli" --config "$work_root/post-backup.toml" server health >/dev/null 2>&1; then
+        fail "post-backup authority survived destructive restore"
+    fi
+    [[ -f "$runtime_root/backups/alpha-disaster/manifest.riffdb" ]] \
+        || fail "verified backup manifest is absent"
+fi
+
 cleanup
 trap - EXIT
 [[ -s "$runtime_root/data/riffdb.redb" ]] || fail "container did not retain its database"
-printf 'Remote Compose acceptance passed (TLS, proxy, liveness, readiness, rotation, drain).\n'
+if [[ "$backup_restore" == true ]]; then
+    printf 'Remote Compose acceptance passed (TLS, proxy, rotation, volume loss, verified restore).\n'
+else
+    printf 'Remote Compose acceptance passed (TLS, proxy, liveness, readiness, rotation, drain).\n'
+fi

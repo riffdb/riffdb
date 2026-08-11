@@ -59,6 +59,28 @@ under a fixed deadline, closes the database, publishes the complete immutable
 backup, and performs the full startup validation again before returning to
 readiness.
 
+## Remote container disaster drill
+
+The release Compose topology can exercise total database-volume loss through
+the same public maintenance API used by operators:
+
+```bash
+./scripts/remote-compose-acceptance --backup-restore
+```
+
+The drill creates and polls a backup from the separate operator container,
+creates a post-backup authority record, stops the database container, empties
+only its freshly allocated test data root, starts an empty replacement, and
+restores the backup through the public TLS endpoint. It then proves that the
+backed-up operator and application authorities work and that the post-backup
+authority disappeared. The operator container receives no database or backup
+mount and never supplies a server filesystem path.
+
+This command proves the generic remote physical recovery boundary. The
+adapter-specific WP-576 gate additionally has to rerun each adapter's
+conformance manifest against restored state; the generic drill alone is not
+the Deployable Application Alpha disaster receipt.
+
 An existing named backup is never silently replaced.
 
 ## Restore a Backup

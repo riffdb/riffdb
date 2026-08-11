@@ -107,6 +107,10 @@ name = "remote_deployment_rotation"
 path = "../../tests/remote_deployment_rotation.rs"
 harness = false
 
+[[test]]
+name = "remote_backup_restore"
+path = "../../tests/remote_backup_restore.rs"
+
 [[example]]
 name = "driver_conformance_remote_client"
 path = "../../tests/driver_conformance_remote_client.rs"
