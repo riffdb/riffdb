@@ -10,8 +10,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_application::{
-    ApplicationInstallationPlan, InstallationArtifact, InstallationArtifactKind,
-    InstallationDriver, InstallationSeed, InstallationSymbol, InstalledSeedEvidence,
+    AdapterConformanceManifest, ApplicationInstallationPlan, InstallationArtifact,
+    InstallationArtifactKind, InstallationDriver, InstallationSeed, InstallationSymbol,
+    InstalledSeedEvidence,
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
@@ -460,6 +461,17 @@ pub async fn run() -> ExitCode {
         )
         && !networked_successor_lock
     {
+        if let ApplicationCommand::Conformance { manifest, plan } = command {
+            let terminal = check_adapter_conformance_manifest(
+                Path::new(manifest),
+                plan.as_deref().map(Path::new),
+            );
+            return terminal.emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            );
+        }
         if let ApplicationCommand::Preview { source } = command {
             return match preview_application_lock(Path::new(source)) {
                 Ok(lock) => {
@@ -534,6 +546,9 @@ pub async fn run() -> ExitCode {
             };
         }
         let result = match command {
+            ApplicationCommand::Conformance { .. } => {
+                unreachable!("conformance returned above")
+            }
             ApplicationCommand::Migrate { .. } => unreachable!("migration returned above"),
             ApplicationCommand::Check { .. } => unreachable!("check returned above"),
             ApplicationCommand::Preview { .. } => unreachable!("preview returned above"),
@@ -940,6 +955,13 @@ async fn application_command(
     _stdin: &mut dyn Read,
 ) -> Terminal {
     let command = match command {
+        ApplicationCommand::Conformance { .. } => {
+            return local_error(
+                CommandIdentity::ApplicationConformance,
+                "application_conformance_dispatch_invalid",
+                "local adapter conformance operation reached network dispatch",
+            );
+        }
         ApplicationCommand::Install {
             plan,
             campaign_id,
@@ -1028,6 +1050,7 @@ async fn application_command(
             None,
         ),
         ApplicationCommand::Check { .. }
+        | ApplicationCommand::Conformance { .. }
         | ApplicationCommand::Migrate { .. }
         | ApplicationCommand::Preview { .. }
         | ApplicationCommand::Lock { .. }
@@ -2090,6 +2113,77 @@ async fn application_command(
     )
 }
 
+fn check_adapter_conformance_manifest(manifest_path: &Path, plan_path: Option<&Path>) -> Terminal {
+    let identity = CommandIdentity::ApplicationConformance;
+    let manifest_bytes = match read_file(manifest_path, MAX_INPUT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return local_error(
+                identity,
+                "adapter_manifest_unreadable",
+                "adapter conformance manifest could not be read",
+            );
+        }
+    };
+    let manifest = match AdapterConformanceManifest::decode_canonical(&manifest_bytes) {
+        Ok(manifest) => manifest,
+        Err(_) => {
+            return local_error(
+                identity,
+                "adapter_manifest_invalid",
+                "adapter conformance manifest is invalid or noncanonical",
+            );
+        }
+    };
+    let plan_hash = if let Some(path) = plan_path {
+        let bytes = match read_file(path, MAX_INPUT_BYTES) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return local_error(
+                    identity,
+                    "installation_plan_unreadable",
+                    "installation plan could not be read",
+                );
+            }
+        };
+        let plan = match ApplicationInstallationPlan::decode_canonical(&bytes) {
+            Ok(plan) => plan,
+            Err(_) => {
+                return local_error(
+                    identity,
+                    "installation_plan_invalid",
+                    "installation plan is invalid or noncanonical",
+                );
+            }
+        };
+        if manifest.validate_installation_plan(&plan).is_err() {
+            return local_error(
+                identity,
+                "adapter_plan_identity_mismatch",
+                "adapter manifest and installation plan identities do not match",
+            );
+        }
+        Some(hex(plan.identity().as_bytes()))
+    } else {
+        None
+    };
+    success(
+        identity,
+        "checked",
+        &serde_json::json!({
+            "adapter": manifest.input().adapter.as_str(),
+            "adapter_version": manifest.input().adapter_version.as_str(),
+            "manifest_hash": hex(manifest.identity().as_bytes()),
+            "installation_plan_hash": plan_hash,
+            "feature_claims": manifest.input().feature_claims.len(),
+            "roles": manifest.input().roles.len(),
+            "drivers": manifest.input().drivers.len(),
+            "conformance_probes": manifest.input().conformance.len(),
+            "evolution_cases": manifest.input().evolution.len(),
+        }),
+    )
+}
+
 #[derive(Clone)]
 struct DeploymentInstallation {
     plan: ApplicationInstallationPlan,
@@ -2206,12 +2300,16 @@ fn validate_deployment_installation_plan(
             return Err("installation_plan_role_identity_mismatch");
         }
     }
-    if input.adapter_manifest_hash.is_some() {
-        return Err("installation_adapter_manifest_preflight_required");
-    }
-
     let (mut expected_artifacts, expected_seeds) =
         deployment_installation_artifacts(locked, input.migration)?;
+    if input.adapter_manifest_hash.is_some() {
+        let adapter_artifact = input
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind() == InstallationArtifactKind::AdapterManifest)
+            .ok_or("installation_adapter_manifest_artifact_absent")?;
+        expected_artifacts.push(adapter_artifact.clone());
+    }
     if input.seeds != expected_seeds {
         return Err("installation_plan_seed_identity_mismatch");
     }
@@ -9890,6 +9988,19 @@ mod tests {
         let plan = ApplicationInstallationPlan::compile(input).expect("installation plan");
         validate_deployment_installation_plan(&plan, &locked, &config, Some(&role))
             .expect("exact plan matches local application");
+
+        let adapter_hash = riffdb_types::AdapterConformanceManifestHash::from_bytes([0x5a; 32]);
+        let mut adapter_input = plan.input().clone();
+        adapter_input.artifacts.push(InstallationArtifact::new(
+            InstallationArtifactKind::AdapterManifest,
+            InstallationSymbol::new("adapter-conformance").expect("adapter symbol"),
+            GeneratedArtifactHash::from_bytes(*adapter_hash.as_bytes()),
+        ));
+        adapter_input.adapter_manifest_hash = Some(adapter_hash);
+        let adapter_plan = ApplicationInstallationPlan::compile(adapter_input)
+            .expect("adapter-bound installation plan");
+        validate_deployment_installation_plan(&adapter_plan, &locked, &config, Some(&role))
+            .expect("exact adapter artifact is accepted after local conformance preflight");
 
         let plan_path = directory.join("installation-plan.json");
         fs::write(&plan_path, plan.canonical_bytes()).expect("canonical plan fixture");

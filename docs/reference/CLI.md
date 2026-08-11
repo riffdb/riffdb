@@ -81,6 +81,7 @@ Validates and regenerates an exact application package
 Usage: riffdb application [OPTIONS] <COMMAND>
 
 Commands:
+  conformance    Validates one bounded adapter conformance manifest and optional exact installation plan
   install        Starts or resumes one exact, caller-identified installation campaign
   installation   Observes one retained installation campaign without changing its plan
   migrate        Previews or atomically writes an explicit local application-format migration
@@ -475,6 +476,27 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                               Print help
+```
+
+#### `riffdb application conformance`
+
+```text
+Validates one bounded adapter conformance manifest and optional exact installation plan
+
+Usage: riffdb application conformance [OPTIONS] <ADAPTER_CONFORMANCE_MANIFEST>
+
+Arguments:
+  <ADAPTER_CONFORMANCE_MANIFEST>
+
+Options:
+      --config <PATH>
+      --plan <CANONICAL_INSTALLATION_PLAN>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                 [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                Print help
 ```
 
 #### `riffdb application install`

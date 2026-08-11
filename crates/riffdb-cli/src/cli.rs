@@ -196,6 +196,13 @@ pub(crate) enum MigrationCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationCommand {
+    /// Validates one bounded adapter conformance manifest and optional exact installation plan.
+    Conformance {
+        #[arg(value_name = "ADAPTER_CONFORMANCE_MANIFEST")]
+        manifest: OsString,
+        #[arg(long, value_name = "CANONICAL_INSTALLATION_PLAN")]
+        plan: Option<OsString>,
+    },
     /// Starts or resumes one exact, caller-identified installation campaign.
     Install {
         #[arg(long, value_name = "CANONICAL_PLAN")]
@@ -1469,6 +1476,24 @@ mod tests {
             TopLevel::Migration {
                 command: MigrationCommand::Plan { application, .. }
             } if application == "custom.application.json"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "conformance",
+                "adapter.conformance.json",
+                "--plan",
+                "installation-plan.json",
+            ])
+            .expect("adapter conformance check")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Conformance {
+                    manifest,
+                    plan: Some(plan),
+                }
+            } if manifest == "adapter.conformance.json" && plan == "installation-plan.json"
         ));
         assert!(matches!(
             Cli::try_parse_from(["riffdb", "application", "migrate", "--to", "v2"])
