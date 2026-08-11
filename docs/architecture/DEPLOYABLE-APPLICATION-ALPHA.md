@@ -14,7 +14,7 @@ storage or kernel escape hatch.
 
 The release gate is:
 
-> A fresh OpenFGA-, MLflow-, Payload-, or Woodpecker-shaped adapter can be
+> A fresh OpenFGA-, MLflow-, Better-Auth-, or Woodpecker-shaped adapter can be
 > installed and exercised through public symbolic surfaces from a separate
 > container, with encrypted authenticated transport, generated supported-
 > language bindings, bounded atomic application commands, indexed operational
@@ -36,7 +36,7 @@ endurance work cannot be deferred into release day.
 | Operational queries | ADR-0108 | WP-563–WP-565 | Finite dynamic predicate families, cursors/top-N, declared text indexes, shared exact aggregates, safe catalog pages, receipted identity rotation |
 | Workflow concurrency | ADR-0109 | WP-566–WP-567 | Revision checks, legal transitions, fenced leases, service time/IDs, and scheduler-through-commands only |
 | Provisioning/evolution | ADR-0110 | WP-568–WP-569 | Programmatic resumable install/upgrade, explicit authority diffs, migration integration, and adapter conformance manifests |
-| Per-row policy | ADR-0111 | WP-570, WP-572–WP-573 | Closed principal-aware predicates enforced before disclosure and transaction-current on writes; realistic Payload and MLflow policy proof |
+| Per-row policy | ADR-0111 | WP-570, WP-572–WP-573 | Closed principal-aware predicates enforced before disclosure and transaction-current on writes; realistic Better Auth and MLflow policy proof |
 | Format compatibility and exit | ADR-0112 | WP-574–WP-575 | Release format manifest, refusal before mutation, snapshot-consistent symbolic export, and compiled reimport |
 | Disaster recovery | ADR-0050/0112 | WP-576 | Remote backup, total database-volume loss, verified restore, and full adapter reconciliation |
 | Endurance | durability ADRs | WP-577–WP-578 | Reproducible lifecycle harness and retained 72-hour growth/recycling/recovery evidence |
@@ -121,7 +121,9 @@ framing or follower semantics.
    deployment, migration, role/credential rotation, and feature conformance.
 7. **Compiled row policy.** WP-570 and WP-572–WP-573 freeze and enforce the
    policy language across authoritative, projected, search, reactive, command,
-   workflow, and export surfaces, then prove realistic Payload and MLflow ACLs.
+   workflow, and export surfaces, then prove realistic Better Auth per-user
+   row policies (a principal sees only its own sessions and accounts) and
+   MLflow ACLs.
 8. **Compatibility and exit.** WP-574–WP-575 publish the exact durable-format
    promise, refuse unsupported data before mutation, and prove symbolic
    export/reimport into an empty database.
@@ -143,11 +145,21 @@ At minimum, final evidence includes:
 |---|---|
 | OpenFGA | Atomic bounded tuple writes/deletes, revision tokens, indexed tuple lookup, remote Go client |
 | MLflow | Metric/parameter batches, exact decimal aggregates, per-experiment/per-run policy, run transitions and leases, Python wheel matrix |
-| Payload | Document graph creation, per-document owner/team/public ACLs, optional/null/prefix queries, cursor pages, TypeScript long-lived transport |
+| Better Auth | Unique identities and provider/account links, single-use expiring verification tokens with replay refusal, atomic user/account/session workflows, concurrent session refresh and revocation, secret-field classification with guaranteed display-surface redaction, server-owned time and IDs, verification-email outbox intent, plugin schemas resolved at generation time, TypeScript long-lived transport |
 | Woodpecker | Pipeline-plus-step creation, claims/scheduler locks, state transitions, event/reactive worker flow |
 
+Payload's adapter shape (document graph creation, per-document
+owner/team/public ACLs, optional/null/prefix queries, cursor pages) is
+retained as a named post-alpha adapter: every capability it forced has
+already landed, and its shape moves down the list rather than out of it
+(maintainer scope decision, 2026-08-11). Framework integrations themselves
+live in dedicated repositories once the required capabilities exist; this
+repository carries only capabilities, design records, and workload shapes
+(ADR-0117).
+
 The alpha adapter event corpus deliberately contains no protected deletion
-event. Payload deletion notifications are not part of the gate; MLflow has no
+event. Better Auth revokes and expires sessions through commands rather than
+protected deletion events; MLflow has no
 protected run/experiment deletion event; OpenFGA's tuple deletion has no event
 stream; and Woodpecker's protected stream contains only pipeline-start facts.
 The bulk restrict-delete conformance case emits no event. Adding a protected

@@ -188,7 +188,8 @@ detail or mutation.
   redaction matrices.
 - Empty, compatible-upgrade, migration-required, failed-seed, and resume
   acceptance against multiple databases.
-- Adapter conformance for OpenFGA, MLflow, Payload, and Woodpecker shapes in
+- Adapter conformance for OpenFGA, MLflow, Better Auth (Payload deferred
+  post-alpha; Amendment 1, 2026-08-11), and Woodpecker shapes in
   Rust, Go, TypeScript, and Python where supported.
 
 ## Requirements and Work Packages
@@ -202,3 +203,13 @@ detail or mutation.
 
 Exact acceptance is required before an installation permission/RPC, application
 format, conformance manifest, role-widening flow, or receipt is implemented.
+
+### Amendment 1: Better Auth replaces Payload in the alpha conformance set (2026-08-11)
+
+- **Status:** Proposed
+
+Maintainer scope decision: the alpha conformance adapter set is OpenFGA,
+MLflow, Better Auth, and Woodpecker. Payload's shape is retained as a named
+post-alpha adapter. Better Auth's conformance additionally uses the
+framework's own published adapter conformance suite as an external
+acceptance instrument, run from the integration repository per ADR-0117.
