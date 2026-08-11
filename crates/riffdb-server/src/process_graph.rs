@@ -508,6 +508,7 @@ impl ProductionGraphBuilder {
         let offline_maintenance = maintenance.coordinator(&blocking);
         let installation = Arc::new(ServerApplicationInstallationCoordinator::new(
             storage.clone(),
+            maintenance.installation_migration_receipts(),
             &blocking,
         ));
         // Retained for the graceful-shutdown validated-prefix write (ADR-0019 A1).

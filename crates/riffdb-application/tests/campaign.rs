@@ -186,7 +186,7 @@ fn every_interruption_resumes_after_revalidating_completed_identities() {
     let receipt = campaign.seal_receipt(&plan).expect("terminal receipt");
     assert_eq!(
         receipt.canonical_bytes(),
-        include_bytes!("../../../fixtures/installation/application-installation-receipt-v1.json")
+        include_bytes!("../../../fixtures/installation/application-installation-receipt-v2.json")
     );
     assert_eq!(
         campaign.seal_receipt(&plan).expect("idempotent seal"),
@@ -202,11 +202,20 @@ fn every_interruption_resumes_after_revalidating_completed_identities() {
             .expect("canonical receipt"),
         receipt
     );
+    ApplicationInstallationReceipt::decode_canonical(include_bytes!(
+        "../../../fixtures/installation/application-installation-receipt-v1.json"
+    ))
+    .expect("the accepted v1 receipt remains readable");
 
     let receipt_text = std::str::from_utf8(receipt.canonical_bytes()).expect("utf8 json");
-    assert!(!receipt_text.contains("capability_id"));
-    assert!(!receipt_text.contains("credential"));
-    assert!(!receipt_text.contains(&capability(1).to_string()));
+    assert!(receipt_text.contains("\"terminal_state\":\"installed\""));
+    assert!(receipt_text.contains("\"credentials\""));
+    assert!(receipt_text.contains("\"capability_id\""));
+    assert!(receipt_text.contains("00000000000170008000000000000001"));
+    assert!(receipt_text.contains("\"seed_checkpoints\""));
+    assert!(receipt_text.contains("\"succeeded\":5,\"replayed\":2"));
+    assert!(receipt_text.contains("\"safe_remediation\":[]"));
+    assert!(!receipt_text.contains("token"));
     assert!(!receipt_text.contains("/home/"));
 }
 
@@ -325,7 +334,7 @@ fn canonical_campaign_state_recovers_every_partial_and_terminal_boundary() {
     assert_eq!(
         terminal.canonical_bytes(),
         include_bytes!(
-            "../../../fixtures/installation/application-installation-campaign-state-v1.json"
+            "../../../fixtures/installation/application-installation-campaign-state-current.json"
         )
     );
     let recovered =
@@ -333,6 +342,11 @@ fn canonical_campaign_state_recovers_every_partial_and_terminal_boundary() {
             .expect("terminal recovery");
     assert!(recovered.campaign().is_installed());
     assert_eq!(recovered.campaign(), &campaign);
+    let legacy = ApplicationInstallationCampaignState::decode_canonical(include_bytes!(
+        "../../../fixtures/installation/application-installation-campaign-state-v1.json"
+    ))
+    .expect("legacy v1-receipt campaign state remains readable");
+    assert!(legacy.campaign().is_installed());
 }
 
 #[test]
@@ -367,5 +381,41 @@ fn campaign_state_rejects_noncanonical_tampered_and_cross_plan_bytes() {
             .expect_err("plan identity substitution")
             .kind(),
         InstallationCampaignErrorKind::PlanIdentityMismatch
+    );
+}
+
+#[test]
+fn current_receipt_rejects_missing_authority_and_inexact_migration_references() {
+    let fixture =
+        include_bytes!("../../../fixtures/installation/application-installation-receipt-v2.json");
+    let mut missing_authority: serde_json::Value =
+        serde_json::from_slice(fixture).expect("receipt fixture");
+    missing_authority["credentials"] = serde_json::json!([]);
+    let mut bytes = serde_json::to_vec(&missing_authority).expect("json");
+    bytes.push(b'\n');
+    assert_eq!(
+        ApplicationInstallationReceipt::decode_canonical(&bytes)
+            .expect_err("terminal receipt cannot discard capability identities")
+            .kind(),
+        InstallationCampaignErrorKind::InvalidEncoding
+    );
+
+    let mut inexact_migration: serde_json::Value =
+        serde_json::from_slice(fixture).expect("receipt fixture");
+    inexact_migration["migration_receipt"] = serde_json::json!({
+        "operation_id": "00000000000270008000000000000002",
+        "migration_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+    });
+    inexact_migration["backup_receipt"] = serde_json::json!({
+        "migration_operation_id": "00000000000270008000000000000002",
+        "policy": "required_verified"
+    });
+    let mut bytes = serde_json::to_vec(&inexact_migration).expect("json");
+    bytes.push(b'\n');
+    assert_eq!(
+        ApplicationInstallationReceipt::decode_canonical(&bytes)
+            .expect_err("migration reference must be bound to the campaign identity")
+            .kind(),
+        InstallationCampaignErrorKind::InvalidEncoding
     );
 }

@@ -141,6 +141,16 @@ paths never enter the plan.
 - Partial or failed stages never carry a terminal receipt. `installed` requires
   every closed stage plus the receipt stage in dependency order.
 
+Newly sealed terminal receipts use
+`riffdb.application-installation-receipt/v2`. The canonical, content-addressed
+document includes the exact nonsecret capability ID for every credential
+destination, value-free per-seed succeeded/replayed checkpoints, the adapter
+manifest digest, the installed terminal state, and exact migration and backup
+receipt references when a migration was required. It never includes bearer
+credentials, seed values, host paths, or hidden schema. Accepted v1 receipts
+and campaign states remain readable; resuming one preserves its original
+receipt identity instead of silently rotating it.
+
 ## Current POC limit
 
 On every start or resume, the server now reconciles the campaign against its
@@ -175,7 +185,10 @@ the invocation does not continue into contract, module, role, or seed work.
 Rerunning the identical command resumes the retained operation, rechecks its
 parent, successor, and migration identities, and advances only after the
 migration reports `succeeded`. Failed-closed or substituted operations never
-advance the campaign.
+advance the campaign. The server also requires the campaign-derived migration
+operation to have a retained succeeded apply receipt with its verified backup
+manifest before the migration stage can complete, so terminal receipt
+references cannot name a guessed or unrelated operation.
 
 Every
 role and credential destination remains present in the immutable plan and is

@@ -18,14 +18,16 @@ use riffdb_service::{
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ApplicationInstallationCampaignRepository,
     ApplicationInstallationCampaignWriteResultV1, CapabilityLifecycleV1, CapabilityReader,
-    CatalogRepository, QueryModuleRepository, ReactiveModuleRepository, StorageError,
-    StorageErrorKind, StoredApplicationInstallationCampaignV1,
+    CatalogRepository, ContractMigrationOperationKindV1, ContractMigrationReceiptPhaseV1,
+    QueryModuleRepository, ReactiveModuleRepository, StorageError, StorageErrorKind,
+    StoredApplicationInstallationCampaignV1,
 };
 use riffdb_types::{
-    ApplicationInstallationCampaignId, CapabilityPermissionV1, ContractLineage, QueryModuleHash,
-    ReactiveModuleHash,
+    ApplicationInstallationCampaignId, CapabilityPermissionV1, ContractLineage,
+    ContractMigrationOperationId, QueryModuleHash, ReactiveModuleHash,
 };
 
+use crate::maintenance_adapter::InstallationMigrationReceiptReader;
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
 use crate::storage::SharedRedbOperationalPorts;
 
@@ -49,13 +51,19 @@ pub(crate) struct ServerApplicationInstallationCoordinator {
 }
 
 impl ServerApplicationInstallationCoordinator {
-    pub(crate) fn new(storage: SharedRedbOperationalPorts, driver: &BlockingPortDriver) -> Self {
+    pub(crate) fn new(
+        storage: SharedRedbOperationalPorts,
+        migration_receipts: InstallationMigrationReceiptReader,
+        driver: &BlockingPortDriver,
+    ) -> Self {
         let lineage_storage = storage.clone();
         let start_storage = storage.clone();
         Self {
             lineage: driver
                 .executor(move |campaign_id| resolve_lineage(&lineage_storage, campaign_id)),
-            start: driver.executor(move |request| start_or_resume(start_storage.clone(), request)),
+            start: driver.executor(move |request| {
+                start_or_resume(start_storage.clone(), &migration_receipts, request)
+            }),
             observation: driver.executor(move |request| observe(&storage, request)),
         }
     }
@@ -115,6 +123,7 @@ fn resolve_lineage(
 
 fn start_or_resume(
     mut storage: SharedRedbOperationalPorts,
+    migration_receipts: &InstallationMigrationReceiptReader,
     request: AuthorizedApplicationInstallationStart,
 ) -> Result<ApplicationInstallationOperationResult, ApplicationInstallationStartPortError> {
     let (_request_id, _ingress, request, _authorization) = request.into_parts();
@@ -126,10 +135,10 @@ fn start_or_resume(
     let (expected, mut campaign) =
         recover_campaign(retained, campaign_id, plan.as_ref(), &lineage)?;
 
-    advance_observed_stages(&storage, plan.as_ref(), &mut campaign)?;
+    advance_observed_stages(&storage, migration_receipts, plan.as_ref(), &mut campaign)?;
     if let Some(completion) = external_completion {
         complete_external_stage(plan.as_ref(), &mut campaign, completion)?;
-        advance_observed_stages(&storage, plan.as_ref(), &mut campaign)?;
+        advance_observed_stages(&storage, migration_receipts, plan.as_ref(), &mut campaign)?;
     }
 
     let replacement = encode_state(&campaign, plan.as_ref())
@@ -172,6 +181,7 @@ enum StageVerification {
 
 fn advance_observed_stages(
     storage: &SharedRedbOperationalPorts,
+    migration_receipts: &InstallationMigrationReceiptReader,
     plan: &ApplicationInstallationPlan,
     campaign: &mut ApplicationInstallationCampaign,
 ) -> Result<(), ApplicationInstallationStartPortError> {
@@ -203,7 +213,12 @@ fn advance_observed_stages(
                     }
                 }
             }
-            InstallationStage::Migration => match verify_migration_stage(storage, plan)? {
+            InstallationStage::Migration => match verify_migration_stage(
+                storage,
+                migration_receipts,
+                plan,
+                observation.campaign_id(),
+            )? {
                 StageVerification::Pending => None,
                 StageVerification::Complete => Some(InstallationStageEvidence::Migration {
                     migration_hash: plan
@@ -336,7 +351,9 @@ fn classify_contract_stage(
 
 fn verify_migration_stage(
     storage: &SharedRedbOperationalPorts,
+    migration_receipts: &InstallationMigrationReceiptReader,
     plan: &ApplicationInstallationPlan,
+    campaign_id: ApplicationInstallationCampaignId,
 ) -> Result<StageVerification, ApplicationInstallationStartPortError> {
     let Some(migration) = plan.input().migration else {
         return Ok(StageVerification::Complete);
@@ -368,10 +385,34 @@ fn verify_migration_stage(
         ));
     };
     let artifacts = edge.retirement().artifacts();
+    if artifacts.parent() != migration.parent_bundle_hash()
+        || artifacts.candidate() != migration.successor_bundle_hash()
+        || artifacts.migration() != migration.migration_hash()
+    {
+        return Ok(StageVerification::Failed(
+            InstallationFailureCode::RemoteIdentityMismatch,
+        ));
+    }
+    let operation_id = ContractMigrationOperationId::from_bytes(campaign_id.into_bytes())
+        .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+    let Some(receipt) = migration_receipts
+        .read(operation_id)
+        .map_err(map_start_storage)?
+    else {
+        return Ok(StageVerification::Failed(
+            InstallationFailureCode::RemoteIdentityMismatch,
+        ));
+    };
+    let receipt_artifacts = receipt.artifacts();
     Ok(
-        if artifacts.parent() == migration.parent_bundle_hash()
-            && artifacts.candidate() == migration.successor_bundle_hash()
-            && artifacts.migration() == migration.migration_hash()
+        if receipt.operation_kind() == ContractMigrationOperationKindV1::Apply
+            && receipt.operation_id() == operation_id
+            && receipt.current_phase() == ContractMigrationReceiptPhaseV1::Succeeded
+            && receipt_artifacts.parent() == migration.parent_bundle_hash()
+            && receipt_artifacts.candidate() == migration.successor_bundle_hash()
+            && receipt_artifacts.migration() == migration.migration_hash()
+            && receipt.backup_name().is_some()
+            && receipt.backup_manifest().is_some()
         {
             StageVerification::Complete
         } else {

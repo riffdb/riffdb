@@ -63,6 +63,30 @@ pub(crate) const MAINTENANCE_TRIGGER_BUFFER: usize = 1;
 /// Process-wide ownership of the external receipt and artifact adapter.
 pub(crate) type SharedMaintenanceStorage = Arc<Mutex<RedbMaintenanceStorage>>;
 
+/// Read-only exact migration-receipt capability for installation reconciliation.
+#[derive(Clone)]
+pub(crate) struct InstallationMigrationReceiptReader {
+    storage: SharedMaintenanceStorage,
+}
+
+impl InstallationMigrationReceiptReader {
+    pub(crate) fn read(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<Option<ContractMigrationReceiptV1>, StorageError> {
+        self.storage
+            .lock()
+            .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?
+            .read_contract_migration_receipt(operation_id)
+    }
+}
+
+impl fmt::Debug for InstallationMigrationReceiptReader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("InstallationMigrationReceiptReader([READ_ONLY_RECEIPTS])")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MigrationProcessOwner {
     database_id: DatabaseId,
@@ -354,6 +378,13 @@ impl MaintenanceController {
     /// Clones the external maintenance-storage authority for the daemon driver.
     pub(crate) fn storage(&self) -> SharedMaintenanceStorage {
         Arc::clone(&self.storage)
+    }
+
+    /// Narrows maintenance authority to exact migration-receipt observation.
+    pub(crate) fn installation_migration_receipts(&self) -> InstallationMigrationReceiptReader {
+        InstallationMigrationReceiptReader {
+            storage: Arc::clone(&self.storage),
+        }
     }
 
     /// Releases the exact retained process lease after the database is ready.
