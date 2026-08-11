@@ -1,0 +1,69 @@
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
+
+//! Architecture evidence for the WP-576 remote destructive-restore drill.
+
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("testkit has a repository parent")
+        .to_path_buf()
+}
+
+#[test]
+fn operator_container_has_authority_but_no_database_or_backup_mount() {
+    let root = repository_root();
+    let compose = fs::read_to_string(root.join("release/container/compose.yaml"))
+        .expect("Compose source is readable");
+    let operator = compose
+        .split("  operator-probe:")
+        .nth(1)
+        .expect("operator service exists");
+    assert!(operator.contains("/run/secrets/operator.credential"));
+    assert!(operator.contains("/run/secrets/riffdb-ca.pem"));
+    assert!(!operator.contains("/var/lib/riffdb/data"));
+    assert!(!operator.contains("/var/lib/riffdb/backups"));
+    assert!(!operator.contains("application.credential"));
+}
+
+#[test]
+fn destructive_drill_uses_only_public_maintenance_and_proves_a_real_rewind() {
+    let root = repository_root();
+    let script = fs::read_to_string(root.join("scripts/remote-compose-acceptance"))
+        .expect("remote acceptance source is readable");
+    for required in [
+        "contracts/examples/budget.riff",
+        "operator_cli backup create alpha-disaster",
+        "operator_cli backup operation \"$operation_id\"",
+        "operator_cli backup restore alpha-disaster",
+        "--confirm-replace-current-database",
+        "poll_maintenance_operation",
+        "find \"$expected_data_root\" -mindepth 1 -delete",
+        "post-backup authority survived destructive restore",
+        "backups/alpha-disaster/manifest.riffdb",
+    ] {
+        assert!(
+            script.contains(required),
+            "missing disaster invariant: {required}"
+        );
+    }
+    assert!(script.contains("refusing to destroy an unexpected data root"));
+    assert!(!script.contains("operator_cli storage"));
+    assert!(!script.contains("operator_cli capability bootstrap"));
+}
+
+#[test]
+fn remote_drill_script_is_valid_shell() {
+    let root = repository_root();
+    let status = Command::new("bash")
+        .arg("-n")
+        .arg(root.join("scripts/remote-compose-acceptance"))
+        .status()
+        .expect("bash is available");
+    assert!(status.success());
+}
