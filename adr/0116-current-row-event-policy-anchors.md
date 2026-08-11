@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction requested:** 2026-08-11
-- **Exact text accepted:** 2026-08-11, commit `6499d2b3`
+- **Exact text accepted:** Yes — 2026-08-11, including the Better Auth adapter substitution
 - **Decision deadline:** Before WP-572 enables protected event consumption
 - **Requires:** ADR-0007, ADR-0038, ADR-0055, ADR-0080, ADR-0111, and ADR-0114
 - **Amends:** ADR-0111 Amendment 1
