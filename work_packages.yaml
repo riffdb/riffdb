@@ -10898,6 +10898,9 @@ work_packages:
     document lists/detail/search/live update, and aggregate inference
   - MLflow corpus covers experiment/run owners and groups, nested metrics/artifacts, transition
     races, revocation, dashboards, events, and agents under least-authority roles
+  - The alpha protected-event corpus contains no deletion event; adding a protected Payload,
+    MLflow, OpenFGA, or Woodpecker deletion notification requires the accepted immutable-event-
+    policy successor and a human-reviewed amendment before it can enter the gate
   - Boundary lint rejects middleware/client filtering, raw capability facts, alternate queries,
     administrator credentials, hidden row IDs, and per-language policy implementations
   acceptance_commands:
