@@ -53,8 +53,10 @@ pub(crate) const EVENT_CONSUMERS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("event_consumers");
 pub(crate) const EVENT_CONSUMER_DELIVERIES: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("event_consumer_deliveries");
+pub(crate) const APPLICATION_INSTALLATION_CAMPAIGNS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("application_installation_campaigns");
 
-pub(crate) const TABLE_NAMES: [&str; 31] = [
+pub(crate) const TABLE_NAMES: [&str; 32] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -86,9 +88,10 @@ pub(crate) const TABLE_NAMES: [&str; 31] = [
     "reactive_modules",
     "event_consumers",
     "event_consumer_deliveries",
+    "application_installation_campaigns",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 30] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 31] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -119,6 +122,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 30] = [
     REACTIVE_MODULES,
     EVENT_CONSUMERS,
     EVENT_CONSUMER_DELIVERIES,
+    APPLICATION_INSTALLATION_CAMPAIGNS,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -189,6 +193,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(REACTIVE_MODULES)?);
     drop(tx.open_table(EVENT_CONSUMERS)?);
     drop(tx.open_table(EVENT_CONSUMER_DELIVERIES)?);
+    drop(tx.open_table(APPLICATION_INSTALLATION_CAMPAIGNS)?);
     Ok(())
 }
 
@@ -234,10 +239,11 @@ mod tests {
             REACTIVE_MODULES.name(),
             EVENT_CONSUMERS.name(),
             EVENT_CONSUMER_DELIVERIES.name(),
+            APPLICATION_INSTALLATION_CAMPAIGNS.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 31);
+        assert_eq!(TABLE_NAMES.len(), 32);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

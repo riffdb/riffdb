@@ -17,12 +17,18 @@ use riffdb_api_grpc::{
     GrpcApplication, GrpcBootstrapCompletion, GrpcDeploymentCompletion, GrpcLifecycleRoute,
     GrpcOfflineMaintenanceOperation, GrpcRequestLimits, UNAUTHENTICATED_MESSAGE,
 };
+use riffdb_application::{
+    ApplicationInstallationCampaign, ApplicationInstallationPlan, InstallationStage,
+    InstallationStageEvidence,
+};
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure,
     CapabilityDigestKeyProvider, CredentialAuthenticator, CurrentCapabilityActivity,
     CurrentCapabilityResolver, OpaqueCredential,
 };
-use riffdb_client_rust::{BearerCredential, CallMetadata, RiffDbClient};
+use riffdb_client_rust::{
+    BearerCredential, CallMetadata, RiffDbClient, StartApplicationInstallation,
+};
 use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
 };
@@ -51,13 +57,14 @@ use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, BackupNameV1, CapabilityGrantV1, CapabilityPermissionsV1,
-    CommitSequence, ContractBundleHash, ContractLineage, ContractPlanRootHash, ContractVersion,
-    DatabaseId, Environment, FrontierPosition, OfflineMaintenanceInputHash,
-    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation, PartitionScopeV1, PlanHash, ProjectionGeneration,
-    ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceIngressKindV1,
-    ServiceOperationV1, SourceHash, TenantScope, Timestamp, offline_maintenance_input_hash,
+    ActorId, ActorKind, ApplicationInstallationCampaignId, Audience, BackupNameV1,
+    CapabilityGrantV1, CapabilityPermissionsV1, CommitSequence, ContractBundleHash,
+    ContractLineage, ContractPlanRootHash, ContractVersion, DatabaseId, Environment,
+    FrontierPosition, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionScopeV1,
+    PlanHash, ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash,
+    RequestId, ServiceIngressKindV1, ServiceOperationV1, SourceHash, TenantScope, Timestamp,
+    offline_maintenance_input_hash,
 };
 use tokio::sync::oneshot;
 use tonic::metadata::MetadataValue;
@@ -80,6 +87,117 @@ struct ObservedInvocation {
     operation: ServiceOperationV1,
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installation_start_retry_and_observe_cross_authenticated_grpc() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(25, [0x25; 10]).expect("database ID");
+    let environment = Environment::new("dev").expect("environment");
+    let audience = Audience::new("grpc-loopback").expect("audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let service = Arc::new(ProjectionService::new());
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: service.clone(),
+        security: CheckedGrpcSecurityContext::new(
+            Arc::new(AcceptingAuthenticator { principal }),
+            AuthenticationContext::new(database_id, environment, audience),
+            Arc::new(
+                CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+                    .expect("capability keys"),
+            ),
+        ),
+        read_stage_telemetry: None,
+    });
+    let application = GrpcApplication::new(
+        route,
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("request limit"),
+    );
+    let incoming =
+        TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address")).expect("bind listener");
+    let address = incoming.local_addr().expect("listener address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.admin_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+    let channel = Endpoint::from_shared(format!("http://{address}"))
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = RiffDbClient::from_channel(channel);
+    let metadata =
+        CallMetadata::authenticated(BearerCredential::new(CAPABILITY_TOKEN).expect("credential"));
+    let campaign_id =
+        ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(31, [0x31; 10])
+            .expect("campaign ID");
+    let plan = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+        "../../fixtures/installation/application-installation-plan-v1.json"
+    ))
+    .expect("canonical plan");
+    let start = StartApplicationInstallation::new(campaign_id, plan);
+    let first = client
+        .start_application_installation_with_retry(
+            &start,
+            riffdb_client_rust::AttemptBudget::new(2).expect("attempt budget"),
+            &metadata,
+        )
+        .await
+        .expect("start campaign");
+    let first_observation = first.observation.expect("start observation");
+    assert_eq!(
+        first_observation.completed_stages,
+        vec![v1::ApplicationInstallationStage::Preflight as i32]
+    );
+    assert_eq!(
+        first_observation.next_action,
+        v1::ApplicationInstallationNextAction::DeployContract as i32
+    );
+
+    let retry = client
+        .start_application_installation_with_retry(
+            &start,
+            riffdb_client_rust::AttemptBudget::new(2).expect("attempt budget"),
+            &metadata,
+        )
+        .await
+        .expect("same campaign retry");
+    assert_eq!(retry.observation, Some(first_observation.clone()));
+
+    let observed = client
+        .get_application_installation(
+            v1::GetApplicationInstallationRequest {
+                request_id: request_id(0x32).into_bytes().to_vec(),
+                campaign_id: campaign_id.into_bytes().to_vec(),
+            },
+            &metadata,
+        )
+        .await
+        .expect("observe campaign");
+    let Some(v1::get_application_installation_response::Result::Found(found)) = observed.result
+    else {
+        panic!("campaign must be retained");
+    };
+    assert_eq!(found.observation, Some(first_observation));
+    assert_eq!(
+        service
+            .observed()
+            .into_iter()
+            .map(|item| item.operation)
+            .collect::<Vec<_>>(),
+        vec![
+            ServiceOperationV1::StartApplicationInstallation,
+            ServiceOperationV1::StartApplicationInstallation,
+            ServiceOperationV1::GetApplicationInstallation,
+        ]
+    );
+
+    shutdown_sender.send(()).expect("server running");
+    server.await.expect("server task").expect("clean shutdown");
+}
+
 struct ProjectionService {
     observed: Mutex<Vec<ObservedInvocation>>,
     command_discovery_prior: Mutex<Vec<bool>>,
@@ -89,8 +207,88 @@ struct ProjectionService {
     current_authority: Option<Arc<AuthorizationFixture>>,
     resource_cursors: Mutex<ResourceCursorState>,
     maintenance_invocations: Mutex<Vec<ObservedMaintenanceInvocation>>,
+    installation: Mutex<Option<(ApplicationInstallationPlan, ApplicationInstallationCampaign)>>,
     /// Optional residual-stage sink for SpawnDispatch in the gRPC harness.
     read_stage_telemetry: Option<Arc<dyn riffdb_service::ServiceTelemetry>>,
+}
+
+impl riffdb_service::ApplicationInstallationApplication for ProjectionService {
+    fn start_application_installation(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::StartApplicationInstallationRequest,
+    ) -> ServiceFuture<'_, riffdb_service::ApplicationInstallationOperationResult> {
+        self.observe(&context, ServiceOperationV1::StartApplicationInstallation);
+        let (campaign_id, plan) = request.into_parts();
+        let mut retained = self.installation.lock().expect("installation state lock");
+        match retained.as_mut() {
+            Some((stored_plan, campaign)) if stored_plan == plan.as_ref() => {
+                if campaign.resume(campaign_id, plan.as_ref()).is_err() {
+                    return denied();
+                }
+            }
+            Some(_) => return denied(),
+            None => {
+                retained.replace((
+                    plan.as_ref().clone(),
+                    ApplicationInstallationCampaign::start(campaign_id, plan.identity()),
+                ));
+            }
+        }
+        let (stored_plan, campaign) = retained.as_mut().expect("installed campaign");
+        if campaign.observe().next_stage() == Some(InstallationStage::Preflight) {
+            let input = stored_plan.input();
+            if campaign
+                .complete_stage(
+                    stored_plan,
+                    InstallationStageEvidence::Preflight {
+                        source_hash: input.source_hash,
+                        lock_hash: input.lock_hash,
+                        manifest_hash: input.manifest_hash,
+                    },
+                )
+                .is_err()
+            {
+                return denied();
+            }
+        }
+        let result = riffdb_service::ApplicationInstallationOperationResult::new(
+            stored_plan.input().target.lineage().clone(),
+            campaign.observe(),
+            None,
+        )
+        .map_err(|_| ServiceFailure::from(PublicError::authorization_denied()));
+        Box::pin(async move { result })
+    }
+
+    fn get_application_installation(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::GetApplicationInstallationRequest,
+    ) -> ServiceFuture<'_, riffdb_service::GetApplicationInstallationResult> {
+        self.observe(&context, ServiceOperationV1::GetApplicationInstallation);
+        let result = self
+            .installation
+            .lock()
+            .expect("installation state lock")
+            .as_ref()
+            .filter(|(_, campaign)| campaign.observe().campaign_id() == request.campaign_id())
+            .map_or_else(
+                || Ok(riffdb_service::GetApplicationInstallationResult::NotFound),
+                |(plan, campaign)| {
+                    riffdb_service::ApplicationInstallationOperationResult::new(
+                        plan.input().target.lineage().clone(),
+                        campaign.observe(),
+                        None,
+                    )
+                    .map(|result| {
+                        riffdb_service::GetApplicationInstallationResult::Found(Box::new(result))
+                    })
+                    .map_err(|_| ServiceFailure::from(PublicError::authorization_denied()))
+                },
+            );
+        Box::pin(async move { result })
+    }
 }
 
 struct PendingProbe {
@@ -132,6 +330,7 @@ impl ProjectionService {
             current_authority: None,
             resource_cursors: Mutex::new(ResourceCursorState::default()),
             maintenance_invocations: Mutex::new(Vec::new()),
+            installation: Mutex::new(None),
         }
     }
 
@@ -1144,6 +1343,8 @@ impl GrpcLifecycleRoute for ActiveRoute {
                 | ServiceOperationV1::DescribeEvent
                 | ServiceOperationV1::ExecuteQuery
                 | ServiceOperationV1::WatchNamedQuery
+                | ServiceOperationV1::StartApplicationInstallation
+                | ServiceOperationV1::GetApplicationInstallation
         )
         .then(|| Arc::clone(&self.service))
     }

@@ -22,6 +22,7 @@ riffdb-storage-redb = { path = "../riffdb-storage-redb", version = "0.1.0", defa
 riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
 
 [dev-dependencies]
+riffdb-application = { path = "../riffdb-application", version = "0.1.0", default-features = false }
 riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
@@ -114,6 +115,10 @@ path = "../../tests/operational_queries.rs"
 [[test]]
 name = "workflow_concurrency"
 path = "../../tests/workflow_concurrency.rs"
+
+[[test]]
+name = "application_installation"
+path = "../../tests/application_installation.rs"
 
 [[test]]
 name = "scheduler_recovery"

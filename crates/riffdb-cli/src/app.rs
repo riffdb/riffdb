@@ -9,6 +9,7 @@ use std::process::{Command as ProcessCommand, ExitCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
+use riffdb_application::ApplicationInstallationPlan;
 use riffdb_client_rust::{
     ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
     ApplicationUuid, ApplicationValue, ApplyContractMigration, AttemptBudget, BackupNameV1,
@@ -18,8 +19,8 @@ use riffdb_client_rust::{
     OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedAggregate,
     ProjectedAggregateValue, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
     ProjectedQueryOutcome, ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup,
-    RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
-    generate_request_id, v1,
+    RiffDbClient, StartApplicationInstallation, app_v1, generate_capability_id,
+    generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -30,8 +31,8 @@ use riffdb_query_module::{
     compile_reactive_source,
 };
 use riffdb_types::{
-    CanonicalValue, CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
-    PartitionScopeV1, TenantId, TenantScope,
+    ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, PartitionScopeV1, TenantId, TenantScope,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -59,9 +60,10 @@ use crate::output::{
     local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
     render_compilation_diagnostics, render_contract_deploy, render_contract_migration_operation,
     render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
-    render_entity, render_execution, render_health, render_maintenance_operation,
-    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
-    render_revoke, success, take_normal_create_disposition, uncertain,
+    render_entity, render_execution, render_health, render_installation_observation,
+    render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
+    render_projection, render_restore_maintenance_start, render_revoke, success,
+    take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::format_uuid;
@@ -425,7 +427,10 @@ pub async fn run() -> ExitCode {
     if let TopLevel::Application { command } = &cli.command
         && !matches!(
             command,
-            ApplicationCommand::Deploy { .. } | ApplicationCommand::BindDevRole { .. }
+            ApplicationCommand::Deploy { .. }
+                | ApplicationCommand::BindDevRole { .. }
+                | ApplicationCommand::Install { .. }
+                | ApplicationCommand::Installation { .. }
         )
         && !networked_successor_lock
     {
@@ -526,6 +531,9 @@ pub async fn run() -> ExitCode {
             } => generate_application(Path::new(manifest), *locked, Some(Path::new(lock))),
             ApplicationCommand::Deploy { .. } | ApplicationCommand::BindDevRole { .. } => {
                 unreachable!("networked application operation was not intercepted")
+            }
+            ApplicationCommand::Install { .. } | ApplicationCommand::Installation { .. } => {
+                unreachable!("installation operation was not intercepted")
             }
         };
         return match result {
@@ -905,6 +913,15 @@ async fn application_command(
     environment: &dyn Environment,
     stdin: &mut dyn Read,
 ) -> Terminal {
+    let command = match command {
+        ApplicationCommand::Install { plan, campaign_id } => {
+            return start_application_installation(plan, campaign_id, config, environment).await;
+        }
+        ApplicationCommand::Installation { campaign_id } => {
+            return get_application_installation(campaign_id, config, environment).await;
+        }
+        command => command,
+    };
     if let ApplicationCommand::Lock {
         source,
         lock,
@@ -967,7 +984,9 @@ async fn application_command(
         | ApplicationCommand::Migrate { .. }
         | ApplicationCommand::Preview { .. }
         | ApplicationCommand::Lock { .. }
-        | ApplicationCommand::Generate { .. } => {
+        | ApplicationCommand::Generate { .. }
+        | ApplicationCommand::Install { .. }
+        | ApplicationCommand::Installation { .. } => {
             return local_error(
                 CommandIdentity::ApplicationDeploy,
                 "application_dispatch_invalid",
@@ -1836,6 +1855,90 @@ async fn application_command(
             "seeded": seed,
         }),
     )
+}
+
+async fn start_application_installation(
+    plan_path: OsString,
+    campaign_id: String,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = CommandIdentity::ApplicationInstall;
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let campaign_id = match parse_application_installation_campaign_id(&campaign_id) {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
+    let plan_bytes = match read_file(Path::new(&plan_path), MAX_INPUT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => return input_terminal(identity, error),
+    };
+    let plan = match ApplicationInstallationPlan::decode_canonical(&plan_bytes) {
+        Ok(plan) => plan,
+        Err(_) => {
+            return local_error(
+                identity,
+                "installation_plan_invalid",
+                "the installation plan is not canonical or semantically valid",
+            );
+        }
+    };
+    let start = StartApplicationInstallation::new(campaign_id, plan);
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    match client
+        .start_application_installation_with_retry(&start, attempts, &metadata)
+        .await
+    {
+        Ok(response) => render_installation_start(&response),
+        Err(ClientError::OutcomeUnknown(_)) => {
+            crate::output::installation_uncertain(identity, campaign_id)
+        }
+        Err(error) => client_error(identity, &error),
+    }
+}
+
+async fn get_application_installation(
+    campaign_id: String,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = CommandIdentity::ApplicationInstallation;
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let campaign_id = match parse_application_installation_campaign_id(&campaign_id) {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
+    let request_id = match request_id() {
+        Ok(value) => value,
+        Err(error) => return client_error(identity, &error),
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    match client
+        .get_application_installation(
+            v1::GetApplicationInstallationRequest {
+                request_id,
+                campaign_id: campaign_id.into_bytes().to_vec(),
+            },
+            &metadata,
+        )
+        .await
+    {
+        Ok(response) => render_installation_observation(&response),
+        Err(error) => client_error(identity, &error),
+    }
 }
 
 async fn write_successor_application_lock(
@@ -7791,6 +7894,12 @@ fn parse_contract_migration_operation_id(value: &str) -> Result<ContractMigratio
     ContractMigrationOperationId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
 }
 
+fn parse_application_installation_campaign_id(
+    value: &str,
+) -> Result<ApplicationInstallationCampaignId, ()> {
+    ApplicationInstallationCampaignId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
+}
+
 fn parse_lower_hash(value: &str) -> Result<[u8; 32], ()> {
     if value.len() != 64
         || !value
@@ -7812,6 +7921,12 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Application {
+            command: ApplicationCommand::Install { .. },
+        } => CommandIdentity::ApplicationInstall,
+        TopLevel::Application {
+            command: ApplicationCommand::Installation { .. },
+        } => CommandIdentity::ApplicationInstallation,
         TopLevel::Application {
             command: ApplicationCommand::Lock { .. },
         } => CommandIdentity::ApplicationLock,

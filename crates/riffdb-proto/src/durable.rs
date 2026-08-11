@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 73;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 74;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 53;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 54;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -194,6 +194,14 @@ const WORKFLOW_SERVICE_VALUES_V3_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(
 const WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES: &[u8; 40] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-workflow-service-values-v3-record-bounds.bin"
+));
+const INSTALLATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-installation-v1-schema-hash.bin"
+));
+const INSTALLATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-installation-v1-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -1034,6 +1042,27 @@ const COMMAND_SEGMENT_V2_RECORD_SCHEMA: RecordSchema<'static> = workflow_service
     2
 );
 
+const APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredApplicationInstallationCampaignV1",
+        SchemaHash::from_bytes(*INSTALLATION_V1_SCHEMA_HASH_BYTES),
+        u32::from_be_bytes([
+            INSTALLATION_V1_RECORD_BOUND_BYTES[0],
+            INSTALLATION_V1_RECORD_BOUND_BYTES[1],
+            INSTALLATION_V1_RECORD_BOUND_BYTES[2],
+            INSTALLATION_V1_RECORD_BOUND_BYTES[3],
+        ]) as usize,
+        u32::from_be_bytes([
+            INSTALLATION_V1_RECORD_BOUND_BYTES[4],
+            INSTALLATION_V1_RECORD_BOUND_BYTES[5],
+            INSTALLATION_V1_RECORD_BOUND_BYTES[6],
+            INSTALLATION_V1_RECORD_BOUND_BYTES[7],
+        ]) as usize,
+        preflight_payload::<68>,
+        validate_payload::<68, v1::StoredApplicationInstallationCampaignV1>,
+    )
+    .with_compact_identity(57, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1218,6 +1247,10 @@ readable_message!(
 readable_message!(v1::StoredOutcomeV3, OUTCOME_V3_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandCapsuleV3, COMMAND_CAPSULE_V3_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandSegmentV2, COMMAND_SEGMENT_V2_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredApplicationInstallationCampaignV1,
+    APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -1272,6 +1305,7 @@ writable_message!(v1::StoredExecutionFailedV3);
 writable_message!(v1::StoredOutcomeV3);
 writable_message!(v1::StoredCommandCapsuleV3);
 writable_message!(v1::StoredCommandSegmentV2);
+writable_message!(v1::StoredApplicationInstallationCampaignV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -1437,6 +1471,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     OUTCOME_V3_RECORD_SCHEMA,
     COMMAND_CAPSULE_V3_RECORD_SCHEMA,
     COMMAND_SEGMENT_V2_RECORD_SCHEMA,
+    APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1498,6 +1533,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_CAPSULE_V3_RECORD_SCHEMA,
     COMMAND_SEGMENT_V2_RECORD_SCHEMA,
     COMMAND_DERIVED_INDEX_CHECKPOINT_V1_RECORD_SCHEMA,
+    APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

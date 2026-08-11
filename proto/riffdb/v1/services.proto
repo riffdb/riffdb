@@ -73,4 +73,6 @@ service AdminService {
   rpc CheckContractMigration(CheckContractMigrationRequest) returns (CheckContractMigrationResponse);
   rpc ApplyContractMigration(ApplyContractMigrationRequest) returns (ApplyContractMigrationResponse);
   rpc GetContractMigrationOperation(GetContractMigrationOperationRequest) returns (GetContractMigrationOperationResponse);
+  rpc StartApplicationInstallation(StartApplicationInstallationRequest) returns (StartApplicationInstallationResponse);
+  rpc GetApplicationInstallation(GetApplicationInstallationRequest) returns (GetApplicationInstallationResponse);
 }

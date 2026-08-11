@@ -755,6 +755,7 @@ enum RegistryMigration {
     ValidatedPrefixCheckpoint,
     RetentionWatermark,
     ReactiveConsumers,
+    ApplicationInstallationCampaign,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -810,6 +811,12 @@ pub(crate) const PRE_RETENTION_WATERMARK_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST: [u8; 32] = [
     0x39, 0x5a, 0x7f, 0x77, 0xcf, 0x3a, 0x95, 0x52, 0x12, 0x95, 0x76, 0x8d, 0x57, 0xbd, 0x82, 0x27,
     0xa1, 0x5a, 0x9d, 0xd8, 0x99, 0x28, 0xcc, 0xf9, 0x81, 0x9e, 0x79, 0x41, 0x12, 0x1e, 0x6e, 0x21,
+];
+/// Registry digest immediately before durable application-installation
+/// campaigns became current in WP-568.
+pub(crate) const PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST: [u8; 32] = [
+    0xe6, 0x50, 0x78, 0x74, 0xb8, 0x90, 0x77, 0x1f, 0xe7, 0x1c, 0xd6, 0xe2, 0x73, 0x08, 0x2d, 0xc3,
+    0xdd, 0x22, 0xd5, 0xd3, 0x4d, 0xa4, 0x0a, 0x4e, 0x47, 0x11, 0x1f, 0xfa, 0x39, 0xaf, 0xec, 0x24,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1238,6 +1245,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST)
                 {
                     RegistryMigration::ReactiveConsumers
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::ApplicationInstallationCampaign
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1399,6 +1410,27 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+                | RegistryMigration::AuditRequestIndex
+                | RegistryMigration::EventRoute
+                | RegistryMigration::EntityReference
+                | RegistryMigration::ContractMigration
+                | RegistryMigration::ValidatedPrefixCheckpoint
+                | RegistryMigration::RetentionWatermark
+                | RegistryMigration::ReactiveConsumers
+                | RegistryMigration::ApplicationInstallationCampaign
+        ) {
+            install_application_installation_campaign_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -2539,6 +2571,21 @@ fn install_reactive_consumer_tables(shared: &SharedRedb) -> Result<(), StorageEr
     drop(
         transaction
             .open_table(crate::layout::EVENT_CONSUMER_DELIVERIES)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)
+}
+
+fn install_application_installation_campaign_table(
+    shared: &SharedRedb,
+) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
             .map_err(table_error)?,
     );
     shared.commit_durable(transaction)

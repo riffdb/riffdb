@@ -9,6 +9,8 @@ use riffdb_types::{
 };
 use serde::{Deserialize, Serialize};
 
+pub use riffdb_types::MAX_APPLICATION_INSTALLATION_CAMPAIGN_STATE_BYTES;
+
 use crate::{
     ApplicationInstallationPlan, InstallationArtifact, InstallationArtifactKind,
     InstallationDriver, InstallationPlanError, InstallationPlanErrorKind, InstallationSymbol,
@@ -23,8 +25,9 @@ pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1: &str =
     "riffdb.application-installation-campaign-state/v1";
 /// Maximum canonical bytes in one redacted terminal receipt.
 pub const MAX_INSTALLATION_RECEIPT_BYTES: usize = 2 * 1_024 * 1_024;
-/// Maximum canonical bytes in one exact plan-plus-campaign durable record.
-pub const MAX_INSTALLATION_CAMPAIGN_STATE_BYTES: usize = 8 * 1_024 * 1_024;
+/// Compatibility alias for the shared exact campaign-state storage boundary.
+pub const MAX_INSTALLATION_CAMPAIGN_STATE_BYTES: usize =
+    MAX_APPLICATION_INSTALLATION_CAMPAIGN_STATE_BYTES;
 
 /// Closed, dependency-ordered stages in one application installation campaign.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

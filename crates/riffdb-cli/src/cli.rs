@@ -196,6 +196,18 @@ pub(crate) enum MigrationCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationCommand {
+    /// Starts or resumes one exact, caller-identified installation campaign.
+    Install {
+        #[arg(long, value_name = "CANONICAL_PLAN")]
+        plan: OsString,
+        #[arg(long, value_name = "UUID_V7")]
+        campaign_id: String,
+    },
+    /// Observes one retained installation campaign without changing its plan.
+    Installation {
+        #[arg(long, value_name = "UUID_V7")]
+        campaign_id: String,
+    },
     /// Previews or atomically writes an explicit local application-format migration.
     Migrate {
         #[arg(
@@ -1545,6 +1557,48 @@ mod tests {
                 command: ApplicationCommand::BindDevRole { role, tenant: Some(tenant), .. }
             } if role == "TicketDeskAgent" && tenant == "organization_acme"
         ));
+
+        let campaign_id = "018f2f85-3c20-7a31-8f11-112233445566";
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "install",
+                "--plan",
+                "installation-plan.json",
+                "--campaign-id",
+                campaign_id,
+            ])
+            .expect("exact application installation")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Install { plan, campaign_id: parsed }
+            } if plan == "installation-plan.json" && parsed == campaign_id
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "installation",
+                "--campaign-id",
+                campaign_id,
+            ])
+            .expect("application installation observation")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Installation { campaign_id: parsed }
+            } if parsed == campaign_id
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "install",
+                "--plan",
+                "installation-plan.json",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

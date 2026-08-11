@@ -6,6 +6,10 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use riffdb_application::{
+    ApplicationInstallationPlan, InstallationCampaignPhase, InstallationFailureCode,
+    InstallationNextAction, InstallationStage,
+};
 use riffdb_auth::AuthenticationContext;
 use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_value_to_proto, v1};
 use riffdb_service::{
@@ -36,12 +40,13 @@ use riffdb_service::{
     ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
     FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult,
-    GetCommitRequest, GetCommitResult, GetContractMigrationOperationRequest,
-    GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    GetQueryModuleRequest, GetReactiveWakeupResult, HealthComponentKind, HealthComponentStatus,
-    HealthRequest, HealthResult, HealthStatus, JournaledCommandResult, JournaledCompletion,
+    GetApplicationInstallationRequest, GetApplicationInstallationResult, GetCommitRequest,
+    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
+    GetReactiveWakeupResult, HealthComponentKind, HealthComponentStatus, HealthRequest,
+    HealthResult, HealthStatus, JournaledCommandResult, JournaledCompletion,
     ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection,
     LiveQueryCursor, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
     LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
@@ -60,27 +65,28 @@ use riffdb_service::{
     ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
     RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
     ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    SeekEventStreamConsumerRequest, SourceName, StatisticsRequest, StatisticsResult,
-    SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity, SubmittedMoney,
-    SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest, SymbolicContractSelector,
-    SymbolicDiagnostic, SymbolicEvent, SymbolicQueryIdentity, SymbolicQueryParameters,
-    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
-    TailEventsRequest, TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult,
-    ValidateContractRequest, WatchLiveNamedQueryRequest,
+    SeekEventStreamConsumerRequest, SourceName, StartApplicationInstallationRequest,
+    StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField,
+    SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
+    SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent,
+    SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
+    SymbolicResultField, SymbolicResultRecord, TailEventsRequest, TailEventsResult,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AdmittedActorContext, ApplicationRoleHash, Audience, BackupNameV1,
-    CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1,
-    CapabilityPermissionsV1, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractMigrationApplyConfirmation, ContractMigrationOperationId,
-    ContractMigrationOperationKind, ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1,
-    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, EventConsumerName, EventLeaseToken,
-    FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, MigrationBundleHash,
-    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
-    ProvenanceId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
-    RequestId, RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope,
-    Timestamp,
+    ActorId, ActorKind, AdmittedActorContext, ApplicationInstallationCampaignId,
+    ApplicationRoleHash, Audience, BackupNameV1, CapabilityGrantV1, CapabilityId,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommandId,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationApplyConfirmation,
+    ContractMigrationOperationId, ContractMigrationOperationKind, ContractVersion, CurrencyCode,
+    Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId,
+    EventConsumerName, EventLeaseToken, FieldId, FrontierPosition, IdempotencyKey,
+    IndexEpochPosition, IndexId, MigrationBundleHash, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
+    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName,
+    ReactiveModuleHash, ReactiveOperationName, RequestId, RevocationReasonCodeV1, SchemaHash,
+    ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -3579,6 +3585,39 @@ fn contract_migration_operation_id_from_bytes(
     ContractMigrationOperationId::from_bytes(bytes).map_err(|_| invalid_request())
 }
 
+/// Converts one exact canonical installation start request.
+pub fn start_application_installation_request_from_proto(
+    request: v1::StartApplicationInstallationRequest,
+) -> Result<(RequestId, StartApplicationInstallationRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let campaign_id = application_installation_campaign_id_from_bytes(&request.campaign_id)?;
+    let plan = ApplicationInstallationPlan::decode_canonical(&request.canonical_plan)
+        .map_err(|_| invalid_request())?;
+    Ok((
+        request_id,
+        StartApplicationInstallationRequest::new(campaign_id, plan),
+    ))
+}
+
+/// Converts one protected exact campaign selector.
+pub fn get_application_installation_request_from_proto(
+    request: v1::GetApplicationInstallationRequest,
+) -> Result<(RequestId, GetApplicationInstallationRequest), Status> {
+    Ok((
+        request_id_from_bytes(&request.request_id)?,
+        GetApplicationInstallationRequest::new(application_installation_campaign_id_from_bytes(
+            &request.campaign_id,
+        )?),
+    ))
+}
+
+fn application_installation_campaign_id_from_bytes(
+    bytes: &[u8],
+) -> Result<ApplicationInstallationCampaignId, Status> {
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
+    ApplicationInstallationCampaignId::from_bytes(bytes).map_err(|_| invalid_request())
+}
+
 /// Converts the restricted or authenticated Health result without widening it.
 #[must_use]
 pub fn health_result_to_proto(
@@ -3867,6 +3906,159 @@ pub fn get_contract_migration_operation_result_to_proto(
     };
     v1::GetContractMigrationOperationResponse {
         result: Some(result),
+    }
+}
+
+/// Converts one exact campaign start/resume result.
+#[must_use]
+pub fn application_installation_result_to_proto(
+    result: &riffdb_service::ApplicationInstallationOperationResult,
+) -> v1::StartApplicationInstallationResponse {
+    v1::StartApplicationInstallationResponse {
+        observation: Some(application_installation_observation_to_proto(result)),
+        canonical_receipt: result
+            .receipt()
+            .map_or_else(Vec::new, |receipt| receipt.canonical_bytes().to_vec()),
+    }
+}
+
+/// Converts one protected campaign lookup without changing absence semantics.
+#[must_use]
+pub fn get_application_installation_result_to_proto(
+    result: &GetApplicationInstallationResult,
+) -> v1::GetApplicationInstallationResponse {
+    let result = match result {
+        GetApplicationInstallationResult::NotFound => {
+            v1::get_application_installation_response::Result::NotFound(v1::Unit {})
+        }
+        GetApplicationInstallationResult::Found(found) => {
+            v1::get_application_installation_response::Result::Found(
+                application_installation_result_to_proto(found),
+            )
+        }
+    };
+    v1::GetApplicationInstallationResponse {
+        result: Some(result),
+    }
+}
+
+fn application_installation_observation_to_proto(
+    result: &riffdb_service::ApplicationInstallationOperationResult,
+) -> v1::ApplicationInstallationObservation {
+    let observation = result.observation();
+    let failure = observation
+        .failure()
+        .map(|failure| v1::ApplicationInstallationFailure {
+            stage: application_installation_stage_to_proto(failure.stage()) as i32,
+            code: application_installation_failure_to_proto(failure.code()) as i32,
+            next_action: application_installation_next_action_to_proto(failure.next_action())
+                as i32,
+        });
+    v1::ApplicationInstallationObservation {
+        campaign_id: observation.campaign_id().into_bytes().to_vec(),
+        plan_hash: observation.plan_hash().into_bytes().to_vec(),
+        contract_lineage: result.lineage().as_str().to_owned(),
+        phase: match observation.phase() {
+            InstallationCampaignPhase::Running => v1::ApplicationInstallationPhase::Running,
+            InstallationCampaignPhase::Partial => v1::ApplicationInstallationPhase::Partial,
+            InstallationCampaignPhase::Installed => v1::ApplicationInstallationPhase::Installed,
+        } as i32,
+        completed_stages: observation
+            .completed()
+            .iter()
+            .map(|stage| application_installation_stage_to_proto(*stage) as i32)
+            .collect(),
+        next_stage: observation.next_stage().map_or(
+            v1::ApplicationInstallationStage::Unspecified,
+            application_installation_stage_to_proto,
+        ) as i32,
+        next_action: application_installation_next_action_to_proto(observation.next_action())
+            as i32,
+        failure,
+        receipt_hash: observation
+            .receipt_hash()
+            .map_or_else(Vec::new, |hash| hash.into_bytes().to_vec()),
+    }
+}
+
+const fn application_installation_stage_to_proto(
+    stage: InstallationStage,
+) -> v1::ApplicationInstallationStage {
+    match stage {
+        InstallationStage::Preflight => v1::ApplicationInstallationStage::Preflight,
+        InstallationStage::Contract => v1::ApplicationInstallationStage::Contract,
+        InstallationStage::Migration => v1::ApplicationInstallationStage::Migration,
+        InstallationStage::QueryModules => v1::ApplicationInstallationStage::QueryModules,
+        InstallationStage::ReactiveModules => v1::ApplicationInstallationStage::ReactiveModules,
+        InstallationStage::Roles => v1::ApplicationInstallationStage::Roles,
+        InstallationStage::Credentials => v1::ApplicationInstallationStage::Credentials,
+        InstallationStage::DriverProof => v1::ApplicationInstallationStage::DriverProof,
+        InstallationStage::Seeds => v1::ApplicationInstallationStage::Seeds,
+        InstallationStage::Receipt => v1::ApplicationInstallationStage::Receipt,
+    }
+}
+
+const fn application_installation_failure_to_proto(
+    code: InstallationFailureCode,
+) -> v1::ApplicationInstallationFailureCode {
+    match code {
+        InstallationFailureCode::LocalArtifactMismatch => {
+            v1::ApplicationInstallationFailureCode::LocalArtifactMismatch
+        }
+        InstallationFailureCode::RemoteIdentityMismatch => {
+            v1::ApplicationInstallationFailureCode::RemoteIdentityMismatch
+        }
+        InstallationFailureCode::MigrationGateRequired => {
+            v1::ApplicationInstallationFailureCode::MigrationGateRequired
+        }
+        InstallationFailureCode::RoleWideningApprovalRequired => {
+            v1::ApplicationInstallationFailureCode::RoleWideningApprovalRequired
+        }
+        InstallationFailureCode::CredentialDestinationOccupied => {
+            v1::ApplicationInstallationFailureCode::CredentialDestinationOccupied
+        }
+        InstallationFailureCode::DriverProofFailed => {
+            v1::ApplicationInstallationFailureCode::DriverProofFailed
+        }
+        InstallationFailureCode::SeedPartial => v1::ApplicationInstallationFailureCode::SeedPartial,
+        InstallationFailureCode::AuthorizationDenied => {
+            v1::ApplicationInstallationFailureCode::AuthorizationDenied
+        }
+        InstallationFailureCode::ServiceUnavailable => {
+            v1::ApplicationInstallationFailureCode::ServiceUnavailable
+        }
+    }
+}
+
+const fn application_installation_next_action_to_proto(
+    action: InstallationNextAction,
+) -> v1::ApplicationInstallationNextAction {
+    match action {
+        InstallationNextAction::ValidateLocalArtifacts => {
+            v1::ApplicationInstallationNextAction::ValidateLocalArtifacts
+        }
+        InstallationNextAction::DeployContract => {
+            v1::ApplicationInstallationNextAction::DeployContract
+        }
+        InstallationNextAction::ApplyMigration => {
+            v1::ApplicationInstallationNextAction::ApplyMigration
+        }
+        InstallationNextAction::DeployQueryModules => {
+            v1::ApplicationInstallationNextAction::DeployQueryModules
+        }
+        InstallationNextAction::DeployReactiveModules => {
+            v1::ApplicationInstallationNextAction::DeployReactiveModules
+        }
+        InstallationNextAction::ReconcileRoles => {
+            v1::ApplicationInstallationNextAction::ReconcileRoles
+        }
+        InstallationNextAction::RotateCredentials => {
+            v1::ApplicationInstallationNextAction::RotateCredentials
+        }
+        InstallationNextAction::ProveDrivers => v1::ApplicationInstallationNextAction::ProveDrivers,
+        InstallationNextAction::RunSeeds => v1::ApplicationInstallationNextAction::RunSeeds,
+        InstallationNextAction::SealReceipt => v1::ApplicationInstallationNextAction::SealReceipt,
+        InstallationNextAction::None => v1::ApplicationInstallationNextAction::None,
     }
 }
 

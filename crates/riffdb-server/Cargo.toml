@@ -17,6 +17,7 @@ getrandom = { version = "=0.3.4", default-features = false }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
 riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["server"] }
+riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }

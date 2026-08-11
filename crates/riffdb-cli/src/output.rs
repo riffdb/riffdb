@@ -7,6 +7,7 @@ use riffdb_client_rust::{
     ValidationPathSegment, v1,
 };
 use riffdb_diagnostics::AuthoringDiagnostics;
+use riffdb_types::ApplicationInstallationCampaignId;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{Error as _, SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -26,6 +27,8 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
     ApplicationLock,
+    ApplicationInstall,
+    ApplicationInstallation,
     ApplicationDeploy,
     ApplicationBindDevRole,
     MigrationPlan,
@@ -91,6 +94,8 @@ impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ApplicationLock => "application.lock",
+            Self::ApplicationInstall => "application.install",
+            Self::ApplicationInstallation => "application.installation",
             Self::ApplicationDeploy => "application.deploy",
             Self::ApplicationBindDevRole => "application.bind_dev_role",
             Self::MigrationPlan => "migration.plan",
@@ -271,6 +276,26 @@ pub(crate) fn migration_uncertain(
         },
         "outcome_unknown",
         "the migration operation outcome remains unknown",
+        3,
+    )
+}
+
+pub(crate) fn installation_uncertain(
+    command: CommandIdentity,
+    campaign_id: ApplicationInstallationCampaignId,
+) -> Terminal {
+    let campaign_id = campaign_id.to_string();
+    error_with_exit(
+        command,
+        &InstallationUncertainError {
+            kind: "uncertain",
+            code: "outcome_unknown",
+            message: "the installation campaign outcome remains unknown",
+            recovery_action: "observe_application_installation",
+            campaign_id: &campaign_id,
+        },
+        "outcome_unknown",
+        "the installation campaign outcome remains unknown",
         3,
     )
 }
@@ -880,6 +905,46 @@ pub(crate) fn render_contract_migration_operation(
     }
 }
 
+pub(crate) fn render_installation_start(
+    response: &v1::StartApplicationInstallationResponse,
+) -> Terminal {
+    let Some(observation) = response.observation.as_ref().and_then(|observation| {
+        InstallationObservationDto::new("observed", observation, &response.canonical_receipt)
+    }) else {
+        return rendering_failure(CommandIdentity::ApplicationInstall);
+    };
+    let status = observation.phase;
+    success(CommandIdentity::ApplicationInstall, status, &observation)
+}
+
+pub(crate) fn render_installation_observation(
+    response: &v1::GetApplicationInstallationResponse,
+) -> Terminal {
+    use v1::get_application_installation_response::Result;
+    match response.result.as_ref() {
+        Some(Result::NotFound(_)) => success(
+            CommandIdentity::ApplicationInstallation,
+            "not_found",
+            &StatusResult {
+                status: "not_found",
+            },
+        ),
+        Some(Result::Found(found)) => {
+            let Some(observation) = found.observation.as_ref().and_then(|observation| {
+                InstallationObservationDto::new("found", observation, &found.canonical_receipt)
+            }) else {
+                return rendering_failure(CommandIdentity::ApplicationInstallation);
+            };
+            success(
+                CommandIdentity::ApplicationInstallation,
+                "found",
+                &observation,
+            )
+        }
+        None => rendering_failure(CommandIdentity::ApplicationInstallation),
+    }
+}
+
 pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
     use v1::health_response::Result;
     match response.result.as_ref() {
@@ -1468,6 +1533,16 @@ struct MaintenanceUncertainError<'a> {
     message: &'static str,
     recovery_action: &'static str,
     operation_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct InstallationUncertainError<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    code: &'static str,
+    message: &'static str,
+    recovery_action: &'static str,
+    campaign_id: &'a str,
 }
 
 impl Serialize for MaintenanceUncertainError<'_> {
@@ -2307,6 +2382,165 @@ struct MaintenanceOperationDto<'a> {
     failure: Option<&'static str>,
 }
 
+#[derive(Serialize)]
+struct InstallationFailureDto {
+    stage: &'static str,
+    code: &'static str,
+    next_action: &'static str,
+}
+
+#[derive(Serialize)]
+struct InstallationObservationDto<'a> {
+    status: &'a str,
+    campaign_id: String,
+    plan_hash: LowerHex<'a>,
+    contract_lineage: &'a str,
+    phase: &'static str,
+    completed_stages: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_stage: Option<&'static str>,
+    next_action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<InstallationFailureDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_hash: Option<LowerHex<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt: Option<serde_json::Value>,
+}
+
+impl<'a> InstallationObservationDto<'a> {
+    fn new(
+        status: &'a str,
+        observation: &'a v1::ApplicationInstallationObservation,
+        canonical_receipt: &'a [u8],
+    ) -> Option<Self> {
+        if observation.plan_hash.len() != 32 || observation.contract_lineage.is_empty() {
+            return None;
+        }
+        let phase = installation_phase(observation.phase)?;
+        let completed_stages = observation
+            .completed_stages
+            .iter()
+            .copied()
+            .map(installation_stage)
+            .collect::<Option<Vec<_>>>()?;
+        let next_stage = if observation.next_stage == 0 {
+            None
+        } else {
+            Some(installation_stage(observation.next_stage)?)
+        };
+        let next_action = installation_next_action(observation.next_action)?;
+        let failure = match observation.failure.as_ref() {
+            Some(failure) => Some(InstallationFailureDto {
+                stage: installation_stage(failure.stage)?,
+                code: installation_failure_code(failure.code)?,
+                next_action: installation_next_action(failure.next_action)?,
+            }),
+            None => None,
+        };
+        let receipt_hash = match observation.receipt_hash.as_slice() {
+            [] => None,
+            hash if hash.len() == 32 => Some(LowerHex(hash)),
+            _ => return None,
+        };
+        let receipt = if canonical_receipt.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_slice(canonical_receipt).ok()?)
+        };
+        if (phase == "partial") != failure.is_some()
+            || (phase == "installed") != receipt_hash.is_some()
+            || receipt_hash.is_some() != receipt.is_some()
+        {
+            return None;
+        }
+        Some(Self {
+            status,
+            campaign_id: format_uuid(&observation.campaign_id)?,
+            plan_hash: LowerHex(&observation.plan_hash),
+            contract_lineage: &observation.contract_lineage,
+            phase,
+            completed_stages,
+            next_stage,
+            next_action,
+            failure,
+            receipt_hash,
+            receipt,
+        })
+    }
+}
+
+fn installation_stage(value: i32) -> Option<&'static str> {
+    match v1::ApplicationInstallationStage::try_from(value).ok()? {
+        v1::ApplicationInstallationStage::Preflight => Some("preflight"),
+        v1::ApplicationInstallationStage::Contract => Some("contract"),
+        v1::ApplicationInstallationStage::Migration => Some("migration"),
+        v1::ApplicationInstallationStage::QueryModules => Some("query_modules"),
+        v1::ApplicationInstallationStage::ReactiveModules => Some("reactive_modules"),
+        v1::ApplicationInstallationStage::Roles => Some("roles"),
+        v1::ApplicationInstallationStage::Credentials => Some("credentials"),
+        v1::ApplicationInstallationStage::DriverProof => Some("driver_proof"),
+        v1::ApplicationInstallationStage::Seeds => Some("seeds"),
+        v1::ApplicationInstallationStage::Receipt => Some("receipt"),
+        v1::ApplicationInstallationStage::Unspecified => None,
+    }
+}
+
+fn installation_phase(value: i32) -> Option<&'static str> {
+    match v1::ApplicationInstallationPhase::try_from(value).ok()? {
+        v1::ApplicationInstallationPhase::Running => Some("running"),
+        v1::ApplicationInstallationPhase::Partial => Some("partial"),
+        v1::ApplicationInstallationPhase::Installed => Some("installed"),
+        v1::ApplicationInstallationPhase::Unspecified => None,
+    }
+}
+
+fn installation_failure_code(value: i32) -> Option<&'static str> {
+    match v1::ApplicationInstallationFailureCode::try_from(value).ok()? {
+        v1::ApplicationInstallationFailureCode::LocalArtifactMismatch => {
+            Some("local_artifact_mismatch")
+        }
+        v1::ApplicationInstallationFailureCode::RemoteIdentityMismatch => {
+            Some("remote_identity_mismatch")
+        }
+        v1::ApplicationInstallationFailureCode::MigrationGateRequired => {
+            Some("migration_gate_required")
+        }
+        v1::ApplicationInstallationFailureCode::RoleWideningApprovalRequired => {
+            Some("role_widening_approval_required")
+        }
+        v1::ApplicationInstallationFailureCode::CredentialDestinationOccupied => {
+            Some("credential_destination_occupied")
+        }
+        v1::ApplicationInstallationFailureCode::DriverProofFailed => Some("driver_proof_failed"),
+        v1::ApplicationInstallationFailureCode::SeedPartial => Some("seed_partial"),
+        v1::ApplicationInstallationFailureCode::AuthorizationDenied => Some("authorization_denied"),
+        v1::ApplicationInstallationFailureCode::ServiceUnavailable => Some("service_unavailable"),
+        v1::ApplicationInstallationFailureCode::Unspecified => None,
+    }
+}
+
+fn installation_next_action(value: i32) -> Option<&'static str> {
+    match v1::ApplicationInstallationNextAction::try_from(value).ok()? {
+        v1::ApplicationInstallationNextAction::ValidateLocalArtifacts => {
+            Some("validate_local_artifacts")
+        }
+        v1::ApplicationInstallationNextAction::DeployContract => Some("deploy_contract"),
+        v1::ApplicationInstallationNextAction::ApplyMigration => Some("apply_migration"),
+        v1::ApplicationInstallationNextAction::DeployQueryModules => Some("deploy_query_modules"),
+        v1::ApplicationInstallationNextAction::DeployReactiveModules => {
+            Some("deploy_reactive_modules")
+        }
+        v1::ApplicationInstallationNextAction::ReconcileRoles => Some("reconcile_roles"),
+        v1::ApplicationInstallationNextAction::RotateCredentials => Some("rotate_credentials"),
+        v1::ApplicationInstallationNextAction::ProveDrivers => Some("prove_drivers"),
+        v1::ApplicationInstallationNextAction::RunSeeds => Some("run_seeds"),
+        v1::ApplicationInstallationNextAction::SealReceipt => Some("seal_receipt"),
+        v1::ApplicationInstallationNextAction::None => Some("none"),
+        v1::ApplicationInstallationNextAction::Unspecified => None,
+    }
+}
+
 impl<'a> MaintenanceOperationDto<'a> {
     fn new(status: &'a str, operation: &'a v1::OfflineMaintenanceOperation) -> Option<Self> {
         let kind = match v1::OfflineMaintenanceOperationKind::try_from(operation.kind).ok()? {
@@ -2700,6 +2934,48 @@ mod tests {
         let mut malformed = operation;
         malformed.failure = v1::ContractMigrationFailureClass::StageCorrupt as i32;
         assert!(MigrationOperationDto::new("found", &malformed).is_none());
+    }
+
+    #[test]
+    fn installation_output_names_only_safe_exact_campaign_progress() {
+        let campaign_id =
+            ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(1, [6; 10])
+                .expect("campaign ID");
+        let response = v1::StartApplicationInstallationResponse {
+            observation: Some(v1::ApplicationInstallationObservation {
+                campaign_id: campaign_id.into_bytes().to_vec(),
+                plan_hash: vec![9; 32],
+                contract_lineage: "TicketDesk".to_owned(),
+                phase: v1::ApplicationInstallationPhase::Running as i32,
+                completed_stages: vec![v1::ApplicationInstallationStage::Preflight as i32],
+                next_stage: v1::ApplicationInstallationStage::Contract as i32,
+                next_action: v1::ApplicationInstallationNextAction::DeployContract as i32,
+                failure: None,
+                receipt_hash: Vec::new(),
+            }),
+            canonical_receipt: Vec::new(),
+        };
+        let terminal = render_installation_start(&response);
+        let document: JsonValue =
+            serde_json::from_slice(terminal.json_bytes().expect("rendered campaign"))
+                .expect("campaign JSON");
+        assert_eq!(document["command"], "application.install");
+        assert_eq!(document["result"]["phase"], "running");
+        assert_eq!(document["result"]["completed_stages"][0], "preflight");
+        assert_eq!(document["result"]["next_action"], "deploy_contract");
+        let encoded = serde_json::to_string(&document).expect("encoded campaign");
+        for canary in ["credential", "seed_value", "/home/", "field_id"] {
+            assert!(!encoded.contains(canary), "leaked {canary}");
+        }
+
+        let mut malformed = response;
+        malformed
+            .observation
+            .as_mut()
+            .expect("observation")
+            .plan_hash
+            .pop();
+        assert!(render_installation_start(&malformed).failed);
     }
 
     const RESULT_FIXTURES: &[&str] = &[

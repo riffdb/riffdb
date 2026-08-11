@@ -10683,10 +10683,12 @@ work_packages:
     fixtures/installation/**, crates/riffdb-types/**, crates/riffdb-application/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
     crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-proto/examples/**,
-    crates/riffdb-storage-api/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-api-grpc/**,
     crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
-    crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-observability/**, fixtures/compatibility/**, release/**,
+    examples/agent-alpha/domains/rust/Cargo.lock,
+    tests/**, scripts/**, docs/**]
   deliverables:
   - Versioned deterministic installation plan/diff, permission, operation identity, service
     start/observe protocol, phase model, receipt, CLI/operator SDK, and compatibility fixtures

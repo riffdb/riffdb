@@ -106,6 +106,11 @@ pub const MAX_PROJECTION_QUERY_ROWS: usize = 500;
 /// Maximum encoded row content returned by one projection query.
 pub const MAX_PROJECTION_QUERY_CONTENT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Maximum canonical bytes retained for one exact application-installation campaign state.
+///
+/// The value includes the immutable installation plan plus bounded completed-stage evidence.
+pub const MAX_APPLICATION_INSTALLATION_CAMPAIGN_STATE_BYTES: usize = 8 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;

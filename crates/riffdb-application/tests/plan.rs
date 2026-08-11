@@ -68,6 +68,11 @@ fn base_input() -> ApplicationInstallationPlanInput {
                 symbol("manifest"),
                 GeneratedArtifactHash::from_bytes(hash32(5)),
             ),
+            InstallationArtifact::new(
+                InstallationArtifactKind::QueryModule,
+                symbol("queries"),
+                GeneratedArtifactHash::from_bytes(hash32(7)),
+            ),
         ],
         migration: None,
         roles: vec![role],
@@ -80,7 +85,7 @@ fn base_input() -> ApplicationInstallationPlanInput {
             )
             .expect("credential destination"),
         ],
-        drivers: vec![InstallationDriver::Rust],
+        drivers: vec![InstallationDriver::Rust, InstallationDriver::TypeScript],
         seeds: vec![
             InstallationSeed::new(
                 symbol("initial-data"),

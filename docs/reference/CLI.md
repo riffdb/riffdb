@@ -81,6 +81,8 @@ Validates and regenerates an exact application package
 Usage: riffdb application [OPTIONS] <COMMAND>
 
 Commands:
+  install        Starts or resumes one exact, caller-identified installation campaign
+  installation   Observes one retained installation campaign without changing its plan
   migrate        Previews or atomically writes an explicit local application-format migration
   check          Read-only symbolic compilation and safety analysis
   preview        Compiles and prints the exact proposed lock without writing
@@ -466,6 +468,43 @@ Commands:
   budget
 
 Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb application install`
+
+```text
+Starts or resumes one exact, caller-identified installation campaign
+
+Usage: riffdb application install [OPTIONS] --plan <CANONICAL_PLAN> --campaign-id <UUID_V7>
+
+Options:
+      --config <PATH>
+      --plan <CANONICAL_PLAN>
+      --campaign-id <UUID_V7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb application installation`
+
+```text
+Observes one retained installation campaign without changing its plan
+
+Usage: riffdb application installation [OPTIONS] --campaign-id <UUID_V7>
+
+Options:
+      --campaign-id <UUID_V7>
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
