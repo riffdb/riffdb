@@ -11826,3 +11826,63 @@ work_packages:
   - NOT STARTED. Depends on WP-592 (embedding ingress) and WP-594 (approximate tier),
     both open; the obligation map's pending table enumerates what remains unproven.
   human_review_triggers: *id001
+- id: WP-597
+  name: Secret field classification with structural display-surface redaction
+  depends_on: []
+  objective: Implement ADR-0118. A field may be declared secret; the classification rides
+    AST, versioned IR, bundle hash, catalogs, and generated bindings; every display surface
+    (tracing, typed public errors and diagnostics, MCP text, CLI rendering, provenance and
+    audit summaries, telemetry) consumes a redacting value wrapper so unredacted rendering is
+    unrepresentable; capability field visibility excludes secret fields from wildcard and
+    default grants; durable storage, backups, exports, and changelog frames remain
+    full-fidelity under existing authority rules. Register the SEC-F requirement family.
+  requirements: []
+  required_adrs: [ADR-0111, ADR-0117, ADR-0118]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/0118-secret-field-classification.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-types/**, crates/riffdb-policy/**,
+    crates/riffdb-errors/**, crates/riffdb-service/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-observability/**, docs/**, fixtures/**]
+  deliverables:
+  - secret keyword through grammar, AST, versioned IR with compatibility fixtures, bundle
+    hash, generated catalogs and bindings, with source-span diagnostics
+  - The redacting wrapper consumed by every display surface, with a per-surface redaction
+    sweep test asserting value absence and marker presence
+  - Field-visibility default-deny for secret fields with explicit-grant reveal, predicates
+    and unique enforcement functioning without read visibility
+  - Handbook page stating the classification's promise and its explicit non-promises (no
+    cryptography), plus a negative example
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
+  - cargo test -p riffdb-service -p riffdb-cli --all-features
+  - ./scripts/handbook check
+  human_review_triggers: *id001
+- id: WP-598
+  name: Framework-profile prerequisite verification for the rescoped alpha gate
+  depends_on: [WP-597]
+  objective: Verify or deliver the generic capabilities ADR-0117 names so the rescoped gate
+    (Better Auth shape) is honestly reachable, without any framework-specific code entering
+    first-party crates. Each item concludes as VERIFIED-with-named-test, DELIVERED-small, or
+    ESCALATED-as-own-package with evidence.
+  requirements: []
+  required_adrs: [ADR-0107, ADR-0109, ADR-0117]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-runtime/**, crates/riffdb-invariant/**, crates/riffdb-testkit/**,
+    tests/**]
+  deliverables:
+  - Unique-constraint enforcement verified transactional and conflict-integrated under
+    concurrent admission (named tests; the gate workload's unique-identity fixture)
+  - Single-use expiring token pattern proven expressible as compiled commands
+    (consume-once mutation plus invariant comparing a stored timestamp against transaction
+    logical time), with a replay-refusal and expiry-refusal fixture; smallest compiler or
+    invariant addition delivered here if expressibility falls short
+  - Atomic user/account/session workflow shape proven over ADR-0107/0109 machinery with a
+    concurrent refresh/revocation race test
+  - Adapter-minted idempotency documented as the keyless-retry pattern over existing client
+    identity machinery, with a driver-level test
+  - Gate workload-shape fixtures for the alpha corpus (framework-agnostic) covering the
+    above, wired into the acceptance path that replaced the Payload shape
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/check-requirement-coverage
+  human_review_triggers: *id001

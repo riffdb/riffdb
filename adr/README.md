@@ -132,6 +132,11 @@ direction, merged draft, or implementation choice.
 | [0111](0111-compiled-principal-row-policies.md) | Compiled Principal-Aware Row Policies | Accepted |
 | [0112](0112-alpha-format-compatibility-and-application-portability.md) | Alpha Format Compatibility and Application Portability | Accepted |
 | [0113](0113-deterministic-simulation-testing.md) | Deterministic Simulation Testing for the Durable Engine | Accepted |
+| [0114](0114-row-policy-capability-successor.md) | Row-Policy Capability Successor | Accepted |
+| [0115](0115-application-export-capability-successor.md) | Application Export Capability Successor | Proposed |
+| [0116](0116-current-row-event-policy-anchors.md) | Current-Row Policy Anchors for Durable Events | Proposed |
+| [0117](0117-compiled-external-framework-profiles.md) | Compiled External-Framework Profiles | Proposed |
+| [0118](0118-secret-field-classification.md) | Secret Field Classification and Display-Surface Redaction | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
