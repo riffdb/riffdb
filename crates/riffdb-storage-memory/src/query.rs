@@ -307,6 +307,17 @@ impl QueryReadView for MemoryQueryView<'_> {
             None => Ok(QueryScanPage::exact_end(rows, epoch)),
         }
     }
+
+    fn nearest(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+    ) -> Result<Vec<QueryRow>, Self::Error> {
+        // Row-store does not support vector nearest-neighbor search (ADR-0091).
+        // Nearest queries must be routed through the columnar projection engine.
+        Err(storage_error(StorageErrorKind::InvariantViolation))
+    }
 }
 
 impl MemoryQueryView<'_> {

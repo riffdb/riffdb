@@ -4648,6 +4648,15 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                     0,
                 ))
             }
+
+            fn nearest(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _k: u32,
+            ) -> Result<Vec<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(Vec::new())
+            }
         }
         riffdb_query_executor::execute_page_in_snapshot(program, parameters, prior, &mut EmptyView)
     }
@@ -4698,6 +4707,15 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                     Vec::new(),
                     0,
                 ))
+            }
+
+            fn nearest(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _k: u32,
+            ) -> Result<Vec<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(Vec::new())
             }
         }
 
@@ -4762,6 +4780,15 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                     Vec::new(),
                     0,
                 ))
+            }
+
+            fn nearest(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _k: u32,
+            ) -> Result<Vec<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(Vec::new())
             }
         }
         riffdb_query_executor::execute_operational_page_in_snapshot(

@@ -294,6 +294,127 @@ pub fn query_snapshot(
     execute_query(definition, snapshot, request)
 }
 
+/// Nearest-neighbor query request for the columnar vector projection.
+#[derive(Clone, Debug)]
+pub struct NearestQueryRequest {
+    /// Exactly one organization scope value (ADR-0086 §9 / ADR-0087).
+    pub org_scope: CanonicalValue,
+    /// The projected vector field to search.
+    pub vector_field: FieldId,
+    /// The query vector.
+    pub query_vector: riffdb_types::CanonicalVector,
+    /// Maximum results (K). Mandatory and positive.
+    pub k: u32,
+    /// Distance metric for scoring.
+    pub metric: riffdb_types::DistanceMetric,
+    /// Scan budget.
+    pub budget: QueryBudget,
+}
+
+/// One nearest-neighbor result row: primary key values and distance score.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NearestResultRow {
+    /// Primary-key component values aligned with
+    /// [`RegisteredDefinition::primary_key_fields`].
+    pub primary_key: Vec<CanonicalValue>,
+    /// All projected cell values for this entity row.
+    pub cells: Vec<CanonicalValue>,
+    /// Distance from the query vector (lower is closer for all metrics).
+    pub distance: f32,
+}
+
+/// Nearest-neighbor query result.
+#[derive(Clone, Debug)]
+pub struct NearestQueryResult {
+    /// Primary-key field order.
+    pub primary_key_fields: Vec<FieldId>,
+    /// Projected field order.
+    pub projected_fields: Vec<FieldId>,
+    /// Matching rows ordered by distance ascending (closest first).
+    pub rows: Vec<NearestResultRow>,
+}
+
+/// Executes a nearest-neighbor query against a published snapshot.
+///
+/// Policy filtering (VEC-007) is the caller's responsibility: only rows
+/// whose predicates pass should be included in the candidate set. This
+/// function scans all org-partitioned rows and applies the vector field
+/// extraction + distance computation.
+///
+/// Returns up to `k` rows ordered by distance ascending (closest first).
+pub fn nearest_query_snapshot(
+    definition: &RegisteredDefinition,
+    snapshot: &ColumnarSnapshot,
+    request: &NearestQueryRequest,
+) -> Result<NearestQueryResult, QueryError> {
+    // Validate org scope type.
+    if !org_value_matches_type(&request.org_scope, definition.org_scope_type()) {
+        return Err(QueryError::OrgScopeTypeMismatch {
+            expected: definition.org_scope_type().tag(),
+        });
+    }
+    let org = OrgKey::from_value(&request.org_scope).map_err(|_| QueryError::InvalidOrgScope)?;
+
+    // Find the vector field index in the projected fields.
+    let vector_field_index = projected_field_index(definition, request.vector_field)?;
+
+    let merged = snapshot.merged_org(&org);
+    let mut scanned = 0usize;
+
+    // Collect candidates: (row_index, vector_ref) for rows that have a vector value.
+    // All rows are included (caller is responsible for policy-pre-filtering via
+    // the predicate mechanism at the executor level).
+    let mut candidate_rows: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
+    let mut candidate_vectors: Vec<riffdb_types::CanonicalVector> = Vec::new();
+
+    for (key, row) in merged {
+        scanned = scanned.saturating_add(1);
+        if scanned > request.budget.max_scanned_rows {
+            return Err(QueryError::ScanBudgetExceeded {
+                max: request.budget.max_scanned_rows,
+            });
+        }
+        // Extract the vector value from the projected cell.
+        let cell = &row.cells[vector_field_index];
+        if let CanonicalValue::Vector(vec_val) = cell {
+            let pk_values = decode_primary_key(definition, &key)?;
+            candidate_vectors.push(vec_val.clone());
+            candidate_rows.push((key, pk_values, row));
+        }
+        // Rows without a vector value (Null or non-Vector) are silently skipped.
+    }
+
+    // Run exact KNN.
+    let candidate_refs: Vec<&riffdb_types::CanonicalVector> = candidate_vectors.iter().collect();
+    let scored = crate::nearest::exact_knn(
+        &request.query_vector,
+        &candidate_refs,
+        request.metric,
+        request.k,
+    );
+
+    let primary_key_fields = definition.primary_key_fields().to_vec();
+    let projected_fields = definition.projected_fields().to_vec();
+
+    let rows = scored
+        .into_iter()
+        .map(|scored_candidate| {
+            let (_, pk_values, merged_row) = &candidate_rows[scored_candidate.index];
+            NearestResultRow {
+                primary_key: pk_values.clone(),
+                cells: merged_row.cells.clone(),
+                distance: scored_candidate.distance,
+            }
+        })
+        .collect();
+
+    Ok(NearestQueryResult {
+        primary_key_fields,
+        projected_fields,
+        rows,
+    })
+}
+
 /// Executes `request` against `snapshot` under `definition`.
 pub(crate) fn execute_query(
     definition: &RegisteredDefinition,

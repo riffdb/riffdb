@@ -25,6 +25,7 @@ riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
 riffdb-application = { path = "../riffdb-application", version = "0.1.0", default-features = false }
 riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
+riffdb-columnar = { path = "../riffdb-columnar", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-config = { path = "../riffdb-config", version = "0.1.0", default-features = false }
 riffdb-conflict = { path = "../riffdb-conflict", version = "0.1.0", default-features = false }
@@ -135,6 +136,10 @@ path = "../../tests/scheduler_recovery.rs"
 [[test]]
 name = "bulk_command_recovery"
 path = "../../tests/bulk_command_recovery.rs"
+
+[[test]]
+name = "projection_semantics"
+path = "../../tests/projection_semantics.rs"
 
 [lints]
 workspace = true
