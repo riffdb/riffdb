@@ -413,6 +413,8 @@ pub enum TypeExpression {
 /// A command declaration split into the grammar's fixed phases.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandDeclaration {
+    /// Ordinary single-plan command or compiler-bounded collection command.
+    pub kind: CommandKind,
     /// The command identifier.
     pub name: Spanned<String>,
     /// Input declarations in source order.
@@ -423,12 +425,38 @@ pub struct CommandDeclaration {
     pub idempotency: Option<Spanned<IdempotencyClause>>,
     /// Up-front entity bindings in source order.
     pub bindings: Vec<Spanned<Binding>>,
+    /// The one compiler-owned collection expansion, present only for bulk commands.
+    pub bulk_iteration: Option<Spanned<BulkIteration>>,
     /// Business preconditions in source order.
     pub requirements: Vec<Spanned<Requirement>>,
     /// Interleaved state and event effects in source order.
     pub effects: Vec<Spanned<Effect>>,
     /// The command's final success outcome.
     pub return_clause: Spanned<ReturnClause>,
+}
+
+/// Closed command declaration family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandKind {
+    /// Existing scalar command semantics.
+    Ordinary,
+    /// One atomic compiler-bounded collection expansion.
+    Bulk,
+}
+
+/// The sole source-level collection expansion accepted by a bulk command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BulkIteration {
+    /// Local name of the current submitted element.
+    pub element: Spanned<String>,
+    /// Command list-input name expanded in submitted order.
+    pub collection: Spanned<String>,
+    /// Element-local entity bindings.
+    pub bindings: Vec<Spanned<Binding>>,
+    /// Element-local deterministic business requirements.
+    pub requirements: Vec<Spanned<Requirement>>,
+    /// Element-local state/event effects.
+    pub effects: Vec<Spanned<Effect>>,
 }
 
 /// A command input declaration.
@@ -472,6 +500,8 @@ pub enum Binding {
     Mutate(EntityBinding),
     /// A mutable new-entity binding.
     Create(EntityBinding),
+    /// A checked removal of one existing entity under its declared deletion policy.
+    Delete(EntityBinding),
 }
 
 /// The common syntax of every entity binding.

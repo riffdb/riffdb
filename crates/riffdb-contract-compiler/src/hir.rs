@@ -1347,6 +1347,9 @@ fn lower_commands(
                 Binding::Read(binding) => (binding, BindingMode::Read),
                 Binding::Mutate(binding) => (binding, BindingMode::Mutate),
                 Binding::Create(binding) => (binding, BindingMode::Create),
+                // The compiler entry gate rejects this until the successor IR
+                // owns a distinct checked-delete mode.
+                Binding::Delete(binding) => (binding, BindingMode::Mutate),
             };
             let Some(entity_id) = symbols.entities.get(&binding.entity.value).copied() else {
                 diagnostics.push(CompilerDiagnostic::new(

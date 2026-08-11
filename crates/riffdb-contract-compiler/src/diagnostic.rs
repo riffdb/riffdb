@@ -97,6 +97,8 @@ pub enum CompilerDiagnosticCode {
     CrossPartitionRowPolicy,
     /// `RDB-C043`: a row-policy relationship probe is absent, unindexed, or unsafe.
     InvalidRowPolicyRelationship,
+    /// `RDB-C044`: collection/delete syntax is known but its sealed plan is unavailable.
+    UnsupportedCollectionMutation,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -107,7 +109,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -151,6 +153,7 @@ impl CompilerDiagnosticCode {
         Self::UnboundedRowPolicy,
         Self::CrossPartitionRowPolicy,
         Self::InvalidRowPolicyRelationship,
+        Self::UnsupportedCollectionMutation,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -203,6 +206,7 @@ impl CompilerDiagnosticCode {
             Self::UnboundedRowPolicy => "RDB-C041",
             Self::CrossPartitionRowPolicy => "RDB-C042",
             Self::InvalidRowPolicyRelationship => "RDB-C043",
+            Self::UnsupportedCollectionMutation => "RDB-C044",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -297,6 +301,9 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidRowPolicyRelationship => {
                 "the row-policy relationship must use one exact local declared index"
+            }
+            Self::UnsupportedCollectionMutation => {
+                "the collection or delete command plan is unavailable in this compiler"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -421,6 +428,9 @@ impl CompilerDiagnosticCode {
             Self::InvalidRowPolicyRelationship => {
                 Some("name one declared target index and provide its complete partition-routed key")
             }
+            Self::UnsupportedCollectionMutation => Some(
+                "use a compiler with the ADR-0107 bounded collection and delete plan format enabled",
+            ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
             }
@@ -595,7 +605,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 46);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 47);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

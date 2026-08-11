@@ -516,7 +516,8 @@ fn allocate_command_symbols(
         let entity_binding = match &binding.value {
             riffdb_contract_syntax::ast::Binding::Read(binding)
             | riffdb_contract_syntax::ast::Binding::Mutate(binding)
-            | riffdb_contract_syntax::ast::Binding::Create(binding) => binding,
+            | riffdb_contract_syntax::ast::Binding::Create(binding)
+            | riffdb_contract_syntax::ast::Binding::Delete(binding) => binding,
         };
         binding_names.insert(&entity_binding.binding, diagnostics);
         if let Some(input_span) = inputs.names.get(&entity_binding.binding.value) {
@@ -548,7 +549,8 @@ fn allocate_command_symbols(
         let failure = match &binding.value {
             riffdb_contract_syntax::ast::Binding::Read(binding)
             | riffdb_contract_syntax::ast::Binding::Mutate(binding)
-            | riffdb_contract_syntax::ast::Binding::Create(binding) => &binding.failure,
+            | riffdb_contract_syntax::ast::Binding::Create(binding)
+            | riffdb_contract_syntax::ast::Binding::Delete(binding) => &binding.failure,
         };
         rejection_names
             .entry(failure.value.name.value.clone())
