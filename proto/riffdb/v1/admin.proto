@@ -575,10 +575,41 @@ message ApplicationInstallationObservation {
   bytes receipt_hash = 9;
 }
 
+enum ApplicationInstallationDriver {
+  APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED = 0;
+  APPLICATION_INSTALLATION_DRIVER_RUST = 1;
+  APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT = 2;
+  APPLICATION_INSTALLATION_DRIVER_GO = 3;
+  APPLICATION_INSTALLATION_DRIVER_PYTHON = 4;
+}
+
+message ApplicationInstallationDriverProof {
+  repeated ApplicationInstallationDriver drivers = 1;
+}
+
+message ApplicationInstallationSeedReceipt {
+  string name = 1;
+  bytes content_hash = 2;
+  uint64 succeeded = 3;
+  uint64 replayed = 4;
+}
+
+message ApplicationInstallationSeedReceipts {
+  repeated ApplicationInstallationSeedReceipt seeds = 1;
+}
+
+message ApplicationInstallationExternalCompletion {
+  oneof completion {
+    ApplicationInstallationDriverProof driver_proof = 1;
+    ApplicationInstallationSeedReceipts seed_receipts = 2;
+  }
+}
+
 message StartApplicationInstallationRequest {
   bytes request_id = 1;
   bytes campaign_id = 2;
   bytes canonical_plan = 3;
+  ApplicationInstallationExternalCompletion external_completion = 4;
 }
 
 message StartApplicationInstallationResponse {

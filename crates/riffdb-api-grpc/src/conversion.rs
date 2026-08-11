@@ -7,8 +7,9 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_application::{
-    ApplicationInstallationPlan, InstallationCampaignPhase, InstallationFailureCode,
-    InstallationNextAction, InstallationStage,
+    ApplicationInstallationPlan, InstallationCampaignPhase, InstallationDriver,
+    InstallationFailureCode, InstallationNextAction, InstallationStage, InstallationStageEvidence,
+    InstallationSymbol, InstalledSeedEvidence,
 };
 use riffdb_auth::AuthenticationContext;
 use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_value_to_proto, v1};
@@ -81,12 +82,13 @@ use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationApplyConfirmation,
     ContractMigrationOperationId, ContractMigrationOperationKind, ContractVersion, CurrencyCode,
     Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId,
-    EventConsumerName, EventLeaseToken, FieldId, FrontierPosition, IdempotencyKey,
-    IndexEpochPosition, IndexId, MigrationBundleHash, OfflineMaintenanceOperationId,
-    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
-    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName,
-    ReactiveModuleHash, ReactiveOperationName, RequestId, RevocationReasonCodeV1, SchemaHash,
-    ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    EventConsumerName, EventLeaseToken, FieldId, FrontierPosition, GeneratedArtifactHash,
+    IdempotencyKey, IndexEpochPosition, IndexId, MigrationBundleHash,
+    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
+    ProvenanceId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
+    RequestId, RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope,
+    Timestamp,
 };
 use tonic::Status;
 
@@ -3593,10 +3595,66 @@ pub fn start_application_installation_request_from_proto(
     let campaign_id = application_installation_campaign_id_from_bytes(&request.campaign_id)?;
     let plan = ApplicationInstallationPlan::decode_canonical(&request.canonical_plan)
         .map_err(|_| invalid_request())?;
-    Ok((
-        request_id,
-        StartApplicationInstallationRequest::new(campaign_id, plan),
-    ))
+    let mut checked = StartApplicationInstallationRequest::new(campaign_id, plan);
+    if let Some(completion) = request.external_completion {
+        checked = checked
+            .with_external_completion(application_installation_external_completion_from_proto(
+                completion,
+            )?)
+            .map_err(|_| invalid_request())?;
+    }
+    Ok((request_id, checked))
+}
+
+fn application_installation_external_completion_from_proto(
+    completion: v1::ApplicationInstallationExternalCompletion,
+) -> Result<InstallationStageEvidence, Status> {
+    use v1::application_installation_external_completion::Completion;
+
+    match completion.completion.ok_or_else(invalid_request)? {
+        Completion::DriverProof(proof) => Ok(InstallationStageEvidence::DriverProof(
+            proof
+                .drivers
+                .into_iter()
+                .map(|driver| {
+                    Ok(
+                        match v1::ApplicationInstallationDriver::try_from(driver)
+                            .map_err(|_| invalid_request())?
+                        {
+                            v1::ApplicationInstallationDriver::Rust => InstallationDriver::Rust,
+                            v1::ApplicationInstallationDriver::Typescript => {
+                                InstallationDriver::TypeScript
+                            }
+                            v1::ApplicationInstallationDriver::Go => InstallationDriver::Go,
+                            v1::ApplicationInstallationDriver::Python => InstallationDriver::Python,
+                            v1::ApplicationInstallationDriver::Unspecified => {
+                                return Err(invalid_request());
+                            }
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, Status>>()?,
+        )),
+        Completion::SeedReceipts(receipts) => Ok(InstallationStageEvidence::Seeds(
+            receipts
+                .seeds
+                .into_iter()
+                .map(|receipt| {
+                    Ok(InstalledSeedEvidence::new(
+                        InstallationSymbol::new(receipt.name).map_err(|_| invalid_request())?,
+                        GeneratedArtifactHash::from_bytes(
+                            receipt
+                                .content_hash
+                                .try_into()
+                                .map_err(|_| invalid_request())?,
+                        ),
+                        receipt.succeeded,
+                        receipt.replayed,
+                    ))
+                })
+                .collect::<Result<Vec<_>, Status>>()?,
+        )),
+    }
 }
 
 /// Converts one protected exact campaign selector.
@@ -5166,6 +5224,56 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn installation_conversion_preserves_only_exact_plan_bound_external_evidence() {
+        use v1::application_installation_external_completion::Completion;
+
+        let plan = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+            "../../../fixtures/installation/application-installation-plan-v1.json"
+        ))
+        .expect("canonical plan");
+        let request = v1::StartApplicationInstallationRequest {
+            request_id: request_id().into_bytes().to_vec(),
+            campaign_id: ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(
+                2, [4; 10],
+            )
+            .expect("campaign ID")
+            .into_bytes()
+            .to_vec(),
+            canonical_plan: plan.canonical_bytes().to_vec(),
+            external_completion: Some(v1::ApplicationInstallationExternalCompletion {
+                completion: Some(Completion::DriverProof(
+                    v1::ApplicationInstallationDriverProof {
+                        drivers: vec![
+                            v1::ApplicationInstallationDriver::Rust as i32,
+                            v1::ApplicationInstallationDriver::Typescript as i32,
+                        ],
+                    },
+                )),
+            }),
+        };
+        let (_, checked) = start_application_installation_request_from_proto(request.clone())
+            .expect("exact proof");
+        assert!(matches!(
+            checked.external_completion(),
+            Some(InstallationStageEvidence::DriverProof(drivers))
+                if drivers == &[InstallationDriver::Rust, InstallationDriver::TypeScript]
+        ));
+
+        let mut mismatched = request;
+        mismatched.external_completion = Some(v1::ApplicationInstallationExternalCompletion {
+            completion: Some(Completion::DriverProof(
+                v1::ApplicationInstallationDriverProof {
+                    drivers: vec![v1::ApplicationInstallationDriver::Rust as i32],
+                },
+            )),
+        });
+        assert!(
+            start_application_installation_request_from_proto(mismatched).is_err(),
+            "a subset proof cannot be repaired into plan-exact evidence"
+        );
+    }
 
     #[test]
     fn contract_authoring_conversion_preserves_preview_and_exact_identity_as_one_shape() {

@@ -64,9 +64,24 @@ remains a symbolic next action, and conflicting identity becomes a typed
 partial campaign. This makes resuming existing deployment operations safe
 without accepting caller-asserted remote identities.
 
+The Rust operator SDK can resume the exact current `driver_proof` stage with
+`StartApplicationInstallation::with_driver_proof` and the exact current
+`seeds` stage with `with_seed_receipts`. Both forms are checked against the
+immutable plan before transport and again at service admission. They cannot
+assert a server-observed stage, skip or replay a stage, carry seed values, or
+seal the receipt directly. An empty seed plan is completed by the server; a
+nonempty plan requires one canonically ordered receipt per declared batch,
+whose successful and replayed counters add to the plan's exact item count.
+
+These two forms are controller-observed attestations made under the dedicated
+installation authority. A controller must first run each declared first-party
+driver identity handshake and each seed through ordinary compiled commands.
+The attestation does not grant application-write authority and does not turn
+seed execution into a privileged bulk-write path.
+
 The existing `application deploy`, migration, role, credential, driver, and
-seed operations remain the available executors. First-party driver proof and
-nonempty seed receipt verification are still part of WP-568, so the campaign
-stops before those stages and cannot seal a terminal receipt. Until those
-receipts and their controller composition land, do not interpret a `running`
-campaign as a completed application deployment.
+seed operations remain the available executors. The current CLI `application
+install` command starts and observes the campaign but does not yet compose
+those executors or submit driver/seed evidence automatically. Until that
+controller composition lands, do not interpret a `running` campaign as a
+completed application deployment.

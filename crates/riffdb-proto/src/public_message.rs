@@ -28,7 +28,10 @@ pub const MAX_PUBLIC_REQUEST_BYTES: usize = 1_048_576;
 /// Exact maximum encoded size of one artifact-carrying migration request.
 pub const MAX_CONTRACT_MIGRATION_REQUEST_BYTES: usize = 32 * 1_024 * 1_024;
 /// Exact maximum encoded size of one canonical application installation request.
-pub const MAX_APPLICATION_INSTALLATION_REQUEST_BYTES: usize = 4 * 1_024 * 1_024 + 128;
+///
+/// The additional bounded allowance carries at most 256 exact seed receipts;
+/// it is not available to the canonical plan itself.
+pub const MAX_APPLICATION_INSTALLATION_REQUEST_BYTES: usize = 4 * 1_024 * 1_024 + 128 * 1_024;
 /// Exact maximum encoded size of one public unary response or stream item.
 pub const MAX_PUBLIC_RESPONSE_BYTES: usize = 4_194_304;
 
@@ -43,6 +46,9 @@ const MAX_COMMAND_EXPLAIN_ITEMS: usize = 4_096;
 const MAX_COMMAND_BATCH_ITEMS: usize = 16;
 const MAX_DISCOVERY_PAGE_BYTES: usize = 2_621_440;
 const MAX_OPERATION_SCHEMA_BYTES: usize = 65_536;
+const MAX_INSTALLATION_DRIVERS: usize = 4;
+const MAX_INSTALLATION_SEEDS: usize = 256;
+const MAX_INSTALLATION_SYMBOL_BYTES: usize = 256;
 const MAX_PROVENANCE_LINKS: usize = 4_096;
 const MAX_SOURCE_REPOSITORY_BYTES: usize = 512;
 const MAX_SOURCE_COMMIT_BYTES: usize = 128;
@@ -3631,7 +3637,76 @@ fn validate_start_application_installation_request(
     if request.canonical_plan.is_empty() || request.canonical_plan.len() > 4 * 1_024 * 1_024 {
         return Err(PublicWireError::InvalidBytes);
     }
+    if let Some(completion) = request.external_completion.as_ref() {
+        validate_application_installation_external_completion(completion)?;
+    }
     Ok(())
+}
+
+fn validate_application_installation_external_completion(
+    completion: &v1::ApplicationInstallationExternalCompletion,
+) -> Result<(), PublicWireError> {
+    match completion
+        .completion
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::application_installation_external_completion::Completion::DriverProof(proof) => {
+            if proof.drivers.is_empty() || proof.drivers.len() > MAX_INSTALLATION_DRIVERS {
+                return Err(PublicWireError::TooManyItems);
+            }
+            let mut previous = 0;
+            for &driver in &proof.drivers {
+                let driver = v1::ApplicationInstallationDriver::try_from(driver)
+                    .map_err(|_| PublicWireError::InvalidEnum)?;
+                if driver == v1::ApplicationInstallationDriver::Unspecified {
+                    return Err(PublicWireError::InvalidEnum);
+                }
+                let current = driver as i32;
+                if current <= previous {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                previous = current;
+            }
+            Ok(())
+        }
+        v1::application_installation_external_completion::Completion::SeedReceipts(receipts) => {
+            if receipts.seeds.is_empty() || receipts.seeds.len() > MAX_INSTALLATION_SEEDS {
+                return Err(PublicWireError::TooManyItems);
+            }
+            let mut previous_name: Option<&str> = None;
+            for seed in &receipts.seeds {
+                if !valid_installation_symbol(&seed.name) {
+                    return Err(PublicWireError::InvalidIdentity);
+                }
+                if previous_name.is_some_and(|previous| previous >= seed.name.as_str()) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                hash(&seed.content_hash)?;
+                if seed
+                    .succeeded
+                    .checked_add(seed.replayed)
+                    .filter(|total| *total != 0)
+                    .is_none()
+                {
+                    return Err(PublicWireError::InvalidIdentity);
+                }
+                previous_name = Some(seed.name.as_str());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn valid_installation_symbol(value: &str) -> bool {
+    valid_ascii(value, MAX_INSTALLATION_SYMBOL_BYTES)
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_'
+                || byte == b'-'
+                || byte == b'.'
+                || byte.is_ascii_alphabetic()
+                || index > 0 && byte.is_ascii_digit()
+        })
 }
 
 fn validate_start_application_installation_response(
@@ -6650,6 +6725,79 @@ fn preflight_application_installation_observation(input: &[u8]) -> Result<(), Pu
     )
 }
 
+fn preflight_application_installation_driver_proof(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[1],
+        &[],
+        &[],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_INSTALLATION_DRIVERS,
+            wire: RepeatedWire::PackableVarint,
+        }],
+    )
+}
+
+fn preflight_application_installation_seed_receipt(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[], &[])
+}
+
+fn preflight_application_installation_seed_receipts(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[1],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_application_installation_seed_receipt,
+        }],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_INSTALLATION_SEEDS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_application_installation_external_completion(
+    input: &[u8],
+) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_application_installation_driver_proof,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_installation_seed_receipts,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_start_application_installation_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 4,
+            preflight: preflight_application_installation_external_completion,
+        }],
+        &[],
+    )
+}
+
 fn preflight_start_application_installation_response(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -8761,10 +8909,10 @@ impl_public_message!(
 impl_public_message!(
     v1::StartApplicationInstallationRequest,
     MAX_APPLICATION_INSTALLATION_REQUEST_BYTES,
-    3,
+    4,
     &[],
     &[],
-    preflight_noop,
+    preflight_start_application_installation_request,
     validate_start_application_installation_request
 );
 impl_public_message!(

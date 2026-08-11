@@ -118,7 +118,7 @@ fn start_or_resume(
     request: AuthorizedApplicationInstallationStart,
 ) -> Result<ApplicationInstallationOperationResult, ApplicationInstallationStartPortError> {
     let (_request_id, _ingress, request, _authorization) = request.into_parts();
-    let (campaign_id, plan) = request.into_parts();
+    let (campaign_id, plan, external_completion) = request.into_parts_with_external_completion();
     let lineage = plan.input().target.lineage().clone();
     let retained = storage
         .read_application_installation_campaign(campaign_id)
@@ -127,6 +127,10 @@ fn start_or_resume(
         recover_campaign(retained, campaign_id, plan.as_ref(), &lineage)?;
 
     advance_observed_stages(&storage, plan.as_ref(), &mut campaign)?;
+    if let Some(completion) = external_completion {
+        complete_external_stage(plan.as_ref(), &mut campaign, completion)?;
+        advance_observed_stages(&storage, plan.as_ref(), &mut campaign)?;
+    }
 
     let replacement = encode_state(&campaign, plan.as_ref())
         .map_err(|()| ApplicationInstallationStartPortError::Integrity)?;
@@ -143,6 +147,20 @@ fn start_or_resume(
             Err(ApplicationInstallationStartPortError::OutcomeUnknown)
         }
     }
+}
+
+fn complete_external_stage(
+    plan: &ApplicationInstallationPlan,
+    campaign: &mut ApplicationInstallationCampaign,
+    completion: InstallationStageEvidence,
+) -> Result<(), ApplicationInstallationStartPortError> {
+    if campaign.observe().next_stage() != Some(completion.stage()) {
+        return Err(ApplicationInstallationStartPortError::InputMismatch);
+    }
+    campaign
+        .complete_stage(plan, completion)
+        .map(|_| ())
+        .map_err(|_| ApplicationInstallationStartPortError::InputMismatch)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -263,9 +281,17 @@ fn advance_observed_stages(
                     return Ok(());
                 }
             },
-            InstallationStage::DriverProof
-            | InstallationStage::Seeds
-            | InstallationStage::Receipt => None,
+            InstallationStage::DriverProof => None,
+            InstallationStage::Seeds if plan.input().seeds.is_empty() => {
+                Some(InstallationStageEvidence::Seeds(Vec::new()))
+            }
+            InstallationStage::Seeds => None,
+            InstallationStage::Receipt => {
+                campaign
+                    .seal_receipt(plan)
+                    .map_err(|_| ApplicationInstallationStartPortError::Integrity)?;
+                return Ok(());
+            }
         };
         let Some(evidence) = evidence else {
             return Ok(());
@@ -626,6 +652,7 @@ const fn map_start_storage(error: StorageError) -> ApplicationInstallationStartP
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_application::{InstallationDriver, InstalledSeedEvidence};
     use riffdb_storage_api::ActiveCatalogPointerV1;
     use riffdb_types::ContractBundleHash;
 
@@ -718,5 +745,104 @@ mod tests {
             classify_contract_stage(&plan, Some(&inexact)),
             StageVerification::Failed(InstallationFailureCode::MigrationGateRequired)
         );
+    }
+
+    #[test]
+    fn external_completion_cannot_skip_or_replay_a_campaign_stage() {
+        let plan = plan();
+        let mut campaign = ApplicationInstallationCampaign::start(campaign_id(), plan.identity());
+        let driver_proof = InstallationStageEvidence::DriverProof(vec![
+            InstallationDriver::Rust,
+            InstallationDriver::TypeScript,
+        ]);
+        let original = campaign.clone();
+        assert_eq!(
+            complete_external_stage(&plan, &mut campaign, driver_proof.clone()),
+            Err(ApplicationInstallationStartPortError::InputMismatch)
+        );
+        assert_eq!(campaign, original, "rejected evidence cannot advance state");
+
+        complete_through_credentials(&plan, &mut campaign);
+        complete_external_stage(&plan, &mut campaign, driver_proof.clone())
+            .expect("exact driver proof advances only its stage");
+        assert_eq!(
+            campaign.observe().next_stage(),
+            Some(InstallationStage::Seeds)
+        );
+        assert_eq!(
+            complete_external_stage(&plan, &mut campaign, driver_proof),
+            Err(ApplicationInstallationStartPortError::InputMismatch)
+        );
+
+        let seed = plan.input().seeds.first().expect("seed plan");
+        complete_external_stage(
+            &plan,
+            &mut campaign,
+            InstallationStageEvidence::Seeds(vec![InstalledSeedEvidence::new(
+                seed.name().clone(),
+                seed.content_hash(),
+                seed.item_count(),
+                0,
+            )]),
+        )
+        .expect("exact bounded seed receipt");
+        assert_eq!(
+            campaign.observe().next_stage(),
+            Some(InstallationStage::Receipt),
+            "external evidence never asserts the terminal receipt"
+        );
+    }
+
+    fn complete_through_credentials(
+        plan: &ApplicationInstallationPlan,
+        campaign: &mut ApplicationInstallationCampaign,
+    ) {
+        let input = plan.input();
+        let stages = [
+            InstallationStageEvidence::Preflight {
+                source_hash: input.source_hash,
+                lock_hash: input.lock_hash,
+                manifest_hash: input.manifest_hash,
+            },
+            InstallationStageEvidence::Contract {
+                version: input.contract.version(),
+                bundle_hash: input.contract.bundle_hash(),
+            },
+            InstallationStageEvidence::Migration {
+                migration_hash: None,
+            },
+            InstallationStageEvidence::QueryModules(artifacts_for(
+                plan,
+                InstallationArtifactKind::QueryModule,
+            )),
+            InstallationStageEvidence::ReactiveModules(artifacts_for(
+                plan,
+                InstallationArtifactKind::ReactiveModule,
+            )),
+            InstallationStageEvidence::Roles(
+                input
+                    .roles
+                    .iter()
+                    .map(|role| InstalledRoleEvidence::new(role.name().clone(), role.role_hash()))
+                    .collect(),
+            ),
+            InstallationStageEvidence::Credentials(
+                input
+                    .credential_destinations
+                    .iter()
+                    .map(|destination| {
+                        InstalledCredentialEvidence::new(
+                            destination.name().clone(),
+                            destination.successor(),
+                        )
+                    })
+                    .collect(),
+            ),
+        ];
+        for stage in stages {
+            campaign
+                .complete_stage(plan, stage)
+                .expect("authoritative predecessor stage");
+        }
     }
 }
