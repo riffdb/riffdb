@@ -772,29 +772,55 @@ fn validate_transaction_current_command_parts(
     if resolved.plan().commit_checks().is_empty() {
         return Ok(CheckedCommandDecision::NonZero(coverage));
     }
-    let values = assemble_transaction_current_values(
-        resolved,
-        normalized_input,
-        logical_time,
-        evaluated,
-        current,
-        &coverage,
-    )?;
-    let decision = match evaluate_commit_checks(
-        resolved.plan().expressions(),
-        resolved.plan().commit_checks(),
-        &values,
-    ) {
-        Ok(CommitCheckResult::Satisfied) => CheckedCommandDecision::NonZero(coverage),
-        Ok(CommitCheckResult::Rejected { .. }) => {
-            CheckedCommandDecision::Rejected(CandidateValidationRejection::CommitCheckRejected)
-        }
-        Err(EvaluationError::Arithmetic) => CheckedCommandDecision::Rejected(
-            CandidateValidationRejection::CommitCheckArithmeticFault,
-        ),
-        Err(EvaluationError::Integrity) => return Err(CommandValidationError::integrity()),
+    let element_ordinals = if let Some(expansion) = resolved.plan().collection_expansion() {
+        let CanonicalValue::List(elements) =
+            record_field(normalized_input, expansion.input_field())
+                .ok_or_else(CommandValidationError::integrity)?
+        else {
+            return Err(CommandValidationError::integrity());
+        };
+        (0..elements.len())
+            .map(|ordinal| {
+                u16::try_from(ordinal)
+                    .map(Some)
+                    .map_err(|_| CommandValidationError::integrity())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![None]
     };
-    Ok(decision)
+    for ordinal in element_ordinals {
+        let values = assemble_transaction_current_values(
+            resolved,
+            normalized_input,
+            logical_time,
+            evaluated,
+            current,
+            &coverage,
+            ordinal,
+        )?;
+        match evaluate_commit_checks(
+            resolved.plan().expressions(),
+            resolved.plan().commit_checks(),
+            &values,
+        ) {
+            Ok(CommitCheckResult::Satisfied) => {}
+            Ok(CommitCheckResult::Rejected { .. }) => {
+                return Ok(CheckedCommandDecision::Rejected(
+                    CandidateValidationRejection::CommitCheckRejected,
+                ));
+            }
+            Err(EvaluationError::Arithmetic) => {
+                return Ok(CheckedCommandDecision::Rejected(
+                    CandidateValidationRejection::CommitCheckArithmeticFault,
+                ));
+            }
+            Err(EvaluationError::Integrity) => {
+                return Err(CommandValidationError::integrity());
+            }
+        }
+    }
+    Ok(CheckedCommandDecision::NonZero(coverage))
 }
 
 fn validate_identity_positions_and_output(
@@ -878,12 +904,18 @@ fn validate_identity_positions_and_output(
         return Err(CommandValidationError::integrity());
     }
 
-    validate_evaluated_output(plan, resolved.bundle().bundle().schema(), evaluated)
+    validate_evaluated_output(
+        plan,
+        resolved.bundle().bundle().schema(),
+        normalized_input,
+        evaluated,
+    )
 }
 
 fn validate_evaluated_output(
     plan: &CommandPlan,
     schema: &SchemaIr,
+    normalized_input: &CanonicalRecord,
     evaluated: &EvaluatedCommand,
 ) -> Result<(), CommandValidationError> {
     let outcome = evaluated.outcome();
@@ -965,9 +997,43 @@ fn validate_evaluated_output(
     if outcome.outcome_id() != plan.success_outcome() {
         return Err(CommandValidationError::integrity());
     }
-    let expected_events = plan
-        .instructions()
-        .iter()
+    let instruction_ordinals = if let Some(expansion) = plan.collection_expansion() {
+        let CanonicalValue::List(elements) =
+            record_field(normalized_input, expansion.input_field())
+                .ok_or_else(CommandValidationError::integrity)?
+        else {
+            return Err(CommandValidationError::integrity());
+        };
+        let first = expansion.first_instruction() as usize;
+        let end = first
+            .checked_add(expansion.instruction_count())
+            .ok_or_else(CommandValidationError::integrity)?;
+        if end > plan.instructions().len() {
+            return Err(CommandValidationError::integrity());
+        }
+        let mut ordinals = Vec::with_capacity(
+            first
+                .checked_add(
+                    expansion
+                        .instruction_count()
+                        .checked_mul(elements.len())
+                        .ok_or_else(CommandValidationError::integrity)?,
+                )
+                .and_then(|count| count.checked_add(plan.instructions().len() - end))
+                .ok_or_else(CommandValidationError::integrity)?,
+        );
+        ordinals.extend(0..first);
+        for _ in elements.values() {
+            ordinals.extend(first..end);
+        }
+        ordinals.extend(end..plan.instructions().len());
+        ordinals
+    } else {
+        (0..plan.instructions().len()).collect()
+    };
+    let expected_events = instruction_ordinals
+        .into_iter()
+        .map(|index| &plan.instructions()[index])
         .filter_map(|instruction| match instruction {
             Instruction::EmitEvent(event) => Some(event),
             Instruction::Require { .. }
@@ -1090,6 +1156,13 @@ fn prove_mutation_coverage(
                 },
                 EntityObservation::Present(record),
             ) if *expected_version == record.entity_version() => {}
+            (
+                BindingMode::Delete,
+                EntityMutation::Delete {
+                    expected_version, ..
+                },
+                EntityObservation::Present(record),
+            ) if *expected_version == record.entity_version() => {}
             (BindingMode::Read, _, _)
             | (BindingMode::Create | BindingMode::Mutate | BindingMode::Delete, _, _) => {
                 return Err(CommandValidationError::integrity());
@@ -1131,6 +1204,7 @@ struct PositionedRootRecord {
 /// Owned values passed across the pure invariant-evaluator boundary.
 struct TransactionCurrentValues {
     input: CanonicalRecord,
+    collection_element: Option<CanonicalValue>,
     logical_time: LogicalTime,
     bindings: Box<[PositionedBindingRecord]>,
     roots: Box<[PositionedRootRecord]>,
@@ -1145,6 +1219,17 @@ impl fmt::Debug for TransactionCurrentValues {
 impl ExpressionValueSource for TransactionCurrentValues {
     fn input_field(&self, field: FieldId) -> Option<CanonicalValue> {
         record_field(&self.input, field).cloned()
+    }
+
+    fn collection_element(&self) -> Option<CanonicalValue> {
+        self.collection_element.clone()
+    }
+
+    fn collection_element_field(&self, field: FieldId) -> Option<CanonicalValue> {
+        let CanonicalValue::Record(record) = self.collection_element.as_ref()? else {
+            return None;
+        };
+        record_field(record, field).cloned()
     }
 
     fn complete_binding(&self, binding: BindingId) -> Option<CanonicalValue> {
@@ -1186,18 +1271,31 @@ fn assemble_transaction_current_values(
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     coverage: &[Option<usize>],
+    element_ordinal: Option<u16>,
 ) -> Result<TransactionCurrentValues, CommandValidationError> {
     let plan = resolved.plan();
     let schema = resolved.bundle().bundle().schema();
     let request = evaluated.validation_request();
-    let mut bindings = Vec::with_capacity(plan.bindings().len());
-    for (index, ((binding, target), observation)) in plan
-        .bindings()
+    let facts = derive_input_command_facts(plan, normalized_input.clone())
+        .map_err(|_| CommandValidationError::integrity())?;
+    let mut bindings = (0..plan.bindings().len())
+        .map(|_| None)
+        .collect::<Vec<Option<PositionedBindingRecord>>>();
+    for (slot, (((plan_index, ordinal), target), observation)) in facts
+        .binding_plan_indices()
         .iter()
+        .zip(facts.binding_element_ordinals())
         .zip(request.binding_targets())
         .zip(current.bindings())
         .enumerate()
     {
+        if *ordinal != element_ordinal && ordinal.is_some() {
+            continue;
+        }
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
         let entity = schema
             .entity(binding.entity_type())
             .ok_or_else(CommandValidationError::integrity)?;
@@ -1214,17 +1312,23 @@ fn assemble_transaction_current_values(
                         record,
                         resolved.reference(),
                     )?;
-                    bindings.push(PositionedBindingRecord {
+                    let positioned = PositionedBindingRecord {
                         id: binding.id(),
                         record: projected,
-                    });
+                    };
+                    let position = bindings
+                        .get_mut(*plan_index as usize)
+                        .ok_or_else(CommandValidationError::integrity)?;
+                    if position.replace(positioned).is_some() {
+                        return Err(CommandValidationError::integrity());
+                    }
                     continue;
                 }
                 EntityObservation::Absent(_) => return Err(CommandValidationError::integrity()),
             },
-            BindingMode::Mutate | BindingMode::Create => {
+            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete => {
                 let mutation_index = coverage
-                    .get(index)
+                    .get(slot)
                     .copied()
                     .flatten()
                     .ok_or_else(CommandValidationError::integrity)?;
@@ -1236,9 +1340,8 @@ fn assemble_transaction_current_values(
                     .post_image()
                     .fields()
             }
-            BindingMode::Delete => return Err(CommandValidationError::integrity()),
         };
-        bindings.push(PositionedBindingRecord {
+        let positioned = PositionedBindingRecord {
             id: binding.id(),
             record: validate_post_image_and_project(
                 schema,
@@ -1249,16 +1352,36 @@ fn assemble_transaction_current_values(
                 observation,
                 resolved.reference(),
             )?,
-        });
+        };
+        let position = bindings
+            .get_mut(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
+        if position.replace(positioned).is_some() {
+            return Err(CommandValidationError::integrity());
+        }
     }
+    let bindings = bindings
+        .into_iter()
+        .map(|binding| binding.ok_or_else(CommandValidationError::integrity))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let mut roots = Vec::with_capacity(plan.root_validation_reads().len());
-    for ((read, target), observation) in plan
-        .root_validation_reads()
+    let mut roots = (0..plan.root_validation_reads().len())
+        .map(|_| None)
+        .collect::<Vec<Option<PositionedRootRecord>>>();
+    for (((plan_index, ordinal), target), observation) in facts
+        .root_validation_plan_indices()
         .iter()
+        .zip(facts.root_validation_element_ordinals())
         .zip(request.root_validation_targets())
         .zip(current.root_validations())
     {
+        if *ordinal != element_ordinal && ordinal.is_some() {
+            continue;
+        }
+        let read = plan
+            .root_validation_reads()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
         let entity = schema
             .entity(read.entity_type())
             .ok_or_else(CommandValidationError::integrity)?;
@@ -1268,7 +1391,7 @@ fn assemble_transaction_current_values(
         let EntityObservation::Present(record) = observation else {
             return Err(CommandValidationError::integrity());
         };
-        roots.push(PositionedRootRecord {
+        let positioned = PositionedRootRecord {
             id: read.id(),
             record: materialize_current_entity_record(
                 schema,
@@ -1277,11 +1400,42 @@ fn assemble_transaction_current_values(
                 record,
                 resolved.reference(),
             )?,
-        });
+        };
+        let position = roots
+            .get_mut(*plan_index as usize)
+            .ok_or_else(CommandValidationError::integrity)?;
+        if position.replace(positioned).is_some() {
+            return Err(CommandValidationError::integrity());
+        }
     }
+    let roots = roots
+        .into_iter()
+        .map(|root| root.ok_or_else(CommandValidationError::integrity))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let collection_element = match (plan.collection_expansion(), element_ordinal) {
+        (Some(expansion), Some(ordinal)) => {
+            let CanonicalValue::List(elements) =
+                record_field(normalized_input, expansion.input_field())
+                    .ok_or_else(CommandValidationError::integrity)?
+            else {
+                return Err(CommandValidationError::integrity());
+            };
+            Some(
+                elements
+                    .values()
+                    .get(ordinal as usize)
+                    .cloned()
+                    .ok_or_else(CommandValidationError::integrity)?,
+            )
+        }
+        (None, None) => None,
+        _ => return Err(CommandValidationError::integrity()),
+    };
 
     Ok(TransactionCurrentValues {
         input: normalized_input.clone(),
+        collection_element,
         logical_time,
         bindings: bindings.into_boxed_slice(),
         roots: roots.into_boxed_slice(),
@@ -1390,6 +1544,12 @@ fn validate_post_image_and_project(
                 .filter(|(field, _)| entity.record().field(*field).is_none())
                 .collect::<Vec<_>>();
             if post_unknown != current_unknown {
+                return Err(CommandValidationError::integrity());
+            }
+        }
+        (BindingMode::Delete, EntityObservation::Present(record)) => {
+            let current = materialize_current_entity_record(schema, entity, target, record, plan)?;
+            if post_image != &current {
                 return Err(CommandValidationError::integrity());
             }
         }
@@ -1509,6 +1669,74 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../fixtures/contracts/bulk/openfga-tuples.riff"
     ));
+    const BULK_INVARIANT_SOURCE: &str = r#"
+contract BulkInvariant version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    field value: i64
+    invariant non_negative: value >= 0
+  }
+  aggregate Rows {
+    root Row
+    partition_by tenant_id
+    conflict_key (tenant_id, row_id)
+  }
+  bulk command PutRows {
+    input request_id: uuid
+    input rows: list<Row, 1..8>
+    idempotency_key request_id
+    for row in rows {
+      create Row(row.tenant_id, row.row_id) as stored else Exists {}
+      set stored.value = row.value
+    }
+    return Written {}
+  }
+}
+"#;
+    const BULK_EVENT_SOURCE: &str = r#"
+contract BulkEvent version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    field value: i64
+  }
+  event RowWritten { row_id: uuid value: i64 }
+  aggregate Rows {
+    root Row
+    partition_by tenant_id
+    conflict_key (tenant_id, row_id)
+  }
+  bulk command PutRows {
+    input request_id: uuid
+    input rows: list<Row, 1..8>
+    idempotency_key request_id
+    for row in rows {
+      create Row(row.tenant_id, row.row_id) as stored else Exists {}
+      set stored.value = row.value
+      emit RowWritten { row_id: row.row_id, value: stored.value }
+    }
+    return Written {}
+  }
+}
+"#;
+    const BULK_DELETE_SOURCE: &str = r#"
+contract BulkDeleteValidation version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    delete_policy no_inbound
+  }
+  aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id, row_id) }
+  bulk command DeleteRows {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for row_id in row_ids {
+      delete Row(tenant_id, row_id) as row else Missing {}
+    }
+    return Deleted {}
+  }
+}
+"#;
 
     #[test]
     fn collection_mutations_cover_every_concrete_slot_before_commit() {
@@ -1520,25 +1748,23 @@ mod tests {
             .find(|entity| entity.name() == "Tuple")
             .expect("tuple entity");
         let tuple_value = |id: u8, object: &str| {
-            CanonicalValue::Record(
-                named_record(
-                    tuple.record(),
-                    &[
-                        ("store_id", CanonicalValue::Uuid([0x31; 16])),
-                        ("tuple_id", CanonicalValue::Uuid([id; 16])),
-                        ("object", CanonicalValue::string(object).expect("object")),
-                        (
-                            "relation",
-                            CanonicalValue::string("reader").expect("relation"),
-                        ),
-                        (
-                            "subject",
-                            CanonicalValue::string("user:alice").expect("subject"),
-                        ),
-                    ],
-                    &[],
-                ),
-            )
+            CanonicalValue::Record(named_record(
+                tuple.record(),
+                &[
+                    ("store_id", CanonicalValue::Uuid([0x31; 16])),
+                    ("tuple_id", CanonicalValue::Uuid([id; 16])),
+                    ("object", CanonicalValue::string(object).expect("object")),
+                    (
+                        "relation",
+                        CanonicalValue::string("reader").expect("relation"),
+                    ),
+                    (
+                        "subject",
+                        CanonicalValue::string("user:alice").expect("subject"),
+                    ),
+                ],
+                &[],
+            ))
         };
         let prepared = prepare(
             BULK_TUPLE_SOURCE,
@@ -1578,6 +1804,151 @@ mod tests {
             panic!("collection must retain one nonzero atomic graph");
         };
         assert_eq!(positions.as_ref(), &[Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn collection_commit_checks_revalidate_each_submitted_element() {
+        let compiled = compile_contract_source(BULK_INVARIANT_SOURCE).expect("bulk compiles");
+        let row = compiled.schema().entities().first().expect("row entity");
+        let row_value = |id: u8, value: i64| {
+            CanonicalValue::Record(named_record(
+                row.record(),
+                &[
+                    ("tenant_id", CanonicalValue::Uuid([0x51; 16])),
+                    ("row_id", CanonicalValue::Uuid([id; 16])),
+                    ("value", CanonicalValue::I64(value)),
+                ],
+                &[],
+            ))
+        };
+        let prepared = prepare(
+            BULK_INVARIANT_SOURCE,
+            "PutRows",
+            &[
+                ("request_id", CanonicalValue::Uuid([0x52; 16])),
+                (
+                    "rows",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![row_value(0x61, 1), row_value(0x62, -2)])
+                            .expect("rows"),
+                    ),
+                ),
+            ],
+        );
+        assert!(!prepared.plan().commit_checks().is_empty());
+        let bindings = prepared
+            .binding_targets
+            .iter()
+            .cloned()
+            .map(EntityObservation::Absent)
+            .collect();
+        let fixture = evaluate(prepared, bindings, vec![]);
+
+        assert!(matches!(
+            validate_transaction_current_command_parts(
+                &fixture.prepared.resolved,
+                &fixture.prepared.input,
+                fixture.prepared.logical_time,
+                &fixture.evaluated,
+                &fixture.current,
+            ),
+            Ok(CheckedCommandDecision::Rejected(
+                CandidateValidationRejection::CommitCheckRejected
+            ))
+        ));
+    }
+
+    #[test]
+    fn collection_events_validate_in_submitted_element_then_instruction_order() {
+        let compiled = compile_contract_source(BULK_EVENT_SOURCE).expect("bulk compiles");
+        let row = compiled.schema().entities().first().expect("row entity");
+        let row_value = |id: u8, value: i64| {
+            CanonicalValue::Record(named_record(
+                row.record(),
+                &[
+                    ("tenant_id", CanonicalValue::Uuid([0x71; 16])),
+                    ("row_id", CanonicalValue::Uuid([id; 16])),
+                    ("value", CanonicalValue::I64(value)),
+                ],
+                &[],
+            ))
+        };
+        let prepared = prepare(
+            BULK_EVENT_SOURCE,
+            "PutRows",
+            &[
+                ("request_id", CanonicalValue::Uuid([0x72; 16])),
+                (
+                    "rows",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![row_value(0x73, 1), row_value(0x74, 2)])
+                            .expect("rows"),
+                    ),
+                ),
+            ],
+        );
+        let bindings = prepared
+            .binding_targets
+            .iter()
+            .cloned()
+            .map(EntityObservation::Absent)
+            .collect();
+        let fixture = evaluate(prepared, bindings, vec![]);
+        assert_eq!(fixture.evaluated.event_intents().len(), 2);
+
+        assert!(matches!(
+            validate_transaction_current_command_parts(
+                &fixture.prepared.resolved,
+                &fixture.prepared.input,
+                fixture.prepared.logical_time,
+                &fixture.evaluated,
+                &fixture.current,
+            ),
+            Ok(CheckedCommandDecision::NonZero(_))
+        ));
+    }
+
+    #[test]
+    fn collection_delete_validation_requires_each_exact_current_predecessor() {
+        let prepared = prepare(
+            BULK_DELETE_SOURCE,
+            "DeleteRows",
+            &[
+                ("request_id", CanonicalValue::Uuid([0x91; 16])),
+                ("tenant_id", CanonicalValue::Uuid([0x92; 16])),
+                (
+                    "row_ids",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![
+                            CanonicalValue::Uuid([0x93; 16]),
+                            CanonicalValue::Uuid([0x94; 16]),
+                        ])
+                        .expect("row IDs"),
+                    ),
+                ),
+            ],
+        );
+        let bindings = (0..prepared.binding_targets.len())
+            .map(|index| prepared.present_binding(index, EntityVersion::first(), &[], vec![], &[]))
+            .collect();
+        let fixture = evaluate(prepared, bindings, vec![]);
+        assert!(
+            fixture
+                .evaluated
+                .mutations()
+                .iter()
+                .all(EntityMutation::is_delete)
+        );
+        assert!(matches!(
+            validate_transaction_current_command_parts(
+                &fixture.prepared.resolved,
+                &fixture.prepared.input,
+                fixture.prepared.logical_time,
+                &fixture.evaluated,
+                &fixture.current,
+            ),
+            Ok(CheckedCommandDecision::NonZero(_))
+        ));
     }
 
     const ZERO_REJECT_SOURCE: &str = r#"
@@ -2032,6 +2403,12 @@ contract ReadOnlyValidation version 1 {
             } => EntityMutation::Replace {
                 expected_version: *expected_version,
                 post_image,
+            },
+            EntityMutation::Delete {
+                expected_version, ..
+            } => EntityMutation::Delete {
+                expected_version: *expected_version,
+                prior_image: post_image,
             },
         }
     }
@@ -2534,6 +2911,7 @@ contract ReadOnlyValidation version 1 {
             &fixture.evaluated,
             &fixture.current,
             &coverage,
+            None,
         )
         .expect("owned mixed values");
         let amount = entity_field(&fixture, "Child", "amount");
@@ -2945,7 +3323,9 @@ contract ReadOnlyValidation version 1 {
                 )
                 .expect("bounded malformed postimage"),
             },
-            EntityMutation::Create(_) => panic!("fixture must replace"),
+            EntityMutation::Create(_) | EntityMutation::Delete { .. } => {
+                panic!("fixture must replace")
+            }
         };
         fixture.evaluated = EvaluatedCommand::new(
             &fixture.snapshot,

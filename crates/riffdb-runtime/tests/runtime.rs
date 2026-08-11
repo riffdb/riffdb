@@ -24,6 +24,120 @@ const BULK_TUPLE_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/contracts/bulk/openfga-tuples.riff"
 ));
+const BULK_DELETE_SOURCE: &str = r#"
+contract BulkDeleteRuntime version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    delete_policy no_inbound
+  }
+  aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id, row_id) }
+  bulk command DeleteRows {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for row_id in row_ids {
+      delete Row(tenant_id, row_id) as row else Missing {}
+    }
+    return Deleted {}
+  }
+}
+"#;
+
+#[test]
+fn bounded_collection_delete_retains_exact_predecessors_without_post_delete_rows() {
+    let bundle = compile_contract_source(BULK_DELETE_SOURCE).expect("delete fixture compiles");
+    let plan = command(&bundle, "DeleteRows");
+    let tenant = [0x81; 16];
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x82; 16])),
+            ("tenant_id", CanonicalValue::Uuid(tenant)),
+            (
+                "row_ids",
+                CanonicalValue::List(
+                    CanonicalList::new(vec![
+                        CanonicalValue::Uuid([0x83; 16]),
+                        CanonicalValue::Uuid([0x84; 16]),
+                    ])
+                    .expect("row IDs"),
+                ),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("delete facts");
+    let row = bundle.schema().entities().first().expect("row entity");
+    let records = facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .map(|(index, key)| {
+            let target =
+                EntityTarget::new(plan.bindings()[*index as usize].entity_type(), key.clone())
+                    .expect("target");
+            let key_values = row.primary_key().decode_entity(key).expect("row key");
+            stored_record(
+                &bundle,
+                plan,
+                target,
+                input_record(
+                    row.record(),
+                    [
+                        ("tenant_id", key_values[0].clone()),
+                        ("row_id", key_values[1].clone()),
+                    ],
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let targets = records
+        .iter()
+        .map(|record| record.target().clone())
+        .collect::<Vec<_>>();
+    let request = SnapshotRequest::new(plan_ref(&bundle, plan), targets, vec![], vec![])
+        .expect("snapshot request");
+    let snapshot = ReadSnapshot::new(
+        &request,
+        None,
+        records
+            .iter()
+            .cloned()
+            .map(EntityObservation::Present)
+            .collect(),
+        vec![],
+        vec![],
+    )
+    .expect("snapshot");
+    let context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(1, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("delete evaluates")
+    else {
+        panic!("delete mutates");
+    };
+    assert_eq!(evaluated.mutations().len(), 2);
+    for (mutation, predecessor) in evaluated.mutations().iter().zip(records) {
+        assert!(mutation.is_delete());
+        assert_eq!(
+            mutation.expected_version(),
+            Some(predecessor.entity_version())
+        );
+        assert_eq!(mutation.post_image().fields(), predecessor.fields());
+    }
+}
 
 #[test]
 fn bounded_collection_create_executes_as_one_complete_evaluated_graph() {

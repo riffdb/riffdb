@@ -740,8 +740,7 @@ fn derive_grammar_v1_indexes(
         (bundle.grammar_version(), bundle.ir_version()),
         (GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
             | (GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
-    )
-        || plan.execution_class() != ExecutionClass::IdempotentMutation
+    ) || plan.execution_class() != ExecutionClass::IdempotentMutation
         || resolved.reference() != evaluated.plan()
         || request.plan() != evaluated.plan()
         || evaluated.mutations().is_empty()
@@ -776,8 +775,10 @@ fn derive_grammar_v1_indexes(
         }
     }
 
-    let mut builder =
-        IndexDerivationBuilder::new(request.binding_targets().len(), request.root_validation_targets().len())?;
+    let mut builder = IndexDerivationBuilder::new(
+        request.binding_targets().len(),
+        request.root_validation_targets().len(),
+    )?;
     let schema_binding = DurableKeySchemaBindingV1::from_plan(resolved.reference());
     let empty_covered =
         CanonicalRecord::new(Vec::new()).map_err(|_| CommandIndexError::internal_defect())?;
@@ -801,7 +802,9 @@ fn derive_grammar_v1_indexes(
 
         let current_record = match (binding.mode(), &current.bindings()[binding_position]) {
             (BindingMode::Create, EntityObservation::Absent(_)) => None,
-            (BindingMode::Mutate, EntityObservation::Present(record)) => Some(record.fields()),
+            (BindingMode::Mutate | BindingMode::Delete, EntityObservation::Present(record)) => {
+                Some(record.fields())
+            }
             (
                 BindingMode::Read | BindingMode::Create | BindingMode::Mutate | BindingMode::Delete,
                 _,
@@ -810,6 +813,19 @@ fn derive_grammar_v1_indexes(
             }
         };
         for index in entity.indexes() {
+            if binding.mode() == BindingMode::Delete {
+                let old_values = index_values(
+                    index,
+                    current_record.ok_or_else(CommandIndexError::internal_defect)?,
+                )?;
+                let old_key = index
+                    .key_schema()
+                    .encode_index(&old_values, mutation.target().key().clone())
+                    .map_err(|_| CommandIndexError::internal_defect())?;
+                builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
+                insert_generation(index, &old_values, command_partition, &mut builder)?;
+                continue;
+            }
             let is_unique = bundle
                 .schema()
                 .unique_keys()

@@ -438,6 +438,10 @@ fn command_validation_seals_one_exact_attempt_before_index_or_record_authority()
         "validate_evaluated_output(",
         "validate_post_image_and_project(",
         "materialize_current_entity_record(",
+        // ADR-0107 collection slots are re-derived from the exact normalized
+        // input through the pure invariant evaluator. This is semantic
+        // validation, not a second admission or storage authority.
+        "derive_input_command_facts",
         "struct TransactionCurrentValues",
         "input: CanonicalRecord",
         "bindings: Box<[PositionedBindingRecord]>",
@@ -450,7 +454,6 @@ fn command_validation_seals_one_exact_attempt_before_index_or_record_authority()
         );
     }
     for forbidden in [
-        "derive_input_command_facts",
         "execute_command(",
         "SnapshotReader",
         "StorageEngine",

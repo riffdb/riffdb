@@ -588,7 +588,7 @@ impl EntityPostImage {
     }
 }
 
-/// One create or replace mutation with an explicit expected observation.
+/// One create, replace, or checked-delete mutation with an explicit expected observation.
 #[derive(Clone, Eq, PartialEq)]
 pub enum EntityMutation {
     /// Create only while the target remains absent.
@@ -600,6 +600,16 @@ pub enum EntityMutation {
         /// Complete canonical post-image.
         post_image: EntityPostImage,
     },
+    /// Delete only while the target retains the exact observed version.
+    ///
+    /// The predecessor image is retained through validation and index
+    /// derivation. It is never interpreted as a post-delete materialized row.
+    Delete {
+        /// Exact current entity version required for deletion.
+        expected_version: EntityVersion,
+        /// Complete checked predecessor image used by policy and index proofs.
+        prior_image: EntityPostImage,
+    },
 }
 
 impl EntityMutation {
@@ -608,15 +618,26 @@ impl EntityMutation {
     pub const fn target(&self) -> &EntityTarget {
         match self {
             Self::Create(post_image) | Self::Replace { post_image, .. } => post_image.target(),
+            Self::Delete { prior_image, .. } => prior_image.target(),
         }
     }
 
-    /// Borrows the complete mutation post-image.
+    /// Borrows the complete mutation image.
+    ///
+    /// For a delete this is the checked predecessor, not a materialized
+    /// post-delete row. Callers that publish state must branch on the variant.
     #[must_use]
     pub const fn post_image(&self) -> &EntityPostImage {
         match self {
             Self::Create(post_image) | Self::Replace { post_image, .. } => post_image,
+            Self::Delete { prior_image, .. } => prior_image,
         }
+    }
+
+    /// Returns whether this mutation removes current materialized state.
+    #[must_use]
+    pub const fn is_delete(&self) -> bool {
+        matches!(self, Self::Delete { .. })
     }
 
     /// Returns the expected pre-mutation observation.
@@ -626,6 +647,9 @@ impl EntityMutation {
             Self::Create(_) => None,
             Self::Replace {
                 expected_version, ..
+            }
+            | Self::Delete {
+                expected_version, ..
             } => Some(*expected_version),
         }
     }
@@ -634,6 +658,7 @@ impl EntityMutation {
         let variant_bytes = match self {
             Self::Create(_) => 1,
             Self::Replace { .. } => 1 + 8,
+            Self::Delete { .. } => 1 + 8,
         };
         self.post_image()
             .semantic_bytes()?
@@ -1297,6 +1322,9 @@ fn validate_evaluated_mutation(
     let required = match mutation {
         EntityMutation::Create(_) => crate::ExpectedEntityState::Absent,
         EntityMutation::Replace {
+            expected_version, ..
+        }
+        | EntityMutation::Delete {
             expected_version, ..
         } => crate::ExpectedEntityState::Present(*expected_version),
     };
