@@ -1,0 +1,6 @@
+reactive PipelineActivity version 1 {
+  stream PipelineTransitions($organization_id: ScheduledPipeline.organization_id) {
+    partition (organization_id = $organization_id);
+    event PipelineStartedEvent select (organization_id, pipeline_id, due_at);
+  }
+}

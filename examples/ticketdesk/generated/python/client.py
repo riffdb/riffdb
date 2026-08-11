@@ -1630,7 +1630,7 @@ class AsyncTicketDeskClient:
 
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
 
 TICKET_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "fe070fde66deaac7fe7e8f0e76fc997b67d30fa6658d9bd92e1ff835da685d70"
@@ -1784,7 +1784,10 @@ class AsyncTicketDeskReactiveClient(AsyncTicketDeskClient):
         async for item in self._transport._consume_event_stream(reactive_module_hash=TICKET_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="TicketEvents", parameters=encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA), consumer_name=consumer_name):
             raw = dict(item)
             event_type = raw.pop("type")
-            delivery = raw.pop("_delivery")
+            if not isinstance(event_type, str): raise ValueError("invalid RiffDB event type")
+            delivery_value = raw.pop("_delivery")
+            if not isinstance(delivery_value, dict): raise ValueError("invalid RiffDB event delivery")
+            delivery = cast(dict[str, Any], delivery_value)
             event_class = variants.get(event_type)
             if event_class is None: raise ValueError("undeclared RiffDB event")
             yield TicketEventsDelivery(event=decode_record(event_class, raw), event_id=delivery["event_id"], attempt=delivery["attempt"], lease_token=delivery["lease_token"], expires_at=delivery["expires_at"], history_incarnation=delivery["history_incarnation"])

@@ -16,6 +16,7 @@ riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.
 riffdb-contract-ir = { path = "../riffdb-contract-ir", version = "0.1.0", default-features = false }
 riffdb-invariant = { path = "../riffdb-invariant", version = "0.1.0", default-features = false }
 riffdb-runtime = { path = "../riffdb-runtime", version = "0.1.0", default-features = false }
+riffdb-scheduler = { path = "../riffdb-scheduler", version = "0.1.0", default-features = false }
 riffdb-storage-api = { path = "../riffdb-storage-api", version = "0.1.0" }
 riffdb-storage-redb = { path = "../riffdb-storage-redb", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
@@ -38,6 +39,7 @@ riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", 
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "tls-ring"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 
 [[test]]
 name = "driver_host"
@@ -112,6 +114,10 @@ path = "../../tests/operational_queries.rs"
 [[test]]
 name = "workflow_concurrency"
 path = "../../tests/workflow_concurrency.rs"
+
+[[test]]
+name = "scheduler_recovery"
+path = "../../tests/scheduler_recovery.rs"
 
 [lints]
 workspace = true

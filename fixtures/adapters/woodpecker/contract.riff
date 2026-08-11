@@ -1,0 +1,95 @@
+contract WoodpeckerScheduler version 1 {
+  enum PipelineState { Queued, Running }
+
+  entity ScheduledPipeline {
+    key (organization_id: uuid, pipeline_id: uuid)
+    field state: PipelineState
+    field due_at: timestamp
+    field lease_owner: optional<uuid>
+    field lease_expires_at: optional<timestamp>
+    field lease_fence: u64
+    field lease_attempts: u64
+  }
+
+  event PipelineStartedEvent {
+    partition_by (organization_id)
+    organization_id: uuid
+    pipeline_id: uuid
+    due_at: timestamp
+  }
+
+  aggregate ScheduledPipelines {
+    root ScheduledPipeline
+    partition_by organization_id
+    conflict_key (organization_id, pipeline_id)
+  }
+
+  workflow PipelineLifecycle {
+    entity ScheduledPipeline
+    state state
+    transition StartPipelineState from (Queued) to Running
+    lease scheduler {
+      owner lease_owner
+      expires_at lease_expires_at
+      fencing_token lease_fence
+      attempts lease_attempts
+      duration_seconds (5, 900)
+    }
+  }
+
+  command ClaimPipeline {
+    input request_key: string<128>
+    input organization_id: uuid
+    input pipeline_id: uuid
+    input owner_id: uuid
+    input duration: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate ScheduledPipeline(organization_id, pipeline_id) as pipeline else PipelineMissing {}
+    lease claim scheduler on pipeline owner owner_id duration_seconds duration revision expected_revision
+      stale ClaimStale {}
+      unavailable ClaimUnavailable {}
+      invalid ClaimInvalid {}
+      exhausted ClaimExhausted {}
+    return PipelineClaimed { pipeline: pipeline }
+  }
+
+  command StartPipeline {
+    input request_key: string<128>
+    input organization_id: uuid
+    input pipeline_id: uuid
+    input owner_id: uuid
+    input fencing_token: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate ScheduledPipeline(organization_id, pipeline_id) as pipeline else PipelineMissing {}
+    transition StartPipelineState on pipeline revision expected_revision
+      stale StartStale {}
+      illegal StartIllegal {}
+    lease fence scheduler on pipeline owner owner_id fencing_token fencing_token revision expected_revision
+      stale FenceStale {}
+      invalid FenceInvalid {}
+      expired FenceExpired {}
+    emit PipelineStartedEvent {
+      organization_id: organization_id,
+      pipeline_id: pipeline_id,
+      due_at: pipeline.due_at,
+    }
+    return PipelineStarted { pipeline: pipeline }
+  }
+
+  command ReleasePipeline {
+    input request_key: string<128>
+    input organization_id: uuid
+    input pipeline_id: uuid
+    input owner_id: uuid
+    input fencing_token: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    mutate ScheduledPipeline(organization_id, pipeline_id) as pipeline else PipelineMissing {}
+    lease release scheduler on pipeline owner owner_id fencing_token fencing_token revision expected_revision
+      stale ReleaseStale {}
+      invalid ReleaseInvalid {}
+    return PipelineReleased { pipeline: pipeline }
+  }
+}

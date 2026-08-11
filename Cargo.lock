@@ -2018,6 +2018,7 @@ dependencies = [
 name = "riffdb-query-module"
 version = "0.1.0"
 dependencies = [
+ "riffdb-client-rust",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-contract-syntax",
@@ -2047,6 +2048,14 @@ dependencies = [
  "riffdb-invariant",
  "riffdb-storage-api",
  "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-scheduler"
+version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+ "tokio",
 ]
 
 [[package]]
@@ -2202,12 +2211,14 @@ dependencies = [
  "riffdb-query-module",
  "riffdb-riffql-syntax",
  "riffdb-runtime",
+ "riffdb-scheduler",
  "riffdb-server",
  "riffdb-service",
  "riffdb-storage-api",
  "riffdb-storage-memory",
  "riffdb-storage-redb",
  "riffdb-types",
+ "serde",
  "serde_json",
  "tokio",
  "tonic",

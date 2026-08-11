@@ -30,6 +30,7 @@
 - [Application Source and Exact Lock](getting-started/APPLICATION-MANIFEST.md)
 - [Contract Migrations](contracts/MIGRATIONS.md)
 - [Workflow Transitions and Fenced Leases](contracts/WORKFLOWS.md)
+- [Bounded Workflow Schedulers](contracts/SCHEDULERS.md)
 - [Domain Events](contracts/DOMAIN-EVENTS.md)
 - [Reactive Modules](reactive/MODULES.md)
 - [Reactive Application Clients](reactive/CLIENTS.md)

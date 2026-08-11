@@ -552,7 +552,7 @@ pub fn generate_python_application_client(
         return Ok(output);
     }
     output.push_str(
-        "\n\nfrom collections.abc import AsyncIterator\nfrom typing import Any\n\
+        "\n\nfrom collections.abc import AsyncIterator\nfrom typing import Any, cast\n\
          from riffdb_application._binding import decode_record, encode_reactive_record\n\n",
     );
     for reactive in reactive_modules {
@@ -685,7 +685,7 @@ fn emit_python_reactive_module(
                 }
                 writeln!(
                     output,
-                    "        }}\n        async for item in self._transport._consume_event_stream(reactive_module_hash={}_REACTIVE_MODULE_HASH, operation_name={:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name):\n            raw = dict(item)\n            event_type = raw.pop(\"type\")\n            delivery = raw.pop(\"_delivery\")\n            event_class = variants.get(event_type)\n            if event_class is None: raise ValueError(\"undeclared RiffDB event\")\n            yield {name}Delivery(event=decode_record(event_class, raw), event_id=delivery[\"event_id\"], attempt=delivery[\"attempt\"], lease_token=delivery[\"lease_token\"], expires_at=delivery[\"expires_at\"], history_incarnation=delivery[\"history_incarnation\"])\n",
+                    "        }}\n        async for item in self._transport._consume_event_stream(reactive_module_hash={}_REACTIVE_MODULE_HASH, operation_name={:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name):\n            raw = dict(item)\n            event_type = raw.pop(\"type\")\n            if not isinstance(event_type, str): raise ValueError(\"invalid RiffDB event type\")\n            delivery_value = raw.pop(\"_delivery\")\n            if not isinstance(delivery_value, dict): raise ValueError(\"invalid RiffDB event delivery\")\n            delivery = cast(dict[str, Any], delivery_value)\n            event_class = variants.get(event_type)\n            if event_class is None: raise ValueError(\"undeclared RiffDB event\")\n            yield {name}Delivery(event=decode_record(event_class, raw), event_id=delivery[\"event_id\"], attempt=delivery[\"attempt\"], lease_token=delivery[\"lease_token\"], expires_at=delivery[\"expires_at\"], history_incarnation=delivery[\"history_incarnation\"])\n",
                     screaming_snake(reactive.name()),
                     operation.name().as_str()
                 )
@@ -795,7 +795,11 @@ fn emit_python_reactive_module(
                     if workflow_revisions.is_empty() {
                         output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
                     } else {
-                        output.push_str("        }\n        result = raw._map_outcome(lambda value: decode_variant(outcomes, value))\n");
+                        writeln!(
+                            output,
+                            "        }}\n        result: TypedCommandResult[{command_name}Outcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))"
+                        )
+                        .expect("String writes cannot fail");
                         writeln!(
                             output,
                             "        if not isinstance(result.outcome, {command_name}{}):\n            return result._with_workflow_revisions(())",
@@ -1019,7 +1023,11 @@ fn emit_client(
         if workflow_revisions.is_empty() {
             output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
         } else {
-            output.push_str("        }\n        result = raw._map_outcome(lambda value: decode_variant(outcomes, value))\n");
+            writeln!(
+                output,
+                "        }}\n        result: TypedCommandResult[{name}Outcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))"
+            )
+            .expect("String writes cannot fail");
             writeln!(
                 output,
                 "        if not isinstance(result.outcome, {name}{}):\n            return result._with_workflow_revisions(())",

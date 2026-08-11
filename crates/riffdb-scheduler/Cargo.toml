@@ -1,0 +1,19 @@
+[package]
+name = "riffdb-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+riffdb-types = { path = "../riffdb-types", version = "0.1.0", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

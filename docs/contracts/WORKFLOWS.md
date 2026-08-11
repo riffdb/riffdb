@@ -5,6 +5,9 @@ same authorization, idempotency, provenance, commit, and recovery path as every
 other application mutation. There is no generic compare-and-swap, entity
 editor, caller clock, or scheduler bypass.
 
+For the bounded worker protocol that safely composes these commands with named
+queries or durable events, see [Bounded Workflow Schedulers](SCHEDULERS.md).
+
 ## Declare the workflow state
 
 ```riff

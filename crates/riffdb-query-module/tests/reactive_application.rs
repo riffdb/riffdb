@@ -364,6 +364,11 @@ fn reactive_generation_is_exact_typed_and_transport_neutral() {
         );
     }
     assert!(!typescript.contains("Authorization: Bearer"));
+    assert!(typescript.ends_with('\n'));
+    assert!(
+        !typescript.ends_with("\n\n"),
+        "generated TypeScript has exactly one final newline"
+    );
 
     let python = generate_python_application_client(
         &query_module,

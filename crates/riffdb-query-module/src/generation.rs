@@ -2319,6 +2319,8 @@ pub fn generate_typescript_application_client(
     for reactive in reactive_modules {
         emit_typescript_reactive_module(&mut output, module, contract, reactive);
     }
+    output.truncate(output.trim_end().len());
+    output.push('\n');
     output
 }
 

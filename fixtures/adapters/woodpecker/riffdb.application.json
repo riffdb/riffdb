@@ -1,0 +1,46 @@
+{
+  "schema": "riffdb.application-source/v5",
+  "application": "woodpecker-scheduler",
+  "contract": {
+    "source": "contract.riff",
+    "lineage": "WoodpeckerScheduler",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "woodpecker_scheduler",
+      "version": 1,
+      "queries": [
+        { "name": "GetPipeline", "source": "queries/get_pipeline.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [
+    {
+      "name": "PipelineActivity",
+      "version": 1,
+      "source": "reactive/pipeline_activity.riffr"
+    }
+  ],
+  "roles": [
+    {
+      "name": "WoodpeckerSchedulerWorker",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [],
+      "commands": ["ClaimPipeline", "StartPipeline", "ReleasePipeline"],
+      "event_streams": ["PipelineTransitions"],
+      "watch_queries": [],
+      "agent_subscriptions": []
+    }
+  ],
+  "seed_inputs": []
+}
