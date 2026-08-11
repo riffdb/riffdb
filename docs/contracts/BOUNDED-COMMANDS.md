@@ -44,6 +44,19 @@ Every accepted delete names a policy on the entity:
   transaction-current empty-prefix check; a runtime scan or unindexed relationship discovery is
   never substituted.
 
+An indexed-restrict delete must name the business result separately from a missing row:
+
+```riff
+delete Parent(tenant_id, parent_id) as parent
+    else Missing {}
+    restrict Referenced {}
+```
+
+If the reverse index is nonempty, RiffDB persists `Referenced` as the command's typed zero-mutation
+outcome. If a reference races with the delete, transaction-current validation reevaluates the
+whole bounded command and selects `Referenced`; it does not spin on an infrastructure retry.
+Grammar/IR v6 permits one indexed-restrict delete template per command.
+
 Cascade, set-null, orphaning, cross-partition deletion, physical history removal, nested loops,
 and caller-supplied callbacks are not part of this surface. Deleting an entity with a declared
 unique key is also rejected in the current compiler because its release conflict is not yet

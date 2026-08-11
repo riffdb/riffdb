@@ -1,4 +1,4 @@
-spec_version: '0.91'
+spec_version: '0.92'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted

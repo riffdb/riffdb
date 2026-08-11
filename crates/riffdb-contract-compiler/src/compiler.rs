@@ -371,7 +371,7 @@ contract DeleteRestrict version 1 {
     input parent_ids: list<uuid, 1..8>
     idempotency_key request_id
     for parent_id in parent_ids {
-      delete Parent(tenant_id, parent_id) as parent else Missing {}
+      delete Parent(tenant_id, parent_id) as parent else Missing {} restrict Referenced {}
     }
     return Deleted {}
   }
@@ -412,10 +412,70 @@ contract DeleteRestrict version 1 {
             } if source_entity == child.id()
                 && child.indexes().iter().any(|index| index.id() == index_id)
         ));
+        assert_eq!(
+            delete.bindings()[0]
+                .restriction_failure()
+                .expect("restrict failure")
+                .outcome_id(),
+            delete
+                .outcomes()
+                .iter()
+                .find(|outcome| outcome.name() == "Referenced")
+                .expect("Referenced outcome")
+                .id()
+        );
         assert!(
             riffdb_contract_ir::CommandExplain::from_plan(delete)
                 .render_text()
                 .contains("transaction-current-empty:true")
+        );
+
+        let missing_outcome = source.replace(" restrict Referenced {}", "");
+        let missing_error =
+            compile_contract_source(&missing_outcome).expect_err("restrict outcome is mandatory");
+        let missing = missing_error
+            .semantic()
+            .expect("semantic diagnostic")
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::InvalidDeletePolicy)
+            .expect("invalid delete policy diagnostic");
+        let delete_parent = missing_outcome
+            .rfind("Parent(tenant_id, parent_id)")
+            .expect("delete binding span");
+        assert_eq!(missing.primary_span().start() as usize, delete_parent);
+        assert_eq!(
+            missing.primary_span().end() as usize,
+            delete_parent + "Parent".len()
+        );
+
+        let no_inbound_with_restrict_outcome = r#"
+contract DeleteNoInbound version 1 {
+  entity Parent {
+    key (tenant_id: uuid, parent_id: uuid)
+    delete_policy no_inbound
+  }
+  aggregate Owned {
+    root Parent
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+  bulk command DeleteParents {
+    input request_id: uuid
+    input tenant_id: uuid
+    input parent_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for parent_id in parent_ids {
+      delete Parent(tenant_id, parent_id) as parent else Missing {} restrict Referenced {}
+    }
+    return Deleted {}
+  }
+}
+"#;
+        assert_semantic_diagnostic_at(
+            no_inbound_with_restrict_outcome,
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            "Referenced {}",
         );
 
         let invalid = source.replace(

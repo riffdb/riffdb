@@ -434,6 +434,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "accessed_fields",
                 "complete_record_access",
                 "failure",
+                "restriction_failure",
             ],
         ),
         (

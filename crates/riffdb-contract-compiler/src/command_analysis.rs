@@ -98,6 +98,17 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    let mut restrict_failures = command
+        .bindings
+        .iter()
+        .filter_map(|binding| binding.restriction_failure.as_ref());
+    let _first_restrict_failure = restrict_failures.next();
+    for failure in restrict_failures {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            failure.span,
+        ));
+    }
     validate_binding_ownership(command, diagnostics);
     validate_relationship_reads(hir, command, diagnostics);
     validate_unique_conflicts(hir, command, diagnostics);
@@ -148,11 +159,16 @@ fn validate_command(
     for binding in &command.bindings {
         influential_roots.extend(binding.arguments.iter());
         influential_roots.extend(binding.failure.fields.iter().map(|field| &field.value));
+        if let Some(failure) = &binding.restriction_failure {
+            influential_roots.extend(failure.fields.iter().map(|field| &field.value));
+        }
     }
     let mut outcomes = command
         .bindings
         .iter()
-        .map(|binding| &binding.failure)
+        .flat_map(|binding| {
+            std::iter::once(&binding.failure).chain(binding.restriction_failure.iter())
+        })
         .collect::<Vec<_>>();
     for requirement in &command.requirements {
         validate_create_reads(command, &states, &requirement.condition, diagnostics);

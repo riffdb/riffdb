@@ -242,9 +242,9 @@ for language in rust go typescript python; do
 done
 jq -e '.atomic_conflict == true and .delete_restrict == true' "$work_root/rust.json" >/dev/null
 
-jq -e '.tools[] | select(.name | endswith("write_tuples"))
-       | .inputSchema.properties.tuples.minItems == 1
-         and .inputSchema.properties.tuples.maxItems == 128' \
+jq -e '.commands[] | select(.name | endswith("write_tuples"))
+       | .input_schema.properties.tuples.minItems == 1
+         and .input_schema.properties.tuples.maxItems == 128' \
     fixtures/adapters/bulk-conformance/generated/mcp/tools.json >/dev/null
 
 if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|transaction)|entity_type_id|field_id|index_id' \

@@ -1601,6 +1601,15 @@ fn apply_entities(
             .transpose()?;
         let (prior_state, prior_revision, prior_hash) = match (stored_head.as_ref(), observation) {
             (None, EntityObservation::Absent(_)) => (EntityChainStateV1::NeverExisted, 0, None),
+            (Some(head), EntityObservation::Absent(_))
+                if head.target() == target && head.state() == EntityChainStateV1::Deleted =>
+            {
+                (
+                    head.state(),
+                    head.chain_revision(),
+                    Some(head.last_transition_hash()),
+                )
+            }
             (Some(head), EntityObservation::Present(record)) => {
                 let expected_state = EntityChainStateV1::Live {
                     version: record.entity_version(),

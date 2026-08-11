@@ -701,26 +701,14 @@ where
         drop(attempt);
         return Err(CommandValidationError::integrity());
     }
-    let restricted_delete = attempt
-        .materialized_snapshot()
-        .snapshot()
-        .ranges()
-        .iter()
-        .any(|observation| !observation.entries().is_empty());
-    let decision = if restricted_delete {
-        Ok(CheckedCommandDecision::Rejected(
-            CandidateValidationRejection::MutationPreconditionChanged,
-        ))
-    } else {
-        let pending = attempt.commit_context().pending();
-        validate_transaction_current_command_parts(
-            attempt.resolved_plan(),
-            attempt.normalized_input(),
-            pending.logical_time(),
-            attempt.evaluated(),
-            current.state(),
-        )
-    };
+    let pending = attempt.commit_context().pending();
+    let decision = validate_transaction_current_command_parts(
+        attempt.resolved_plan(),
+        attempt.normalized_input(),
+        pending.logical_time(),
+        attempt.evaluated(),
+        current.state(),
+    );
     let decision = match decision {
         Ok(decision) => decision,
         Err(error) => {
@@ -940,66 +928,67 @@ fn validate_evaluated_output(
 
     if evaluated.mutations().is_empty() {
         let declared_rejection = outcome.outcome_id() != plan.success_outcome()
-            && (plan
-                .bindings()
+            && (plan.bindings().iter().any(|binding| {
+                binding.failure().outcome_id() == outcome.outcome_id()
+                    || binding
+                        .restriction_failure()
+                        .is_some_and(|failure| failure.outcome_id() == outcome.outcome_id())
+            }) || plan
+                .instructions()
                 .iter()
-                .any(|binding| binding.failure().outcome_id() == outcome.outcome_id())
-                || plan
-                    .instructions()
-                    .iter()
-                    .any(|instruction| match instruction {
-                        Instruction::Require { reject, .. } => {
-                            reject.outcome_id() == outcome.outcome_id()
-                        }
-                        Instruction::WorkflowTransition { stale, illegal, .. } => [stale, illegal]
+                .any(|instruction| match instruction {
+                    Instruction::Require { reject, .. } => {
+                        reject.outcome_id() == outcome.outcome_id()
+                    }
+                    Instruction::WorkflowTransition { stale, illegal, .. } => [stale, illegal]
+                        .into_iter()
+                        .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                    Instruction::WorkflowLease { operation, .. } => match operation {
+                        riffdb_contract_ir::WorkflowLeaseOperation::Claim {
+                            stale,
+                            unavailable,
+                            invalid,
+                            exhausted,
+                            ..
+                        } => [stale, unavailable, invalid, exhausted]
                             .into_iter()
                             .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
-                        Instruction::WorkflowLease { operation, .. } => match operation {
-                            riffdb_contract_ir::WorkflowLeaseOperation::Claim {
-                                stale,
-                                unavailable,
-                                invalid,
-                                exhausted,
-                                ..
-                            } => [stale, unavailable, invalid, exhausted]
-                                .into_iter()
-                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
-                            riffdb_contract_ir::WorkflowLeaseOperation::Renew {
-                                stale,
-                                invalid,
-                                expired,
-                                exhausted,
-                                ..
-                            } => [stale, invalid, expired, exhausted]
-                                .into_iter()
-                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
-                            riffdb_contract_ir::WorkflowLeaseOperation::Release {
-                                stale,
-                                invalid,
-                                ..
-                            } => [stale, invalid]
-                                .into_iter()
-                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
-                            riffdb_contract_ir::WorkflowLeaseOperation::Expire {
-                                stale,
-                                active,
-                                ..
-                            } => [stale, active]
-                                .into_iter()
-                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
-                            riffdb_contract_ir::WorkflowLeaseOperation::Fence {
-                                stale,
-                                invalid,
-                                expired,
-                                ..
-                            } => [stale, invalid, expired]
-                                .into_iter()
-                                .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
-                        },
-                        Instruction::SetField { .. }
-                        | Instruction::EmitEvent(_)
-                        | Instruction::Return(_) => false,
-                    }));
+                        riffdb_contract_ir::WorkflowLeaseOperation::Renew {
+                            stale,
+                            invalid,
+                            expired,
+                            exhausted,
+                            ..
+                        } => [stale, invalid, expired, exhausted]
+                            .into_iter()
+                            .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                        riffdb_contract_ir::WorkflowLeaseOperation::Release {
+                            stale,
+                            invalid,
+                            ..
+                        } => [stale, invalid]
+                            .into_iter()
+                            .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                        riffdb_contract_ir::WorkflowLeaseOperation::Expire {
+                            stale,
+                            active,
+                            ..
+                        } => [stale, active]
+                            .into_iter()
+                            .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                        riffdb_contract_ir::WorkflowLeaseOperation::Fence {
+                            stale,
+                            invalid,
+                            expired,
+                            ..
+                        } => [stale, invalid, expired]
+                            .into_iter()
+                            .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
+                    },
+                    Instruction::SetField { .. }
+                    | Instruction::EmitEvent(_)
+                    | Instruction::Return(_) => false,
+                }));
         if !declared_rejection || !evaluated.event_intents().is_empty() {
             return Err(CommandValidationError::integrity());
         }
