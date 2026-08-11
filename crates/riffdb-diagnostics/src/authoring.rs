@@ -989,7 +989,9 @@ static_registry!(
         ApplicationRoleErrorKind::ContractMismatch => ("RDB-AR003", "application role contract identity is stale", AuthoringCause::IdentityDrift, AuthoringFix::WriteLock),
         ApplicationRoleErrorKind::ModuleMismatch => ("RDB-AR004", "application role query module identity is stale", AuthoringCause::IdentityDrift, AuthoringFix::WriteLock),
         ApplicationRoleErrorKind::UnknownOperation => ("RDB-AR005", "application role names an unknown operation", AuthoringCause::UnknownSymbol, AuthoringFix::CorrectSymbol),
-        ApplicationRoleErrorKind::RequirementLimit => ("RDB-AR006", "application role derived authority exceeds a hard bound", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole)
+        ApplicationRoleErrorKind::RequirementLimit => ("RDB-AR006", "application role derived authority exceeds a hard bound", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole),
+        ApplicationRoleErrorKind::UnknownPolicy => ("RDB-AR008", "application role names an unknown or ambiguous row policy", AuthoringCause::UnknownSymbol, AuthoringFix::CorrectSymbol),
+        ApplicationRoleErrorKind::PolicyCoverage => ("RDB-AR009", "application role does not select a row policy for every protected operation", AuthoringCause::UnsafeRole, AuthoringFix::NarrowRole)
     }
 );
 

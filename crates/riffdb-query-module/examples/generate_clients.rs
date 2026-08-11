@@ -13,8 +13,8 @@ use riffdb_query_module::{
     ApplicationLock, ApplicationMigrationLockInput, ApplicationSourceManifest,
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
-    generate_go_client, generate_mcp_commands, generate_mcp_tools, generate_python_client,
-    generate_rust_client, generate_typescript_client,
+    compile_application_role_v2, generate_go_client, generate_mcp_commands, generate_mcp_tools,
+    generate_python_client, generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -262,6 +262,213 @@ fn main() {
     )
     .expect("role description fixture");
     generate_migration_application_fixtures(&output);
+    generate_row_policy_application_fixtures(&output);
+}
+
+fn generate_row_policy_application_fixtures(output: &std::path::Path) {
+    let contract_source =
+        include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff");
+    let contract = compile_contract_source(contract_source).expect("row-policy contract");
+    let query_source = r#"
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+    return Found { document: document { document_id owner_id team_id visibility } }
+    outcomes Found | NotFound
+}
+"#;
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("policy_surface").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("GetDocument", query_source).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("row-policy module");
+    let source_json = serde_json::json!({
+        "application": "policy-surface",
+        "contract": {"lineage": "PolicySurface", "source": "contract.riff", "version": 1},
+        "generation": {
+            "go": "generated/go/client.go",
+            "mcp": "generated/mcp/tools.json",
+            "python": "generated/python/client.py",
+            "rust": "generated/rust/client.rs",
+            "typescript": "generated/typescript/client.ts",
+        },
+        "migrations": [],
+        "query_modules": [{
+            "name": "policy_surface",
+            "queries": [{"name": "GetDocument", "source": "queries/get_document.riffq"}],
+            "version": 1,
+        }],
+        "reactive_modules": [],
+        "roles": [{
+            "agent_subscriptions": [],
+            "commands": [],
+            "environment": "development",
+            "event_streams": [],
+            "name": "DocumentReader",
+            "queries": ["GetDocument"],
+            "row_policies": ["DocumentAccess"],
+            "tenant_scope": "global",
+            "watch_queries": [],
+        }],
+        "schema": "riffdb.application-source/v6",
+        "seed_inputs": [],
+    });
+    let source = ApplicationSourceManifest::parse(
+        &serde_json::to_string(&source_json).expect("source JSON"),
+    )
+    .expect("source V6");
+    let exact = source
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("exact manifest V4");
+    let role = compile_application_role_v2(
+        &exact,
+        "DocumentReader",
+        None,
+        &contract,
+        std::slice::from_ref(&module),
+        &[],
+    )
+    .expect("policy role");
+    let rust = generate_rust_client(&module, &contract);
+    let typescript = generate_typescript_client(&module, &contract);
+    let python = generate_python_client(&module, &contract).expect("Python client");
+    let go = generate_go_client(&module, &contract);
+    let mcp = serde_json::to_vec(&serde_json::json!({
+        "commands": generate_mcp_commands(&module, &contract)
+            .expect("MCP commands")
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>(),
+        "schema": "riffdb-row-policy-fixture-mcp/v1",
+        "tools": generate_mcp_tools(&module)
+            .expect("MCP tools")
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+    }))
+    .expect("MCP fixture");
+    let artifacts = [
+        (
+            GeneratedApplicationArtifactKind::Manifest,
+            "generated/riffdb.application.exact.json",
+            exact.canonical_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Rust,
+            "generated/rust/client.rs",
+            rust.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::TypeScript,
+            "generated/typescript/client.ts",
+            typescript.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Python,
+            "generated/python/client.py",
+            python.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Go,
+            "generated/go/client.go",
+            go.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Mcp,
+            "generated/mcp/tools.json",
+            mcp.as_slice(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::ContractBundle,
+            riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+            contract.canonical_bytes(),
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, path, bytes)| {
+        GeneratedApplicationArtifact::new(kind, path, bytes).expect("generated artifact")
+    })
+    .collect::<Vec<_>>();
+    let lock = ApplicationLock::compile_v7(
+        &source,
+        &exact,
+        &contract,
+        std::slice::from_ref(&module),
+        &[],
+        &artifacts,
+        &[],
+    )
+    .expect("application lock V7");
+    fs::write(
+        output.join("fixtures/application-manifests/policy-surface-v6.json"),
+        source.canonical_bytes(),
+    )
+    .expect("source fixture");
+    fs::write(
+        output.join("fixtures/application-manifests/policy-surface-exact-v4.json"),
+        exact.canonical_bytes(),
+    )
+    .expect("exact fixture");
+    fs::write(
+        output.join("fixtures/application-locks/policy-surface-v7.json"),
+        lock.canonical_bytes(),
+    )
+    .expect("lock fixture");
+    let receipt = serde_json::json!({
+        "after": {
+            "application_lock_schema": lock.schema(),
+            "application_manifest_schema": exact.schema(),
+            "application_role_definition_format": 3,
+            "application_source_schema": source.schema(),
+            "contract_bundle_format": contract.format_version(),
+            "contract_grammar_version": contract.grammar_version(),
+            "contract_ir_version": contract.ir_version(),
+            "identities": {
+                "application_lock_hash": hex(lock.identity().as_bytes()),
+                "application_manifest_hash": hex(exact.identity().as_bytes()),
+                "application_role_hash": hex(role.identity().as_bytes()),
+                "contract_bundle_hash": hex(contract.bundle_hash().as_bytes()),
+                "query_module_hash": hex(module.identity().as_bytes()),
+                "source_hash": hex(source.identity().as_bytes()),
+            },
+        },
+        "before": {
+            "application_lock_fixture": "fixtures/application-locks/ticketdesk-migration-v4.json",
+            "application_manifest_fixture": "fixtures/application-manifests/ticketdesk-v1.json",
+            "preserved": true,
+        },
+        "classification": {
+            "old_fixtures_preserved": true,
+            "partial_rotation_is_success": false,
+            "row_policy_identity_is_additive": true,
+        },
+        "decision": "ADR-0111",
+        "repository_closure": [
+            "fixtures/application-manifests/policy-surface-v6.json",
+            "fixtures/application-manifests/policy-surface-exact-v4.json",
+            "fixtures/application-locks/policy-surface-v7.json",
+        ],
+        "schema": "riffdb-row-policy-identity-rotation/v1",
+        "work_package": "WP-570",
+    });
+    fs::write(
+        output.join("fixtures/application-locks/row-policy-rotation-v1.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&receipt).expect("rotation receipt")
+        ),
+    )
+    .expect("rotation receipt fixture");
 }
 
 fn generate_migration_application_fixtures(output: &std::path::Path) {

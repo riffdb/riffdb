@@ -2,7 +2,8 @@
 
 use proptest::prelude::*;
 use riffdb_contract_syntax::ast::{
-    BinaryOperator, Binding, Declaration, Effect, EntityItem, Expression, Literal, ServiceValueKind,
+    BinaryOperator, Binding, Declaration, Effect, EntityItem, Expression, Literal,
+    RowPolicyExpression, RowPolicyOperation, ServiceValueKind,
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
@@ -17,6 +18,46 @@ const RELATIONSHIPS: &str =
 const SPEC: &str = include_str!("../../../SPEC.md");
 const WORKFLOW_SURFACE: &str =
     include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
+const ROW_POLICY_SURFACE: &str =
+    include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff");
+
+#[test]
+fn parses_principal_facts_and_closed_row_policy_rules_with_exact_spans() {
+    let document = parse_contract(ROW_POLICY_SURFACE).expect("row-policy surface parses");
+    let Declaration::PrincipalFact(fact) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be the principal fact");
+    };
+    assert_eq!(fact.name.value, "team_ids");
+
+    let policy = document
+        .contract
+        .value
+        .declarations
+        .iter()
+        .find_map(|declaration| match &declaration.value {
+            Declaration::RowPolicy(policy) => Some(policy),
+            _ => None,
+        })
+        .expect("row policy declaration");
+    assert_eq!(policy.name.value, "DocumentAccess");
+    assert_eq!(policy.entity.value, "Document");
+    assert_eq!(policy.rules.len(), 4);
+    assert_eq!(
+        policy.rules[0].value.operation.value,
+        RowPolicyOperation::Read
+    );
+    assert!(matches!(
+        policy.rules[0].value.expression.value,
+        RowPolicyExpression::Binary { .. }
+    ));
+    let start = ROW_POLICY_SURFACE
+        .find("row policy DocumentAccess")
+        .expect("policy source");
+    assert_eq!(
+        policy.name.span.start() as usize,
+        start + "row policy ".len()
+    );
+}
 
 #[test]
 fn parses_compiler_visible_workflow_and_service_values_with_exact_spans() {

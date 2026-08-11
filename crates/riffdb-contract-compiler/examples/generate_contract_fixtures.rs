@@ -54,6 +54,29 @@ const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
     ),
 ];
 
+const ROW_POLICY_FIXTURES: &[(&str, &str)] = &[
+    (
+        "valid/document-access.riff",
+        include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff"),
+    ),
+    (
+        "valid/document-grant.riff",
+        include_str!("../../../fixtures/compiler/row-policy/valid/document-grant.riff"),
+    ),
+    (
+        "invalid/cross-aggregate-exists.riff",
+        include_str!("../../../fixtures/compiler/row-policy/invalid/cross-aggregate-exists.riff"),
+    ),
+    (
+        "invalid/two-exists.riff",
+        include_str!("../../../fixtures/compiler/row-policy/invalid/two-exists.riff"),
+    ),
+    (
+        "invalid/unindexed-exists.riff",
+        include_str!("../../../fixtures/compiler/row-policy/invalid/unindexed-exists.riff"),
+    ),
+];
+
 const OPTIONAL_ARITHMETIC_SOURCE: &str = r#"
 contract OptionalArithmetic version 1 {
   entity Row {
@@ -225,6 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     fs::write(fixture_root.join("late-bounds.txt"), late_bound_snapshot()?)?;
     generate_relationship_source_fixtures(&fixture_root)?;
+    generate_row_policy_source_fixtures(&fixture_root)?;
     generate_root_validation_fixtures(&fixture_root)?;
     generate_mcp_evolution_fixture(&fixture_root)?;
     generate_migration_fixtures(&output_root)?;
@@ -695,6 +719,21 @@ fn generate_relationship_source_fixtures(
     fs::create_dir_all(&root)?;
     for (name, source) in RELATIONSHIP_FIXTURES {
         fs::write(root.join(name), source)?;
+    }
+    Ok(())
+}
+
+fn generate_row_policy_source_fixtures(
+    fixture_root: &std::path::Path,
+) -> Result<(), Box<dyn Error>> {
+    let root = fixture_root.join("row-policy");
+    for (name, source) in ROW_POLICY_FIXTURES {
+        let path = root.join(name);
+        let parent = path
+            .parent()
+            .ok_or("row-policy fixture path has no parent")?;
+        fs::create_dir_all(parent)?;
+        fs::write(path, source)?;
     }
     Ok(())
 }
@@ -2662,6 +2701,59 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
         cases.push((name, code, error));
     }
 
+    let policy_surface =
+        include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff");
+    let excessive_disjunction = (0..17).map(|_| "true").collect::<Vec<_>>().join(" || ");
+    for (name, code, source) in [
+        (
+            "RDB-C039-invalid-principal-fact",
+            CompilerDiagnosticCode::InvalidPrincipalFact,
+            policy_surface.replace("list<uuid, 32>", "list<uuid, 65>"),
+        ),
+        (
+            "RDB-C040-invalid-row-policy",
+            CompilerDiagnosticCode::InvalidRowPolicy,
+            policy_surface.replace("owner_id == principal.id", "owner_id < principal.id"),
+        ),
+        (
+            "RDB-C041-unbounded-row-policy",
+            CompilerDiagnosticCode::UnboundedRowPolicy,
+            policy_surface.replace(
+                "visibility == Public\n      || owner_id == principal.id\n      || team_id in principal.fact.team_ids",
+                &excessive_disjunction,
+            ),
+        ),
+        (
+            "RDB-C042-cross-partition-row-policy",
+            CompilerDiagnosticCode::CrossPartitionRowPolicy,
+            concat!(
+                "contract CrossPolicy version 1 { ",
+                "entity Document { key (organization_id: uuid, document_id: uuid) } ",
+                "entity Grant { key (other_id: uuid, grant_id: uuid) index by_subject (other_id, grant_id) } ",
+                "aggregate Documents { root Document partition_by organization_id conflict_key (organization_id) } ",
+                "aggregate Grants { root Grant partition_by other_id conflict_key (other_id) } ",
+                "row policy Access on Document { allow read when exists Grant.by_subject(organization_id, document_id) } }",
+            )
+            .to_owned(),
+        ),
+        (
+            "RDB-C043-invalid-row-policy-relationship",
+            CompilerDiagnosticCode::InvalidRowPolicyRelationship,
+            concat!(
+                "contract MissingPolicyIndex version 1 { ",
+                "entity Document { key (organization_id: uuid, document_id: uuid) } ",
+                "entity Grant { key (organization_id: uuid, document_id: uuid, grant_id: uuid) } ",
+                "aggregate Documents { root Document child Grant partition_by organization_id conflict_key (organization_id) } ",
+                "row policy Access on Document { allow read when exists Grant.by_subject(organization_id, document_id, document_id) } }",
+            )
+            .to_owned(),
+        ),
+    ] {
+        let error = validate_contract_source(&source).expect_err("invalid row-policy fixture");
+        require_semantic_code(name, code, &error)?;
+        cases.push((name, code, error));
+    }
+
     for (name, code, source) in [
         (
             "RDB-C201-invalid-command-tool-name",
@@ -2749,8 +2841,8 @@ fn require_semantic_code(
         Ok(())
     } else {
         Err(format!(
-            "diagnostic fixture {name} did not emit {}",
-            expected.as_str()
+            "diagnostic fixture {name} did not emit {}; observed {error:?}",
+            expected.as_str(),
         )
         .into())
     }

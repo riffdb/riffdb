@@ -1,0 +1,27 @@
+contract PolicySurface version 1 {
+  enum Visibility { Private, Team, Public }
+
+  principal fact team_ids: list<uuid, 32>
+
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field owner_id: uuid
+    field team_id: optional<uuid>
+    field visibility: Visibility
+  }
+
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+
+  row policy DocumentAccess on Document {
+    allow read when visibility == Public
+      || owner_id == principal.id
+      || team_id in principal.fact.team_ids
+    allow create when owner_id == principal.id
+    allow update when owner_id == principal.id
+    allow delete when owner_id == principal.id
+  }
+}

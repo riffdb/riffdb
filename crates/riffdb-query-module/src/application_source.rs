@@ -20,6 +20,8 @@ pub const APPLICATION_SOURCE_SCHEMA_V3: &str = "riffdb.application-source/v3";
 pub const APPLICATION_SOURCE_SCHEMA_V4: &str = "riffdb.application-source/v4";
 /// Symbolic source schema adding an exact generated Go target.
 pub const APPLICATION_SOURCE_SCHEMA_V5: &str = "riffdb.application-source/v5";
+/// Symbolic source schema binding compiler-owned row policies to exact roles.
+pub const APPLICATION_SOURCE_SCHEMA_V6: &str = "riffdb.application-source/v6";
 /// Maximum accepted application-source bytes.
 pub const MAX_APPLICATION_SOURCE_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
@@ -186,6 +188,7 @@ pub struct ApplicationSourceRole {
     event_streams: Vec<String>,
     watch_queries: Vec<String>,
     agent_subscriptions: Vec<String>,
+    row_policies: Vec<String>,
 }
 
 impl ApplicationSourceRole {
@@ -232,6 +235,11 @@ impl ApplicationSourceRole {
     #[must_use]
     pub fn agent_subscriptions(&self) -> &[String] {
         &self.agent_subscriptions
+    }
+    /// Compiler-owned row policies attached to this role.
+    #[must_use]
+    pub fn row_policies(&self) -> &[String] {
+        &self.row_policies
     }
 }
 
@@ -310,7 +318,9 @@ impl ApplicationSourceManifest {
             .ok_or_else(|| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape))?;
         let root_keys = if matches!(
             schema_value,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             &[
                 "application",
@@ -352,6 +362,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V3 => APPLICATION_SOURCE_SCHEMA_V3,
             APPLICATION_SOURCE_SCHEMA_V4 => APPLICATION_SOURCE_SCHEMA_V4,
             APPLICATION_SOURCE_SCHEMA_V5 => APPLICATION_SOURCE_SCHEMA_V5,
+            APPLICATION_SOURCE_SCHEMA_V6 => APPLICATION_SOURCE_SCHEMA_V6,
             _ => {
                 return Err(ApplicationSourceError::new(
                     ApplicationSourceErrorKind::UnsupportedVersion,
@@ -363,7 +374,9 @@ impl ApplicationSourceManifest {
         let query_modules = parse_modules(required(root, "query_modules")?)?;
         let reactive_modules = if matches!(
             schema,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             parse_reactive_modules(required(root, "reactive_modules")?)?
         } else {
@@ -377,6 +390,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V3
                 | APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             parse_migrations(required(root, "migrations")?)?
         } else {
@@ -504,7 +518,9 @@ impl ApplicationSourceManifest {
     ) -> Result<ApplicationManifest, ApplicationSourceError> {
         if matches!(
             self.schema,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             return Err(ApplicationSourceError::new(
                 ApplicationSourceErrorKind::IdentityMismatch,
@@ -595,7 +611,9 @@ impl ApplicationSourceManifest {
     ) -> Result<ApplicationManifest, ApplicationSourceError> {
         if !matches!(
             self.schema,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) || reactive.len() != self.reactive_modules.len()
         {
             return Err(ApplicationSourceError::new(
@@ -609,7 +627,9 @@ impl ApplicationSourceManifest {
             .expect("compiler-created manifest object");
         root.insert(
             "schema".to_owned(),
-            json!(if self.schema == APPLICATION_SOURCE_SCHEMA_V5 {
+            json!(if self.schema == APPLICATION_SOURCE_SCHEMA_V6 {
+                crate::APPLICATION_MANIFEST_SCHEMA_V4
+            } else if self.schema == APPLICATION_SOURCE_SCHEMA_V5 {
                 crate::APPLICATION_MANIFEST_SCHEMA_V3
             } else {
                 crate::APPLICATION_MANIFEST_SCHEMA_V2
@@ -635,12 +655,12 @@ impl ApplicationSourceManifest {
         }).collect::<Result<Vec<_>, ApplicationSourceError>>()?));
         root.insert(
             "roles".to_owned(),
-            json!(self.roles.iter().map(|role| json!({
-            "agent_subscriptions": role.agent_subscriptions,
-            "commands": role.commands, "environment": role.environment,
-            "event_streams": role.event_streams, "name": role.name, "queries": role.queries,
-            "tenant_scope": role.tenant_scope.as_str(), "watch_queries": role.watch_queries,
-        })).collect::<Vec<_>>()),
+            json!(
+                self.roles
+                    .iter()
+                    .map(|role| reactive_role_value(role, self.schema))
+                    .collect::<Vec<_>>()
+            ),
         );
         let encoded = serde_json::to_string(&value)
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
@@ -778,7 +798,10 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
     root.insert("generation".to_owned(), Value::Object(generation_value));
     if matches!(
         schema,
-        APPLICATION_SOURCE_SCHEMA_V3 | APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+        APPLICATION_SOURCE_SCHEMA_V3
+            | APPLICATION_SOURCE_SCHEMA_V4
+            | APPLICATION_SOURCE_SCHEMA_V5
+            | APPLICATION_SOURCE_SCHEMA_V6
     ) {
         root.insert(
             "migrations".to_owned(),
@@ -811,7 +834,7 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
     );
     if matches!(
         schema,
-        APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+        APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6
     ) {
         root.insert(
             "reactive_modules".to_owned(),
@@ -830,16 +853,9 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
         json!(
             roles
                 .iter()
-                .map(|role| if matches!(schema, APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5) { json!({
-                    "agent_subscriptions": role.agent_subscriptions,
-                    "commands": role.commands,
-                    "environment": role.environment,
-                    "event_streams": role.event_streams,
-                    "name": role.name,
-                    "queries": role.queries,
-                    "tenant_scope": role.tenant_scope.as_str(),
-                    "watch_queries": role.watch_queries,
-                }) } else { json!({
+                .map(|role| if matches!(schema, APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6) {
+                    reactive_role_value(role, schema)
+                } else { json!({
                     "commands": role.commands, "environment": role.environment, "name": role.name,
                     "queries": role.queries, "tenant_scope": role.tenant_scope.as_str(),
                 }) })
@@ -849,6 +865,26 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
     root.insert("schema".to_owned(), json!(schema));
     root.insert("seed_inputs".to_owned(), json!(seeds));
     Value::Object(root)
+}
+
+fn reactive_role_value(role: &ApplicationSourceRole, schema: &str) -> Value {
+    let mut value = json!({
+        "agent_subscriptions": role.agent_subscriptions,
+        "commands": role.commands,
+        "environment": role.environment,
+        "event_streams": role.event_streams,
+        "name": role.name,
+        "queries": role.queries,
+        "tenant_scope": role.tenant_scope.as_str(),
+        "watch_queries": role.watch_queries,
+    });
+    if schema == APPLICATION_SOURCE_SCHEMA_V6 {
+        value
+            .as_object_mut()
+            .expect("compiler-created role object")
+            .insert("row_policies".to_owned(), json!(role.row_policies));
+    }
+    value
 }
 
 fn parse_migrations(
@@ -953,7 +989,22 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = if matches!(
+        let object = if schema == APPLICATION_SOURCE_SCHEMA_V6 {
+            object(
+                value,
+                &[
+                    "agent_subscriptions",
+                    "commands",
+                    "environment",
+                    "event_streams",
+                    "name",
+                    "queries",
+                    "row_policies",
+                    "tenant_scope",
+                    "watch_queries",
+                ],
+            )?
+        } else if matches!(
             schema,
             APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
         ) {
@@ -982,7 +1033,9 @@ fn parse_roles(
         commands.sort();
         let mut event_streams = if matches!(
             schema,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             parse_names(required(object, "event_streams")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -990,7 +1043,9 @@ fn parse_roles(
         };
         let mut watch_queries = if matches!(
             schema,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             parse_names(required(object, "watch_queries")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -998,7 +1053,9 @@ fn parse_roles(
         };
         let mut agent_subscriptions = if matches!(
             schema,
-            APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5
+            APPLICATION_SOURCE_SCHEMA_V4
+                | APPLICATION_SOURCE_SCHEMA_V5
+                | APPLICATION_SOURCE_SCHEMA_V6
         ) {
             parse_names(
                 required(object, "agent_subscriptions")?,
@@ -1007,14 +1064,21 @@ fn parse_roles(
         } else {
             Vec::new()
         };
+        let mut row_policies = if schema == APPLICATION_SOURCE_SCHEMA_V6 {
+            parse_names(required(object, "row_policies")?, MAX_ROLE_OPERATIONS)?
+        } else {
+            Vec::new()
+        };
         event_streams.sort();
         watch_queries.sort();
         agent_subscriptions.sort();
+        row_policies.sort();
         ensure_unique(queries.iter().map(String::as_str))?;
         ensure_unique(commands.iter().map(String::as_str))?;
         ensure_unique(event_streams.iter().map(String::as_str))?;
         ensure_unique(watch_queries.iter().map(String::as_str))?;
         ensure_unique(agent_subscriptions.iter().map(String::as_str))?;
+        ensure_unique(row_policies.iter().map(String::as_str))?;
         if queries
             .iter()
             .any(|query| !available.contains(query.as_str()))
@@ -1040,6 +1104,7 @@ fn parse_roles(
             event_streams,
             watch_queries,
             agent_subscriptions,
+            row_policies,
         });
     }
     roles.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1053,7 +1118,10 @@ fn parse_generation(
 ) -> Result<ApplicationSourceGeneration, ApplicationSourceError> {
     let object = if schema == APPLICATION_SOURCE_SCHEMA_V1 {
         object(value, &["mcp", "rust", "typescript"])?
-    } else if schema == APPLICATION_SOURCE_SCHEMA_V5 {
+    } else if matches!(
+        schema,
+        APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6
+    ) {
         object(value, &["go", "mcp", "python", "rust", "typescript"])?
     } else {
         object(value, &["mcp", "python", "rust", "typescript"])?
@@ -1061,7 +1129,10 @@ fn parse_generation(
     let generation = ApplicationSourceGeneration {
         rust: checked_path(string(object, "rust")?)?,
         typescript: checked_path(string(object, "typescript")?)?,
-        go: if schema == APPLICATION_SOURCE_SCHEMA_V5 {
+        go: if matches!(
+            schema,
+            APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6
+        ) {
             Some(checked_path(string(object, "go")?)?)
         } else {
             None

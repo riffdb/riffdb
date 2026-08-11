@@ -17,6 +17,10 @@ multi-tenant service.
   failure may degrade service but cannot roll back a commit.
 - The deterministic runtime receives checked inputs and reserved logical time;
   it has no ambient I/O, clock, or randomness.
+- Row-policy source, principal-fact schemas, and role selection are compiler
+  inputs. Application requests cannot submit a predicate, fact, evaluator, or
+  bypass. The [row-policy reference](security/ROW-POLICIES.md) records the
+  current compiler/runtime boundary.
 
 ## Primary Threats
 

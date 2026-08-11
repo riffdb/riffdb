@@ -507,7 +507,7 @@ fn require_expected(
     }
 }
 
-fn lower_literal(
+pub(crate) fn lower_literal(
     literal: &Literal,
     expected: Option<&ValueType>,
 ) -> Option<(CanonicalValue, ValueType)> {

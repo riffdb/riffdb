@@ -6,8 +6,8 @@ compatibility inputs. The source names paths, operations, roles, and output
 targets. It never asks an author or agent to discover, copy, or maintain a
 compiler-derived identity.
 
-The compiler writes `riffdb.application.lock.json` using
-`riffdb.application-lock/v1`. That exact lock covers the normalized symbolic
+The compiler writes `riffdb.application.lock.json` using the lock generation
+corresponding to the source schema (V1 through V7 today). That exact lock covers the normalized symbolic
 source; contract source, bundle, plan-root, lineage, version, and compiler
 formats; query module, source, and plan identities; tenant-unbound role
 definitions and their exact operation authority; and every generated artifact
@@ -125,6 +125,39 @@ with named reads and commands does not invent a dummy stream.
 `riffdb new --language rust|go|typescript|python` uses this same V5/V3/V6
 identity chain for every language. Selecting a language changes the runnable
 starter, not the compiled application identity or operation schemas.
+
+Application Source V6 adds a required symbolic `row_policies` allowlist to
+every role. It emits exact Application Manifest V4 and Lock V7. The lock's V3
+role-definition receipt names each selected policy, protected entity, and
+operation class; executable policy bytecode remains covered by the contract
+bundle hash and is never copied into an application request or generated
+client.
+
+```json
+{
+  "schema": "riffdb.application-source/v6",
+  "roles": [
+    {
+      "agent_subscriptions": [],
+      "commands": [],
+      "environment": "development",
+      "event_streams": [],
+      "name": "DocumentReader",
+      "queries": ["GetDocument"],
+      "row_policies": ["DocumentAccess"],
+      "tenant_scope": "tenant",
+      "watch_queries": []
+    }
+  ]
+}
+```
+
+WP-570 exposes this schema for compiler review and exact-lock generation. The
+current build deliberately withholds executable query, command, and reactive
+permissions from operations touching protected entities until WP-572 installs
+the shared transaction-current evaluator. An authorization refusal is expected
+for such a role in this intermediate build; application middleware is not an
+accepted substitute. See [Compiled Row Policies](../security/ROW-POLICIES.md).
 
 The source document is closed JSON with exactly these top-level members:
 

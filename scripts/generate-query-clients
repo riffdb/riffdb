@@ -28,6 +28,35 @@ if [[ "${1:-}" == "--check" ]]; then
         "$generated/fixtures/application-manifests/ticketdesk-migration-v3.json"
     diff -u fixtures/application-locks/ticketdesk-migration-v4.json \
         "$generated/fixtures/application-locks/ticketdesk-migration-v4.json"
+    diff -u fixtures/application-manifests/policy-surface-v6.json \
+        "$generated/fixtures/application-manifests/policy-surface-v6.json"
+    diff -u fixtures/application-manifests/policy-surface-exact-v4.json \
+        "$generated/fixtures/application-manifests/policy-surface-exact-v4.json"
+    diff -u fixtures/application-locks/policy-surface-v7.json \
+        "$generated/fixtures/application-locks/policy-surface-v7.json"
+    diff -u fixtures/application-locks/row-policy-rotation-v1.json \
+        "$generated/fixtures/application-locks/row-policy-rotation-v1.json"
+    jq -e '
+      .schema == "riffdb-row-policy-identity-rotation/v1"
+      and .work_package == "WP-570"
+      and .decision == "ADR-0111"
+      and .before.preserved == true
+      and .after.application_source_schema == "riffdb.application-source/v6"
+      and .after.application_manifest_schema == "riffdb.application-manifest/v4"
+      and .after.application_lock_schema == "riffdb.application-lock/v7"
+      and .after.application_role_definition_format == 3
+      and .after.contract_grammar_version == 4
+      and .after.contract_ir_version == 4
+      and .after.contract_bundle_format == 4
+      and .classification.old_fixtures_preserved == true
+      and .classification.row_policy_identity_is_additive == true
+      and .classification.partial_rotation_is_success == false
+      and .repository_closure == [
+        "fixtures/application-manifests/policy-surface-v6.json",
+        "fixtures/application-manifests/policy-surface-exact-v4.json",
+        "fixtures/application-locks/policy-surface-v7.json"
+      ]
+    ' fixtures/application-locks/row-policy-rotation-v1.json >/dev/null
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     diff -u clients/go/ticketdesk/client.go "$generated/clients/go/ticketdesk/client.go"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"

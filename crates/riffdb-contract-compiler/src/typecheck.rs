@@ -17,6 +17,7 @@ pub(crate) struct ResolvedTypes {
     pub(crate) event_fields: BTreeMap<(EventTypeId, FieldId), ValueType>,
     pub(crate) command_inputs: BTreeMap<(CommandId, FieldId), ValueType>,
     pub(crate) command_service_values: BTreeMap<(CommandId, FieldId), ValueType>,
+    pub(crate) principal_facts: BTreeMap<String, ValueType>,
 }
 
 /// Resolves and checks every source-declared value type.
@@ -38,6 +39,7 @@ pub(crate) fn resolve_declared_types(
     let mut event_fields = BTreeMap::new();
     let mut command_inputs = BTreeMap::new();
     let mut command_service_values = BTreeMap::new();
+    let mut principal_facts = BTreeMap::new();
     for declaration in &document.contract.value.declarations {
         match &declaration.value {
             Declaration::Entity(entity) => {
@@ -157,10 +159,27 @@ pub(crate) fn resolve_declared_types(
                     }
                 }
             }
+            Declaration::PrincipalFact(fact) => {
+                if let Some(value_type) = resolve_type(&fact.ty, symbols, &mut diagnostics) {
+                    let valid = value_type.is_projection_group_scalar()
+                        || value_type.list_parts().is_some_and(|(element, maximum)| {
+                            element.is_projection_group_scalar() && maximum <= 64
+                        });
+                    if valid {
+                        principal_facts.insert(fact.name.value.clone(), value_type);
+                    } else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidPrincipalFact,
+                            fact.ty.span,
+                        ));
+                    }
+                }
+            }
             Declaration::Enum(_)
             | Declaration::Aggregate(_)
             | Declaration::Workflow(_)
-            | Declaration::Projection(_) => {}
+            | Declaration::Projection(_)
+            | Declaration::RowPolicy(_) => {}
         }
     }
     if diagnostics.is_empty() {
@@ -169,6 +188,7 @@ pub(crate) fn resolve_declared_types(
             event_fields,
             command_inputs,
             command_service_values,
+            principal_facts,
         })
     } else {
         Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))

@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=41
+count=46
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -116,15 +116,30 @@ code.36.help=pass one required u64 command input containing the revision returne
 code.37.id=RDB-C038
 code.37.message=a workflow lease operation requires direct owner, duration, revision, and fencing-token inputs
 code.37.help=pass the exact owner, duration, revision, and fencing token as required command inputs
-code.38.id=RDB-C201
-code.38.message=an identifier cannot form a valid MCP command tool-name segment
-code.38.help=start contract and command identifiers with an ASCII letter
-code.39.id=RDB-C202
-code.39.message=the complete MCP command tool name exceeds 128 bytes
-code.39.help=shorten the source contract or command identifier
-code.40.id=RDB-C203
-code.40.message=two commands normalize to the same MCP command tool name
-code.40.help=rename one command so lowercase identifiers remain distinct
+code.38.id=RDB-C039
+code.38.message=the principal fact schema is invalid or exceeds a fixed bound
+code.38.help=declare a scalar or list of at most 64 scalar values; at most 32 facts are allowed
+code.39.id=RDB-C040
+code.39.message=the row-policy rule is mistyped, duplicated, or invalid
+code.39.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+code.40.id=RDB-C041
+code.40.message=the row-policy expression exceeds a fixed static bound
+code.40.help=reduce policy nodes, disjunctions, fact values, or relationship probes
+code.41.id=RDB-C042
+code.41.message=the row-policy dependency is not provably partition-local
+code.41.help=keep the policy entity and relationship target in one declared aggregate partition
+code.42.id=RDB-C043
+code.42.message=the row-policy relationship must use one exact local declared index
+code.42.help=name one declared target index and provide its complete partition-routed key
+code.43.id=RDB-C201
+code.43.message=an identifier cannot form a valid MCP command tool-name segment
+code.43.help=start contract and command identifiers with an ASCII letter
+code.44.id=RDB-C202
+code.44.message=the complete MCP command tool name exceeds 128 bytes
+code.44.help=shorten the source contract or command identifier
+code.45.id=RDB-C203
+code.45.message=two commands normalize to the same MCP command tool name
+code.45.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -520,6 +535,86 @@ diagnostic.0.message=a workflow lease operation requires direct owner, duration,
 diagnostic.0.primary=2038..2047
 diagnostic.0.related=none
 diagnostic.0.help=pass the exact owner, duration, revision, and fencing token as required command inputs
+
+[RDB-C039-invalid-principal-fact]
+expected=RDB-C039
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C039
+diagnostic.0.message=the principal fact schema is invalid or exceeds a fixed bound
+diagnostic.0.primary=107..121
+diagnostic.0.related=none
+diagnostic.0.help=declare a scalar or list of at most 64 scalar values; at most 32 facts are allowed
+
+[RDB-C040-invalid-row-policy]
+expected=RDB-C040
+kind=semantic
+count=5
+diagnostic.0.code=RDB-C040
+diagnostic.0.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.0.primary=408..707
+diagnostic.0.related=none
+diagnostic.0.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+diagnostic.1.code=RDB-C040
+diagnostic.1.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.1.primary=507..508
+diagnostic.1.related=none
+diagnostic.1.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+diagnostic.2.code=RDB-C040
+diagnostic.2.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.2.primary=597..598
+diagnostic.2.related=none
+diagnostic.2.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+diagnostic.3.code=RDB-C040
+diagnostic.3.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.3.primary=643..644
+diagnostic.3.related=none
+diagnostic.3.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+diagnostic.4.code=RDB-C040
+diagnostic.4.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.4.primary=689..690
+diagnostic.4.related=none
+diagnostic.4.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+
+[RDB-C041-unbounded-row-policy]
+expected=RDB-C041
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C041
+diagnostic.0.message=the row-policy expression exceeds a fixed static bound
+diagnostic.0.primary=468..600
+diagnostic.0.related=none
+diagnostic.0.help=reduce policy nodes, disjunctions, fact values, or relationship probes
+
+[RDB-C042-cross-partition-row-policy]
+expected=RDB-C042
+kind=semantic
+count=2
+diagnostic.0.code=RDB-C040
+diagnostic.0.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.0.primary=368..471
+diagnostic.0.related=none
+diagnostic.0.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+diagnostic.1.code=RDB-C042
+diagnostic.1.message=the row-policy dependency is not provably partition-local
+diagnostic.1.primary=423..428
+diagnostic.1.related=none
+diagnostic.1.help=keep the policy entity and relationship target in one declared aggregate partition
+
+[RDB-C043-invalid-row-policy-relationship]
+expected=RDB-C043
+kind=semantic
+count=2
+diagnostic.0.code=RDB-C040
+diagnostic.0.message=the row-policy rule is mistyped, duplicated, or invalid
+diagnostic.0.primary=297..413
+diagnostic.0.related=none
+diagnostic.0.help=use row fields, principal identity, declared facts, constants, and closed boolean operators
+diagnostic.1.code=RDB-C043
+diagnostic.1.message=the row-policy relationship must use one exact local declared index
+diagnostic.1.primary=358..368
+diagnostic.1.related=none
+diagnostic.1.help=name one declared target index and provide its complete partition-routed key
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

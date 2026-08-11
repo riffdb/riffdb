@@ -87,6 +87,16 @@ pub enum CompilerDiagnosticCode {
     MissingWorkflowRevision,
     /// `RDB-C038`: a workflow lease operation lacks a required direct command input.
     MissingWorkflowLeaseInput,
+    /// `RDB-C039`: a principal fact schema is invalid or exceeds its closed bounds.
+    InvalidPrincipalFact,
+    /// `RDB-C040`: a row-policy rule is mistyped, duplicated, or otherwise invalid.
+    InvalidRowPolicy,
+    /// `RDB-C041`: a row-policy expression exceeds its static node or disjunction bound.
+    UnboundedRowPolicy,
+    /// `RDB-C042`: a row-policy dependency cannot be proved to remain in one partition.
+    CrossPartitionRowPolicy,
+    /// `RDB-C043`: a row-policy relationship probe is absent, unindexed, or unsafe.
+    InvalidRowPolicyRelationship,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -97,7 +107,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 46] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -136,6 +146,11 @@ impl CompilerDiagnosticCode {
         Self::InvalidServiceValue,
         Self::MissingWorkflowRevision,
         Self::MissingWorkflowLeaseInput,
+        Self::InvalidPrincipalFact,
+        Self::InvalidRowPolicy,
+        Self::UnboundedRowPolicy,
+        Self::CrossPartitionRowPolicy,
+        Self::InvalidRowPolicyRelationship,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -183,6 +198,11 @@ impl CompilerDiagnosticCode {
             Self::InvalidServiceValue => "RDB-C036",
             Self::MissingWorkflowRevision => "RDB-C037",
             Self::MissingWorkflowLeaseInput => "RDB-C038",
+            Self::InvalidPrincipalFact => "RDB-C039",
+            Self::InvalidRowPolicy => "RDB-C040",
+            Self::UnboundedRowPolicy => "RDB-C041",
+            Self::CrossPartitionRowPolicy => "RDB-C042",
+            Self::InvalidRowPolicyRelationship => "RDB-C043",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -266,6 +286,17 @@ impl CompilerDiagnosticCode {
             }
             Self::MissingWorkflowLeaseInput => {
                 "a workflow lease operation requires direct owner, duration, revision, and fencing-token inputs"
+            }
+            Self::InvalidPrincipalFact => {
+                "the principal fact schema is invalid or exceeds a fixed bound"
+            }
+            Self::InvalidRowPolicy => "the row-policy rule is mistyped, duplicated, or invalid",
+            Self::UnboundedRowPolicy => "the row-policy expression exceeds a fixed static bound",
+            Self::CrossPartitionRowPolicy => {
+                "the row-policy dependency is not provably partition-local"
+            }
+            Self::InvalidRowPolicyRelationship => {
+                "the row-policy relationship must use one exact local declared index"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -375,6 +406,21 @@ impl CompilerDiagnosticCode {
             Self::MissingWorkflowLeaseInput => Some(
                 "pass the exact owner, duration, revision, and fencing token as required command inputs",
             ),
+            Self::InvalidPrincipalFact => Some(
+                "declare a scalar or list of at most 64 scalar values; at most 32 facts are allowed",
+            ),
+            Self::InvalidRowPolicy => Some(
+                "use row fields, principal identity, declared facts, constants, and closed boolean operators",
+            ),
+            Self::UnboundedRowPolicy => {
+                Some("reduce policy nodes, disjunctions, fact values, or relationship probes")
+            }
+            Self::CrossPartitionRowPolicy => Some(
+                "keep the policy entity and relationship target in one declared aggregate partition",
+            ),
+            Self::InvalidRowPolicyRelationship => {
+                Some("name one declared target index and provide its complete partition-routed key")
+            }
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
             }
@@ -549,7 +595,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 41);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 46);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

@@ -936,9 +936,9 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
 
 layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "magic" => "ASCII `RIFFDB-BUNDLE\\0`",
-    "bundle_format_version" => "u32 = 1, 2, or 3",
-    "grammar_version" => "u32 = 1, 2, or 3; must equal the bundle version",
-    "executable_ir_version" => "u32 = 1, 2, or 3; must equal the bundle version",
+    "bundle_format_version" => "u32 = 1, 2, 3, or 4",
+    "grammar_version" => "u32 = 1, 2, 3, or 4; must equal the bundle version",
+    "executable_ir_version" => "u32 = 1, 2, 3, or 4; must equal the bundle version",
     "compiler_version" => "nonempty ASCII compiler semantic-version identity string, <=64 bytes",
     "contract_lineage" => "string",
     "contract_version" => "u64",
@@ -948,6 +948,7 @@ layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "ledger" => "LineageLedgerV1",
     "schema" => "StructuralSchema",
     "workflows" => "IR v2+: u32 count + WorkflowSchema[]; omitted in v1",
+    "row_policies" => "IR v4+: RowPolicyCatalogV1; omitted in v1-v3",
     "commands" => "u32 count + CommandBundleEntry[]",
     "projections" => "u32 count + ProjectionBundleEntry[]",
     "schema_artifacts" => "u32 count + GeneratedSchemaArtifact[]",
@@ -1232,6 +1233,33 @@ layout!(PROJECTION_COMPONENT_LAYOUT, "ProjectionGroupComponentSchema", {
     "enum_variants" => "u32 count + EnumVariantId[]",
     "maximum_framed_bytes" => "u32",
 });
+layout!(ROW_POLICY_CATALOG_LAYOUT, "RowPolicyCatalogV1", {
+    "version" => "u32 = 1",
+    "facts" => "u32 count + PrincipalFactSchemaV1[] in symbolic-name order",
+    "policies" => "u32 count + RowPolicyPlanV1[] in symbolic-name order",
+});
+layout!(PRINCIPAL_FACT_SCHEMA_LAYOUT, "PrincipalFactSchemaV1", {
+    "name" => "string",
+    "value_type" => "scalar ValueType or list<scalar, maximum <= 64>",
+});
+layout!(ROW_POLICY_PLAN_LAYOUT, "RowPolicyPlanV1", {
+    "name" => "string",
+    "entity" => "EntityTypeId",
+    "rules" => "u32 count + RowPolicyRuleV1[] in operation-tag order",
+});
+layout!(ROW_POLICY_RULE_LAYOUT, "RowPolicyRuleV1", {
+    "operation" => "row-policy operation tag",
+    "root" => "u32 topologically ordered node index",
+    "nodes" => "u32 count + RowPolicyExpressionNodeV1[]",
+});
+layout!(ROW_POLICY_NODE_LAYOUT, "RowPolicyExpressionNodeV1", {
+    "tag" => "closed row-policy expression tag",
+    "payload" => "exact selected operand, node references, or indexed-exists payload",
+});
+layout!(ROW_POLICY_OPERAND_LAYOUT, "RowPolicyOperandV1", {
+    "source" => "closed row-field/principal-id/principal-kind/principal-fact/constant tag and payload",
+    "value_type" => "ValueType",
+});
 layout!(SCHEMA_ARTIFACT_LAYOUT, "GeneratedSchemaArtifact", {
     "key" => "SchemaArtifactKey tag plus exact selected payload",
     "canonical_json" => "bytes",
@@ -1311,6 +1339,12 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     PROJECTION_MEASURE_LAYOUT,
     PROJECTION_GROUP_LAYOUT,
     PROJECTION_COMPONENT_LAYOUT,
+    ROW_POLICY_CATALOG_LAYOUT,
+    PRINCIPAL_FACT_SCHEMA_LAYOUT,
+    ROW_POLICY_PLAN_LAYOUT,
+    ROW_POLICY_RULE_LAYOUT,
+    ROW_POLICY_NODE_LAYOUT,
+    ROW_POLICY_OPERAND_LAYOUT,
     SCHEMA_ARTIFACT_LAYOUT,
     MCP_REGISTRY_LAYOUT,
     MCP_ENTRY_LAYOUT,
@@ -2150,7 +2184,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 49);
+        assert_eq!(FORMAT_LAYOUTS.len(), 55);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

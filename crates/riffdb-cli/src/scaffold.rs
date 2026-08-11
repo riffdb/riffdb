@@ -982,6 +982,7 @@ fn compile_symbolic_application_mode(
         source.schema(),
         riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
             | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
+            | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6
     ) {
         source.exact_manifest_v2(&contract, &modules, &reactive_modules)
     } else {
@@ -999,6 +1000,7 @@ fn compile_symbolic_application_mode(
             source.schema(),
             riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
                 | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
+                | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6
         ) {
             compile_application_role_v2(
                 &exact,
@@ -1113,7 +1115,17 @@ fn compile_symbolic_application_mode(
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5 {
+    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6 {
+        ApplicationLock::compile_v7(
+            &source,
+            &exact,
+            &contract,
+            &modules,
+            &reactive_modules,
+            &artifacts,
+            &migration_inputs,
+        )
+    } else if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5 {
         ApplicationLock::compile_v6(
             &source,
             &exact,

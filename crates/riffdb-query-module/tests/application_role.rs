@@ -3,10 +3,13 @@
 //! Symbolic application-role authority tests.
 
 use riffdb_contract_compiler::compile_contract_source;
+use riffdb_query_ir::SymbolicCatalog;
 use riffdb_query_module::{
-    ApplicationManifest, ApplicationRoleErrorKind, ApplicationRoleOperationKind, NamedQuerySource,
-    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role,
+    ApplicationManifest, ApplicationRoleErrorKind, ApplicationRoleOperationKind,
+    ApplicationSourceManifest, NamedQuerySource, QueryModule, QueryModuleCandidate,
+    QueryModuleName, QueryModuleVersion, compile_application_role, generate_go_application_client,
+    generate_python_application_client, generate_rust_application_client,
+    generate_typescript_application_client,
 };
 use riffdb_types::{
     CapabilityPermissionKindV1, CapabilityPermissionV1, PartitionScopeV1, TenantId, TenantScope,
@@ -79,6 +82,114 @@ fn exact_application() -> (
     .expect("candidate");
     let module = QueryModule::compile(candidate, &contract).expect("module");
     (manifest, contract, module)
+}
+
+#[test]
+fn v4_role_identity_covers_symbolic_policy_and_fact_schema() {
+    let contract = compile_contract_source(include_str!(
+        "../../../fixtures/compiler/row-policy/valid/document-access.riff"
+    ))
+    .expect("policy contract");
+    let query_source = r#"
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+    return Found {
+        document: document { document_id owner_id team_id visibility }
+    }
+    outcomes Found | NotFound
+}
+"#;
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("policy_surface").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("GetDocument", query_source).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("module");
+    let source = |policies: &str| {
+        format!(
+            r#"{{
+  "application": "policy-surface",
+  "contract": {{"lineage": "PolicySurface", "source": "contract.riff", "version": 1}},
+  "generation": {{"go": "generated/go/client.go", "mcp": "generated/mcp/tools.json", "python": "generated/python/client.py", "rust": "generated/rust/client.rs", "typescript": "generated/typescript/client.ts"}},
+  "migrations": [],
+  "query_modules": [{{"name": "policy_surface", "queries": [{{"name": "GetDocument", "source": "queries/get_document.riffq"}}], "version": 1}}],
+  "reactive_modules": [],
+  "roles": [{{"agent_subscriptions": [], "commands": [], "environment": "development", "event_streams": [], "name": "DocumentReader", "queries": ["GetDocument"], "row_policies": {policies}, "tenant_scope": "global", "watch_queries": []}}],
+  "schema": "riffdb.application-source/v6",
+  "seed_inputs": []
+}}"#
+        )
+    };
+    let exact = ApplicationSourceManifest::parse(&source("[\"DocumentAccess\"]"))
+        .expect("source")
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("exact manifest");
+    let role = compile_application_role(
+        &exact,
+        "DocumentReader",
+        None,
+        &contract,
+        std::slice::from_ref(&module),
+    )
+    .expect("compiled role");
+
+    assert_eq!(exact.schema(), "riffdb.application-manifest/v4");
+    assert_eq!(role.row_policies().len(), 1);
+    assert_eq!(role.row_policies()[0].name(), "DocumentAccess");
+    assert_eq!(role.row_policies()[0].entity(), "Document");
+    assert_eq!(role.principal_fact_schemas().len(), 1);
+    assert_eq!(role.principal_fact_schemas()[0].name(), "team_ids");
+    assert_eq!(
+        role.principal_fact_schemas()[0].value_type(),
+        "List<Uuid,32>"
+    );
+    let catalog = SymbolicCatalog::from_bundle(&contract).expect("safe catalog");
+    let policy = catalog.row_policy("DocumentAccess").expect("policy symbol");
+    assert_eq!(policy.entity(), "Document");
+    assert_eq!(policy.operations().len(), 4);
+    let fact = catalog.principal_fact("team_ids").expect("fact schema");
+    assert_eq!(fact.value_type(), "List<Uuid,32>");
+    let safe_catalog = format!("{policy:?} {fact:?}");
+    assert!(!safe_catalog.contains("field_id"));
+    assert!(!safe_catalog.contains("team-a"));
+    let generated = [
+        generate_rust_application_client(&module, &contract, &[]),
+        generate_typescript_application_client(&module, &contract, &[]),
+        generate_python_application_client(&module, &contract, &[]).expect("Python client"),
+        generate_go_application_client(&module, &contract, &[]),
+    ];
+    for client in generated {
+        let client = client.to_ascii_lowercase();
+        assert!(!client.contains("row_policy"));
+        assert!(!client.contains("principal_fact"));
+        assert!(!client.contains("policy_bypass"));
+    }
+    assert!(
+        !role
+            .internal_grant()
+            .permissions()
+            .as_slice()
+            .iter()
+            .any(|permission| matches!(permission, CapabilityPermissionV1::ExecuteNamedQuery(..)))
+    );
+
+    let missing = ApplicationSourceManifest::parse(&source("[]"))
+        .expect("source")
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("exact manifest");
+    let error = compile_application_role(&missing, "DocumentReader", None, &contract, &[module])
+        .expect_err("missing protected policy must deny");
+    assert_eq!(error.kind(), ApplicationRoleErrorKind::PolicyCoverage);
 }
 
 #[test]

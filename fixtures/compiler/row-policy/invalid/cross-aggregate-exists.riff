@@ -1,0 +1,30 @@
+contract CrossAggregatePolicy version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+  }
+
+  entity DocumentGrant {
+    key (organization_id: uuid, document_id: uuid, subject_id: uuid)
+    index by_document_subject (organization_id, document_id, subject_id)
+  }
+
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+
+  aggregate Grants {
+    root DocumentGrant
+    partition_by organization_id
+    conflict_key (organization_id, document_id, subject_id)
+  }
+
+  row policy DocumentAccess on Document {
+    allow read when exists DocumentGrant.by_document_subject(
+      organization_id,
+      document_id,
+      principal.id,
+    )
+  }
+}

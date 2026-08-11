@@ -24,6 +24,7 @@
 - [Command Lifecycle](concepts/COMMAND-LIFECYCLE.md)
 - [Consistency and Recovery](concepts/CONSISTENCY.md)
 - [Safety by Construction](safety-by-construction.md)
+- [Compiled Row Policies](security/ROW-POLICIES.md)
 
 # Build Applications
 

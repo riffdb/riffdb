@@ -15,6 +15,8 @@ pub const APPLICATION_MANIFEST_SCHEMA_V1: &str = "riffdb.application-manifest/v1
 pub const APPLICATION_MANIFEST_SCHEMA_V2: &str = "riffdb.application-manifest/v2";
 /// Exact manifest schema binding an exact generated Go target.
 pub const APPLICATION_MANIFEST_SCHEMA_V3: &str = "riffdb.application-manifest/v3";
+/// Exact manifest schema binding compiler-owned row policies to roles.
+pub const APPLICATION_MANIFEST_SCHEMA_V4: &str = "riffdb.application-manifest/v4";
 /// Maximum accepted application-manifest source bytes.
 pub const MAX_APPLICATION_MANIFEST_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
@@ -195,6 +197,7 @@ pub struct ManifestRole {
     event_streams: Vec<String>,
     watch_queries: Vec<String>,
     agent_subscriptions: Vec<String>,
+    row_policies: Vec<String>,
 }
 
 /// Symbolic tenant binding required by an application role.
@@ -259,6 +262,11 @@ impl ManifestRole {
     #[must_use]
     pub fn agent_subscriptions(&self) -> &[String] {
         &self.agent_subscriptions
+    }
+    /// Exact symbolic row-policy allowlist.
+    #[must_use]
+    pub fn row_policies(&self) -> &[String] {
+        &self.row_policies
     }
 }
 
@@ -334,7 +342,9 @@ impl ApplicationManifest {
             .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))?;
         let root_keys = if matches!(
             schema_value,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             &[
                 "application",
@@ -362,6 +372,7 @@ impl ApplicationManifest {
             APPLICATION_MANIFEST_SCHEMA_V1 => APPLICATION_MANIFEST_SCHEMA_V1,
             APPLICATION_MANIFEST_SCHEMA_V2 => APPLICATION_MANIFEST_SCHEMA_V2,
             APPLICATION_MANIFEST_SCHEMA_V3 => APPLICATION_MANIFEST_SCHEMA_V3,
+            APPLICATION_MANIFEST_SCHEMA_V4 => APPLICATION_MANIFEST_SCHEMA_V4,
             _ => return Err(ManifestError::new(ManifestErrorKind::UnsupportedVersion)),
         };
         let application_name = checked_name(string(root, "application")?)?;
@@ -369,7 +380,9 @@ impl ApplicationManifest {
         let query_modules = parse_query_modules(required(root, "query_modules")?)?;
         let reactive_modules = if matches!(
             schema,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             parse_reactive_modules(required(root, "reactive_modules")?)?
         } else {
@@ -401,11 +414,8 @@ impl ApplicationManifest {
                 })).collect::<Vec<_>>(),
                 "version": module.version,
             })).collect::<Vec<_>>(),
-            "roles": roles.iter().map(|role| if matches!(schema, APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3) {
-                json!({"agent_subscriptions": role.agent_subscriptions, "commands": role.commands,
-                    "environment": role.environment, "event_streams": role.event_streams,
-                    "name": role.name, "queries": role.queries,
-                    "tenant_scope": role.tenant_scope.as_str(), "watch_queries": role.watch_queries})
+            "roles": roles.iter().map(|role| if matches!(schema, APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4) {
+                manifest_role_value(role, schema)
             } else {
                 json!({"commands": role.commands, "environment": role.environment,
                     "name": role.name, "queries": role.queries,
@@ -416,7 +426,9 @@ impl ApplicationManifest {
         });
         if matches!(
             schema,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             let root = canonical_value.as_object_mut().expect("manifest object");
             let mut generation_value = Map::new();
@@ -688,7 +700,22 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = if matches!(
+        let object = if schema == APPLICATION_MANIFEST_SCHEMA_V4 {
+            object(
+                value,
+                &[
+                    "agent_subscriptions",
+                    "commands",
+                    "environment",
+                    "event_streams",
+                    "name",
+                    "queries",
+                    "row_policies",
+                    "tenant_scope",
+                    "watch_queries",
+                ],
+            )?
+        } else if matches!(
             schema,
             APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
         ) {
@@ -715,7 +742,9 @@ fn parse_roles(
         let mut commands = parse_names(required(object, "commands")?, MAX_ROLE_OPERATIONS)?;
         let mut event_streams = if matches!(
             schema,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             parse_names(required(object, "event_streams")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -723,7 +752,9 @@ fn parse_roles(
         };
         let mut watch_queries = if matches!(
             schema,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             parse_names(required(object, "watch_queries")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -731,7 +762,9 @@ fn parse_roles(
         };
         let mut agent_subscriptions = if matches!(
             schema,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             parse_names(
                 required(object, "agent_subscriptions")?,
@@ -740,16 +773,23 @@ fn parse_roles(
         } else {
             Vec::new()
         };
+        let mut row_policies = if schema == APPLICATION_MANIFEST_SCHEMA_V4 {
+            parse_names(required(object, "row_policies")?, MAX_ROLE_OPERATIONS)?
+        } else {
+            Vec::new()
+        };
         queries.sort();
         commands.sort();
         event_streams.sort();
         watch_queries.sort();
         agent_subscriptions.sort();
+        row_policies.sort();
         ensure_unique(queries.iter().map(String::as_str))?;
         ensure_unique(commands.iter().map(String::as_str))?;
         ensure_unique(event_streams.iter().map(String::as_str))?;
         ensure_unique(watch_queries.iter().map(String::as_str))?;
         ensure_unique(agent_subscriptions.iter().map(String::as_str))?;
+        ensure_unique(row_policies.iter().map(String::as_str))?;
         if queries
             .iter()
             .any(|query| !available_queries.contains(query.as_str()))
@@ -769,6 +809,7 @@ fn parse_roles(
             event_streams,
             watch_queries,
             agent_subscriptions,
+            row_policies,
         });
     }
     roles.sort_by(|left, right| left.name.cmp(&right.name));
@@ -776,11 +817,34 @@ fn parse_roles(
     Ok(roles)
 }
 
+fn manifest_role_value(role: &ManifestRole, schema: &str) -> Value {
+    let mut value = json!({
+        "agent_subscriptions": role.agent_subscriptions,
+        "commands": role.commands,
+        "environment": role.environment,
+        "event_streams": role.event_streams,
+        "name": role.name,
+        "queries": role.queries,
+        "tenant_scope": role.tenant_scope.as_str(),
+        "watch_queries": role.watch_queries,
+    });
+    if schema == APPLICATION_MANIFEST_SCHEMA_V4 {
+        value
+            .as_object_mut()
+            .expect("compiler-created role object")
+            .insert("row_policies".to_owned(), json!(role.row_policies));
+    }
+    value
+}
+
 fn parse_generation(
     value: &Value,
     schema: &str,
 ) -> Result<ManifestGenerationTargets, ManifestError> {
-    let object = if schema == APPLICATION_MANIFEST_SCHEMA_V3 {
+    let object = if matches!(
+        schema,
+        APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4
+    ) {
         object(value, &["go", "mcp", "python", "rust", "typescript"])?
     } else if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
         object(value, &["mcp", "python", "rust", "typescript"])?
@@ -790,7 +854,10 @@ fn parse_generation(
     let generation = ManifestGenerationTargets {
         rust: checked_path(string(object, "rust")?)?,
         typescript: checked_path(string(object, "typescript")?)?,
-        go: if schema == APPLICATION_MANIFEST_SCHEMA_V3 {
+        go: if matches!(
+            schema,
+            APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4
+        ) {
             Some(checked_path(string(object, "go")?)?)
         } else {
             None
@@ -798,7 +865,9 @@ fn parse_generation(
         mcp: checked_path(string(object, "mcp")?)?,
         python: if matches!(
             schema,
-            APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3
+            APPLICATION_MANIFEST_SCHEMA_V2
+                | APPLICATION_MANIFEST_SCHEMA_V3
+                | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
             Some(checked_path(string(object, "python")?)?)
         } else {

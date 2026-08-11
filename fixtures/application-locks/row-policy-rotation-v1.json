@@ -1,0 +1,37 @@
+{
+  "after": {
+    "application_lock_schema": "riffdb.application-lock/v7",
+    "application_manifest_schema": "riffdb.application-manifest/v4",
+    "application_role_definition_format": 3,
+    "application_source_schema": "riffdb.application-source/v6",
+    "contract_bundle_format": 4,
+    "contract_grammar_version": 4,
+    "contract_ir_version": 4,
+    "identities": {
+      "application_lock_hash": "37c7e2390b834c9528ff05051478b3d729cad33d4662c580446e6c2b5f8229ed",
+      "application_manifest_hash": "4f1aa96788e903c843ad609a06a10b450266fc24e5f0529d138ebcc7dd80d858",
+      "application_role_hash": "1dc98a807ec17c2dd29d5ef94a7d022b47d9a05e98172884c50b33f82376886d",
+      "contract_bundle_hash": "45d4bc3fc92e497994678d3de970b26b36645b582eeb153fb7b083991c40ab23",
+      "query_module_hash": "c4a73f82fa189b332a7918b45ac3572da07726d5fe05937652962dd74c69bfcc",
+      "source_hash": "2da12a176b5583f244fbfcb69ffe3debb1d63bea3c150c067061b09c14416a3e"
+    }
+  },
+  "before": {
+    "application_lock_fixture": "fixtures/application-locks/ticketdesk-migration-v4.json",
+    "application_manifest_fixture": "fixtures/application-manifests/ticketdesk-v1.json",
+    "preserved": true
+  },
+  "classification": {
+    "old_fixtures_preserved": true,
+    "partial_rotation_is_success": false,
+    "row_policy_identity_is_additive": true
+  },
+  "decision": "ADR-0111",
+  "repository_closure": [
+    "fixtures/application-manifests/policy-surface-v6.json",
+    "fixtures/application-manifests/policy-surface-exact-v4.json",
+    "fixtures/application-locks/policy-surface-v7.json"
+  ],
+  "schema": "riffdb-row-policy-identity-rotation/v1",
+  "work_package": "WP-570"
+}

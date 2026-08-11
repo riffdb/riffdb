@@ -47,6 +47,93 @@ Declaration: Spanned<Declaration> = {
         => parser::spanned(Declaration::Workflow(workflow), lo, hi),
     <lo:@L> <projection:ProjectionDeclaration> <hi:@R>
         => parser::spanned(Declaration::Projection(projection), lo, hi),
+    <lo:@L> <fact:PrincipalFactDeclaration> <hi:@R>
+        => parser::spanned(Declaration::PrincipalFact(fact), lo, hi),
+    <lo:@L> <policy:RowPolicyDeclaration> <hi:@R>
+        => parser::spanned(Declaration::RowPolicy(policy), lo, hi),
+};
+
+PrincipalFactDeclaration: PrincipalFactDeclaration = {
+    "principal" "fact" <name:Identifier> ":" <ty:TypeExpression>
+        => PrincipalFactDeclaration { name, ty },
+};
+
+RowPolicyDeclaration: RowPolicyDeclaration = {
+    "row" "policy" <name:Identifier> "on" <entity:Identifier>
+        "{" <rules:RowPolicyRule+> "}"
+        => RowPolicyDeclaration { name, entity, rules },
+};
+
+RowPolicyRule: Spanned<RowPolicyRule> = {
+    <lo:@L> "allow" <operation:RowPolicyOperation> "when"
+        <expression:RowPolicyExpression> <hi:@R>
+        => parser::spanned(RowPolicyRule { operation, expression: expression.into_syntax() }, lo, hi),
+};
+
+RowPolicyOperation: Spanned<RowPolicyOperation> = {
+    <lo:@L> "read" <hi:@R> => parser::spanned(RowPolicyOperation::Read, lo, hi),
+    <lo:@L> "create" <hi:@R> => parser::spanned(RowPolicyOperation::Create, lo, hi),
+    <lo:@L> "update" <hi:@R> => parser::spanned(RowPolicyOperation::Update, lo, hi),
+    <lo:@L> "delete" <hi:@R> => parser::spanned(RowPolicyOperation::Delete, lo, hi),
+};
+
+RowPolicyExpression: parser::ParsedRowPolicyExpression = RowPolicyOrExpression;
+
+RowPolicyOrExpression: parser::ParsedRowPolicyExpression = {
+    <left:RowPolicyAndExpression> <rest:(<OrOperator> <RowPolicyAndExpression>)*>
+        =>? parser::grammar_result(parser::row_policy_binary_chain(left, rest)),
+};
+
+RowPolicyAndExpression: parser::ParsedRowPolicyExpression = {
+    <left:RowPolicyPredicate> <rest:(<AndOperator> <RowPolicyPredicate>)*>
+        =>? parser::grammar_result(parser::row_policy_binary_chain(left, rest)),
+};
+
+RowPolicyPredicate: parser::ParsedRowPolicyExpression = {
+    <left:RowPolicyUnary> <operator:ComparisonOperator> <right:RowPolicyUnary>
+        =>? parser::grammar_result(parser::row_policy_binary(left, operator, right)),
+    <needle:RowPolicyUnary> "in" <haystack:RowPolicyUnary>
+        =>? parser::grammar_result(parser::row_policy_in(needle, haystack)),
+    <value:RowPolicyUnary> "is" <negated:("not")?> "null"
+        =>? parser::grammar_result(parser::row_policy_is_null(value, negated.is_some())),
+    RowPolicyUnary,
+};
+
+RowPolicyUnary: parser::ParsedRowPolicyExpression = {
+    <lo:@L> "!" <value:RowPolicyUnary> <hi:@R>
+        =>? parser::grammar_result(parser::row_policy_not(value, parser::span(lo, hi))),
+    RowPolicyPrimary,
+};
+
+RowPolicyPrimary: parser::ParsedRowPolicyExpression = {
+    <literal:Literal> => parser::row_policy_literal(literal),
+    <path:RowPolicyPath> => parser::row_policy_path(path),
+    <lo:@L> "(" <expression:RowPolicyExpression> ")" <hi:@R>
+        =>? parser::grammar_result(parser::row_policy_parenthesized(expression, parser::span(lo, hi))),
+    <lo:@L> "exists" <entity:Identifier> "." <index:Identifier>
+        "(" <arguments:RowPolicyArgumentList> ")" <hi:@R>
+        =>? parser::grammar_result(parser::row_policy_exists(entity, index, arguments, parser::span(lo, hi))),
+};
+
+RowPolicyArgumentList: Vec<parser::ParsedRowPolicyExpression> = {
+    <head:RowPolicyExpression> <tail:("," <RowPolicyExpression>)*> <trailing:Comma?> => {
+        let _ = trailing;
+        let mut values = vec![head];
+        values.extend(tail);
+        values
+    },
+};
+
+RowPolicyPath: Spanned<Path> = {
+    <lo:@L> <head:RowPolicyPathSegment> <tail:("." <RowPolicyPathSegment>)*> <hi:@R> => {
+        let mut segments = vec![head];
+        segments.extend(tail);
+        parser::spanned(Path { segments }, lo, hi)
+    },
+};
+
+RowPolicyPathSegment: Spanned<String> = {
+    Identifier,
 };
 
 WorkflowDeclaration: WorkflowDeclaration = {
@@ -632,6 +719,17 @@ Identifier: Spanned<String> = {
     <lo:@L> "exhausted" <hi:@R> => parser::spanned("exhausted".to_owned(), lo, hi),
     <lo:@L> "expired" <hi:@R> => parser::spanned("expired".to_owned(), lo, hi),
     <lo:@L> "active" <hi:@R> => parser::spanned("active".to_owned(), lo, hi),
+    <lo:@L> "principal" <hi:@R> => parser::spanned("principal".to_owned(), lo, hi),
+    <lo:@L> "fact" <hi:@R> => parser::spanned("fact".to_owned(), lo, hi),
+    <lo:@L> "row" <hi:@R> => parser::spanned("row".to_owned(), lo, hi),
+    <lo:@L> "policy" <hi:@R> => parser::spanned("policy".to_owned(), lo, hi),
+    <lo:@L> "allow" <hi:@R> => parser::spanned("allow".to_owned(), lo, hi),
+    <lo:@L> "when" <hi:@R> => parser::spanned("when".to_owned(), lo, hi),
+    <lo:@L> "update" <hi:@R> => parser::spanned("update".to_owned(), lo, hi),
+    <lo:@L> "delete" <hi:@R> => parser::spanned("delete".to_owned(), lo, hi),
+    <lo:@L> "in" <hi:@R> => parser::spanned("in".to_owned(), lo, hi),
+    <lo:@L> "is" <hi:@R> => parser::spanned("is".to_owned(), lo, hi),
+    <lo:@L> "not" <hi:@R> => parser::spanned("not".to_owned(), lo, hi),
 };
 
 UnsignedInteger: Spanned<String> = {
@@ -719,6 +817,18 @@ extern {
         "set" => Token::Set,
         "emit" => Token::Emit,
         "return" => Token::Return,
+        "principal" => Token::Principal,
+        "fact" => Token::Fact,
+        "row" => Token::Row,
+        "policy" => Token::Policy,
+        "allow" => Token::Allow,
+        "when" => Token::When,
+        "update" => Token::Update,
+        "delete" => Token::Delete,
+        "in" => Token::In,
+        "is" => Token::Is,
+        "not" => Token::Not,
+        "exists" => Token::Exists,
         "bool" => Token::Bool,
         "i64" => Token::I64,
         "u64" => Token::U64,
