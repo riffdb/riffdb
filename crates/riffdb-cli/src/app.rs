@@ -9,7 +9,9 @@ use std::process::{Command as ProcessCommand, ExitCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
-use riffdb_application::ApplicationInstallationPlan;
+use riffdb_application::{
+    ApplicationInstallationPlan, InstallationDriver, InstallationSymbol, InstalledSeedEvidence,
+};
 use riffdb_client_rust::{
     ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
     ApplicationUuid, ApplicationValue, ApplyContractMigration, AttemptBudget, BackupNameV1,
@@ -32,7 +34,8 @@ use riffdb_query_module::{
 };
 use riffdb_types::{
     ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, PartitionScopeV1, TenantId, TenantScope,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, GeneratedArtifactHash, PartitionScopeV1,
+    TenantId, TenantScope,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -75,6 +78,26 @@ const MAX_OPAQUE_TOKEN_BYTES: usize = 128;
 const APPLICATION_DEPLOYMENT_STATE_SCHEMA: &str = "riffdb.application-deployment-state/v1";
 const APPLICATION_DEPLOYMENT_TEST_INTERRUPT_AFTER: &str = "RIFFDB_APPLICATION_TEST_INTERRUPT_AFTER";
 const APPLICATION_DEPLOYMENT_TEST_INTERRUPT_EXIT: i32 = 86;
+const APPLICATION_INSTALLATION_SEED_RECEIPTS_SCHEMA: &str =
+    "riffdb.application-installation-seed-receipts/v1";
+const MAX_APPLICATION_INSTALLATION_SEED_RECEIPTS_BYTES: usize = 128 * 1_024;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationInstallationSeedReceiptsDocument {
+    schema: String,
+    plan_hash: String,
+    seeds: Vec<ApplicationInstallationSeedReceiptDocument>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationInstallationSeedReceiptDocument {
+    name: String,
+    content_hash: String,
+    succeeded: u64,
+    replayed: u64,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -914,8 +937,21 @@ async fn application_command(
     stdin: &mut dyn Read,
 ) -> Terminal {
     let command = match command {
-        ApplicationCommand::Install { plan, campaign_id } => {
-            return start_application_installation(plan, campaign_id, config, environment).await;
+        ApplicationCommand::Install {
+            plan,
+            campaign_id,
+            driver_proof,
+            seed_receipts,
+        } => {
+            return start_application_installation(
+                plan,
+                campaign_id,
+                driver_proof,
+                seed_receipts,
+                config,
+                environment,
+            )
+            .await;
         }
         ApplicationCommand::Installation { campaign_id } => {
             return get_application_installation(campaign_id, config, environment).await;
@@ -1860,6 +1896,8 @@ async fn application_command(
 async fn start_application_installation(
     plan_path: OsString,
     campaign_id: String,
+    driver_proof: Vec<ApplicationLanguage>,
+    seed_receipts_path: Option<OsString>,
     config: &EffectiveConfig,
     environment: &dyn Environment,
 ) -> Terminal {
@@ -1886,7 +1924,41 @@ async fn start_application_installation(
             );
         }
     };
-    let start = StartApplicationInstallation::new(campaign_id, plan);
+    let mut start = StartApplicationInstallation::new(campaign_id, plan);
+    if !driver_proof.is_empty() {
+        let drivers = driver_proof.into_iter().map(installation_driver).collect();
+        start = match start.with_driver_proof(drivers) {
+            Ok(start) => start,
+            Err(_) => {
+                return local_error(
+                    identity,
+                    "installation_driver_proof_mismatch",
+                    "driver proof does not exactly match the immutable installation plan",
+                );
+            }
+        };
+    } else if let Some(path) = seed_receipts_path {
+        let receipts = match read_installation_seed_receipts(Path::new(&path), start.plan()) {
+            Ok(receipts) => receipts,
+            Err(()) => {
+                return local_error(
+                    identity,
+                    "installation_seed_receipts_invalid",
+                    "seed receipts are not canonical or do not match the immutable installation plan",
+                );
+            }
+        };
+        start = match start.with_seed_receipts(receipts) {
+            Ok(start) => start,
+            Err(_) => {
+                return local_error(
+                    identity,
+                    "installation_seed_receipts_mismatch",
+                    "seed receipts do not exactly complete every plan-declared seed item",
+                );
+            }
+        };
+    }
     let mut client = match connect(config).await {
         Ok(client) => client,
         Err(error) => return client_error(identity, &error),
@@ -1902,6 +1974,46 @@ async fn start_application_installation(
         }
         Err(error) => client_error(identity, &error),
     }
+}
+
+const fn installation_driver(language: ApplicationLanguage) -> InstallationDriver {
+    match language {
+        ApplicationLanguage::Rust => InstallationDriver::Rust,
+        ApplicationLanguage::Go => InstallationDriver::Go,
+        ApplicationLanguage::Typescript => InstallationDriver::TypeScript,
+        ApplicationLanguage::Python => InstallationDriver::Python,
+    }
+}
+
+fn read_installation_seed_receipts(
+    path: &Path,
+    plan: &ApplicationInstallationPlan,
+) -> Result<Vec<InstalledSeedEvidence>, ()> {
+    let bytes =
+        read_file(path, MAX_APPLICATION_INSTALLATION_SEED_RECEIPTS_BYTES).map_err(|_| ())?;
+    let document: ApplicationInstallationSeedReceiptsDocument =
+        serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let mut canonical = serde_json::to_vec(&document).map_err(|_| ())?;
+    canonical.push(b'\n');
+    if canonical != bytes
+        || document.schema != APPLICATION_INSTALLATION_SEED_RECEIPTS_SCHEMA
+        || document.plan_hash != hex(plan.identity().as_bytes())
+        || document.seeds.is_empty()
+    {
+        return Err(());
+    }
+    document
+        .seeds
+        .into_iter()
+        .map(|receipt| {
+            Ok(InstalledSeedEvidence::new(
+                InstallationSymbol::new(receipt.name).map_err(|_| ())?,
+                GeneratedArtifactHash::from_bytes(parse_lower_hash(&receipt.content_hash)?),
+                receipt.succeeded,
+                receipt.replayed,
+            ))
+        })
+        .collect()
 }
 
 async fn get_application_installation(
@@ -8631,6 +8743,57 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn installation_seed_receipt_document_is_canonical_plan_bound_and_value_free() {
+        let plan = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+            "../../../fixtures/installation/application-installation-plan-v1.json"
+        ))
+        .expect("canonical plan");
+        let expected = plan.input().seeds.first().expect("seed");
+        let document = ApplicationInstallationSeedReceiptsDocument {
+            schema: APPLICATION_INSTALLATION_SEED_RECEIPTS_SCHEMA.to_owned(),
+            plan_hash: hex(plan.identity().as_bytes()),
+            seeds: vec![ApplicationInstallationSeedReceiptDocument {
+                name: expected.name().as_str().to_owned(),
+                content_hash: hex(expected.content_hash().as_bytes()),
+                succeeded: expected.item_count() - 2,
+                replayed: 2,
+            }],
+        };
+        let mut bytes = serde_json::to_vec(&document).expect("canonical receipt JSON");
+        bytes.push(b'\n');
+        let path = std::env::temp_dir().join(format!(
+            "riffdb-installation-seed-receipts-{}.json",
+            std::process::id()
+        ));
+        fs::write(&path, &bytes).expect("write receipt");
+
+        let receipts = read_installation_seed_receipts(&path, &plan).expect("exact receipts");
+        StartApplicationInstallation::new(
+            ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(1, [0x61; 10])
+                .expect("campaign ID"),
+            plan.clone(),
+        )
+        .with_seed_receipts(receipts)
+        .expect("receipt counters complete the exact seed plan");
+        assert!(
+            !bytes.windows(5).any(|window| window == b"input"),
+            "receipt format has no command-value channel"
+        );
+
+        let noncanonical = serde_json::to_vec_pretty(&document).expect("pretty JSON");
+        fs::write(&path, noncanonical).expect("write noncanonical receipt");
+        assert!(read_installation_seed_receipts(&path, &plan).is_err());
+
+        let mut wrong_plan = document;
+        wrong_plan.plan_hash = "00".repeat(32);
+        let mut wrong_plan_bytes = serde_json::to_vec(&wrong_plan).expect("wrong-plan JSON");
+        wrong_plan_bytes.push(b'\n');
+        fs::write(&path, wrong_plan_bytes).expect("write wrong-plan receipt");
+        assert!(read_installation_seed_receipts(&path, &plan).is_err());
+        fs::remove_file(path).expect("remove receipt");
+    }
 
     #[test]
     fn storage_preflight_machine_output_names_the_exact_non_mutating_action() {

@@ -202,6 +202,21 @@ pub(crate) enum ApplicationCommand {
         plan: OsString,
         #[arg(long, value_name = "UUID_V7")]
         campaign_id: String,
+        /// Attests exact successful first-party driver identity handshakes.
+        #[arg(
+            long = "driver-proof",
+            value_enum,
+            value_name = "rust|go|typescript|python",
+            conflicts_with = "seed_receipts"
+        )]
+        driver_proof: Vec<ApplicationLanguage>,
+        /// Attests one canonical plan-bound ordinary-command seed receipt set.
+        #[arg(
+            long,
+            value_name = "CANONICAL_SEED_RECEIPTS",
+            conflicts_with = "driver_proof"
+        )]
+        seed_receipts: Option<OsString>,
     },
     /// Observes one retained installation campaign without changing its plan.
     Installation {
@@ -1568,13 +1583,63 @@ mod tests {
                 "installation-plan.json",
                 "--campaign-id",
                 campaign_id,
+                "--driver-proof",
+                "rust",
+                "--driver-proof",
+                "typescript",
             ])
             .expect("exact application installation")
             .command,
             TopLevel::Application {
-                command: ApplicationCommand::Install { plan, campaign_id: parsed }
-            } if plan == "installation-plan.json" && parsed == campaign_id
+                command: ApplicationCommand::Install {
+                    plan,
+                    campaign_id: parsed,
+                    driver_proof,
+                    seed_receipts: None,
+                }
+            } if plan == "installation-plan.json"
+                && parsed == campaign_id
+                && driver_proof == [ApplicationLanguage::Rust, ApplicationLanguage::Typescript]
         ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "install",
+                "--plan",
+                "installation-plan.json",
+                "--campaign-id",
+                campaign_id,
+                "--seed-receipts",
+                "seed-receipts.json",
+            ])
+            .expect("exact seed completion")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Install {
+                    seed_receipts: Some(path),
+                    driver_proof,
+                    ..
+                }
+            } if path == "seed-receipts.json" && driver_proof.is_empty()
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "install",
+                "--plan",
+                "installation-plan.json",
+                "--campaign-id",
+                campaign_id,
+                "--driver-proof",
+                "rust",
+                "--seed-receipts",
+                "seed-receipts.json",
+            ])
+            .is_err(),
+            "one resume request can complete only one external stage"
+        );
         assert!(matches!(
             Cli::try_parse_from([
                 "riffdb",

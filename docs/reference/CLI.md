@@ -486,14 +486,27 @@ Usage: riffdb application install [OPTIONS] --plan <CANONICAL_PLAN> --campaign-i
 
 Options:
       --config <PATH>
+
       --plan <CANONICAL_PLAN>
+
       --campaign-id <UUID_V7>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+
+      --driver-proof <rust|go|typescript|python>
+          Attests exact successful first-party driver identity handshakes [possible values: rust, go, typescript, python]
+      --output <human|json>
+          [possible values: human, json]
+      --seed-receipts <CANONICAL_SEED_RECEIPTS>
+          Attests one canonical plan-bound ordinary-command seed receipt set
       --max-attempts <1..10>
+
       --credential-file <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb application installation`
