@@ -5,7 +5,11 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use riffdb_policy::{AuthorizedIndexedRelationshipLookupV1, AuthorizedQueryRowPolicyContextV1};
+use riffdb_policy::{
+    AuthorizedIndexedRelationshipLookupV1, AuthorizedProjectedRowAdmissionV1,
+    AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CANDIDATES_V1,
+    ProjectedPolicyCandidateObservationV1,
+};
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
     QueryExecutionRequest, QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView,
@@ -18,7 +22,7 @@ use riffdb_query_ir::{
     QueryAccessStep, QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
-use riffdb_types::{CanonicalValue, FieldId, IndexEntryKey};
+use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
 
 use crate::state::{MemoryIndexEntry, MemoryState, unique_binary_search_by};
 use crate::store::{MemoryOperationalPorts, storage_error};
@@ -90,6 +94,50 @@ impl QueryExecutionPort for MemoryOperationalPorts {
                 .collect::<Result<Vec<_>, _>>())
         })
         .map_err(map_storage_query_error)?
+    }
+
+    fn authorize_projected_candidates(
+        &self,
+        entity: EntityTypeId,
+        candidates: &[EntityKey],
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
+        if candidates.len() > MAX_PROJECTED_POLICY_CANDIDATES_V1 {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        self.read(|state| {
+            let mut observations = Vec::with_capacity(candidates.len());
+            for key in candidates {
+                let target = EntityTarget::new(entity, key.clone())
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                let record = match unique_binary_search_by(&state.entities, |record| {
+                    record.target().cmp(&target)
+                })? {
+                    Ok(index) => &state.entities[index],
+                    Err(_) => {
+                        observations
+                            .push(ProjectedPolicyCandidateObservationV1::missing(key.clone()));
+                        continue;
+                    }
+                };
+                let lookups = policy
+                    .relationship_lookups(entity, record.fields())
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                let evidence = lookups
+                    .iter()
+                    .map(|lookup| indexed_relationship_exists(state, lookup))
+                    .collect::<Result<Vec<_>, _>>()?;
+                observations.push(ProjectedPolicyCandidateObservationV1::current(
+                    key.clone(),
+                    record.fields().clone(),
+                    evidence,
+                ));
+            }
+            policy
+                .authorize_projected_candidates(entity, observations)
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+        })
+        .map_err(map_storage_query_error)
     }
 
     fn execute_operational_query_page(
@@ -510,35 +558,39 @@ impl MemoryQueryView<'_> {
         &self,
         lookup: &AuthorizedIndexedRelationshipLookupV1,
     ) -> Result<bool, StorageError> {
-        let upper = exclusive_prefix_end(lookup.index_prefix())
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let start = self
-            .state
-            .index_entries
-            .partition_point(|entry| entry.key().as_bytes() < lookup.index_prefix());
-        let end = self
-            .state
-            .index_entries
-            .partition_point(|entry| entry.key().as_bytes() < upper.as_slice());
-        let matching = self
-            .state
-            .index_entries
-            .get(start..end)
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        if matching.len() >= riffdb_query_executor::MAX_QUERY_SCANNED_ROWS as usize {
-            return Err(storage_error(StorageErrorKind::LimitExceeded));
-        }
-        for entry in matching {
-            checked_current(entry)?;
-            if entry
-                .current_record()
-                .is_some_and(|current| current.partition_key() == lookup.partition())
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        indexed_relationship_exists(self.state, lookup)
     }
+}
+
+fn indexed_relationship_exists(
+    state: &MemoryState,
+    lookup: &AuthorizedIndexedRelationshipLookupV1,
+) -> Result<bool, StorageError> {
+    let upper = exclusive_prefix_end(lookup.index_prefix())
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let start = state
+        .index_entries
+        .partition_point(|entry| entry.key().as_bytes() < lookup.index_prefix());
+    let end = state
+        .index_entries
+        .partition_point(|entry| entry.key().as_bytes() < upper.as_slice());
+    let matching = state
+        .index_entries
+        .get(start..end)
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    if matching.len() >= riffdb_query_executor::MAX_QUERY_SCANNED_ROWS as usize {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    for entry in matching {
+        checked_current(entry)?;
+        if entry
+            .current_record()
+            .is_some_and(|current| current.partition_key() == lookup.partition())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
@@ -858,8 +910,8 @@ query ProjectMembers(
             .index_entries
             .sort_unstable_by(|left, right| left.key().cmp(right.key()));
         let parameters = QueryParameters::checked(BTreeMap::from([
-            ("organization_id".to_owned(), organization),
-            ("project_id".to_owned(), project),
+            ("organization_id".to_owned(), organization.clone()),
+            ("project_id".to_owned(), project.clone()),
         ]))
         .expect("parameters");
         let mut view = MemoryQueryView {
@@ -1005,6 +1057,26 @@ query ProjectMembers(
                 if rows.len() == 1
                     && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
         )));
+
+        let candidate_keys = [3_u8, 4_u8]
+            .into_iter()
+            .map(|ordinal| {
+                step.internal_entity_key_schema()
+                    .encode_entity(&[
+                        organization.clone(),
+                        project.clone(),
+                        CanonicalValue::Uuid([ordinal; 16]),
+                    ])
+                    .expect("candidate key")
+            })
+            .collect::<Vec<_>>();
+        let admission = ports
+            .authorize_projected_candidates(step.internal_entity_id(), &candidate_keys, &policy)
+            .expect("authoritative projected admission");
+        let covered = candidate_keys.iter().cloned().collect();
+        assert!(admission.covers(step.internal_entity_id(), &covered));
+        assert!(!admission.admits(&candidate_keys[0]));
+        assert!(admission.admits(&candidate_keys[1]));
     }
 
     #[test]

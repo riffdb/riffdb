@@ -20,6 +20,7 @@ const EVENT_SOURCE: &str = include_str!("../src/event_operations.rs");
 const MAINTENANCE_SOURCE: &str = include_str!("../src/maintenance_operations.rs");
 const ORCHESTRATION_SOURCE: &str = include_str!("../src/orchestration.rs");
 const PORTS_SOURCE: &str = include_str!("../src/ports.rs");
+const PROJECTED_QUERY_SOURCE: &str = include_str!("../src/projected_query.rs");
 const QUERY_SOURCE: &str = include_str!("../src/query_discovery_operations.rs");
 const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
 const SYMBOLIC_QUERY_SOURCE: &str = include_str!("../src/symbolic_query.rs");
@@ -447,6 +448,27 @@ fn contextual_hydration_cannot_fall_back_to_an_unprotected_query_group() {
         2,
         "contextual delivery must reauthorize immediately before hydration and release"
     );
+}
+
+#[test]
+fn protected_projection_admission_is_authoritative_and_pre_shape() {
+    let ready = PROJECTED_QUERY_SOURCE
+        .split_once("fn query_ready(")
+        .expect("projected ready boundary exists")
+        .1
+        .split_once("fn field_ids_to_names(")
+        .expect("projected ready boundary is closed")
+        .0;
+    let authorize = ready
+        .find("authorize_projected_candidates(")
+        .expect("authoritative candidate admission is mandatory");
+    let execute = ready
+        .find("query_snapshot_with_policy_admission(")
+        .expect("protected columnar execution is mandatory");
+    assert!(authorize < execute, "admission must precede shaping");
+    assert!(ready.contains("Some(policy) =>"));
+    assert!(ready.contains("None => query_snapshot("));
+    assert!(!ready.contains("filter(|row|"));
 }
 
 #[test]

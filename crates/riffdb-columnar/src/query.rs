@@ -1,10 +1,11 @@
 //! Org-scoped query executor over a published snapshot (D6).
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
+use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_types::{CanonicalValue, EntityKey, FieldId, encode_canonical_value};
 
 use crate::definition::RegisteredDefinition;
@@ -228,6 +229,9 @@ pub enum QueryError {
     },
     /// Primary-key bytes could not be decoded with the registered key schema.
     PrimaryKeyDecode,
+    /// The authoritative admission proof did not cover this exact entity and
+    /// complete projection candidate set.
+    PolicyAdmissionMismatch,
     /// Scan budget exceeded.
     ScanBudgetExceeded {
         /// Configured max.
@@ -286,6 +290,9 @@ impl fmt::Display for QueryError {
                 )
             }
             Self::PrimaryKeyDecode => f.write_str("primary key decode failed"),
+            Self::PolicyAdmissionMismatch => {
+                f.write_str("projected row-policy admission did not cover the candidate set")
+            }
             Self::ScanBudgetExceeded { max } => write!(f, "scan budget exceeded (max {max})"),
             Self::GroupCardinalityExceeded { max } => {
                 write!(f, "group cardinality exceeded (max {max})")
@@ -317,7 +324,25 @@ pub fn query_snapshot(
     snapshot: &ColumnarSnapshot,
     request: &ColumnarQueryRequest,
 ) -> Result<QueryResult, QueryError> {
-    execute_query(definition, snapshot, request)
+    execute_query(definition, snapshot, request, None)
+}
+
+/// Executes a protected projected query using one opaque authoritative
+/// admission proof.
+///
+/// Admission is checked against the complete org-partition candidate set and
+/// applied before caller predicates, scan charging, limits, grouping, or
+/// aggregation. This is an internal first-party boundary used by the
+/// authoritative query adapters; application transports never receive the
+/// proof or an editable allow list.
+#[doc(hidden)]
+pub fn query_snapshot_with_policy_admission(
+    definition: &RegisteredDefinition,
+    snapshot: &ColumnarSnapshot,
+    request: &ColumnarQueryRequest,
+    admission: &AuthorizedProjectedRowAdmissionV1,
+) -> Result<QueryResult, QueryError> {
+    execute_query(definition, snapshot, request, Some(admission))
 }
 
 /// Nearest-neighbor query request for the columnar vector projection.
@@ -503,6 +528,7 @@ pub(crate) fn execute_query(
     definition: &RegisteredDefinition,
     snapshot: &ColumnarSnapshot,
     request: &ColumnarQueryRequest,
+    admission: Option<&AuthorizedProjectedRowAdmissionV1>,
 ) -> Result<QueryResult, QueryError> {
     // A wrong-typed org value can never name a real partition; fail typed
     // instead of silently returning an empty result.
@@ -535,10 +561,40 @@ pub(crate) fn execute_query(
         validate_aggregate_field(definition, agg)?;
     }
 
-    let merged = snapshot.merged_org(&org);
+    let merged = match admission {
+        Some(_) => snapshot
+            .merged_org_bounded(&org, MAX_PROJECTED_POLICY_CANDIDATES_V1)
+            .ok_or(QueryError::ScanBudgetExceeded {
+                max: MAX_PROJECTED_POLICY_CANDIDATES_V1,
+            })?,
+        None => snapshot.merged_org(&org),
+    };
+    let candidate_keys = admission
+        .map(|_| {
+            merged
+                .keys()
+                .map(|key| {
+                    EntityKey::from_bytes(key.as_bytes().to_vec())
+                        .map_err(|_| QueryError::PolicyAdmissionMismatch)
+                })
+                .collect::<Result<BTreeSet<_>, _>>()
+        })
+        .transpose()?;
+    if let (Some(admission), Some(candidate_keys)) = (admission, candidate_keys.as_ref())
+        && !admission.covers(definition.entity_type_id(), candidate_keys)
+    {
+        return Err(QueryError::PolicyAdmissionMismatch);
+    }
     let mut scanned = 0usize;
     let mut matched: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
     for (key, row) in merged {
+        if let Some(admission) = admission {
+            let candidate = EntityKey::from_bytes(key.as_bytes().to_vec())
+                .map_err(|_| QueryError::PolicyAdmissionMismatch)?;
+            if !admission.admits(&candidate) {
+                continue;
+            }
+        }
         scanned = scanned.saturating_add(1);
         if scanned > request.budget.max_scanned_rows {
             return Err(QueryError::ScanBudgetExceeded {

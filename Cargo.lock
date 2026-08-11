@@ -1795,6 +1795,7 @@ dependencies = [
  "rand 0.8.7",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-policy",
  "riffdb-storage-api",
  "riffdb-types",
 ]

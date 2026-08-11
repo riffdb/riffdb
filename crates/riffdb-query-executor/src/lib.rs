@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use riffdb_policy::AuthorizedQueryRowPolicyContextV1;
+use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_ir::{
     NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateV1, PageBound,
     QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
@@ -831,6 +831,21 @@ pub trait QueryExecutionPort: Send + Sync {
         _requests: &[QueryExecutionRequest<'_>],
         _policy: &AuthorizedQueryRowPolicyContextV1,
     ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
+    }
+
+    /// Evaluates all candidate entity keys against current authoritative rows
+    /// and relationship evidence in one read snapshot.
+    ///
+    /// The default denies. Concrete first-party adapters return a move-only,
+    /// entity/candidate-bound proof; they never return a caller-editable allow
+    /// list and must reject candidate sets above the fixed policy ceiling.
+    fn authorize_projected_candidates(
+        &self,
+        _entity: EntityTypeId,
+        _candidates: &[EntityKey],
+        _policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
         Err(QueryExecutionError::InvalidProgram)
     }
 

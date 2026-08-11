@@ -4,16 +4,18 @@
 mod common;
 
 use riffdb_contract_ir::ValueTypeTag;
+use riffdb_policy::AuthorizedProjectedRowAdmissionV1;
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 use riffdb_types::{
-    CanonicalValue, CommitSequence, CommitToken, FrontierPosition, ProjectionFrontier,
+    CanonicalValue, CommitSequence, CommitToken, EntityKey, FrontierPosition, ProjectionFrontier,
     encode_canonical_value,
 };
 
 use riffdb_columnar::{
-    ColumnPredicate, ColumnarEngine, ColumnarError, ColumnarQueryRequest, DegradedReason,
-    OpenOptions, OrderSpec, QueryBudget, QueryError, QueryResult, RebuildingReason, SortDirection,
-    StorageFailure, encode_org_scope_key, query_snapshot,
+    AggregateOp, ColumnPredicate, ColumnarEngine, ColumnarError, ColumnarQueryRequest,
+    DegradedReason, OpenOptions, OrderSpec, OrgKey, QueryBudget, QueryError, QueryResult,
+    RebuildingReason, SortDirection, StorageFailure, encode_org_scope_key, query_snapshot,
+    query_snapshot_with_policy_admission,
 };
 
 use common::*;
@@ -413,6 +415,56 @@ fn a4_query_snapshot_matches_engine_query() {
     let via_snapshot = query_snapshot(engine.definition(), &engine.published_snapshot(), &request)
         .expect("snapshot");
     assert_eq!(via_engine, via_snapshot);
+}
+
+/// RAP-007/RAP-010: denied rows never enter scan accounting or aggregation,
+/// and a partial candidate proof is rejected rather than post-filtered.
+#[test]
+fn protected_snapshot_admission_precedes_scan_budget_and_aggregate() {
+    let (bundle, engine, org) = seed_board_three_tickets();
+    let snapshot = engine.published_snapshot();
+    let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org key");
+    let candidates = snapshot
+        .merged_org(&org_key)
+        .keys()
+        .map(|key| EntityKey::from_bytes(key.as_bytes().to_vec()).expect("entity key"))
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 3);
+    let admission = AuthorizedProjectedRowAdmissionV1::test_fixture(
+        entity_type_id(&bundle, "Ticket"),
+        candidates.clone(),
+        vec![candidates[1].clone()],
+    )
+    .expect("admission");
+    let request = ColumnarQueryRequest {
+        org_scope: CanonicalValue::Uuid(org),
+        select: Vec::new(),
+        predicates: Vec::new(),
+        order: Vec::new(),
+        limit: Some(1),
+        group_by: None,
+        aggregate: Some(AggregateOp::Count),
+        budget: QueryBudget {
+            max_scanned_rows: 1,
+            max_group_cardinality: 1,
+        },
+    };
+    assert_eq!(
+        query_snapshot_with_policy_admission(engine.definition(), &snapshot, &request, &admission,)
+            .expect("one admitted row"),
+        QueryResult::Aggregate(riffdb_columnar::AggregateValue::Count(1))
+    );
+
+    let partial = AuthorizedProjectedRowAdmissionV1::test_fixture(
+        entity_type_id(&bundle, "Ticket"),
+        candidates[..2].to_vec(),
+        vec![candidates[1].clone()],
+    )
+    .expect("partial proof object");
+    assert_eq!(
+        query_snapshot_with_policy_admission(engine.definition(), &snapshot, &request, &partial,),
+        Err(QueryError::PolicyAdmissionMismatch)
+    );
 }
 
 /// A5: closed reason enums are exhaustive (tags unique, match arms closed).

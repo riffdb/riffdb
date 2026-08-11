@@ -10833,6 +10833,7 @@ work_packages:
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-runtime/**,
     crates/riffdb-query-executor/**, crates/riffdb-projection/**,
+    crates/riffdb-columnar/**,
     crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
@@ -10842,6 +10843,11 @@ work_packages:
   deliverables:
   - Shared policy proof and evaluator used before selection, hydration, limit/cursor, aggregation,
     FTS/vector scoring/statistics/snippets, live diff, contextual hydration, and protected release
+  - Protected projection admission reloads the complete bounded candidate set and relationship
+    evidence in one authoritative snapshot, returns an entity/candidate-bound opaque proof, and
+    filters before request predicates, scan charging, limit, grouping, aggregation, or ranking
+  - Durable event consumption remains denied until declarations carry an explicit compiler-owned
+    source-entity/key or event-policy anchor; payload field names are never treated as authority
   - Create evaluates proposed state; update evaluates transaction-current and successor state;
     delete evaluates transaction-current state; owner/visibility/ACL escape requires a named policy
   - Commit verifier rechecks row/relationship evidence and capability revision after evaluation;
