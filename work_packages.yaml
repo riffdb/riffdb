@@ -11729,8 +11729,10 @@ work_packages:
     freshness service, snapshot rebuild, replay-budget detach) has no vector consumer yet;
     nearest_query_snapshot is not wired into any QueryReadView adapter, so the executor path
     is fail-closed but unserved
-  - Principal row-policy evaluation does not exist at runtime for ANY access path; binding
-    compiled row policies into the nearest predicate set lands with that machinery
+  - Principal row-policy evaluation was absent at runtime when this round landed; the
+    alpha track has since begun landing the runtime evaluator (main 4e1f45e) — binding
+    compiled row policies into the nearest predicate set lands when that machinery wires
+    into the query paths, and the nearest path must be included in its coverage
   - The service/wire surface for nearest results (vector cells refused on proto until a wire
     variant is accepted; resolver still permits selecting a vector field into a result)
   human_review_triggers: *id001
