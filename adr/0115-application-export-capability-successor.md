@@ -80,6 +80,15 @@ independent explicit bits and never follow from either data-class bit.
 Unknown scopes, false-only grants, duplicates, unordered grants, absent
 lineages, and over-bound records are corrupt.
 
+Audit-only and provenance-only export grants are deliberately unrepresentable
+in V5. At least one of `entities` or `events` must be selected even when
+`public_audit` or `provenance` is selected. The alpha export is a portable
+application-data operation with optional supporting records, not a general
+regulatory audit extraction surface. Adding either supporting-record class as
+a standalone export later requires a V6 successor and its own authority
+review; an implementation must not obtain that behavior by loosening V5
+validation.
+
 `PrincipalFiltered` requires an exact V4 row-policy extension, one matching
 `ApplicationRoleIdentity` permission in the base grant, and current field
 visibility. It exports only rows/events allowed by that current role and fact
@@ -108,6 +117,13 @@ revision, lineage, selected scope/classes, exact application/contract/module
 identity, row-policy identity where applicable, and snapshot frontier. A
 revision or authority change before a page is released closes the operation;
 it never continues under the authority present at start.
+
+This intentionally means that routine capability administration can close a
+long-running export. Operators should either avoid revising the export
+capability during the operation or expect to start a new operation against a
+new snapshot. The prior operation remains safely closed and its durable
+checkpoint and terminal state remain inspectable, but its cursor cannot
+continue under the replacement revision.
 
 Principal-filtered entity and event pages consume the same compiler-owned
 policy proof as ordinary reads before serialization, counting, cursor

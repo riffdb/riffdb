@@ -96,6 +96,29 @@ delivery and replay, and row deletion makes retained events invisible to
 ordinary consumers. Event durability is not a promise that every principal
 will remain authorized to observe an event forever.
 
+### Alpha adapter deletion-event audit
+
+The 2026-08-11 alpha-gate audit found no requirement for a protected deletion
+event in any of the four adapter workloads:
+
+- Payload's WP-573/final-gate corpus requires document creation, owner/team/
+  public ACLs, draft/transfer/revocation behavior, queries, search, aggregates,
+  and live updates, but not a document-deletion notification.
+- MLflow requires experiment/run policy, metric and artifact relationships,
+  lifecycle transitions, dashboards, and events, but not a run- or experiment-
+  deletion event.
+- OpenFGA requires bounded tuple writes/deletes and indexed reads, but its
+  alpha adapter manifest declares no protected event stream.
+- Woodpecker's protected `PipelineTransitions` stream contains
+  `PipelineStartedEvent`; it does not contain a deletion event.
+
+The bulk conformance fixture's `DeleteRestrictParents` command tests
+transaction-current restrict-delete behavior and emits no event. It therefore
+does not contradict this audit. The alpha may rely on current-row anchors
+without making a gate workload unimplementable. Adding a protected deletion
+event to any gate adapter is a human-review trigger and requires an accepted
+immutable-event-policy ADR before the workload or role can be widened.
+
 ### Hidden-event checkpoint and replay semantics
 
 The server scans one partition-ordered retained stream under existing bounded
@@ -140,6 +163,15 @@ all example locks, modules, generated clients/MCP schemas, protocol fixtures,
 and frozen hashes in one receipted change. No old event is guessed into the new
 authority model.
 
+The anchor descriptor's inclusion in the durable event-record successor also
+makes the authority input available to the replication changelog without a
+second inferred representation. On a follower, however, "current row" means
+current at that follower's applied state/policy frontier. RE3 must decide and
+test whether protected delivery waits for the required frontier, routes to an
+authoritative leader, or returns a typed freshness/reset outcome. This ADR
+does not permit a follower to evaluate against stale state while claiming
+authoritative current-row semantics.
+
 ## Security
 
 Default is deny. Payload names and values are never authority. Every delivery
@@ -156,6 +188,13 @@ cursor bytes beyond the accepted bounded-progress class.
 - **Scale:** evaluation is one partition, one bounded stream window, one row
   plus compiler-bounded indexed relationship probes per candidate, with fixed
   candidate/item/byte/lease ceilings.
+
+Every examined candidate, including a hidden candidate, therefore incurs an
+anchored entity read, its compiler-bounded relationship-evidence reads, and a
+policy evaluation. That read amplification is an accepted alpha cost. A later
+performance campaign may cache or share exact frontier-bound evidence, but it
+may not persist allow decisions, skip current-state checks, weaken inference
+protection, or expose hidden-candidate cardinality.
 
 ## Testing
 

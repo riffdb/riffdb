@@ -146,6 +146,14 @@ At minimum, final evidence includes:
 | Payload | Document graph creation, per-document owner/team/public ACLs, optional/null/prefix queries, cursor pages, TypeScript long-lived transport |
 | Woodpecker | Pipeline-plus-step creation, claims/scheduler locks, state transitions, event/reactive worker flow |
 
+The alpha adapter event corpus deliberately contains no protected deletion
+event. Payload deletion notifications are not part of the gate; MLflow has no
+protected run/experiment deletion event; OpenFGA's tuple deletion has no event
+stream; and Woodpecker's protected stream contains only pipeline-start facts.
+The bulk restrict-delete conformance case emits no event. Adding a protected
+deletion event to any gate adapter requires the separately accepted immutable-
+event-policy design rather than weakening current-row anchor semantics.
+
 Every shape must install from an empty selected database, upgrade a populated
 database through the supported evolution class, rotate its application
 credential, survive process/network interruption, and pass an adapter-owned
