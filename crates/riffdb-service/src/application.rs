@@ -4,26 +4,27 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::{
-    ApplyContractMigrationRequest, CheckContractMigrationRequest, ContractMigrationStartResult,
-    ContractValidationResult, CreateCapabilityInvocation, CreateCapabilityResult,
-    CreateOfflineBackupRequest, DeployContractRequest, DeployContractResult, DescribeEventRequest,
-    DescribeEventResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
-    DiscoverResourcesRequest, DiscoverResourcesResult, ExecuteCommandRequest, ExecuteCommandResult,
-    ExplainCommandRequest, ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult,
-    GetCommitRequest, GetCommitResult, GetContractMigrationOperationRequest,
-    GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
-    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    OfflineMaintenanceStartResult, QueryProjectionRequest, QueryProjectionResult,
-    RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest, ReplayEventsResult,
-    RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    ApplicationInstallationOperationResult, ApplyContractMigrationRequest,
+    CheckContractMigrationRequest, ContractMigrationStartResult, ContractValidationResult,
+    CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
+    DeployContractRequest, DeployContractResult, DescribeEventRequest, DescribeEventResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
+    DiscoverResourcesResult, ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest,
+    ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult,
+    GetApplicationInstallationRequest, GetApplicationInstallationResult, GetCommitRequest,
+    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, OfflineMaintenanceStartResult, QueryProjectionRequest,
+    QueryProjectionResult, RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest,
+    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
     RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
     ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceResult,
-    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
-    TailEventsRequest, TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult,
-    ValidateContractRequest,
+    StartApplicationInstallationRequest, StatisticsRequest, StatisticsResult,
+    SubscribeToCommitsRequest, SubscribeToCommitsResult, TailEventsRequest, TailEventsResult,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 
 /// One boxed, sendable operation future used to keep service traits object-safe.
@@ -256,6 +257,27 @@ pub trait ContractMigrationApplication: Send + Sync {
         context: RequestContext,
         request: GetContractMigrationOperationRequest,
     ) -> ServiceFuture<'_, GetContractMigrationOperationResult>;
+}
+
+/// Policy-filtered exact application installation campaign orchestration.
+///
+/// This operator-only trait is intentionally separate from [`ApplicationService`]
+/// so generated/stable application clients cannot acquire installation methods
+/// merely by receiving the ordinary application facade.
+pub trait ApplicationInstallationApplication: Send + Sync {
+    /// Starts, resumes, or resolves one exact caller-stable campaign.
+    fn start_application_installation(
+        &self,
+        context: RequestContext,
+        request: StartApplicationInstallationRequest,
+    ) -> ServiceFuture<'_, ApplicationInstallationOperationResult>;
+
+    /// Observes one protected campaign after resolving its retained lineage.
+    fn get_application_installation(
+        &self,
+        context: RequestContext,
+        request: GetApplicationInstallationRequest,
+    ) -> ServiceFuture<'_, GetApplicationInstallationResult>;
 }
 
 /// Recovery-only restore capability exposed while no current database is trusted.

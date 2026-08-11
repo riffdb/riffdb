@@ -1605,6 +1605,20 @@ impl OperationRequest {
         }
     }
 
+    pub(crate) fn into_application_installation_parts(
+        self,
+    ) -> Option<(ServiceOperationV1, ContractLineage)> {
+        match self.0 {
+            OperationKind::StartApplicationInstallation { lineage } => {
+                Some((ServiceOperationV1::StartApplicationInstallation, lineage))
+            }
+            OperationKind::GetApplicationInstallation { lineage } => {
+                Some((ServiceOperationV1::GetApplicationInstallation, lineage))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn permission_requirement(&self) -> Option<PermissionRequirement> {
         use CapabilityPermissionKindV1 as Kind;
         let requirement = match &self.0 {
