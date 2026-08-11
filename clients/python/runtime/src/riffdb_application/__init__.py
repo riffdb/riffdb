@@ -227,6 +227,12 @@ class TypedQueryResult(Generic[T]):
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowSuccessorRevision:
+    binding: str
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class TypedCommandResult(Generic[T]):
     outcome: T
     commit_sequence: int | None
@@ -234,6 +240,7 @@ class TypedCommandResult(Generic[T]):
     plan_hash: str
     replayed: bool
     outcome_uri: str | None = None
+    workflow_revisions: tuple[WorkflowSuccessorRevision, ...] = ()
 
     def _map_outcome(self, transform: Callable[[T], U]) -> TypedCommandResult[U]:
         return TypedCommandResult(
@@ -243,6 +250,20 @@ class TypedCommandResult(Generic[T]):
             self.plan_hash,
             self.replayed,
             self.outcome_uri,
+            self.workflow_revisions,
+        )
+
+    def _with_workflow_revisions(
+        self, revisions: tuple[WorkflowSuccessorRevision, ...]
+    ) -> TypedCommandResult[T]:
+        return TypedCommandResult(
+            self.outcome,
+            self.commit_sequence,
+            self.contract_version,
+            self.plan_hash,
+            self.replayed,
+            self.outcome_uri,
+            revisions,
         )
 
 
@@ -935,4 +956,5 @@ __all__ = [
     "TypedCommandResult",
     "TypedQueryResult",
     "VerifiedTlsConfig",
+    "WorkflowSuccessorRevision",
 ]

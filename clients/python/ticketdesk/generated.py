@@ -11,7 +11,7 @@ from uuid import UUID
 from riffdb_application import (
 AsyncApplicationTransport, AttemptBudget, CommandBatchOptions,
 CommandBatchProgress, CommandBatchResult, Money, QueryOptions, RiffDate,
-SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult,
+SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, WorkflowSuccessorRevision,
 )
 from riffdb_application._binding import decode_variant, encode_record
 

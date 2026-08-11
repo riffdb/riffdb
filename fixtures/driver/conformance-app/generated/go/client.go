@@ -15,7 +15,8 @@ const ContractBundleHash = "d4180d54fbe7a55c4d88afe02beacbb99f582a323da02cd1e72b
 
 type QueryOptions = riffdb.Options
 type QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }
-type CommandResult[T any] struct { Outcome T; CommitSequence *uint64; Replayed bool; OutcomeURI string }
+type WorkflowSuccessorRevision struct { Binding string; Revision uint64 }
+type CommandResult[T any] struct { Outcome T; CommitSequence *uint64; Replayed bool; OutcomeURI string; WorkflowRevisions []WorkflowSuccessorRevision }
 type BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }
 type BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }
 

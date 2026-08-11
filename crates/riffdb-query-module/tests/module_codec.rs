@@ -12,6 +12,33 @@ use riffdb_query_module::{
 use std::sync::Arc;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+const WORKFLOW_CONTRACT: &str =
+    include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
+const WORKFLOW_QUERY: &str = r#"
+query GetWork(
+    $organization_id: WorkItem.organization_id,
+    $work_id: WorkItem.work_id,
+) {
+    one work from WorkItem
+        where organization_id == $organization_id
+            && work_id == $work_id
+        else NotFound
+
+    return Found {
+        work: work {
+            organization_id
+            work_id
+            state
+            lease_owner
+            lease_expires_at
+            lease_fence
+            lease_attempts
+        }
+    }
+
+    outcomes Found | NotFound
+}
+"#;
 
 fn candidate(reversed: bool) -> QueryModuleCandidate {
     let mut queries = vec![
@@ -376,6 +403,35 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
     assert!(python.contains("CONTRACT_BUNDLE_HASH: Final[str]"));
     assert!(!rust.contains("pub field_id"));
     assert!(!typescript.contains("entity_type_id"));
+}
+
+#[test]
+fn generated_workflow_commands_return_symbolic_successor_revisions() {
+    let bundle = compile_contract_source(WORKFLOW_CONTRACT).expect("workflow contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("workflow_surface").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![NamedQuerySource::new("GetWork", WORKFLOW_QUERY).expect("query source")],
+    )
+    .expect("module candidate");
+    let module = QueryModule::compile(candidate, &bundle).expect("workflow module");
+
+    let rust = generate_rust_client(&module, &bundle);
+    let typescript = generate_typescript_client(&module, &bundle);
+    let python = generate_python_client(&module, &bundle).expect("Python");
+    let go = generate_go_client(&module, &bundle);
+
+    assert!(rust.contains("fn workflow_successor_revisions"));
+    assert!(rust.contains("WorkflowSuccessorRevision::generated(\"work\""));
+    assert!(rust.contains("self.expected_revision.checked_add(1)"));
+    assert!(rust.contains("response.outcome_type != \"Started\""));
+    assert!(rust.contains("response.outcome_type != \"Claimed\""));
+    assert!(typescript.contains("workflowRevisions"));
+    assert!(typescript.contains("binding: \"work\""));
+    assert!(python.contains("workflow_revisions"));
+    assert!(python.contains("WorkflowSuccessorRevision(binding=\"work\""));
+    assert!(go.contains("WorkflowRevisions"));
+    assert!(go.contains("Binding: \"work\""));
 }
 
 #[test]
