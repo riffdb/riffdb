@@ -2253,6 +2253,7 @@ pub struct EntityView {
     entity_version: EntityVersion,
     written_by_contract: ContractVersion,
     fields: CanonicalRecord,
+    redacted_fields: Vec<riffdb_types::RedactedSecretField>,
 }
 
 impl EntityView {
@@ -2269,7 +2270,26 @@ impl EntityView {
             entity_version,
             written_by_contract,
             fields,
+            redacted_fields: Vec::new(),
         }
+    }
+
+    /// Attaches the secret-classified fields withheld from this image
+    /// (ADR-0118): display surfaces render each entry's redaction marker in
+    /// the value's place.
+    #[must_use]
+    pub fn with_redacted_fields(
+        mut self,
+        redacted_fields: Vec<riffdb_types::RedactedSecretField>,
+    ) -> Self {
+        self.redacted_fields = redacted_fields;
+        self
+    }
+
+    /// Secret-classified fields withheld from this image, in field order.
+    #[must_use]
+    pub fn redacted_fields(&self) -> &[riffdb_types::RedactedSecretField] {
+        &self.redacted_fields
     }
 
     /// Borrows the canonical entity key.
@@ -2387,13 +2407,35 @@ impl fmt::Debug for ScanIndexRequest {
 pub struct IndexRowView {
     key: IndexEntryKey,
     values: CanonicalRecord,
+    redacted_fields: Vec<riffdb_types::RedactedSecretField>,
 }
 
 impl IndexRowView {
     /// Joins a canonical complete index key and filtered returned values.
     #[must_use]
     pub const fn new(key: IndexEntryKey, values: CanonicalRecord) -> Self {
-        Self { key, values }
+        Self {
+            key,
+            values,
+            redacted_fields: Vec::new(),
+        }
+    }
+
+    /// Attaches the secret-classified fields withheld from this row
+    /// (ADR-0118).
+    #[must_use]
+    pub fn with_redacted_fields(
+        mut self,
+        redacted_fields: Vec<riffdb_types::RedactedSecretField>,
+    ) -> Self {
+        self.redacted_fields = redacted_fields;
+        self
+    }
+
+    /// Secret-classified fields withheld from this row, in field order.
+    #[must_use]
+    pub fn redacted_fields(&self) -> &[riffdb_types::RedactedSecretField] {
+        &self.redacted_fields
     }
 
     /// Borrows the complete canonical index key.

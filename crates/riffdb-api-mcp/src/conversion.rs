@@ -358,6 +358,26 @@ pub enum McpPresentedValue {
         /// Ordered fields.
         fields: Vec<McpPresentedField>,
     },
+    /// A secret-classified field's value withheld by structural redaction
+    /// (ADR-0118). Carries only the stable marker — the value never reached
+    /// this surface.
+    ///
+    /// The wrapper itself is unserializable: `riffdb-types` carries no serde
+    /// dependency, so no `Serialize` impl can exist for [`riffdb_types::SecretValue`]
+    /// anywhere (orphan rule), and a diagnostic serializer cannot consume it:
+    ///
+    /// ```compile_fail,E0277
+    /// fn diagnostic_serializer<T: serde::Serialize>(_: &T) {}
+    /// diagnostic_serializer(&riffdb_types::SecretValue::classify(
+    ///     riffdb_types::FieldId::first(),
+    ///     "token_hash",
+    ///     riffdb_types::CanonicalValue::Null,
+    /// ));
+    /// ```
+    Redacted {
+        /// The stable redaction marker, `[redacted:field_name]`-shaped.
+        marker: String,
+    },
 }
 
 /// Fixed provenance selector.

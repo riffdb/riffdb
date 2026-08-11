@@ -490,13 +490,27 @@ async fn execute_projected_query(
     };
 
     let maximum_rows = row_limit(request.body().limit());
-    let non_key_fields = resolved.authorization_fields(entity);
+    // ADR-0118: secrets are gated on projection only — selected columns,
+    // aggregate inputs, and group-by keys require the grant's dedicated
+    // secret naming, while predicate/order use stays out of the ordinary
+    // visibility rule entirely.
+    let entity_secret_fields = bundle
+        .bundle()
+        .schema()
+        .secret_fields_for_entity(definition.entity_type_id());
+    let projected_secret_fields = resolved.secret_projection_fields(&entity_secret_fields);
+    let non_key_fields = resolved
+        .authorization_fields(entity)
+        .into_iter()
+        .filter(|field| entity_secret_fields.binary_search(field).is_err())
+        .collect();
     let access = ApplicationQueryAccessRequirement::new(
         definition.entity_type_id(),
         None,
         non_key_fields,
         maximum_rows,
     )
+    .and_then(|access| access.with_projected_secret_fields(projected_secret_fields))
     .map_err(|_| {
         application_validation_failure(
             ValidationCode::InvalidValue,
@@ -1086,6 +1100,39 @@ impl ResolvedBody {
 
     fn referenced_field_count(&self) -> u64 {
         self.authz_fields.len() as u64
+    }
+
+    /// Secret-classified fields whose VALUES this query would release
+    /// (ADR-0118): selected columns, aggregate inputs (min/max/sum reveal
+    /// derived values), and group-by keys (group identity reveals the
+    /// value). Predicates and order-by compare without returning and are
+    /// deliberately excluded.
+    fn secret_projection_fields(&self, secret_fields: &[FieldId]) -> Vec<FieldId> {
+        fn aggregate_field(op: &AggregateOp) -> Option<FieldId> {
+            match op {
+                AggregateOp::Count => None,
+                AggregateOp::Sum { field }
+                | AggregateOp::Min { field }
+                | AggregateOp::Max { field } => Some(*field),
+            }
+        }
+        let mut fields: Vec<FieldId> = self
+            .select
+            .iter()
+            .copied()
+            .chain(self.aggregate.as_ref().and_then(aggregate_field))
+            .chain(self.group_by.iter().flat_map(|group| {
+                group
+                    .keys
+                    .iter()
+                    .copied()
+                    .chain(group.aggregates.iter().filter_map(aggregate_field))
+            }))
+            .filter(|field| secret_fields.binary_search(field).is_ok())
+            .collect();
+        fields.sort_unstable();
+        fields.dedup();
+        fields
     }
 
     fn into_engine_request(

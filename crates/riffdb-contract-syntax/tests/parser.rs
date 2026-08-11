@@ -1090,7 +1090,10 @@ contract Invalid version 1 {
     let start = source.find("hidden").expect("modifier span");
     let diagnostic = &diagnostics.as_slice()[0];
     assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::InvalidToken);
-    assert_eq!(diagnostic.span(), Span::new(start, start + 6).expect("span"));
+    assert_eq!(
+        diagnostic.span(),
+        Span::new(start, start + 6).expect("span")
+    );
 }
 
 /// The classification is unrepresentable outside stored entity fields: key

@@ -8,9 +8,7 @@
 //! while contracts without the keyword keep their exact prior encoding.
 
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V7, ContractBundle, SchemaIr, SecretFieldSpecV1,
-};
+use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V7, ContractBundle, SchemaIr, SecretFieldSpecV1};
 
 const SECRET_CONTRACT: &str = r#"
 contract AuthShape version 1 {
@@ -192,8 +190,7 @@ fn unclassified_contracts_keep_their_prior_encoding_and_version() {
 #[test]
 fn checked_in_secret_bundle_fixture_decodes_with_classification_intact() {
     let bytes: &[u8] = include_bytes!("../../../fixtures/compiler/secret/bundle.bin");
-    let pinned_hash =
-        include_str!("../../../fixtures/compiler/secret/bundle-hash.txt").trim_end();
+    let pinned_hash = include_str!("../../../fixtures/compiler/secret/bundle-hash.txt").trim_end();
     let decoded = ContractBundle::decode(bytes).expect("the pinned v7 fixture must decode");
     assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V7);
     assert_eq!(decoded.schema().secret_field_specs().len(), 2);

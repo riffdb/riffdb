@@ -761,3 +761,99 @@ fn the_revision_checked_reauthorization_shortcut_is_reachable_only_from_the_read
         "the shared entry point must always fully re-evaluate"
     );
 }
+
+// ─── ADR-0118 secret reveal enumeration (WP-597) ───
+
+const MCP_BACKEND_SOURCE: &str = include_str!("../../riffdb-api-mcp/src/service_backend.rs");
+const CLI_APP_SOURCE: &str = include_str!("../../riffdb-cli/src/app.rs");
+const CLI_OUTPUT_SOURCE: &str = include_str!("../../riffdb-cli/src/output.rs");
+const CLI_VALUE_SOURCE: &str = include_str!("../../riffdb-cli/src/value.rs");
+const LIVE_QUERY_SOURCE: &str = include_str!("../../riffdb-service/src/live_query.rs");
+const AUDIT_SOURCE: &str = include_str!("../../riffdb-service/src/audit.rs");
+const RESPONSE_SOURCE: &str = include_str!("../../riffdb-service/src/response.rs");
+
+/// Every call site of the ONLY value escape from `SecretValue`
+/// (`reveal_for_authorized_display`) and the ONLY authority mint
+/// (`SecretRevealAuthority::from_explicit_field_visibility`) is enumerated
+/// here (ADR-0118). Adding one is a reviewed event: extend this list only
+/// with a surface that proves explicit field-visibility authority.
+#[test]
+fn secret_reveal_call_sites_are_exactly_enumerated() {
+    let display_surfaces = [
+        ("administration_operations.rs", ADMINISTRATION_SOURCE),
+        ("command_operations.rs", COMMAND_SOURCE),
+        ("commit_operations.rs", COMMIT_SOURCE),
+        ("consumer_operations.rs", CONSUMER_SOURCE),
+        ("dto.rs", DTO_SOURCE),
+        ("event_operations.rs", EVENT_SOURCE),
+        ("maintenance_operations.rs", MAINTENANCE_SOURCE),
+        ("orchestration.rs", ORCHESTRATION_SOURCE),
+        ("projected_query.rs", PROJECTED_QUERY_SOURCE),
+        ("query_discovery_operations.rs", QUERY_SOURCE),
+        ("service.rs", SERVICE_SOURCE),
+        ("symbolic_query.rs", SYMBOLIC_QUERY_SOURCE),
+        ("live_query.rs", LIVE_QUERY_SOURCE),
+        ("audit.rs", AUDIT_SOURCE),
+        ("response.rs", RESPONSE_SOURCE),
+        ("riffdb-api-mcp/service_backend.rs", MCP_BACKEND_SOURCE),
+        ("riffdb-cli/app.rs", CLI_APP_SOURCE),
+        ("riffdb-cli/output.rs", CLI_OUTPUT_SOURCE),
+        ("riffdb-cli/value.rs", CLI_VALUE_SOURCE),
+    ];
+    for (name, source) in display_surfaces {
+        // Unit-test modules exercise the boundary deliberately; production
+        // call sites are everything before the first `#[cfg(test)]`.
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(production, _)| production);
+        let reveals = production
+            .matches(".reveal_for_authorized_display(")
+            .count();
+        let mints = production
+            .matches("SecretRevealAuthority::from_explicit_field_visibility(")
+            .count();
+        if name == "query_discovery_operations.rs" {
+            assert_eq!(
+                reveals, 1,
+                "the release point in filter_record is the single reveal call"
+            );
+            assert_eq!(
+                mints, 1,
+                "secret_reveal_authorities is the single authority mint"
+            );
+        } else {
+            assert_eq!(reveals, 0, "unreviewed secret reveal call in {name}");
+            assert_eq!(mints, 0, "unreviewed reveal-authority mint in {name}");
+        }
+    }
+}
+
+/// Audit targets and provenance summaries are value-free by construction
+/// (ADR-0118): the audit module must never grow field-value carriage —
+/// identities and closed enums only.
+#[test]
+fn audit_and_provenance_summaries_carry_no_field_values() {
+    assert!(
+        !AUDIT_SOURCE.contains("CanonicalValue"),
+        "audit targets must stay value-free: IDs and closed enums only"
+    );
+    assert!(
+        !AUDIT_SOURCE.contains("CanonicalRecord"),
+        "audit targets must not carry records"
+    );
+}
+
+/// The MCP entity and index renderings must consume the withheld-field list;
+/// reverting to the redaction-blind record renderer reds here before any
+/// sweep runs.
+#[test]
+fn mcp_record_renderings_consume_withheld_secret_fields() {
+    assert!(
+        MCP_BACKEND_SOURCE.contains("entity.redacted_fields(),"),
+        "entity rendering must pass the withheld-field list"
+    );
+    assert!(
+        MCP_BACKEND_SOURCE.contains("row.redacted_fields(),"),
+        "index-row rendering must pass the withheld-field list"
+    );
+}

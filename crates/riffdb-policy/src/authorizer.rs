@@ -566,10 +566,19 @@ fn evaluate(
             riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
         )
         .expect("application-query budget constants are valid");
-        if !budget.covers(target.cost())
-            || !application_query_accesses_visible(&current.grant, target)
-        {
+        if !budget.covers(target.cost()) {
             return Err(PolicyCode::MissingPermission);
+        }
+        match application_query_accesses_visible(&current.grant, target) {
+            crate::decision::QueryAccessVisibility::Visible => {}
+            crate::decision::QueryAccessVisibility::Denied => {
+                return Err(PolicyCode::MissingPermission);
+            }
+            // Projecting a secret-classified field without the grant's
+            // dedicated secret naming is its own observed denial (ADR-0118).
+            crate::decision::QueryAccessVisibility::SecretDenied => {
+                return Err(PolicyCode::FieldVisibilityDenied);
+            }
         }
     }
 
@@ -604,7 +613,8 @@ fn evaluate(
     };
     let field_mask = request
         .field_requirement()
-        .map(|requirement| derive_field_mask(&current.grant, requirement));
+        .map(|requirement| derive_field_mask(&current.grant, requirement))
+        .transpose()?;
     let row_limit = request
         .requested_rows()
         .map(|requested| requested.min(current.grant.max_scan_rows()));
@@ -623,7 +633,7 @@ fn evaluate(
 fn application_query_accesses_visible(
     grant: &CapabilityGrantV1,
     target: &crate::ApplicationQueryTarget,
-) -> bool {
+) -> crate::decision::QueryAccessVisibility {
     crate::decision::application_query_accesses_visible(grant, target.lineage(), target.accesses())
 }
 

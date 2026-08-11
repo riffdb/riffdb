@@ -1987,6 +1987,54 @@ mod tests {
         );
     }
 
+    /// ADR-0118 sweep anchor: the public error surface is structurally
+    /// incapable of echoing a secret-classified field's VALUE, because no
+    /// details shape carries caller or stored text at all — locations are
+    /// stable IDs, messages are `&'static str`. This match is exhaustive on
+    /// purpose: a new details variant carrying dynamic payload must red here
+    /// and be reviewed against the secret-field guarantee before it ships.
+    #[test]
+    fn public_error_details_shapes_carry_no_dynamic_payload_for_secret_fields() {
+        let error = PublicError::validation(ValidationIssues::one(issue()));
+        // The channel is live: the diagnostic names the field's stable ID…
+        let PublicErrorDetails::Validation(issues) = error.details() else {
+            panic!("validation details expected");
+        };
+        assert_eq!(
+            issues.as_slice()[0].path().segments()[0],
+            ValidationPathSegment::Field(FieldId::new(7).expect("nonzero field"))
+        );
+        // …while every details shape is closed over value-free payloads.
+        for details in [
+            PublicErrorDetails::None,
+            error.details().clone(),
+            PublicErrorDetails::ContractMismatch {
+                active_contract_version: ContractVersion::new(3).expect("nonzero version"),
+            },
+            PublicErrorDetails::CommandExecutionFailed {
+                code: ExecutionFailureCode::ArithmeticFault,
+            },
+        ] {
+            match details {
+                PublicErrorDetails::None => {}
+                PublicErrorDetails::Validation(issues) => {
+                    for issue in issues.as_slice() {
+                        for segment in issue.path().segments() {
+                            match segment {
+                                ValidationPathSegment::Field(_)
+                                | ValidationPathSegment::ListIndex(_) => {}
+                            }
+                        }
+                    }
+                }
+                PublicErrorDetails::ContractMismatch {
+                    active_contract_version: _,
+                } => {}
+                PublicErrorDetails::CommandExecutionFailed { code: _ } => {}
+            }
+        }
+    }
+
     #[test]
     fn incident_source_is_synchronous_fallible_and_has_no_fallback() {
         struct FixedSource(IncidentId);
