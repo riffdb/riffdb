@@ -1267,12 +1267,21 @@ pub struct CapabilityMigrationGrantExtensionV1 {
     #[prost(bool, tag = "2")]
     pub approval_required: bool,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityInstallationGrantExtensionV1 {
+    #[prost(string, repeated, tag = "1")]
+    pub contract_lineages: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(bool, tag = "2")]
+    pub approval_required: bool,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityRecordV2 {
     #[prost(message, optional, tag = "1")]
     pub base: ::core::option::Option<CapabilityRecordV1>,
     #[prost(message, optional, tag = "2")]
     pub migration: ::core::option::Option<CapabilityMigrationGrantExtensionV1>,
+    #[prost(message, optional, tag = "3")]
+    pub installation: ::core::option::Option<CapabilityInstallationGrantExtensionV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredContractBundleV1 {

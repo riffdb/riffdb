@@ -945,6 +945,12 @@ enum OperationKind {
         version: ContractVersion,
         requested_rows: NonZeroU16,
     },
+    StartApplicationInstallation {
+        lineage: ContractLineage,
+    },
+    GetApplicationInstallation {
+        lineage: ContractLineage,
+    },
 }
 
 /// Checked policy facts for exactly one closed application-service operation.
@@ -1468,6 +1474,18 @@ impl OperationRequest {
         Self(OperationKind::ExecuteContextualReaction { target })
     }
 
+    /// Constructs one exact application installation start-or-resume request.
+    #[must_use]
+    pub const fn start_application_installation(lineage: ContractLineage) -> Self {
+        Self(OperationKind::StartApplicationInstallation { lineage })
+    }
+
+    /// Constructs one exact application installation observation request.
+    #[must_use]
+    pub const fn get_application_installation(lineage: ContractLineage) -> Self {
+        Self(OperationKind::GetApplicationInstallation { lineage })
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -1548,6 +1566,12 @@ impl OperationRequest {
             }
             OperationKind::ExecuteContextualReaction { .. } => {
                 ServiceOperationV1::ExecuteContextualReaction
+            }
+            OperationKind::StartApplicationInstallation { .. } => {
+                ServiceOperationV1::StartApplicationInstallation
+            }
+            OperationKind::GetApplicationInstallation { .. } => {
+                ServiceOperationV1::GetApplicationInstallation
             }
         }
     }
@@ -1747,6 +1771,12 @@ impl OperationRequest {
                 Kind::ConsumeEventStream,
                 Kind::ConsumeContextualSubscription,
             ]),
+            OperationKind::StartApplicationInstallation { lineage }
+            | OperationKind::GetApplicationInstallation { lineage } => {
+                PermissionRequirement::Exact(CapabilityPermissionV1::InstallApplication(
+                    lineage.clone(),
+                ))
+            }
             OperationKind::DiscoverCommandTools | OperationKind::DiscoverResources => return None,
         };
         Some(requirement)
@@ -1768,6 +1798,10 @@ impl OperationRequest {
             | OperationKind::TraceProvenance { .. }
             | OperationKind::GetStatistics
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
+                Some(&GLOBAL_ONLY_OPERATION_SCOPE)
+            }
+            OperationKind::StartApplicationInstallation { .. }
+            | OperationKind::GetApplicationInstallation { .. } => {
                 Some(&GLOBAL_ONLY_OPERATION_SCOPE)
             }
             OperationKind::ExecuteAdHocQuery { target }
@@ -1918,6 +1952,12 @@ impl OperationRequest {
                 Some(AuditClass::AdministrativeRead)
             }
             OperationKind::GetReactiveWakeup => Some(AuditClass::AdministrativeRead),
+            OperationKind::StartApplicationInstallation { .. } => {
+                Some(AuditClass::ControlPlaneMutation)
+            }
+            OperationKind::GetApplicationInstallation { .. } => {
+                Some(AuditClass::AdministrativeRead)
+            }
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
@@ -1968,6 +2008,10 @@ impl OperationRequest {
             | OperationKind::RevokeCapability { .. }
             | OperationKind::RevokeAbsentCapability { .. }
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
+                OutputClassification::AdministrativeRedactedData
+            }
+            OperationKind::StartApplicationInstallation { .. }
+            | OperationKind::GetApplicationInstallation { .. } => {
                 OutputClassification::AdministrativeRedactedData
             }
             OperationKind::AcknowledgeEventStream { .. }
@@ -2445,6 +2489,8 @@ mod tests {
                 NonZeroU16::new(10).expect("nonzero"),
             ),
             OperationRequest::deploy_reactive_module(lineage.clone(), version(), bundle_hash(4)),
+            OperationRequest::start_application_installation(lineage.clone()),
+            OperationRequest::get_application_installation(lineage.clone()),
             OperationRequest::consume_event_stream(
                 event_consumer_target(),
                 NonZeroU16::new(10).expect("nonzero"),
@@ -2475,7 +2521,7 @@ mod tests {
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 47);
+        assert_eq!(requests.len(), 49);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()
@@ -2513,13 +2559,15 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 28);
+        assert_eq!(kinds.len(), 29);
         assert_eq!(
             kinds
                 .into_iter()
                 .map(CapabilityPermissionKindV1::tag)
                 .collect::<Vec<_>>(),
-            (1..=24).chain([0x1b, 0x1c, 0x1d, 0x1e]).collect::<Vec<_>>()
+            (1..=24)
+                .chain([0x1b, 0x1c, 0x1d, 0x1e, 0x1f])
+                .collect::<Vec<_>>()
         );
     }
 

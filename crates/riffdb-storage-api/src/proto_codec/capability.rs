@@ -116,6 +116,15 @@ fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermis
             None,
             None,
         ),
+        CapabilityPermissionV1::InstallApplication(lineage) => (
+            Some(lineage.as_str().to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
         CapabilityPermissionV1::ConsumeEventStream(lineage, hash, name)
         | CapabilityPermissionV1::SeekEventStreamConsumer(lineage, hash, name)
         | CapabilityPermissionV1::WatchNamedQuery(lineage, hash, name)
@@ -247,6 +256,11 @@ fn permission_from_proto(
         // Migration authority is durable only in CapabilityRecordV2's required
         // extension. The frozen V1 base rejects the otherwise-decodable tag.
         (CapabilityPermissionKindV1::MigrateContract, PermissionParameter::Lineage) => {
+            Err(DurableCodecError::corrupt())
+        }
+        // Installation authority is durable only in CapabilityRecordV2's
+        // required extension. The frozen V1 base rejects the bare tag.
+        (CapabilityPermissionKindV1::InstallApplication, PermissionParameter::Lineage) => {
             Err(DurableCodecError::corrupt())
         }
         (
@@ -409,11 +423,12 @@ fn grant_to_proto(value: &CapabilityGrantV1) -> wire::CapabilityGrantV1 {
     }
 }
 
-fn grant_to_proto_with_migration_extension(
+fn grant_to_proto_with_extensions(
     value: &CapabilityGrantV1,
 ) -> (
     wire::CapabilityGrantV1,
     Option<wire::CapabilityMigrationGrantExtensionV1>,
+    Option<wire::CapabilityInstallationGrantExtensionV1>,
 ) {
     let mut legacy = grant_to_proto(value);
     let lineages = value
@@ -440,7 +455,35 @@ fn grant_to_proto_with_migration_extension(
         contract_lineages: lineages,
         approval_required,
     });
-    (legacy, extension)
+    let installation_lineages = value
+        .permissions()
+        .as_slice()
+        .iter()
+        .filter_map(|permission| match permission {
+            CapabilityPermissionV1::InstallApplication(lineage) => {
+                Some(lineage.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(permissions) = legacy.permissions.as_mut() {
+        permissions.values.retain(|permission| {
+            permission.kind != i32::from(CapabilityPermissionKindV1::InstallApplication.tag())
+        });
+    }
+    let installation_approval_required = value
+        .approval_required()
+        .contains(&CapabilityPermissionKindV1::InstallApplication);
+    legacy
+        .approval_required
+        .retain(|kind| *kind != i32::from(CapabilityPermissionKindV1::InstallApplication.tag()));
+    let installation = (!installation_lineages.is_empty()).then_some(
+        wire::CapabilityInstallationGrantExtensionV1 {
+            contract_lineages: installation_lineages,
+            approval_required: installation_approval_required,
+        },
+    );
+    (legacy, extension, installation)
 }
 
 fn grant_from_proto(
@@ -515,6 +558,53 @@ fn grant_from_proto_with_migration_extension(
     ))
 }
 
+fn grant_from_proto_with_extensions(
+    value: wire::CapabilityGrantV1,
+    migration: Option<wire::CapabilityMigrationGrantExtensionV1>,
+    installation: Option<wire::CapabilityInstallationGrantExtensionV1>,
+) -> Result<CapabilityGrantV1, DurableCodecError> {
+    if migration.is_none() && installation.is_none() {
+        return Err(DurableCodecError::corrupt());
+    }
+    let base = match migration {
+        Some(extension) => grant_from_proto_with_migration_extension(value, extension)?,
+        None => grant_from_proto(value)?,
+    };
+    let Some(extension) = installation else {
+        return Ok(base);
+    };
+    if extension.contract_lineages.is_empty() {
+        return Err(DurableCodecError::corrupt());
+    }
+    let mut lineages = extension
+        .contract_lineages
+        .into_iter()
+        .map(|lineage| ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !lineages.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(DurableCodecError::corrupt());
+    }
+    let mut permissions = base.permissions().as_slice().to_vec();
+    permissions.extend(
+        lineages
+            .drain(..)
+            .map(CapabilityPermissionV1::InstallApplication),
+    );
+    let permissions = grant_result(CapabilityPermissionsV1::new(permissions))?;
+    let mut approval_required = base.approval_required().to_vec();
+    if extension.approval_required {
+        approval_required.push(CapabilityPermissionKindV1::InstallApplication);
+    }
+    grant_result(CapabilityGrantV1::new(
+        base.tenant_scope().clone(),
+        base.partition_scope().clone(),
+        permissions,
+        base.field_visibility().to_vec(),
+        base.max_scan_rows(),
+        approval_required,
+    ))
+}
+
 fn digest_to_proto(value: CapabilityTokenDigest) -> wire::CapabilityTokenDigestV1 {
     wire::CapabilityTokenDigestV1 {
         digest_scheme: u32::from(value.scheme()),
@@ -574,7 +664,7 @@ fn lifecycle_from_proto(
 pub fn encode_capability_record_v1(
     value: &StoredCapabilityRecordV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    let (grant, migration) = grant_to_proto_with_migration_extension(value.grant());
+    let (grant, migration, installation) = grant_to_proto_with_extensions(value.grant());
     let base = wire::CapabilityRecordV1 {
         capability_id: value.capability_id().as_bytes().to_vec(),
         revision: value.revision().get(),
@@ -595,13 +685,14 @@ pub fn encode_capability_record_v1(
         grant: Some(grant),
         lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
     };
-    match migration {
-        None => encode_message(RECORD, &base),
-        Some(migration) => encode_message(
+    match (migration, installation) {
+        (None, None) => encode_message(RECORD, &base),
+        (migration, installation) => encode_message(
             RECORD_V2,
             &wire::CapabilityRecordV2 {
                 base: Some(base),
-                migration: Some(migration),
+                migration,
+                installation,
             },
         ),
     }
@@ -618,12 +709,15 @@ pub fn decode_capability_record_v1(
         RECORD => {
             let value = wire::CapabilityRecordV1::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
-            record_from_proto(value, None)?
+            record_from_proto(value, None, None)?
         }
         RECORD_V2 => {
             let value = wire::CapabilityRecordV2::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
-            record_from_proto(require(value.base)?, Some(require(value.migration)?))?
+            if value.migration.is_none() && value.installation.is_none() {
+                return Err(DurableCodecError::corrupt());
+            }
+            record_from_proto(require(value.base)?, value.migration, value.installation)?
         }
         _ => {
             return Err(DurableCodecError::new(
@@ -639,12 +733,15 @@ pub fn decode_capability_record_v1(
 fn record_from_proto(
     value: wire::CapabilityRecordV1,
     migration: Option<wire::CapabilityMigrationGrantExtensionV1>,
+    installation: Option<wire::CapabilityInstallationGrantExtensionV1>,
 ) -> Result<StoredCapabilityRecordV1, DurableCodecError> {
-    let grant = match migration {
-        None => grant_from_proto(require(value.grant.clone())?)?,
-        Some(extension) => {
-            grant_from_proto_with_migration_extension(require(value.grant.clone())?, extension)?
-        }
+    let grant = match (migration, installation) {
+        (None, None) => grant_from_proto(require(value.grant.clone())?)?,
+        (migration, installation) => grant_from_proto_with_extensions(
+            require(value.grant.clone())?,
+            migration,
+            installation,
+        )?,
     };
     storage_result(StoredCapabilityRecordV1::from_stored_parts(
         CapabilityId::from_bytes(fixed(value.capability_id)?)

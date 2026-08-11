@@ -134,6 +134,7 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER = 28;
   CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY = 29;
   CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION = 30;
+  CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION = 31;
 }
 
 message LineageScopedStableId {
@@ -185,6 +186,7 @@ message CapabilityPermission {
     ReactiveOperationPermission seek_event_stream_consumer = 28;
     ReactiveOperationPermission watch_named_query = 29;
     ReactiveOperationPermission consume_contextual_subscription = 30;
+    string install_application = 31;
   }
 }
 
@@ -503,5 +505,95 @@ message GetContractMigrationOperationResponse {
   oneof result {
     Unit not_found = 1;
     ContractMigrationOperation found = 2;
+  }
+}
+
+enum ApplicationInstallationStage {
+  APPLICATION_INSTALLATION_STAGE_UNSPECIFIED = 0;
+  APPLICATION_INSTALLATION_STAGE_PREFLIGHT = 1;
+  APPLICATION_INSTALLATION_STAGE_CONTRACT = 2;
+  APPLICATION_INSTALLATION_STAGE_MIGRATION = 3;
+  APPLICATION_INSTALLATION_STAGE_QUERY_MODULES = 4;
+  APPLICATION_INSTALLATION_STAGE_REACTIVE_MODULES = 5;
+  APPLICATION_INSTALLATION_STAGE_ROLES = 6;
+  APPLICATION_INSTALLATION_STAGE_CREDENTIALS = 7;
+  APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF = 8;
+  APPLICATION_INSTALLATION_STAGE_SEEDS = 9;
+  APPLICATION_INSTALLATION_STAGE_RECEIPT = 10;
+}
+
+enum ApplicationInstallationPhase {
+  APPLICATION_INSTALLATION_PHASE_UNSPECIFIED = 0;
+  APPLICATION_INSTALLATION_PHASE_RUNNING = 1;
+  APPLICATION_INSTALLATION_PHASE_PARTIAL = 2;
+  APPLICATION_INSTALLATION_PHASE_INSTALLED = 3;
+}
+
+enum ApplicationInstallationFailureCode {
+  APPLICATION_INSTALLATION_FAILURE_CODE_UNSPECIFIED = 0;
+  APPLICATION_INSTALLATION_FAILURE_CODE_LOCAL_ARTIFACT_MISMATCH = 1;
+  APPLICATION_INSTALLATION_FAILURE_CODE_REMOTE_IDENTITY_MISMATCH = 2;
+  APPLICATION_INSTALLATION_FAILURE_CODE_MIGRATION_GATE_REQUIRED = 3;
+  APPLICATION_INSTALLATION_FAILURE_CODE_ROLE_WIDENING_APPROVAL_REQUIRED = 4;
+  APPLICATION_INSTALLATION_FAILURE_CODE_CREDENTIAL_DESTINATION_OCCUPIED = 5;
+  APPLICATION_INSTALLATION_FAILURE_CODE_DRIVER_PROOF_FAILED = 6;
+  APPLICATION_INSTALLATION_FAILURE_CODE_SEED_PARTIAL = 7;
+  APPLICATION_INSTALLATION_FAILURE_CODE_AUTHORIZATION_DENIED = 8;
+  APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE = 9;
+}
+
+enum ApplicationInstallationNextAction {
+  APPLICATION_INSTALLATION_NEXT_ACTION_UNSPECIFIED = 0;
+  APPLICATION_INSTALLATION_NEXT_ACTION_VALIDATE_LOCAL_ARTIFACTS = 1;
+  APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_CONTRACT = 2;
+  APPLICATION_INSTALLATION_NEXT_ACTION_APPLY_MIGRATION = 3;
+  APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_QUERY_MODULES = 4;
+  APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_REACTIVE_MODULES = 5;
+  APPLICATION_INSTALLATION_NEXT_ACTION_RECONCILE_ROLES = 6;
+  APPLICATION_INSTALLATION_NEXT_ACTION_ROTATE_CREDENTIALS = 7;
+  APPLICATION_INSTALLATION_NEXT_ACTION_PROVE_DRIVERS = 8;
+  APPLICATION_INSTALLATION_NEXT_ACTION_RUN_SEEDS = 9;
+  APPLICATION_INSTALLATION_NEXT_ACTION_SEAL_RECEIPT = 10;
+  APPLICATION_INSTALLATION_NEXT_ACTION_NONE = 11;
+}
+
+message ApplicationInstallationFailure {
+  ApplicationInstallationStage stage = 1;
+  ApplicationInstallationFailureCode code = 2;
+  ApplicationInstallationNextAction next_action = 3;
+}
+
+message ApplicationInstallationObservation {
+  bytes campaign_id = 1;
+  bytes plan_hash = 2;
+  string contract_lineage = 3;
+  ApplicationInstallationPhase phase = 4;
+  repeated ApplicationInstallationStage completed_stages = 5;
+  ApplicationInstallationStage next_stage = 6;
+  ApplicationInstallationNextAction next_action = 7;
+  ApplicationInstallationFailure failure = 8;
+  bytes receipt_hash = 9;
+}
+
+message StartApplicationInstallationRequest {
+  bytes request_id = 1;
+  bytes campaign_id = 2;
+  bytes canonical_plan = 3;
+}
+
+message StartApplicationInstallationResponse {
+  ApplicationInstallationObservation observation = 1;
+  bytes canonical_receipt = 2;
+}
+
+message GetApplicationInstallationRequest {
+  bytes request_id = 1;
+  bytes campaign_id = 2;
+}
+
+message GetApplicationInstallationResponse {
+  oneof result {
+    Unit not_found = 1;
+    StartApplicationInstallationResponse found = 2;
   }
 }

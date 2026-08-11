@@ -310,8 +310,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        137,
-        "136 semantic messages plus the unchanged StoredEnvelope"
+        138,
+        "137 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors

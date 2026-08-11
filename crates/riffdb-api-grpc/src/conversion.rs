@@ -4695,6 +4695,9 @@ fn capability_permission_from_proto(
         Permission::MigrateContract(lineage) => Ok(CapabilityPermissionV1::MigrateContract(
             ContractLineage::new(lineage).map_err(|_| invalid_request())?,
         )),
+        Permission::InstallApplication(lineage) => Ok(CapabilityPermissionV1::InstallApplication(
+            ContractLineage::new(lineage).map_err(|_| invalid_request())?,
+        )),
         Permission::InvokeCommand(value) => {
             let (lineage, id) = lineage_scoped_id(value)?;
             Ok(CapabilityPermissionV1::InvokeCommand(
@@ -4918,6 +4921,9 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         }
         v1::CapabilityPermissionKind::ConsumeContextualSubscription => {
             Ok(CapabilityPermissionKindV1::ConsumeContextualSubscription)
+        }
+        v1::CapabilityPermissionKind::InstallApplication => {
+            Ok(CapabilityPermissionKindV1::InstallApplication)
         }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }

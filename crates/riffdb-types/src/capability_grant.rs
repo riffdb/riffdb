@@ -109,6 +109,8 @@ pub enum CapabilityPermissionKindV1 {
     WatchNamedQuery,
     /// Consume one exact immutable contextual subscription.
     ConsumeContextualSubscription,
+    /// Install or upgrade one exact application lineage.
+    InstallApplication,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -146,6 +148,7 @@ impl CapabilityPermissionKindV1 {
             Self::SeekEventStreamConsumer => 0x1c,
             Self::WatchNamedQuery => 0x1d,
             Self::ConsumeContextualSubscription => 0x1e,
+            Self::InstallApplication => 0x1f,
         }
     }
 
@@ -183,6 +186,7 @@ impl CapabilityPermissionKindV1 {
             0x1c => Some(Self::SeekEventStreamConsumer),
             0x1d => Some(Self::WatchNamedQuery),
             0x1e => Some(Self::ConsumeContextualSubscription),
+            0x1f => Some(Self::InstallApplication),
             _ => None,
         }
     }
@@ -204,6 +208,7 @@ impl CapabilityPermissionKindV1 {
                 | Self::SeekEventStreamConsumer
                 | Self::WatchNamedQuery
                 | Self::ConsumeContextualSubscription
+                | Self::InstallApplication
         )
     }
 }
@@ -241,6 +246,8 @@ pub enum CapabilityPermissionV1 {
     WatchNamedQuery(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
     /// Consume an exact contextual subscription from one immutable reactive module.
     ConsumeContextualSubscription(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
+    /// Install or upgrade one exact application lineage.
+    InstallApplication(ContractLineage),
 }
 
 impl CapabilityPermissionV1 {
@@ -277,6 +284,7 @@ impl CapabilityPermissionV1 {
             Self::ConsumeContextualSubscription(..) => {
                 CapabilityPermissionKindV1::ConsumeContextualSubscription
             }
+            Self::InstallApplication(..) => CapabilityPermissionKindV1::InstallApplication,
         }
     }
 
@@ -312,6 +320,7 @@ impl CapabilityPermissionV1 {
                 bytes.extend_from_slice(role_hash.as_bytes());
             }
             Self::MigrateContract(lineage) => append_lineage(&mut bytes, lineage),
+            Self::InstallApplication(lineage) => append_lineage(&mut bytes, lineage),
             Self::ConsumeEventStream(lineage, module_hash, operation_name)
             | Self::SeekEventStreamConsumer(lineage, module_hash, operation_name)
             | Self::WatchNamedQuery(lineage, module_hash, operation_name)
@@ -563,7 +572,7 @@ impl CapabilityGrantV1 {
     ) -> Result<Self, CapabilityGrantError> {
         if usize::from(max_scan_rows.get()) > 500
             || field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
-            || approval_required.len() > 30
+            || approval_required.len() > 31
         {
             return Err(CapabilityGrantError::LimitExceeded);
         }
@@ -683,6 +692,7 @@ fn capability_permission_semantic_bytes(permission: &CapabilityPermissionV1) -> 
         }
         CapabilityPermissionV1::ApplicationRoleIdentity(_) => 1 + 32,
         CapabilityPermissionV1::MigrateContract(lineage) => 1 + 4 + lineage.as_bytes().len(),
+        CapabilityPermissionV1::InstallApplication(lineage) => 1 + 4 + lineage.as_bytes().len(),
         CapabilityPermissionV1::ConsumeEventStream(lineage, _, name)
         | CapabilityPermissionV1::SeekEventStreamConsumer(lineage, _, name)
         | CapabilityPermissionV1::WatchNamedQuery(lineage, _, name)
@@ -791,12 +801,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=30 {
+        for tag in 1..=31 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(31), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(32), None);
     }
 
     #[test]
@@ -902,7 +912,7 @@ mod tests {
         let query_name = QueryOperationName::new("TicketPage").expect("query name");
         let reactive_module = ReactiveModuleHash::from_bytes([4; 32]);
         let reactive_name = ReactiveOperationName::new("TicketActivity").expect("reactive name");
-        let mut values = (1..=30)
+        let mut values = (1..=31)
             .filter_map(CapabilityPermissionKindV1::from_tag)
             .filter_map(|kind| CapabilityPermissionV1::unparameterized(kind).ok())
             .collect::<Vec<_>>();

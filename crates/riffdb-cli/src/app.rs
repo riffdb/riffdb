@@ -6271,6 +6271,9 @@ enum CapabilityPermissionInput {
     MigrateContract {
         contract_lineage: String,
     },
+    InstallApplication {
+        contract_lineage: String,
+    },
     InvokeCommand {
         contract_lineage: String,
         stable_id: u32,
@@ -6364,6 +6367,7 @@ enum CapabilityPermissionKindInput {
     ExplainNamedQuery,
     ExecuteNamedQuery,
     MigrateContract,
+    InstallApplication,
     ConsumeEventStream,
     SeekEventStreamConsumer,
     WatchNamedQuery,
@@ -6679,6 +6683,12 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
             }
             Permission::MigrateContract(contract_lineage)
         }
+        CapabilityPermissionInput::InstallApplication { contract_lineage } => {
+            if contract_lineage.is_empty() || contract_lineage.len() > 256 {
+                return Err(());
+            }
+            Permission::InstallApplication(contract_lineage)
+        }
         CapabilityPermissionInput::InvokeCommand {
             contract_lineage,
             stable_id,
@@ -6852,6 +6862,9 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         }
         CapabilityPermissionKindInput::MigrateContract => {
             v1::CapabilityPermissionKind::MigrateContract as i32
+        }
+        CapabilityPermissionKindInput::InstallApplication => {
+            v1::CapabilityPermissionKind::InstallApplication as i32
         }
         CapabilityPermissionKindInput::ConsumeEventStream => {
             v1::CapabilityPermissionKind::ConsumeEventStream as i32

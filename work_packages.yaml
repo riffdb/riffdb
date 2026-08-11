@@ -10682,7 +10682,9 @@ work_packages:
     fixtures/proto/**, fixtures/application-manifests/**, fixtures/application-locks/**,
     fixtures/installation/**, crates/riffdb-types/**, crates/riffdb-application/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
-    crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-proto/examples/**,
+    crates/riffdb-storage-api/**,
+    crates/riffdb-api-grpc/**,
     crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
     crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
   deliverables:
