@@ -1692,6 +1692,7 @@ fn journal_worker(
                 }
             }
         }
+        let tail_position = next_position;
         let write = if let Some(error) = encode_error {
             Err(error)
         } else {
@@ -1700,6 +1701,18 @@ fn journal_worker(
                 .try_for_each(|frame| {
                     file.write_all_at(&frame.bytes, frame.position)
                         .map_err(|_| JournalIoError::Io)
+                })
+                .and_then(|()| {
+                    // A recycled extent can retain an older, differently sized
+                    // frame beyond this generation's shorter suffix. Seal one
+                    // zero header at the new tail in the same durability fence
+                    // so recovery cannot mistake stale frame interior bytes for
+                    // a torn current-generation frame.
+                    if tail_position < EXTENT_FILE_BYTES {
+                        file.write_all_at(&[0_u8; EXTENT_FRAME_HEADER_BYTES], tail_position)
+                            .map_err(|_| JournalIoError::Io)?;
+                    }
+                    Ok(())
                 })
                 .and_then(|()| file.sync_data().map_err(|_| JournalIoError::Io))
         };
@@ -3178,6 +3191,60 @@ mod tests {
             .expect("scan recycled extent")
             .expect("extent exists");
         assert_eq!(tail.transition_count, 0);
+        assert!(!tail.incomplete_tail);
+    }
+
+    #[test]
+    fn shorter_recycled_suffix_writes_a_zero_tail_over_stale_frame_interior() {
+        let path = TestPath::new("shorter-recycled-suffix");
+        let database_id = database_id(24);
+        let header = JournalFileHeader::new(database_id, None, [0; 32]);
+        initialize_or_validate_file(&path.0, &header).expect("initialize extent");
+        let stale = JournalFrame::new(
+            database_id,
+            sequence(1),
+            sequence(1),
+            1,
+            [0; 32],
+            vec![
+                JournalMutation::put(JournalTable::Commits, vec![1], vec![7; 12_000])
+                    .expect("stale put"),
+            ],
+        )
+        .expect("stale frame")
+        .encode()
+        .expect("encode stale");
+        write_physical_frame(&path.0, &stale, false);
+        reset_journal(&path.0, &header).expect("recycle extent");
+
+        let current = JournalFrame::new(
+            database_id,
+            sequence(1),
+            sequence(1),
+            1,
+            [0; 32],
+            vec![JournalMutation::put(JournalTable::Commits, vec![2], vec![8]).expect("put")],
+        )
+        .expect("current frame")
+        .encode()
+        .expect("encode current");
+        {
+            let lane = JournalLane::open(&path.0, &header).expect("open recycled lane");
+            lane.submit(current)
+                .expect("submit current")
+                .wait()
+                .expect("fence current");
+        }
+
+        let mut visited = 0;
+        let (_, tail) = scan_journal(&path.0, database_id, |_| {
+            visited += 1;
+            Ok(())
+        })
+        .expect("scan current suffix")
+        .expect("extent exists");
+        assert_eq!(visited, 1);
+        assert_eq!(tail.transition_count, 1);
         assert!(!tail.incomplete_tail);
     }
 
