@@ -10827,7 +10827,7 @@ work_packages:
     RAP-011, RAP-015]
   required_adrs: [ADR-0007, ADR-0038, ADR-0055, ADR-0080, ADR-0086,
     ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111,
-    ADR-0114]
+    ADR-0114, ADR-0116]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, fixtures/proto/**,
     fixtures/compatibility/**, release/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
@@ -10885,7 +10885,7 @@ work_packages:
   requirements: [AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009,
     AAA-010, AAA-012, AAA-018, PYD-004, PYD-005, SAFE-007, SAFE-008, RAP-016]
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0106,
-    ADR-0108, ADR-0111]
+    ADR-0108, ADR-0111, ADR-0114, ADR-0116]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
     crates/riffdb-cli/**, crates/riffdb-api-mcp/**, clients/**, templates/**,
@@ -10968,7 +10968,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-575
   name: Snapshot-consistent symbolic application export and reimport receipts
-  depends_on: [WP-558, WP-568, WP-570, WP-574]
+  depends_on: [WP-558, WP-568, WP-570, WP-572, WP-574]
   objective: Provide a public operator-authorized, resumable, snapshot-consistent export of symbolic
     entities/events and optional provenance/audit, plus adapter-declared compiled reimport mappings,
     without exposing storage bytes or creating a generic import write path.
@@ -10977,7 +10977,7 @@ work_packages:
     EXP-001, EXP-002, EXP-003, EXP-004, EXP-005, EXP-006, EXP-007, EXP-008,
     EXP-009, EXP-010, EXP-011, EXP-012, EXP-013, EXP-014]
   required_adrs: [ADR-0007, ADR-0055, ADR-0057, ADR-0065, ADR-0072,
-    ADR-0080, ADR-0110, ADR-0111, ADR-0112]
+    ADR-0080, ADR-0110, ADR-0111, ADR-0112, ADR-0114, ADR-0115, ADR-0116]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
     fixtures/export/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-storage-api/**,
@@ -11110,7 +11110,7 @@ work_packages:
     SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
     PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010]
   required_adrs: [ADR-0050, ADR-0080, ADR-0082, ADR-0085, ADR-0101,
-    ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112]
+    ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0116]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
     fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
     docs/**, release/evidence/**, .github/**]
@@ -11177,7 +11177,8 @@ work_packages:
     END-009, END-010]
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
     ADR-0080, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0105, ADR-0106,
-    ADR-0107, ADR-0108, ADR-0109, ADR-0110, ADR-0111, ADR-0112]
+    ADR-0107, ADR-0108, ADR-0109, ADR-0110, ADR-0111, ADR-0112, ADR-0114,
+    ADR-0115, ADR-0116]
   allowed_paths: [SPEC.md, PLAN.md, work_packages.yaml, Cargo.lock, crates/**, proto/**,
     clients/**, fixtures/**, fuzz/**, tests/**, examples/**, benchmarks/**, scripts/**,
     templates/**, docs/**, release/**, .github/**]

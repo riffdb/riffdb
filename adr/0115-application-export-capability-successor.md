@@ -1,11 +1,12 @@
 # ADR-0115: Application Export Capability Successor
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction requested:** 2026-08-11
+- **Exact text accepted:** 2026-08-11, commit `6499d2b3`
 - **Decision deadline:** Before WP-575 adds any export request or durable export authority
 - **Requires:** ADR-0006, ADR-0007, ADR-0009, ADR-0055, ADR-0089,
   ADR-0111, ADR-0112, and ADR-0114
-- **Amends if accepted:** ADR-0089's closed capability successor chain
+- **Amends:** ADR-0089's closed capability successor chain
 - **Defines or blocks:** WP-575, WP-578, and WP-579
 
 ## Context
@@ -24,7 +25,7 @@ rule and make a broad, resumable snapshot operation follow accidentally from a
 different privilege. The export request also cannot carry a policy bypass or
 authority claim.
 
-## Proposed Decision
+## Decision
 
 ### A distinct V5 durable record
 

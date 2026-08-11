@@ -1,10 +1,11 @@
 # ADR-0116: Current-Row Policy Anchors for Durable Events
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction requested:** 2026-08-11
+- **Exact text accepted:** 2026-08-11, commit `6499d2b3`
 - **Decision deadline:** Before WP-572 enables protected event consumption
 - **Requires:** ADR-0007, ADR-0038, ADR-0055, ADR-0080, ADR-0111, and ADR-0114
-- **Amends if accepted:** ADR-0111 Amendment 1
+- **Amends:** ADR-0111 Amendment 1
 - **Defines or blocks:** WP-572, WP-573, WP-578, and WP-579
 
 ## Context
@@ -20,7 +21,7 @@ Filtering after delivery selection would leak hidden event counts and ordering.
 General event predicates would create a second policy language. The alpha
 therefore needs one narrow anchor that reuses the compiled entity row policy.
 
-## Proposed Decision
+## Decision
 
 ### One explicit current-row anchor
 
