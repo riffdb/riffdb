@@ -9,7 +9,8 @@ use riffdb_types::{
     ContractVersion, EntityRecordHash, EntityVersion, EventHash, EventId, EventTypeId,
     IndexEntryKey, IndexEpoch, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
     MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
-    RequestId, encode_canonical_record, hash_entity_record, hash_event, hash_partition_key,
+    RequestId, RowPolicyName, encode_canonical_record, hash_entity_record, hash_event,
+    hash_partition_key,
 };
 
 use crate::{
@@ -876,6 +877,152 @@ pub struct StoredDurableEventV1 {
     event_hash: EventHash,
 }
 
+/// Compiler-owned current-row authority retained with one protected event.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredEventPolicyAnchorV1 {
+    contract: DurableKeySchemaBindingV1,
+    event_type_id: EventTypeId,
+    source: EntityTarget,
+    read_policy: RowPolicyName,
+}
+
+impl StoredEventPolicyAnchorV1 {
+    /// Constructs an exact retained-contract, event, entity, and policy binding.
+    #[must_use]
+    pub const fn new(
+        contract: DurableKeySchemaBindingV1,
+        event_type_id: EventTypeId,
+        source: EntityTarget,
+        read_policy: RowPolicyName,
+    ) -> Self {
+        Self {
+            contract,
+            event_type_id,
+            source,
+            read_policy,
+        }
+    }
+
+    /// Exact retained contract that owns the anchor interpretation.
+    #[must_use]
+    pub const fn contract(&self) -> &DurableKeySchemaBindingV1 {
+        &self.contract
+    }
+
+    /// Stable event identity whose declaration owns this anchor.
+    #[must_use]
+    pub const fn event_type_id(&self) -> EventTypeId {
+        self.event_type_id
+    }
+
+    /// Canonical current-row target controlling protected delivery.
+    #[must_use]
+    pub const fn source(&self) -> &EntityTarget {
+        &self.source
+    }
+
+    /// Exact compiler-selected read-policy identity.
+    #[must_use]
+    pub const fn read_policy(&self) -> &RowPolicyName {
+        &self.read_policy
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.contract
+            .semantic_bytes()?
+            .checked_add(4)
+            .and_then(|value| value.checked_add(self.source.semantic_bytes().ok()?))
+            .and_then(|value| {
+                value.checked_add(framed_bytes(self.read_policy.as_str().len()).ok()?)
+            })
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+/// Versioned durable event successor carrying a compiler-owned policy anchor.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredDurableEventV2 {
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: Arc<CanonicalRecord>,
+    payload_encoded: Arc<[u8]>,
+    event_hash: EventHash,
+    policy_anchor: StoredEventPolicyAnchorV1,
+}
+
+impl StoredDurableEventV2 {
+    /// Constructs and verifies one anchored event without weakening frozen V1 bytes.
+    pub fn new(
+        event_id: EventId,
+        event_type_id: EventTypeId,
+        payload: CanonicalRecord,
+        event_hash: EventHash,
+        policy_anchor: StoredEventPolicyAnchorV1,
+    ) -> Result<Self, StorageValueError> {
+        if policy_anchor.event_type_id() != event_type_id {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let payload_encoded = encode_canonical_record(&payload)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
+        if derive_event_hash_v2(event_id, event_type_id, &payload, &policy_anchor)? != event_hash {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let value = Self {
+            event_id,
+            event_type_id,
+            payload: Arc::new(payload),
+            payload_encoded: Arc::from(payload_encoded),
+            event_hash,
+            policy_anchor,
+        };
+        value.semantic_bytes()?;
+        Ok(value)
+    }
+
+    /// Stable commit-sequence and ordinal identity.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+
+    /// Stable event type identity.
+    #[must_use]
+    pub const fn event_type_id(&self) -> EventTypeId {
+        self.event_type_id
+    }
+
+    /// Complete canonical event payload.
+    #[must_use]
+    pub fn payload(&self) -> &CanonicalRecord {
+        &self.payload
+    }
+
+    /// Canonical payload bytes retained at construction.
+    #[must_use]
+    pub fn payload_encoded(&self) -> &[u8] {
+        &self.payload_encoded
+    }
+
+    /// Domain-separated hash binding payload and policy anchor.
+    #[must_use]
+    pub const fn event_hash(&self) -> EventHash {
+        self.event_hash
+    }
+
+    /// Compiler-owned current-row policy anchor.
+    #[must_use]
+    pub const fn policy_anchor(&self) -> &StoredEventPolicyAnchorV1 {
+        &self.policy_anchor
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        stored_event_semantic_bytes(self.event_type_id, self.payload_encoded.len())?
+            .checked_add(self.policy_anchor.semantic_bytes()?)
+            .and_then(|value| value.checked_add(4))
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
 /// Exact payload-free link to one authoritative durable event row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventReferenceV2 {
@@ -1171,6 +1318,74 @@ fn canonical_event_preimage_v1(
     preimage.extend_from_slice(&event_type_id.to_be_bytes());
     preimage.extend_from_slice(&payload_length.to_be_bytes());
     preimage.extend_from_slice(&payload_bytes);
+    Ok(preimage)
+}
+
+/// Derives the V2 event hash binding the complete payload and current-row anchor.
+pub fn derive_event_hash_v2(
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: &CanonicalRecord,
+    policy_anchor: &StoredEventPolicyAnchorV1,
+) -> Result<EventHash, StorageValueError> {
+    Ok(hash_event(&canonical_event_preimage_v2(
+        event_id,
+        event_type_id,
+        payload,
+        policy_anchor,
+    )?))
+}
+
+fn canonical_event_preimage_v2(
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: &CanonicalRecord,
+    policy_anchor: &StoredEventPolicyAnchorV1,
+) -> Result<Vec<u8>, StorageValueError> {
+    if policy_anchor.event_type_id() != event_type_id {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    let payload_bytes =
+        encode_canonical_record(payload).map_err(|error| canonical_codec_storage_error(&error))?;
+    let payload_length =
+        u32::try_from(payload_bytes.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let lineage = policy_anchor.contract().lineage().as_bytes();
+    let lineage_length =
+        u32::try_from(lineage.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let key = policy_anchor.source().key().as_bytes();
+    let key_length = u32::try_from(key.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let policy = policy_anchor.read_policy().as_str().as_bytes();
+    let policy_length =
+        u32::try_from(policy.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let capacity = 4usize
+        .checked_add(12 + 4 + 4)
+        .and_then(|value| value.checked_add(payload_bytes.len()))
+        .and_then(|value| value.checked_add(4 + lineage.len() + 8 + 32 + 4 + 4))
+        .and_then(|value| value.checked_add(4 + key.len()))
+        .and_then(|value| value.checked_add(4 + policy.len()))
+        .ok_or(StorageValueError::SizeOverflow)?;
+    let mut preimage = Vec::with_capacity(capacity);
+    preimage.extend_from_slice(&2_u32.to_be_bytes());
+    preimage.extend_from_slice(&event_id.to_be_bytes());
+    preimage.extend_from_slice(&event_type_id.to_be_bytes());
+    preimage.extend_from_slice(&payload_length.to_be_bytes());
+    preimage.extend_from_slice(&payload_bytes);
+    preimage.extend_from_slice(&lineage_length.to_be_bytes());
+    preimage.extend_from_slice(lineage);
+    preimage.extend_from_slice(
+        &policy_anchor
+            .contract()
+            .contract_version()
+            .get()
+            .to_be_bytes(),
+    );
+    preimage.extend_from_slice(policy_anchor.contract().bundle_hash().as_bytes());
+    preimage.extend_from_slice(&policy_anchor.event_type_id().to_be_bytes());
+    preimage.extend_from_slice(&policy_anchor.source().entity_type_id().to_be_bytes());
+    preimage.extend_from_slice(&key_length.to_be_bytes());
+    preimage.extend_from_slice(key);
+    preimage.extend_from_slice(&policy_length.to_be_bytes());
+    preimage.extend_from_slice(policy);
     Ok(preimage)
 }
 
@@ -3126,6 +3341,8 @@ redacted_debug!(
     CommittedEntityMutationV1,
     StoredOutcomeV1,
     StoredDurableEventV1,
+    StoredEventPolicyAnchorV1,
+    StoredDurableEventV2,
     StoredOutboxIntentV1,
     AffectedEntityV1,
     StoredProvenanceRecordV1,
@@ -3542,6 +3759,47 @@ mod tests {
         assert_eq!(
             derive_event_hash_v1(event_id, event_type_id, &payload),
             Ok(expected)
+        );
+    }
+
+    #[test]
+    fn event_hash_v2_binds_the_retained_contract_row_and_policy() {
+        let event_id = EventId::new(CommitSequence::first(), 0);
+        let event_type_id = EventTypeId::first();
+        let payload = payload_record(1);
+        let base = StoredEventPolicyAnchorV1::new(
+            DurableKeySchemaBindingV1::from_plan(&plan()),
+            event_type_id,
+            entity_target(),
+            RowPolicyName::new("TicketAccess").expect("policy"),
+        );
+        let hash = derive_event_hash_v2(event_id, event_type_id, &payload, &base)
+            .expect("anchored event hash");
+        assert!(
+            StoredDurableEventV2::new(
+                event_id,
+                event_type_id,
+                payload.clone(),
+                hash,
+                base.clone(),
+            )
+            .is_ok()
+        );
+
+        let changed_policy = StoredEventPolicyAnchorV1::new(
+            base.contract().clone(),
+            event_type_id,
+            base.source().clone(),
+            RowPolicyName::new("TicketAdminAccess").expect("policy"),
+        );
+        assert_ne!(
+            derive_event_hash_v2(event_id, event_type_id, &payload, &changed_policy)
+                .expect("changed policy hash"),
+            hash
+        );
+        assert_eq!(
+            StoredDurableEventV2::new(event_id, event_type_id, payload, hash, changed_policy,),
+            Err(StorageValueError::IdentityMismatch)
         );
     }
 

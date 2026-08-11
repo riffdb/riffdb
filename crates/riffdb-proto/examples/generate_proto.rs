@@ -49,6 +49,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/contextual_causation_v2.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
+    "riffdb/storage/v1/event_policy_anchor.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -84,6 +85,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/contextual_causation_v2.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
+    "riffdb/storage/v1/event_policy_anchor.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -550,6 +552,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "CapabilityRecordV4",
         PayloadBound::Document,
     ),
+    durable(
+        "event_policy_anchor.proto",
+        "StoredDurableEventV2",
+        PayloadBound::Document,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -960,6 +967,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let capability_v4_record = durable_registry
         .get(current_v1_record_count + 46)
         .ok_or_else(|| io::Error::other("durable capability-v4 registry is incomplete"))?;
+    let durable_event_v2_record = durable_registry
+        .get(current_v1_record_count + 47)
+        .ok_or_else(|| io::Error::other("durable event-v2 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1104,6 +1114,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-capability-v4-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(capability_v4_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-event-v2-schema-hash.bin",
+        &durable_event_v2_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-event-v2-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(durable_event_v2_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1502,9 +1522,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 76 {
+    if DURABLE_RECORDS.len() != 77 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 76 records").into(),
+            io::Error::other("readable durable registry must contain exactly 77 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1528,9 +1548,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 151 || enum_count != 20 {
+    if message_count != 153 || enum_count != 20 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 151 messages and 20 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 153 messages and 20 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1813,12 +1833,16 @@ fn durable_writable_registry_fixture(
     let capability_v4 = records
         .get(current_v1_record_count + 46)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV4"))?;
+    let durable_event_v2 = records
+        .get(current_v1_record_count + 47)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredDurableEventV2"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
         .chain(std::iter::once(generation_v2))
         .chain(workflow_service_values_v3[..3].iter())
         .chain(legacy[13..14].iter())
+        .chain(std::iter::once(durable_event_v2))
         .chain(std::iter::once(outbox_v2))
         .chain(contextual_causation_v2[3..].iter())
         .chain(std::iter::once(commit_v3))
@@ -1845,7 +1869,7 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 29);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 30);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

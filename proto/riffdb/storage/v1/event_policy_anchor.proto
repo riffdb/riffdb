@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/common.proto";
+
+message StoredEventPolicyAnchorV1 {
+  DurableKeySchemaBindingV1 contract = 1;
+  uint32 event_type_id = 2;
+  EntityTargetV1 source = 3;
+  string read_policy = 4;
+}
+
+message StoredDurableEventV2 {
+  EventIdV1 event_id = 1;
+  uint32 event_type_id = 2;
+  bytes canonical_payload = 3;
+  bytes event_hash = 4;
+  StoredEventPolicyAnchorV1 policy_anchor = 5;
+}

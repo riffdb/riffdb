@@ -243,6 +243,13 @@ fn storage_source_import_and_type_inventory_is_exact() {
             ),
             ("riffdb/storage/v1/envelope.proto".to_owned(), vec![]),
             (
+                "riffdb/storage/v1/event_policy_anchor.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/application.proto",
+                    "riffdb/storage/v1/common.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/event_references_v2.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -335,8 +342,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        151,
-        "150 semantic messages plus the unchanged StoredEnvelope"
+        153,
+        "152 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -365,9 +372,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 58);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 81);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 58);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 59);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 82);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 59);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -437,6 +444,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV3".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV4".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredDurableEventV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -452,6 +460,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names[15] = "riffdb.storage.v1.StoredProvenanceRecordV2".to_owned();
     writable_names[16] = "riffdb.storage.v1.StoredCommitRecordV3".to_owned();
     writable_names[21] = "riffdb.storage.v1.ServiceAuditRecordV2".to_owned();
+    writable_names.insert(14, "riffdb.storage.v1.StoredDurableEventV2".to_owned());
     writable_names.extend(
         QUERY_MODULE_RECORDS
             .iter()
@@ -614,8 +623,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 81);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 58);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 82);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 59);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -768,18 +777,16 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
 fn every_semantic_golden_payload_and_envelope_is_canonical() {
     let mut lines = DURABLE_WIRE_VECTORS.lines();
     assert_eq!(lines.next(), Some("riffdb-durable-wire-vectors-v1"));
-    assert_eq!(lines.next(), Some("records\t26"));
+    assert_eq!(lines.next(), Some("records\t27"));
     let vectors = lines.collect::<Vec<_>>();
-    assert_eq!(vectors.len(), LEGACY_RECORDS.len());
+    assert_eq!(vectors.len(), 27);
 
     let registry = readable_record_registry();
-    for (line, schema) in vectors
-        .iter()
-        .zip(&READABLE_RECORD_SCHEMAS[..LEGACY_RECORDS.len()])
-    {
+    for line in vectors {
         let columns = line.split('\t').collect::<Vec<_>>();
         assert_eq!(columns.len(), 3, "one FQN, payload, and envelope per line");
-        assert_eq!(columns[0], schema.record_type());
+        let schema = readable_record_schema(columns[0])
+            .unwrap_or_else(|| panic!("{} must remain readable", columns[0]));
 
         let payload = decode_lower_hex(columns[1]);
         let envelope = decode_lower_hex(columns[2]);

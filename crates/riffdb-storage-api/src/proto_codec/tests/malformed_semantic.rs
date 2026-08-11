@@ -4,7 +4,7 @@ use riffdb_proto::{
     envelope::{self, STORAGE_FORMAT_VERSION_V1},
     storage::v1 as wire,
 };
-use riffdb_types::ExecutionFailureCode;
+use riffdb_types::{CommitSequence, EventId, EventTypeId, ExecutionFailureCode, RowPolicyName};
 
 use super::super::*;
 use super::sample;
@@ -45,6 +45,71 @@ fn assert_error_kind<T>(
         Err(error) => assert_eq!(error.kind(), expected),
         Ok(_) => panic!("semantically malformed durable record decoded"),
     }
+}
+
+fn canonical_anchored_event() -> CanonicalStoredEnvelopeV1 {
+    let event_id = EventId::new(CommitSequence::first(), 0);
+    let event_type = EventTypeId::first();
+    let payload = sample::canonical_record(0x43);
+    let anchor = crate::StoredEventPolicyAnchorV1::new(
+        crate::DurableKeySchemaBindingV1::from_plan(&sample::plan()),
+        event_type,
+        sample::entity_target(),
+        RowPolicyName::new("TicketAccess").expect("policy name"),
+    );
+    let event = crate::StoredDurableEventV2::new(
+        event_id,
+        event_type,
+        payload.clone(),
+        crate::derive_event_hash_v2(event_id, event_type, &payload, &anchor).expect("event hash"),
+        anchor,
+    )
+    .expect("anchored event");
+    encode_durable_event_v2(&event).expect("anchored event encodes")
+}
+
+#[test]
+fn anchored_event_missing_or_inconsistent_authority_fails_closed() {
+    const EVENT_V2: &str = "riffdb.storage.v1.StoredDurableEventV2";
+    let canonical = canonical_anchored_event();
+    let message = payload_message::<wire::StoredDurableEventV2>(canonical.as_bytes());
+
+    let mut missing_anchor = message.clone();
+    missing_anchor.policy_anchor = None;
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &missing_anchor,
+    )));
+
+    let mut mismatched_event_type = message.clone();
+    mismatched_event_type
+        .policy_anchor
+        .as_mut()
+        .expect("sample policy anchor")
+        .event_type_id = 2;
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &mismatched_event_type,
+    )));
+
+    let mut invalid_policy = message.clone();
+    invalid_policy
+        .policy_anchor
+        .as_mut()
+        .expect("sample policy anchor")
+        .read_policy
+        .clear();
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &invalid_policy,
+    )));
+
+    let mut mismatched_hash = message;
+    mismatched_hash.event_hash[0] ^= 0x01;
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &mismatched_hash,
+    )));
 }
 
 #[test]

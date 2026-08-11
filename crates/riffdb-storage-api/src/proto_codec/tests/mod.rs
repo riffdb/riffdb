@@ -11,8 +11,8 @@ mod variants;
 use std::fmt::Debug;
 
 use riffdb_types::{
-    AdministrationSequence, CommitSequence, ExecutionFailureCode, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceOperationV1,
+    AdministrationSequence, CommitSequence, EventId, EventTypeId, ExecutionFailureCode,
+    RowPolicyName, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1,
 };
 
 use crate::EncodedPageItem;
@@ -38,7 +38,7 @@ where
 }
 
 fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
-    let mut vectors = Vec::with_capacity(26);
+    let mut vectors = Vec::with_capacity(27);
     vectors.push((
         "riffdb.storage.v1.StoredStorageFormatVersionV1",
         assert_round_trip(
@@ -152,6 +152,26 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
             atomic.events()[0].clone(),
             encode_durable_event_v1,
             decode_durable_event_v1,
+        ),
+    ));
+    let event_id = EventId::new(CommitSequence::first(), 0);
+    let event_type = EventTypeId::first();
+    let payload = sample::canonical_record(0x43);
+    let anchor = crate::StoredEventPolicyAnchorV1::new(
+        crate::DurableKeySchemaBindingV1::from_plan(&sample::plan()),
+        event_type,
+        sample::entity_target(),
+        RowPolicyName::new("TicketAccess").expect("policy"),
+    );
+    let hash = crate::derive_event_hash_v2(event_id, event_type, &payload, &anchor)
+        .expect("anchored event hash");
+    vectors.push((
+        "riffdb.storage.v1.StoredDurableEventV2",
+        assert_round_trip(
+            crate::StoredDurableEventV2::new(event_id, event_type, payload, hash, anchor)
+                .expect("anchored event"),
+            encode_durable_event_v2,
+            decode_durable_event_v2,
         ),
     ));
     vectors.push((
@@ -1042,8 +1062,9 @@ fn semantic_wire_fixture(format: DurableVectorFormat) -> String {
         DurableVectorFormat::LegacyV1 => "riffdb-durable-wire-vectors-v1",
         DurableVectorFormat::CompactV2 => "riffdb-durable-wire-vectors-v2",
     };
-    let mut fixture = format!("{heading}\nrecords\t26\n");
-    for (name, envelope) in semantic_wire_vectors() {
+    let vectors = semantic_wire_vectors();
+    let mut fixture = format!("{heading}\nrecords\t{}\n", vectors.len());
+    for (name, envelope) in vectors {
         let decoded = riffdb_proto::durable::readable_record_registry()
             .decode(envelope.as_bytes())
             .expect("sample envelope decodes");
