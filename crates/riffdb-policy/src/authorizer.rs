@@ -6,21 +6,23 @@ use riffdb_auth::{
     AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity, CurrentCapabilityResolver,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1,
-    DatabaseId, Environment, PartitionScopeV1, ServiceOperationV1, TenantScope, Timestamp,
+    ActorId, ActorKind, ApplicationExportSelectionV1, Audience, CapabilityApplicationExportScopeV1,
+    CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1, DatabaseId, Environment,
+    PartitionScopeV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
 use crate::operation::PartitionRequirement;
 use crate::{
-    AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
-    AuthorizedCapabilityMutationPreparation, AuthorizedContractMigration,
-    AuthorizedOfflineMaintenance, AuthorizedOperation, AuthorizedRowPolicyAuthority,
-    CapabilityActivity, CapabilityMutationRequest, CheckedCapabilityValidity,
-    ContractMigrationAuthorizationRequest, ContractMigrationDecision, CurrentAuthorizationIdentity,
-    Decision, Obligations, OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision,
-    OperationRequest, OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts,
-    TrustedAudienceCatalog,
+    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1, AuthorizationClock,
+    AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
+    AuthorizedApplicationExportV1, AuthorizedCapabilityMutationPreparation,
+    AuthorizedContractMigration, AuthorizedOfflineMaintenance, AuthorizedOperation,
+    AuthorizedRowPolicyAuthority, CapabilityActivity, CapabilityMutationRequest,
+    CheckedCapabilityValidity, ContractMigrationAuthorizationRequest, ContractMigrationDecision,
+    CurrentAuthorizationIdentity, Decision, Obligations, OfflineMaintenanceAuthorizationRequest,
+    OfflineMaintenanceDecision, OperationRequest, OutputClassification, PolicyCode,
+    TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -96,6 +98,83 @@ where
     C: AuthorizationClock + ?Sized,
     T: AuthorizationTelemetry + ?Sized,
 {
+    /// Reloads current state and evaluates one symbolic-export release safe point.
+    ///
+    /// Callers must invoke this independently for start, every page, status,
+    /// and cancellation. The move-only proof cannot be cached as continuing
+    /// authority for a later release.
+    pub fn authorize_application_export(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ApplicationExportAuthorizationRequestV1,
+    ) -> Result<ApplicationExportDecisionV1, AuthorizationError> {
+        let current = self.resolver.resolve_current(principal).map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::CurrentCapabilityUnavailable,
+            ));
+            AuthorizationError::CurrentCapabilityUnavailable
+        })?;
+        let now = self.clock.now().map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::ClockUnavailable,
+            ));
+            AuthorizationError::ClockUnavailable
+        })?;
+        let row_policy_authority = if request.selection().scope()
+            == CapabilityApplicationExportScopeV1::PrincipalFiltered
+        {
+            match (
+                current.row_policy_principal_binding(),
+                current.grant().internal_row_policy(),
+            ) {
+                (Some(Ok(binding)), Some(grant)) => {
+                    Some(AuthorizedRowPolicyAuthority::new(binding, grant.clone()))
+                }
+                _ => {
+                    self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                        AuthorizationDefect::CurrentCapabilityUnavailable,
+                    ));
+                    return Err(AuthorizationError::CurrentCapabilityUnavailable);
+                }
+            }
+        } else {
+            None
+        };
+
+        let principal_facts = PrincipalFacts::from(principal);
+        let current_facts = CurrentFacts::from(&current);
+        match evaluate_application_export(
+            &principal_facts,
+            &current_facts,
+            self.expected_database_id,
+            &self.expected_environment,
+            now,
+            request.selection(),
+        ) {
+            Ok(obligations) => Ok(ApplicationExportDecisionV1::Allow(Box::new(
+                AuthorizedApplicationExportV1::new(
+                    self.expected_database_id,
+                    self.expected_environment.clone(),
+                    request,
+                    obligations,
+                    current_facts.capability_id,
+                    current_facts.revision,
+                    principal_facts.principal_id,
+                    principal_facts.actor_kind,
+                    current_facts.grant.partition_scope().clone(),
+                    current_facts.grant.max_scan_rows(),
+                    current_facts.grant.field_visibility().to_vec(),
+                    row_policy_authority,
+                ),
+            ))),
+            Err(code) => {
+                self.telemetry
+                    .record(AuthorizationTelemetryEvent::Denied(code));
+                Ok(ApplicationExportDecisionV1::Deny(code))
+            }
+        }
+    }
+
     /// Reloads current state and evaluates one offline-maintenance safe point.
     ///
     /// Restore callers must invoke this independently against the healthy
@@ -395,6 +474,79 @@ fn evaluate_offline_maintenance(
         None,
         None,
         OutputClassification::AdministrativeRedactedData,
+    ))
+}
+
+fn evaluate_application_export(
+    principal: &PrincipalFacts,
+    current: &CurrentFacts,
+    expected_database_id: DatabaseId,
+    expected_environment: &Environment,
+    now: Timestamp,
+    selection: &ApplicationExportSelectionV1,
+) -> Result<Obligations, PolicyCode> {
+    validate_current(
+        principal,
+        current,
+        expected_database_id,
+        expected_environment,
+        now,
+    )?;
+    let export = current
+        .grant
+        .internal_export()
+        .ok_or(PolicyCode::MissingPermission)?;
+    let application = export
+        .applications()
+        .binary_search_by(|candidate| {
+            candidate
+                .lineage()
+                .as_bytes()
+                .cmp(selection.lineage().as_bytes())
+        })
+        .ok()
+        .map(|index| &export.applications()[index])
+        .ok_or(PolicyCode::MissingPermission)?;
+
+    if selection.entities() && !application.entities()
+        || selection.events() && !application.events()
+        || selection.provenance() && !application.provenance()
+        || selection.public_audit() && !application.public_audit()
+    {
+        return Err(PolicyCode::MissingPermission);
+    }
+    match (selection.scope(), application.scope()) {
+        (
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+        ) => {}
+        (
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            CapabilityApplicationExportScopeV1::WholeApplication,
+        ) if current.grant.internal_row_policy().is_some() => {}
+        (
+            CapabilityApplicationExportScopeV1::WholeApplication,
+            CapabilityApplicationExportScopeV1::WholeApplication,
+        ) if current.grant.tenant_scope() == &TenantScope::Global
+            && current.grant.partition_scope() == &PartitionScopeV1::All => {}
+        _ => return Err(PolicyCode::MissingPermission),
+    }
+
+    let principal_filtered =
+        selection.scope() == CapabilityApplicationExportScopeV1::PrincipalFiltered;
+    Ok(Obligations::new(
+        current.grant.tenant_scope().clone(),
+        principal_filtered
+            .then(|| crate::PartitionConstraint::Filter(current.grant.partition_scope().clone())),
+        None,
+        principal_filtered.then(|| current.grant.max_scan_rows()),
+        None,
+        None,
+        if principal_filtered {
+            OutputClassification::PolicyFilteredApplicationData
+        } else {
+            OutputClassification::AdministrativeRedactedData
+        },
     ))
 }
 
@@ -714,14 +866,16 @@ mod tests {
         AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
     };
     use riffdb_types::{
-        AggregateTypeId, ApplicationRoleHash, CapabilityPermissionKindV1, CapabilityPermissionV1,
-        CapabilityPermissionsV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
-        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
-        ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1,
-        EntityTypeId, EventConsumerName, FieldId, IndexId, PartitionKeyBuilder, ProjectionId,
-        ProjectionIdentity, ProjectionPlanHash, QueryModuleHash, QueryOperationName,
-        QueryParameterHash, QueryPlanHash, ReactiveModuleHash, ReactiveOperationName, RequestId,
-        RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1, TenantId,
+        AggregateTypeId, ApplicationExportOperationId, ApplicationRoleHash,
+        CapabilityApplicationExportGrantV1, CapabilityExportGrantV1, CapabilityPermissionKindV1,
+        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityPrincipalFactsV1,
+        CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
+        CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
+        EntityFieldVisibilityV1, EntityTypeId, EventConsumerName, FieldId, IndexId,
+        PartitionKeyBuilder, ProjectionId, ProjectionIdentity, ProjectionPlanHash, QueryModuleHash,
+        QueryOperationName, QueryParameterHash, QueryPlanHash, ReactiveModuleHash,
+        ReactiveOperationName, RequestId, RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1,
+        TenantId,
     };
 
     use super::*;
@@ -861,6 +1015,192 @@ mod tests {
             grant,
         };
         (principal, current, environment)
+    }
+
+    fn export_selection(
+        scope: CapabilityApplicationExportScopeV1,
+        entities: bool,
+        events: bool,
+        provenance: bool,
+        public_audit: bool,
+    ) -> ApplicationExportSelectionV1 {
+        ApplicationExportSelectionV1::new(
+            lineage(),
+            scope,
+            entities,
+            events,
+            provenance,
+            public_audit,
+        )
+        .expect("selection")
+    }
+
+    fn export_extension(
+        scope: CapabilityApplicationExportScopeV1,
+        entities: bool,
+        events: bool,
+        provenance: bool,
+        public_audit: bool,
+    ) -> CapabilityExportGrantV1 {
+        CapabilityExportGrantV1::new(vec![
+            CapabilityApplicationExportGrantV1::new(
+                lineage(),
+                scope,
+                entities,
+                events,
+                provenance,
+                public_audit,
+            )
+            .expect("application export grant"),
+        ])
+        .expect("export extension")
+    }
+
+    #[test]
+    fn export_requires_exact_lineage_scope_and_every_selected_class() {
+        let grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            Vec::new(),
+            100,
+            Vec::new(),
+        )
+        .with_export(export_extension(
+            CapabilityApplicationExportScopeV1::WholeApplication,
+            true,
+            false,
+            false,
+            false,
+        ))
+        .expect("V5 grant");
+        let (principal, current, environment) = facts(grant);
+        assert!(
+            evaluate_application_export(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &export_selection(
+                    CapabilityApplicationExportScopeV1::WholeApplication,
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            evaluate_application_export(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &export_selection(
+                    CapabilityApplicationExportScopeV1::WholeApplication,
+                    false,
+                    true,
+                    false,
+                    false,
+                ),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+        assert_eq!(
+            evaluate_application_export(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &export_selection(
+                    CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+    }
+
+    #[test]
+    fn principal_export_requires_v4_and_preserves_policy_obligations() {
+        let role = ApplicationRoleHash::from_bytes([0x71; 32]);
+        let visibility =
+            EntityFieldVisibilityV1::new(lineage(), EntityTypeId::first(), vec![FieldId::first()])
+                .expect("visibility");
+        let grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::ApplicationRoleIdentity(role)],
+            vec![visibility],
+            37,
+            Vec::new(),
+        )
+        .with_row_policy(
+            CapabilityRowPolicyGrantV1::new(
+                role,
+                CapabilityPrincipalFactsV1::empty(),
+                vec![
+                    CapabilityRowPolicyBindingV1::new(
+                        lineage(),
+                        RowPolicyName::new("TicketAccess").expect("policy"),
+                        EntityTypeId::first(),
+                        vec![CapabilityRowPolicyOperationV1::Read],
+                    )
+                    .expect("binding"),
+                ],
+            )
+            .expect("row policy"),
+        )
+        .expect("V4 grant")
+        .with_export(export_extension(
+            CapabilityApplicationExportScopeV1::PrincipalFiltered,
+            true,
+            true,
+            true,
+            false,
+        ))
+        .expect("V5 grant");
+        let (principal, current, environment) = facts(grant);
+        let obligations = evaluate_application_export(
+            &principal,
+            &current,
+            current.database_id,
+            &environment,
+            timestamp(15),
+            &export_selection(
+                CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                true,
+                true,
+                false,
+                false,
+            ),
+        )
+        .expect("principal export");
+        assert_eq!(obligations.row_limit(), NonZeroU16::new(37));
+        assert_eq!(
+            obligations.output_classification(),
+            OutputClassification::PolicyFilteredApplicationData
+        );
+        let request = ApplicationExportAuthorizationRequestV1::new(
+            ApplicationExportOperationId::from_unix_milliseconds_and_random(8, [8; 10])
+                .expect("operation"),
+            export_selection(
+                CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                true,
+                false,
+                false,
+                false,
+            ),
+            crate::ApplicationExportPolicyOperationV1::Page,
+        );
+        assert_eq!(request.selection().lineage(), &lineage());
     }
 
     #[test]

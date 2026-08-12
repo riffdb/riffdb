@@ -53,6 +53,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/export_v1.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
@@ -91,6 +92,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/export_v1.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
@@ -567,6 +569,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         PayloadBound::Document,
     ),
     durable(
+        "export_v1.proto",
+        "StoredApplicationExportOperationV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
         "capability_secret.proto",
         "CapabilityRecordV6",
         PayloadBound::Document,
@@ -987,8 +994,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let capability_v5_record = durable_registry
         .get(current_v1_record_count + 48)
         .ok_or_else(|| io::Error::other("durable capability-v5 registry is incomplete"))?;
-    let capability_v6_record = durable_registry
+    let export_v1_record = durable_registry
         .get(current_v1_record_count + 49)
+        .ok_or_else(|| io::Error::other("durable export-v1 registry is incomplete"))?;
+    let capability_v6_record = durable_registry
+        .get(current_v1_record_count + 50)
         .ok_or_else(|| io::Error::other("durable capability-v6 registry is incomplete"))?;
     write_artifact(
         &output_root,
@@ -1157,16 +1167,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
-        "fixtures/proto/durable-capability-v6-schema-hash.bin",
-        &capability_v6_record.schema_hash,
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v6-record-bound.bin",
-        &durable_record_bounds(std::slice::from_ref(capability_v6_record)),
-    )?;
-    write_artifact(
-        &output_root,
         "fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin",
         &validated_prefix_checkpoint_record.schema_hash,
     )?;
@@ -1284,6 +1284,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-installation-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(installation_v1_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-export-v1-schema-hash.bin",
+        &export_v1_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-export-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(export_v1_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-capability-v6-schema-hash.bin",
+        &capability_v6_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-capability-v6-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(capability_v6_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1562,9 +1582,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 79 {
+    if DURABLE_RECORDS.len() != 80 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 79 records").into(),
+            io::Error::other("readable durable registry must contain exactly 80 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1588,9 +1608,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 159 || enum_count != 21 {
+    if message_count != 160 || enum_count != 21 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 159 messages and 21 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 160 messages and 21 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1879,8 +1899,11 @@ fn durable_writable_registry_fixture(
     let capability_v5 = records
         .get(current_v1_record_count + 48)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV5"))?;
+    let export_v1 = records.get(current_v1_record_count + 49).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredApplicationExportOperationV1")
+    })?;
     let capability_v6 = records
-        .get(current_v1_record_count + 49)
+        .get(current_v1_record_count + 50)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV6"))?;
     let writable = legacy[..8]
         .iter()
@@ -1913,11 +1936,12 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(capability_v3))
         .chain(std::iter::once(capability_v4))
         .chain(std::iter::once(capability_v5))
+        .chain(std::iter::once(export_v1))
         .chain(std::iter::once(capability_v6))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 32);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 33);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

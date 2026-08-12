@@ -8,6 +8,7 @@ pub use riffdb_storage_api::{
 
 mod administration;
 mod application;
+mod application_export;
 mod application_installation;
 mod backup;
 #[cfg(feature = "benchmark-support")]
