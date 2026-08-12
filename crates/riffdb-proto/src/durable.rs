@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 83;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 84;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 60;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 61;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -234,6 +234,14 @@ const INSTALLATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const INSTALLATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-installation-v1-record-bound.bin"
+));
+const EXPORT_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-export-v1-schema-hash.bin"
+));
+const EXPORT_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-export-v1-record-bound.bin"
 ));
 const ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1187,6 +1195,27 @@ const APPLICATION_INSTALLATION_CAMPAIGN_V1_RECORD_SCHEMA: RecordSchema<'static> 
     )
     .with_compact_identity(57, 1);
 
+const APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredApplicationExportOperationV1",
+        SchemaHash::from_bytes(*EXPORT_V1_SCHEMA_HASH_BYTES),
+        u32::from_be_bytes([
+            EXPORT_V1_RECORD_BOUND_BYTES[0],
+            EXPORT_V1_RECORD_BOUND_BYTES[1],
+            EXPORT_V1_RECORD_BOUND_BYTES[2],
+            EXPORT_V1_RECORD_BOUND_BYTES[3],
+        ]) as usize,
+        u32::from_be_bytes([
+            EXPORT_V1_RECORD_BOUND_BYTES[4],
+            EXPORT_V1_RECORD_BOUND_BYTES[5],
+            EXPORT_V1_RECORD_BOUND_BYTES[6],
+            EXPORT_V1_RECORD_BOUND_BYTES[7],
+        ]) as usize,
+        preflight_payload::<78>,
+        validate_payload::<78, v1::StoredApplicationExportOperationV1>,
+    )
+    .with_compact_identity(60, 1);
+
 const fn entity_transitions_v4_schema_hash(index: usize) -> SchemaHash {
     let mut bytes = [0_u8; 32];
     let mut offset = 0;
@@ -1385,6 +1414,10 @@ readable_message!(v1::CapabilityRecordV4, CAPABILITY_V4_RECORD_SCHEMA);
 readable_message!(v1::StoredDurableEventV2, DURABLE_EVENT_V2_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV5, CAPABILITY_V5_RECORD_SCHEMA);
 readable_message!(
+    v1::StoredApplicationExportOperationV1,
+    APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA
+);
+readable_message!(
     v1::StoredValidatedPrefixCheckpointV1,
     VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA
 );
@@ -1519,6 +1552,7 @@ writable_message!(v1::StoredPendingAdmissionV3);
 writable_message!(v1::StoredExecutionFailedV3);
 writable_message!(v1::StoredOutcomeV3);
 writable_message!(v1::StoredApplicationInstallationCampaignV1);
+writable_message!(v1::StoredApplicationExportOperationV1);
 writable_message!(v1::StoredEntityChainHeadV1);
 writable_message!(v1::StoredChangelogV2RotationReceiptV1);
 writable_message!(v1::StoredCommandCapsuleV4);
@@ -1699,6 +1733,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CAPABILITY_V4_RECORD_SCHEMA,
     DURABLE_EVENT_V2_RECORD_SCHEMA,
     CAPABILITY_V5_RECORD_SCHEMA,
+    APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1767,6 +1802,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CAPABILITY_V3_RECORD_SCHEMA,
     CAPABILITY_V4_RECORD_SCHEMA,
     CAPABILITY_V5_RECORD_SCHEMA,
+    APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

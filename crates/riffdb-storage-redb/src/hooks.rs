@@ -29,6 +29,8 @@ pub enum RedbTestOperation {
     ReactiveModuleAdministration,
     /// Durable exact application-installation campaign transition.
     ApplicationInstallationCampaign,
+    /// Durable exact application-export operation transition.
+    ApplicationExportOperation,
     /// Durable event-consumer state transition.
     EventConsumerTransition,
     CapabilityAdministration,

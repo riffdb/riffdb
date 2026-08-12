@@ -855,8 +855,13 @@ shape!(ROOT_APPLICATION_INSTALLATION_CAMPAIGN [
     fixed_bytes(3, 32),
     nonempty_bytes(4, 8 * 1024 * 1024),
 ]);
+shape!(ROOT_APPLICATION_EXPORT_OPERATION [
+    fixed_bytes(1, 16),
+    string(2, MAX_TEXT_ID_BYTES),
+    nonempty_bytes(3, 256 * 1024),
+]);
 
-const ROOTS: [&Shape; 78] = [
+const ROOTS: [&Shape; 79] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -946,6 +951,7 @@ const ROOTS: [&Shape; 78] = [
     &CAPABILITY_RECORD_V4,
     &DURABLE_EVENT_V2,
     &CAPABILITY_RECORD_V5,
+    &ROOT_APPLICATION_EXPORT_OPERATION,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
