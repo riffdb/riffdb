@@ -10,7 +10,7 @@ is explicit and cursors are optional typed parameters.
 
 For v1 application pages, start with a fixed bound such as `take 25` or
 `take 50`. Use a `Limit` parameter only when the role can afford its full
-500-row static charge; its default does not reduce that proof obligation.
+499-row page maximum; its default does not reduce that proof obligation.
 
 `one` and `maybe` are primary-key point reads: their predicates must constrain
 the target entity's complete primary key. A secondary index does not satisfy a
@@ -82,11 +82,12 @@ The parser accepts at most 1 MiB of UTF-8 source, 131,072 tokens/AST nodes,
 Diagnostics are value-free and use stable `RDB-QS001` through `RDB-QS009`
 codes.
 
-A `Limit` parameter is statically charged at its full 500-row range, not at its
-default. The index-scan maxima of all bindings in one query are cumulative.
-Pages with multiple collections should use fixed `take` values whose complete
-scan total is at most 500. This is checked again while deriving every symbolic
-application role; `RDB-AR007` names the role and query before a lock is written.
+A `Limit` parameter is statically charged at its full 499-row page range,
+not at its default. The index-scan maxima of all bindings in one query are
+cumulative. Pages with multiple collections should use fixed `take` values
+whose complete scan total fits the authorized whole-query budget. This is
+checked again while deriving every symbolic application role; `RDB-AR007`
+names the role and query before a lock is written.
 
 ## Nearest-neighbor bindings (alpha)
 
@@ -97,10 +98,11 @@ replace its ordering and bound with a `nearest` clause:
 query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
+    $k: Limit,
 ) {
     many results from Document
         where org_id == $org_id
-        nearest(embedding, $query_vec, 10)
+        nearest(embedding, $query_vec, $k)
     return Found { results: results { title } }
     outcomes Found
 }
@@ -109,8 +111,9 @@ query SimilarDocuments(
 - `nearest` is valid only on `many` bindings. It replaces `order by` (rows
   come back in ascending distance order) and `take` (K is the binding's
   checked page bound).
-- K is a positive integer literal of at most 499 — the same page-take
-  ceiling every bounded binding carries.
+- K is either a positive integer literal or a typed `Limit` parameter. Both
+  share the 499-row page-take ceiling. A submitted parameter value of 0 or
+  500 is rejected as invalid input before nearest storage work begins.
 - The binding still requires the exact partition (organization) equality
   predicate that routes all query access; a nearest query without it does
   not compile (`RDB-QP002`).

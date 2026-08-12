@@ -1281,19 +1281,22 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 }
                 (page.rows, Some(predicates))
             }
-            riffdb_query_ir::QueryAccessKind::Nearest { k, .. } => {
+            riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
                 // WP-593: exact KNN execution path. The adapter applies the
                 // bound predicates BEFORE ranking (filter-before-rank is
                 // enforced structurally in the columnar engine), then runs
                 // exact KNN. Scan work is charged against the same fuel the
                 // plan cost vector funded (the static charge is the
-                // partition-scan ceiling, not K).
+                // partition-scan ceiling, not K). Parameterized K is resolved
+                // and bounded before this backend call.
+                let runtime_k =
+                    u32::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
                 let predicates = bind_predicates(step, parameters, &bindings)?;
                 let page = view
-                    .nearest(step, &predicates, *k, policy)
+                    .nearest(step, &predicates, runtime_k, policy)
                     .map_err(|error| map_view_error(&*view, &error))?;
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
-                    || page.rows.len() as u64 > u64::from(*k)
+                    || page.rows.len() as u64 > limit
                     || page.rows.len() as u64 > page.scanned_rows
                 {
                     return Err(QueryExecutionError::BoundExceeded);
