@@ -529,6 +529,10 @@ impl<'a> Planner<'a> {
                     ));
                 }
                 let vector_parameter = nearest.vector.value.as_str().to_owned();
+                // Nearest.k is the compiler-proven maximum retained in the
+                // stable plan encoding. Literal K uses its exact value;
+                // parameterized K uses maximum_rows (the 499 page ceiling),
+                // while row_limit retains the runtime parameter binding.
                 let k = match &nearest.k.value {
                     riffdb_riffql_syntax::Expression::Literal(
                         riffdb_riffql_syntax::Literal::Unsigned(value),
@@ -541,6 +545,9 @@ impl<'a> Planner<'a> {
                             None,
                         )
                     })?,
+                    riffdb_riffql_syntax::Expression::Parameter(_) => {
+                        u32::try_from(maximum_rows).map_err(|_| internal())?
+                    }
                     _ => {
                         return Err(one(
                             PlannerDiagnosticCode::Cardinality,
@@ -551,7 +558,7 @@ impl<'a> Planner<'a> {
                         ));
                     }
                 };
-                if k == 0 {
+                if k == 0 || u64::from(k) > riffdb_query_ir::max_query_page_take() {
                     return Err(one(
                         PlannerDiagnosticCode::Cardinality,
                         nearest.k.span,
@@ -1681,15 +1688,14 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
         return Ok(1);
     }
     // A nearest binding declares K instead of `take` (the parser rejects
-    // combining them); K is the binding's explicit bound (VEC-010). The
-    // ceiling here is the resolver's page-take ceiling (499), not
-    // MAX_QUERY_ROWS: the resolver already refuses K = 500, so allowing it
-    // here would leave two layers holding different beliefs about the same
-    // bound (fail-closed but incoherent). For every compilable K (1..=499)
-    // the two filters agree, so no plan cost changes.
+    // combining them). A literal K is its exact maximum; a typed Limit
+    // parameter is bounded by the shared page-take ceiling. The durable
+    // Nearest.k field retains that compiler-proven maximum while row_limit
+    // retains the request-specific source.
     if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
         return match &nearest.k.value {
             Expression::Literal(Literal::Unsigned(value)) => value.parse::<u64>().ok(),
+            Expression::Parameter(_) => Some(riffdb_query_ir::max_query_page_take()),
             _ => None,
         }
         .filter(|value| (1..=riffdb_query_ir::max_query_page_take()).contains(value))
@@ -1714,7 +1720,7 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
     };
     match &take.limit.value {
         Expression::Literal(Literal::Unsigned(value)) => value.parse::<u64>().ok(),
-        Expression::Parameter(_) => Some(MAX_QUERY_ROWS),
+        Expression::Parameter(_) => Some(riffdb_query_ir::max_query_page_take()),
         _ => None,
     }
     .filter(|value| (1..=MAX_QUERY_ROWS).contains(value))
@@ -1729,27 +1735,11 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
     })
 }
 
-fn row_limit(
-    binding: &riffdb_riffql_syntax::Binding,
+fn lowered_row_limit(
+    expression: &Expression,
     document: &Document,
 ) -> Result<QueryRowLimit, PlannerDiagnostics> {
-    if binding.cardinality.value != Cardinality::Many {
-        return Ok(QueryRowLimit::Literal(1));
-    }
-    if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
-        // K is the nearest binding's literal row limit (validated positive
-        // by the planner's access construction).
-        return match &nearest.k.value {
-            Expression::Literal(Literal::Unsigned(value)) => value
-                .parse::<u64>()
-                .ok()
-                .map(QueryRowLimit::Literal)
-                .ok_or_else(internal),
-            _ => Err(internal()),
-        };
-    }
-    let take = binding.take.as_ref().ok_or_else(internal)?;
-    match &take.limit.value {
+    match expression {
         Expression::Literal(Literal::Unsigned(value)) => value
             .parse::<u64>()
             .ok()
@@ -1775,6 +1765,20 @@ fn row_limit(
         }
         _ => Err(internal()),
     }
+}
+
+fn row_limit(
+    binding: &riffdb_riffql_syntax::Binding,
+    document: &Document,
+) -> Result<QueryRowLimit, PlannerDiagnostics> {
+    if binding.cardinality.value != Cardinality::Many {
+        return Ok(QueryRowLimit::Literal(1));
+    }
+    if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
+        return lowered_row_limit(&nearest.k.value, document);
+    }
+    let take = binding.take.as_ref().ok_or_else(internal)?;
+    lowered_row_limit(&take.limit.value, document)
 }
 
 fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {

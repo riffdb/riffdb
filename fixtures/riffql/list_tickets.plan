@@ -1,4 +1,4 @@
 partition $organization_id
-tickets: Ticket via index by_project_status reverse max 500
-authorize Ticket fields [assignee_id,organization_id,project_id,reporter_id,status,ticket_id,title,updated_at] indexes [by_project_status] max 500
-cost steps=1 scans=500 points=500 dependent_keys=0 intermediates=500 projected_values=3500 result_bytes=742239
+tickets: Ticket via index by_project_status reverse max 499
+authorize Ticket fields [assignee_id,organization_id,project_id,reporter_id,status,ticket_id,title,updated_at] indexes [by_project_status] max 499
+cost steps=1 scans=499 points=499 dependent_keys=0 intermediates=499 projected_values=3493 result_bytes=740757
