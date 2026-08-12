@@ -716,6 +716,168 @@ pub mod get_application_installation_response {
         Found(super::StartApplicationInstallationResponse),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationExportSelection {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(enumeration = "CapabilityApplicationExportScope", tag = "2")]
+    pub scope: i32,
+    #[prost(bool, tag = "3")]
+    pub entities: bool,
+    #[prost(bool, tag = "4")]
+    pub events: bool,
+    #[prost(bool, tag = "5")]
+    pub provenance: bool,
+    #[prost(bool, tag = "6")]
+    pub public_audit: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationExportSnapshotBinding {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "3")]
+    pub application_frontier: u64,
+    #[prost(uint64, tag = "4")]
+    pub administration_frontier: u64,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "7")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "8")]
+    pub reactive_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationExportOperation {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<ApplicationExportSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub snapshot: ::core::option::Option<ApplicationExportSnapshotBinding>,
+    #[prost(enumeration = "ApplicationExportPhase", tag = "4")]
+    pub phase: i32,
+    #[prost(message, optional, tag = "5")]
+    pub lease_expires_at: ::core::option::Option<Timestamp>,
+    #[prost(uint64, tag = "6")]
+    pub pages_released: u64,
+    #[prost(uint64, tag = "7")]
+    pub rows_released: u64,
+    #[prost(uint64, tag = "8")]
+    pub bytes_released: u64,
+    #[prost(enumeration = "ApplicationExportFailure", tag = "9")]
+    pub failure: i32,
+    #[prost(bytes = "vec", tag = "10")]
+    pub canonical_manifest_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "11")]
+    pub canonical_receipt_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "12")]
+    pub manifest_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "13")]
+    pub receipt_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartApplicationExportRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub selection: ::core::option::Option<ApplicationExportSelection>,
+    #[prost(uint32, tag = "4")]
+    pub lease_seconds: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartApplicationExportResponse {
+    #[prost(enumeration = "ApplicationExportStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<ApplicationExportOperation>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationExportPageRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "4")]
+    pub max_rows: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationExportPage {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub page_number: u64,
+    #[prost(enumeration = "ApplicationExportRecordClass", tag = "3")]
+    pub record_class: i32,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub canonical_json_lines: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub next_cursor: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "6")]
+    pub class_complete: bool,
+    #[prost(bool, tag = "7")]
+    pub operation_complete: bool,
+    #[prost(bytes = "vec", tag = "8")]
+    pub page_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationExportPageResponse {
+    #[prost(message, optional, tag = "1")]
+    pub page: ::core::option::Option<ApplicationExportPage>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationExportRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationExportResponse {
+    #[prost(oneof = "get_application_export_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<get_application_export_response::Result>,
+}
+/// Nested message and enum types in `GetApplicationExportResponse`.
+pub mod get_application_export_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::ApplicationExportOperation),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelApplicationExportRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelApplicationExportResponse {
+    #[prost(oneof = "cancel_application_export_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<cancel_application_export_response::Result>,
+}
+/// Nested message and enum types in `CancelApplicationExportResponse`.
+pub mod cancel_application_export_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::ApplicationExportOperation),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PreBootstrapLifecycle {
@@ -1957,6 +2119,168 @@ impl ApplicationInstallationDriver {
             "APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT" => Some(Self::Typescript),
             "APPLICATION_INSTALLATION_DRIVER_GO" => Some(Self::Go),
             "APPLICATION_INSTALLATION_DRIVER_PYTHON" => Some(Self::Python),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationExportRecordClass {
+    Unspecified = 0,
+    Entity = 1,
+    Event = 2,
+    Provenance = 3,
+    PublicAudit = 4,
+}
+impl ApplicationExportRecordClass {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED",
+            Self::Entity => "APPLICATION_EXPORT_RECORD_CLASS_ENTITY",
+            Self::Event => "APPLICATION_EXPORT_RECORD_CLASS_EVENT",
+            Self::Provenance => "APPLICATION_EXPORT_RECORD_CLASS_PROVENANCE",
+            Self::PublicAudit => "APPLICATION_EXPORT_RECORD_CLASS_PUBLIC_AUDIT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_EXPORT_RECORD_CLASS_ENTITY" => Some(Self::Entity),
+            "APPLICATION_EXPORT_RECORD_CLASS_EVENT" => Some(Self::Event),
+            "APPLICATION_EXPORT_RECORD_CLASS_PROVENANCE" => Some(Self::Provenance),
+            "APPLICATION_EXPORT_RECORD_CLASS_PUBLIC_AUDIT" => Some(Self::PublicAudit),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationExportPhase {
+    Unspecified = 0,
+    Accepted = 1,
+    Exporting = 2,
+    Completed = 3,
+    Cancelled = 4,
+    Expired = 5,
+    FailedClosed = 6,
+}
+impl ApplicationExportPhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_EXPORT_PHASE_UNSPECIFIED",
+            Self::Accepted => "APPLICATION_EXPORT_PHASE_ACCEPTED",
+            Self::Exporting => "APPLICATION_EXPORT_PHASE_EXPORTING",
+            Self::Completed => "APPLICATION_EXPORT_PHASE_COMPLETED",
+            Self::Cancelled => "APPLICATION_EXPORT_PHASE_CANCELLED",
+            Self::Expired => "APPLICATION_EXPORT_PHASE_EXPIRED",
+            Self::FailedClosed => "APPLICATION_EXPORT_PHASE_FAILED_CLOSED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_EXPORT_PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_EXPORT_PHASE_ACCEPTED" => Some(Self::Accepted),
+            "APPLICATION_EXPORT_PHASE_EXPORTING" => Some(Self::Exporting),
+            "APPLICATION_EXPORT_PHASE_COMPLETED" => Some(Self::Completed),
+            "APPLICATION_EXPORT_PHASE_CANCELLED" => Some(Self::Cancelled),
+            "APPLICATION_EXPORT_PHASE_EXPIRED" => Some(Self::Expired),
+            "APPLICATION_EXPORT_PHASE_FAILED_CLOSED" => Some(Self::FailedClosed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationExportFailure {
+    Unspecified = 0,
+    AuthorityChanged = 1,
+    SnapshotUnavailable = 2,
+    SourceInvalid = 3,
+    LeaseExpired = 4,
+    Cancelled = 5,
+    LimitExceeded = 6,
+    Internal = 7,
+}
+impl ApplicationExportFailure {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_EXPORT_FAILURE_UNSPECIFIED",
+            Self::AuthorityChanged => "APPLICATION_EXPORT_FAILURE_AUTHORITY_CHANGED",
+            Self::SnapshotUnavailable => {
+                "APPLICATION_EXPORT_FAILURE_SNAPSHOT_UNAVAILABLE"
+            }
+            Self::SourceInvalid => "APPLICATION_EXPORT_FAILURE_SOURCE_INVALID",
+            Self::LeaseExpired => "APPLICATION_EXPORT_FAILURE_LEASE_EXPIRED",
+            Self::Cancelled => "APPLICATION_EXPORT_FAILURE_CANCELLED",
+            Self::LimitExceeded => "APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED",
+            Self::Internal => "APPLICATION_EXPORT_FAILURE_INTERNAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_EXPORT_FAILURE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_EXPORT_FAILURE_AUTHORITY_CHANGED" => {
+                Some(Self::AuthorityChanged)
+            }
+            "APPLICATION_EXPORT_FAILURE_SNAPSHOT_UNAVAILABLE" => {
+                Some(Self::SnapshotUnavailable)
+            }
+            "APPLICATION_EXPORT_FAILURE_SOURCE_INVALID" => Some(Self::SourceInvalid),
+            "APPLICATION_EXPORT_FAILURE_LEASE_EXPIRED" => Some(Self::LeaseExpired),
+            "APPLICATION_EXPORT_FAILURE_CANCELLED" => Some(Self::Cancelled),
+            "APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED" => Some(Self::LimitExceeded),
+            "APPLICATION_EXPORT_FAILURE_INTERNAL" => Some(Self::Internal),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationExportStartDisposition {
+    Unspecified = 0,
+    Accepted = 1,
+    AlreadyAccepted = 2,
+    Terminal = 3,
+}
+impl ApplicationExportStartDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_EXPORT_START_DISPOSITION_UNSPECIFIED",
+            Self::Accepted => "APPLICATION_EXPORT_START_DISPOSITION_ACCEPTED",
+            Self::AlreadyAccepted => {
+                "APPLICATION_EXPORT_START_DISPOSITION_ALREADY_ACCEPTED"
+            }
+            Self::Terminal => "APPLICATION_EXPORT_START_DISPOSITION_TERMINAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_EXPORT_START_DISPOSITION_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_EXPORT_START_DISPOSITION_ACCEPTED" => Some(Self::Accepted),
+            "APPLICATION_EXPORT_START_DISPOSITION_ALREADY_ACCEPTED" => {
+                Some(Self::AlreadyAccepted)
+            }
+            "APPLICATION_EXPORT_START_DISPOSITION_TERMINAL" => Some(Self::Terminal),
             _ => None,
         }
     }

@@ -5,6 +5,7 @@
 pub use riffdb_types::IndexEpochPosition;
 
 pub mod admission;
+pub mod application_export;
 pub mod application_installation;
 pub mod audit;
 pub mod authoritative;
@@ -44,6 +45,7 @@ pub mod startup;
 pub mod validated_prefix_checkpoint;
 
 pub use admission::*;
+pub use application_export::*;
 pub use application_installation::*;
 pub use audit::*;
 pub use authoritative::*;

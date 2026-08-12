@@ -6,7 +6,8 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AdapterConformanceManifestHash, ApplicationInstallationPlanHash,
+    AdapterConformanceManifestHash, ApplicationExportManifestHash, ApplicationExportPageHash,
+    ApplicationExportReceiptHash, ApplicationInstallationPlanHash,
     ApplicationInstallationReceiptHash, ApplicationLockHash, ApplicationManifestHash,
     ApplicationRoleDefinitionHash, ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash,
     CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash,
@@ -112,11 +113,17 @@ pub enum HashDomain {
     ApplicationInstallationReceipt,
     /// One canonical adapter conformance manifest.
     AdapterConformanceManifest,
+    /// One canonical page of symbolic application-export records.
+    ApplicationExportPage,
+    /// One canonical symbolic application-export manifest.
+    ApplicationExportManifest,
+    /// One terminal symbolic application-export receipt.
+    ApplicationExportReceipt,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 45] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -159,6 +166,9 @@ impl HashDomain {
         Self::ApplicationInstallationPlan,
         Self::ApplicationInstallationReceipt,
         Self::AdapterConformanceManifest,
+        Self::ApplicationExportPage,
+        Self::ApplicationExportManifest,
+        Self::ApplicationExportReceipt,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -206,6 +216,9 @@ impl HashDomain {
             Self::ApplicationInstallationPlan => "riffdb.application-installation-plan/v1",
             Self::ApplicationInstallationReceipt => "riffdb.application-installation-receipt/v1",
             Self::AdapterConformanceManifest => "riffdb.adapter-conformance-manifest/v1",
+            Self::ApplicationExportPage => "riffdb.application-export-page/v1",
+            Self::ApplicationExportManifest => "riffdb.application-export-manifest/v1",
+            Self::ApplicationExportReceipt => "riffdb.application-export-receipt/v1",
         }
     }
 }
@@ -453,6 +466,24 @@ typed_hash_function!(
     hash_adapter_conformance_manifest,
     AdapterConformanceManifest,
     AdapterConformanceManifestHash
+);
+typed_hash_function!(
+    /// Hashes one canonical symbolic application-export page.
+    hash_application_export_page,
+    ApplicationExportPage,
+    ApplicationExportPageHash
+);
+typed_hash_function!(
+    /// Hashes one canonical symbolic application-export manifest.
+    hash_application_export_manifest,
+    ApplicationExportManifest,
+    ApplicationExportManifestHash
+);
+typed_hash_function!(
+    /// Hashes one terminal symbolic application-export receipt.
+    hash_application_export_receipt,
+    ApplicationExportReceipt,
+    ApplicationExportReceiptHash
 );
 typed_hash_function!(
     /// Hashes one canonical application manifest in its immutable v1 domain.
