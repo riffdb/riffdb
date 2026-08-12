@@ -2,8 +2,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$#" -eq 2 && "$1" == "--all-languages" && "$2" == "--row-policy" ]]; then
+    exec "$repo_root/scripts/adapter-row-policy-acceptance" \
+        --all-languages --domains payload,mlflow
+fi
 if [[ "$#" -ne 2 || "$1" != "--all-languages" || "$2" != "--remote" ]]; then
-    echo "usage: ./scripts/driver-conformance --all-languages --remote" >&2
+    echo "usage: ./scripts/driver-conformance --all-languages <--remote|--row-policy>" >&2
     exit 2
 fi
 

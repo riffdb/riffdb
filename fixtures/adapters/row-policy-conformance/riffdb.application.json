@@ -1,0 +1,54 @@
+{
+  "schema": "riffdb.application-source/v6",
+  "application": "adapter-row-policy-conformance",
+  "contract": {
+    "source": "riffdb/contract.riff",
+    "lineage": "AdapterRowPolicyConformance",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "adapter_row_policy_conformance",
+      "version": 1,
+      "queries": [
+        { "name": "DocumentSummary", "source": "riffdb/queries/document_summary.riffq" },
+        { "name": "GetDocument", "source": "riffdb/queries/get_document.riffq" },
+        { "name": "ListDraftDocuments", "source": "riffdb/queries/list_draft_documents.riffq" },
+        { "name": "ListDocuments", "source": "riffdb/queries/list_documents.riffq" },
+        { "name": "SearchDocuments", "source": "riffdb/queries/search_documents.riffq" },
+        { "name": "ListExperiments", "source": "riffdb/queries/list_experiments.riffq" },
+        { "name": "RunPage", "source": "riffdb/queries/run_page.riffq" },
+        { "name": "MetricDashboard", "source": "riffdb/queries/metric_dashboard.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [
+    {
+      "name": "DocumentActivity",
+      "version": 1,
+      "source": "riffdb/reactive/document_activity.riffr"
+    }
+  ],
+  "roles": [
+    {
+      "name": "AdapterRowPolicyApplication",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["DocumentSummary", "GetDocument", "ListDraftDocuments", "ListDocuments", "SearchDocuments", "ListExperiments", "RunPage", "MetricDashboard"],
+      "commands": ["AttemptDocumentTransfer", "ChangeDocumentAccess", "CreateDocument", "CreateExperiment", "CreateRun", "FinishRun", "LogMetric", "CreateArtifact"],
+      "event_streams": [],
+      "watch_queries": ["DocumentListWatch"],
+      "agent_subscriptions": [],
+      "row_policies": ["DocumentAccess", "ExperimentAccess", "RunAccess", "MetricAccess", "ArtifactAccess"]
+    }
+  ],
+  "seed_inputs": []
+}

@@ -25,8 +25,8 @@ use riffdb_client_rust::{
     ProjectedAggregateValue, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
     ProjectedQueryOutcome, ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup,
     RiffDbClient, StartApplicationExport, StartApplicationInstallation, app_v1,
-    generate_application_export_operation_id, generate_capability_id,
-    generate_offline_maintenance_operation_id, generate_request_id, v1,
+    canonical_value_from_proto, canonical_value_to_proto, generate_application_export_operation_id,
+    generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -37,9 +37,10 @@ use riffdb_query_module::{
     compile_application_role_v2, compile_reactive_source,
 };
 use riffdb_types::{
-    ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, ContractLineage, GeneratedArtifactHash,
-    PartitionScopeV1, TenantId, TenantScope, hash_generated_artifact,
+    ActorId, ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPrincipalFactV1,
+    CapabilityPrincipalFactsV1, CapabilityRowPolicyOperationV1, ContractLineage,
+    GeneratedArtifactHash, PartitionScopeV1, TenantId, TenantScope, hash_generated_artifact,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -244,6 +245,7 @@ struct ApplicationRoleIdentityError<'a> {
 
 struct PreparedRoleBinding {
     role: CompiledApplicationRole,
+    bound_grant: Option<CapabilityGrantV1>,
     principal: String,
     actor_kind: RoleActorKind,
     lifetime_seconds: String,
@@ -1941,6 +1943,7 @@ async fn application_command(
             let disposition = match create_compiled_role_binding(
                 PreparedRoleBinding {
                     role: compiled_role.clone(),
+                    bound_grant: None,
                     principal: format!("app:{}", locked.manifest().application_name()),
                     actor_kind: RoleActorKind::Service,
                     lifetime_seconds: lifetime_seconds.to_string(),
@@ -6807,6 +6810,7 @@ async fn rotate_application_credential(
         let disposition = create_compiled_role_binding(
             PreparedRoleBinding {
                 role: role.clone(),
+                bound_grant: None,
                 principal: format!("app:{}", role.application_name()),
                 actor_kind: RoleActorKind::Service,
                 lifetime_seconds: lifetime_seconds.to_string(),
@@ -7031,6 +7035,7 @@ async fn create_compiled_role_binding(
 ) -> Result<NormalCreateDisposition, Terminal> {
     let PreparedRoleBinding {
         role,
+        bound_grant,
         principal,
         actor_kind,
         lifetime_seconds,
@@ -7064,6 +7069,14 @@ async fn create_compiled_role_binding(
     {
         return Err(invalid_input(identity));
     }
+    let grant = match application_role_grant_to_proto(
+        bound_grant
+            .as_ref()
+            .unwrap_or_else(|| role.internal_grant()),
+    ) {
+        Ok(grant) => grant,
+        Err(()) => return Err(role_invalid(identity)),
+    };
     let request = v1::CreateCapabilityRequest {
         request_id: Vec::new(),
         mode: v1::CapabilityCreateMode::Normal as i32,
@@ -7076,7 +7089,7 @@ async fn create_compiled_role_binding(
         },
         requested_lifetime_seconds: lifetime_seconds,
         audiences,
-        grant: Some(application_role_grant_to_proto(role.internal_grant())),
+        grant: Some(grant),
     };
     let template = match NormalCapabilityCreateTemplate::new(request) {
         Ok(template) => template,
@@ -7182,6 +7195,7 @@ async fn role_command(
             actor_kind,
             lifetime_seconds,
             audiences,
+            principal_facts,
             capability_id,
             credential_output,
         } => {
@@ -7189,9 +7203,15 @@ async fn role_command(
                 Ok(role) => role,
                 Err(error) => return error.terminal(CommandIdentity::RoleBind),
             };
+            let bound_grant =
+                match bind_role_principal_facts(&role, &principal, principal_facts.as_deref()) {
+                    Ok(grant) => grant,
+                    Err(()) => return role_principal_facts_invalid(&role),
+                };
             bind_compiled_role(
                 PreparedRoleBinding {
                     role,
+                    bound_grant: Some(bound_grant),
                     principal,
                     actor_kind,
                     lifetime_seconds,
@@ -7345,6 +7365,7 @@ fn compile_role_from_workspace(
                 | "riffdb.application-source/v3"
                 | "riffdb.application-source/v4"
                 | "riffdb.application-source/v5"
+                | "riffdb.application-source/v6"
         )
     );
     let source_locked = requested_is_source
@@ -7527,6 +7548,10 @@ fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
         "query_module_hashes": role.module_hashes().iter()
             .map(|hash| hex(hash.as_bytes()))
             .collect::<Vec<_>>(),
+        "principal_fact_schemas": role.principal_fact_schemas().iter().map(|fact| serde_json::json!({
+            "name": fact.name(),
+            "type": fact.value_type(),
+        })).collect::<Vec<_>>(),
         "operations": role.operations().iter().map(|operation| serde_json::json!({
             "kind": match operation.kind() {
                 riffdb_query_module::ApplicationRoleOperationKind::Query => "query",
@@ -7540,7 +7565,82 @@ fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
     })
 }
 
-fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityGrant {
+fn bind_role_principal_facts(
+    role: &CompiledApplicationRole,
+    principal: &str,
+    path: Option<&OsStr>,
+) -> Result<CapabilityGrantV1, ()> {
+    let facts = match path {
+        None if role.principal_fact_schemas().is_empty() => CapabilityPrincipalFactsV1::empty(),
+        None => return Err(()),
+        Some(path) => {
+            validate_path(path).map_err(|_| ())?;
+            let bytes = read_file(Path::new(path), MAX_INPUT_BYTES).map_err(|_| ())?;
+            let values =
+                serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes)
+                    .map_err(|_| ())?;
+            let facts = values
+                .into_iter()
+                .map(|(name, value)| {
+                    let value = natural_principal_fact_value(role, &name, value)?;
+                    CapabilityPrincipalFactV1::new(name, value).map_err(|_| ())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            CapabilityPrincipalFactsV1::new(facts).map_err(|_| ())?
+        }
+    };
+    let principal = ActorId::new(principal.to_owned()).map_err(|_| ())?;
+    role.bind_principal_facts_for(&principal, facts)
+        .map_err(|_| ())
+}
+
+fn natural_principal_fact_value(
+    role: &CompiledApplicationRole,
+    fact_name: &str,
+    value: serde_json::Value,
+) -> Result<CanonicalValue, ()> {
+    match value {
+        serde_json::Value::Array(values) => CanonicalValue::list(
+            values
+                .into_iter()
+                .map(|value| natural_principal_fact_value(role, fact_name, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map_err(|_| ()),
+        serde_json::Value::Object(mut tagged) if tagged.len() == 1 => {
+            if let Some(serde_json::Value::String(variant)) = tagged.remove("$enum") {
+                role.internal_resolve_principal_fact_enum(fact_name, &variant)
+                    .ok_or(())
+            } else {
+                let wire = natural_query_value(serde_json::Value::Object(tagged))?;
+                canonical_value_from_proto(wire).map_err(|_| ())
+            }
+        }
+        value => {
+            let wire = natural_query_value(value)?;
+            canonical_value_from_proto(wire).map_err(|_| ())
+        }
+    }
+}
+
+fn role_principal_facts_invalid(role: &CompiledApplicationRole) -> Terminal {
+    const CODE: &str = "application_role_principal_facts_invalid";
+    const MESSAGE: &str = "the protected application role requires one exact operator-owned principal-facts JSON object matching the compiled schemas";
+    let detail = serde_json::json!({
+        "code": CODE,
+        "message": MESSAGE,
+        "role": role.role_name(),
+        "required_facts": role.principal_fact_schemas().iter().map(|fact| serde_json::json!({
+            "name": fact.name(),
+            "type": fact.value_type(),
+        })).collect::<Vec<_>>(),
+        "required_argument": "--principal-facts <JSON_OBJECT_PATH>",
+        "recovery_action": "supply_exact_principal_facts",
+    });
+    local_error_with(CommandIdentity::RoleBind, &detail, CODE, MESSAGE, 2)
+}
+
+fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> Result<v1::CapabilityGrant, ()> {
     let tenant_scope = match grant.tenant_scope() {
         TenantScope::Global => v1::TenantScope {
             scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
@@ -7557,7 +7657,60 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
         },
         PartitionScopeV1::Explicit(_) => unreachable!("application roles never expose partitions"),
     };
-    v1::CapabilityGrant {
+    let row_policy = grant
+        .internal_row_policy()
+        .map(|row_policy| {
+            let principal_facts = row_policy
+                .internal_principal_facts()
+                .names()
+                .map(|name| {
+                    let fact = row_policy
+                        .internal_principal_facts()
+                        .internal_fact(name)
+                        .ok_or(())?;
+                    Ok(v1::CapabilityPrincipalFact {
+                        name: name.to_owned(),
+                        value: Some(
+                            canonical_value_to_proto(fact.internal_value()).map_err(|_| ())?,
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>, ()>>()?;
+            let policies = row_policy
+                .bindings()
+                .iter()
+                .map(|binding| v1::CapabilityRowPolicyBinding {
+                    contract_lineage: binding.lineage().as_str().to_owned(),
+                    policy_name: binding.policy_name().as_str().to_owned(),
+                    entity_type_id: binding.entity_type().get(),
+                    operations: binding
+                        .operations()
+                        .iter()
+                        .map(|operation| match operation {
+                            CapabilityRowPolicyOperationV1::Read => {
+                                v1::CapabilityRowPolicyOperation::Read as i32
+                            }
+                            CapabilityRowPolicyOperationV1::Create => {
+                                v1::CapabilityRowPolicyOperation::Create as i32
+                            }
+                            CapabilityRowPolicyOperationV1::Update => {
+                                v1::CapabilityRowPolicyOperation::Update as i32
+                            }
+                            CapabilityRowPolicyOperationV1::Delete => {
+                                v1::CapabilityRowPolicyOperation::Delete as i32
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+            Ok(v1::CapabilityRowPolicyGrant {
+                application_role_hash: row_policy.application_role_hash().as_bytes().to_vec(),
+                principal_facts,
+                policies,
+            })
+        })
+        .transpose()?;
+    Ok(v1::CapabilityGrant {
         tenant_scope: Some(tenant_scope),
         partition_scope: Some(partition_scope),
         permissions: grant
@@ -7581,9 +7734,9 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
             .collect(),
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
         approval_required: Vec::new(),
-        row_policy: None,
+        row_policy,
         export: None,
-    }
+    })
 }
 
 fn application_role_permission_to_proto(
@@ -11581,7 +11734,7 @@ mod tests {
             None,
         )
         .expect("role");
-        let grant = application_role_grant_to_proto(role.internal_grant());
+        let grant = application_role_grant_to_proto(role.internal_grant()).expect("role grant");
         assert!(grant.permissions.iter().all(|permission| {
             matches!(
                 permission.permission,
@@ -11610,6 +11763,101 @@ mod tests {
                     if hash.as_slice() == role.identity().as_bytes()
             )
         }));
+    }
+
+    #[test]
+    fn protected_role_binding_lowers_exact_operator_facts_into_v4_authority() {
+        use riffdb_query_module::ApplicationSourceManifest;
+
+        let contract = compile_contract_source(include_str!(
+            "../../../fixtures/compiler/row-policy/valid/document-access.riff"
+        ))
+        .expect("policy contract");
+        let query = r#"
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+    return Found { document: document { document_id owner_id team_id visibility } }
+    outcomes Found | NotFound
+}
+"#;
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("policy_surface").expect("module"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("GetDocument", query).expect("query")],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+        let source = r#"{
+          "application":"policy-surface",
+          "contract":{"lineage":"PolicySurface","source":"contract.riff","version":1},
+          "generation":{"go":"generated/go/client.go","mcp":"generated/mcp/tools.json","python":"generated/python/client.py","rust":"generated/rust/client.rs","typescript":"generated/typescript/client.ts"},
+          "migrations":[],
+          "query_modules":[{"name":"policy_surface","queries":[{"name":"GetDocument","source":"queries/get_document.riffq"}],"version":1}],
+          "reactive_modules":[],
+          "roles":[{"agent_subscriptions":[],"commands":[],"environment":"development","event_streams":[],"name":"DocumentReader","queries":["GetDocument"],"row_policies":["DocumentAccess"],"tenant_scope":"global","watch_queries":[]}],
+          "schema":"riffdb.application-source/v6",
+          "seed_inputs":[]
+        }"#;
+        let exact = ApplicationSourceManifest::parse(source)
+            .expect("source")
+            .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+            .expect("exact");
+        let role = compile_application_role(
+            &exact,
+            "DocumentReader",
+            None,
+            &contract,
+            std::slice::from_ref(&module),
+        )
+        .expect("role");
+        let directory =
+            tempfile::TempDir::with_prefix("riffdb-role-facts-").expect("facts directory");
+        let facts_path = directory.path().join("facts.json");
+        fs::write(
+            &facts_path,
+            r#"{"team_ids":[{"$uuid":"00000000-0000-0000-0000-000000000008"}]}"#,
+        )
+        .expect("facts");
+
+        let grant = bind_role_principal_facts(
+            &role,
+            "00000000-0000-0000-0000-000000000007",
+            Some(facts_path.as_os_str()),
+        )
+        .expect("bound role");
+        let wire = application_role_grant_to_proto(&grant).expect("wire grant");
+        let policy = wire.row_policy.expect("V4 row-policy authority");
+        assert_eq!(policy.application_role_hash, role.identity().as_bytes());
+        assert_eq!(policy.principal_facts.len(), 1);
+        assert_eq!(policy.principal_facts[0].name, "team_ids");
+        assert_eq!(policy.policies.len(), 1);
+        assert_eq!(policy.policies[0].policy_name, "DocumentAccess");
+        assert_eq!(policy.policies[0].operations.len(), 4);
+        assert!(
+            bind_role_principal_facts(&role, "not-a-uuid", Some(facts_path.as_os_str())).is_err()
+        );
+        assert!(
+            bind_role_principal_facts(&role, "00000000-0000-0000-0000-000000000007", None).is_err()
+        );
+
+        fs::write(&facts_path, r#"{"unknown":true}"#).expect("invalid facts");
+        assert!(
+            bind_role_principal_facts(
+                &role,
+                "00000000-0000-0000-0000-000000000007",
+                Some(facts_path.as_os_str()),
+            )
+            .is_err()
+        );
     }
 
     #[test]

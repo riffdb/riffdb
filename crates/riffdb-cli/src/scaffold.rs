@@ -409,6 +409,7 @@ pub(crate) fn refresh_application_lock_from_pinned_bundle(
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
     ) {
         return Ok(PinnedLockRefresh::NotPinned);
     }
@@ -725,6 +726,7 @@ fn compile_for_existing_lock(
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
     ) {
         let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
             lock_diagnostic(
@@ -2973,6 +2975,41 @@ mod tests {
                 seed_input_count: 0
             }
         );
+    }
+
+    #[test]
+    fn row_policy_fixture_lock_round_trips_through_its_pinned_bundle() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/adapters/row-policy-conformance/riffdb.application.json");
+        let root = source_parent(&source);
+        let lock_path = workspace_lock_path(root, None).expect("lock path");
+        let decoded = ApplicationLock::decode_canonical(
+            &read_bounded(&lock_path, riffdb_query_module::MAX_APPLICATION_LOCK_BYTES)
+                .expect("read lock"),
+        )
+        .expect("decode lock");
+        let artifact = decoded
+            .contract_bundle_artifact()
+            .expect("contract bundle artifact");
+        let contract = ContractBundle::decode(
+            &read_workspace_file(root, artifact.path(), riffdb_contract_ir::MAX_BUNDLE_BYTES)
+                .expect("read contract bundle"),
+        )
+        .expect("decode contract bundle");
+        let contract_source = application_contract_source(&source).expect("contract source");
+        assert_eq!(
+            contract.source_hash(),
+            hash_source(contract_source.as_bytes()),
+            "the pinned bundle must retain the exact contract source identity"
+        );
+        let compiled = compile_for_existing_lock(&source, root, &lock_path, &decoded)
+            .expect("compile from pinned bundle");
+        assert_eq!(
+            decoded.canonical_bytes(),
+            compiled.lock.canonical_bytes(),
+            "a policy-bearing exact lock must round-trip through its pinned bundle"
+        );
+        check_application_lock(&source, None).expect("check exact row-policy fixture lock");
     }
 
     #[test]

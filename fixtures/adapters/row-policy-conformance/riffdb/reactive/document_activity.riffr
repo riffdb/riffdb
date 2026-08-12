@@ -1,0 +1,5 @@
+reactive DocumentActivity version 1 {
+  watch DocumentListWatch(
+    $organization_id: Document.organization_id
+  ) query ListDocuments updates reset;
+}

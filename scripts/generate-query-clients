@@ -204,6 +204,9 @@ if [[ "${1:-}" == "--check" ]]; then
     cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
         fixtures/adapters/woodpecker/riffdb.application.json \
         --lock riffdb.application.lock.json --output json >/dev/null
+    cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
+        fixtures/adapters/row-policy-conformance/riffdb.application.json \
+        --lock riffdb.application.lock.json --output json >/dev/null
     cargo check --quiet --manifest-path examples/agent-alpha/domains/rust/Cargo.toml
     if command -v tsc >/dev/null 2>&1; then
         tsc --noEmit --strict --target ES2022 \
@@ -237,5 +240,8 @@ cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
     --lock riffdb.application.lock.json >/dev/null
 cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
     fixtures/adapters/woodpecker/riffdb.application.json \
+    --lock riffdb.application.lock.json >/dev/null
+cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
+    fixtures/adapters/row-policy-conformance/riffdb.application.json \
     --lock riffdb.application.lock.json >/dev/null
 cargo run --quiet -p riffdb-query-module --example generate_operational_rotation -- "$repo_root"

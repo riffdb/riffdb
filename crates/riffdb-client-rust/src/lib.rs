@@ -31,6 +31,8 @@ pub use riffdb_proto::app::v1 as app_v1;
 /// Re-exporting the generated package lets public-API consumers construct
 /// requests without taking a second direct dependency on the Proto owner.
 pub use riffdb_proto::v1;
+#[doc(hidden)]
+pub use riffdb_proto::{canonical_value_from_proto, canonical_value_to_proto};
 
 pub use application::{
     ApplicationCardinality, ApplicationCatalogFeature, ApplicationCatalogFeatureState,

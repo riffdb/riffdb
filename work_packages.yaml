@@ -10889,8 +10889,10 @@ work_packages:
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0106,
     ADR-0108, ADR-0111, ADR-0114, ADR-0116]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
-    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
-    crates/riffdb-cli/**, crates/riffdb-api-mcp/**, clients/**, templates/**,
+    crates/riffdb-client-rust/**, crates/riffdb-commit/**, crates/riffdb-driver-host/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-testkit/Cargo.toml,
+    clients/**, templates/**,
     fixtures/application-parity/**, fixtures/adapters/**, examples/**,
     tests/**, scripts/**, docs/**, release/**]
   deliverables:

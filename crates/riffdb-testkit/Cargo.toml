@@ -127,6 +127,11 @@ path = "../../tests/adapter_operational_remote_client.rs"
 test = false
 
 [[example]]
+name = "adapter_row_policy_remote_client"
+path = "../../tests/adapter_row_policy_remote_client.rs"
+test = false
+
+[[example]]
 name = "generate_adapter_conformance"
 path = "../../tests/generate_adapter_conformance.rs"
 test = false

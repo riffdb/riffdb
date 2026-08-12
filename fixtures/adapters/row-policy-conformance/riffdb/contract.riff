@@ -1,0 +1,255 @@
+contract AdapterRowPolicyConformance version 1 {
+  enum Visibility { Private, Group, Public }
+  enum DocumentState { Draft, Published }
+  enum RunState { Running, Finished }
+
+  principal fact group_ids: list<uuid, 16>
+
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field owner_id: uuid
+    field group_id: optional<uuid>
+    field visibility: Visibility
+    field state: DocumentState
+    field title: string<128>
+    field body: string<1024>
+    index all_documents (organization_id, document_id)
+    index by_state (organization_id, state, document_id)
+    index by_title (organization_id, title, document_id) text_key(title, binary_utf8_v1)
+  }
+
+  entity Experiment {
+    key (organization_id: uuid, experiment_id: uuid)
+    field owner_id: uuid
+    field group_id: optional<uuid>
+    field visibility: Visibility
+    field name: string<128>
+    index all_experiments (organization_id, experiment_id)
+  }
+
+  entity Run {
+    key (organization_id: uuid, experiment_id: uuid, run_id: uuid)
+    field owner_id: uuid
+    field group_id: optional<uuid>
+    field visibility: Visibility
+    field state: RunState
+    field revision: u64
+    index by_experiment (organization_id, experiment_id, run_id)
+  }
+
+  entity Metric {
+    key (organization_id: uuid, experiment_id: uuid, run_id: uuid, metric_id: uuid)
+    field owner_id: uuid
+    field group_id: optional<uuid>
+    field visibility: Visibility
+    field name: string<64>
+    field value_micros: i64
+    index all_metrics (organization_id, metric_id)
+    index by_run (organization_id, experiment_id, run_id, metric_id)
+  }
+
+  entity Artifact {
+    key (organization_id: uuid, experiment_id: uuid, run_id: uuid, artifact_id: uuid)
+    field owner_id: uuid
+    field group_id: optional<uuid>
+    field visibility: Visibility
+    field path: string<256>
+    index by_run_artifact (organization_id, experiment_id, run_id, artifact_id)
+  }
+
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+
+  aggregate Experiments {
+    root Experiment
+    child Run
+    child Metric
+    child Artifact
+    partition_by organization_id
+    conflict_key (organization_id, experiment_id)
+  }
+
+  row policy DocumentAccess on Document {
+    allow read when visibility == Public
+      || owner_id == principal.id
+      || group_id in principal.fact.group_ids
+    allow create when owner_id == principal.id
+    allow update when owner_id == principal.id
+    allow delete when owner_id == principal.id
+  }
+
+  row policy ExperimentAccess on Experiment {
+    allow read when visibility == Public
+      || owner_id == principal.id
+      || group_id in principal.fact.group_ids
+    allow create when owner_id == principal.id
+    allow update when owner_id == principal.id
+    allow delete when owner_id == principal.id
+  }
+
+  row policy RunAccess on Run {
+    allow read when visibility == Public
+      || owner_id == principal.id
+      || group_id in principal.fact.group_ids
+    allow create when owner_id == principal.id
+    allow update when owner_id == principal.id
+    allow delete when owner_id == principal.id
+  }
+
+  row policy MetricAccess on Metric {
+    allow read when visibility == Public
+      || owner_id == principal.id
+      || group_id in principal.fact.group_ids
+    allow create when owner_id == principal.id
+    allow update when owner_id == principal.id
+    allow delete when owner_id == principal.id
+  }
+
+  row policy ArtifactAccess on Artifact {
+    allow read when visibility == Public
+      || owner_id == principal.id
+      || group_id in principal.fact.group_ids
+    allow create when owner_id == principal.id
+    allow update when owner_id == principal.id
+    allow delete when owner_id == principal.id
+  }
+
+  command CreateDocument {
+    input request_id: uuid
+    input organization_id: uuid
+    input document_id: uuid
+    input owner_id: uuid
+    input group_id: optional<uuid>
+    input visibility: Visibility
+    input state: DocumentState
+    input title: string<128>
+    input body: string<1024>
+    idempotency_key request_id
+    create Document(organization_id, document_id) as document else DocumentExists {}
+    set document.owner_id = owner_id
+    set document.group_id = group_id
+    set document.visibility = visibility
+    set document.state = state
+    set document.title = title
+    set document.body = body
+    return DocumentCreated { document: document }
+  }
+
+  command ChangeDocumentAccess {
+    input request_id: uuid
+    input organization_id: uuid
+    input document_id: uuid
+    input group_id: optional<uuid>
+    input visibility: Visibility
+    idempotency_key request_id
+    mutate Document(organization_id, document_id) as document else DocumentMissing {}
+    set document.group_id = group_id
+    set document.visibility = visibility
+    return DocumentAccessChanged { document: document }
+  }
+
+  command AttemptDocumentTransfer {
+    input request_id: uuid
+    input organization_id: uuid
+    input document_id: uuid
+    input new_owner_id: uuid
+    idempotency_key request_id
+    mutate Document(organization_id, document_id) as document else DocumentMissing {}
+    set document.owner_id = new_owner_id
+    return DocumentTransferred { document: document }
+  }
+
+  command CreateExperiment {
+    input request_id: uuid
+    input organization_id: uuid
+    input experiment_id: uuid
+    input owner_id: uuid
+    input group_id: optional<uuid>
+    input visibility: Visibility
+    input name: string<128>
+    idempotency_key request_id
+    create Experiment(organization_id, experiment_id) as experiment else ExperimentExists {}
+    set experiment.owner_id = owner_id
+    set experiment.group_id = group_id
+    set experiment.visibility = visibility
+    set experiment.name = name
+    return ExperimentCreated { experiment: experiment }
+  }
+
+  command CreateRun {
+    input request_id: uuid
+    input organization_id: uuid
+    input experiment_id: uuid
+    input run_id: uuid
+    input owner_id: uuid
+    input group_id: optional<uuid>
+    input visibility: Visibility
+    input state: RunState
+    idempotency_key request_id
+    create Run(organization_id, experiment_id, run_id) as run else RunExists {}
+    set run.owner_id = owner_id
+    set run.group_id = group_id
+    set run.visibility = visibility
+    set run.state = state
+    set run.revision = 1
+    return RunCreated { run: run }
+  }
+
+  command LogMetric {
+    input request_id: uuid
+    input organization_id: uuid
+    input experiment_id: uuid
+    input run_id: uuid
+    input metric_id: uuid
+    input owner_id: uuid
+    input group_id: optional<uuid>
+    input visibility: Visibility
+    input name: string<64>
+    input value_micros: i64
+    idempotency_key request_id
+    create Metric(organization_id, experiment_id, run_id, metric_id) as metric else MetricExists {}
+    set metric.owner_id = owner_id
+    set metric.group_id = group_id
+    set metric.visibility = visibility
+    set metric.name = name
+    set metric.value_micros = value_micros
+    return MetricLogged { metric: metric }
+  }
+
+  command CreateArtifact {
+    input request_id: uuid
+    input organization_id: uuid
+    input experiment_id: uuid
+    input run_id: uuid
+    input artifact_id: uuid
+    input owner_id: uuid
+    input group_id: optional<uuid>
+    input visibility: Visibility
+    input path: string<256>
+    idempotency_key request_id
+    create Artifact(organization_id, experiment_id, run_id, artifact_id) as artifact else ArtifactExists {}
+    set artifact.owner_id = owner_id
+    set artifact.group_id = group_id
+    set artifact.visibility = visibility
+    set artifact.path = path
+    return ArtifactCreated { artifact: artifact }
+  }
+
+  command FinishRun {
+    input request_id: uuid
+    input organization_id: uuid
+    input experiment_id: uuid
+    input run_id: uuid
+    input expected_revision: u64
+    idempotency_key request_id
+    mutate Run(organization_id, experiment_id, run_id) as run else RunMissing {}
+    require current_revision: run.revision == expected_revision else FinishStale {}
+    require running: run.state == RunState.Running else FinishIllegal {}
+    set run.state = RunState.Finished
+    set run.revision = run.revision + 1
+    return RunFinished { run: run }
+  }
+}

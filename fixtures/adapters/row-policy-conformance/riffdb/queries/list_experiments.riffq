@@ -1,0 +1,12 @@
+query ListExperiments($organization_id: Experiment.organization_id) {
+    many experiments from Experiment
+        where organization_id == $organization_id
+        order by experiment_id asc
+        take 25
+
+    return Found {
+        experiments: experiments { experiment_id owner_id group_id visibility name }
+    }
+
+    outcomes Found
+}

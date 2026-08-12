@@ -242,6 +242,100 @@ query GetDocument(
 }
 
 #[test]
+fn compiled_role_resolves_enum_principal_facts_by_symbol_only() {
+    let contract = compile_contract_source(
+        r#"
+contract EnumPolicySurface version 1 {
+  enum Visibility { Private, Team, Public }
+
+  principal fact allowed_visibility: Visibility
+  principal fact allowed_visibilities: list<Visibility, 3>
+
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field visibility: Visibility
+  }
+
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+
+  row policy DocumentAccess on Document {
+    allow read when visibility == principal.fact.allowed_visibility
+      || visibility in principal.fact.allowed_visibilities
+  }
+}
+"#,
+    )
+    .expect("enum policy contract");
+    let query = r#"
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+    return Found { document: document { document_id visibility } }
+    outcomes Found | NotFound
+}
+"#;
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("enum_policy_surface").expect("module"),
+            QueryModuleVersion::new(1).expect("version"),
+            vec![NamedQuerySource::new("GetDocument", query).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("module");
+    let source = r#"{
+      "application":"enum-policy-surface",
+      "contract":{"lineage":"EnumPolicySurface","source":"contract.riff","version":1},
+      "generation":{"go":"generated/go/client.go","mcp":"generated/mcp/tools.json","python":"generated/python/client.py","rust":"generated/rust/client.rs","typescript":"generated/typescript/client.ts"},
+      "migrations":[],
+      "query_modules":[{"name":"enum_policy_surface","queries":[{"name":"GetDocument","source":"queries/get_document.riffq"}],"version":1}],
+      "reactive_modules":[],
+      "roles":[{"agent_subscriptions":[],"commands":[],"environment":"development","event_streams":[],"name":"DocumentReader","queries":["GetDocument"],"row_policies":["DocumentAccess"],"tenant_scope":"global","watch_queries":[]}],
+      "schema":"riffdb.application-source/v6",
+      "seed_inputs":[]
+    }"#;
+    let exact = ApplicationSourceManifest::parse(source)
+        .expect("source")
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("exact");
+    let role = compile_application_role(
+        &exact,
+        "DocumentReader",
+        None,
+        &contract,
+        std::slice::from_ref(&module),
+    )
+    .expect("role");
+
+    let scalar = role
+        .internal_resolve_principal_fact_enum("allowed_visibility", "Team")
+        .expect("scalar enum symbol");
+    let list_member = role
+        .internal_resolve_principal_fact_enum("allowed_visibilities", "Team")
+        .expect("list enum symbol");
+    assert_eq!(scalar, list_member);
+    assert!(matches!(scalar, CanonicalValue::Enum { .. }));
+    assert!(
+        role.internal_resolve_principal_fact_enum("allowed_visibility", "Missing")
+            .is_none()
+    );
+    assert!(
+        role.internal_resolve_principal_fact_enum("unknown_fact", "Team")
+            .is_none()
+    );
+}
+
+#[test]
 fn symbolic_role_lowers_only_to_exact_application_operations() {
     let (manifest, contract, module) = exact_application();
     let role = compile_application_role(&manifest, "TicketDeskAgent", None, &contract, &[module])

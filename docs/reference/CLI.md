@@ -1687,20 +1687,37 @@ Arguments:
 
 Options:
       --config <PATH>
+
       --role <ROLE>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --tenant <TENANT>
+
       --database <DATABASE>
+
       --principal <PRINCIPAL>
-      --actor-kind <human|agent|service>   [possible values: human, agent, service]
-      --output <human|json>                [possible values: human, json]
-      --lifetime-seconds <SECONDS>         [default: 3600]
+
+      --actor-kind <human|agent|service>
+          [possible values: human, agent, service]
+      --output <human|json>
+          [possible values: human, json]
+      --lifetime-seconds <SECONDS>
+          [default: 3600]
       --max-attempts <1..10>
+
       --audience <AUDIENCE>
+
       --credential-file <PATH>
+
+      --principal-facts <JSON_OBJECT_PATH>
+          Operator-owned bounded fact values for a compiler-protected role
       --capability-id <CAPABILITY_UUIDV7>
+
       --credential-output <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb role revoke`
