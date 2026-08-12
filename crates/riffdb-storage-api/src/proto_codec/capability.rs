@@ -469,8 +469,8 @@ fn apply_secret_extension(
     }
     let mut visibility = grant.field_visibility().to_vec();
     for entry in extension.entries {
-        let lineage =
-            ContractLineage::new(entry.contract_lineage).map_err(|_| DurableCodecError::corrupt())?;
+        let lineage = ContractLineage::new(entry.contract_lineage)
+            .map_err(|_| DurableCodecError::corrupt())?;
         let entity_type =
             EntityTypeId::new(entry.entity_type_id).ok_or_else(DurableCodecError::corrupt)?;
         let raw_secret = entry
@@ -1056,7 +1056,7 @@ pub fn decode_capability_record_v1(
             StoredCapabilityRecordV1::from_stored_parts(
                 record.capability_id(),
                 record.revision(),
-                record.token_digest().clone(),
+                record.token_digest(),
                 record.database_id(),
                 record.environment().clone(),
                 record.principal_id().clone(),
@@ -1065,7 +1065,7 @@ pub fn decode_capability_record_v1(
                 record.issued_at(),
                 record.expires_at(),
                 record.creation_sequence(),
-                record.creation_request_id().clone(),
+                record.creation_request_id(),
                 grant,
                 record.lifecycle().clone(),
             )

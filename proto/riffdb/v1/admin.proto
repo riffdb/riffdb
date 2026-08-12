@@ -210,6 +210,9 @@ message EntityFieldVisibility {
   string contract_lineage = 1;
   uint32 entity_type_id = 2;
   repeated uint32 field_ids = 3;
+  // Dedicated explicit naming that reveals secret-classified fields
+  // (ADR-0118); the ordinary field_ids list never does.
+  repeated uint32 secret_field_ids = 4;
 }
 
 enum CapabilityRowPolicyOperation {

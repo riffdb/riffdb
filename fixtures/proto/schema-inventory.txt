@@ -1770,10 +1770,11 @@ messages
     2 entity_version optional uint64
     3 written_by_contract_version optional uint64
     4 fields optional .riffdb.v1.ValueRecord
-  riffdb.v1.EntityFieldVisibility fields=3
+  riffdb.v1.EntityFieldVisibility fields=4
     1 contract_lineage optional string
     2 entity_type_id optional uint32
     3 field_ids repeated uint32
+    4 secret_field_ids repeated uint32
   riffdb.v1.EntitySchemaResource fields=3
     1 contract_lineage optional string
     2 entity_type_id optional uint32

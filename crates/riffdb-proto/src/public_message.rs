@@ -3019,7 +3019,8 @@ fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize,
                 let fields = entry
                     .field_ids
                     .len()
-                    .checked_mul(4)
+                    .checked_add(entry.secret_field_ids.len())
+                    .and_then(|count| count.checked_mul(4))
                     .ok_or(PublicWireError::TooManyItems)?;
                 let content = checked_capability_sum([
                     framed_capability_bytes(entry.contract_lineage.len())?,
@@ -6825,15 +6826,22 @@ fn preflight_partition_scope(input: &[u8]) -> Result<(), PublicWireError> {
 fn preflight_field_visibility(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        3,
-        &[3],
+        4,
+        &[3, 4],
         &[],
         &[],
-        &[RepeatedRule {
-            field: 3,
-            maximum: MAX_CAPABILITY_FIELD_VISIBILITY,
-            wire: RepeatedWire::PackableVarint,
-        }],
+        &[
+            RepeatedRule {
+                field: 3,
+                maximum: MAX_CAPABILITY_FIELD_VISIBILITY,
+                wire: RepeatedWire::PackableVarint,
+            },
+            RepeatedRule {
+                field: 4,
+                maximum: MAX_CAPABILITY_FIELD_VISIBILITY,
+                wire: RepeatedWire::PackableVarint,
+            },
+        ],
     )
 }
 
