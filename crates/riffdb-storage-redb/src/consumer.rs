@@ -1,10 +1,6 @@
 //! Durable redb persistence for backend-neutral event-consumer transitions.
 
 use redb::ReadableTable;
-use riffdb_catalog::{
-    EventReplayErrorKind, EventReplayPosition, ResolvedEventReplay, SymbolicEventEnvelope,
-    SymbolicEventReplayPage,
-};
 use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, EventPolicyCandidateV1};
 use riffdb_query_executor::MAX_QUERY_SCANNED_ROWS;
 use riffdb_storage_api::{
@@ -13,20 +9,20 @@ use riffdb_storage_api::{
     CoordinateConsumerLeaseResultV1, CoordinatedConsumerLeaseV1, EncodedPageItem, EntityTarget,
     EvaluatedEventConsumerTransitionV1, EventConsumerIdentityV1, EventConsumerRepository,
     EventConsumerSnapshotV1, EventConsumerTransitionResultV1, EventConsumerTransitionV1,
-    EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
-    ExpectedConsumerDeliveryV1, IdempotencyIdentity, MAX_CONSUMER_BATCH_ITEMS,
-    MAX_CONSUMER_DELIVERY_RECORDS, MAX_CONSUMER_IN_FLIGHT, MAX_CONSUMER_SPARSE_RESOLUTIONS,
-    MAX_EVENT_CONSUMERS, MAX_SCAN_PAGE_BYTES, PartitionEventRouteReader,
-    PreparedConsumerResolutionV1, StorageError, StorageErrorKind, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredEventConsumerDeliveryV1,
-    StoredEventConsumerV1, StoredOutcomeV1, StoredProvenanceRecordV1,
-    evaluate_consumer_lease_validation, evaluate_event_consumer_transition,
-    normalize_consumer_recovery, prepare_consumer_resolution, resolve_policy_hidden_state,
-    status_from_snapshot,
+    EventRouteContinuationV1, EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1,
+    EventRouteUpperFenceV1, ExpectedConsumerDeliveryV1, IdempotencyIdentity,
+    MAX_CONSUMER_BATCH_ITEMS, MAX_CONSUMER_DELIVERY_RECORDS, MAX_CONSUMER_IN_FLIGHT,
+    MAX_CONSUMER_SPARSE_RESOLUTIONS, MAX_EVENT_CONSUMERS, MAX_SCAN_PAGE_BYTES,
+    PartitionEventRouteReader, PolicyAuthorizedEventReplayItemV1, PreparedConsumerResolutionV1,
+    StorageError, StorageErrorKind, StoredCommitRecordV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredEventConsumerDeliveryV1, StoredEventConsumerV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, evaluate_consumer_lease_validation,
+    evaluate_event_consumer_transition, normalize_consumer_recovery, prepare_consumer_resolution,
+    resolve_policy_hidden_state, status_from_snapshot,
 };
 use riffdb_types::{
     CommitSequence, DatabaseId, EventConsumerIdentityHash, EventDeliveryAttempt, EventId,
-    EventLeaseToken, PartitionKeyHash, ProvenanceId, Timestamp,
+    EventLeaseToken, EventTypeId, PartitionKeyHash, ProvenanceId, Timestamp,
 };
 
 use crate::codec::{
@@ -54,10 +50,10 @@ pub const MAX_PROTECTED_EVENT_REPLAY_CANDIDATES: u16 = 1024;
 
 /// Move-only protected replay request evaluated at one redb safe point.
 pub struct ProtectedEventReplayV1 {
-    /// Catalog-resolved event symbol, selected fields, and partition route.
-    pub replay: ResolvedEventReplay,
-    /// Exact frozen route position.
-    pub position: EventReplayPosition,
+    /// Exact first or continuing storage route selected by the catalog.
+    pub scan_request: EventRouteScanRequestV1,
+    /// Stable event type selected by the catalog-resolved symbolic operation.
+    pub event_type_id: EventTypeId,
     /// Maximum visible events returned.
     pub return_limit: EventRoutePageLimit,
     /// Maximum raw route candidates examined.
@@ -81,7 +77,9 @@ pub enum ProtectedEventReplayDispositionV1 {
 
 /// Policy-filtered symbolic page and its inference-safe work disposition.
 pub struct ProtectedEventReplayPageV1 {
-    page: SymbolicEventReplayPage,
+    items: Vec<PolicyAuthorizedEventReplayItemV1>,
+    continuation: Option<EventRouteContinuationV1>,
+    inclusive_upper: EventRouteUpperFenceV1,
     disposition: ProtectedEventReplayDispositionV1,
 }
 
@@ -96,8 +94,20 @@ pub enum ProtectedEventReplayResultV1 {
 impl ProtectedEventReplayPageV1 {
     /// Consumes the checked protected result.
     #[must_use]
-    pub fn into_parts(self) -> (SymbolicEventReplayPage, ProtectedEventReplayDispositionV1) {
-        (self.page, self.disposition)
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<PolicyAuthorizedEventReplayItemV1>,
+        Option<EventRouteContinuationV1>,
+        EventRouteUpperFenceV1,
+        ProtectedEventReplayDispositionV1,
+    ) {
+        (
+            self.items,
+            self.continuation,
+            self.inclusive_upper,
+            self.disposition,
+        )
     }
 }
 
@@ -224,17 +234,15 @@ impl RedbOperationalPorts {
             .map_err(|_| corrupt())?;
         let maximum_visible = usize::from(request.return_limit.get().get());
         let maximum_candidates = usize::from(request.candidate_limit.get().get());
-        let mut position = request.position;
+        let partition_hash = request.scan_request.partition_hash();
+        let mut scan_request = request.scan_request;
         let mut visible = Vec::with_capacity(maximum_visible);
         let mut continuation = None;
         let mut inclusive_upper = None;
         let mut disposition = ProtectedEventReplayDispositionV1::Page;
 
         for examined in 0..maximum_candidates {
-            let page = request
-                .replay
-                .replay_page(&reader, position, one, request.history_incarnation)
-                .map_err(map_event_replay_storage_error)?;
+            let page = reader.scan_partition_event_routes(scan_request)?;
             if inclusive_upper
                 .replace(page.inclusive_upper())
                 .is_some_and(|prior| prior != page.inclusive_upper())
@@ -242,29 +250,53 @@ impl RedbOperationalPorts {
                 return Err(corrupt());
             }
             continuation = page.continuation();
-            for event in page.into_items() {
-                if authorize_symbolic_event(transaction, &event, &request.policy)? {
-                    visible.push(event);
+            for encoded_route in page.items() {
+                let route = *encoded_route.value();
+                if route.event_type_id() != request.event_type_id {
+                    continue;
                 }
+                let event = reader
+                    .read_durable_event(route.event_id())?
+                    .ok_or_else(corrupt)?;
+                if !authorize_stored_event(transaction, &event, &request.policy)? {
+                    continue;
+                }
+                let commit = reader
+                    .read_commit(route.event_id().commit_sequence())?
+                    .ok_or_else(corrupt)?;
+                let provenance = reader
+                    .read_provenance(commit.provenance_id())?
+                    .ok_or_else(corrupt)?;
+                visible.push(
+                    PolicyAuthorizedEventReplayItemV1::new(
+                        partition_hash,
+                        route,
+                        event,
+                        commit,
+                        provenance,
+                    )
+                    .map_err(|_| corrupt())?,
+                );
             }
             if visible.len() == maximum_visible || continuation.is_none() {
                 break;
             }
-            position = EventReplayPosition::Continue(continuation.ok_or_else(corrupt)?);
+            scan_request =
+                EventRouteScanRequestV1::continuing(continuation.ok_or_else(corrupt)?, one);
             if examined.saturating_add(1) == maximum_candidates {
                 disposition = ProtectedEventReplayDispositionV1::BoundedProgress;
             }
         }
 
         let inclusive_upper = inclusive_upper.unwrap_or(EventRouteUpperFenceV1::BeforeFirst);
-        let page = SymbolicEventReplayPage::from_policy_filtered_parts(
-            visible,
-            continuation,
-            inclusive_upper,
-        );
         access.abort()?;
         Ok(ProtectedEventReplayResultV1::Page(
-            ProtectedEventReplayPageV1 { page, disposition },
+            ProtectedEventReplayPageV1 {
+                items: visible,
+                continuation,
+                inclusive_upper,
+                disposition,
+            },
         ))
     }
 
@@ -831,9 +863,9 @@ impl AuthoritativePointReader for ProtectedEventReplayReader<'_> {
     }
 }
 
-fn authorize_symbolic_event(
+fn authorize_stored_event(
     transaction: &redb::WriteTransaction,
-    event: &SymbolicEventEnvelope,
+    event: &StoredDurableEventV1,
     policy: &AuthorizedQueryRowPolicyContextV1,
 ) -> Result<bool, StorageError> {
     let Some(anchor) = event.policy_anchor() else {
@@ -872,13 +904,6 @@ fn authorize_symbolic_event(
     Ok(policy
         .authorize_event_release(&candidate, current.fields(), &evidence)
         .is_allowed())
-}
-
-fn map_event_replay_storage_error(error: riffdb_catalog::EventReplayError) -> StorageError {
-    match error.kind() {
-        EventReplayErrorKind::Storage(kind) => storage_error(kind),
-        EventReplayErrorKind::Materialization(_) | EventReplayErrorKind::Integrity => corrupt(),
-    }
 }
 
 fn current_capability_matches_policy(

@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
-    QueryModuleCatalogError, ReactiveModuleCatalogError, ResolvedExecutablePlan,
-    ValidatedContractBundle, ValidatedQueryModule, ValidatedReactiveModule,
-    prepare_catalog_activation, resolve_executable_plan,
+    EventReplayPosition, QueryModuleCatalogError, ReactiveModuleCatalogError,
+    ResolvedExecutablePlan, SymbolicEventReplayPage, ValidatedContractBundle, ValidatedQueryModule,
+    ValidatedReactiveModule, prepare_catalog_activation, resolve_executable_plan,
 };
 use riffdb_contract_ir::ContractBundle;
 use riffdb_idempotency::{
@@ -39,13 +39,13 @@ use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
     AuthoritativeScanReader, CapabilityLifecycleV1, CapabilityReader, CatalogRepository,
     CommitScanPageV1, CommitScanRequest, DurabilityMode, EntityTarget, EventRoutePageLimit,
-    ExecutablePlanRef, FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyKeyDigest,
-    IdempotencyLookupCandidatesV1, IndexPartitionFilter, IndexPartitionFilterScope,
-    IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository, ReactiveModuleRepository,
-    ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind,
-    StorageScanLimit, StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
-    StoredProvenanceRecordV1,
+    EventRouteScanRequestV1, ExecutablePlanRef, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexPartitionFilter,
+    IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository,
+    ReactiveModuleRepository, ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageError,
+    StorageErrorKind, StorageScanLimit, StoredAdmissionStateV1, StoredCommitRecordV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
@@ -716,6 +716,21 @@ impl ServerAuthoritativeReadPort {
             let limit = EventRoutePageLimit::new(limit.get())
                 .map_err(|_| AuthoritativeReadError::Integrity)?;
             if let Some((observed_at, policy)) = protected {
+                let one = EventRoutePageLimit::new(
+                    std::num::NonZeroU16::new(1).ok_or(AuthoritativeReadError::Integrity)?,
+                )
+                .map_err(|_| AuthoritativeReadError::Integrity)?;
+                let scan_request = match position {
+                    EventReplayPosition::Initial { after } => {
+                        EventRouteScanRequestV1::initial(replay.partition_hash(), after, one)
+                    }
+                    EventReplayPosition::Continue(continuation) => {
+                        if continuation.partition_hash() != replay.partition_hash() {
+                            return Err(AuthoritativeReadError::Integrity);
+                        }
+                        EventRouteScanRequestV1::continuing(continuation, one)
+                    }
+                };
                 let candidate_limit = EventRoutePageLimit::new(
                     std::num::NonZeroU16::new(
                         riffdb_storage_redb::MAX_PROTECTED_EVENT_REPLAY_CANDIDATES,
@@ -725,8 +740,8 @@ impl ServerAuthoritativeReadPort {
                 .map_err(|_| AuthoritativeReadError::Integrity)?;
                 return match event_storage
                     .replay_protected_events(riffdb_storage_redb::ProtectedEventReplayV1 {
-                        replay,
-                        position,
+                        scan_request,
+                        event_type_id: replay.event_type_id(),
                         return_limit: limit,
                         candidate_limit,
                         history_incarnation,
@@ -739,7 +754,23 @@ impl ServerAuthoritativeReadPort {
                         Ok(AuthoritativeEventReplayPage::AuthorizationChanged)
                     }
                     riffdb_storage_redb::ProtectedEventReplayResultV1::Page(page) => {
-                        let (page, disposition) = page.into_parts();
+                        let (items, continuation, inclusive_upper, disposition) =
+                            page.into_parts();
+                        let items = items
+                            .into_iter()
+                            .map(|item| {
+                                replay.materialize_policy_authorized_item(
+                                    item,
+                                    history_incarnation,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|error| map_event_replay_error(error.kind()))?;
+                        let page = SymbolicEventReplayPage::from_policy_filtered_parts(
+                            items,
+                            continuation,
+                            inclusive_upper,
+                        );
                         let disposition = match disposition {
                             riffdb_storage_redb::ProtectedEventReplayDispositionV1::Page => {
                                 AuthoritativeEventReplayDisposition::Page
