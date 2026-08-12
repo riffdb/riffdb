@@ -6,6 +6,7 @@ use riffdb_types::{EventHash, EventId, EventTypeId, PartitionKeyHash};
 
 use crate::{
     EncodedPageItem, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES, StorageError, StorageValueError,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredProvenanceRecordV1,
     checked_encoded_page_content,
 };
 
@@ -68,6 +69,86 @@ impl StoredEventRouteV1 {
     #[must_use]
     pub const fn event_hash(self) -> EventHash {
         self.event_hash
+    }
+}
+
+/// One immutable event and its complete reciprocal authority evidence after a
+/// transaction-current row-policy decision.
+///
+/// This storage-owned carrier lets an authoritative adapter filter candidates
+/// inside one storage safe point without importing catalog authority. Symbolic
+/// materialization remains catalog-owned after the safe point closes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct PolicyAuthorizedEventReplayItemV1 {
+    route: StoredEventRouteV1,
+    event: StoredDurableEventV1,
+    commit: StoredCommitRecordV1,
+    provenance: StoredProvenanceRecordV1,
+}
+
+impl PolicyAuthorizedEventReplayItemV1 {
+    /// Constructs one item only when route, event, commit, and provenance form
+    /// the exact immutable reciprocal graph.
+    pub fn new(
+        partition_hash: PartitionKeyHash,
+        route: StoredEventRouteV1,
+        event: StoredDurableEventV1,
+        commit: StoredCommitRecordV1,
+        provenance: StoredProvenanceRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        if route.event_id() != event.event_id()
+            || route.event_type_id() != event.event_type_id()
+            || route.event_hash() != event.event_hash()
+            || commit.commit_sequence() != route.event_id().commit_sequence()
+            || commit.partition_hash() != partition_hash
+            || !commit.events().iter().any(|candidate| candidate == &event)
+            || provenance.provenance_id() != commit.provenance_id()
+            || provenance.commit_sequence() != commit.commit_sequence()
+            || provenance.admission_request_id() != commit.admission_request_id()
+            || provenance.plan() != commit.plan()
+            || provenance.canonical_input_hash() != commit.canonical_input_hash()
+            || provenance.actor() != commit.actor()
+            || provenance.logical_time() != commit.logical_time()
+            || provenance.partition_hash() != commit.partition_hash()
+            || provenance.conflict_hashes() != commit.conflict_hashes()
+            || provenance.outcome_id() != commit.declared_outcome().outcome_id()
+            || !provenance
+                .event_ids()
+                .iter()
+                .copied()
+                .eq(commit.events().iter().map(StoredDurableEventV1::event_id))
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            route,
+            event,
+            commit,
+            provenance,
+        })
+    }
+
+    /// Consumes the checked immutable graph.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        StoredEventRouteV1,
+        StoredDurableEventV1,
+        StoredCommitRecordV1,
+        StoredProvenanceRecordV1,
+    ) {
+        (self.route, self.event, self.commit, self.provenance)
+    }
+}
+
+impl std::fmt::Debug for PolicyAuthorizedEventReplayItemV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PolicyAuthorizedEventReplayItemV1")
+            .field("event_id", &self.route.event_id())
+            .field("payload", &"[REDACTED]")
+            .finish_non_exhaustive()
     }
 }
 

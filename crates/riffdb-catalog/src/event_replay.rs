@@ -10,8 +10,8 @@ use riffdb_query_module::{
 };
 use riffdb_storage_api::{
     AuthoritativePointReader, EventRouteContinuationV1, EventRoutePageLimit,
-    EventRouteScanRequestV1, EventRouteUpperFenceV1, PartitionEventRouteReader, StorageErrorKind,
-    StoredCommitRecordV1,
+    EventRouteScanRequestV1, EventRouteUpperFenceV1, PartitionEventRouteReader,
+    PolicyAuthorizedEventReplayItemV1, StorageErrorKind, StoredCommitRecordV1,
 };
 use riffdb_types::{
     ActorKind, CanonicalValue, ContractVersion, EventId, EventTypeId, PartitionKey,
@@ -240,6 +240,62 @@ impl ResolvedEventReplay {
     #[must_use]
     pub fn event_name(&self) -> &str {
         self.materializer.event_name()
+    }
+
+    /// Returns the exact storage route selected by the resolved symbolic
+    /// replay. This is a first-party adapter handoff, not an application ID.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+
+    /// Returns the stable event identity selected by the resolved symbolic
+    /// replay for the storage-owned candidate filter.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn event_type_id(&self) -> EventTypeId {
+        self.materializer.event_type_id()
+    }
+
+    /// Materializes one immutable event graph only after storage has made the
+    /// transaction-current row-policy decision. Storage owns reciprocal graph
+    /// validation; catalog still owns symbolic names, selected fields, and
+    /// historical schema interpretation.
+    #[doc(hidden)]
+    pub fn materialize_policy_authorized_item(
+        &self,
+        item: PolicyAuthorizedEventReplayItemV1,
+        history_incarnation: u64,
+    ) -> Result<SymbolicEventEnvelope, EventReplayError> {
+        let (route, event, commit, provenance) = item.into_parts();
+        if event.event_type_id() != self.materializer.event_type_id() {
+            return Err(EventReplayError::integrity());
+        }
+        let view = self.materializer.materialize_routed_event(
+            commit.plan(),
+            self.partition_hash,
+            route,
+            &event,
+        )?;
+        let (root_request_id, causing_event_id) = match provenance.causation() {
+            Some(causation) => (
+                causation.root_request_id(),
+                Some(causation.causing_event_id()),
+            ),
+            None => (commit.admission_request_id(), None),
+        };
+        Ok(SymbolicEventEnvelope {
+            view,
+            occurred_at: commit.logical_time().timestamp(),
+            request_id: commit.admission_request_id(),
+            root_request_id,
+            causing_event_id,
+            actor_kind: commit.actor().actor_kind(),
+            provenance_id: commit.provenance_id(),
+            history_incarnation,
+            policy_anchor: event.policy_anchor().cloned(),
+        })
     }
 
     /// Reads one bounded physical route page and returns only matching events.
