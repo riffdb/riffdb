@@ -4,7 +4,7 @@ use riffdb_proto::{
     envelope::{self, STORAGE_FORMAT_VERSION_V1},
     storage::v1 as wire,
 };
-use riffdb_types::ExecutionFailureCode;
+use riffdb_types::{CommitSequence, EventId, EventTypeId, ExecutionFailureCode, RowPolicyName};
 
 use super::super::*;
 use super::sample;
@@ -45,6 +45,71 @@ fn assert_error_kind<T>(
         Err(error) => assert_eq!(error.kind(), expected),
         Ok(_) => panic!("semantically malformed durable record decoded"),
     }
+}
+
+fn canonical_anchored_event() -> CanonicalStoredEnvelopeV1 {
+    let event_id = EventId::new(CommitSequence::first(), 0);
+    let event_type = EventTypeId::first();
+    let payload = sample::canonical_record(0x43);
+    let anchor = crate::StoredEventPolicyAnchorV1::new(
+        crate::DurableKeySchemaBindingV1::from_plan(&sample::plan()),
+        event_type,
+        sample::entity_target(),
+        RowPolicyName::new("TicketAccess").expect("policy name"),
+    );
+    let event = crate::StoredDurableEventV2::new(
+        event_id,
+        event_type,
+        payload.clone(),
+        crate::derive_event_hash_v2(event_id, event_type, &payload, &anchor).expect("event hash"),
+        anchor,
+    )
+    .expect("anchored event");
+    encode_durable_event_v2(&event).expect("anchored event encodes")
+}
+
+#[test]
+fn anchored_event_missing_or_inconsistent_authority_fails_closed() {
+    const EVENT_V2: &str = "riffdb.storage.v1.StoredDurableEventV2";
+    let canonical = canonical_anchored_event();
+    let message = payload_message::<wire::StoredDurableEventV2>(canonical.as_bytes());
+
+    let mut missing_anchor = message.clone();
+    missing_anchor.policy_anchor = None;
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &missing_anchor,
+    )));
+
+    let mut mismatched_event_type = message.clone();
+    mismatched_event_type
+        .policy_anchor
+        .as_mut()
+        .expect("sample policy anchor")
+        .event_type_id = 2;
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &mismatched_event_type,
+    )));
+
+    let mut invalid_policy = message.clone();
+    invalid_policy
+        .policy_anchor
+        .as_mut()
+        .expect("sample policy anchor")
+        .read_policy
+        .clear();
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &invalid_policy,
+    )));
+
+    let mut mismatched_hash = message;
+    mismatched_hash.event_hash[0] ^= 0x01;
+    assert_corrupt(decode_durable_event_v2(&checked_envelope(
+        EVENT_V2,
+        &mismatched_hash,
+    )));
 }
 
 #[test]
@@ -331,6 +396,65 @@ fn capability_v4_row_policy_extension_is_required_canonical_and_role_bound() {
     assert_corrupt(decode_capability_record_v1(&checked_envelope(
         CAPABILITY_V4,
         &unknown_operation,
+    )));
+}
+
+#[test]
+fn capability_v5_export_extension_is_required_canonical_and_scope_checked() {
+    const CAPABILITY_V5: &str = "riffdb.storage.v1.CapabilityRecordV5";
+    let value = sample::capability_record_with_export_authority();
+    let canonical = encode_capability_record_v1(&value).expect("export capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV5>(canonical.as_bytes());
+
+    let mut missing = message.clone();
+    missing.export = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &missing,
+    )));
+
+    let mut empty = message.clone();
+    empty
+        .export
+        .as_mut()
+        .expect("export extension")
+        .applications
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &empty,
+    )));
+
+    let mut false_only = message.clone();
+    let application = &mut false_only
+        .export
+        .as_mut()
+        .expect("export extension")
+        .applications[0];
+    application.entities = false;
+    application.events = false;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &false_only,
+    )));
+
+    let mut unknown_scope = message.clone();
+    unknown_scope
+        .export
+        .as_mut()
+        .expect("export extension")
+        .applications[0]
+        .scope = 99;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &unknown_scope,
+    )));
+
+    let mut missing_policy = message;
+    missing_policy.row_policy = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V5,
+        &missing_policy,
     )));
 }
 

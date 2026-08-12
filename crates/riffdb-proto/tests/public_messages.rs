@@ -89,6 +89,7 @@ fn grant() -> v1::CapabilityGrant {
         max_scan_rows: 1,
         approval_required: Vec::new(),
         row_policy: None,
+        export: None,
     }
 }
 
@@ -103,6 +104,67 @@ fn create_request(mode: v1::CapabilityCreateMode) -> v1::CreateCapabilityRequest
         audiences: vec!["riffdb-cli".to_owned()],
         grant: Some(grant()),
     }
+}
+
+#[test]
+fn export_capability_request_is_strict_and_unknown_scope_is_rejected() {
+    let mut request = create_request(v1::CapabilityCreateMode::Normal);
+    request.grant.as_mut().expect("grant").export = Some(v1::CapabilityExportGrant {
+        applications: vec![v1::CapabilityApplicationExportGrant {
+            contract_lineage: "TicketDesk".to_owned(),
+            scope: v1::CapabilityApplicationExportScope::WholeApplication as i32,
+            entities: true,
+            events: true,
+            provenance: false,
+            public_audit: true,
+        }],
+    });
+    validate_public_message(&request).expect("export capability request");
+    decode_public_message::<v1::CreateCapabilityRequest>(&request.encode_to_vec())
+        .expect("export capability wire request");
+
+    request
+        .grant
+        .as_mut()
+        .expect("grant")
+        .export
+        .as_mut()
+        .expect("export")
+        .applications[0]
+        .scope = i32::MAX;
+    assert_eq!(
+        validate_public_message(&request),
+        Err(riffdb_proto::PublicWireError::InvalidEnum)
+    );
+
+    let grant = request.grant.as_mut().expect("grant");
+    grant.export.as_mut().expect("export").applications[0].scope =
+        v1::CapabilityApplicationExportScope::WholeApplication as i32;
+    grant.row_policy = Some(v1::CapabilityRowPolicyGrant {
+        application_role_hash: vec![0x71; 32],
+        principal_facts: Vec::new(),
+        policies: vec![v1::CapabilityRowPolicyBinding {
+            contract_lineage: "TicketDesk".to_owned(),
+            policy_name: "VisibleTicket".to_owned(),
+            entity_type_id: 1,
+            operations: vec![v1::CapabilityRowPolicyOperation::Read as i32],
+        }],
+    });
+    decode_public_message::<v1::CreateCapabilityRequest>(&request.encode_to_vec())
+        .expect("row policy plus export wire request");
+    request
+        .grant
+        .as_mut()
+        .expect("grant")
+        .row_policy
+        .as_mut()
+        .expect("row policy")
+        .policies[0]
+        .operations[0] = i32::MAX;
+    assert_eq!(
+        validate_public_message(&request),
+        Err(riffdb_proto::PublicWireError::InvalidEnum)
+    );
 }
 
 fn transition() -> v1::CapabilityTransition {

@@ -10830,6 +10830,8 @@ work_packages:
     ADR-0114, ADR-0116]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, fixtures/proto/**,
     fixtures/compatibility/**, release/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-runtime/**,
     crates/riffdb-query-executor/**, crates/riffdb-projection/**,

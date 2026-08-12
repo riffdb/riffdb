@@ -109,6 +109,25 @@ pub(crate) fn vector_metric(
     Ok(Spanned::new(metric, identifier.span))
 }
 
+/// Builds the narrow contextual `policy_anchor current` declaration.
+pub(crate) fn event_policy_anchor(
+    current: Spanned<String>,
+    entity: Spanned<String>,
+    fields: Vec<Spanned<EventPolicyAnchorField>>,
+    outer_span: Span,
+) -> Result<Spanned<EventPolicyAnchorDeclaration>, SyntaxDiagnostic> {
+    if current.value != "current" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            current.span,
+        ));
+    }
+    Ok(Spanned::new(
+        EventPolicyAnchorDeclaration { entity, fields },
+        outer_span,
+    ))
+}
+
 /// Builds a vector_field entity item, validating the contextual
 /// `staleness_slo` keyword position.
 #[allow(clippy::too_many_arguments)]
@@ -784,6 +803,7 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "root",
     "child",
     "partition_by",
+    "policy_anchor",
     "conflict_key",
     "projection",
     "source",
@@ -963,6 +983,20 @@ impl NodeCounter {
                 if let Some(partition_by) = &event.partition_by {
                     self.add(1, partition_by.span)?;
                     self.names(&partition_by.value, partition_by.span)?;
+                }
+                if let Some(anchor) = &event.policy_anchor {
+                    self.add(2, anchor.span)?;
+                    self.name(&anchor.value.entity)?;
+                    self.collection(
+                        anchor.value.fields.len(),
+                        MAX_DECLARATION_ITEMS,
+                        anchor.span,
+                    )?;
+                    for field in &anchor.value.fields {
+                        self.add(1, field.span)?;
+                        self.name(&field.value.entity_field)?;
+                        self.name(&field.value.payload_field)?;
+                    }
                 }
                 self.collection(event.fields.len(), MAX_DECLARATION_ITEMS, declaration.span)?;
                 for field in &event.fields {

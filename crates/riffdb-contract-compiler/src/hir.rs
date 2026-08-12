@@ -8,8 +8,9 @@ use riffdb_contract_ir::{
 use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
     AggregateItem, Aggregation, Binding, CommandKind, Declaration, DeletePolicyDeclaration, Effect,
-    EntityItem, Expression, ObjectLiteral, OutcomeExpression, Path, ServiceValueKind,
-    TypeExpression, WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
+    EntityItem, EventPolicyAnchorDeclaration, Expression, ObjectLiteral, OutcomeExpression, Path,
+    RowPolicyOperation, ServiceValueKind, TypeExpression,
+    WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::{ContractDocument, Spanned};
 use riffdb_types::{
@@ -512,7 +513,7 @@ pub(crate) fn lower_contract_hir(
     let mut diagnostics = Vec::new();
     let enums = lower_enums(document, symbols);
     let entities = lower_entities(document, symbols, types, &mut diagnostics);
-    let events = lower_events(document, symbols, types, &mut diagnostics);
+    let events = lower_events(document, symbols, types, &entities, &mut diagnostics);
     let aggregates = lower_aggregates(document, symbols, types, &mut diagnostics);
     let workflows = lower_workflows(document, symbols, &entities, &aggregates, &mut diagnostics);
     let commands = lower_commands(
@@ -1002,6 +1003,7 @@ fn lower_events(
     document: &ContractDocument,
     symbols: &GenesisSymbols,
     types: &ResolvedTypes,
+    entities: &[HirEntity],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Vec<HirEvent> {
     document
@@ -1029,7 +1031,7 @@ fn lower_events(
                         field_id.and_then(|field_id| types.event_fields.get(&(id, field_id))),
                     )
                 })
-                .collect();
+                .collect::<Vec<_>>();
             let partition_fields = source
                 .partition_by
                 .as_ref()
@@ -1052,6 +1054,26 @@ fn lower_events(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            if let Some(anchor) = &source.policy_anchor
+                && validate_event_policy_anchor(
+                    document,
+                    symbols,
+                    entities,
+                    id,
+                    &fields,
+                    &partition_fields,
+                    anchor,
+                    diagnostics,
+                )
+            {
+                // The source has passed ADR-0116's semantic gate. Keep the
+                // deployment fail-closed until WP-597's concurrent bundle-version
+                // rotation has landed and this checked result can be retained in IR.
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidEvent,
+                    anchor.span,
+                ));
+            }
             Some(HirEvent {
                 id,
                 name: source.name.value.clone(),
@@ -1062,6 +1084,135 @@ fn lower_events(
             })
         })
         .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_event_policy_anchor(
+    document: &ContractDocument,
+    symbols: &GenesisSymbols,
+    entities: &[HirEntity],
+    event_id: EventTypeId,
+    event_fields: &[HirField],
+    partition_fields: &[(FieldId, Span)],
+    anchor: &Spanned<EventPolicyAnchorDeclaration>,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> bool {
+    let diagnostic_start = diagnostics.len();
+    let Some(entity_id) = symbols.entities.get(&anchor.value.entity.value).copied() else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::UnknownName,
+            anchor.value.entity.span,
+        ));
+        return false;
+    };
+    let Some(entity) = entities.iter().find(|candidate| candidate.id == entity_id) else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidEvent,
+            anchor.value.entity.span,
+        ));
+        return false;
+    };
+
+    let mut mapped_entity_fields = Vec::with_capacity(anchor.value.fields.len());
+    let mut mapped_payload_fields = Vec::with_capacity(anchor.value.fields.len());
+    for mapping in &anchor.value.fields {
+        let entity_field_id = symbols
+            .entity_fields
+            .get(&(entity_id, mapping.value.entity_field.value.clone()))
+            .copied();
+        let payload_field_id = symbols
+            .event_fields
+            .get(&(event_id, mapping.value.payload_field.value.clone()))
+            .copied();
+        let Some(entity_field_id) = entity_field_id else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                mapping.value.entity_field.span,
+            ));
+            continue;
+        };
+        let Some(payload_field_id) = payload_field_id else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                mapping.value.payload_field.span,
+            ));
+            continue;
+        };
+        let entity_field = entity
+            .fields
+            .iter()
+            .find(|field| field.id == entity_field_id);
+        let payload_field = event_fields
+            .iter()
+            .find(|field| field.id == payload_field_id);
+        if entity_field
+            .zip(payload_field)
+            .is_none_or(|(entity_field, payload_field)| {
+                payload_field.value_type.is_optional()
+                    || entity_field.value_type != payload_field.value_type
+            })
+        {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidEvent,
+                mapping.value.payload_field.span,
+            ));
+        }
+        mapped_entity_fields.push(entity_field_id);
+        mapped_payload_fields.push(payload_field_id);
+    }
+
+    if mapped_entity_fields != entity.key_fields
+        || mapped_payload_fields
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != mapped_payload_fields.len()
+    {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidEvent,
+            anchor.span,
+        ));
+    }
+    let partition_ids = partition_fields
+        .iter()
+        .map(|(field, _)| *field)
+        .collect::<Vec<_>>();
+    if partition_ids.is_empty()
+        || mapped_payload_fields.get(..partition_ids.len()) != Some(partition_ids.as_slice())
+    {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidEvent,
+            anchor.span,
+        ));
+    }
+
+    let policies = document
+        .contract
+        .value
+        .declarations
+        .iter()
+        .filter_map(|declaration| {
+            let Declaration::RowPolicy(policy) = &declaration.value else {
+                return None;
+            };
+            (symbols.entities.get(&policy.entity.value).copied() == Some(entity_id))
+                .then_some(policy)
+        })
+        .collect::<Vec<_>>();
+    if policies.len() != 1
+        || !policies[0]
+            .rules
+            .iter()
+            .any(|rule| rule.value.operation.value == RowPolicyOperation::Read)
+    {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidEvent,
+            anchor.value.entity.span,
+        ));
+    }
+
+    diagnostics.len() == diagnostic_start
 }
 
 fn lower_aggregates(

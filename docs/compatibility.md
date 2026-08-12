@@ -43,15 +43,26 @@ its bytes are readable merely because a decoder accepts some records.
 
 Capability records follow a least-successor rule: ordinary grants remain V1,
 migration authority uses migration-only V2, installation authority uses V3,
-and a compiler-bound row-policy grant uses V4. The V4 extension binds one exact
-application-role hash, canonical principal facts, and canonical protected
-entity/operation selections; omitting the extension under the V4 identity is
-corruption. V2's source and schema hash are frozen to ADR-0089's original
-bytes. A short-lived pre-alpha build accidentally emitted the additive V3
-installation payload under V2's compact identity; current readers recover that
-exact payload without dropping authority, while every new installation grant
-is written as V3. No general unknown-field or best-effort durable decoder is
-enabled by this narrow compatibility repair.
+and a compiler-bound row-policy grant uses V4. A grant with explicit symbolic
+application-export authority uses V5; V5 is not selected merely because a
+grant can read entities, events, provenance, audit, or administer
+capabilities. V5 preserves the exact optional V2 through V4 extensions and
+adds a bounded, lineage-ordered export extension. Principal-filtered export
+requires the matching V4 role/policy extension, while whole-application export
+requires explicit global/all-partition authority. The public export operation
+is not available until WP-575 completes; this durable successor only makes its
+future authority distinct and fail-closed.
+
+The V4 extension binds one exact application-role hash, canonical principal
+facts, and canonical protected entity/operation selections; omitting the
+extension under the V4 identity is corruption. V1 through V4 source,
+descriptor, hash, and wire fixtures remain frozen. V2's source and schema hash
+are frozen to ADR-0089's original bytes. A short-lived pre-alpha build
+accidentally emitted the additive V3 installation payload under V2's compact
+identity; current readers recover that exact payload without dropping
+authority, while every new installation grant is written as V3. No general
+unknown-field or best-effort durable decoder is enabled by this narrow
+compatibility repair.
 
 Normal daemon startup performs the source-free format comparison before redb
 can open the file. An exact mismatch exits with `RDB-FORMAT-0101`, the retained

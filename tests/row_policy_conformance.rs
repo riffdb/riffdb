@@ -8,13 +8,14 @@ use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{ContractBundle, RowPolicyOperationV1, RowPolicyPlanV1};
 use riffdb_policy::{
-    IndexedRelationshipEvidenceV1, RowPolicyDecisionV1, evaluate_row_policy,
-    evaluate_row_transition, revalidate_row_policy_proof,
+    AuthorizedQueryRowPolicyContextV1, EventPolicyReleaseDecisionV1, IndexedRelationshipEvidenceV1,
+    RowPolicyDecisionV1, evaluate_row_policy, evaluate_row_transition,
+    revalidate_event_release_proof, revalidate_row_policy_proof,
 };
 use riffdb_types::{
     ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityId,
-    CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, DatabaseId, Environment, TenantScope,
-    Timestamp,
+    CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CommitSequence, DatabaseId, EntityKey,
+    Environment, EventId, TenantScope, Timestamp,
 };
 
 const SOURCE: &str = include_str!("../fixtures/compiler/row-policy/valid/document-access.riff");
@@ -260,6 +261,81 @@ fn final_safe_point_rejects_capability_revision_and_row_drift() {
     );
 }
 
+#[test]
+fn event_release_proof_binds_event_key_row_and_capability_revision() {
+    let bundle = compile_contract_source(SOURCE).expect("policy contract compiles");
+    let policy = policy(&bundle).clone();
+    let row = document(&bundle, OWNER, Some(TEAM), "Private");
+    let key = document_key(&bundle, &row);
+    let event_id = EventId::new(CommitSequence::first(), 0);
+    let context = AuthorizedQueryRowPolicyContextV1::test_fixture(
+        principal(OWNER, &[]),
+        vec![policy.clone()],
+        bundle.schema(),
+    )
+    .expect("event policy context");
+
+    let EventPolicyReleaseDecisionV1::Allow(proof) =
+        context.authorize_event_release(event_id, &key, &row, &[])
+    else {
+        panic!("owner receives an event/key-bound proof");
+    };
+    assert_eq!(proof.event_id(), event_id);
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Document")
+        .expect("document entity");
+    let wrong_key = entity
+        .primary_key()
+        .encode_entity(&[
+            CanonicalValue::Uuid([0x01; 16]),
+            CanonicalValue::Uuid([0x09; 16]),
+        ])
+        .expect("different document key");
+    assert!(
+        context
+            .authorize_event_release(event_id, &wrong_key, &row, &[])
+            .is_denied()
+    );
+    assert!(
+        revalidate_event_release_proof(&proof, &context, event_id, &key, &row, &[]).is_allowed()
+    );
+    assert!(
+        revalidate_event_release_proof(
+            &proof,
+            &context,
+            EventId::new(CommitSequence::first(), 1),
+            &key,
+            &row,
+            &[],
+        )
+        .is_denied()
+    );
+
+    let revised = AuthorizedQueryRowPolicyContextV1::test_fixture(
+        principal_at_revision(OWNER, &[], 2),
+        vec![policy.clone()],
+        bundle.schema(),
+    )
+    .expect("revised context");
+    assert!(
+        revalidate_event_release_proof(&proof, &revised, event_id, &key, &row, &[]).is_denied()
+    );
+    let outsider = AuthorizedQueryRowPolicyContextV1::test_fixture(
+        principal(OUTSIDER, &[]),
+        vec![policy],
+        bundle.schema(),
+    )
+    .expect("outsider context");
+    assert!(
+        outsider
+            .authorize_event_release(event_id, &key, &row, &[])
+            .is_denied()
+    );
+}
+
 fn policy(bundle: &ContractBundle) -> &RowPolicyPlanV1 {
     bundle
         .row_policies()
@@ -267,6 +343,30 @@ fn policy(bundle: &ContractBundle) -> &RowPolicyPlanV1 {
         .iter()
         .find(|policy| policy.name() == "DocumentAccess")
         .expect("document policy")
+}
+
+fn document_key(bundle: &ContractBundle, row: &CanonicalRecord) -> EntityKey {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Document")
+        .expect("document entity");
+    let values = entity
+        .primary_key_fields()
+        .iter()
+        .map(|field_id| {
+            row.fields()
+                .binary_search_by_key(field_id, |(candidate, _)| *candidate)
+                .ok()
+                .map(|index| row.fields()[index].1.clone())
+                .expect("complete document key")
+        })
+        .collect::<Vec<_>>();
+    entity
+        .primary_key()
+        .encode_entity(&values)
+        .expect("canonical document key")
 }
 
 fn document(

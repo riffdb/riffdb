@@ -1357,6 +1357,7 @@ fn pruned_history_bootstrap_request(
             max_scan_rows: 100,
             approval_required: Vec::new(),
             row_policy: None,
+            export: None,
         }),
     })
 }
@@ -1403,6 +1404,7 @@ fn consumer_capability_request(module_hash: &[u8]) -> TestResult<v1::CreateCapab
             max_scan_rows: 100,
             approval_required: Vec::new(),
             row_policy: None,
+            export: None,
         }),
     })
 }
@@ -1707,6 +1709,7 @@ fn bootstrap_request(
             max_scan_rows: 100,
             approval_required: Vec::new(),
             row_policy: None,
+            export: None,
         }),
     })
 }
@@ -1759,6 +1762,7 @@ fn explicit_partition_capability_request() -> TestResult<v1::CreateCapabilityReq
             max_scan_rows: 10,
             approval_required: Vec::new(),
             row_policy: None,
+            export: None,
         }),
     })
 }

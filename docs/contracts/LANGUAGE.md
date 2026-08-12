@@ -257,13 +257,35 @@ VectorMetric: Spanned<VectorMetricKeyword> = {
 };
 
 EventDeclaration: EventDeclaration = {
-    "event" <name:Identifier> "{" <partition_by:EventPartition?> <fields:SpannedTypedField*> "}"
-        => EventDeclaration { name, partition_by, fields },
+    "event" <name:Identifier> "{" <partition_by:EventPartition?>
+        <policy_anchor:EventPolicyAnchor?> <fields:SpannedTypedField*> "}"
+        => EventDeclaration { name, partition_by, policy_anchor, fields },
 };
 
 EventPartition: Spanned<Vec<Spanned<String>>> = {
     <lo:@L> "partition_by" "(" <fields:IdentifierList> ")" <hi:@R>
         => parser::spanned(fields, lo, hi),
+};
+
+EventPolicyAnchor: Spanned<EventPolicyAnchorDeclaration> = {
+    <lo:@L> "policy_anchor" <current:Identifier> <entity:Identifier>
+        "(" <fields:EventPolicyAnchorFieldList> ")" <hi:@R> =>? {
+            parser::grammar_result(parser::event_policy_anchor(current, entity, fields, parser::span(lo, hi)))
+        },
+};
+
+EventPolicyAnchorFieldList: Vec<Spanned<EventPolicyAnchorField>> = {
+    <head:EventPolicyAnchorField> <tail:("," <EventPolicyAnchorField>)*> <trailing:Comma?> => {
+        let _ = trailing;
+        let mut values = vec![head];
+        values.extend(tail);
+        values
+    },
+};
+
+EventPolicyAnchorField: Spanned<EventPolicyAnchorField> = {
+    <lo:@L> <entity_field:Identifier> ":" <payload_field:Identifier> <hi:@R>
+        => parser::spanned(EventPolicyAnchorField { entity_field, payload_field }, lo, hi),
 };
 
 EnumDeclaration: EnumDeclaration = {
@@ -840,6 +862,7 @@ extern {
         "root" => Token::Root,
         "child" => Token::Child,
         "partition_by" => Token::PartitionBy,
+        "policy_anchor" => Token::PolicyAnchor,
         "conflict_key" => Token::ConflictKey,
         "projection" => Token::Projection,
         "source" => Token::Source,

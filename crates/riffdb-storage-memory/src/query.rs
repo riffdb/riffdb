@@ -1013,8 +1013,12 @@ query ProjectMembers(
             CapabilityPrincipalFactsV1::empty(),
         )
         .expect("principal facts");
-        let policy = AuthorizedQueryRowPolicyContextV1::test_fixture(principal, vec![policy])
-            .expect("policy context");
+        let policy = AuthorizedQueryRowPolicyContextV1::test_fixture(
+            principal,
+            vec![policy],
+            bundle.schema(),
+        )
+        .expect("policy context");
         let mut policy_view = MemoryQueryView {
             state: &state,
             program: &program,

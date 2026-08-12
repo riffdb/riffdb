@@ -21,6 +21,11 @@ multi-tenant service.
   inputs. Application requests cannot submit a predicate, fact, evaluator, or
   bypass. The [row-policy reference](security/ROW-POLICIES.md) records the
   current compiler/runtime boundary.
+- Symbolic application export has distinct Capability V5 authority. Entity,
+  event, provenance, public-audit, capability-administration, and backup rights
+  do not imply export. Principal-filtered scope requires the exact current V4
+  role/policy extension; whole-application scope requires an explicit named
+  lineage under global tenant and all-partition scope.
 
 ## Primary Threats
 
@@ -82,3 +87,11 @@ must not reuse material. Preserve required readable keys during rotation.
 For storage or receipt corruption, stop. RiffDB intentionally fails readiness
 closed and has no online repair path. Restore only from a fully validated
 offline backup and account for the destructive rewind limitations.
+
+Capability-create JSON may include a bounded `grant.export.applications`
+array. Each entry names one contract lineage, selects `principal_filtered` or
+`whole_application`, and explicitly selects entities, events, provenance, and
+public audit. At least one of entities or events is required. This authority
+surface is available for provisioning, but the export execution commands
+remain unavailable until WP-575 completes; ordinary read or administrator
+credentials must not be treated as substitutes.

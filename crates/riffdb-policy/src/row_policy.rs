@@ -6,12 +6,12 @@ use std::num::NonZeroU64;
 use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_contract_ir::{
     ContractBundle, KeySchema, RowPolicyExpressionNodeV1, RowPolicyOperandV1, RowPolicyOperationV1,
-    RowPolicyPlanV1, RowPolicyValueSourceV1,
+    RowPolicyPlanV1, RowPolicyValueSourceV1, SchemaIr,
 };
 use riffdb_types::{
     ActorKind, CanonicalRecord, CanonicalValue, CanonicalValueHash, CapabilityId,
-    CapabilityRowPolicyOperationV1, EntityKey, EntityTypeId, IndexId, PartitionKey,
-    encode_canonical_record, hash_canonical_value,
+    CapabilityRowPolicyOperationV1, EntityKey, EntityTypeId, EventId, FieldId, IndexId,
+    PartitionKey, encode_canonical_record, hash_canonical_value,
 };
 
 use crate::{
@@ -211,6 +211,8 @@ struct AuthorizedRelationshipPlanV1 {
 struct AuthorizedEntityPolicyV1 {
     policy: RowPolicyPlanV1,
     relationships: BTreeMap<(EntityTypeId, IndexId), AuthorizedRelationshipPlanV1>,
+    primary_key_fields: Vec<FieldId>,
+    primary_key: KeySchema,
 }
 
 /// Move-only transaction-current policy authority retained by the command lane.
@@ -362,6 +364,64 @@ pub struct AuthorizedQueryRowPolicyContextV1 {
     policies: BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>,
 }
 
+/// Move-only proof that one exact event may be released under current-row authority.
+///
+/// It binds the stable event identity and compiler-owned source key to the same
+/// capability revision and current-row hash carried by the shared policy proof.
+pub struct AuthorizedEventReleaseProofV1 {
+    event_id: EventId,
+    source_key: EntityKey,
+    row_policy: RowPolicyProofV1,
+}
+
+impl std::fmt::Debug for AuthorizedEventReleaseProofV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedEventReleaseProofV1")
+            .field("event_id", &self.event_id)
+            .field("entity", &self.source_key.entity_type_id())
+            .field("authority", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl AuthorizedEventReleaseProofV1 {
+    /// Stable event identity covered by this release proof.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+
+    /// Exact current capability revision used by policy evaluation.
+    #[must_use]
+    pub const fn capability_revision(&self) -> NonZeroU64 {
+        self.row_policy.capability_revision()
+    }
+}
+
+/// Closed event-release result. Denial is indistinguishable absence to consumers.
+#[derive(Debug)]
+pub enum EventPolicyReleaseDecisionV1 {
+    /// Exact event/key/revision/current-row proof.
+    Allow(AuthorizedEventReleaseProofV1),
+    /// Deny without exposing the event, source row, or failure detail publicly.
+    Deny(RowPolicyDenyReasonV1),
+}
+
+impl EventPolicyReleaseDecisionV1 {
+    /// Whether current authority allows release.
+    #[must_use]
+    pub const fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allow(_))
+    }
+
+    /// Whether release is denied as indistinguishable absence.
+    #[must_use]
+    pub const fn is_denied(&self) -> bool {
+        matches!(self, Self::Deny(_))
+    }
+}
+
 impl std::fmt::Debug for AuthorizedQueryRowPolicyContextV1 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -385,6 +445,7 @@ impl AuthorizedQueryRowPolicyContextV1 {
     pub fn test_fixture(
         principal: PrincipalFactBindingV1,
         policies: Vec<RowPolicyPlanV1>,
+        schema: &SchemaIr,
     ) -> Result<Self, QueryRowPolicyContextErrorV1> {
         let mut selected = BTreeMap::new();
         for policy in policies {
@@ -393,13 +454,17 @@ impl AuthorizedQueryRowPolicyContextV1 {
                     .iter()
                     .any(|node| matches!(node, RowPolicyExpressionNodeV1::IndexedExists { .. }))
             }) || selected
-                .insert(
-                    policy.entity(),
+                .insert(policy.entity(), {
+                    let entity = schema
+                        .entity(policy.entity())
+                        .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
                     AuthorizedEntityPolicyV1 {
                         policy,
                         relationships: BTreeMap::new(),
-                    },
-                )
+                        primary_key_fields: entity.primary_key_fields().to_vec(),
+                        primary_key: entity.primary_key().clone(),
+                    }
+                })
                 .is_some()
             {
                 return Err(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan);
@@ -505,6 +570,60 @@ impl AuthorizedQueryRowPolicyContextV1 {
         .is_allowed()
     }
 
+    /// Produces an event/key-bound proof only after the exact selected read
+    /// policy accepts the authoritative current row and relationship evidence.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn authorize_event_release(
+        &self,
+        event_id: EventId,
+        source_key: &EntityKey,
+        row: &CanonicalRecord,
+        relationship_exists: &[bool],
+    ) -> EventPolicyReleaseDecisionV1 {
+        let entity = source_key.entity_type_id();
+        let Some(selected) = self.policies.get(&entity) else {
+            return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::MissingRule);
+        };
+        if row_entity_key(selected, row).as_ref() != Some(source_key) {
+            return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::InvalidPlanOrRow);
+        }
+        let Ok(probes) = required_indexed_relationship_probes(
+            &selected.policy,
+            RowPolicyOperationV1::Read,
+            row,
+            &self.principal,
+        ) else {
+            return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::InvalidPlanOrRow);
+        };
+        if probes.len() != relationship_exists.len() {
+            return EventPolicyReleaseDecisionV1::Deny(
+                RowPolicyDenyReasonV1::MissingOrInvalidRelationshipEvidence,
+            );
+        }
+        let evidence = probes
+            .into_iter()
+            .zip(relationship_exists)
+            .map(|(probe, exists)| probe.into_evidence(*exists))
+            .collect::<Vec<_>>();
+        match evaluate_row_policy(
+            &selected.policy,
+            RowPolicyOperationV1::Read,
+            row,
+            &self.principal,
+            &evidence,
+        ) {
+            RowPolicyDecisionV1::Allow(row_policy) => {
+                EventPolicyReleaseDecisionV1::Allow(AuthorizedEventReleaseProofV1 {
+                    event_id,
+                    source_key: source_key.clone(),
+                    row_policy,
+                })
+            }
+            RowPolicyDecisionV1::Deny(reason) => EventPolicyReleaseDecisionV1::Deny(reason),
+        }
+    }
+
     /// Evaluates a complete authoritative observation set for one projected
     /// entity and returns an opaque candidate-bound admission proof.
     ///
@@ -544,6 +663,77 @@ impl AuthorizedQueryRowPolicyContextV1 {
             admitted,
         })
     }
+}
+
+/// Re-evaluates one event release at the final safe point. Event identity,
+/// source key, capability revision, current row, relationships, and predicate
+/// must all remain exact or release is denied.
+#[doc(hidden)]
+#[must_use]
+pub fn revalidate_event_release_proof(
+    prior: &AuthorizedEventReleaseProofV1,
+    context: &AuthorizedQueryRowPolicyContextV1,
+    event_id: EventId,
+    source_key: &EntityKey,
+    row: &CanonicalRecord,
+    relationship_exists: &[bool],
+) -> EventPolicyReleaseDecisionV1 {
+    if prior.event_id != event_id || &prior.source_key != source_key {
+        return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::StaleAuthority);
+    }
+    let Some(selected) = context.policies.get(&source_key.entity_type_id()) else {
+        return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::StaleAuthority);
+    };
+    if row_entity_key(selected, row).as_ref() != Some(source_key) {
+        return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::StaleAuthority);
+    }
+    let Ok(probes) = required_indexed_relationship_probes(
+        &selected.policy,
+        RowPolicyOperationV1::Read,
+        row,
+        &context.principal,
+    ) else {
+        return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::StaleAuthority);
+    };
+    if probes.len() != relationship_exists.len() {
+        return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::StaleAuthority);
+    }
+    let evidence = probes
+        .into_iter()
+        .zip(relationship_exists)
+        .map(|(probe, exists)| probe.into_evidence(*exists))
+        .collect::<Vec<_>>();
+    match revalidate_row_policy_proof(
+        &prior.row_policy,
+        &selected.policy,
+        Some(row),
+        None,
+        &context.principal,
+        &evidence,
+    ) {
+        RowPolicyDecisionV1::Allow(row_policy) => {
+            EventPolicyReleaseDecisionV1::Allow(AuthorizedEventReleaseProofV1 {
+                event_id,
+                source_key: source_key.clone(),
+                row_policy,
+            })
+        }
+        RowPolicyDecisionV1::Deny(reason) => EventPolicyReleaseDecisionV1::Deny(reason),
+    }
+}
+
+fn row_entity_key(selected: &AuthorizedEntityPolicyV1, row: &CanonicalRecord) -> Option<EntityKey> {
+    let values = selected
+        .primary_key_fields
+        .iter()
+        .map(|field_id| {
+            row.fields()
+                .binary_search_by_key(field_id, |(candidate, _)| *candidate)
+                .ok()
+                .map(|index| row.fields()[index].1.clone())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    selected.primary_key.encode_entity(&values).ok()
 }
 
 /// Resolves exact query policy context from a current authorization proof.
@@ -641,11 +831,17 @@ pub fn resolve_authorized_query_row_policy_context(
                 );
             }
         }
+        let entity_schema = bundle
+            .schema()
+            .entity(entity)
+            .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
         policies.insert(
             entity,
             AuthorizedEntityPolicyV1 {
                 policy,
                 relationships,
+                primary_key_fields: entity_schema.primary_key_fields().to_vec(),
+                primary_key: entity_schema.primary_key().clone(),
             },
         );
     }
@@ -728,12 +924,18 @@ fn resolve_read_policies(
             .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
         let relationships = relationship_plans(bundle, &policy)
             .map_err(|_| QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+        let entity_schema = bundle
+            .schema()
+            .entity(entity)
+            .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
         if policies
             .insert(
                 entity,
                 AuthorizedEntityPolicyV1 {
                     policy,
                     relationships,
+                    primary_key_fields: entity_schema.primary_key_fields().to_vec(),
+                    primary_key: entity_schema.primary_key().clone(),
                 },
             )
             .is_some()
@@ -782,12 +984,18 @@ pub fn resolve_authorized_command_row_policy_context(
             .ok_or(CommandRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
         let relationships = relationship_plans(bundle, &policy)
             .map_err(|_| CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+        let entity_schema = bundle
+            .schema()
+            .entity(binding.entity_type())
+            .ok_or(CommandRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
         if policies
             .insert(
                 binding.entity_type(),
                 AuthorizedEntityPolicyV1 {
                     policy,
                     relationships,
+                    primary_key_fields: entity_schema.primary_key_fields().to_vec(),
+                    primary_key: entity_schema.primary_key().clone(),
                 },
             )
             .is_some()

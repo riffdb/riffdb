@@ -5,17 +5,18 @@ use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     CanonicalInputHash, CommitSequence, ConflictKeyHash, ContractVersion, EntityRecordHash,
     EntityVersion, EventHash, EventTypeId, IndexEntryKey, IndexEpoch, IndexId, MAX_KEY_BYTES,
-    OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record,
+    OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId, RequestId, RowPolicyName,
+    encode_canonical_record,
 };
 
 use crate::{
     AffectedEntityV1, CommittedEntityMutationV1, CommittedEntityReferenceV2, DurabilityMode,
     EncodedPageItem, EventReferenceV2, IndexMigrationRowEvidence, IndexMigrationSemanticRow,
     LegacyStoredIndexEpochV1, PartitionIndexTarget, StoredCommandCausationV1, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1,
-    StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StoredReadDependencyV1,
+    StoredDurableEventV1, StoredDurableEventV2, StoredEntityRecordV1, StoredEventPolicyAnchorV1,
+    StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredReadDependenciesV1, StoredReadDependencyV1,
 };
 
 use super::{
@@ -44,6 +45,7 @@ pub(super) const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
 pub(super) const OUTCOME_V2: &str = "riffdb.storage.v1.StoredOutcomeV2";
 pub(super) const OUTCOME_V3: &str = "riffdb.storage.v1.StoredOutcomeV3";
 pub(super) const EVENT: &str = "riffdb.storage.v1.StoredDurableEventV1";
+pub(super) const EVENT_V2: &str = "riffdb.storage.v1.StoredDurableEventV2";
 pub(super) const EVENT_ROUTE: &str = "riffdb.storage.v1.StoredEventRouteV1";
 pub(super) const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
 pub(super) const PROVENANCE_V2: &str = "riffdb.storage.v1.StoredProvenanceRecordV2";
@@ -328,6 +330,50 @@ pub(super) fn event_from_proto(
         EventTypeId::new(value.event_type_id).ok_or_else(DurableCodecError::corrupt)?,
         canonical_record_from_bytes(&value.canonical_payload)?,
         EventHash::from_bytes(fixed(value.event_hash)?),
+    ))
+}
+
+fn event_policy_anchor_to_proto(
+    value: &StoredEventPolicyAnchorV1,
+) -> wire::StoredEventPolicyAnchorV1 {
+    wire::StoredEventPolicyAnchorV1 {
+        contract: Some(binding_to_proto(value.contract())),
+        event_type_id: value.event_type_id().get(),
+        source: Some(entity_target_to_proto(value.source())),
+        read_policy: value.read_policy().as_str().to_owned(),
+    }
+}
+
+fn event_policy_anchor_from_proto(
+    value: wire::StoredEventPolicyAnchorV1,
+) -> Result<StoredEventPolicyAnchorV1, DurableCodecError> {
+    Ok(StoredEventPolicyAnchorV1::new(
+        binding_from_proto(require(value.contract)?)?,
+        EventTypeId::new(value.event_type_id).ok_or_else(DurableCodecError::corrupt)?,
+        entity_target_from_proto(require(value.source)?)?,
+        RowPolicyName::new(value.read_policy).map_err(|_| DurableCodecError::corrupt())?,
+    ))
+}
+
+fn event_v2_to_proto(value: &StoredDurableEventV2) -> wire::StoredDurableEventV2 {
+    wire::StoredDurableEventV2 {
+        event_id: Some(event_id_to_proto(value.event_id())),
+        event_type_id: value.event_type_id().get(),
+        canonical_payload: value.payload_encoded().to_vec(),
+        event_hash: value.event_hash().as_bytes().to_vec(),
+        policy_anchor: Some(event_policy_anchor_to_proto(value.policy_anchor())),
+    }
+}
+
+fn event_v2_from_proto(
+    value: wire::StoredDurableEventV2,
+) -> Result<StoredDurableEventV2, DurableCodecError> {
+    storage_result(StoredDurableEventV2::new(
+        event_id_from_proto(require(value.event_id)?)?,
+        EventTypeId::new(value.event_type_id).ok_or_else(DurableCodecError::corrupt)?,
+        canonical_record_from_bytes(&value.canonical_payload)?,
+        EventHash::from_bytes(fixed(value.event_hash)?),
+        event_policy_anchor_from_proto(require(value.policy_anchor)?)?,
     ))
 }
 
@@ -791,6 +837,20 @@ pub fn decode_durable_event_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredDurableEventV1>, DurableCodecError> {
     decode_message::<wire::StoredDurableEventV1, _, _>(EVENT, encoded, event_from_proto)
+}
+
+/// Encodes one anchored durable-event successor without changing frozen V1 bytes.
+pub fn encode_durable_event_v2(
+    value: &StoredDurableEventV2,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(EVENT_V2, &event_v2_to_proto(value))
+}
+
+/// Decodes one anchored durable-event successor and verifies payload plus authority hash.
+pub fn decode_durable_event_v2(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredDurableEventV2>, DurableCodecError> {
+    decode_message::<wire::StoredDurableEventV2, _, _>(EVENT_V2, encoded, event_v2_from_proto)
 }
 
 /// Encodes one payload-free partition event route.

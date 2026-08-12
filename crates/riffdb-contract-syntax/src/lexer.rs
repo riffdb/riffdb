@@ -75,6 +75,8 @@ pub(crate) enum Token {
     Child,
     #[token("partition_by")]
     PartitionBy,
+    #[token("policy_anchor")]
+    PolicyAnchor,
     #[token("conflict_key")]
     ConflictKey,
     #[token("projection")]
