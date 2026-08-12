@@ -7,20 +7,27 @@ use std::fmt;
 use prost::Message;
 use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
-    AgentSessionId, ApplicationInstallationCampaignId, Audience, BackupNameV1, CapabilityId,
-    ContractMigrationOperationId, EntityKey, EventConsumerName, IndexEntryKey, MAX_ACTOR_ID_BYTES,
+    AgentSessionId, ApplicationInstallationCampaignId, ApplicationRoleHash, Audience, BackupNameV1,
+    CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+    CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
+    CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
+    ContractLineage, ContractMigrationOperationId, EntityKey, EntityTypeId, EventConsumerName,
+    IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS,
     MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS,
     MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
-    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
-    MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
-    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, Timestamp,
+    MAX_CAPABILITY_ROW_POLICY_BINDINGS, MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES,
+    MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1,
+    MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, OfflineMaintenanceOperationId,
+    PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
     hash_application_installation_plan, hash_application_installation_receipt, hash_schema,
     offline_maintenance_input_hash,
 };
 
 use crate::command::validate_provenance_uri;
 use crate::v1;
-use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_value, validate_value_record};
+use crate::value::{
+    MAX_PROTOCOL_NAME_BYTES, canonical_value_from_proto, validate_value, validate_value_record,
+};
 use crate::wire::{self, Cursor, PreflightError};
 
 /// Exact maximum encoded size of one public request.
@@ -2666,6 +2673,12 @@ fn compare_field_visibility(left: (&str, u32), right: (&str, u32)) -> Ordering {
     compare_framed_bytes(left.0.as_bytes(), right.0.as_bytes()).then_with(|| left.1.cmp(&right.1))
 }
 
+fn compare_row_policy_bindings(left: (&str, u32, &str), right: (&str, u32, &str)) -> Ordering {
+    compare_framed_bytes(left.0.as_bytes(), right.0.as_bytes())
+        .then_with(|| left.1.cmp(&right.1))
+        .then_with(|| left.2.as_bytes().cmp(right.2.as_bytes()))
+}
+
 fn checked_capability_sum(
     parts: impl IntoIterator<Item = usize>,
 ) -> Result<usize, PublicWireError> {
@@ -2678,6 +2691,189 @@ fn framed_capability_bytes(content_bytes: usize) -> Result<usize, PublicWireErro
     4usize
         .checked_add(content_bytes)
         .ok_or(PublicWireError::TooManyItems)
+}
+
+fn validate_capability_row_policy(
+    row_policy: Option<&v1::CapabilityRowPolicyGrant>,
+) -> Result<usize, PublicWireError> {
+    let Some(row_policy) = row_policy else {
+        return Ok(0);
+    };
+    let application_role_hash: [u8; 32] = row_policy
+        .application_role_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    if row_policy.principal_facts.len() > MAX_PRINCIPAL_FACTS_V1
+        || row_policy.policies.len() > MAX_CAPABILITY_ROW_POLICY_BINDINGS
+    {
+        return Err(PublicWireError::TooManyItems);
+    }
+    if row_policy.policies.is_empty() {
+        return Err(PublicWireError::MissingRequiredField);
+    }
+
+    let mut facts = Vec::with_capacity(row_policy.principal_facts.len());
+    let mut previous_fact_name: Option<&str> = None;
+    for fact in &row_policy.principal_facts {
+        if previous_fact_name.is_some_and(|previous| previous >= fact.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        let value = canonical_value_from_proto(
+            fact.value
+                .clone()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+        facts.push(
+            CapabilityPrincipalFactV1::new(fact.name.clone(), value)
+                .map_err(|_| PublicWireError::InvalidValue)?,
+        );
+        previous_fact_name = Some(fact.name.as_str());
+    }
+    let principal_facts =
+        CapabilityPrincipalFactsV1::new(facts).map_err(|_| PublicWireError::NonCanonical)?;
+
+    let mut bindings = Vec::with_capacity(row_policy.policies.len());
+    let mut previous_binding: Option<(&str, u32, &str)> = None;
+    for binding in &row_policy.policies {
+        let lineage = ContractLineage::new(binding.contract_lineage.clone())
+            .map_err(|_| PublicWireError::InvalidIdentity)?;
+        let policy_name = RowPolicyName::new(binding.policy_name.clone())
+            .map_err(|_| PublicWireError::InvalidIdentity)?;
+        let entity_type =
+            EntityTypeId::new(binding.entity_type_id).ok_or(PublicWireError::InvalidIdentity)?;
+        if binding.operations.is_empty() || binding.operations.len() > 4 {
+            return Err(PublicWireError::TooManyItems);
+        }
+        let key = (
+            binding.contract_lineage.as_str(),
+            binding.entity_type_id,
+            binding.policy_name.as_str(),
+        );
+        if previous_binding
+            .is_some_and(|previous| compare_row_policy_bindings(previous, key) != Ordering::Less)
+        {
+            return Err(PublicWireError::NonCanonical);
+        }
+
+        let mut operations = Vec::with_capacity(binding.operations.len());
+        let mut previous_operation = 0i32;
+        for raw_operation in &binding.operations {
+            if *raw_operation <= previous_operation {
+                return Err(PublicWireError::NonCanonical);
+            }
+            let operation = match v1::CapabilityRowPolicyOperation::try_from(*raw_operation)
+                .map_err(|_| PublicWireError::InvalidEnum)?
+            {
+                v1::CapabilityRowPolicyOperation::Read => CapabilityRowPolicyOperationV1::Read,
+                v1::CapabilityRowPolicyOperation::Create => CapabilityRowPolicyOperationV1::Create,
+                v1::CapabilityRowPolicyOperation::Update => CapabilityRowPolicyOperationV1::Update,
+                v1::CapabilityRowPolicyOperation::Delete => CapabilityRowPolicyOperationV1::Delete,
+                v1::CapabilityRowPolicyOperation::Unspecified => {
+                    return Err(PublicWireError::InvalidEnum);
+                }
+            };
+            operations.push(operation);
+            previous_operation = *raw_operation;
+        }
+        bindings.push(
+            CapabilityRowPolicyBindingV1::new(lineage, policy_name, entity_type, operations)
+                .map_err(|_| PublicWireError::NonCanonical)?,
+        );
+        previous_binding = Some(key);
+    }
+
+    let grant = CapabilityRowPolicyGrantV1::new(
+        ApplicationRoleHash::from_bytes(application_role_hash),
+        principal_facts,
+        bindings,
+    )
+    .map_err(|_| PublicWireError::NonCanonical)?;
+    grant.bindings().iter().try_fold(
+        checked_capability_sum([
+            32,
+            grant
+                .internal_principal_facts()
+                .internal_canonical_bytes()
+                .len(),
+            4,
+        ])?,
+        |total, binding| {
+            checked_capability_sum([
+                total,
+                binding.lineage().as_bytes().len(),
+                binding.policy_name().as_str().len(),
+                4,
+                4,
+                binding.operations().len(),
+            ])
+        },
+    )
+}
+
+fn validate_capability_export(
+    export: Option<&v1::CapabilityExportGrant>,
+) -> Result<usize, PublicWireError> {
+    let Some(export) = export else {
+        return Ok(0);
+    };
+    if export.applications.is_empty() {
+        return Err(PublicWireError::MissingRequiredField);
+    }
+    if export.applications.len() > MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS {
+        return Err(PublicWireError::TooManyItems);
+    }
+
+    let mut applications = Vec::with_capacity(export.applications.len());
+    let mut previous_lineage: Option<&str> = None;
+    for application in &export.applications {
+        if previous_lineage.is_some_and(|previous| {
+            compare_framed_bytes(previous.as_bytes(), application.contract_lineage.as_bytes())
+                != Ordering::Less
+        }) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        let lineage = ContractLineage::new(application.contract_lineage.clone())
+            .map_err(|_| PublicWireError::InvalidIdentity)?;
+        let scope = match v1::CapabilityApplicationExportScope::try_from(application.scope)
+            .map_err(|_| PublicWireError::InvalidEnum)?
+        {
+            v1::CapabilityApplicationExportScope::PrincipalFiltered => {
+                CapabilityApplicationExportScopeV1::PrincipalFiltered
+            }
+            v1::CapabilityApplicationExportScope::WholeApplication => {
+                CapabilityApplicationExportScopeV1::WholeApplication
+            }
+            v1::CapabilityApplicationExportScope::Unspecified => {
+                return Err(PublicWireError::InvalidEnum);
+            }
+        };
+        applications.push(
+            CapabilityApplicationExportGrantV1::new(
+                lineage,
+                scope,
+                application.entities,
+                application.events,
+                application.provenance,
+                application.public_audit,
+            )
+            .map_err(|_| PublicWireError::InvalidIdentity)?,
+        );
+        previous_lineage = Some(application.contract_lineage.as_str());
+    }
+    let export =
+        CapabilityExportGrantV1::new(applications).map_err(|_| PublicWireError::NonCanonical)?;
+    export
+        .applications()
+        .iter()
+        .try_fold(4usize, |total, grant| {
+            checked_capability_sum([
+                total,
+                framed_capability_bytes(grant.lineage().as_bytes().len())?,
+                5,
+            ])
+        })
 }
 
 fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize, PublicWireError> {
@@ -2762,6 +2958,8 @@ fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize,
         field_visibility_bytes,
         2,
         checked_capability_sum([4, grant.approval_required.len()])?,
+        validate_capability_row_policy(grant.row_policy.as_ref())?,
+        validate_capability_export(grant.export.as_ref())?,
     ])
 }
 
@@ -6231,6 +6429,88 @@ fn preflight_field_visibility(input: &[u8]) -> Result<(), PublicWireError> {
     )
 }
 
+fn preflight_capability_principal_fact(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_value,
+        }],
+        &[],
+    )
+}
+
+fn preflight_capability_row_policy_binding(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[4],
+        &[],
+        &[],
+        &[RepeatedRule {
+            field: 4,
+            maximum: 4,
+            wire: RepeatedWire::PackableVarint,
+        }],
+    )
+}
+
+fn preflight_capability_row_policy_grant(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[2, 3],
+        &[],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_capability_principal_fact,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_capability_row_policy_binding,
+            },
+        ],
+        &[
+            RepeatedRule {
+                field: 2,
+                maximum: MAX_PRINCIPAL_FACTS_V1,
+                wire: RepeatedWire::LengthDelimited,
+            },
+            RepeatedRule {
+                field: 3,
+                maximum: MAX_CAPABILITY_ROW_POLICY_BINDINGS,
+                wire: RepeatedWire::LengthDelimited,
+            },
+        ],
+    )
+}
+
+fn preflight_capability_application_export_grant(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 6, &[], &[], &[], &[])
+}
+
+fn preflight_capability_export_grant(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[1],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_capability_application_export_grant,
+        }],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
 fn count_packed_field(input: &[u8], field_number: u32) -> Result<usize, PublicWireError> {
     let mut total = 0usize;
     let mut cursor = Cursor::new(input);
@@ -6253,7 +6533,7 @@ fn preflight_capability_grant(input: &[u8]) -> Result<(), PublicWireError> {
     }
     preflight_nested_message(
         input,
-        6,
+        8,
         &[3, 4, 6],
         &[],
         &[
@@ -6272,6 +6552,14 @@ fn preflight_capability_grant(input: &[u8]) -> Result<(), PublicWireError> {
             NestedRule {
                 field: 4,
                 preflight: preflight_field_visibility,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_capability_row_policy_grant,
+            },
+            NestedRule {
+                field: 8,
+                preflight: preflight_capability_export_grant,
             },
         ],
         &[

@@ -113,6 +113,20 @@ Known limitations:
 Follow-up issues:
 ```
 
+## Build hygiene
+
+- Sessions running multiple package worktrees SHOULD export one shared
+  `CARGO_TARGET_DIR` per session (for example `~/dev/.cargo-target-<session>`)
+  and reuse it across that session's worktrees, keeping dependency builds warm
+  instead of paying a cold build per package. Do not share one target directory
+  across concurrent sessions: cargo's target lock serializes builds.
+- Dependency debuginfo is disabled workspace-wide (`[profile.dev.package."*"]
+  debug = false`); workspace crates keep line tables. Do not re-enable it in a
+  package without maintainer approval.
+- Prefer targeted cleanup (`rm -rf <target>/*/incremental`, age-based sweeps)
+  over `cargo clean`; a machine-wide `sccache` wrapper caches dependency
+  compilation, so cold rebuilds are cheap but still wasteful.
+
 ## Standard commands
 
 ```bash

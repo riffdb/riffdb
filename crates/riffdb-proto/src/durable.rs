@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 81;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 83;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 58;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 60;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -122,6 +122,22 @@ const CAPABILITY_V4_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const CAPABILITY_V4_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-capability-v4-record-bound.bin"
+));
+const EVENT_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-v2-schema-hash.bin"
+));
+const EVENT_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-v2-record-bound.bin"
+));
+const CAPABILITY_V5_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-capability-v5-schema-hash.bin"
+));
+const CAPABILITY_V5_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-capability-v5-record-bound.bin"
 ));
 const VALIDATED_PREFIX_CHECKPOINT_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -728,6 +744,46 @@ const CAPABILITY_V4_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_cur
 )
 .with_compact_identity(18, 5);
 
+const DURABLE_EVENT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredDurableEventV2",
+    SchemaHash::from_bytes(*EVENT_V2_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        EVENT_V2_RECORD_BOUND_BYTES[0],
+        EVENT_V2_RECORD_BOUND_BYTES[1],
+        EVENT_V2_RECORD_BOUND_BYTES[2],
+        EVENT_V2_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        EVENT_V2_RECORD_BOUND_BYTES[4],
+        EVENT_V2_RECORD_BOUND_BYTES[5],
+        EVENT_V2_RECORD_BOUND_BYTES[6],
+        EVENT_V2_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<76>,
+    validate_payload::<76, v1::StoredDurableEventV2>,
+)
+.with_compact_identity(14, 2);
+
+const CAPABILITY_V5_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.CapabilityRecordV5",
+    SchemaHash::from_bytes(*CAPABILITY_V5_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        CAPABILITY_V5_RECORD_BOUND_BYTES[0],
+        CAPABILITY_V5_RECORD_BOUND_BYTES[1],
+        CAPABILITY_V5_RECORD_BOUND_BYTES[2],
+        CAPABILITY_V5_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        CAPABILITY_V5_RECORD_BOUND_BYTES[4],
+        CAPABILITY_V5_RECORD_BOUND_BYTES[5],
+        CAPABILITY_V5_RECORD_BOUND_BYTES[6],
+        CAPABILITY_V5_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<77>,
+    validate_payload::<77, v1::CapabilityRecordV5>,
+)
+.with_compact_identity(18, 6);
+
 const VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA: RecordSchema<'static> =
     RecordSchema::new_current(
         "riffdb.storage.v1.StoredValidatedPrefixCheckpointV1",
@@ -1326,6 +1382,8 @@ readable_message!(
 readable_message!(v1::CapabilityRecordV2, CAPABILITY_V2_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV3, CAPABILITY_V3_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV4, CAPABILITY_V4_RECORD_SCHEMA);
+readable_message!(v1::StoredDurableEventV2, DURABLE_EVENT_V2_RECORD_SCHEMA);
+readable_message!(v1::CapabilityRecordV5, CAPABILITY_V5_RECORD_SCHEMA);
 readable_message!(
     v1::StoredValidatedPrefixCheckpointV1,
     VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA
@@ -1415,6 +1473,7 @@ writable_message!(v1::ActiveCatalogPointerV1);
 writable_message!(v1::StoredCatalogAdministrationV1);
 writable_message!(v1::StoredEntityRecordV1);
 writable_message!(v1::StoredDurableEventV1);
+writable_message!(v1::StoredDurableEventV2);
 writable_message!(v1::CapabilityRecordV1);
 writable_message!(v1::CapabilityTokenLookupV1);
 writable_message!(v1::CapabilityBootstrapMarkerV1);
@@ -1441,6 +1500,7 @@ writable_message!(v1::StoredRetiredEntityRecordV1);
 writable_message!(v1::CapabilityRecordV2);
 writable_message!(v1::CapabilityRecordV3);
 writable_message!(v1::CapabilityRecordV4);
+writable_message!(v1::CapabilityRecordV5);
 writable_message!(v1::StoredRetentionWatermarkV1);
 writable_message!(v1::StoredRetentionHoldsV1);
 writable_message!(v1::StoredHistoryTombstoneV1);
@@ -1637,6 +1697,8 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA,
     CAPABILITY_V3_RECORD_SCHEMA,
     CAPABILITY_V4_RECORD_SCHEMA,
+    DURABLE_EVENT_V2_RECORD_SCHEMA,
+    CAPABILITY_V5_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1660,6 +1722,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     EXECUTION_FAILED_V3_RECORD_SCHEMA,
     OUTCOME_V3_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[13],
+    DURABLE_EVENT_V2_RECORD_SCHEMA,
     OUTBOX_INTENT_V2_RECORD_SCHEMA,
     PROVENANCE_V2_RECORD_SCHEMA,
     COMMIT_V3_RECORD_SCHEMA,
@@ -1703,6 +1766,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA,
     CAPABILITY_V3_RECORD_SCHEMA,
     CAPABILITY_V4_RECORD_SCHEMA,
+    CAPABILITY_V5_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 
