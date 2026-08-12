@@ -238,6 +238,25 @@ message CapabilityRowPolicyGrant {
   repeated CapabilityRowPolicyBinding policies = 3;
 }
 
+enum CapabilityApplicationExportScope {
+  CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED = 0;
+  CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED = 1;
+  CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION = 2;
+}
+
+message CapabilityApplicationExportGrant {
+  string contract_lineage = 1;
+  CapabilityApplicationExportScope scope = 2;
+  bool entities = 3;
+  bool events = 4;
+  bool provenance = 5;
+  bool public_audit = 6;
+}
+
+message CapabilityExportGrant {
+  repeated CapabilityApplicationExportGrant applications = 1;
+}
+
 message CapabilityGrant {
   TenantScope tenant_scope = 1;
   PartitionScope partition_scope = 2;
@@ -246,6 +265,7 @@ message CapabilityGrant {
   uint32 max_scan_rows = 5;
   repeated CapabilityPermissionKind approval_required = 6;
   CapabilityRowPolicyGrant row_policy = 7;
+  CapabilityExportGrant export = 8;
 }
 
 message CreateCapabilityRequest {

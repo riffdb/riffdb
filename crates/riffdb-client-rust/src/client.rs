@@ -1744,6 +1744,7 @@ mod tests {
                 max_scan_rows: 1,
                 approval_required: Vec::new(),
                 row_policy: None,
+                export: None,
             }),
         }
     }

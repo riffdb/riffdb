@@ -75,11 +75,13 @@ ceiling; it never post-filters or returns a partial aggregate.
 Event replay/tail, durable streams, contextual trigger delivery and reactions,
 consumer status/checkpoint operations, wakeup visibility, and export remain
 deliberately closed for V4 credentials until their respective safe points
-consume the same authority. Event policy cannot be guessed from payload field
-names: the accepted anchor surface binds an event to an explicit current
-source-entity key and read policy, but compiler/runtime activation remains
-fail-closed during its exact-identity rollout. Do not implement a temporary
-middleware filter or weaken this refusal.
+consume the same authority. Export additionally requires a distinct current
+Capability V5 grant; V4 row policy alone never implies it. Event policy cannot
+be guessed from payload field names: the accepted anchor surface binds an
+event to an explicit current source-entity key and read policy, but
+compiler/runtime activation remains fail-closed during its exact-identity
+rollout. Do not implement a temporary middleware filter or weaken this
+refusal.
 Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
 not silently drop an unknown fact or substitute a default value. A role whose
 selected policy reads `principal.id` also rejects a principal that is not

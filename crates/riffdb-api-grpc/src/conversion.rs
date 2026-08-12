@@ -77,7 +77,8 @@ use riffdb_service::{
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationInstallationCampaignId,
-    ApplicationRoleHash, Audience, BackupNameV1, CapabilityGrantV1, CapabilityId,
+    ApplicationRoleHash, Audience, BackupNameV1, CapabilityApplicationExportGrantV1,
+    CapabilityApplicationExportScopeV1, CapabilityExportGrantV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
     CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
     CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
@@ -4247,6 +4248,7 @@ pub fn capability_grant_from_proto(
     grant: v1::CapabilityGrant,
 ) -> Result<CapabilityGrantV1, Status> {
     let row_policy = grant.row_policy;
+    let export = grant.export;
     let tenant_scope = tenant_scope_from_proto(grant.tenant_scope.ok_or_else(invalid_request)?)?;
     let partition_scope =
         partition_scope_from_proto(grant.partition_scope.ok_or_else(invalid_request)?)?;
@@ -4290,72 +4292,112 @@ pub fn capability_grant_from_proto(
         approval_required,
     )
     .map_err(|_| invalid_request())?;
-    let Some(row_policy) = row_policy else {
-        return Ok(grant);
-    };
-    let role_hash = ApplicationRoleHash::from_bytes(
-        row_policy
-            .application_role_hash
-            .as_slice()
-            .try_into()
-            .map_err(|_| invalid_request())?,
-    );
-    let principal_facts = CapabilityPrincipalFactsV1::new(
-        row_policy
-            .principal_facts
-            .into_iter()
-            .map(|fact| {
-                CapabilityPrincipalFactV1::new(
-                    fact.name,
-                    canonical_value_from_proto(fact.value.ok_or_else(invalid_request)?)
+    let grant = match row_policy {
+        None => grant,
+        Some(row_policy) => {
+            let role_hash = ApplicationRoleHash::from_bytes(
+                row_policy
+                    .application_role_hash
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| invalid_request())?,
+            );
+            let principal_facts = CapabilityPrincipalFactsV1::new(
+                row_policy
+                    .principal_facts
+                    .into_iter()
+                    .map(|fact| {
+                        CapabilityPrincipalFactV1::new(
+                            fact.name,
+                            canonical_value_from_proto(fact.value.ok_or_else(invalid_request)?)
+                                .map_err(|_| invalid_request())?,
+                        )
+                        .map_err(|_| invalid_request())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .map_err(|_| invalid_request())?;
+            let bindings = row_policy
+                .policies
+                .into_iter()
+                .map(|binding| {
+                    let operations = binding
+                        .operations
+                        .into_iter()
+                        .map(|operation| {
+                            match v1::CapabilityRowPolicyOperation::try_from(operation)
+                                .map_err(|_| invalid_request())?
+                            {
+                                v1::CapabilityRowPolicyOperation::Read => {
+                                    Ok(CapabilityRowPolicyOperationV1::Read)
+                                }
+                                v1::CapabilityRowPolicyOperation::Create => {
+                                    Ok(CapabilityRowPolicyOperationV1::Create)
+                                }
+                                v1::CapabilityRowPolicyOperation::Update => {
+                                    Ok(CapabilityRowPolicyOperationV1::Update)
+                                }
+                                v1::CapabilityRowPolicyOperation::Delete => {
+                                    Ok(CapabilityRowPolicyOperationV1::Delete)
+                                }
+                                v1::CapabilityRowPolicyOperation::Unspecified => {
+                                    Err(invalid_request())
+                                }
+                            }
+                        })
+                        .collect::<Result<Vec<_>, Status>>()?;
+                    CapabilityRowPolicyBindingV1::new(
+                        ContractLineage::new(binding.contract_lineage)
+                            .map_err(|_| invalid_request())?,
+                        RowPolicyName::new(binding.policy_name).map_err(|_| invalid_request())?,
+                        EntityTypeId::new(binding.entity_type_id).ok_or_else(invalid_request)?,
+                        operations,
+                    )
+                    .map_err(|_| invalid_request())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            grant
+                .with_row_policy(
+                    CapabilityRowPolicyGrantV1::new(role_hash, principal_facts, bindings)
                         .map_err(|_| invalid_request())?,
                 )
-                .map_err(|_| invalid_request())
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-    )
-    .map_err(|_| invalid_request())?;
-    let bindings = row_policy
-        .policies
+                .map_err(|_| invalid_request())?
+        }
+    };
+    let Some(export) = export else {
+        return Ok(grant);
+    };
+    let applications = export
+        .applications
         .into_iter()
-        .map(|binding| {
-            let operations = binding
-                .operations
-                .into_iter()
-                .map(|operation| {
-                    match v1::CapabilityRowPolicyOperation::try_from(operation)
-                        .map_err(|_| invalid_request())?
-                    {
-                        v1::CapabilityRowPolicyOperation::Read => {
-                            Ok(CapabilityRowPolicyOperationV1::Read)
-                        }
-                        v1::CapabilityRowPolicyOperation::Create => {
-                            Ok(CapabilityRowPolicyOperationV1::Create)
-                        }
-                        v1::CapabilityRowPolicyOperation::Update => {
-                            Ok(CapabilityRowPolicyOperationV1::Update)
-                        }
-                        v1::CapabilityRowPolicyOperation::Delete => {
-                            Ok(CapabilityRowPolicyOperationV1::Delete)
-                        }
-                        v1::CapabilityRowPolicyOperation::Unspecified => Err(invalid_request()),
-                    }
-                })
-                .collect::<Result<Vec<_>, Status>>()?;
-            CapabilityRowPolicyBindingV1::new(
-                ContractLineage::new(binding.contract_lineage).map_err(|_| invalid_request())?,
-                RowPolicyName::new(binding.policy_name).map_err(|_| invalid_request())?,
-                EntityTypeId::new(binding.entity_type_id).ok_or_else(invalid_request)?,
-                operations,
+        .map(|application| {
+            let scope = match v1::CapabilityApplicationExportScope::try_from(application.scope)
+                .map_err(|_| invalid_request())?
+            {
+                v1::CapabilityApplicationExportScope::PrincipalFiltered => {
+                    CapabilityApplicationExportScopeV1::PrincipalFiltered
+                }
+                v1::CapabilityApplicationExportScope::WholeApplication => {
+                    CapabilityApplicationExportScopeV1::WholeApplication
+                }
+                v1::CapabilityApplicationExportScope::Unspecified => {
+                    return Err(invalid_request());
+                }
+            };
+            CapabilityApplicationExportGrantV1::new(
+                ContractLineage::new(application.contract_lineage)
+                    .map_err(|_| invalid_request())?,
+                scope,
+                application.entities,
+                application.events,
+                application.provenance,
+                application.public_audit,
             )
             .map_err(|_| invalid_request())
         })
         .collect::<Result<Vec<_>, _>>()?;
     grant
-        .with_row_policy(
-            CapabilityRowPolicyGrantV1::new(role_hash, principal_facts, bindings)
-                .map_err(|_| invalid_request())?,
-        )
+        .with_export(CapabilityExportGrantV1::new(applications).map_err(|_| invalid_request())?)
         .map_err(|_| invalid_request())
 }
 
@@ -5328,6 +5370,7 @@ mod tests {
                     operations: vec![v1::CapabilityRowPolicyOperation::Read as i32],
                 }],
             }),
+            export: None,
         };
         let grant = capability_grant_from_proto(request.clone()).expect("checked public V4 grant");
 
@@ -5342,6 +5385,118 @@ mod tests {
             .expect("row policy")
             .application_role_hash = vec![0x24; 32];
         assert!(capability_grant_from_proto(substituted).is_err());
+    }
+
+    #[test]
+    fn export_capability_crosses_public_transport_only_with_exact_scope_prerequisites() {
+        let role_hash = vec![0x43; 32];
+        let mut principal = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: vec![v1::CapabilityPermission {
+                permission: Some(
+                    v1::capability_permission::Permission::ApplicationRoleIdentity(
+                        role_hash.clone(),
+                    ),
+                ),
+            }],
+            field_visibility: Vec::new(),
+            max_scan_rows: 1,
+            approval_required: Vec::new(),
+            row_policy: Some(v1::CapabilityRowPolicyGrant {
+                application_role_hash: role_hash,
+                principal_facts: Vec::new(),
+                policies: vec![v1::CapabilityRowPolicyBinding {
+                    contract_lineage: "TicketDesk".to_owned(),
+                    policy_name: "TicketVisible".to_owned(),
+                    entity_type_id: 1,
+                    operations: vec![v1::CapabilityRowPolicyOperation::Read as i32],
+                }],
+            }),
+            export: Some(v1::CapabilityExportGrant {
+                applications: vec![v1::CapabilityApplicationExportGrant {
+                    contract_lineage: "TicketDesk".to_owned(),
+                    scope: v1::CapabilityApplicationExportScope::PrincipalFiltered as i32,
+                    entities: true,
+                    events: true,
+                    provenance: true,
+                    public_audit: false,
+                }],
+            }),
+        };
+        let checked = capability_grant_from_proto(principal.clone())
+            .expect("principal-filtered export grant");
+        assert_eq!(
+            checked
+                .internal_export()
+                .expect("export extension")
+                .applications()[0]
+                .scope(),
+            CapabilityApplicationExportScopeV1::PrincipalFiltered
+        );
+
+        principal.row_policy = None;
+        assert!(capability_grant_from_proto(principal).is_err());
+
+        let mut whole = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: Vec::new(),
+            field_visibility: Vec::new(),
+            max_scan_rows: 1,
+            approval_required: Vec::new(),
+            row_policy: None,
+            export: Some(v1::CapabilityExportGrant {
+                applications: vec![v1::CapabilityApplicationExportGrant {
+                    contract_lineage: "TicketDesk".to_owned(),
+                    scope: v1::CapabilityApplicationExportScope::WholeApplication as i32,
+                    entities: true,
+                    events: false,
+                    provenance: false,
+                    public_audit: true,
+                }],
+            }),
+        };
+        capability_grant_from_proto(whole.clone()).expect("whole-application export grant");
+        whole.tenant_scope = Some(v1::TenantScope {
+            scope: Some(v1::tenant_scope::Scope::TenantId("tenant-a".to_owned())),
+        });
+        assert!(capability_grant_from_proto(whole).is_err());
+
+        let over_bound = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: Vec::new(),
+            field_visibility: Vec::new(),
+            max_scan_rows: 1,
+            approval_required: Vec::new(),
+            row_policy: None,
+            export: Some(v1::CapabilityExportGrant {
+                applications: (0..=riffdb_types::MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS)
+                    .map(|index| v1::CapabilityApplicationExportGrant {
+                        contract_lineage: format!("lineage_{index:03}"),
+                        scope: v1::CapabilityApplicationExportScope::WholeApplication as i32,
+                        entities: true,
+                        events: false,
+                        provenance: false,
+                        public_audit: false,
+                    })
+                    .collect(),
+            }),
+        };
+        assert!(capability_grant_from_proto(over_bound).is_err());
     }
 
     #[test]

@@ -257,6 +257,26 @@ pub struct CapabilityRowPolicyGrant {
     #[prost(message, repeated, tag = "3")]
     pub policies: ::prost::alloc::vec::Vec<CapabilityRowPolicyBinding>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityApplicationExportGrant {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(enumeration = "CapabilityApplicationExportScope", tag = "2")]
+    pub scope: i32,
+    #[prost(bool, tag = "3")]
+    pub entities: bool,
+    #[prost(bool, tag = "4")]
+    pub events: bool,
+    #[prost(bool, tag = "5")]
+    pub provenance: bool,
+    #[prost(bool, tag = "6")]
+    pub public_audit: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityExportGrant {
+    #[prost(message, repeated, tag = "1")]
+    pub applications: ::prost::alloc::vec::Vec<CapabilityApplicationExportGrant>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityGrant {
     #[prost(message, optional, tag = "1")]
@@ -273,6 +293,8 @@ pub struct CapabilityGrant {
     pub approval_required: ::prost::alloc::vec::Vec<i32>,
     #[prost(message, optional, tag = "7")]
     pub row_policy: ::core::option::Option<CapabilityRowPolicyGrant>,
+    #[prost(message, optional, tag = "8")]
+    pub export: ::core::option::Option<CapabilityExportGrant>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateCapabilityRequest {
@@ -1053,6 +1075,43 @@ impl CapabilityRowPolicyOperation {
             "CAPABILITY_ROW_POLICY_OPERATION_CREATE" => Some(Self::Create),
             "CAPABILITY_ROW_POLICY_OPERATION_UPDATE" => Some(Self::Update),
             "CAPABILITY_ROW_POLICY_OPERATION_DELETE" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CapabilityApplicationExportScope {
+    Unspecified = 0,
+    PrincipalFiltered = 1,
+    WholeApplication = 2,
+}
+impl CapabilityApplicationExportScope {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED",
+            Self::PrincipalFiltered => {
+                "CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED"
+            }
+            Self::WholeApplication => {
+                "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED" => {
+                Some(Self::PrincipalFiltered)
+            }
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION" => {
+                Some(Self::WholeApplication)
+            }
             _ => None,
         }
     }
