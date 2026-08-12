@@ -362,18 +362,12 @@ pub enum McpPresentedValue {
     /// (ADR-0118). Carries only the stable marker — the value never reached
     /// this surface.
     ///
-    /// The wrapper itself is unserializable: `riffdb-types` carries no serde
-    /// dependency, so no `Serialize` impl can exist for [`riffdb_types::SecretValue`]
-    /// anywhere (orphan rule), and a diagnostic serializer cannot consume it:
-    ///
-    /// ```compile_fail,E0277
-    /// fn diagnostic_serializer<T: serde::Serialize>(_: &T) {}
-    /// diagnostic_serializer(&riffdb_types::SecretValue::classify(
-    ///     riffdb_types::FieldId::first(),
-    ///     "token_hash",
-    ///     riffdb_types::CanonicalValue::Null,
-    /// ));
-    /// ```
+    /// The value-bearing wrapper itself (`riffdb_policy::SecretValue`) is
+    /// unserializable — neither `riffdb-policy` nor `riffdb-types` carries a
+    /// serde dependency, so by the orphan rule no `Serialize` impl can exist
+    /// anywhere; the compile-fail doctests pinning this (and the
+    /// unforgeability of the sealed reveal authority) live on
+    /// `riffdb_policy::secret`.
     Redacted {
         /// The stable redaction marker, `[redacted:field_name]`-shaped.
         marker: String,

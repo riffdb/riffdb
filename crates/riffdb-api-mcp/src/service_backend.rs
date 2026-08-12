@@ -6247,4 +6247,56 @@ mod tests {
             "the structural Redacted arm must render, not a string lookalike"
         );
     }
+
+    /// End-to-end through the REAL composition path: `render_entity_result`
+    /// and `render_index_result` run `compose_fixed_tool_result`, which
+    /// validates the composed value against the registry's pinned result
+    /// schema — exactly where a missing `redacted` schema branch failed the
+    /// whole tool call at runtime. A redacted view must now compose AND
+    /// validate.
+    #[test]
+    fn redacted_views_compose_and_validate_against_the_fixed_tool_schemas() {
+        let plain_field = riffdb_types::FieldId::first();
+        let secret_field = plain_field.checked_next().expect("second field");
+        let mut key = riffdb_types::EntityKeyBuilder::new(riffdb_types::EntityTypeId::first());
+        key.push_u64(7).expect("key component");
+        let key = key.finish().expect("entity key");
+        let record = CanonicalRecord::new(vec![(
+            plain_field,
+            CanonicalValue::String(
+                riffdb_types::CanonicalString::new("visible-value".to_owned())
+                    .expect("plain string"),
+            ),
+        )])
+        .expect("record");
+        let redacted = vec![riffdb_types::RedactedSecretField::new(
+            secret_field,
+            "token_hash",
+        )];
+
+        let view = riffdb_service::EntityView::new(
+            key.clone(),
+            riffdb_types::EntityVersion::first(),
+            riffdb_types::ContractVersion::new(1).expect("nonzero version"),
+            record.clone(),
+        )
+        .with_redacted_fields(redacted.clone());
+        render_entity_result(riffdb_service::GetEntityResult::Found(view))
+            .expect("a redacted entity view must compose and pass the result-schema validation");
+
+        let mut index_key = riffdb_types::IndexEntryKeyBuilder::new(riffdb_types::IndexId::first());
+        index_key.push_u64(7).expect("index component");
+        let index_key = index_key.finish(key).expect("index entry key");
+        let row =
+            riffdb_service::IndexRowView::new(index_key, record).with_redacted_fields(redacted);
+        let page = riffdb_service::Page::new(
+            riffdb_service::PageLimit::new(1).expect("page limit"),
+            vec![row],
+            None,
+            riffdb_service::IndexScanFence::new(riffdb_types::IndexEpochPosition::BeforeFirst),
+        )
+        .expect("bounded page");
+        render_index_result(riffdb_service::ScanIndexResult::new(page))
+            .expect("a redacted index page must compose and pass the result-schema validation");
+    }
 }

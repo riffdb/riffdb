@@ -236,6 +236,23 @@ impl FieldMask {
     pub fn fields(&self) -> &[FieldId] {
         &self.fields
     }
+
+    /// Mints sealed reveal authority for every secret field this mask's
+    /// grant explicitly names (ADR-0118).
+    ///
+    /// This is the ONLY mint for [`crate::SecretRevealAuthority`]: the type
+    /// has no constructor outside the policy crate, and a `FieldMask` can be
+    /// produced only by the authorizer's evaluation of a real capability
+    /// grant — so holding an authority IS the proof that a policy decision
+    /// named the field. The display-surface architecture test enumerates
+    /// this method's call sites.
+    #[must_use]
+    pub fn secret_reveal_authorities(&self) -> Vec<crate::SecretRevealAuthority> {
+        self.secret_fields
+            .iter()
+            .map(|field| crate::SecretRevealAuthority::sealed(*field))
+            .collect()
+    }
 }
 
 impl fmt::Debug for FieldMask {
