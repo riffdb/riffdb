@@ -10,8 +10,10 @@ mod adapter;
 mod campaign;
 mod diff;
 mod plan;
+mod portability;
 
 pub use adapter::*;
 pub use campaign::*;
 pub use diff::*;
 pub use plan::*;
+pub use portability::*;

@@ -183,5 +183,9 @@ path = "../../tests/deployable_alpha_gate.rs"
 name = "release_format_compatibility"
 path = "../../tests/release_format_compatibility.rs"
 
+[[test]]
+name = "application_export"
+path = "../../tests/application_export.rs"
+
 [lints]
 workspace = true

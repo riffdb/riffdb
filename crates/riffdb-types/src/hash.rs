@@ -9,6 +9,7 @@ use crate::{
     AdapterConformanceManifestHash, ApplicationExportManifestHash, ApplicationExportPageHash,
     ApplicationExportReceiptHash, ApplicationInstallationPlanHash,
     ApplicationInstallationReceiptHash, ApplicationLockHash, ApplicationManifestHash,
+    ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash,
     ApplicationRoleDefinitionHash, ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash,
     CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash,
     ContractMigrationInputHash, ContractMigrationJournalHash, ContractMigrationValidationDigest,
@@ -121,11 +122,15 @@ pub enum HashDomain {
     ApplicationExportReceipt,
     /// One opaque checkpoint cursor for a symbolic application export.
     ApplicationExportCursor,
+    /// One adapter-owned compiled reimport mapping manifest.
+    ApplicationPortabilityManifest,
+    /// One terminal application reimport reconciliation receipt.
+    ApplicationReimportReceipt,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 48] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -172,6 +177,8 @@ impl HashDomain {
         Self::ApplicationExportManifest,
         Self::ApplicationExportReceipt,
         Self::ApplicationExportCursor,
+        Self::ApplicationPortabilityManifest,
+        Self::ApplicationReimportReceipt,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -223,6 +230,8 @@ impl HashDomain {
             Self::ApplicationExportManifest => "riffdb.application-export-manifest/v1",
             Self::ApplicationExportReceipt => "riffdb.application-export-receipt/v1",
             Self::ApplicationExportCursor => "riffdb.application-export-cursor/v1",
+            Self::ApplicationPortabilityManifest => "riffdb.application-portability-manifest/v1",
+            Self::ApplicationReimportReceipt => "riffdb.application-reimport-receipt/v1",
         }
     }
 }
@@ -488,6 +497,18 @@ typed_hash_function!(
     hash_application_export_receipt,
     ApplicationExportReceipt,
     ApplicationExportReceiptHash
+);
+typed_hash_function!(
+    /// Hashes one adapter-owned compiled reimport mapping manifest.
+    hash_application_portability_manifest,
+    ApplicationPortabilityManifest,
+    ApplicationPortabilityManifestHash
+);
+typed_hash_function!(
+    /// Hashes one terminal application reimport reconciliation receipt.
+    hash_application_reimport_receipt,
+    ApplicationReimportReceipt,
+    ApplicationReimportReceiptHash
 );
 typed_hash_function!(
     /// Hashes one canonical application manifest in its immutable v1 domain.
