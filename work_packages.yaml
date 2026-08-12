@@ -10970,7 +10970,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-575
   name: Snapshot-consistent symbolic application export and reimport receipts
-  depends_on: [WP-558, WP-568, WP-570, WP-572, WP-574]
+  depends_on: [WP-558, WP-568, WP-570, WP-572, WP-574, WP-599]
   objective: Provide a public operator-authorized, resumable, snapshot-consistent export of symbolic
     entities/events and optional provenance/audit, plus adapter-declared compiled reimport mappings,
     without exposing storage bytes or creating a generic import write path.
@@ -11890,4 +11890,65 @@ work_packages:
   acceptance_commands:
   - cargo test --workspace --all-features
   - ./scripts/check-requirement-coverage
+  human_review_triggers: *id001
+- id: WP-599
+  name: Compiler-owned workflow reconstitution and all-domain portability closure
+  depends_on: [WP-568, WP-570, WP-572, WP-574, WP-597]
+  objective: Implement accepted ADR-0119 so an exact, not-ready application-reimport campaign can
+    recreate complete workflow entity state from a canonical export through a distinct create-only
+    compiled command class, while ordinary application roles remain unable to set workflow state or
+    restore leases, then close WP-575's four-domain and all-language acceptance gate.
+  requirements: [API-001, SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-003,
+    SAFE-006, SAFE-007, REC-001, REC-002, WF-001, WF-002, WF-003, WF-004,
+    WF-005, WF-008, WF-009, WF-010, APE-001, APE-002, APE-003, APE-004,
+    APE-005, APE-009, APE-010, APE-011, APE-012, EXP-011, EXP-012, EXP-013,
+    EXP-014]
+  required_adrs: [ADR-0003, ADR-0005, ADR-0055, ADR-0072, ADR-0080, ADR-0106,
+    ADR-0107, ADR-0109, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0118,
+    ADR-0119]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml,
+    adr/0119-compiler-owned-workflow-reconstitution.md, proto/**, fixtures/proto/**,
+    fixtures/export/**, fixtures/adapters/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
+    crates/riffdb-runtime/**, crates/riffdb-service/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-application/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-testkit/**, clients/**, examples/**, tests/**, scripts/**, docs/**,
+    release/**]
+  deliverables:
+  - Versioned reimport-command grammar/IR/lock identity and compiler diagnostics for exact complete
+    create-only records, compiler-derived dependencies, and inaccessible ordinary command surfaces
+  - Workflow reconstitution preserves state/fence/attempts only from a quiescent null-owner/expiry
+    snapshot, resets destination revision explicitly, and rejects active/partial leases before mutation
+  - Distinct bounded capability successor and start/page/status/cancel service, TLS gRPC, Rust operator,
+    CLI, driver-host, and generated Go/TypeScript/Python operator bindings with no app-role discovery
+  - Durable not-ready campaign checkpoints, deterministic record-derived idempotency, exact page hashes,
+    crash resumption, typed partial failure/cancel, final validation/reconciliation, and credentials only
+    after readiness publication
+  - MLflow and Woodpecker portability fixtures with noninitial workflow state and nonzero quiescent fences,
+    plus OpenFGA, MLflow, Better Auth, and Woodpecker completing export/reimport and post-import
+    language observations; retained Payload remains a post-alpha regression fixture
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-runtime -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test application_export --all-features
+  - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
+  - ./scripts/generate-proto --check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: An empty not-ready database is reconstructed through only exact compiled reimport
+    commands, including quiescent MLflow/Woodpecker workflow rows, and becomes ready only after
+    receipted four-domain reconciliation while every ordinary workflow-state/import bypass remains
+    unrepresentable.
+  standing_design_tests:
+    interface_safety: Reconstitution cannot be invoked or emulated by an application role, cannot
+      target an existing row, select a state transformation, restore a live lease, choose ordering or
+      idempotency, or publish a partial destination; raw entity/storage import remains absent.
+    scale: Canonical pages, compiler-derived dependency schedules, command groups, checkpoints,
+      diagnostics, observations, and retained replay state are bounded and stream without whole-state
+      memory; unsupported dependency cycles fail compilation.
   human_review_triggers: *id001
