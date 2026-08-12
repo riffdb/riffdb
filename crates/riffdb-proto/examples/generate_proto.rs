@@ -53,6 +53,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/export_v1.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
@@ -90,6 +91,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/export_v1.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
@@ -564,6 +566,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "CapabilityRecordV5",
         PayloadBound::Document,
     ),
+    durable(
+        "export_v1.proto",
+        "StoredApplicationExportOperationV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -980,6 +987,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let capability_v5_record = durable_registry
         .get(current_v1_record_count + 48)
         .ok_or_else(|| io::Error::other("durable capability-v5 registry is incomplete"))?;
+    let export_v1_record = durable_registry
+        .get(current_v1_record_count + 49)
+        .ok_or_else(|| io::Error::other("durable export-v1 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1267,6 +1277,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-export-v1-schema-hash.bin",
+        &export_v1_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-export-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(export_v1_record)),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
         &durable_schema_hashes(entity_transitions_v4_records),
     )?;
@@ -1542,9 +1562,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 78 {
+    if DURABLE_RECORDS.len() != 79 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 78 records").into(),
+            io::Error::other("readable durable registry must contain exactly 79 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1568,9 +1588,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 156 || enum_count != 21 {
+    if message_count != 157 || enum_count != 21 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 156 messages and 21 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 157 messages and 21 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1859,6 +1879,9 @@ fn durable_writable_registry_fixture(
     let capability_v5 = records
         .get(current_v1_record_count + 48)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV5"))?;
+    let export_v1 = records.get(current_v1_record_count + 49).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredApplicationExportOperationV1")
+    })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1890,10 +1913,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(capability_v3))
         .chain(std::iter::once(capability_v4))
         .chain(std::iter::once(capability_v5))
+        .chain(std::iter::once(export_v1))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 31);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 32);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

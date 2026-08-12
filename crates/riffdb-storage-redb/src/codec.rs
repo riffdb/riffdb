@@ -120,6 +120,13 @@ borrowed_codec!(
     encode_application_installation_campaign_v1,
     decode_application_installation_campaign_v1
 );
+borrowed_codec!(
+    encode_application_export_operation_v1,
+    decode_application_export_operation_v1,
+    storage::StoredApplicationExportOperationV1,
+    encode_application_export_operation_v1,
+    decode_application_export_operation_v1
+);
 
 pub(crate) fn decode_commit_entity_references(
     encoded: &[u8],

@@ -989,6 +989,7 @@ impl AdminAuditCheckpoint {
             undelivered_outbox_events: _,
             capabilities: _,
             capability_lookups: _,
+            application_export_operations: _,
             projection_controls: _,
             projection_states: _,
             projection_applies: _,

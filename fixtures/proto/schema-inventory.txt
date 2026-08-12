@@ -61,6 +61,7 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/event_route_v1.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/export_v1.proto
   riffdb/storage/v1/history_incarnation_v1.proto
   riffdb/storage/v1/index_generation_v2.proto
     import riffdb/storage/v1/application.proto
@@ -751,6 +752,10 @@ messages
     2 source_commit optional string proto3-optional oneof=_source_commit
     3 reason optional string proto3-optional oneof=_reason
     4 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredApplicationExportOperationV1 fields=3
+    1 operation_id optional bytes
+    2 contract_lineage optional string
+    3 canonical_state optional bytes
   riffdb.storage.v1.StoredApplicationInstallationCampaignV1 fields=4
     1 campaign_id optional bytes
     2 contract_lineage optional string
