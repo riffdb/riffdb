@@ -675,3 +675,134 @@ message GetApplicationInstallationResponse {
     StartApplicationInstallationResponse found = 2;
   }
 }
+
+enum ApplicationExportRecordClass {
+  APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED = 0;
+  APPLICATION_EXPORT_RECORD_CLASS_ENTITY = 1;
+  APPLICATION_EXPORT_RECORD_CLASS_EVENT = 2;
+  APPLICATION_EXPORT_RECORD_CLASS_PROVENANCE = 3;
+  APPLICATION_EXPORT_RECORD_CLASS_PUBLIC_AUDIT = 4;
+}
+
+message ApplicationExportSelection {
+  string contract_lineage = 1;
+  CapabilityApplicationExportScope scope = 2;
+  bool entities = 3;
+  bool events = 4;
+  bool provenance = 5;
+  bool public_audit = 6;
+}
+
+message ApplicationExportSnapshotBinding {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  uint64 application_frontier = 3;
+  uint64 administration_frontier = 4;
+  uint64 contract_version = 5;
+  bytes contract_bundle_hash = 6;
+  repeated bytes query_module_hashes = 7;
+  repeated bytes reactive_module_hashes = 8;
+}
+
+enum ApplicationExportPhase {
+  APPLICATION_EXPORT_PHASE_UNSPECIFIED = 0;
+  APPLICATION_EXPORT_PHASE_ACCEPTED = 1;
+  APPLICATION_EXPORT_PHASE_EXPORTING = 2;
+  APPLICATION_EXPORT_PHASE_COMPLETED = 3;
+  APPLICATION_EXPORT_PHASE_CANCELLED = 4;
+  APPLICATION_EXPORT_PHASE_EXPIRED = 5;
+  APPLICATION_EXPORT_PHASE_FAILED_CLOSED = 6;
+}
+
+enum ApplicationExportFailure {
+  APPLICATION_EXPORT_FAILURE_UNSPECIFIED = 0;
+  APPLICATION_EXPORT_FAILURE_AUTHORITY_CHANGED = 1;
+  APPLICATION_EXPORT_FAILURE_SNAPSHOT_UNAVAILABLE = 2;
+  APPLICATION_EXPORT_FAILURE_SOURCE_INVALID = 3;
+  APPLICATION_EXPORT_FAILURE_LEASE_EXPIRED = 4;
+  APPLICATION_EXPORT_FAILURE_CANCELLED = 5;
+  APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED = 6;
+  APPLICATION_EXPORT_FAILURE_INTERNAL = 7;
+}
+
+message ApplicationExportOperation {
+  bytes operation_id = 1;
+  ApplicationExportSelection selection = 2;
+  ApplicationExportSnapshotBinding snapshot = 3;
+  ApplicationExportPhase phase = 4;
+  Timestamp lease_expires_at = 5;
+  uint64 pages_released = 6;
+  uint64 rows_released = 7;
+  uint64 bytes_released = 8;
+  ApplicationExportFailure failure = 9;
+  bytes canonical_manifest_json = 10;
+  bytes canonical_receipt_json = 11;
+  bytes manifest_hash = 12;
+  bytes receipt_hash = 13;
+}
+
+enum ApplicationExportStartDisposition {
+  APPLICATION_EXPORT_START_DISPOSITION_UNSPECIFIED = 0;
+  APPLICATION_EXPORT_START_DISPOSITION_ACCEPTED = 1;
+  APPLICATION_EXPORT_START_DISPOSITION_ALREADY_ACCEPTED = 2;
+  APPLICATION_EXPORT_START_DISPOSITION_TERMINAL = 3;
+}
+
+message StartApplicationExportRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  ApplicationExportSelection selection = 3;
+  uint32 lease_seconds = 4;
+}
+
+message StartApplicationExportResponse {
+  ApplicationExportStartDisposition disposition = 1;
+  ApplicationExportOperation operation = 2;
+  bytes cursor = 3;
+}
+
+message GetApplicationExportPageRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  bytes cursor = 3;
+  uint32 max_rows = 4;
+}
+
+message ApplicationExportPage {
+  bytes operation_id = 1;
+  uint64 page_number = 2;
+  ApplicationExportRecordClass record_class = 3;
+  repeated bytes canonical_json_lines = 4;
+  bytes next_cursor = 5;
+  bool class_complete = 6;
+  bool operation_complete = 7;
+  bytes page_hash = 8;
+}
+
+message GetApplicationExportPageResponse {
+  ApplicationExportPage page = 1;
+}
+
+message GetApplicationExportRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+}
+
+message GetApplicationExportResponse {
+  oneof result {
+    Unit not_found = 1;
+    ApplicationExportOperation found = 2;
+  }
+}
+
+message CancelApplicationExportRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+}
+
+message CancelApplicationExportResponse {
+  oneof result {
+    Unit not_found = 1;
+    ApplicationExportOperation found = 2;
+  }
+}
