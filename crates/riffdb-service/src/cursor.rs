@@ -2018,14 +2018,19 @@ impl ServiceCursorRegistries {
         lookup: EventConsumerProgressCursorLookup,
         state: EventConsumerProgressCursorState,
     ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
-        let registration = self.registry.register_replacing(
+        // Protected progress cursors are immutable retained seek/replay
+        // positions, not a single forward-only query continuation. Keeping
+        // earlier bounded tokens live until ordinary expiry lets an authorized
+        // consumer deliberately replay under current policy without exposing
+        // the raw event checkpoint.
+        let registration = self.registry.register(
             CursorBinding::new(
                 principal.clone(),
                 ServiceCursorLookup::EventConsumerProgress(lookup),
             ),
             ServiceCursorState::EventConsumerProgress(Arc::new(state)),
         )?;
-        Ok(self.publication_guard_exclusive(registration))
+        Ok(self.publication_guard(registration))
     }
 
     pub(crate) fn resolve_event_consumer_progress(
@@ -2745,6 +2750,74 @@ mod tests {
         assert_ne!(
             &token.as_bytes()[..8],
             &checkpoint.commit_sequence().get().to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn protected_consumer_retains_older_authorized_seek_positions() {
+        let registry = ServiceCursorRegistries::new(
+            Arc::new(SequentialGenerator::new()),
+            Arc::new(FixedClock::at(0)),
+        );
+        let principal = ActorId::new("protected-consumer").expect("bounded principal");
+        let lookup = EventConsumerProgressCursorLookup::new(
+            EventConsumerIdentityHash::from_bytes([1; 32]),
+            2,
+            CapabilityId::from_bytes({
+                let mut bytes = [3; 16];
+                bytes[6] = 0x73;
+                bytes[8] = 0x83;
+                bytes
+            })
+            .expect("valid capability UUIDv7"),
+            NonZeroU64::new(4).expect("nonzero revision"),
+            ApplicationRoleHash::from_bytes([5; 32]),
+        );
+        let first_checkpoint = EventId::new(CommitSequence::first(), 0);
+        let second_checkpoint = EventId::new(
+            CommitSequence::first()
+                .checked_next()
+                .expect("next sequence"),
+            0,
+        );
+        let first = registry
+            .register_event_consumer_progress_unpublished(
+                &principal,
+                lookup.clone(),
+                EventConsumerProgressCursorState::new(
+                    EventConsumerRevision::first(),
+                    Some(first_checkpoint),
+                ),
+            )
+            .expect("first cursor")
+            .publish();
+        let second = registry
+            .register_event_consumer_progress_unpublished(
+                &principal,
+                lookup.clone(),
+                EventConsumerProgressCursorState::new(
+                    EventConsumerRevision::first()
+                        .checked_next()
+                        .expect("next revision"),
+                    Some(second_checkpoint),
+                ),
+            )
+            .expect("second cursor")
+            .publish();
+
+        assert_eq!(
+            registry
+                .resolve_event_consumer_progress(first, &principal, &lookup)
+                .expect("older position remains authorized")
+                .checkpoint(),
+            Some(first_checkpoint)
+        );
+        assert_eq!(
+            registry
+                .resolve_event_consumer_progress(second, &principal, &lookup)
+                .expect("newer position resolves")
+                .checkpoint(),
+            Some(second_checkpoint)
         );
     }
 

@@ -805,7 +805,10 @@ pub(crate) enum EventCommand {
         #[command(flatten)]
         consumer: EventConsumerArgs,
         #[arg(long, value_name = "before-first|COMMIT:ORDINAL")]
-        checkpoint: String,
+        checkpoint: Option<String>,
+        /// Opaque protected-consumer cursor returned by status or consume.
+        #[arg(long, value_name = "BASE64_CURSOR")]
+        progress_cursor: Option<String>,
     },
     /// Retires one consumer and releases its retention fence.
     Retire {

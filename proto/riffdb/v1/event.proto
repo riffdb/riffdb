@@ -185,6 +185,7 @@ message SeekEventStreamConsumerRequest {
   bytes request_id = 1;
   EventConsumerSelection selection = 2;
   EventConsumerCheckpoint checkpoint = 3;
+  bytes progress_cursor = 4;
 }
 
 message RetireEventStreamConsumerRequest {
@@ -215,6 +216,7 @@ message GetEventStreamConsumerStatusResponse {
   oneof result {
     Unit not_found = 1;
     EventConsumerStatus found = 2;
+    ProtectedEventConsumerStatus protected = 3;
   }
 }
 

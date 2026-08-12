@@ -3064,7 +3064,7 @@ fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCo
 fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 
 use riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
-use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus, ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
+use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus, ApplicationEventMutationResult, ApplicationEventProgressCursor, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
 
 pub const TICKET_ACTIVITY_REACTIVE_MODULE_HASH: [u8; 32] = [254, 7, 15, 222, 102, 222, 170, 199, 254, 126, 143, 14, 118, 252, 153, 123, 103, 211, 15, 166, 101, 141, 155, 217, 46, 31, 248, 53, 218, 104, 93, 112];
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3134,7 +3134,11 @@ impl TicketDeskClient {
         let identity = consumer.clone().event_consumer()?;
         self.client.seek_event_consumer(&identity, checkpoint, &self.metadata).await
     }
-    pub async fn ticket_events_status(&mut self, consumer: &TicketEventsConsumer) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    pub async fn seek_protected_ticket_events(&mut self, consumer: &TicketEventsConsumer, cursor: ApplicationEventProgressCursor) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.seek_protected_event_consumer(&identity, cursor, &self.metadata).await
+    }
+    pub async fn ticket_events_status(&mut self, consumer: &TicketEventsConsumer) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let identity = consumer.clone().event_consumer()?;
         self.client.event_consumer_status(&identity, &self.metadata).await
     }
@@ -3250,7 +3254,7 @@ impl TicketDeskClient {
         let identity = consumer.clone().event_consumer()?;
         self.client.negative_acknowledge_contextual_item(&identity, item.evidence(), retry_delay_nanos, &self.metadata).await
     }
-    pub async fn triage_ticket_status(&mut self, consumer: &TriageTicketConsumer) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    pub async fn triage_ticket_status(&mut self, consumer: &TriageTicketConsumer) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let identity = consumer.clone().event_consumer()?;
         self.client.contextual_subscription_status(&identity, &self.metadata).await
     }

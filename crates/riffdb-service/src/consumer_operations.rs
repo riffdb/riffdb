@@ -518,7 +518,16 @@ impl NegativeAcknowledgeEventStreamRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SeekEventStreamConsumerRequest {
     selection: EventConsumerSelection,
-    checkpoint: EventConsumerCheckpoint,
+    target: EventConsumerSeekTarget,
+}
+
+/// Closed seek target selected by the stream's authorization model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventConsumerSeekTarget {
+    /// Exact checkpoint for an unprotected stream.
+    Exact(EventConsumerCheckpoint),
+    /// Opaque retained policy-bound position for a protected stream.
+    Protected(EventConsumerProgressCursor),
 }
 
 impl SeekEventStreamConsumerRequest {
@@ -530,7 +539,18 @@ impl SeekEventStreamConsumerRequest {
     ) -> Self {
         Self {
             selection,
-            checkpoint,
+            target: EventConsumerSeekTarget::Exact(checkpoint),
+        }
+    }
+    /// Joins an exact consumer and opaque protected progress position.
+    #[must_use]
+    pub const fn protected(
+        selection: EventConsumerSelection,
+        cursor: EventConsumerProgressCursor,
+    ) -> Self {
+        Self {
+            selection,
+            target: EventConsumerSeekTarget::Protected(cursor),
         }
     }
     /// Exact consumer selection.
@@ -540,8 +560,8 @@ impl SeekEventStreamConsumerRequest {
     }
     /// Requested checkpoint.
     #[must_use]
-    pub const fn checkpoint(&self) -> EventConsumerCheckpoint {
-        self.checkpoint
+    pub const fn target(&self) -> EventConsumerSeekTarget {
+        self.target
     }
 }
 
@@ -847,7 +867,7 @@ pub trait EventConsumerServiceApplication: Send + Sync {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>>;
+    ) -> ServiceFuture<'_, Option<EventConsumerPublicStatus>>;
 }
 
 impl EventConsumerServiceApplication for RiffDbService {
@@ -952,7 +972,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>> {
+    ) -> ServiceFuture<'_, Option<EventConsumerPublicStatus>> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
@@ -2565,7 +2585,7 @@ pub(crate) async fn contextual_consumer_status(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     selection: EventConsumerSelection,
-) -> ServiceResult<Option<EventConsumerStatus>> {
+) -> ServiceResult<Option<EventConsumerPublicStatus>> {
     status(
         service,
         context,
@@ -2926,7 +2946,9 @@ async fn seek(
     request: SeekEventStreamConsumerRequest,
 ) -> ServiceResult<EventConsumerMutationResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::SeekEventStreamConsumer;
-    let prepared = prepare_consumer(&service, &context, request.selection, OPERATION).await?;
+    let target = request.target();
+    let prepared =
+        prepare_consumer(&service, &context, request.selection().clone(), OPERATION).await?;
     let begun = begin_consumer(
         &service,
         &context,
@@ -2934,7 +2956,54 @@ async fn seek(
         policy_request(&prepared, OPERATION, 1)?,
     )
     .await?;
-    if let EventConsumerCheckpoint::After(event_id) = request.checkpoint {
+    let protected = begun
+        .initial_authorization()
+        .internal_row_policy_authority()
+        .is_some();
+    let checkpoint = match (protected, target) {
+        (false, EventConsumerSeekTarget::Exact(checkpoint)) => checkpoint,
+        (true, EventConsumerSeekTarget::Protected(cursor)) => {
+            let lookup = prepared
+                .progress_cursor_lookup(&service, begun.initial_authorization())
+                .ok_or_else(|| {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                })?;
+            match service.cursors.resolve_event_consumer_progress(
+                cursor.token(),
+                context.principal().principal_id(),
+                &lookup,
+            ) {
+                Ok(state) => state.checkpoint().map_or(
+                    EventConsumerCheckpoint::BeforeFirst,
+                    EventConsumerCheckpoint::After,
+                ),
+                Err(CursorAccessError::InvalidCursor) => {
+                    return Err(finish_failure(
+                        &service,
+                        &context,
+                        &begun,
+                        invalid_consumer_cursor(),
+                    )
+                    .await);
+                }
+                Err(CursorAccessError::Unavailable) => {
+                    return Err(finish_failure(
+                        &service,
+                        &context,
+                        &begun,
+                        PublicError::storage_unavailable().into(),
+                    )
+                    .await);
+                }
+            }
+        }
+        _ => {
+            return Err(
+                finish_failure(&service, &context, &begun, invalid_consumer_cursor()).await,
+            );
+        }
+    };
+    if let EventConsumerCheckpoint::After(event_id) = checkpoint {
         let after = event_predecessor(event_id);
         let window = match read_window(
             &service,
@@ -2961,7 +3030,7 @@ async fn seek(
         &prepared,
         EventConsumerPortRequest::Seek {
             identity: prepared.port_identity(),
-            checkpoint: request.checkpoint,
+            checkpoint,
         },
     )
     .await;
@@ -3000,7 +3069,7 @@ async fn status(
     context: RequestContext,
     selection: EventConsumerSelection,
     operation: ServiceOperationV1,
-) -> ServiceResult<Option<EventConsumerStatus>> {
+) -> ServiceResult<Option<EventConsumerPublicStatus>> {
     let prepared = prepare_consumer(&service, &context, selection, operation).await?;
     let begun = begin_consumer(
         &service,
@@ -3011,9 +3080,58 @@ async fn status(
     .await?;
     let result = inspect_consumer(&service, &context, &begun, &prepared).await;
     match result {
-        Ok(status) => {
+        Ok(None) => {
             finish_success(&service, &context, &begun).await?;
-            Ok(status)
+            Ok(None)
+        }
+        Ok(Some(status))
+            if begun
+                .initial_authorization()
+                .internal_row_policy_authority()
+                .is_some() =>
+        {
+            let lookup = prepared
+                .progress_cursor_lookup(&service, begun.initial_authorization())
+                .ok_or_else(|| {
+                    service.internal_failure(operation, InternalDefect::ProofMismatch)
+                })?;
+            let authorization = begun.reauthorize(&service, &context).await?;
+            ensure_consumer_authorization(&service, &authorization, operation, &prepared)?;
+            if prepared
+                .progress_cursor_lookup(&service, &authorization)
+                .as_ref()
+                != Some(&lookup)
+            {
+                return Err(finish_failure(
+                    &service,
+                    &context,
+                    &begun,
+                    PublicError::authorization_denied().into(),
+                )
+                .await);
+            }
+            let guard = service
+                .cursors
+                .register_event_consumer_progress_unpublished(
+                    context.principal().principal_id(),
+                    lookup,
+                    EventConsumerProgressCursorState::new(
+                        status.revision(),
+                        prepared.checkpoint_after(Some(&status)),
+                    ),
+                )
+                .map_err(|_| PublicError::storage_unavailable())?;
+            let public = EventConsumerPublicStatus::Protected(ProtectedEventConsumerStatus::new(
+                status.history_incarnation(),
+                EventConsumerProgressCursor(guard.token()),
+            ));
+            finish_success(&service, &context, &begun).await?;
+            guard.publish();
+            Ok(Some(public))
+        }
+        Ok(Some(status)) => {
+            finish_success(&service, &context, &begun).await?;
+            Ok(Some(EventConsumerPublicStatus::Exact(status)))
         }
         Err(failure) => Err(finish_failure(&service, &context, &begun, failure).await),
     }

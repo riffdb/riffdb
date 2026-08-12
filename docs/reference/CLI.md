@@ -1134,6 +1134,7 @@ Options:
       --in-flight-limit <1..64>            [default: 16]
       --lease-seconds <5..900>             [default: 60]
       --wait-nanos <NANOSECONDS>           [default: 0]
+      --progress-cursor <BASE64_CURSOR>
   -h, --help                               Print help
 ```
 
@@ -1191,21 +1192,35 @@ Options:
 ```text
 Moves a consumer checkpoint after exact seek authorization
 
-Usage: riffdb event seek [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --checkpoint <before-first|COMMIT:ORDINAL>
+Usage: riffdb event seek [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER>
 
 Options:
       --config <PATH>
+
       --module-hash <64_HEX_CHARS>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --operation <OPERATION>
+
       --database <DATABASE>
+
       --parameter <NAME=JSON_VALUE>
+
       --consumer-name <CONSUMER>
-      --output <human|json>                       [possible values: human, json]
+
+      --output <human|json>
+          [possible values: human, json]
       --checkpoint <before-first|COMMIT:ORDINAL>
+
       --max-attempts <1..10>
+
       --credential-file <PATH>
-  -h, --help                                      Print help
+
+      --progress-cursor <BASE64_CURSOR>
+          Opaque protected-consumer cursor returned by status or consume
+  -h, --help
+          Print help
 ```
 
 #### `riffdb event retire`
@@ -1269,6 +1284,7 @@ Options:
       --max-attempts <1..10>
       --wait-nanos <NANOSECONDS>           [default: 0]
       --credential-file <PATH>
+      --progress-cursor <BASE64_CURSOR>
   -h, --help                               Print help
 ```
 

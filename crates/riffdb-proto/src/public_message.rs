@@ -8649,7 +8649,11 @@ fn validate_seek_event_stream_consumer_request(
 ) -> Result<(), PublicWireError> {
     request_id(&message.request_id)?;
     validate_event_consumer_selection(message.selection.as_ref())?;
-    validate_event_consumer_checkpoint(message.checkpoint.as_ref())
+    match (message.checkpoint.as_ref(), message.progress_cursor.len()) {
+        (Some(checkpoint), 0) => validate_event_consumer_checkpoint(Some(checkpoint)),
+        (None, 16) => Ok(()),
+        _ => Err(PublicWireError::InvalidValue),
+    }
 }
 
 fn validate_retire_event_stream_consumer_request(
@@ -8688,6 +8692,7 @@ fn validate_get_event_stream_consumer_status_response(
     {
         Result::NotFound(_) => Ok(()),
         Result::Found(status) => validate_event_consumer_status(Some(status)),
+        Result::Protected(status) => validate_protected_event_consumer_status(Some(status)),
     }
 }
 
@@ -9194,7 +9199,7 @@ impl_public_message!(
 impl_public_message!(
     v1::SeekEventStreamConsumerRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    3,
+    4,
     &[],
     &[],
     preflight_noop,
@@ -9284,12 +9289,103 @@ impl_public_message!(
 impl_public_message!(
     v1::GetEventStreamConsumerStatusResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    2,
+    3,
     &[],
-    &[&[1, 2]],
+    &[&[1, 2, 3]],
     preflight_noop,
     validate_get_event_stream_consumer_status_response
 );
+
+#[cfg(test)]
+mod protected_event_consumer_tests {
+    use super::*;
+
+    fn seek_request() -> v1::SeekEventStreamConsumerRequest {
+        v1::SeekEventStreamConsumerRequest {
+            request_id: RequestId::from_unix_milliseconds_and_random(1, [2; 10])
+                .expect("valid uuidv7")
+                .into_bytes()
+                .to_vec(),
+            selection: Some(v1::EventConsumerSelection {
+                reactive_module_hash: vec![3; 32],
+                operation_name: "TicketActivity".to_owned(),
+                parameters: Vec::new(),
+                consumer_name: "triage-agent".to_owned(),
+            }),
+            checkpoint: Some(v1::EventConsumerCheckpoint {
+                position: Some(v1::event_consumer_checkpoint::Position::BeforeFirst(
+                    v1::Unit {},
+                )),
+            }),
+            progress_cursor: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn protected_status_exposes_only_incarnation_and_fixed_opaque_cursor() {
+        use v1::get_event_stream_consumer_status_response::Result;
+
+        let response = v1::GetEventStreamConsumerStatusResponse {
+            result: Some(Result::Protected(v1::ProtectedEventConsumerStatus {
+                history_incarnation: 7,
+                progress_cursor: vec![0xa5; 16],
+            })),
+        };
+        assert_eq!(validate_public_message(&response), Ok(()));
+
+        let mut missing_incarnation = response.clone();
+        let Some(Result::Protected(status)) = missing_incarnation.result.as_mut() else {
+            panic!("protected status")
+        };
+        status.history_incarnation = 0;
+        assert_eq!(
+            validate_public_message(&missing_incarnation),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let mut raw_progress_shape = response;
+        let Some(Result::Protected(status)) = raw_progress_shape.result.as_mut() else {
+            panic!("protected status")
+        };
+        status.progress_cursor = vec![0; 15];
+        assert_eq!(
+            validate_public_message(&raw_progress_shape),
+            Err(PublicWireError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn seek_accepts_exact_or_opaque_target_but_never_both_or_neither() {
+        let exact = seek_request();
+        assert_eq!(validate_public_message(&exact), Ok(()));
+
+        let mut protected = exact.clone();
+        protected.checkpoint = None;
+        protected.progress_cursor = vec![0x5a; 16];
+        assert_eq!(validate_public_message(&protected), Ok(()));
+
+        let mut both = exact.clone();
+        both.progress_cursor = vec![0x5a; 16];
+        assert_eq!(
+            validate_public_message(&both),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let mut neither = exact;
+        neither.checkpoint = None;
+        assert_eq!(
+            validate_public_message(&neither),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let mut wrong_width = protected;
+        wrong_width.progress_cursor.pop();
+        assert_eq!(
+            validate_public_message(&wrong_width),
+            Err(PublicWireError::InvalidValue)
+        );
+    }
+}
 impl_public_message!(
     v1::ValidateContractResponse,
     MAX_PUBLIC_RESPONSE_BYTES,

@@ -353,6 +353,7 @@ pub(crate) fn fixed_request_to_proto(
             parameters,
             consumer_name,
             checkpoint,
+            progress_cursor,
         } => FixedGrpcRequest::EventSeek(v1::SeekEventStreamConsumerRequest {
             request_id,
             selection: Some(event_selection(
@@ -361,17 +362,20 @@ pub(crate) fn fixed_request_to_proto(
                 parameters,
                 consumer_name,
             )?),
-            checkpoint: Some(v1::EventConsumerCheckpoint {
-                position: Some(match checkpoint {
-                    None => v1::event_consumer_checkpoint::Position::BeforeFirst(v1::Unit {}),
-                    Some((commit_sequence, event_ordinal)) => {
-                        v1::event_consumer_checkpoint::Position::AfterEventId(v1::EventId {
-                            commit_sequence,
-                            event_ordinal,
-                        })
-                    }
+            checkpoint: progress_cursor
+                .is_none()
+                .then(|| v1::EventConsumerCheckpoint {
+                    position: Some(match checkpoint {
+                        None => v1::event_consumer_checkpoint::Position::BeforeFirst(v1::Unit {}),
+                        Some((commit_sequence, event_ordinal)) => {
+                            v1::event_consumer_checkpoint::Position::AfterEventId(v1::EventId {
+                                commit_sequence,
+                                event_ordinal,
+                            })
+                        }
+                    }),
                 }),
-            }),
+            progress_cursor: progress_cursor.map_or_else(Vec::new, |value| value.to_vec()),
         }),
         McpFixedToolRequest::EventStatus {
             module_hash,

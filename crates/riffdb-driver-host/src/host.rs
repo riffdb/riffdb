@@ -815,7 +815,7 @@ impl DriverHost {
                             .await?;
                         Ok((
                             status
-                                .map(raise_consumer_status)
+                                .map(raise_consumer_public_status)
                                 .unwrap_or(DriverValue::Null),
                             None,
                             None,
@@ -873,7 +873,7 @@ impl DriverHost {
                             .await?;
                         Ok((
                             status
-                                .map(raise_consumer_status)
+                                .map(raise_consumer_public_status)
                                 .unwrap_or(DriverValue::Null),
                             None,
                             None,

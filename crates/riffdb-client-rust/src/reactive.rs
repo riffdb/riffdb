@@ -1038,7 +1038,7 @@ impl StableApplicationClient {
         &mut self,
         consumer: &ApplicationEventConsumer,
         metadata: &CallMetadata,
-    ) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    ) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let response = self
             .inner
             .get_contextual_subscription_status(
@@ -1052,7 +1052,12 @@ impl StableApplicationClient {
         match response.result {
             Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => Ok(None),
             Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
-                raise_consumer_status(status).map(Some)
+                raise_consumer_status(status)
+                    .map(ApplicationEventConsumerPublicStatus::Exact)
+                    .map(Some)
+            }
+            Some(v1::get_event_stream_consumer_status_response::Result::Protected(status)) => {
+                raise_protected_consumer_status(status).map(Some)
             }
             None => Err(ApplicationClientError::InvalidResponse),
         }
@@ -1208,6 +1213,30 @@ impl StableApplicationClient {
                     checkpoint: Some(v1::EventConsumerCheckpoint {
                         position: Some(position),
                     }),
+                    progress_cursor: Vec::new(),
+                },
+                metadata,
+            )
+            .await?;
+        raise_mutation_result(response.result)
+    }
+
+    /// Moves one protected consumer to an opaque position previously issued
+    /// under the same current principal, role, capability, and stream identity.
+    pub async fn seek_protected_event_consumer(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        cursor: ApplicationEventProgressCursor,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let response = self
+            .inner
+            .seek_event_stream_consumer(
+                v1::SeekEventStreamConsumerRequest {
+                    request_id: request_id()?,
+                    selection: Some(consumer.selection()?),
+                    checkpoint: None,
+                    progress_cursor: cursor.as_bytes().to_vec(),
                 },
                 metadata,
             )
@@ -1220,7 +1249,7 @@ impl StableApplicationClient {
         &mut self,
         consumer: &ApplicationEventConsumer,
         metadata: &CallMetadata,
-    ) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    ) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let response = self
             .inner
             .get_event_stream_consumer_status(
@@ -1234,7 +1263,12 @@ impl StableApplicationClient {
         match response.result {
             Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => Ok(None),
             Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
-                raise_consumer_status(status).map(Some)
+                raise_consumer_status(status)
+                    .map(ApplicationEventConsumerPublicStatus::Exact)
+                    .map(Some)
+            }
+            Some(v1::get_event_stream_consumer_status_response::Result::Protected(status)) => {
+                raise_protected_consumer_status(status).map(Some)
             }
             None => Err(ApplicationClientError::InvalidResponse),
         }
@@ -1550,17 +1584,24 @@ fn raise_consumer_public_status(
         (Some(status), None) => {
             raise_consumer_status(status).map(ApplicationEventConsumerPublicStatus::Exact)
         }
-        (None, Some(status)) if status.history_incarnation != 0 => {
-            Ok(ApplicationEventConsumerPublicStatus::Protected(
-                ApplicationProtectedEventConsumerStatus {
-                    history_incarnation: status.history_incarnation,
-                    progress_cursor: ApplicationEventProgressCursor::new(status.progress_cursor)
-                        .map_err(|_| ApplicationClientError::InvalidResponse)?,
-                },
-            ))
-        }
+        (None, Some(status)) => raise_protected_consumer_status(status),
         _ => Err(ApplicationClientError::InvalidResponse),
     }
+}
+
+fn raise_protected_consumer_status(
+    status: v1::ProtectedEventConsumerStatus,
+) -> Result<ApplicationEventConsumerPublicStatus, ApplicationClientError> {
+    if status.history_incarnation == 0 {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(ApplicationEventConsumerPublicStatus::Protected(
+        ApplicationProtectedEventConsumerStatus {
+            history_incarnation: status.history_incarnation,
+            progress_cursor: ApplicationEventProgressCursor::new(status.progress_cursor)
+                .map_err(|_| ApplicationClientError::InvalidResponse)?,
+        },
+    ))
 }
 
 fn raise_consumer_disposition(

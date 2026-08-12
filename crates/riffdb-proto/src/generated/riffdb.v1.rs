@@ -4411,6 +4411,8 @@ pub struct SeekEventStreamConsumerRequest {
     pub selection: ::core::option::Option<EventConsumerSelection>,
     #[prost(message, optional, tag = "3")]
     pub checkpoint: ::core::option::Option<EventConsumerCheckpoint>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub progress_cursor: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RetireEventStreamConsumerRequest {
@@ -4431,21 +4433,26 @@ pub struct EventConsumerMutationResponse {
     #[prost(enumeration = "EventConsumerMutationResult", tag = "1")]
     pub result: i32,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetEventStreamConsumerStatusResponse {
-    #[prost(oneof = "get_event_stream_consumer_status_response::Result", tags = "1, 2")]
+    #[prost(
+        oneof = "get_event_stream_consumer_status_response::Result",
+        tags = "1, 2, 3"
+    )]
     pub result: ::core::option::Option<
         get_event_stream_consumer_status_response::Result,
     >,
 }
 /// Nested message and enum types in `GetEventStreamConsumerStatusResponse`.
 pub mod get_event_stream_consumer_status_response {
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
         NotFound(super::Unit),
         #[prost(message, tag = "2")]
         Found(super::EventConsumerStatus),
+        #[prost(message, tag = "3")]
+        Protected(super::ProtectedEventConsumerStatus),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
