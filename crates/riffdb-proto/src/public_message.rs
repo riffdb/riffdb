@@ -7,18 +7,21 @@ use std::fmt;
 use prost::Message;
 use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
-    AgentSessionId, ApplicationInstallationCampaignId, ApplicationRoleHash, Audience, BackupNameV1,
+    AgentSessionId, ApplicationExportClassV1, ApplicationExportOperationId,
+    ApplicationInstallationCampaignId, ApplicationRoleHash, Audience, BackupNameV1,
     CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
     CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
-    ContractLineage, ContractMigrationOperationId, EntityKey, EntityTypeId, EventConsumerName,
-    IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS,
-    MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS,
-    MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
-    MAX_CAPABILITY_ROW_POLICY_BINDINGS, MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES,
-    MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1,
-    MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, OfflineMaintenanceOperationId,
-    PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
+    ContractLineage, ContractMigrationOperationId, DatabaseId, EntityKey, EntityTypeId,
+    EventConsumerName, IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_APPLICATION_EXPORT_MODULES,
+    MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS, MAX_CAPABILITY_AUDIENCES,
+    MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
+    MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, MAX_CAPABILITY_ROW_POLICY_BINDINGS,
+    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
+    MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
+    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
+    canonical_application_export_page_preimage, hash_application_export_manifest,
+    hash_application_export_page, hash_application_export_receipt,
     hash_application_installation_plan, hash_application_installation_receipt, hash_schema,
     offline_maintenance_input_hash,
 };
@@ -56,6 +59,13 @@ const MAX_OPERATION_SCHEMA_BYTES: usize = 65_536;
 const MAX_INSTALLATION_DRIVERS: usize = 4;
 const MAX_INSTALLATION_SEEDS: usize = 256;
 const MAX_INSTALLATION_SYMBOL_BYTES: usize = 256;
+const MAX_APPLICATION_EXPORT_JSON_LINE_BYTES: usize = 64 * 1024;
+const MAX_APPLICATION_EXPORT_PAGE_ROWS: usize = 500;
+const MAX_APPLICATION_EXPORT_PAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_APPLICATION_EXPORT_TERMINAL_DOCUMENT_BYTES: usize = 256 * 1024;
+const MAX_APPLICATION_EXPORT_CURSOR_BYTES: usize = 512;
+const MIN_APPLICATION_EXPORT_LEASE_SECONDS: u32 = 60;
+const MAX_APPLICATION_EXPORT_LEASE_SECONDS: u32 = 24 * 60 * 60;
 const MAX_PROVENANCE_LINKS: usize = 4_096;
 const MAX_SOURCE_REPOSITORY_BYTES: usize = 512;
 const MAX_SOURCE_COMMIT_BYTES: usize = 128;
@@ -380,6 +390,75 @@ pub fn validate_get_application_installation_exchange(
         if observation.campaign_id != request.campaign_id {
             return Err(PublicWireError::InconsistentFields);
         }
+    }
+    Ok(())
+}
+
+/// Validates export start identity and terminal/cursor relations.
+pub fn validate_start_application_export_exchange(
+    request: &v1::StartApplicationExportRequest,
+    response: &v1::StartApplicationExportResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if operation.operation_id != request.operation_id
+        || operation.selection.as_ref() != request.selection.as_ref()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates one exact export page against its operation and requested bound.
+pub fn validate_get_application_export_page_exchange(
+    request: &v1::GetApplicationExportPageRequest,
+    response: &v1::GetApplicationExportPageResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let page = response
+        .page
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if page.operation_id != request.operation_id
+        || page.canonical_json_lines.len()
+            > usize::try_from(request.max_rows).map_err(|_| PublicWireError::InvalidValue)?
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates one protected export status observation without expanding absence.
+pub fn validate_get_application_export_exchange(
+    request: &v1::GetApplicationExportRequest,
+    response: &v1::GetApplicationExportResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::get_application_export_response::Result::Found(operation)) = &response.result
+        && operation.operation_id != request.operation_id
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates one export cancellation observation without expanding absence.
+pub fn validate_cancel_application_export_exchange(
+    request: &v1::CancelApplicationExportRequest,
+    response: &v1::CancelApplicationExportResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::cancel_application_export_response::Result::Found(operation)) = &response.result
+        && operation.operation_id != request.operation_id
+    {
+        return Err(PublicWireError::InconsistentFields);
     }
     Ok(())
 }
@@ -3950,6 +4029,335 @@ fn validate_get_application_installation_response(
     }
 }
 
+fn application_export_operation_id(bytes: &[u8]) -> Result<(), PublicWireError> {
+    if valid_uuid(bytes, ApplicationExportOperationId::from_bytes) {
+        Ok(())
+    } else {
+        Err(PublicWireError::InvalidUuidV7)
+    }
+}
+
+fn validate_application_export_selection(
+    selection: Option<&v1::ApplicationExportSelection>,
+) -> Result<(), PublicWireError> {
+    let selection = selection.ok_or(PublicWireError::MissingRequiredField)?;
+    ContractLineage::new(selection.contract_lineage.clone())
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    if !matches!(
+        v1::CapabilityApplicationExportScope::try_from(selection.scope),
+        Ok(v1::CapabilityApplicationExportScope::PrincipalFiltered
+            | v1::CapabilityApplicationExportScope::WholeApplication)
+    ) {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    if !selection.entities && !selection.events {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_application_export_snapshot(
+    snapshot: Option<&v1::ApplicationExportSnapshotBinding>,
+) -> Result<(), PublicWireError> {
+    let snapshot = snapshot.ok_or(PublicWireError::MissingRequiredField)?;
+    if !valid_uuid(&snapshot.database_id, DatabaseId::from_bytes) {
+        return Err(PublicWireError::InvalidUuidV7);
+    }
+    if snapshot.history_incarnation == 0 || snapshot.contract_version == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    hash(&snapshot.contract_bundle_hash)?;
+    for identities in [
+        snapshot.query_module_hashes.as_slice(),
+        snapshot.reactive_module_hashes.as_slice(),
+    ] {
+        if identities.len() > MAX_APPLICATION_EXPORT_MODULES {
+            return Err(PublicWireError::TooManyItems);
+        }
+        let mut previous: Option<&[u8]> = None;
+        for identity in identities {
+            hash(identity)?;
+            if previous.is_some_and(|prior| prior >= identity.as_slice()) {
+                return Err(PublicWireError::NonCanonical);
+            }
+            previous = Some(identity);
+        }
+    }
+    Ok(())
+}
+
+fn valid_application_export_json(value: &[u8], maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && std::str::from_utf8(value).is_ok()
+        && !value.contains(&b'\n')
+        && !value.contains(&b'\r')
+        && value.first() == Some(&b'{')
+        && value.last() == Some(&b'}')
+}
+
+fn validate_application_export_operation(
+    operation: &v1::ApplicationExportOperation,
+) -> Result<(), PublicWireError> {
+    application_export_operation_id(&operation.operation_id)?;
+    validate_application_export_selection(operation.selection.as_ref())?;
+    validate_application_export_snapshot(operation.snapshot.as_ref())?;
+    validate_timestamp(operation.lease_expires_at.as_ref())?;
+    let phase = v1::ApplicationExportPhase::try_from(operation.phase)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let failure = v1::ApplicationExportFailure::try_from(operation.failure)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let terminal = matches!(
+        phase,
+        v1::ApplicationExportPhase::Completed
+            | v1::ApplicationExportPhase::Cancelled
+            | v1::ApplicationExportPhase::Expired
+            | v1::ApplicationExportPhase::FailedClosed
+    );
+    let documents_present = !operation.canonical_manifest_json.is_empty()
+        && !operation.canonical_receipt_json.is_empty()
+        && !operation.manifest_hash.is_empty()
+        && !operation.receipt_hash.is_empty();
+    let documents_absent = operation.canonical_manifest_json.is_empty()
+        && operation.canonical_receipt_json.is_empty()
+        && operation.manifest_hash.is_empty()
+        && operation.receipt_hash.is_empty();
+    if phase == v1::ApplicationExportPhase::Unspecified
+        || terminal && !documents_present
+        || !terminal && !documents_absent
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    match phase {
+        v1::ApplicationExportPhase::Accepted | v1::ApplicationExportPhase::Exporting
+            if failure == v1::ApplicationExportFailure::Unspecified => {}
+        v1::ApplicationExportPhase::Completed
+            if failure == v1::ApplicationExportFailure::Unspecified => {}
+        v1::ApplicationExportPhase::Cancelled
+            if failure == v1::ApplicationExportFailure::Cancelled => {}
+        v1::ApplicationExportPhase::Expired
+            if failure == v1::ApplicationExportFailure::LeaseExpired => {}
+        v1::ApplicationExportPhase::FailedClosed
+            if matches!(
+                failure,
+                v1::ApplicationExportFailure::AuthorityChanged
+                    | v1::ApplicationExportFailure::SnapshotUnavailable
+                    | v1::ApplicationExportFailure::SourceInvalid
+                    | v1::ApplicationExportFailure::LimitExceeded
+                    | v1::ApplicationExportFailure::Internal
+            ) => {}
+        _ => return Err(PublicWireError::InconsistentFields),
+    }
+    if terminal {
+        if !valid_application_export_json(
+            &operation.canonical_manifest_json,
+            MAX_APPLICATION_EXPORT_TERMINAL_DOCUMENT_BYTES,
+        ) || !valid_application_export_json(
+            &operation.canonical_receipt_json,
+            MAX_APPLICATION_EXPORT_TERMINAL_DOCUMENT_BYTES,
+        ) {
+            return Err(PublicWireError::InvalidBytes);
+        }
+        hash(&operation.manifest_hash)?;
+        hash(&operation.receipt_hash)?;
+        if operation.manifest_hash.as_slice()
+            != hash_application_export_manifest(&operation.canonical_manifest_json).as_bytes()
+            || operation.receipt_hash.as_slice()
+                != hash_application_export_receipt(&operation.canonical_receipt_json).as_bytes()
+        {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    }
+    Ok(())
+}
+
+fn validate_start_application_export_request(
+    request: &v1::StartApplicationExportRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_export_operation_id(&request.operation_id)?;
+    validate_application_export_selection(request.selection.as_ref())?;
+    if !(MIN_APPLICATION_EXPORT_LEASE_SECONDS..=MAX_APPLICATION_EXPORT_LEASE_SECONDS)
+        .contains(&request.lease_seconds)
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_start_application_export_response(
+    response: &v1::StartApplicationExportResponse,
+) -> Result<(), PublicWireError> {
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    validate_application_export_operation(operation)?;
+    let disposition = v1::ApplicationExportStartDisposition::try_from(response.disposition)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let phase = v1::ApplicationExportPhase::try_from(operation.phase)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let terminal = matches!(
+        phase,
+        v1::ApplicationExportPhase::Completed
+            | v1::ApplicationExportPhase::Cancelled
+            | v1::ApplicationExportPhase::Expired
+            | v1::ApplicationExportPhase::FailedClosed
+    );
+    if response.cursor.len() > MAX_APPLICATION_EXPORT_CURSOR_BYTES
+        || terminal != response.cursor.is_empty()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    match disposition {
+        v1::ApplicationExportStartDisposition::Accepted
+        | v1::ApplicationExportStartDisposition::AlreadyAccepted
+            if !terminal =>
+        {
+            Ok(())
+        }
+        v1::ApplicationExportStartDisposition::Terminal if terminal => Ok(()),
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
+fn validate_get_application_export_page_request(
+    request: &v1::GetApplicationExportPageRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_export_operation_id(&request.operation_id)?;
+    if request.cursor.is_empty()
+        || request.cursor.len() > MAX_APPLICATION_EXPORT_CURSOR_BYTES
+        || request.max_rows == 0
+        || usize::try_from(request.max_rows)
+            .map_or(true, |rows| rows > MAX_APPLICATION_EXPORT_PAGE_ROWS)
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_application_export_page(
+    page: Option<&v1::ApplicationExportPage>,
+) -> Result<(), PublicWireError> {
+    let page = page.ok_or(PublicWireError::MissingRequiredField)?;
+    application_export_operation_id(&page.operation_id)?;
+    let page_number =
+        std::num::NonZeroU64::new(page.page_number).ok_or(PublicWireError::InvalidIdentity)?;
+    let class = match v1::ApplicationExportRecordClass::try_from(page.record_class)
+        .map_err(|_| PublicWireError::InvalidEnum)?
+    {
+        v1::ApplicationExportRecordClass::Entity => ApplicationExportClassV1::Entity,
+        v1::ApplicationExportRecordClass::Event => ApplicationExportClassV1::Event,
+        v1::ApplicationExportRecordClass::Provenance => ApplicationExportClassV1::Provenance,
+        v1::ApplicationExportRecordClass::PublicAudit => ApplicationExportClassV1::PublicAudit,
+        v1::ApplicationExportRecordClass::Unspecified => {
+            return Err(PublicWireError::InvalidEnum);
+        }
+    };
+    if page.canonical_json_lines.len() > MAX_APPLICATION_EXPORT_PAGE_ROWS
+        || page.next_cursor.len() > MAX_APPLICATION_EXPORT_CURSOR_BYTES
+        || page.operation_complete != page.next_cursor.is_empty()
+        || page.operation_complete && !page.class_complete
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let mut total = 0usize;
+    for line in &page.canonical_json_lines {
+        if !valid_application_export_json(line, MAX_APPLICATION_EXPORT_JSON_LINE_BYTES) {
+            return Err(PublicWireError::InvalidBytes);
+        }
+        total = total
+            .checked_add(line.len() + 1)
+            .ok_or(PublicWireError::MessageTooLarge)?;
+    }
+    if total > MAX_APPLICATION_EXPORT_PAGE_BYTES {
+        return Err(PublicWireError::MessageTooLarge);
+    }
+    hash(&page.page_hash)?;
+    let operation_id = ApplicationExportOperationId::from_bytes(
+        page.operation_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicWireError::InvalidUuidV7)?,
+    )
+    .map_err(|_| PublicWireError::InvalidUuidV7)?;
+    let lines = page
+        .canonical_json_lines
+        .iter()
+        .map(Vec::as_slice)
+        .collect::<Vec<_>>();
+    let preimage = canonical_application_export_page_preimage(
+        operation_id,
+        page_number,
+        class,
+        &lines,
+        page.class_complete,
+        page.operation_complete,
+    )
+    .map_err(|_| PublicWireError::MessageTooLarge)?;
+    if page.page_hash.as_slice() != hash_application_export_page(&preimage).as_bytes() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_get_application_export_page_response(
+    response: &v1::GetApplicationExportPageResponse,
+) -> Result<(), PublicWireError> {
+    validate_application_export_page(response.page.as_ref())
+}
+
+fn validate_application_export_operation_request(
+    request_id_bytes: &[u8],
+    operation_id: &[u8],
+) -> Result<(), PublicWireError> {
+    request_id(request_id_bytes)?;
+    application_export_operation_id(operation_id)
+}
+
+fn validate_get_application_export_request(
+    request: &v1::GetApplicationExportRequest,
+) -> Result<(), PublicWireError> {
+    validate_application_export_operation_request(&request.request_id, &request.operation_id)
+}
+
+fn validate_cancel_application_export_request(
+    request: &v1::CancelApplicationExportRequest,
+) -> Result<(), PublicWireError> {
+    validate_application_export_operation_request(&request.request_id, &request.operation_id)
+}
+
+fn validate_get_application_export_response(
+    response: &v1::GetApplicationExportResponse,
+) -> Result<(), PublicWireError> {
+    match response
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::get_application_export_response::Result::NotFound(_) => Ok(()),
+        v1::get_application_export_response::Result::Found(operation) => {
+            validate_application_export_operation(operation)
+        }
+    }
+}
+
+fn validate_cancel_application_export_response(
+    response: &v1::CancelApplicationExportResponse,
+) -> Result<(), PublicWireError> {
+    match response
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::cancel_application_export_response::Result::NotFound(_) => Ok(()),
+        v1::cancel_application_export_response::Result::Found(operation) => {
+            validate_application_export_operation(operation)
+        }
+    }
+}
+
 fn schema_key(key: Option<&v1::SchemaArtifactKey>) -> Result<(u8, u32), PublicWireError> {
     let (kind, owner) = match key
         .and_then(|key| key.artifact.as_ref())
@@ -7120,6 +7528,153 @@ fn preflight_get_application_installation_response(input: &[u8]) -> Result<(), P
     )
 }
 
+fn preflight_application_export_selection(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 6, &[], &[], &[], &[])
+}
+
+fn preflight_application_export_snapshot(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        8,
+        &[7, 8],
+        &[],
+        &[],
+        &[
+            RepeatedRule {
+                field: 7,
+                maximum: MAX_APPLICATION_EXPORT_MODULES,
+                wire: RepeatedWire::LengthDelimited,
+            },
+            RepeatedRule {
+                field: 8,
+                maximum: MAX_APPLICATION_EXPORT_MODULES,
+                wire: RepeatedWire::LengthDelimited,
+            },
+        ],
+    )
+}
+
+fn preflight_application_export_operation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        13,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_export_selection,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_application_export_snapshot,
+            },
+            NestedRule {
+                field: 5,
+                preflight: preflight_timestamp,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_start_application_export_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 3,
+            preflight: preflight_application_export_selection,
+        }],
+        &[],
+    )
+}
+
+fn preflight_start_application_export_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_application_export_operation,
+        }],
+        &[],
+    )
+}
+
+fn preflight_application_export_page(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        8,
+        &[4],
+        &[],
+        &[],
+        &[RepeatedRule {
+            field: 4,
+            maximum: MAX_APPLICATION_EXPORT_PAGE_ROWS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_get_application_export_page_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_application_export_page,
+        }],
+        &[],
+    )
+}
+
+fn preflight_get_application_export_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_export_operation,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_cancel_application_export_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_export_operation,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_generated_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -9230,6 +9785,78 @@ impl_public_message!(
     preflight_get_application_installation_response,
     validate_get_application_installation_response
 );
+impl_public_message!(
+    v1::StartApplicationExportRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    4,
+    &[],
+    &[],
+    preflight_start_application_export_request,
+    validate_start_application_export_request
+);
+impl_public_message!(
+    v1::StartApplicationExportResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_start_application_export_response,
+    validate_start_application_export_response
+);
+impl_public_message!(
+    v1::GetApplicationExportPageRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    4,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_application_export_page_request
+);
+impl_public_message!(
+    v1::GetApplicationExportPageResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_get_application_export_page_response,
+    validate_get_application_export_page_response
+);
+impl_public_message!(
+    v1::GetApplicationExportRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_application_export_request
+);
+impl_public_message!(
+    v1::GetApplicationExportResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_get_application_export_response,
+    validate_get_application_export_response
+);
+impl_public_message!(
+    v1::CancelApplicationExportRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_cancel_application_export_request
+);
+impl_public_message!(
+    v1::CancelApplicationExportResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_cancel_application_export_response,
+    validate_cancel_application_export_response
+);
 
 impl_public_message!(
     v1::WatchNamedQueryRequest,
@@ -9437,6 +10064,203 @@ mod live_query_tests {
         assert_eq!(
             validate_public_message(&update),
             Err(PublicWireError::InvalidValue)
+        );
+    }
+}
+
+#[cfg(test)]
+mod application_export_tests {
+    use super::*;
+
+    fn uuid_bytes(fill: u8) -> Vec<u8> {
+        [
+            0x01, 0x8f, 0, 0, 0, fill, 0x70, 1, 0x80, fill, 0, 0, 0, 0, 0, fill,
+        ]
+        .to_vec()
+    }
+
+    fn selection() -> v1::ApplicationExportSelection {
+        v1::ApplicationExportSelection {
+            contract_lineage: "TicketDesk".to_owned(),
+            scope: v1::CapabilityApplicationExportScope::WholeApplication as i32,
+            entities: true,
+            events: true,
+            provenance: false,
+            public_audit: false,
+        }
+    }
+
+    fn snapshot() -> v1::ApplicationExportSnapshotBinding {
+        v1::ApplicationExportSnapshotBinding {
+            database_id: uuid_bytes(3),
+            history_incarnation: 1,
+            application_frontier: 7,
+            administration_frontier: 8,
+            contract_version: 2,
+            contract_bundle_hash: vec![4; 32],
+            query_module_hashes: vec![vec![5; 32], vec![6; 32]],
+            reactive_module_hashes: vec![vec![7; 32]],
+        }
+    }
+
+    fn operation(phase: v1::ApplicationExportPhase) -> v1::ApplicationExportOperation {
+        let terminal = matches!(
+            phase,
+            v1::ApplicationExportPhase::Completed
+                | v1::ApplicationExportPhase::Cancelled
+                | v1::ApplicationExportPhase::Expired
+                | v1::ApplicationExportPhase::FailedClosed
+        );
+        let manifest = if terminal {
+            br#"{"complete":true}"#.to_vec()
+        } else {
+            Vec::new()
+        };
+        let receipt = if terminal {
+            br#"{"terminal":true}"#.to_vec()
+        } else {
+            Vec::new()
+        };
+        let failure = match phase {
+            v1::ApplicationExportPhase::Cancelled => v1::ApplicationExportFailure::Cancelled,
+            v1::ApplicationExportPhase::Expired => v1::ApplicationExportFailure::LeaseExpired,
+            v1::ApplicationExportPhase::FailedClosed => {
+                v1::ApplicationExportFailure::SnapshotUnavailable
+            }
+            _ => v1::ApplicationExportFailure::Unspecified,
+        };
+        v1::ApplicationExportOperation {
+            operation_id: uuid_bytes(2),
+            selection: Some(selection()),
+            snapshot: Some(snapshot()),
+            phase: phase as i32,
+            lease_expires_at: Some(v1::Timestamp {
+                seconds: 1,
+                nanos: 0,
+            }),
+            pages_released: 0,
+            rows_released: 0,
+            bytes_released: 0,
+            failure: failure as i32,
+            manifest_hash: if terminal {
+                hash_application_export_manifest(&manifest)
+                    .into_bytes()
+                    .to_vec()
+            } else {
+                Vec::new()
+            },
+            receipt_hash: if terminal {
+                hash_application_export_receipt(&receipt)
+                    .into_bytes()
+                    .to_vec()
+            } else {
+                Vec::new()
+            },
+            canonical_manifest_json: manifest,
+            canonical_receipt_json: receipt,
+        }
+    }
+
+    fn page(lines: Vec<Vec<u8>>) -> v1::ApplicationExportPage {
+        let operation_id = ApplicationExportOperationId::from_bytes(
+            uuid_bytes(2).try_into().expect("operation bytes"),
+        )
+        .expect("operation ID");
+        let borrowed = lines.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let preimage = canonical_application_export_page_preimage(
+            operation_id,
+            std::num::NonZeroU64::new(1).expect("page"),
+            ApplicationExportClassV1::Entity,
+            &borrowed,
+            false,
+            false,
+        )
+        .expect("preimage");
+        v1::ApplicationExportPage {
+            operation_id: uuid_bytes(2),
+            page_number: 1,
+            record_class: v1::ApplicationExportRecordClass::Entity as i32,
+            canonical_json_lines: lines,
+            next_cursor: vec![9; 32],
+            class_complete: false,
+            operation_complete: false,
+            page_hash: hash_application_export_page(&preimage)
+                .into_bytes()
+                .to_vec(),
+        }
+    }
+
+    #[test]
+    fn export_start_and_terminal_shapes_are_closed() {
+        let response = v1::StartApplicationExportResponse {
+            disposition: v1::ApplicationExportStartDisposition::Accepted as i32,
+            operation: Some(operation(v1::ApplicationExportPhase::Accepted)),
+            cursor: vec![9; 32],
+        };
+        assert_eq!(validate_public_message(&response), Ok(()));
+
+        let mut invalid = response;
+        invalid.operation.as_mut().expect("operation").phase =
+            v1::ApplicationExportPhase::Completed as i32;
+        assert_eq!(
+            validate_public_message(&invalid),
+            Err(PublicWireError::InconsistentFields)
+        );
+
+        assert_eq!(
+            validate_application_export_operation(&operation(
+                v1::ApplicationExportPhase::Completed
+            )),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn export_page_hash_and_row_preflight_are_enforced() {
+        let mut response = v1::GetApplicationExportPageResponse {
+            page: Some(page(vec![br#"{"entity":"Ticket"}"#.to_vec()])),
+        };
+        assert_eq!(validate_public_message(&response), Ok(()));
+        response.page.as_mut().expect("page").page_hash[0] ^= 1;
+        assert_eq!(
+            validate_public_message(&response),
+            Err(PublicWireError::InconsistentFields)
+        );
+
+        let oversized = v1::GetApplicationExportPageResponse {
+            page: Some(page(vec![
+                b"{}".to_vec();
+                MAX_APPLICATION_EXPORT_PAGE_ROWS + 1
+            ])),
+        };
+        let bytes = oversized.encode_to_vec();
+        assert_eq!(
+            decode_public_message::<v1::GetApplicationExportPageResponse>(&bytes),
+            Err(PublicWireError::PreflightLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn export_exchange_rejects_operation_identity_substitution() {
+        let request = v1::StartApplicationExportRequest {
+            request_id: uuid_bytes(1),
+            operation_id: uuid_bytes(2),
+            selection: Some(selection()),
+            lease_seconds: MIN_APPLICATION_EXPORT_LEASE_SECONDS,
+        };
+        let mut response = v1::StartApplicationExportResponse {
+            disposition: v1::ApplicationExportStartDisposition::Accepted as i32,
+            operation: Some(operation(v1::ApplicationExportPhase::Accepted)),
+            cursor: vec![9; 32],
+        };
+        assert_eq!(
+            validate_start_application_export_exchange(&request, &response),
+            Ok(())
+        );
+        response.operation.as_mut().expect("operation").operation_id = uuid_bytes(8);
+        assert_eq!(
+            validate_start_application_export_exchange(&request, &response),
+            Err(PublicWireError::InconsistentFields)
         );
     }
 }

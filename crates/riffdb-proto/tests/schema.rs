@@ -652,6 +652,18 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "StartApplicationInstallationResponse",
         "GetApplicationInstallationRequest",
         "GetApplicationInstallationResponse",
+        "ApplicationExportSelection",
+        "ApplicationExportSnapshotBinding",
+        "ApplicationExportOperation",
+        "StartApplicationExportRequest",
+        "StartApplicationExportResponse",
+        "GetApplicationExportPageRequest",
+        "ApplicationExportPage",
+        "GetApplicationExportPageResponse",
+        "GetApplicationExportRequest",
+        "GetApplicationExportResponse",
+        "CancelApplicationExportRequest",
+        "CancelApplicationExportResponse",
         "ValidateContractRequest",
         "ValidateContractResponse",
         "EventFieldDescriptor",
@@ -703,7 +715,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        243
+        260
     );
     assert_eq!(
         messages
