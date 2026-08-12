@@ -2964,29 +2964,30 @@ fn current_scan_policy(
     ))
 }
 
-/// Derives per-field secret reveal authority (ADR-0118) from the mask's
-/// explicitly granted secret set.
+/// Resolves the sealed per-field reveal authorities (ADR-0118) minted by
+/// the policy evaluation's mask.
 ///
-/// This is the ONLY construction site for [`riffdb_types::SecretRevealAuthority`]
-/// on the read path — the display-surface architecture test enumerates it.
-/// A mask for the wrong lineage or entity, an absent mask, or a granted
-/// secret the schema no longer classifies all yield no authority.
+/// The authorities themselves are unforgeable — minted only by
+/// [`riffdb_policy::FieldMask::secret_reveal_authorities`], and a mask
+/// exists only through the authorizer's evaluation of a real grant. This
+/// helper adds the service-side scope checks: a mask for the wrong lineage
+/// or entity, an absent mask, or a granted secret the schema no longer
+/// classifies all yield no authority.
 fn secret_reveal_authorities(
     authorization: &AuthorizedOperation,
     lineage: &ContractLineage,
     entity: &EntitySchema,
     secret_fields: &[FieldId],
-) -> Vec<riffdb_types::SecretRevealAuthority> {
+) -> Vec<riffdb_policy::SecretRevealAuthority> {
     let Some(mask) = authorization.obligations().field_mask() else {
         return Vec::new();
     };
     if mask.lineage() != lineage || mask.entity_type_id() != entity.id() {
         return Vec::new();
     }
-    mask.secret_fields()
-        .iter()
-        .filter(|field| secret_fields.binary_search(field).is_ok())
-        .map(|field| riffdb_types::SecretRevealAuthority::from_explicit_field_visibility(*field))
+    mask.secret_reveal_authorities()
+        .into_iter()
+        .filter(|authority| secret_fields.binary_search(&authority.field()).is_ok())
         .collect()
 }
 
@@ -3162,7 +3163,7 @@ fn entity_view(
     requested_key: &EntityKey,
     visible_fields: &[FieldId],
     secret_fields: &[FieldId],
-    reveal: &[riffdb_types::SecretRevealAuthority],
+    reveal: &[riffdb_policy::SecretRevealAuthority],
     snapshot: AuthoritativeEntitySnapshot,
 ) -> ServiceResult<EntityView> {
     if snapshot.key() != requested_key {
@@ -3192,7 +3193,7 @@ fn index_views(
     constraint: &PartitionConstraint,
     visible_fields: &[FieldId],
     secret_fields: &[FieldId],
-    reveal: &[riffdb_types::SecretRevealAuthority],
+    reveal: &[riffdb_policy::SecretRevealAuthority],
     page: &AuthoritativeIndexPage,
     derived_partitions: &[PartitionKey],
 ) -> Result<Vec<IndexRowView>, ()> {
@@ -3259,15 +3260,15 @@ fn partition_allowed(
 /// through the mask alone — even a mask that lists one (for example via a
 /// role default that enumerated every field) yields only its redaction
 /// marker. The sole path to a released secret value is a
-/// [`riffdb_types::SecretRevealAuthority`] for that exact field, consumed by
-/// [`riffdb_types::SecretValue::reveal_for_authorized_display`]; the
+/// [`riffdb_policy::SecretRevealAuthority`] for that exact field, consumed by
+/// [`riffdb_policy::SecretValue::reveal_for_authorized_display`]; the
 /// display-surface architecture test enumerates that method's call sites.
 fn filter_record(
     schema: &RecordSchema,
     record: &CanonicalRecord,
     visible_fields: &[FieldId],
     secret_fields: &[FieldId],
-    reveal: &[riffdb_types::SecretRevealAuthority],
+    reveal: &[riffdb_policy::SecretRevealAuthority],
 ) -> Result<(CanonicalRecord, Vec<riffdb_types::RedactedSecretField>), ()> {
     let mut filtered = Vec::new();
     let mut redacted = Vec::new();
@@ -3280,7 +3281,7 @@ fn filter_record(
         field.value_type().validate_value(value).map_err(|_| ())?;
         if secret_fields.binary_search(field_id).is_ok() {
             let secret =
-                riffdb_types::SecretValue::classify(*field_id, field.name(), value.clone());
+                riffdb_policy::SecretValue::classify(*field_id, field.name(), value.clone());
             let authority = reveal
                 .iter()
                 .find(|authority| authority.field() == *field_id);
@@ -4200,8 +4201,9 @@ mod tests {
         let visible = [plain_field];
         let secrets = [secret_field];
 
-        let exact =
-            [riffdb_types::SecretRevealAuthority::from_explicit_field_visibility(secret_field)];
+        let exact = [riffdb_policy::SecretRevealAuthority::test_fixture(
+            secret_field,
+        )];
         let (fields, redacted) =
             filter_record(&schema, &record, &visible, &secrets, &exact).expect("release succeeds");
         assert!(redacted.is_empty());
@@ -4211,10 +4213,18 @@ mod tests {
             .find(|(id, _)| *id == secret_field)
             .map(|(_, value)| value)
             .expect("revealed value present");
-        assert!(matches!(revealed, CanonicalValue::String(_)));
+        assert_eq!(
+            revealed,
+            &CanonicalValue::String(
+                riffdb_types::CanonicalString::new(SECRET_CANARY.to_owned())
+                    .expect("canary string"),
+            ),
+            "the released value must be the exact stored bytes"
+        );
 
-        let wrong =
-            [riffdb_types::SecretRevealAuthority::from_explicit_field_visibility(plain_field)];
+        let wrong = [riffdb_policy::SecretRevealAuthority::test_fixture(
+            plain_field,
+        )];
         let (fields, redacted) =
             filter_record(&schema, &record, &visible, &secrets, &wrong).expect("release succeeds");
         assert!(
