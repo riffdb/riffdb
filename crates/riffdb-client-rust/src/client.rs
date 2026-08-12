@@ -27,7 +27,7 @@ use riffdb_proto::{
     validate_start_application_installation_exchange, validate_trace_provenance_exchange,
 };
 use riffdb_proto::{app::v1 as app_v1, v1};
-use riffdb_types::{CommitSequence, RequestId};
+use riffdb_types::{ApplicationExportOperationId, CommitSequence, RequestId};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Streaming};
 
@@ -1047,6 +1047,97 @@ impl RiffDbClient {
                 .start_application_export(start.request(request_id), metadata)
                 .await
             {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Releases or exactly replays one snapshot-bound export page with bounded retry.
+    ///
+    /// The opaque cursor is reused byte-for-byte across attempts. If the final
+    /// response remains uncertain, callers may safely invoke this method again
+    /// with the same cursor while the operation lease remains valid.
+    pub async fn get_application_export_page_with_retry(
+        &mut self,
+        operation_id: ApplicationExportOperationId,
+        cursor: &[u8],
+        max_rows: u16,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::GetApplicationExportPageResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            let request = v1::GetApplicationExportPageRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+                cursor: cursor.to_vec(),
+                max_rows: u32::from(max_rows),
+            };
+            match self.get_application_export_page(request, metadata).await {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Observes one exact durable export checkpoint with a fresh request identity.
+    pub async fn get_application_export_operation(
+        &mut self,
+        operation_id: ApplicationExportOperationId,
+        metadata: &CallMetadata,
+    ) -> Result<v1::GetApplicationExportResponse, ClientError> {
+        let request_id = SystemIdSource::new()
+            .next_request_id()
+            .map_err(ClientError::IdentifierGeneration)?;
+        self.get_application_export(
+            v1::GetApplicationExportRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+            },
+            metadata,
+        )
+        .await
+    }
+
+    /// Cancels or exactly observes one terminal export with bounded retry.
+    pub async fn cancel_application_export_with_retry(
+        &mut self,
+        operation_id: ApplicationExportOperationId,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::CancelApplicationExportResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            let request = v1::CancelApplicationExportRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+            };
+            match self.cancel_application_export(request, metadata).await {
                 Ok(response) => return Ok(response),
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}

@@ -50,8 +50,8 @@ capabilities. V5 preserves the exact optional V2 through V4 extensions and
 adds a bounded, lineage-ordered export extension. Principal-filtered export
 requires the matching V4 role/policy extension, while whole-application export
 requires explicit global/all-partition authority. The public export operation
-is not available until WP-575 completes; this durable successor only makes its
-future authority distinct and fail-closed.
+uses that authority for its shared-service, gRPC, Rust operator-client, and CLI
+safe points; it never derives export access from an older permission.
 
 The V4 extension binds one exact application-role hash, canonical principal
 facts, and canonical protected entity/operation selections; omitting the

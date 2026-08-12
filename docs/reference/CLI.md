@@ -28,6 +28,7 @@ Commands:
   capability
   server
   backup
+  export       Exports one authorized symbolic application snapshot as canonical JSONL pages
   storage      Inspects or upgrades one closed database's durable format
   retention    Offline exclusive retention maintenance on a closed database file
   demo
@@ -404,6 +405,29 @@ Commands:
   create
   restore
   operation
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb export`
+
+```text
+Exports one authorized symbolic application snapshot as canonical JSONL pages
+
+Usage: riffdb export [OPTIONS] <COMMAND>
+
+Commands:
+  start   Starts or exactly replays one immutable snapshot export
+  page    Writes one exact bounded page to a newly created canonical JSONL file
+  status  Observes one durable export checkpoint or terminal receipt
+  cancel  Closes one nonterminal export with a durable incomplete receipt
 
 Options:
       --config <PATH>
@@ -1833,6 +1857,119 @@ Arguments:
 
 Options:
       --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb export start`
+
+```text
+Starts or exactly replays one immutable snapshot export
+
+Usage: riffdb export start [OPTIONS] --lineage <CONTRACT_LINEAGE> --scope <principal|whole>
+
+Options:
+      --config <PATH>
+
+
+      --lineage <CONTRACT_LINEAGE>
+
+
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+
+      --scope <principal|whole>
+          Possible values:
+          - principal: Apply the current application role's row and field policy
+          - whole:     Use explicit whole-application export authority
+
+      --database <DATABASE>
+
+
+      --entities
+
+
+      --events
+
+
+      --output <human|json>
+          [possible values: human, json]
+
+      --max-attempts <1..10>
+
+
+      --provenance
+
+
+      --credential-file <PATH>
+
+
+      --public-audit
+
+
+      --lease-seconds <60..86400>
+          [default: 3600]
+
+      --operation-id <UUID_V7>
+
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+#### `riffdb export page`
+
+```text
+Writes one exact bounded page to a newly created canonical JSONL file
+
+Usage: riffdb export page [OPTIONS] --operation-id <UUID_V7> --cursor <OPAQUE_BASE64_CURSOR> --jsonl <NEW_JSONL_FILE>
+
+Options:
+      --config <PATH>
+      --operation-id <UUID_V7>
+      --cursor <OPAQUE_BASE64_CURSOR>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --max-rows <1..500>                  [default: 500]
+      --jsonl <NEW_JSONL_FILE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb export status`
+
+```text
+Observes one durable export checkpoint or terminal receipt
+
+Usage: riffdb export status [OPTIONS] --operation-id <UUID_V7>
+
+Options:
+      --config <PATH>
+      --operation-id <UUID_V7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb export cancel`
+
+```text
+Closes one nonterminal export with a durable incomplete receipt
+
+Usage: riffdb export cancel [OPTIONS] --operation-id <UUID_V7>
+
+Options:
+      --config <PATH>
+      --operation-id <UUID_V7>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]

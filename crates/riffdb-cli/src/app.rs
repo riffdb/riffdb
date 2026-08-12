@@ -15,15 +15,17 @@ use riffdb_application::{
     InstalledSeedEvidence,
 };
 use riffdb_client_rust::{
-    ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
-    ApplicationUuid, ApplicationValue, ApplyContractMigration, AttemptBudget, BackupNameV1,
-    BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, ClientError,
+    ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationExportOperationId,
+    ApplicationExportSelectionV1, ApplicationOperation, ApplicationUuid, ApplicationValue,
+    ApplyContractMigration, AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate,
+    CallMetadata, CapabilityApplicationExportScopeV1, CheckContractMigration, ClientError,
     CommitToken, ContractMigrationOperationId, CreateOfflineBackup, FreshnessPolicy,
     IdempotentCommand, MigrationBundleHash, NormalCapabilityCreateTemplate,
     OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedAggregate,
     ProjectedAggregateValue, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
     ProjectedQueryOutcome, ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup,
-    RiffDbClient, StartApplicationInstallation, app_v1, generate_capability_id,
+    RiffDbClient, StartApplicationExport, StartApplicationInstallation, app_v1,
+    generate_application_export_operation_id, generate_capability_id,
     generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
@@ -36,8 +38,8 @@ use riffdb_query_module::{
 };
 use riffdb_types::{
     ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, GeneratedArtifactHash, PartitionScopeV1,
-    TenantId, TenantScope, hash_generated_artifact,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, ContractLineage, GeneratedArtifactHash,
+    PartitionScopeV1, TenantId, TenantScope, hash_generated_artifact,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -50,9 +52,9 @@ use crate::batch::{
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
-    EntityCommand, EventCommand, EventConsumerArgs, MigrationCommand, OutputMode,
-    ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand, RevocationReason,
-    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
+    EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope, MigrationCommand,
+    OutputMode, ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand,
+    RevocationReason, RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -775,6 +777,7 @@ async fn dispatch(
         }
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
+        TopLevel::Export { command } => export_command(command, config, environment).await,
         TopLevel::Storage { command } => storage_command(command),
         TopLevel::Retention { command } => retention_command(command),
         TopLevel::Demo { command } => demo_command(command, config, environment),
@@ -4702,6 +4705,378 @@ async fn backup_command(
             }
         }
     }
+}
+
+async fn export_command(
+    command: ExportCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = match command {
+        ExportCommand::Start { .. } => CommandIdentity::ExportStart,
+        ExportCommand::Page { .. } => CommandIdentity::ExportPage,
+        ExportCommand::Status { .. } => CommandIdentity::ExportStatus,
+        ExportCommand::Cancel { .. } => CommandIdentity::ExportCancel,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    match command {
+        ExportCommand::Start {
+            lineage,
+            scope,
+            entities,
+            events,
+            provenance,
+            public_audit,
+            lease_seconds,
+            operation_id,
+        } => {
+            let operation_id = match operation_id {
+                Some(value) => match parse_application_export_operation_id(&value) {
+                    Ok(value) => value,
+                    Err(()) => return invalid_input(identity),
+                },
+                None => match generate_application_export_operation_id() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return client_error(identity, &ClientError::IdentifierGeneration(error));
+                    }
+                },
+            };
+            let lineage = match ContractLineage::new(lineage) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let scope = match scope {
+                ExportScope::Principal => CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                ExportScope::Whole => CapabilityApplicationExportScopeV1::WholeApplication,
+            };
+            let selection = match ApplicationExportSelectionV1::new(
+                lineage,
+                scope,
+                entities,
+                events,
+                provenance,
+                public_audit,
+            ) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let lease_seconds = match lease_seconds.parse::<u32>() {
+                Ok(value) if (60..=86_400).contains(&value) => value,
+                Err(_) => return invalid_input(identity),
+                Ok(_) => return invalid_input(identity),
+            };
+            let start = StartApplicationExport::new(operation_id, selection, lease_seconds);
+            match client
+                .start_application_export_with_retry(&start, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_export_start(&response),
+                Err(ClientError::OutcomeUnknown(_)) => export_uncertain(identity, operation_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ExportCommand::Page {
+            operation_id,
+            cursor,
+            max_rows,
+            jsonl,
+        } => {
+            let operation_id = match parse_application_export_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let cursor = match STANDARD.decode(cursor.as_bytes()) {
+                Ok(value) if !value.is_empty() && value.len() <= 512 => value,
+                _ => return invalid_input(identity),
+            };
+            let max_rows = match max_rows.parse::<u16>() {
+                Ok(value) if (1..=500).contains(&value) => value,
+                _ => return invalid_input(identity),
+            };
+            match client
+                .get_application_export_page_with_retry(
+                    operation_id,
+                    &cursor,
+                    max_rows,
+                    attempts,
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => {
+                    let Some(page) = response.page.as_ref() else {
+                        return local_error(
+                            identity,
+                            "export_response_invalid",
+                            "the export page response is invalid",
+                        );
+                    };
+                    if write_export_page(Path::new(&jsonl), page).is_err() {
+                        return local_error(
+                            identity,
+                            "export_output_write_failed",
+                            "the new export JSONL page could not be written",
+                        );
+                    }
+                    render_export_page(page, Path::new(&jsonl))
+                }
+                Err(ClientError::OutcomeUnknown(_)) => export_uncertain(identity, operation_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ExportCommand::Status { operation_id } => {
+            let operation_id = match parse_application_export_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .get_application_export_operation(operation_id, &metadata)
+                .await
+            {
+                Ok(response) => render_export_observation(identity, response.result.as_ref()),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ExportCommand::Cancel { operation_id } => {
+            let operation_id = match parse_application_export_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .cancel_application_export_with_retry(operation_id, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_export_cancel(identity, response.result.as_ref()),
+                Err(ClientError::OutcomeUnknown(_)) => export_uncertain(identity, operation_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+    }
+}
+
+fn write_export_page(path: &Path, page: &v1::ApplicationExportPage) -> Result<(), ()> {
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|_| ())?;
+    for line in &page.canonical_json_lines {
+        output.write_all(line).map_err(|_| ())?;
+        output.write_all(b"\n").map_err(|_| ())?;
+    }
+    output.flush().map_err(|_| ())?;
+    output.sync_all().map_err(|_| ())
+}
+
+fn render_export_start(response: &v1::StartApplicationExportResponse) -> Terminal {
+    let identity = CommandIdentity::ExportStart;
+    let disposition = match v1::ApplicationExportStartDisposition::try_from(response.disposition) {
+        Ok(v1::ApplicationExportStartDisposition::Accepted) => "accepted",
+        Ok(v1::ApplicationExportStartDisposition::AlreadyAccepted) => "already_accepted",
+        Ok(v1::ApplicationExportStartDisposition::Terminal) => "terminal",
+        _ => return invalid_input(identity),
+    };
+    let Some(operation) = response.operation.as_ref() else {
+        return invalid_input(identity);
+    };
+    let Ok(operation) = export_operation_json(operation) else {
+        return invalid_input(identity);
+    };
+    success(
+        identity,
+        disposition,
+        &serde_json::json!({
+            "disposition": disposition,
+            "operation": operation,
+            "cursor": (!response.cursor.is_empty()).then(|| STANDARD.encode(&response.cursor)),
+        }),
+    )
+}
+
+fn render_export_page(page: &v1::ApplicationExportPage, output: &Path) -> Terminal {
+    let class = export_record_class_name(page.record_class).unwrap_or("invalid");
+    success(
+        CommandIdentity::ExportPage,
+        if page.operation_complete {
+            "completed"
+        } else {
+            "page_written"
+        },
+        &serde_json::json!({
+            "operation_id": format_uuid(&page.operation_id),
+            "page_number": page.page_number.to_string(),
+            "record_class": class,
+            "rows": page.canonical_json_lines.len().to_string(),
+            "output": output.to_string_lossy(),
+            "page_hash": hex(&page.page_hash),
+            "class_complete": page.class_complete,
+            "operation_complete": page.operation_complete,
+            "next_cursor": (!page.next_cursor.is_empty()).then(|| STANDARD.encode(&page.next_cursor)),
+        }),
+    )
+}
+
+fn render_export_observation(
+    identity: CommandIdentity,
+    result: Option<&v1::get_application_export_response::Result>,
+) -> Terminal {
+    match result {
+        Some(v1::get_application_export_response::Result::NotFound(_)) => {
+            success(identity, "not_found", &serde_json::json!({"found": false}))
+        }
+        Some(v1::get_application_export_response::Result::Found(operation)) => {
+            match export_operation_json(operation) {
+                Ok(operation) => success(identity, "found", &operation),
+                Err(()) => invalid_input(identity),
+            }
+        }
+        None => invalid_input(identity),
+    }
+}
+
+fn render_export_cancel(
+    identity: CommandIdentity,
+    result: Option<&v1::cancel_application_export_response::Result>,
+) -> Terminal {
+    match result {
+        Some(v1::cancel_application_export_response::Result::NotFound(_)) => {
+            success(identity, "not_found", &serde_json::json!({"found": false}))
+        }
+        Some(v1::cancel_application_export_response::Result::Found(operation)) => {
+            match export_operation_json(operation) {
+                Ok(operation) => success(identity, "cancelled", &operation),
+                Err(()) => invalid_input(identity),
+            }
+        }
+        None => invalid_input(identity),
+    }
+}
+
+fn export_operation_json(
+    operation: &v1::ApplicationExportOperation,
+) -> Result<serde_json::Value, ()> {
+    let selection = operation.selection.as_ref().ok_or(())?;
+    let snapshot = operation.snapshot.as_ref().ok_or(())?;
+    let phase = export_phase_name(operation.phase).ok_or(())?;
+    let failure = if operation.failure == v1::ApplicationExportFailure::Unspecified as i32 {
+        None
+    } else {
+        Some(export_failure_name(operation.failure).ok_or(())?)
+    };
+    let manifest = parse_export_document(&operation.canonical_manifest_json)?;
+    let receipt = parse_export_document(&operation.canonical_receipt_json)?;
+    Ok(serde_json::json!({
+        "operation_id": format_uuid(&operation.operation_id),
+        "selection": {
+            "contract_lineage": selection.contract_lineage,
+            "scope": export_scope_name(selection.scope).ok_or(())?,
+            "entities": selection.entities,
+            "events": selection.events,
+            "provenance": selection.provenance,
+            "public_audit": selection.public_audit,
+        },
+        "snapshot": {
+            "database_id": format_uuid(&snapshot.database_id),
+            "history_incarnation": snapshot.history_incarnation.to_string(),
+            "application_frontier": snapshot.application_frontier.to_string(),
+            "administration_frontier": snapshot.administration_frontier.to_string(),
+            "contract_version": snapshot.contract_version.to_string(),
+            "contract_bundle_hash": hex(&snapshot.contract_bundle_hash),
+            "query_module_hashes": snapshot.query_module_hashes.iter().map(|value| hex(value)).collect::<Vec<_>>(),
+            "reactive_module_hashes": snapshot.reactive_module_hashes.iter().map(|value| hex(value)).collect::<Vec<_>>(),
+        },
+        "phase": phase,
+        "failure": failure,
+        "lease_expires_at": operation.lease_expires_at.as_ref().map(|value| serde_json::json!({
+            "seconds": value.seconds.to_string(),
+            "nanoseconds": value.nanos,
+        })),
+        "pages_released": operation.pages_released.to_string(),
+        "rows_released": operation.rows_released.to_string(),
+        "bytes_released": operation.bytes_released.to_string(),
+        "manifest": manifest,
+        "receipt": receipt,
+        "manifest_hash": (!operation.manifest_hash.is_empty()).then(|| hex(&operation.manifest_hash)),
+        "receipt_hash": (!operation.receipt_hash.is_empty()).then(|| hex(&operation.receipt_hash)),
+    }))
+}
+
+fn parse_export_document(bytes: &[u8]) -> Result<Option<serde_json::Value>, ()> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_slice(bytes).map(Some).map_err(|_| ())
+}
+
+fn export_scope_name(value: i32) -> Option<&'static str> {
+    match v1::CapabilityApplicationExportScope::try_from(value).ok()? {
+        v1::CapabilityApplicationExportScope::PrincipalFiltered => Some("principal_filtered"),
+        v1::CapabilityApplicationExportScope::WholeApplication => Some("whole_application"),
+        v1::CapabilityApplicationExportScope::Unspecified => None,
+    }
+}
+
+fn export_phase_name(value: i32) -> Option<&'static str> {
+    match v1::ApplicationExportPhase::try_from(value).ok()? {
+        v1::ApplicationExportPhase::Accepted => Some("accepted"),
+        v1::ApplicationExportPhase::Exporting => Some("exporting"),
+        v1::ApplicationExportPhase::Completed => Some("completed"),
+        v1::ApplicationExportPhase::Cancelled => Some("cancelled"),
+        v1::ApplicationExportPhase::Expired => Some("expired"),
+        v1::ApplicationExportPhase::FailedClosed => Some("failed_closed"),
+        v1::ApplicationExportPhase::Unspecified => None,
+    }
+}
+
+fn export_failure_name(value: i32) -> Option<&'static str> {
+    match v1::ApplicationExportFailure::try_from(value).ok()? {
+        v1::ApplicationExportFailure::AuthorityChanged => Some("authority_changed"),
+        v1::ApplicationExportFailure::SnapshotUnavailable => Some("snapshot_unavailable"),
+        v1::ApplicationExportFailure::SourceInvalid => Some("source_invalid"),
+        v1::ApplicationExportFailure::LeaseExpired => Some("lease_expired"),
+        v1::ApplicationExportFailure::Cancelled => Some("cancelled"),
+        v1::ApplicationExportFailure::LimitExceeded => Some("limit_exceeded"),
+        v1::ApplicationExportFailure::Internal => Some("internal"),
+        v1::ApplicationExportFailure::Unspecified => None,
+    }
+}
+
+fn export_record_class_name(value: i32) -> Option<&'static str> {
+    match v1::ApplicationExportRecordClass::try_from(value).ok()? {
+        v1::ApplicationExportRecordClass::Entity => Some("entity"),
+        v1::ApplicationExportRecordClass::Event => Some("event"),
+        v1::ApplicationExportRecordClass::Provenance => Some("provenance"),
+        v1::ApplicationExportRecordClass::PublicAudit => Some("public_audit"),
+        v1::ApplicationExportRecordClass::Unspecified => None,
+    }
+}
+
+fn export_uncertain(
+    identity: CommandIdentity,
+    operation_id: ApplicationExportOperationId,
+) -> Terminal {
+    local_error_with(
+        identity,
+        &serde_json::json!({
+            "code": "outcome_unknown",
+            "message": "the application export outcome remains unknown",
+            "recovery_action": "retry_with_the_same_operation_and_cursor",
+            "operation_id": operation_id.to_string(),
+        }),
+        "outcome_unknown",
+        "the application export outcome remains unknown",
+        3,
+    )
 }
 
 async fn contract_command(
@@ -9030,6 +9405,10 @@ fn parse_contract_migration_operation_id(value: &str) -> Result<ContractMigratio
     ContractMigrationOperationId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
 }
 
+fn parse_application_export_operation_id(value: &str) -> Result<ApplicationExportOperationId, ()> {
+    ApplicationExportOperationId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
+}
+
 fn parse_application_installation_campaign_id(
     value: &str,
 ) -> Result<ApplicationInstallationCampaignId, ()> {
@@ -9211,6 +9590,18 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Backup {
             command: BackupCommand::Operation { .. },
         } => CommandIdentity::BackupOperation,
+        TopLevel::Export {
+            command: ExportCommand::Start { .. },
+        } => CommandIdentity::ExportStart,
+        TopLevel::Export {
+            command: ExportCommand::Page { .. },
+        } => CommandIdentity::ExportPage,
+        TopLevel::Export {
+            command: ExportCommand::Status { .. },
+        } => CommandIdentity::ExportStatus,
+        TopLevel::Export {
+            command: ExportCommand::Cancel { .. },
+        } => CommandIdentity::ExportCancel,
         TopLevel::Storage {
             command: StorageCommand::Preflight { .. },
         } => CommandIdentity::StoragePreflight,
@@ -9767,6 +10158,39 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn export_page_writer_is_private_create_only_canonical_jsonl() {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-export-").expect("scratch directory");
+        let path = scratch.path().join("entities-0001.jsonl");
+        let page = v1::ApplicationExportPage {
+            operation_id: parse_uuid_v7("018f2f85-3c20-7a31-8f11-112233445566")
+                .expect("uuid")
+                .to_vec(),
+            page_number: 1,
+            record_class: v1::ApplicationExportRecordClass::Entity as i32,
+            canonical_json_lines: vec![
+                br#"{"class":"entity","symbol":"Ticket"}"#.to_vec(),
+                br#"{"class":"entity","symbol":"User"}"#.to_vec(),
+            ],
+            next_cursor: vec![1, 2, 3],
+            class_complete: false,
+            operation_complete: false,
+            page_hash: vec![7; 32],
+        };
+        write_export_page(&path, &page).expect("write page");
+        assert_eq!(
+            fs::read(&path).expect("read page"),
+            b"{\"class\":\"entity\",\"symbol\":\"Ticket\"}\n{\"class\":\"entity\",\"symbol\":\"User\"}\n"
+        );
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(
+            write_export_page(&path, &page).is_err(),
+            "an existing export page must never be overwritten"
+        );
+    }
 
     #[test]
     fn installation_seed_receipt_document_is_canonical_plan_bound_and_value_free() {
