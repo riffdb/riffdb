@@ -1611,7 +1611,7 @@ impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
     }
 }
 
-fn capability_from_tables<C, L>(
+pub(crate) fn capability_from_tables<C, L>(
     capabilities: &C,
     lookups: &L,
     database_id: riffdb_types::DatabaseId,

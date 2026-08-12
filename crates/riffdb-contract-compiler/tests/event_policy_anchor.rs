@@ -1,4 +1,4 @@
-//! Fail-closed compiler gate for current-row event policy anchors.
+//! Compiler gate for current-row event policy anchors.
 
 use riffdb_contract_compiler::{CompilerDiagnosticCode, validate_contract_source};
 
@@ -44,10 +44,11 @@ fn semantic_diagnostics(source: &str) -> Vec<(CompilerDiagnosticCode, String)> {
 }
 
 #[test]
-fn parsed_anchor_is_rejected_until_the_checked_ir_successor_is_present() {
+fn complete_current_row_anchor_is_retained_in_checked_ir() {
     let source = r#"contract EventPolicyAnchor version 1 {
   entity Ticket {
     key (organization_id: uuid, ticket_id: uuid)
+    field owner_id: uuid
   }
   event TicketCreated {
     partition_by (organization_id)
@@ -66,20 +67,33 @@ fn parsed_anchor_is_rejected_until_the_checked_ir_successor_is_present() {
   row policy TicketAccess on Ticket {
     allow read when true
   }
+  command TouchTicket {
+    input request_id: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    idempotency_key request_id
+    mutate Ticket(organization_id, ticket_id) as ticket else Missing {}
+    set ticket.owner_id = organization_id
+    emit TicketCreated {
+      organization_id: organization_id,
+      ticket_id: ticket_id,
+    }
+    return Touched { ticket: ticket }
+  }
 }
 "#;
-    let error = validate_contract_source(source).expect_err("anchor must not be discarded");
-    let diagnostic = error
-        .semantic()
-        .expect("semantic diagnostic")
-        .as_slice()
+    let bundle = riffdb_contract_compiler::compile_contract_source(source)
+        .expect("a complete current-row anchor compiles");
+    let event = bundle
+        .schema()
+        .events()
         .iter()
-        .find(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::InvalidEvent)
-        .expect("fail-closed anchor diagnostic");
-    let selected = &source
-        [diagnostic.primary_span().start() as usize..diagnostic.primary_span().end() as usize];
-    assert!(selected.starts_with("policy_anchor current Ticket("));
-    assert!(selected.ends_with(')'));
+        .find(|event| event.name() == "TicketCreated")
+        .expect("event schema");
+    let anchor = event.policy_anchor().expect("checked policy anchor");
+    assert_eq!(anchor.source_entity().get(), 1);
+    assert_eq!(anchor.read_policy(), "TicketAccess");
+    assert_eq!(anchor.key_fields().len(), 2);
 }
 
 #[test]

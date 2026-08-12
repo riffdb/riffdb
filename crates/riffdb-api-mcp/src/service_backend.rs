@@ -21,15 +21,16 @@ use riffdb_service::{
     DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryRepresentation,
     EventConsumerCheckpoint, EventConsumerLeaseSelection, EventConsumerMutationResult,
-    EventConsumerSelection, EventConsumerStatus, ExecuteCommandRequest,
-    ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
-    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
-    FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection,
-    LiveQueryCursor, LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason,
-    LiveQueryTerminalReason, LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
+    EventConsumerPublicStatus, EventConsumerPullDisposition, EventConsumerSelection,
+    EventConsumerStatus, ExecuteCommandRequest, ExecuteContextualReactionRequest,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection,
+    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetContractVersionRequest,
+    GetContractVersionResult, GetEntityRequest, GetProjectionStatusRequest,
+    GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection, LiveQueryCursor,
+    LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
     NegativeAcknowledgeEventStreamRequest, OperationSchemaCatalog, PageLimit, PageRequest,
     ProvenanceSelection, QueryParameters, QueryProjectionRequest, QueryResultValue,
     RequestCancellationHandle, RequestContext, RequestControl, ResolveCommandOutcomeRequest,
@@ -3942,8 +3943,9 @@ fn render_event_next(
         McpFixedResultBranch::EventNextCompleted,
         Some(payload_from(&serde_json::json!({
             "events": events,
-            "status": event_consumer_status_payload(result.status()),
+            "status": event_consumer_public_status_payload(result.status()),
             "wait_timed_out": result.wait_timed_out(),
+            "disposition": event_consumer_disposition_payload(result.disposition()),
         }))?),
     )
 }
@@ -4091,8 +4093,9 @@ fn render_contextual_next(
         McpFixedResultBranch::ContextualNextCompleted,
         Some(payload_from(&serde_json::json!({
             "items": items,
-            "status": event_consumer_status_payload(result.status()),
+            "status": event_consumer_public_status_payload(result.status()),
             "wait_timed_out": result.wait_timed_out(),
+            "disposition": event_consumer_disposition_payload(result.disposition()),
         }))?),
     )
 }
@@ -4145,6 +4148,25 @@ fn render_contextual_reaction(
         McpFixedResultBranch::ContextualReactionCompleted,
         result,
     )
+}
+
+fn event_consumer_public_status_payload(status: &EventConsumerPublicStatus) -> serde_json::Value {
+    match status {
+        EventConsumerPublicStatus::Exact(status) => event_consumer_status_payload(status),
+        EventConsumerPublicStatus::Protected(status) => serde_json::json!({
+            "kind": "protected",
+            "history_incarnation": status.history_incarnation().to_string(),
+            "progress_cursor": lower_hex(status.progress_cursor().as_bytes()),
+        }),
+    }
+}
+
+fn event_consumer_disposition_payload(disposition: EventConsumerPullDisposition) -> &'static str {
+    match disposition {
+        EventConsumerPullDisposition::Ready => "ready",
+        EventConsumerPullDisposition::WaitTimedOut => "wait_timed_out",
+        EventConsumerPullDisposition::BoundedProgress => "bounded_progress",
+    }
 }
 
 fn event_consumer_status_payload(status: &EventConsumerStatus) -> serde_json::Value {

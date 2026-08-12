@@ -50,6 +50,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/event_policy_anchor.proto",
+    "riffdb/storage/v1/event_policy_command_authority_v5.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -88,6 +89,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/event_policy_anchor.proto",
+    "riffdb/storage/v1/event_policy_command_authority_v5.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -571,6 +573,16 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredApplicationExportOperationV1",
         PayloadBound::EnvelopeMaximum,
     ),
+    durable(
+        "event_policy_command_authority_v5.proto",
+        "StoredCommandCapsuleV5",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "event_policy_command_authority_v5.proto",
+        "StoredCommandSegmentV4",
+        PayloadBound::EnvelopeMaximum,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -994,6 +1006,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let export_v1_record = durable_registry
         .get(current_v1_record_count + 49)
         .ok_or_else(|| io::Error::other("durable export-v1 registry is incomplete"))?;
+    let event_policy_command_authority_records = durable_registry
+        .get(current_v1_record_count + 50..current_v1_record_count + 52)
+        .ok_or_else(|| {
+            io::Error::other("durable event-policy command-authority registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1291,6 +1308,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin",
+        &durable_schema_hashes(event_policy_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-event-policy-command-authority-v5-record-bounds.bin",
+        &durable_record_bounds(event_policy_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
         &durable_schema_hashes(entity_transitions_v4_records),
     )?;
@@ -1566,9 +1593,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 79 {
+    if DURABLE_RECORDS.len() != 81 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 79 records").into(),
+            io::Error::other("readable durable registry must contain exactly 81 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1592,9 +1619,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 157 || enum_count != 21 {
+    if message_count != 161 || enum_count != 21 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 157 messages and 21 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 161 messages and 21 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1886,6 +1913,11 @@ fn durable_writable_registry_fixture(
     let export_v1 = records.get(current_v1_record_count + 49).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredApplicationExportOperationV1")
     })?;
+    let event_policy_command_authority = records
+        .get(current_v1_record_count + 50..current_v1_record_count + 52)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing event-policy command authority")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1918,10 +1950,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(capability_v4))
         .chain(std::iter::once(capability_v5))
         .chain(std::iter::once(export_v1))
+        .chain(event_policy_command_authority.iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 32);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 34);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

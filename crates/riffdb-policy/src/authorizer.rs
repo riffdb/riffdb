@@ -782,14 +782,8 @@ const fn unanchored_event_policy_surface(operation: ServiceOperationV1) -> bool 
         operation,
         ServiceOperationV1::ReplayEvents
             | ServiceOperationV1::TailEvents
-            | ServiceOperationV1::ConsumeEventStream
-            | ServiceOperationV1::AcknowledgeEventStream
-            | ServiceOperationV1::NegativeAcknowledgeEventStream
             | ServiceOperationV1::SeekEventStreamConsumer
             | ServiceOperationV1::GetEventStreamConsumerStatus
-            | ServiceOperationV1::ConsumeContextualSubscription
-            | ServiceOperationV1::AcknowledgeContextualSubscription
-            | ServiceOperationV1::NegativeAcknowledgeContextualSubscription
             | ServiceOperationV1::GetContextualSubscriptionStatus
             | ServiceOperationV1::ExecuteContextualReaction
             | ServiceOperationV1::GetReactiveWakeup
@@ -1477,14 +1471,8 @@ mod tests {
         let denied = [
             ServiceOperationV1::ReplayEvents,
             ServiceOperationV1::TailEvents,
-            ServiceOperationV1::ConsumeEventStream,
-            ServiceOperationV1::AcknowledgeEventStream,
-            ServiceOperationV1::NegativeAcknowledgeEventStream,
             ServiceOperationV1::SeekEventStreamConsumer,
             ServiceOperationV1::GetEventStreamConsumerStatus,
-            ServiceOperationV1::ConsumeContextualSubscription,
-            ServiceOperationV1::AcknowledgeContextualSubscription,
-            ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
             ServiceOperationV1::GetContextualSubscriptionStatus,
             ServiceOperationV1::ExecuteContextualReaction,
             ServiceOperationV1::GetReactiveWakeup,

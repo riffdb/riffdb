@@ -14,8 +14,9 @@ use riffdb_storage_api::{
     StoredCommitRecordV1,
 };
 use riffdb_types::{
-    ActorKind, CanonicalValue, ContractVersion, EventId, PartitionKey, PartitionKeyHash, PlanHash,
-    ProvenanceId, RequestId, Timestamp, decode_canonical_value, hash_partition_key,
+    ActorKind, CanonicalValue, ContractVersion, EventId, EventTypeId, PartitionKey,
+    PartitionKeyHash, PlanHash, ProvenanceId, RequestId, Timestamp, decode_canonical_value,
+    hash_partition_key,
 };
 
 use crate::{
@@ -202,6 +203,7 @@ impl ResolvedReactiveEventStream {
                 actor_kind: commit.actor().actor_kind(),
                 provenance_id: commit.provenance_id(),
                 history_incarnation,
+                policy_anchor: event.policy_anchor().cloned(),
             });
         }
         Ok(SymbolicEventReplayPage {
@@ -296,6 +298,7 @@ impl ResolvedEventReplay {
                     actor_kind: commit.actor().actor_kind(),
                     provenance_id: commit.provenance_id(),
                     history_incarnation,
+                    policy_anchor: event.policy_anchor().cloned(),
                 });
             }
         }
@@ -408,6 +411,7 @@ pub struct SymbolicEventEnvelope {
     actor_kind: ActorKind,
     provenance_id: ProvenanceId,
     history_incarnation: u64,
+    policy_anchor: Option<riffdb_storage_api::StoredEventPolicyAnchorV1>,
 }
 
 impl SymbolicEventEnvelope {
@@ -415,6 +419,13 @@ impl SymbolicEventEnvelope {
     #[must_use]
     pub const fn event_id(&self) -> EventId {
         self.view.event_id()
+    }
+
+    /// Stable event type used to validate the retained policy-anchor schema.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn event_type_id(&self) -> EventTypeId {
+        self.view.event_type_id()
     }
 
     /// Returns the exact symbolic event type.
@@ -481,6 +492,13 @@ impl SymbolicEventEnvelope {
     #[must_use]
     pub const fn history_incarnation(&self) -> u64 {
         self.history_incarnation
+    }
+
+    /// Compiler-owned current-row anchor retained by a V2 event.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn policy_anchor(&self) -> Option<&riffdb_storage_api::StoredEventPolicyAnchorV1> {
+        self.policy_anchor.as_ref()
     }
 
     /// Borrows only the explicitly selected symbolic payload fields.

@@ -8,14 +8,14 @@ use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{ContractBundle, RowPolicyOperationV1, RowPolicyPlanV1};
 use riffdb_policy::{
-    AuthorizedQueryRowPolicyContextV1, EventPolicyReleaseDecisionV1, IndexedRelationshipEvidenceV1,
-    RowPolicyDecisionV1, evaluate_row_policy, evaluate_row_transition,
-    revalidate_event_release_proof, revalidate_row_policy_proof,
+    AuthorizedQueryRowPolicyContextV1, EventPolicyCandidateV1, EventPolicyReleaseDecisionV1,
+    IndexedRelationshipEvidenceV1, RowPolicyDecisionV1, evaluate_row_policy,
+    evaluate_row_transition, revalidate_event_release_proof, revalidate_row_policy_proof,
 };
 use riffdb_types::{
     ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityId,
     CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CommitSequence, DatabaseId, EntityKey,
-    Environment, EventId, TenantScope, Timestamp,
+    Environment, EventId, RowPolicyName, TenantScope, Timestamp,
 };
 
 const SOURCE: &str = include_str!("../fixtures/compiler/row-policy/valid/document-access.riff");
@@ -274,9 +274,14 @@ fn event_release_proof_binds_event_key_row_and_capability_revision() {
         bundle.schema(),
     )
     .expect("event policy context");
+    let candidate = EventPolicyCandidateV1::new(
+        event_id,
+        key.clone(),
+        RowPolicyName::new(policy.name()).expect("policy name"),
+    );
 
     let EventPolicyReleaseDecisionV1::Allow(proof) =
-        context.authorize_event_release(event_id, &key, &row, &[])
+        context.authorize_event_release(&candidate, &row, &[])
     else {
         panic!("owner receives an event/key-bound proof");
     };
@@ -296,7 +301,15 @@ fn event_release_proof_binds_event_key_row_and_capability_revision() {
         .expect("different document key");
     assert!(
         context
-            .authorize_event_release(event_id, &wrong_key, &row, &[])
+            .authorize_event_release(
+                &EventPolicyCandidateV1::new(
+                    event_id,
+                    wrong_key,
+                    RowPolicyName::new(policy.name()).expect("policy name"),
+                ),
+                &row,
+                &[],
+            )
             .is_denied()
     );
     assert!(
@@ -331,7 +344,7 @@ fn event_release_proof_binds_event_key_row_and_capability_revision() {
     .expect("outsider context");
     assert!(
         outsider
-            .authorize_event_release(event_id, &key, &row, &[])
+            .authorize_event_release(&candidate, &row, &[])
             .is_denied()
     );
 }

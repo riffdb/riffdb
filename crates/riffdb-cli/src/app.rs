@@ -5685,6 +5685,7 @@ async fn event_command(
             in_flight_limit,
             lease_seconds,
             wait_nanos,
+            progress_cursor,
         } => {
             let selection = match event_consumer_selection(consumer) {
                 Ok(selection) => selection,
@@ -5701,6 +5702,14 @@ async fn event_command(
             else {
                 return invalid_input(identity);
             };
+            let progress_cursor = match progress_cursor
+                .map(|value| STANDARD.decode(value.as_bytes()))
+                .transpose()
+            {
+                Ok(Some(bytes)) if bytes.len() == 16 => bytes,
+                Ok(None) => Vec::new(),
+                _ => return invalid_input(identity),
+            };
             match client
                 .consume_event_stream(
                     v1::ConsumeEventStreamRequest {
@@ -5710,6 +5719,7 @@ async fn event_command(
                         in_flight_limit,
                         lease_seconds,
                         maximum_wait_nanos,
+                        progress_cursor,
                     },
                     &metadata,
                 )
@@ -5877,6 +5887,7 @@ async fn contextual_command(
         ContextualCommand::Next {
             consumer,
             wait_nanos,
+            progress_cursor,
         } => {
             let selection = match event_consumer_selection(consumer) {
                 Ok(selection) => selection,
@@ -5886,12 +5897,21 @@ async fn contextual_command(
                 Ok(value) if value <= 30_000_000_000 => value,
                 _ => return invalid_input(identity),
             };
+            let progress_cursor = match progress_cursor
+                .map(|value| STANDARD.decode(value.as_bytes()))
+                .transpose()
+            {
+                Ok(Some(bytes)) if bytes.len() == 16 => bytes,
+                Ok(None) => Vec::new(),
+                _ => return invalid_input(identity),
+            };
             match client
                 .consume_contextual_subscription(
                     v1::ConsumeContextualSubscriptionRequest {
                         request_id,
                         selection: Some(selection),
                         maximum_wait_nanos,
+                        progress_cursor,
                     },
                     &metadata,
                 )
@@ -6365,7 +6385,9 @@ fn render_event_page(
 }
 
 fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Terminal {
-    let Some(status) = response.status.as_ref() else {
+    let Some(status) =
+        consumer_public_status_json(response.status.as_ref(), response.protected_status.as_ref())
+    else {
         return local_error(
             CommandIdentity::EventConsume,
             "invalid_response",
@@ -6400,14 +6422,17 @@ fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Termina
         .collect::<Vec<_>>();
     let result = serde_json::json!({
         "events": events,
-        "status": consumer_status_json(status),
+        "status": status,
         "wait_timed_out": response.wait_timed_out,
+        "disposition": consumer_disposition_name(response.disposition),
     });
     success(CommandIdentity::EventConsume, "leased", &result)
 }
 
 fn render_contextual_response(response: &v1::ConsumeContextualSubscriptionResponse) -> Terminal {
-    let Some(status) = response.status.as_ref() else {
+    let Some(status) =
+        consumer_public_status_json(response.status.as_ref(), response.protected_status.as_ref())
+    else {
         return local_error(
             CommandIdentity::ContextualNext,
             "invalid_response",
@@ -6431,8 +6456,9 @@ fn render_contextual_response(response: &v1::ConsumeContextualSubscriptionRespon
         "leased",
         &serde_json::json!({
             "items": items,
-            "status": consumer_status_json(status),
+            "status": status,
             "wait_timed_out": response.wait_timed_out,
+            "disposition": consumer_disposition_name(response.disposition),
         }),
     )
 }
@@ -6589,6 +6615,30 @@ fn consumer_status_json(status: &v1::EventConsumerStatus) -> serde_json::Value {
         "retries": status.retries,
         "dead_letters": status.dead_letters,
     })
+}
+
+fn consumer_public_status_json(
+    exact: Option<&v1::EventConsumerStatus>,
+    protected: Option<&v1::ProtectedEventConsumerStatus>,
+) -> Option<serde_json::Value> {
+    match (exact, protected) {
+        (Some(status), None) => Some(consumer_status_json(status)),
+        (None, Some(status)) if status.history_incarnation != 0 => Some(serde_json::json!({
+            "kind": "protected",
+            "history_incarnation": status.history_incarnation.to_string(),
+            "progress_cursor": STANDARD.encode(&status.progress_cursor),
+        })),
+        _ => None,
+    }
+}
+
+fn consumer_disposition_name(value: i32) -> &'static str {
+    match v1::EventConsumerPullDisposition::try_from(value).ok() {
+        Some(v1::EventConsumerPullDisposition::Ready) => "ready",
+        Some(v1::EventConsumerPullDisposition::WaitTimedOut) => "wait_timed_out",
+        Some(v1::EventConsumerPullDisposition::BoundedProgress) => "bounded_progress",
+        _ => "invalid",
+    }
 }
 
 async fn prove_application_successor(
@@ -11928,6 +11978,8 @@ query GetDocument(
             }],
             status: Some(status),
             wait_timed_out: false,
+            protected_status: None,
+            disposition: v1::EventConsumerPullDisposition::Ready as i32,
         };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -11953,6 +12005,8 @@ query GetDocument(
             items: vec![v1::ContextualWorkItem::default()],
             status: Some(status),
             wait_timed_out: false,
+            protected_status: None,
+            disposition: v1::EventConsumerPullDisposition::Ready as i32,
         };
         assert_ne!(
             render_contextual_response(&incomplete).emit(

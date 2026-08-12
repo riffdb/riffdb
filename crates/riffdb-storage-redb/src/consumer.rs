@@ -1,26 +1,551 @@
 //! Durable redb persistence for backend-neutral event-consumer transitions.
 
 use redb::ReadableTable;
+use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, EventPolicyCandidateV1};
+use riffdb_query_executor::MAX_QUERY_SCANNED_ROWS;
 use riffdb_storage_api::{
-    ConsumerStateError, EvaluatedEventConsumerTransitionV1, EventConsumerRepository,
-    EventConsumerSnapshotV1, EventConsumerTransitionResultV1, EventConsumerTransitionV1,
-    MAX_CONSUMER_DELIVERY_RECORDS, MAX_EVENT_CONSUMERS, StorageError, StorageErrorKind,
+    CapabilityLifecycleV1, ConsumerDeliveryStateV1, ConsumerLeaseCandidateV1, ConsumerStateError,
+    CoordinateConsumerAcknowledgementV1, CoordinateConsumerLeaseResultV1,
+    CoordinatedConsumerLeaseV1, EvaluatedEventConsumerTransitionV1, EventConsumerIdentityV1,
+    EventConsumerRepository, EventConsumerSnapshotV1, EventConsumerTransitionResultV1,
+    EventConsumerTransitionV1, ExpectedConsumerDeliveryV1, MAX_CONSUMER_BATCH_ITEMS,
+    MAX_CONSUMER_DELIVERY_RECORDS, MAX_CONSUMER_IN_FLIGHT, MAX_CONSUMER_SPARSE_RESOLUTIONS,
+    MAX_EVENT_CONSUMERS, PreparedConsumerResolutionV1, StorageError, StorageErrorKind,
     StoredEventConsumerDeliveryV1, StoredEventConsumerV1, evaluate_event_consumer_transition,
+    normalize_consumer_recovery, prepare_consumer_resolution, resolve_policy_hidden_state,
+    status_from_snapshot,
 };
-use riffdb_types::{DatabaseId, EventConsumerIdentityHash};
+use riffdb_types::{
+    DatabaseId, EventConsumerIdentityHash, EventDeliveryAttempt, EventId, EventLeaseToken,
+    PartitionKeyHash, Timestamp,
+};
 
 use crate::codec::{
-    decode_database_identity_v1, decode_event_consumer_delivery_v1, decode_event_consumer_v1,
+    decode_database_identity_v1, decode_durable_event_v1, decode_entity_record_v1,
+    decode_event_consumer_delivery_v1, decode_event_consumer_v1, decode_index_entry_v2,
     encode_event_consumer_delivery_v1, encode_event_consumer_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    decode_event_consumer_delivery_key, decode_event_consumer_key,
-    encode_event_consumer_delivery_key, encode_event_consumer_key,
+    decode_event_consumer_delivery_key, decode_event_consumer_key, decode_index_entry_key,
+    encode_entity_key, encode_event_consumer_delivery_key, encode_event_consumer_key,
+    encode_event_key,
 };
-use crate::layout::{EVENT_CONSUMER_DELIVERIES, EVENT_CONSUMERS, META, META_DATABASE_ID};
+use crate::layout::{
+    CAPABILITIES, CAPABILITY_TOKENS, ENTITIES, EVENT_CONSUMER_DELIVERIES, EVENT_CONSUMERS, EVENTS,
+    META, META_DATABASE_ID, SECONDARY_INDEXES,
+};
 use crate::store::RedbOperationalPorts;
+
+/// One protected consumer selection whose policy context was reconstructed by
+/// the shared service from a fresh current authorization proof.
+pub struct ProtectedEventConsumerLeaseV1 {
+    /// Complete exact durable consumer identity.
+    pub identity: EventConsumerIdentityV1,
+    /// Catalog-proven selected partition.
+    pub partition_hash: PartitionKeyHash,
+    /// Current durable history incarnation.
+    pub history_incarnation: u64,
+    /// Coordinator-observed current instant.
+    pub observed_at: Timestamp,
+    /// Exclusive expiry for newly leased visible events.
+    pub expires_at: Timestamp,
+    /// Complete catalog-selected event window in exact order.
+    pub selected_events: Vec<EventId>,
+    /// Fresh opaque tokens for every possible visible lease.
+    pub tokens: Vec<EventLeaseToken>,
+    /// Maximum events returned by this call.
+    pub batch_limit: u8,
+    /// Maximum concurrent live leases.
+    pub in_flight_limit: u8,
+    /// Move-only current row-policy authority.
+    pub policy: AuthorizedQueryRowPolicyContextV1,
+}
+
+/// One protected acknowledgement or negative acknowledgement whose policy is
+/// re-evaluated inside the same redb mutation fence as consumer resolution.
+pub struct ProtectedEventConsumerResolutionV1 {
+    /// Ordinary checked acknowledgement intent.
+    pub acknowledgement: CoordinateConsumerAcknowledgementV1,
+    /// Retry/dead-letter eligibility for a negative acknowledgement.
+    pub retry_at: Option<Timestamp>,
+    /// Move-only current row-policy authority.
+    pub policy: AuthorizedQueryRowPolicyContextV1,
+}
+
+impl std::fmt::Debug for ProtectedEventConsumerResolutionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProtectedEventConsumerResolutionV1([REDACTED])")
+    }
+}
+
+impl std::fmt::Debug for ProtectedEventConsumerLeaseV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProtectedEventConsumerLeaseV1([REDACTED])")
+    }
+}
+
+impl RedbOperationalPorts {
+    /// Evaluates current event authority and publishes hidden resolutions plus
+    /// visible leases in one redb mutation fence.
+    pub fn coordinate_protected_event_consumer_lease(
+        &mut self,
+        request: ProtectedEventConsumerLeaseV1,
+    ) -> Result<CoordinateConsumerLeaseResultV1, StorageError> {
+        validate_protected_request(&request)?;
+        let access = self.begin_write()?;
+        let transaction = access.transaction()?;
+        let database_id = read_database_id_from_write(transaction)?;
+        if request.identity.database_id() != database_id {
+            return Err(corrupt());
+        }
+        let identity_hash = request.identity.identity_hash();
+        let current = {
+            let consumers = transaction
+                .open_table(EVENT_CONSUMERS)
+                .map_err(table_error)?;
+            let deliveries = transaction
+                .open_table(EVENT_CONSUMER_DELIVERIES)
+                .map_err(table_error)?;
+            read_snapshot_from_tables(&consumers, &deliveries, database_id, identity_hash)?
+        };
+        if let Some(snapshot) = current.as_ref()
+            && (snapshot.consumer().identity() != &request.identity
+                || snapshot.consumer().partition_hash() != request.partition_hash
+                || snapshot.consumer().history_incarnation() != request.history_incarnation)
+        {
+            return Err(corrupt());
+        }
+
+        if current.as_ref().is_some_and(|snapshot| {
+            snapshot.deliveries().iter().any(|delivery| {
+                matches!(
+                    delivery.state(),
+                    ConsumerDeliveryStateV1::Leased { expires_at, .. }
+                        if request.observed_at >= expires_at
+                )
+            })
+        }) {
+            let snapshot = current.as_ref().ok_or_else(corrupt)?;
+            let (replacement_consumer, replacement_deliveries) = normalize_consumer_recovery(
+                snapshot,
+                request.observed_at,
+                request.history_incarnation,
+                false,
+            )?;
+            let transition = EventConsumerTransitionV1::Recover {
+                expected_revision: snapshot.consumer().revision(),
+                observed_at: request.observed_at,
+                replacement_consumer,
+                replacement_deliveries,
+            };
+            let evaluated = evaluate_event_consumer_transition(current.clone(), transition)
+                .map_err(state_error)?;
+            let EvaluatedEventConsumerTransitionV1::Replace(replacement) = evaluated else {
+                access.abort()?;
+                return Ok(CoordinateConsumerLeaseResultV1 {
+                    transition: EventConsumerTransitionResultV1::StateChanged,
+                    leases: Vec::new(),
+                    status: current.as_ref().map(status_from_snapshot),
+                });
+            };
+            replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+            access.commit_for(RedbTestOperation::EventConsumerTransition)?;
+            return Ok(CoordinateConsumerLeaseResultV1 {
+                transition: EventConsumerTransitionResultV1::StateChanged,
+                leases: Vec::new(),
+                status: Some(status_from_snapshot(replacement.as_ref())),
+            });
+        }
+
+        if !current_capability_matches_policy(
+            transaction,
+            database_id,
+            request.observed_at,
+            &request.policy,
+        )? {
+            access.abort()?;
+            return Ok(CoordinateConsumerLeaseResultV1 {
+                transition: EventConsumerTransitionResultV1::StateChanged,
+                leases: Vec::new(),
+                status: current.as_ref().map(status_from_snapshot),
+            });
+        }
+
+        let visible_events =
+            authorize_selected_events(transaction, &request.selected_events, &request.policy)?;
+        let live = current.as_ref().map_or(0, |snapshot| {
+            snapshot
+                .deliveries()
+                .iter()
+                .filter(|row| matches!(row.state(), ConsumerDeliveryStateV1::Leased { .. }))
+                .count()
+        });
+        let available = usize::from(request.batch_limit)
+            .min(usize::from(request.in_flight_limit).saturating_sub(live));
+        let mut candidates = Vec::with_capacity(available);
+        let mut leases = Vec::with_capacity(available);
+        for event_id in &visible_events {
+            if candidates.len() == available {
+                break;
+            }
+            let expected = current.as_ref().and_then(|snapshot| {
+                snapshot
+                    .deliveries()
+                    .iter()
+                    .find(|row| row.event_id() == *event_id)
+                    .map(StoredEventConsumerDeliveryV1::state)
+            });
+            let attempt = match expected {
+                None => EventDeliveryAttempt::first(),
+                Some(ConsumerDeliveryStateV1::Retry {
+                    failed_attempts,
+                    eligible_at,
+                }) if eligible_at <= request.observed_at => {
+                    failed_attempts.checked_next().ok_or_else(corrupt)?
+                }
+                Some(_) => continue,
+            };
+            if current.as_ref().is_some_and(|snapshot| {
+                !snapshot.consumer().checkpoint().precedes(*event_id)
+                    || snapshot
+                        .consumer()
+                        .sparse_resolutions()
+                        .iter()
+                        .any(|resolution| resolution.event_id() == *event_id)
+            }) {
+                continue;
+            }
+            let token = request.tokens[candidates.len()];
+            let replacement = StoredEventConsumerDeliveryV1::new(
+                identity_hash,
+                *event_id,
+                request.history_incarnation,
+                ConsumerDeliveryStateV1::Leased {
+                    attempt,
+                    token,
+                    expires_at: request.expires_at,
+                },
+            )
+            .map_err(state_error)?;
+            let expected = match expected {
+                None => ExpectedConsumerDeliveryV1::Absent,
+                Some(ConsumerDeliveryStateV1::Retry {
+                    failed_attempts,
+                    eligible_at,
+                }) => ExpectedConsumerDeliveryV1::Retry {
+                    failed_attempts,
+                    eligible_at,
+                },
+                Some(_) => continue,
+            };
+            candidates
+                .push(ConsumerLeaseCandidateV1::new(expected, replacement).map_err(state_error)?);
+            leases.push(CoordinatedConsumerLeaseV1 {
+                event_id: *event_id,
+                attempt,
+                token,
+                expires_at: request.expires_at,
+            });
+        }
+
+        let base = match current.as_ref() {
+            Some(snapshot) => snapshot.consumer().clone(),
+            None => StoredEventConsumerV1::initial(
+                request.identity.clone(),
+                request.partition_hash,
+                request.history_incarnation,
+            )
+            .map_err(state_error)?,
+        };
+        let (checkpoint, sparse) =
+            resolve_policy_hidden_state(&base, &request.selected_events, &visible_events)
+                .map_err(state_error)?;
+        if current.is_some()
+            && candidates.is_empty()
+            && checkpoint == base.checkpoint()
+            && sparse == base.sparse_resolutions()
+        {
+            access.abort()?;
+            return Ok(CoordinateConsumerLeaseResultV1 {
+                transition: EventConsumerTransitionResultV1::Applied,
+                leases,
+                status: current.as_ref().map(status_from_snapshot),
+            });
+        }
+        let replacement_consumer = match current.as_ref() {
+            Some(snapshot) => snapshot
+                .consumer()
+                .advance(checkpoint, sparse)
+                .map_err(state_error)?,
+            None => StoredEventConsumerV1::checked(
+                request.identity,
+                request.partition_hash,
+                request.history_incarnation,
+                riffdb_types::EventConsumerRevision::first(),
+                checkpoint,
+                sparse,
+            )
+            .map_err(state_error)?,
+        };
+        let transition = EventConsumerTransitionV1::PolicySelect {
+            consumer_identity_hash: identity_hash,
+            expected_revision: current
+                .as_ref()
+                .map(|snapshot| snapshot.consumer().revision()),
+            replacement_consumer,
+            candidates,
+            examined_events: request.selected_events,
+            visible_events,
+        };
+        let evaluated =
+            evaluate_event_consumer_transition(current.clone(), transition).map_err(state_error)?;
+        let replacement = match evaluated {
+            EvaluatedEventConsumerTransitionV1::Replace(replacement) => replacement,
+            EvaluatedEventConsumerTransitionV1::NoChange(result) => {
+                access.abort()?;
+                leases.clear();
+                return Ok(CoordinateConsumerLeaseResultV1 {
+                    transition: result,
+                    leases,
+                    status: current.as_ref().map(status_from_snapshot),
+                });
+            }
+            EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
+        };
+        replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+        access.commit_for(RedbTestOperation::EventConsumerTransition)?;
+        Ok(CoordinateConsumerLeaseResultV1 {
+            transition: EventConsumerTransitionResultV1::Applied,
+            leases,
+            status: Some(status_from_snapshot(replacement.as_ref())),
+        })
+    }
+
+    /// Revalidates current event authority and resolves one lease atomically.
+    pub fn coordinate_protected_event_consumer_resolution(
+        &mut self,
+        request: ProtectedEventConsumerResolutionV1,
+    ) -> Result<EventConsumerTransitionResultV1, StorageError> {
+        let access = self.begin_write()?;
+        let transaction = access.transaction()?;
+        let database_id = read_database_id_from_write(transaction)?;
+        if request.acknowledgement.identity.database_id() != database_id {
+            return Err(corrupt());
+        }
+        let identity = request.acknowledgement.identity.identity_hash();
+        let current = {
+            let consumers = transaction
+                .open_table(EVENT_CONSUMERS)
+                .map_err(table_error)?;
+            let deliveries = transaction
+                .open_table(EVENT_CONSUMER_DELIVERIES)
+                .map_err(table_error)?;
+            read_snapshot_from_tables(&consumers, &deliveries, database_id, identity)?
+        };
+        let Some(snapshot) = current.as_ref() else {
+            access.abort()?;
+            return Ok(EventConsumerTransitionResultV1::NotFound);
+        };
+        if !current_capability_matches_policy(
+            transaction,
+            database_id,
+            request.acknowledgement.observed_at,
+            &request.policy,
+        )? || authorize_selected_events(
+            transaction,
+            &[request.acknowledgement.event_id],
+            &request.policy,
+        )?
+        .as_slice()
+            != [request.acknowledgement.event_id]
+        {
+            access.abort()?;
+            return Ok(EventConsumerTransitionResultV1::StateChanged);
+        }
+        let transition = match prepare_consumer_resolution(
+            snapshot,
+            &request.acknowledgement,
+            request.retry_at,
+        )? {
+            PreparedConsumerResolutionV1::NoChange(result) => {
+                access.abort()?;
+                return Ok(result);
+            }
+            PreparedConsumerResolutionV1::Transition(transition) => transition,
+        };
+        let evaluated =
+            evaluate_event_consumer_transition(current.clone(), transition).map_err(state_error)?;
+        let replacement = match evaluated {
+            EvaluatedEventConsumerTransitionV1::Replace(replacement) => replacement,
+            EvaluatedEventConsumerTransitionV1::NoChange(result) => {
+                access.abort()?;
+                return Ok(result);
+            }
+            EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
+        };
+        replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+        access.commit_for(RedbTestOperation::EventConsumerTransition)?;
+        Ok(EventConsumerTransitionResultV1::Applied)
+    }
+}
+
+fn validate_protected_request(request: &ProtectedEventConsumerLeaseV1) -> Result<(), StorageError> {
+    if request.history_incarnation == 0
+        || request.observed_at >= request.expires_at
+        || request.batch_limit == 0
+        || usize::from(request.batch_limit) > MAX_CONSUMER_BATCH_ITEMS
+        || request.in_flight_limit == 0
+        || usize::from(request.in_flight_limit) > MAX_CONSUMER_IN_FLIGHT
+        || request.selected_events.len() > MAX_CONSUMER_SPARSE_RESOLUTIONS + 1
+        || request.tokens.len() < usize::from(request.batch_limit)
+        || !strict_event_order(&request.selected_events)
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    Ok(())
+}
+
+fn current_capability_matches_policy(
+    transaction: &redb::WriteTransaction,
+    database_id: DatabaseId,
+    observed_at: Timestamp,
+    policy: &AuthorizedQueryRowPolicyContextV1,
+) -> Result<bool, StorageError> {
+    let Some((capability_id, revision)) = policy.internal_capability_identity() else {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    };
+    let expected_grant = policy
+        .internal_row_policy_grant()
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let capabilities = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+    let lookups = transaction
+        .open_table(CAPABILITY_TOKENS)
+        .map_err(table_error)?;
+    let Some(current) = crate::administration::capability_from_tables(
+        &capabilities,
+        &lookups,
+        database_id,
+        capability_id,
+    )?
+    else {
+        return Ok(false);
+    };
+    Ok(current.revision() == revision
+        && matches!(current.lifecycle(), CapabilityLifecycleV1::Active)
+        && current.issued_at() <= observed_at
+        && observed_at < current.expires_at()
+        && current.grant().internal_row_policy() == Some(expected_grant))
+}
+
+fn authorize_selected_events(
+    transaction: &redb::WriteTransaction,
+    selected_events: &[EventId],
+    policy: &AuthorizedQueryRowPolicyContextV1,
+) -> Result<Vec<EventId>, StorageError> {
+    let mut visible = Vec::with_capacity(selected_events.len());
+    for event_id in selected_events {
+        let event = {
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            let row = events
+                .get(encode_event_key(*event_id).as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            decode_durable_event_v1(row.value())?.into_parts().0
+        };
+        if event.event_id() != *event_id {
+            return Err(corrupt());
+        }
+        let Some(anchor) = event.policy_anchor() else {
+            // V1 events have no compiler-owned current-row identity. They are
+            // indistinguishable policy-hidden history for an ordinary
+            // protected consumer, never an integrity failure or payload-based
+            // authority fallback.
+            continue;
+        };
+        let target = anchor.source();
+        if !policy.protects(target.entity_type_id()) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let current = {
+            let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+            let Some(row) = entities
+                .get(encode_entity_key(target.key()))
+                .map_err(precommit_storage_error)?
+            else {
+                continue;
+            };
+            let record = decode_entity_record_v1(row.value())?.into_parts().0;
+            if record.target() != target {
+                return Err(corrupt());
+            }
+            record
+        };
+        let lookups = policy
+            .relationship_lookups(target.entity_type_id(), current.fields())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let evidence = lookups
+            .iter()
+            .map(|lookup| indexed_relationship_exists_write(transaction, lookup))
+            .collect::<Result<Vec<_>, _>>()?;
+        let candidate = EventPolicyCandidateV1::new(
+            *event_id,
+            target.key().clone(),
+            anchor.read_policy().clone(),
+        );
+        if policy
+            .authorize_event_release(&candidate, current.fields(), &evidence)
+            .is_allowed()
+        {
+            visible.push(*event_id);
+        }
+    }
+    Ok(visible)
+}
+
+fn indexed_relationship_exists_write(
+    transaction: &redb::WriteTransaction,
+    lookup: &riffdb_policy::AuthorizedIndexedRelationshipLookupV1,
+) -> Result<bool, StorageError> {
+    let upper = exclusive_prefix_end(lookup.index_prefix())
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let indexes = transaction
+        .open_table(SECONDARY_INDEXES)
+        .map_err(table_error)?;
+    let mut inspected = 0usize;
+    for row in indexes
+        .range(lookup.index_prefix()..upper.as_slice())
+        .map_err(precommit_storage_error)?
+    {
+        if inspected == usize::try_from(MAX_QUERY_SCANNED_ROWS).unwrap_or(usize::MAX) {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        inspected = inspected.saturating_add(1);
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        let key = decode_index_entry_key(key.value()).map_err(|_| corrupt())?;
+        let entry = decode_index_entry_v2(value.value())?.into_parts().0;
+        if entry.key() != &key {
+            return Err(corrupt());
+        }
+        if entry.partition_key() == lookup.partition() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
+    upper[position] = upper[position].saturating_add(1);
+    upper.truncate(position + 1);
+    Some(upper)
+}
+
+fn strict_event_order(events: &[EventId]) -> bool {
+    events.windows(2).all(|pair| pair[0] < pair[1])
+}
 
 impl EventConsumerRepository for RedbOperationalPorts {
     fn inspect_event_consumer(

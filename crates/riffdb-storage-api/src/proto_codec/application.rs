@@ -314,6 +314,7 @@ pub(super) fn hashes_from_proto(
 }
 
 pub(super) fn event_to_proto(value: &StoredDurableEventV1) -> wire::StoredDurableEventV1 {
+    debug_assert!(value.policy_anchor().is_none());
     wire::StoredDurableEventV1 {
         event_id: Some(event_id_to_proto(value.event_id())),
         event_type_id: value.event_type_id().get(),
@@ -375,6 +376,35 @@ fn event_v2_from_proto(
         EventHash::from_bytes(fixed(value.event_hash)?),
         event_policy_anchor_from_proto(require(value.policy_anchor)?)?,
     ))
+}
+
+pub(super) fn event_variant_to_proto(
+    value: &StoredDurableEventV1,
+) -> wire::StoredDurableEventVariantV1 {
+    use wire::stored_durable_event_variant_v1::Value;
+
+    let value = match value.policy_anchor() {
+        None => Value::Unanchored(event_to_proto(value)),
+        Some(anchor) => Value::Anchored(wire::StoredDurableEventV2 {
+            event_id: Some(event_id_to_proto(value.event_id())),
+            event_type_id: value.event_type_id().get(),
+            canonical_payload: value.payload_encoded().to_vec(),
+            event_hash: value.event_hash().as_bytes().to_vec(),
+            policy_anchor: Some(event_policy_anchor_to_proto(anchor)),
+        }),
+    };
+    wire::StoredDurableEventVariantV1 { value: Some(value) }
+}
+
+pub(super) fn event_variant_from_proto(
+    value: wire::StoredDurableEventVariantV1,
+) -> Result<StoredDurableEventV1, DurableCodecError> {
+    use wire::stored_durable_event_variant_v1::Value;
+
+    match require(value.value)? {
+        Value::Unanchored(value) => event_from_proto(value),
+        Value::Anchored(value) => storage_result(event_v2_from_proto(value)?.into_common()),
+    }
 }
 
 fn event_route_to_proto(value: StoredEventRouteV1) -> wire::StoredEventRouteV1 {
@@ -829,14 +859,32 @@ pub fn decode_stored_outcome_v1(
 pub fn encode_durable_event_v1(
     value: &StoredDurableEventV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    encode_message(EVENT, &event_to_proto(value))
+    match value.policy_anchor() {
+        None => encode_message(EVENT, &event_to_proto(value)),
+        Some(anchor) => encode_message(
+            EVENT_V2,
+            &wire::StoredDurableEventV2 {
+                event_id: Some(event_id_to_proto(value.event_id())),
+                event_type_id: value.event_type_id().get(),
+                canonical_payload: value.payload_encoded().to_vec(),
+                event_hash: value.event_hash().as_bytes().to_vec(),
+                policy_anchor: Some(event_policy_anchor_to_proto(anchor)),
+            },
+        ),
+    }
 }
 
 /// Decodes one standalone authoritative durable event and verifies its hash.
 pub fn decode_durable_event_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredDurableEventV1>, DurableCodecError> {
-    decode_message::<wire::StoredDurableEventV1, _, _>(EVENT, encoded, event_from_proto)
+    match decode_record_variant_chain(encoded, &[EVENT_V2, EVENT])? {
+        0 => decode_message::<wire::StoredDurableEventV2, _, _>(EVENT_V2, encoded, |value| {
+            storage_result(event_v2_from_proto(value)?.into_common())
+        }),
+        1 => decode_message::<wire::StoredDurableEventV1, _, _>(EVENT, encoded, event_from_proto),
+        _ => unreachable!("closed durable record variant index"),
+    }
 }
 
 /// Encodes one anchored durable-event successor without changing frozen V1 bytes.

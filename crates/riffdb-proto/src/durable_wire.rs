@@ -277,6 +277,10 @@ shape!(DURABLE_EVENT_V2 [
     fixed_bytes(4, 32),
     message(5, &EVENT_POLICY_ANCHOR),
 ]);
+shape!(DURABLE_EVENT_VARIANT_V1 [
+    message(1, &DURABLE_EVENT),
+    message(2, &DURABLE_EVENT_V2),
+]);
 shape!(AFFECTED_ENTITY[message(1, &ENTITY_TARGET)]);
 shape!(PROVENANCE [
     fixed_bytes(1, 16),
@@ -427,6 +431,23 @@ shape!(COMMAND_SEGMENT_BODY_V3 [
 ]);
 shape!(COMMAND_SEGMENT_V3 [
     message(1, &COMMAND_SEGMENT_BODY_V3),
+    fixed_bytes(2, 32),
+]);
+shape!(COMMAND_CAPSULE_V5 [
+    message(1, &COMMAND_CAPSULE_V1),
+    repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT_VARIANT_V1),
+    repeated_message(3, MAX_COMMAND_ITEMS, &INDEX_GENERATION_TRANSITION_V1),
+    bytes(4, MAX_DOCUMENT_BYTES),
+    repeated_message(5, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
+]);
+shape!(COMMAND_SEGMENT_BODY_V4 [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V5),
+    message(9, &COMMAND_SEGMENT_MANIFEST_V1),
+]);
+shape!(COMMAND_SEGMENT_V4 [
+    message(1, &COMMAND_SEGMENT_BODY_V4),
     fixed_bytes(2, 32),
 ]);
 shape!(VALIDATED_PREFIX_CHECKPOINT_V2 [
@@ -861,7 +882,7 @@ shape!(ROOT_APPLICATION_EXPORT_OPERATION [
     nonempty_bytes(3, 256 * 1024),
 ]);
 
-const ROOTS: [&Shape; 79] = [
+const ROOTS: [&Shape; 81] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -952,6 +973,8 @@ const ROOTS: [&Shape; 79] = [
     &DURABLE_EVENT_V2,
     &CAPABILITY_RECORD_V5,
     &ROOT_APPLICATION_EXPORT_OPERATION,
+    &COMMAND_CAPSULE_V5,
+    &COMMAND_SEGMENT_V4,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

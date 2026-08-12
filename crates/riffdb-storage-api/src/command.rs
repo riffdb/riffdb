@@ -3,6 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::StoredEventPolicyAnchorV1;
 use riffdb_types::{
     AdmittedActorContext, ApprovalId, CanonicalInputHash, CanonicalRecord, ConflictKeyHash,
     ContractVersion, EntityVersion, EventTypeId, ExecutionFailureCode, IndexEntryKey, LogicalTime,
@@ -673,6 +674,7 @@ pub struct EventIntent {
     event_type_id: EventTypeId,
     payload: CanonicalRecord,
     payload_encoded_len: usize,
+    policy_anchor: Option<StoredEventPolicyAnchorV1>,
 }
 
 impl EventIntent {
@@ -686,6 +688,25 @@ impl EventIntent {
             event_type_id,
             payload,
             payload_encoded_len,
+            policy_anchor: None,
+        })
+    }
+
+    /// Constructs an event intent with its compiler-materialized current-row anchor.
+    pub fn new_anchored(
+        event_type_id: EventTypeId,
+        payload: CanonicalRecord,
+        policy_anchor: StoredEventPolicyAnchorV1,
+    ) -> Result<Self, StorageValueError> {
+        if policy_anchor.event_type_id() != event_type_id {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let payload_encoded_len = canonical_record_bytes(&payload)?;
+        Ok(Self {
+            event_type_id,
+            payload,
+            payload_encoded_len,
+            policy_anchor: Some(policy_anchor),
         })
     }
 
@@ -707,10 +728,22 @@ impl EventIntent {
         self.payload_encoded_len
     }
 
+    /// Compiler-owned current-row anchor, when this is a protected V2 event.
+    #[must_use]
+    pub const fn policy_anchor(&self) -> Option<&StoredEventPolicyAnchorV1> {
+        self.policy_anchor.as_ref()
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        framed_bytes(self.payload_encoded_len)?
+        let base = framed_bytes(self.payload_encoded_len)?
             .checked_add(4)
-            .ok_or(StorageValueError::SizeOverflow)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        match &self.policy_anchor {
+            Some(anchor) => base
+                .checked_add(anchor.semantic_bytes()?)
+                .ok_or(StorageValueError::SizeOverflow),
+            None => Ok(base),
+        }
     }
 }
 

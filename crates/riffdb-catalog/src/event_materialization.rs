@@ -9,8 +9,8 @@ use riffdb_storage_api::{
     DurableKeySchemaBindingV1, ExecutablePlanRef, StoredDurableEventV1, StoredEventRouteV1,
 };
 use riffdb_types::{
-    CanonicalValue, ContractVersion, EventId, PartitionKey, PartitionKeyHash, PlanHash,
-    hash_partition_key,
+    CanonicalValue, ContractVersion, EventId, EventTypeId, PartitionKey, PartitionKeyHash,
+    PlanHash, hash_partition_key,
 };
 
 use crate::lineage::{LineageMaterializationProof, RecordOwnerV1, WriterRelation};
@@ -378,6 +378,7 @@ impl ResolvedEventMaterializer {
 
         Ok(SymbolicEventView {
             event_id: event.event_id(),
+            event_type_id: event.event_type_id(),
             event_name: self.event_name.clone(),
             writer_contract_version: writer.contract_version(),
             writer_plan_hash: writer.command_plan_hash(),
@@ -436,6 +437,7 @@ impl fmt::Debug for SymbolicEventField {
 /// conflict key, unselected payload, credential, or process-local trace ID.
 pub struct SymbolicEventView {
     event_id: EventId,
+    event_type_id: EventTypeId,
     event_name: String,
     writer_contract_version: ContractVersion,
     writer_plan_hash: PlanHash,
@@ -449,6 +451,13 @@ impl SymbolicEventView {
     #[must_use]
     pub const fn event_id(&self) -> EventId {
         self.event_id
+    }
+
+    /// Stable event type retained for policy-anchor verification.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn event_type_id(&self) -> EventTypeId {
+        self.event_type_id
     }
 
     /// Returns the symbolic event type.
