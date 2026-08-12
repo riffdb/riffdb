@@ -1589,6 +1589,10 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::GetReactiveWakeup => "get_reactive_wakeup",
         ServiceOperationV1::StartApplicationInstallation => "start_application_installation",
         ServiceOperationV1::GetApplicationInstallation => "get_application_installation",
+        ServiceOperationV1::StartApplicationExport => "start_application_export",
+        ServiceOperationV1::GetApplicationExportPage => "get_application_export_page",
+        ServiceOperationV1::GetApplicationExport => "get_application_export",
+        ServiceOperationV1::CancelApplicationExport => "cancel_application_export",
     }
 }
 

@@ -17,6 +17,7 @@ mod cursor;
 mod dto;
 mod event_operations;
 mod export;
+mod export_operations;
 mod failure;
 mod installation;
 mod installation_operations;

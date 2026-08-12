@@ -15,6 +15,8 @@ use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
     AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, ApplicationCommandTransactionPort,
+    ApplicationExportOperationRepository, ApplicationExportOperationWriteResultV1,
+    ApplicationExportSnapshotPort, ApplicationExportSnapshotReader,
     ApplicationInstallationCampaignRepository, ApplicationInstallationCampaignWriteResultV1,
     AuditedAdmissionRepository, AuditedAdmissionRequestV1, AuditedAdmissionResultV1,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
@@ -47,10 +49,11 @@ use riffdb_storage_api::{
     ReactiveModulePublicationResult, ReactiveModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredApplicationInstallationCampaignV1, StoredCapabilityRecordV1, StoredCommitRecordV1,
-    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
-    StoredReactiveModuleV1, UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
+    StoredApplicationExportOperationV1, StoredApplicationInstallationCampaignV1,
+    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
+    StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
@@ -975,6 +978,54 @@ impl ApplicationInstallationCampaignRepository for SharedRedbOperationalPorts {
                 expected,
                 replacement,
             )
+        })
+    }
+}
+
+impl ApplicationExportOperationRepository for SharedRedbOperationalPorts {
+    fn read_application_export_operation(
+        &self,
+        operation_id: riffdb_types::ApplicationExportOperationId,
+    ) -> Result<Option<StoredApplicationExportOperationV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportOperationRepository::read_application_export_operation(
+                ports,
+                operation_id,
+            )
+        })
+    }
+
+    fn compare_and_swap_application_export_operation(
+        &mut self,
+        expected: Option<&StoredApplicationExportOperationV1>,
+        replacement: &StoredApplicationExportOperationV1,
+    ) -> Result<ApplicationExportOperationWriteResultV1, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportOperationRepository::compare_and_swap_application_export_operation(
+                ports,
+                expected,
+                replacement,
+            )
+        })
+    }
+
+    fn list_application_export_operations(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<StoredApplicationExportOperationV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportOperationRepository::list_application_export_operations(ports, maximum)
+        })
+    }
+}
+
+impl ApplicationExportSnapshotPort for SharedRedbOperationalPorts {
+    fn capture_application_export_snapshot(
+        &self,
+        lineage: &ContractLineage,
+    ) -> Result<Arc<dyn ApplicationExportSnapshotReader>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportSnapshotPort::capture_application_export_snapshot(ports, lineage)
         })
     }
 }

@@ -2545,10 +2545,21 @@ mod tests {
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
         assert_eq!(requests.len(), 49);
-        // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
+        // Migration and export have dedicated current-policy request types:
+        // they must not be representable through the ordinary permission
+        // registry or an `OperationRequest` fallback.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()
-            .filter(|operation| *operation != ServiceOperationV1::ApplyContractMigration)
+            .filter(|operation| {
+                !matches!(
+                    operation,
+                    ServiceOperationV1::ApplyContractMigration
+                        | ServiceOperationV1::StartApplicationExport
+                        | ServiceOperationV1::GetApplicationExportPage
+                        | ServiceOperationV1::GetApplicationExport
+                        | ServiceOperationV1::CancelApplicationExport
+                )
+            })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             requests

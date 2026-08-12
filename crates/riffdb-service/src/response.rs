@@ -11,27 +11,29 @@ use riffdb_types::{
 };
 
 use crate::{
-    ApplicationCatalogResult, ApplicationInstallationOperationResult, AvailableContextualReaction,
-    BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery, CommandToolDescriptor,
-    CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
-    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
-    CompactResourceDescriptor, CompactResourceDescriptorRef, ConsumeContextualSubscriptionResult,
-    ConsumeEventStreamResult, ConsumedEvent, ContextualHydration, ContextualWorkItem,
-    ContractDescriptor, ContractMigrationOperationObservation, ContractMigrationStartResult,
-    ContractValidationResult, CreateCapabilityResult, CursorToken, DeclaredOutcomeView,
-    DeployContractResult, DeployQueryModuleResult, DeployReactiveModuleResult, DescribeEventResult,
+    ApplicationCatalogResult, ApplicationExportOperationV1, ApplicationExportPageV1,
+    ApplicationExportStartResultV1, ApplicationInstallationOperationResult,
+    AvailableContextualReaction, BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery,
+    CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent,
+    CommitView, CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem,
+    CompactNamedQueryToolDescriptor, CompactResourceDescriptor, CompactResourceDescriptorRef,
+    ConsumeContextualSubscriptionResult, ConsumeEventStreamResult, ConsumedEvent,
+    ContextualHydration, ContextualWorkItem, ContractDescriptor,
+    ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
+    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
+    DeployQueryModuleResult, DeployReactiveModuleResult, DescribeEventResult,
     DescribeSymbolicContractResult, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
     DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
     DiscoveryCatalogStateRef, DurableEventView, EntityView, EventConsumerMutationResult,
     EventConsumerStatus, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
     ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
     ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult,
-    GetApplicationInstallationResult, GetCommitResult, GetContractMigrationOperationResult,
-    GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusResult, GetReactiveWakeupResult, HealthReport, HealthResult, IndexRowView,
-    IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
-    LiveQueryPatchOperation, LiveQueryUpdate, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
+    GetApplicationExportResultV1, GetApplicationInstallationResult, GetCommitResult,
+    GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, GetReactiveWakeupResult,
+    HealthReport, HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
+    ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation, LiveQueryUpdate,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
@@ -1849,6 +1851,82 @@ impl ServiceResponseCharge for GetApplicationInstallationResult {
     }
 }
 
+impl ServiceResponseCharge for ApplicationExportOperationV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(18)?;
+        charge.add(16 + 32 + 32)?;
+        charge.bytes(self.selection().lineage().as_bytes().len())?;
+        charge.add(
+            self.snapshot()
+                .query_modules()
+                .len()
+                .checked_mul(32)
+                .ok_or(ServiceResponseChargeOverflow)?,
+        )?;
+        charge.add(
+            self.snapshot()
+                .reactive_modules()
+                .len()
+                .checked_mul(32)
+                .ok_or(ServiceResponseChargeOverflow)?,
+        )?;
+        if let Some(manifest) = self.manifest() {
+            charge.bytes(manifest.as_bytes().len())?;
+        }
+        if let Some(receipt) = self.receipt() {
+            charge.bytes(receipt.as_bytes().len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for ApplicationExportPageV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(8)?;
+        charge.add(16 + 32)?;
+        for line in self.lines() {
+            charge.bytes(line.as_bytes().len())?;
+        }
+        if let Some(cursor) = self.next_cursor() {
+            charge.bytes(cursor.as_bytes().len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for ApplicationExportStartResultV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(2)?;
+        charge.nested(self.operation())?;
+        if let Some(cursor) = self.cursor() {
+            charge.bytes(cursor.as_bytes().len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for GetApplicationExportResultV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        if let Self::Found(operation) = self {
+            charge.nested(operation.as_ref())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for OutboxDeliverySummary {
     fn service_response_charge_v1(
         &self,
@@ -2290,6 +2368,10 @@ seal_response_types!(
     GetContractMigrationOperationResult,
     ApplicationInstallationOperationResult,
     GetApplicationInstallationResult,
+    ApplicationExportOperationV1,
+    ApplicationExportPageV1,
+    ApplicationExportStartResultV1,
+    GetApplicationExportResultV1,
     OutboxDeliverySummary,
     ListPendingOutboxDeliveriesResult,
     CommandToolDescriptor,

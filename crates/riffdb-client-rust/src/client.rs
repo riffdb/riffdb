@@ -12,17 +12,19 @@ use riffdb_api_grpc::generated::{
 use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
     PublicMessage, validate_apply_contract_migration_exchange,
-    validate_check_contract_migration_exchange, validate_contract_validation_exchange,
-    validate_create_capability_exchange, validate_create_offline_backup_exchange,
-    validate_discover_command_tools_exchange, validate_discover_resources_exchange,
-    validate_explain_command_exchange, validate_get_application_installation_exchange,
+    validate_cancel_application_export_exchange, validate_check_contract_migration_exchange,
+    validate_contract_validation_exchange, validate_create_capability_exchange,
+    validate_create_offline_backup_exchange, validate_discover_command_tools_exchange,
+    validate_discover_resources_exchange, validate_explain_command_exchange,
+    validate_get_application_export_exchange, validate_get_application_export_page_exchange,
+    validate_get_application_installation_exchange,
     validate_get_contract_migration_operation_exchange, validate_get_contract_version_exchange,
     validate_get_offline_maintenance_operation_exchange, validate_get_outcome_exchange,
     validate_get_projection_status_exchange, validate_list_pending_outbox_deliveries_exchange,
     validate_public_message, validate_query_projection_exchange,
     validate_restore_offline_backup_exchange, validate_scan_commits_exchange,
-    validate_scan_index_exchange, validate_start_application_installation_exchange,
-    validate_trace_provenance_exchange,
+    validate_scan_index_exchange, validate_start_application_export_exchange,
+    validate_start_application_installation_exchange, validate_trace_provenance_exchange,
 };
 use riffdb_proto::{app::v1 as app_v1, v1};
 use riffdb_types::{CommitSequence, RequestId};
@@ -39,7 +41,7 @@ use crate::{
     ApplyContractMigration, AttemptBudget, BootstrapCallMetadata,
     BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, CreateOfflineBackup,
     IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup,
-    StartApplicationInstallation, SystemIdSource,
+    StartApplicationExport, StartApplicationInstallation, SystemIdSource,
 };
 
 pub(crate) trait RetryRequestIdSource {
@@ -674,6 +676,38 @@ impl RiffDbClient {
         v1::GetApplicationInstallationResponse,
         validate_get_application_installation_exchange
     );
+    unary_exchange!(
+        start_application_export,
+        admin,
+        start_application_export,
+        v1::StartApplicationExportRequest,
+        v1::StartApplicationExportResponse,
+        validate_start_application_export_exchange
+    );
+    unary_exchange!(
+        get_application_export_page,
+        admin,
+        get_application_export_page,
+        v1::GetApplicationExportPageRequest,
+        v1::GetApplicationExportPageResponse,
+        validate_get_application_export_page_exchange
+    );
+    unary_exchange!(
+        get_application_export,
+        admin,
+        get_application_export,
+        v1::GetApplicationExportRequest,
+        v1::GetApplicationExportResponse,
+        validate_get_application_export_exchange
+    );
+    unary_exchange!(
+        cancel_application_export,
+        admin,
+        cancel_application_export,
+        v1::CancelApplicationExportRequest,
+        v1::CancelApplicationExportResponse,
+        validate_cancel_application_export_exchange
+    );
 
     /// Performs normal authenticated capability creation.
     pub async fn create_capability(
@@ -980,6 +1014,37 @@ impl RiffDbClient {
             retry.note_request_id(&request_id);
             match self
                 .start_application_installation(start.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or exactly replays one immutable symbolic export with bounded retry.
+    pub async fn start_application_export_with_retry(
+        &mut self,
+        start: &StartApplicationExport,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::StartApplicationExportResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .start_application_export(start.request(request_id), metadata)
                 .await
             {
                 Ok(response) => return Ok(response),

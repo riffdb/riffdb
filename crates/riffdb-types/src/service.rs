@@ -109,11 +109,19 @@ pub enum ServiceOperationV1 {
     StartApplicationInstallation,
     /// Observe one exact application installation campaign.
     GetApplicationInstallation,
+    /// Start or exactly replay one snapshot-bound symbolic application export.
+    StartApplicationExport,
+    /// Release one bounded symbolic application-export page.
+    GetApplicationExportPage,
+    /// Observe one protected application-export checkpoint or receipt.
+    GetApplicationExport,
+    /// Close one nonterminal application export with an incomplete receipt.
+    CancelApplicationExport,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 52] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -162,6 +170,10 @@ impl ServiceOperationV1 {
         Self::GetReactiveWakeup,
         Self::StartApplicationInstallation,
         Self::GetApplicationInstallation,
+        Self::StartApplicationExport,
+        Self::GetApplicationExportPage,
+        Self::GetApplicationExport,
+        Self::CancelApplicationExport,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -216,6 +228,10 @@ impl ServiceOperationV1 {
             Self::GetReactiveWakeup => 0x2e,
             Self::StartApplicationInstallation => 0x2f,
             Self::GetApplicationInstallation => 0x30,
+            Self::StartApplicationExport => 0x31,
+            Self::GetApplicationExportPage => 0x32,
+            Self::GetApplicationExport => 0x33,
+            Self::CancelApplicationExport => 0x34,
         }
     }
 
@@ -271,6 +287,10 @@ impl ServiceOperationV1 {
             0x2e => Some(Self::GetReactiveWakeup),
             0x2f => Some(Self::StartApplicationInstallation),
             0x30 => Some(Self::GetApplicationInstallation),
+            0x31 => Some(Self::StartApplicationExport),
+            0x32 => Some(Self::GetApplicationExportPage),
+            0x33 => Some(Self::GetApplicationExport),
+            0x34 => Some(Self::CancelApplicationExport),
             _ => None,
         }
     }
