@@ -116,6 +116,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: BackupCommand,
     },
+    /// Exports one authorized symbolic application snapshot as canonical JSONL pages.
+    Export {
+        #[command(subcommand)]
+        command: ExportCommand,
+    },
     /// Inspects or upgrades one closed database's durable format.
     Storage {
         #[command(subcommand)]
@@ -129,6 +134,58 @@ pub(crate) enum TopLevel {
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ExportScope {
+    /// Apply the current application role's row and field policy.
+    Principal,
+    /// Use explicit whole-application export authority.
+    Whole,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ExportCommand {
+    /// Starts or exactly replays one immutable snapshot export.
+    Start {
+        #[arg(long, value_name = "CONTRACT_LINEAGE")]
+        lineage: String,
+        #[arg(long, value_enum, value_name = "principal|whole")]
+        scope: ExportScope,
+        #[arg(long)]
+        entities: bool,
+        #[arg(long)]
+        events: bool,
+        #[arg(long)]
+        provenance: bool,
+        #[arg(long)]
+        public_audit: bool,
+        #[arg(long, default_value = "3600", value_name = "60..86400")]
+        lease_seconds: String,
+        #[arg(long, value_name = "UUID_V7")]
+        operation_id: Option<String>,
+    },
+    /// Writes one exact bounded page to a newly created canonical JSONL file.
+    Page {
+        #[arg(long, value_name = "UUID_V7")]
+        operation_id: String,
+        #[arg(long, value_name = "OPAQUE_BASE64_CURSOR")]
+        cursor: String,
+        #[arg(long, default_value = "500", value_name = "1..500")]
+        max_rows: String,
+        #[arg(long, value_name = "NEW_JSONL_FILE")]
+        jsonl: OsString,
+    },
+    /// Observes one durable export checkpoint or terminal receipt.
+    Status {
+        #[arg(long, value_name = "UUID_V7")]
+        operation_id: String,
+    },
+    /// Closes one nonterminal export with a durable incomplete receipt.
+    Cancel {
+        #[arg(long, value_name = "UUID_V7")]
+        operation_id: String,
     },
 }
 
@@ -1867,6 +1924,72 @@ mod tests {
                 "helpdesk.credential",
                 "--field-id",
                 "7",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn export_commands_expose_only_closed_symbolic_scope_and_bounded_pages() {
+        let operation = "018f2f85-3c20-7a31-8f11-112233445566";
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "export",
+                "start",
+                "--lineage",
+                "TicketDesk",
+                "--scope",
+                "principal",
+                "--entities",
+                "--events",
+                "--lease-seconds",
+                "900",
+                "--operation-id",
+                operation,
+            ])
+            .expect("symbolic export start")
+            .command,
+            TopLevel::Export {
+                command: ExportCommand::Start {
+                    lineage,
+                    scope: ExportScope::Principal,
+                    entities: true,
+                    events: true,
+                    operation_id: Some(parsed),
+                    ..
+                }
+            } if lineage == "TicketDesk" && parsed == operation
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "export",
+                "page",
+                "--operation-id",
+                operation,
+                "--cursor",
+                "AQID",
+                "--jsonl",
+                "ticketdesk-0001.jsonl",
+            ])
+            .expect("bounded export page")
+            .command,
+            TopLevel::Export {
+                command: ExportCommand::Page { max_rows, .. }
+            } if max_rows == "500"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "export",
+                "start",
+                "--lineage",
+                "TicketDesk",
+                "--scope",
+                "whole",
+                "--entity-type-id",
+                "2",
             ])
             .is_err()
         );
