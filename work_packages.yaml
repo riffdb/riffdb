@@ -11845,7 +11845,13 @@ work_packages:
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
     crates/riffdb-contract-compiler/**, crates/riffdb-types/**, crates/riffdb-policy/**,
     crates/riffdb-errors/**, crates/riffdb-service/**, crates/riffdb-cli/**,
-    crates/riffdb-api-mcp/**, crates/riffdb-observability/**, docs/**, fixtures/**]
+    crates/riffdb-api-mcp/**, crates/riffdb-observability/**, docs/**, fixtures/**,
+    # Fix-round expansion, coordinator-authorized (2026-08-11): persisting the
+    # grant's dedicated secret-field naming and giving it a production minting
+    # surface requires the durable capability record V6 and the public wire
+    # field, which live in the proto/codec/ingress crates below.
+    proto/**, crates/riffdb-proto/**, crates/riffdb-storage-api/**,
+    crates/riffdb-api-grpc/**, tests/**, release/durable-format-manifest-v1.json]
   deliverables:
   - secret keyword through grammar, AST, versioned IR with compatibility fixtures, bundle
     hash, generated catalogs and bindings, with source-span diagnostics

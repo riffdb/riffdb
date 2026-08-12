@@ -700,3 +700,94 @@ fn absent_outbox_state_and_projection_schema_mismatch_fail_closed() {
         &schema,
     ));
 }
+
+/// ADR-0118: every advertised fail-closed rejection of the V6 secret
+/// extension is exercised against real wire bytes — a missing extension,
+/// an empty extension, an empty per-entry naming, an entry matching no
+/// visibility row, a duplicate entry for one row, and a non-canonical
+/// (unsorted/duplicated) id list all refuse to decode.
+#[test]
+fn capability_v6_secret_extension_is_required_canonical_and_matched() {
+    const CAPABILITY_V6: &str = "riffdb.storage.v1.CapabilityRecordV6";
+    let value = sample::capability_record_with_secret_naming();
+    let canonical = encode_capability_record_v1(&value).expect("secret capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV6>(canonical.as_bytes());
+
+    // 1. V6 without its distinguishing extension is not a valid V6.
+    let mut missing = message.clone();
+    missing.secret = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V6,
+        &missing,
+    )));
+
+    // 2. An extension with zero entries names nothing and must refuse.
+    let mut empty = message.clone();
+    empty
+        .secret
+        .as_mut()
+        .expect("secret extension")
+        .entries
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V6,
+        &empty,
+    )));
+
+    // 3. An entry with an empty id list reveals nothing and must refuse.
+    let mut empty_ids = message.clone();
+    empty_ids.secret.as_mut().expect("secret extension").entries[0]
+        .secret_field_ids
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V6,
+        &empty_ids,
+    )));
+
+    // 4. An entry that matches no visibility row cannot attach.
+    let mut unmatched = message.clone();
+    unmatched.secret.as_mut().expect("secret extension").entries[0].entity_type_id = 999;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V6,
+        &unmatched,
+    )));
+
+    // 5. Two entries for the same visibility row are a duplicate naming.
+    let mut duplicated = message.clone();
+    {
+        let entries = &mut duplicated
+            .secret
+            .as_mut()
+            .expect("secret extension")
+            .entries;
+        let copy = entries[0].clone();
+        entries.push(copy);
+    }
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V6,
+        &duplicated,
+    )));
+
+    // 6. A non-canonical id list (duplicate ids) fails the exact
+    //    sorted-identity re-check.
+    let mut noncanonical = message.clone();
+    {
+        let ids = &mut noncanonical
+            .secret
+            .as_mut()
+            .expect("secret extension")
+            .entries[0]
+            .secret_field_ids;
+        let first = ids[0];
+        ids.push(first);
+    }
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V6,
+        &noncanonical,
+    )));
+
+    // Control (non-empty triggering set): the untouched message decodes.
+    let decoded = decode_capability_record_v1(&checked_envelope(CAPABILITY_V6, &message))
+        .expect("the canonical V6 record decodes");
+    assert_eq!(decoded.value(), &value);
+}
