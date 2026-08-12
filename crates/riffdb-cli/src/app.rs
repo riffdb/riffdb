@@ -7207,6 +7207,7 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
         approval_required: Vec::new(),
         row_policy: None,
+        export: None,
     }
 }
 
@@ -7403,6 +7404,32 @@ struct CapabilityGrantInput {
     field_visibility: Vec<FieldVisibilityInput>,
     max_scan_rows: u32,
     approval_required: Vec<CapabilityPermissionKindInput>,
+    #[serde(default)]
+    export: Option<CapabilityExportGrantInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityExportGrantInput {
+    applications: Vec<CapabilityApplicationExportGrantInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityApplicationExportGrantInput {
+    contract_lineage: String,
+    scope: CapabilityApplicationExportScopeInput,
+    entities: bool,
+    events: bool,
+    provenance: bool,
+    public_audit: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CapabilityApplicationExportScopeInput {
+    PrincipalFiltered,
+    WholeApplication,
 }
 
 #[derive(Deserialize)]
@@ -7814,6 +7841,27 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             })
         })
         .collect::<Result<_, _>>()?;
+    let export = input.export.map(|export| v1::CapabilityExportGrant {
+        applications: export
+            .applications
+            .into_iter()
+            .map(|application| v1::CapabilityApplicationExportGrant {
+                contract_lineage: application.contract_lineage,
+                scope: match application.scope {
+                    CapabilityApplicationExportScopeInput::PrincipalFiltered => {
+                        v1::CapabilityApplicationExportScope::PrincipalFiltered as i32
+                    }
+                    CapabilityApplicationExportScopeInput::WholeApplication => {
+                        v1::CapabilityApplicationExportScope::WholeApplication as i32
+                    }
+                },
+                entities: application.entities,
+                events: application.events,
+                provenance: application.provenance,
+                public_audit: application.public_audit,
+            })
+            .collect(),
+    });
     Ok(v1::CapabilityGrant {
         tenant_scope: Some(tenant_scope),
         partition_scope: Some(partition_scope),
@@ -7826,6 +7874,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             .map(permission_kind)
             .collect(),
         row_policy: None,
+        export,
     })
 }
 
@@ -10698,6 +10747,7 @@ mod tests {
                 max_scan_rows: 1,
                 approval_required: Vec::new(),
                 row_policy: None,
+                export: None,
             }),
         }
     }
@@ -11392,6 +11442,52 @@ mod tests {
             .expect("profile request");
             NormalCapabilityCreateTemplate::new(request).expect("canonical profile");
         }
+    }
+
+    #[test]
+    fn capability_json_carries_explicit_export_authority_without_permission_aliases() {
+        let input: CapabilityCreateInput = serde_json::from_str(
+            r#"{
+              "principal_id":"export-operator",
+              "actor_kind":"service",
+              "requested_lifetime_seconds":600,
+              "audiences":["riffdb-cli"],
+              "grant":{
+                "tenant_scope":{"type":"global"},
+                "partition_scope":{"type":"all"},
+                "permissions":[],
+                "field_visibility":[],
+                "max_scan_rows":1,
+                "approval_required":[],
+                "export":{"applications":[{
+                  "contract_lineage":"TicketDesk",
+                  "scope":"whole_application",
+                  "entities":true,
+                  "events":true,
+                  "provenance":false,
+                  "public_audit":true
+                }]}
+              }
+            }"#,
+        )
+        .expect("export capability JSON");
+        let request = capability_request(
+            input,
+            parse_uuid_v7("01900000-0000-7000-8000-000000000042")
+                .expect("capability ID")
+                .to_vec(),
+            v1::CapabilityCreateMode::Normal,
+        )
+        .expect("export capability request");
+        let grant = request.grant.expect("grant");
+        assert!(grant.permissions.is_empty());
+        let application = &grant.export.expect("export").applications[0];
+        assert_eq!(application.contract_lineage, "TicketDesk");
+        assert_eq!(
+            application.scope,
+            v1::CapabilityApplicationExportScope::WholeApplication as i32
+        );
+        assert!(application.public_audit);
     }
 
     fn i64_bound(value: i64) -> String {

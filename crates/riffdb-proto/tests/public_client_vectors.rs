@@ -288,6 +288,46 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 fn expected_enum_values() -> BTreeSet<String> {
     let mut values = [
         (
+            "riffdb.v1.CapabilityApplicationExportScope",
+            0,
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.CapabilityApplicationExportScope",
+            1,
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED",
+        ),
+        (
+            "riffdb.v1.CapabilityApplicationExportScope",
+            2,
+            "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            0,
+            "CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            1,
+            "CAPABILITY_ROW_POLICY_OPERATION_READ",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            2,
+            "CAPABILITY_ROW_POLICY_OPERATION_CREATE",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            3,
+            "CAPABILITY_ROW_POLICY_OPERATION_UPDATE",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            4,
+            "CAPABILITY_ROW_POLICY_OPERATION_DELETE",
+        ),
+        (
             "riffdb.v1.CapabilityPermissionKind",
             20,
             "CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY",

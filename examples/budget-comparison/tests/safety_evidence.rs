@@ -438,6 +438,7 @@ fn bootstrap_request(
             max_scan_rows: 1,
             approval_required: Vec::new(),
             row_policy: None,
+            export: None,
         }),
     })
 }
@@ -489,6 +490,7 @@ fn normal_capability_request() -> TestResult<v1::CreateCapabilityRequest> {
             max_scan_rows: 100,
             approval_required: Vec::new(),
             row_policy: None,
+            export: None,
         }),
     })
 }

@@ -5410,6 +5410,7 @@ fn public_capability_grant() -> v1::CapabilityGrant {
         max_scan_rows: 50,
         approval_required: Vec::new(),
         row_policy: None,
+        export: None,
     }
 }
 

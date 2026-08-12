@@ -1344,7 +1344,16 @@ messages
     5 storage_format_version optional uint32
     6 contract_ir_version optional uint32
     7 mcp_protocol_baseline optional string
-  riffdb.v1.CapabilityGrant fields=7
+  riffdb.v1.CapabilityApplicationExportGrant fields=6
+    1 contract_lineage optional string
+    2 scope optional .riffdb.v1.CapabilityApplicationExportScope
+    3 entities optional bool
+    4 events optional bool
+    5 provenance optional bool
+    6 public_audit optional bool
+  riffdb.v1.CapabilityExportGrant fields=1
+    1 applications repeated .riffdb.v1.CapabilityApplicationExportGrant
+  riffdb.v1.CapabilityGrant fields=8
     1 tenant_scope optional .riffdb.v1.TenantScope
     2 partition_scope optional .riffdb.v1.PartitionScope
     3 permissions repeated .riffdb.v1.CapabilityPermission
@@ -1352,6 +1361,7 @@ messages
     5 max_scan_rows optional uint32
     6 approval_required repeated .riffdb.v1.CapabilityPermissionKind
     7 row_policy optional .riffdb.v1.CapabilityRowPolicyGrant
+    8 export optional .riffdb.v1.CapabilityExportGrant
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
@@ -2731,6 +2741,10 @@ enums
     8 APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF
     9 APPLICATION_INSTALLATION_STAGE_SEEDS
     10 APPLICATION_INSTALLATION_STAGE_RECEIPT
+  riffdb.v1.CapabilityApplicationExportScope values=3
+    0 CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED
+    1 CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED
+    2 CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION
   riffdb.v1.CapabilityCreateMode values=3
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
