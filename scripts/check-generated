@@ -34,6 +34,7 @@ done
 mapfile -t mcp_tool_catalogs < <(
     {
         find examples -path '*/generated/mcp/tools.json' -type f -print
+        find fixtures/adapters -path '*/generated/mcp/tools.json' -type f -print
         find fixtures/query-modules -maxdepth 1 -type f -name '*.mcp.json' -print
         printf '%s\n' crates/riffdb-api-mcp/fixtures/fixed-tool-registry-v1.json
     } | LC_ALL=C sort

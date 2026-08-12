@@ -1,0 +1,15 @@
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+
+    return Found {
+        document: document { document_id owner_id group_id visibility state title body }
+    }
+
+    outcomes Found | NotFound
+}

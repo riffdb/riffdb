@@ -267,6 +267,13 @@ riffdb role bind riffdb.application.json \
 riffdb role revoke <capability-uuidv7> --reason replaced
 ```
 
+If the role selects a row policy with declared principal facts, add one
+operator-owned `--principal-facts <JSON_OBJECT_PATH>` document. Its object keys
+must exactly match the symbolic `principal_fact_schemas` reported by
+`riffdb role describe`; values use the natural JSON forms documented in
+[Row policies](../security/ROW-POLICIES.md). Generated application clients
+never receive the document, policy bytecode, or a policy-bypass parameter.
+
 `tenant_scope` is exact author intent. A role declaring `"tenant"` requires
 `--tenant <tenant-id>` on check, describe, bind, development binding, and
 provisioning. A role declaring `"global"` requires that `--tenant` be omitted.

@@ -1,0 +1,12 @@
+query ListDocuments($organization_id: Document.organization_id) {
+    many documents from Document
+        where organization_id == $organization_id
+        order by document_id asc
+        take 25
+
+    return Found {
+        documents: documents { document_id owner_id group_id visibility state title body }
+    }
+
+    outcomes Found
+}

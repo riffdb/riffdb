@@ -458,6 +458,9 @@ pub(crate) enum RoleCommand {
         lifetime_seconds: String,
         #[arg(long = "audience", required = true, value_name = "AUDIENCE")]
         audiences: Vec<String>,
+        /// Operator-owned bounded fact values for a compiler-protected role.
+        #[arg(long, value_name = "JSON_OBJECT_PATH")]
+        principal_facts: Option<OsString>,
         #[arg(long, value_name = "CAPABILITY_UUIDV7")]
         capability_id: Option<String>,
         #[arg(long, value_name = "PATH")]
@@ -1926,6 +1929,29 @@ mod tests {
                 "7",
             ])
             .is_err()
+        );
+
+        let protected = Cli::try_parse_from([
+            "riffdb",
+            "role",
+            "bind",
+            "riffdb.application.json",
+            "--role",
+            "HelpdeskAgent",
+            "--principal",
+            "00000000-0000-0000-0000-000000000007",
+            "--actor-kind",
+            "service",
+            "--audience",
+            "helpdesk",
+            "--credential-output",
+            "helpdesk.credential",
+            "--principal-facts",
+            "principal-facts.json",
+        ]);
+        assert!(
+            protected.is_ok(),
+            "protected role binding must accept one operator-owned facts document: {protected:?}"
         );
     }
 

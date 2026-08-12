@@ -1,0 +1,17 @@
+query DocumentSummary($organization_id: Document.organization_id) {
+    many documents from Document
+        where organization_id == $organization_id
+        order by document_id asc
+        take 25
+
+    aggregate summary from documents {
+        group by state
+        count() as document_count
+    }
+
+    return Found {
+        summary: summary { state document_count }
+    }
+
+    outcomes Found
+}

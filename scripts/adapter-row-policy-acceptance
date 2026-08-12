@@ -1,0 +1,420 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$#" -ne 3 || "$1" != "--all-languages" || "$2" != "--domains" || "$3" != "payload,mlflow" ]]; then
+    echo "usage: ./scripts/adapter-row-policy-acceptance --all-languages --domains payload,mlflow" >&2
+    exit 2
+fi
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+export GOCACHE="${RIFFDB_GO_CACHE:-$task_tmp_root/riffdb-go-cache}"
+export GOPATH="${RIFFDB_GO_PATH:-$task_tmp_root/riffdb-go-path}"
+export GOPROXY=off
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$task_tmp_root/riffdb-uv-cache}"
+mkdir -p "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR"
+
+for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required adapter-row-policy tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+work_root="$(mktemp -d "$task_tmp_root/riffdb-adapter-row-policy.XXXXXX")"
+server_pid=
+driver_pid=
+cleanup() {
+    if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
+        kill -TERM "$driver_pid" 2>/dev/null || true
+        wait "$driver_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        printf 'shutdown\n' >&"$server_input_fd" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    if [[ "${RIFFDB_KEEP_CONFORMANCE:-0}" == "1" ]]; then
+        echo "retained adapter-row-policy work root: $work_root" >&2
+    else
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+cd "$repo_root"
+cargo +1.97.0 build --quiet \
+    -p riffdb-server --bin riffdbd \
+    -p riffdb-cli --bin riffdb \
+    -p riffdb-driver-host --bin riffdb-driverd \
+    -p riffdb-testkit --example adapter_row_policy_remote_client
+npm --prefix clients/typescript/runtime run build >/dev/null
+(
+    cd clients/python/runtime
+    python3 -m maturin build --quiet --interpreter python3 \
+        --compatibility linux --out "$work_root/dist"
+)
+python_wheel="$(find "$work_root/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+[[ -n "$python_wheel" ]] || { echo "Python row-policy wheel was not built" >&2; exit 1; }
+uv venv "$work_root/python-venv" >/dev/null
+uv pip install --offline --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
+
+port="$($work_root/python-venv/bin/python - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+cp crates/riffdb-server/tests/fixtures/localhost-cert.pem "$work_root/server.pem"
+cp crates/riffdb-server/tests/fixtures/localhost-key.pem "$work_root/server.key"
+cp crates/riffdb-server/tests/fixtures/test-ca.pem "$work_root/ca.pem"
+chmod 0444 "$work_root/server.pem" "$work_root/ca.pem"
+chmod 0600 "$work_root/server.key"
+printf '%s' 'riffdb-capability-digest-keys-v1
+1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+' >"$work_root/capability.keys"
+printf '%s' 'riffdb-idempotency-digest-keys-v1
+1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+' >"$work_root/idempotency.keys"
+chmod 0600 "$work_root/capability.keys" "$work_root/idempotency.keys"
+mkdir -m 0700 "$work_root/backups"
+
+cat >"$work_root/riffdbd.toml" <<EOF
+[server]
+database = "$work_root/riffdb.redb"
+environment = "development"
+audience = "riffdb-adapter-row-policy"
+capability_keys = "$work_root/capability.keys"
+idempotency_keys = "$work_root/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:$port"
+public_endpoint = "https://127.0.0.1:$port"
+certificate_chain = "$work_root/server.pem"
+private_key = "$work_root/server.key"
+
+[server.application_listener.bounds]
+max_connections = 64
+max_streams_per_connection = 128
+handshake_timeout_seconds = 5
+drain_timeout_seconds = 5
+
+[maintenance]
+backup_root = "$work_root/backups"
+EOF
+
+mkfifo "$work_root/server.input" "$work_root/server.output"
+exec {server_input_fd}<>"$work_root/server.input"
+exec {server_output_fd}<>"$work_root/server.output"
+target/debug/riffdbd --config "$work_root/riffdbd.toml" \
+    <&"$server_input_fd" >"$work_root/server.output" 2>"$work_root/server.stderr" &
+server_pid=$!
+ready=
+while IFS= read -r -t 60 line <&"$server_output_fd"; do
+    if [[ "$line" == riffdbd-ready-v1$'\t'* ]]; then ready="$line"; break; fi
+done
+[[ "$ready" == "riffdbd-ready-v1"$'\t'"127.0.0.1:$port" ]] || {
+    sed -n '1,200p' "$work_root/server.stderr" >&2
+    echo "adapter row-policy RiffDB did not become ready" >&2
+    exit 1
+}
+
+cat >"$work_root/bootstrap.json" <<'EOF'
+{"principal_id":"adapter-row-policy-operator","actor_kind":"human","requested_lifetime_seconds":86400,"audiences":["riffdb-adapter-row-policy"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
+EOF
+cat >"$work_root/bootstrap-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+target/debug/riffdb --config "$work_root/bootstrap-client.toml" capability bootstrap \
+    --request "$work_root/bootstrap.json" --generate "$work_root/bootstrap.credential" \
+    --bearer-output "$work_root/operator.credential" >/dev/null
+cat >"$work_root/operator-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$work_root/operator.credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+
+cp -R fixtures/adapters/row-policy-conformance "$work_root/application"
+(
+    cd "$work_root/application"
+    "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
+        riffdb.application.json --lock riffdb.application.lock.json \
+        >"$work_root/application-deploy.json" 2>"$work_root/application-deploy.stderr" || {
+            cat "$work_root/application-deploy.stderr" >&2
+            cat "$work_root/application-deploy.json" >&2
+            exit 1
+        }
+)
+
+owner_id="018f0f8b-7c6d-7e31-8a4f-000000000001"
+other_id="018f0f8b-7c6d-7e31-8a4f-000000000002"
+outsider_id="018f0f8b-7c6d-7e31-8a4f-000000000003"
+group_id="018f0f8b-7c6d-7e31-8a4f-000000000032"
+jq -n --arg group "$group_id" '{group_ids:[{"$uuid":$group}]}' >"$work_root/owner-facts.json"
+jq -n '{group_ids:[]}' >"$work_root/empty-facts.json"
+
+bind_role() {
+    local principal="$1"
+    local facts="$2"
+    local output="$3"
+    target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+        "$work_root/application/riffdb.application.json" \
+        --role AdapterRowPolicyApplication --principal "$principal" \
+        --actor-kind service --audience riffdb-adapter-row-policy --lifetime-seconds 3600 \
+        --principal-facts "$facts" --credential-output "$output" --output json
+}
+bind_role "$owner_id" "$work_root/owner-facts.json" "$work_root/owner.credential" >"$work_root/owner-bind.json"
+bind_role "$other_id" "$work_root/empty-facts.json" "$work_root/other.credential" >"$work_root/other-bind.json"
+bind_role "$outsider_id" "$work_root/empty-facts.json" "$work_root/outsider.credential" >"$work_root/outsider-bind.json"
+
+client_config() {
+    local credential="$1"
+    local output="$2"
+    cat >"$output" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+}
+client_config "$work_root/owner.credential" "$work_root/owner-client.toml"
+client_config "$work_root/other.credential" "$work_root/other-client.toml"
+client_config "$work_root/outsider.credential" "$work_root/outsider-client.toml"
+
+uuid() { printf '018f0f8b-7c6d-7e31-8a4f-0000000000%02x' "$1"; }
+run_command() {
+    local config="$1"
+    local command="$2"
+    local input="$3"
+    target/debug/riffdb --config "$config" command run "$command" \
+        --input "$input" --application "$work_root/application/riffdb.application.json" \
+        --output json >/dev/null
+}
+create_document() {
+    local config="$1" request="$2" document="$3" owner="$4" group="$5" visibility="$6" state="$7"
+    jq -n --arg request "$request" --arg organization "$(uuid 10)" --arg document "$document" \
+        --arg owner "$owner" --arg group "$group" --arg visibility "$visibility" --arg state "$state" \
+        '{request_id:{"$uuid":$request},organization_id:{"$uuid":$organization},document_id:{"$uuid":$document},owner_id:{"$uuid":$owner},group_id:(if $group == "" then null else {"$uuid":$group} end),visibility:{"$enum":$visibility},state:{"$enum":$state},title:("Document " + $document),body:"bounded body"}' \
+        >"$work_root/input.json"
+    run_command "$config" CreateDocument "$work_root/input.json"
+}
+create_experiment() {
+    local config="$1" request="$2" experiment="$3" owner="$4" group="$5" visibility="$6"
+    jq -n --arg request "$request" --arg organization "$(uuid 10)" --arg experiment "$experiment" \
+        --arg owner "$owner" --arg group "$group" --arg visibility "$visibility" \
+        '{request_id:{"$uuid":$request},organization_id:{"$uuid":$organization},experiment_id:{"$uuid":$experiment},owner_id:{"$uuid":$owner},group_id:(if $group == "" then null else {"$uuid":$group} end),visibility:{"$enum":$visibility},name:("Experiment " + $experiment)}' \
+        >"$work_root/input.json"
+    run_command "$config" CreateExperiment "$work_root/input.json"
+}
+create_run() {
+    local config="$1" request="$2" experiment="$3" run="$4" owner="$5" group="$6" visibility="$7"
+    jq -n --arg request "$request" --arg organization "$(uuid 10)" --arg experiment "$experiment" \
+        --arg run "$run" --arg owner "$owner" --arg group "$group" --arg visibility "$visibility" \
+        '{request_id:{"$uuid":$request},organization_id:{"$uuid":$organization},experiment_id:{"$uuid":$experiment},run_id:{"$uuid":$run},owner_id:{"$uuid":$owner},group_id:(if $group == "" then null else {"$uuid":$group} end),visibility:{"$enum":$visibility},state:{"$enum":"Running"}}' \
+        >"$work_root/input.json"
+    run_command "$config" CreateRun "$work_root/input.json"
+}
+log_metric() {
+    local config="$1" request="$2" experiment="$3" run="$4" metric="$5" owner="$6" group="$7" visibility="$8" value="$9"
+    jq -n --arg request "$request" --arg organization "$(uuid 10)" --arg experiment "$experiment" \
+        --arg run "$run" --arg metric "$metric" --arg owner "$owner" --arg group "$group" \
+        --arg visibility "$visibility" --arg value "$value" \
+        '{request_id:{"$uuid":$request},organization_id:{"$uuid":$organization},experiment_id:{"$uuid":$experiment},run_id:{"$uuid":$run},metric_id:{"$uuid":$metric},owner_id:{"$uuid":$owner},group_id:(if $group == "" then null else {"$uuid":$group} end),visibility:{"$enum":$visibility},name:"latency",value_micros:{"$i64":$value}}' \
+        >"$work_root/input.json"
+    run_command "$config" LogMetric "$work_root/input.json"
+}
+create_artifact() {
+    local config="$1" request="$2" experiment="$3" run="$4" artifact="$5" owner="$6" group="$7" visibility="$8"
+    jq -n --arg request "$request" --arg organization "$(uuid 10)" --arg experiment "$experiment" \
+        --arg run "$run" --arg artifact "$artifact" --arg owner "$owner" --arg group "$group" --arg visibility "$visibility" \
+        '{request_id:{"$uuid":$request},organization_id:{"$uuid":$organization},experiment_id:{"$uuid":$experiment},run_id:{"$uuid":$run},artifact_id:{"$uuid":$artifact},owner_id:{"$uuid":$owner},group_id:(if $group == "" then null else {"$uuid":$group} end),visibility:{"$enum":$visibility},path:"models/model.bin"}' \
+        >"$work_root/input.json"
+    run_command "$config" CreateArtifact "$work_root/input.json"
+}
+
+owner_cfg="$work_root/owner-client.toml"
+other_cfg="$work_root/other-client.toml"
+create_document "$owner_cfg" "$(uuid 101)" "$(uuid 11)" "$owner_id" "" Private Draft
+create_document "$owner_cfg" "$(uuid 102)" "$(uuid 12)" "$owner_id" "$group_id" Group Draft
+create_document "$owner_cfg" "$(uuid 103)" "$(uuid 13)" "$owner_id" "" Public Published
+create_document "$other_cfg" "$(uuid 104)" "$(uuid 14)" "$other_id" "" Private Draft
+create_document "$other_cfg" "$(uuid 105)" "$(uuid 15)" "$other_id" "$group_id" Group Published
+create_document "$other_cfg" "$(uuid 106)" "$(uuid 16)" "$other_id" "" Public Draft
+create_experiment "$owner_cfg" "$(uuid 107)" "$(uuid 21)" "$owner_id" "" Private
+create_experiment "$other_cfg" "$(uuid 108)" "$(uuid 22)" "$other_id" "" Private
+create_experiment "$other_cfg" "$(uuid 109)" "$(uuid 23)" "$other_id" "$group_id" Group
+create_experiment "$other_cfg" "$(uuid 110)" "$(uuid 24)" "$other_id" "" Public
+create_run "$other_cfg" "$(uuid 111)" "$(uuid 23)" "$(uuid 31)" "$other_id" "$group_id" Group
+create_run "$other_cfg" "$(uuid 112)" "$(uuid 22)" "$(uuid 32)" "$other_id" "" Private
+create_run "$owner_cfg" "$(uuid 113)" "$(uuid 21)" "$(uuid 33)" "$owner_id" "" Private
+log_metric "$owner_cfg" "$(uuid 114)" "$(uuid 21)" "$(uuid 33)" "$(uuid 41)" "$owner_id" "" Private 100
+log_metric "$other_cfg" "$(uuid 115)" "$(uuid 23)" "$(uuid 31)" "$(uuid 42)" "$other_id" "$group_id" Group 200
+log_metric "$other_cfg" "$(uuid 116)" "$(uuid 22)" "$(uuid 32)" "$(uuid 43)" "$other_id" "" Private 900
+log_metric "$other_cfg" "$(uuid 117)" "$(uuid 22)" "$(uuid 32)" "$(uuid 44)" "$other_id" "" Public 300
+create_artifact "$other_cfg" "$(uuid 118)" "$(uuid 23)" "$(uuid 31)" "$(uuid 51)" "$other_id" "$group_id" Group
+
+clients/typescript/runtime/node_modules/.bin/tsc \
+    "$work_root/application/generated/typescript/client.ts" \
+    --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck \
+    --outDir "$work_root/typescript"
+export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
+export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
+export RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$repo_root/clients/typescript/runtime/dist/index.js"
+export RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED="$work_root/typescript/client.js"
+
+manifest_hash="$(jq -r '.exact_manifest_hash' "$work_root/application/riffdb.application.lock.json")"
+catalog_hash="$(jq -r '.artifacts[] | select(.kind == "mcp") | .content_hash' "$work_root/application/riffdb.application.lock.json")"
+bundle_hash="$(jq -r '.contract.bundle_hash' "$work_root/application/riffdb.application.lock.json")"
+role_hash="$(jq -r '.roles[] | select(.definition.name == "AdapterRowPolicyApplication") | .definition_hash' "$work_root/application/riffdb.application.lock.json")"
+remote_hash="$(printf 'https://127.0.0.1:%s|127.0.0.1' "$port" | sha256sum | cut -d' ' -f1)"
+jq -n \
+    --arg applicationManifestHash "$manifest_hash" --arg operationCatalogHash "$catalog_hash" \
+    --arg contractLineage AdapterRowPolicyConformance --argjson contractVersion 1 \
+    --arg contractBundleHash "$bundle_hash" --arg database default \
+    --arg role AdapterRowPolicyApplication --arg roleDefinitionHash "$role_hash" \
+    --arg remoteIdentityHash "$remote_hash" \
+    '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
+    >"$work_root/identity.json"
+export RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity.json"
+
+start_driver() {
+    local credential="$1"
+    local socket="$work_root/riffdb-driver.sock"
+    rm -f "$socket"
+    cat >"$work_root/driver.toml" <<EOF
+[driver]
+socket = "$socket"
+
+[application]
+lock_file = "$work_root/application/riffdb.application.lock.json"
+manifest_file = "$work_root/application/generated/riffdb.application.exact.json"
+operation_catalog_file = "$work_root/application/generated/mcp/tools.json"
+database = "default"
+role = "AdapterRowPolicyApplication"
+
+[remote]
+endpoint = "https://127.0.0.1:$port"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$credential"
+pool_connections = 4
+streams_per_connection = 64
+EOF
+    chmod 0600 "$work_root/driver.toml"
+    target/debug/riffdb-driverd "$work_root/driver.toml" >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+    driver_pid=$!
+    local deadline=$((SECONDS + 30))
+    while [[ ! -S "$socket" && "$SECONDS" -lt "$deadline" ]]; do
+        kill -0 "$driver_pid" 2>/dev/null || break
+    done
+    [[ -S "$socket" ]] || {
+        sed -n '1,200p' "$work_root/driver.stderr" >&2
+        echo "row-policy driver host did not become ready" >&2
+        exit 1
+    }
+    export RIFFDB_CONFORMANCE_SOCKET="$socket"
+}
+
+for mode in owner outsider; do
+    credential="$work_root/$mode.credential"
+    export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
+    export RIFFDB_ROW_POLICY_MODE="$mode"
+    if [[ "$mode" == "owner" ]]; then
+        export RIFFDB_ROW_POLICY_MUTATOR_CREDENTIAL="$work_root/other.credential"
+    else
+        unset RIFFDB_ROW_POLICY_MUTATOR_CREDENTIAL
+    fi
+    cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_row_policy_remote_client -- \
+        >"$work_root/$mode-rust.json"
+    PYTHONPATH="$work_root/application/generated/python" \
+        "$work_root/python-venv/bin/python" fixtures/adapters/row-policy-conformance/runner/python.py \
+        >"$work_root/$mode-python.json"
+    start_driver "$credential"
+    GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
+        go -C fixtures/adapters/row-policy-conformance run ./runner/go \
+        >"$work_root/$mode-go.json"
+    node fixtures/adapters/row-policy-conformance/runner/typescript.mjs \
+        >"$work_root/$mode-typescript.json"
+    kill -TERM "$driver_pid"
+    wait "$driver_pid"
+    driver_pid=
+
+    for language in rust go typescript python; do
+        observed="$(jq -cS 'del(.language)' "$work_root/$mode-$language.json")"
+        expected="$(jq -cS 'del(.language)' "$work_root/$mode-rust.json")"
+        [[ "$observed" == "$expected" ]] || {
+            echo "$language diverged from the shared $mode row-policy observation: $observed" >&2
+            exit 1
+        }
+    done
+done
+
+module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
+jq -n --arg organization "$(uuid 10)" '{organization_id:{"$uuid":$organization}}' \
+    >"$work_root/query-parameters.json"
+target/debug/riffdb --config "$work_root/owner-client.toml" query run-named ListDocuments \
+    --contract-lineage AdapterRowPolicyConformance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/query-parameters.json" \
+    --output json >"$work_root/cli.json"
+jq -e '.ok == true and .result.outcome == "Found" and (.result.fields[0].records | length) == 6' \
+    "$work_root/cli.json" >/dev/null
+
+jq -e '
+  .schema == "riffdb-generated-application-operations/v2"
+  and (.tools | length) == 8
+  and (.commands | length) == 8
+  and (.reactive_tools | length) == 1
+  and (([.tools[].operation_name] + [.commands[].operation_name] + [.reactive_tools[].operation_name]) | sort) == ["AttemptDocumentTransfer","ChangeDocumentAccess","CreateArtifact","CreateDocument","CreateExperiment","CreateRun","DocumentListWatch","DocumentSummary","FinishRun","GetDocument","ListDocuments","ListDraftDocuments","ListExperiments","LogMetric","MetricDashboard","RunPage","SearchDocuments"]
+  and ([.tools[], .commands[] | tostring] | join(" ") | test("principal_fact|policy_bypass|field_id|entity_type_id") | not)
+' fixtures/adapters/row-policy-conformance/generated/mcp/tools.json >/dev/null
+if rg -q '"(principal_facts?|row_policy|policy_bypass|field_id|entity_type_id)"[[:space:]]*:' \
+    fixtures/adapters/row-policy-conformance/generated/mcp/tools.json; then
+    echo "generated MCP operations exposed policy authority or numeric storage identity" >&2
+    exit 1
+fi
+
+owner_capability="$(jq -r '.result.transition.identity.capability_id' "$work_root/owner-bind.json")"
+target/debug/riffdb --config "$work_root/operator-client.toml" role revoke \
+    "$owner_capability" --reason policy_change >/dev/null
+if target/debug/riffdb --config "$work_root/owner-client.toml" query run-named ListDocuments \
+    --contract-lineage AdapterRowPolicyConformance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/query-parameters.json" \
+    --output json >"$work_root/revoked.json" 2>&1; then
+    echo "revoked row-policy credential still executed a protected query" >&2
+    exit 1
+fi
+rg -q 'RDB-AUTH-0215' "$work_root/revoked.json"
+
+if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|transaction)|entity_type_id|field_id|index_id|policy_bypass|administrator.credential|client[_ -]?filter|middleware[_ -]?authoriz' \
+    fixtures/adapters/row-policy-conformance/runner tests/adapter_row_policy_remote_client.rs; then
+    echo "row-policy adapter crossed the generated application boundary" >&2
+    exit 1
+fi
+if rg -n 'principalFacts|principal_facts|rowPolicy[[:space:]]*[:=(]|row_policy[[:space:]]*[:=(]' \
+    fixtures/adapters/row-policy-conformance/generated/{go,python,rust,typescript}; then
+    echo "generated application bindings exposed policy authority or principal facts" >&2
+    exit 1
+fi
+
+printf 'shutdown\n' >&"$server_input_fd"
+wait "$server_pid"
+server_pid=
+echo "Rust, Go, TypeScript, Python, CLI, and MCP passed Payload/MLflow protected commands, revision races, live ACL reset, nested hydration, aggregate inference, isolation, and revocation."

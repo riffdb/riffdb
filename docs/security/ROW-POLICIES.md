@@ -188,3 +188,40 @@ protected surfaces. Contextual RiffQL hydration has its shared evaluator but
 remains unreachable for V4 credentials until trigger-event anchor enforcement
 lands. Other protected surfaces remain unavailable until their shared policy
 and final-safe-point enforcement lands.
+
+## Binding a protected role
+
+Principal facts are supplied only by an operator while binding the exact
+compiled application role. They never appear in a generated query or command
+method and cannot be overridden by an application request. Write one bounded
+JSON object whose keys exactly match `riffdb role describe`'s
+`principal_fact_schemas`, then bind it explicitly:
+
+```json
+{
+  "team_ids": [
+    { "$uuid": "00000000-0000-0000-0000-000000000008" }
+  ]
+}
+```
+
+```bash
+riffdb role bind riffdb.application.json \
+  --role DocumentReader \
+  --principal 00000000-0000-0000-0000-000000000007 \
+  --actor-kind service \
+  --audience document-service \
+  --principal-facts principal-facts.json \
+  --credential-output .riffdb/document-reader.credential
+```
+
+The facts document uses the same natural symbolic JSON values as application
+inputs. Missing, extra, wrongly typed, duplicate, or over-bound facts fail
+before capability creation with `application_role_principal_facts_invalid`.
+Enum facts use variant names; the compiler resolves them against that fact's
+declared enum, for example `{ "$enum": "Internal" }`, so operator files never
+contain stable numeric enum IDs. Lists of enum facts use the same tagged form
+for each member.
+When a selected policy reads `principal.id`, the bound principal must be a
+canonical lowercase UUID. Diagnostics may name the required fact and public
+type but never render its value.
