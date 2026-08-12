@@ -118,6 +118,10 @@ pub(crate) fn event_status(
         Result::Found(status) => {
             serde_json::json!({"found": true, "status": consumer_status(&status)?})
         }
+        Result::Protected(status) => serde_json::json!({
+            "found": true,
+            "status": consumer_public_status(None, Some(&status))?,
+        }),
     };
     compose(
         24,
@@ -135,6 +139,10 @@ pub(crate) fn contextual_status(
         Result::Found(status) => {
             serde_json::json!({"found": true, "status": consumer_status(&status)?})
         }
+        Result::Protected(status) => serde_json::json!({
+            "found": true,
+            "status": consumer_public_status(None, Some(&status))?,
+        }),
     };
     compose(
         29,

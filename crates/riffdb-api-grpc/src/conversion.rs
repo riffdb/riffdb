@@ -2107,13 +2107,21 @@ fn checkpoint_from_proto(
 pub fn seek_event_stream_consumer_request_from_proto(
     value: v1::SeekEventStreamConsumerRequest,
 ) -> Result<(RequestId, SeekEventStreamConsumerRequest), Status> {
-    Ok((
-        request_id_from_bytes(&value.request_id)?,
-        SeekEventStreamConsumerRequest::new(
-            event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
-            checkpoint_from_proto(value.checkpoint.ok_or_else(invalid_request)?)?,
+    let selection =
+        event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?;
+    let request = match (value.checkpoint, value.progress_cursor.as_slice()) {
+        (Some(checkpoint), []) => {
+            SeekEventStreamConsumerRequest::new(selection, checkpoint_from_proto(checkpoint)?)
+        }
+        (None, bytes) => SeekEventStreamConsumerRequest::protected(
+            selection,
+            EventConsumerProgressCursor::from_bytes(
+                bytes.try_into().map_err(|_| invalid_request())?,
+            ),
         ),
-    ))
+        _ => return Err(invalid_request()),
+    };
+    Ok((request_id_from_bytes(&value.request_id)?, request))
 }
 
 /// Converts a selection-only consumer request.
@@ -2434,12 +2442,17 @@ pub fn event_consumer_mutation_result_to_proto(
 
 /// Converts optional consumer status.
 pub fn event_consumer_status_result_to_proto(
-    status: Option<&EventConsumerStatus>,
+    status: Option<&EventConsumerPublicStatus>,
 ) -> v1::GetEventStreamConsumerStatusResponse {
     use v1::get_event_stream_consumer_status_response::Result;
     v1::GetEventStreamConsumerStatusResponse {
         result: Some(match status {
-            Some(status) => Result::Found(event_consumer_status_to_proto(status)),
+            Some(EventConsumerPublicStatus::Exact(status)) => {
+                Result::Found(event_consumer_status_to_proto(status))
+            }
+            Some(EventConsumerPublicStatus::Protected(status)) => {
+                Result::Protected(protected_event_consumer_status_to_proto(status))
+            }
             None => Result::NotFound(v1::Unit {}),
         }),
     }

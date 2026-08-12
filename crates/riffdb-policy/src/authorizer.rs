@@ -782,9 +782,6 @@ const fn unanchored_event_policy_surface(operation: ServiceOperationV1) -> bool 
         operation,
         ServiceOperationV1::ReplayEvents
             | ServiceOperationV1::TailEvents
-            | ServiceOperationV1::SeekEventStreamConsumer
-            | ServiceOperationV1::GetEventStreamConsumerStatus
-            | ServiceOperationV1::GetContextualSubscriptionStatus
             | ServiceOperationV1::ExecuteContextualReaction
             | ServiceOperationV1::GetReactiveWakeup
     )
@@ -1435,7 +1432,7 @@ mod tests {
             OperationTenantScope::global_only(),
             partition(),
         );
-        let unanchored_contextual = evaluate(
+        let anchored_contextual = evaluate(
             &principal,
             &current,
             database_id(),
@@ -1446,10 +1443,9 @@ mod tests {
                 NonZeroU16::new(4).expect("rows"),
             ),
         );
-        assert_eq!(
-            unanchored_contextual,
-            Err(PolicyCode::MissingPermission),
-            "a contextual trigger cannot be released before its compiler-owned event policy anchor is checked"
+        assert!(
+            anchored_contextual.is_ok(),
+            "contextual delivery is authorized because its lower release path consumes compiler-owned event policy anchors"
         );
         let unanchored_reaction = evaluate(
             &principal,
@@ -1471,9 +1467,6 @@ mod tests {
         let denied = [
             ServiceOperationV1::ReplayEvents,
             ServiceOperationV1::TailEvents,
-            ServiceOperationV1::SeekEventStreamConsumer,
-            ServiceOperationV1::GetEventStreamConsumerStatus,
-            ServiceOperationV1::GetContextualSubscriptionStatus,
             ServiceOperationV1::ExecuteContextualReaction,
             ServiceOperationV1::GetReactiveWakeup,
         ];

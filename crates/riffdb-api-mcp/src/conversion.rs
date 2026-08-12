@@ -579,6 +579,8 @@ pub enum McpFixedToolRequest {
         consumer_name: String,
         /// Before-first or an exact selected event.
         checkpoint: Option<(u64, u32)>,
+        /// Opaque policy-bound protected-consumer position.
+        progress_cursor: Option<[u8; 16]>,
     },
     /// `riffdb_event_status`.
     EventStatus {
@@ -872,14 +874,34 @@ pub fn decode_fixed_tool_request(
         }
         23 => {
             let request: RawEventSeek = arguments.deserialize().map_err(conversion)?;
+            let (checkpoint, progress_cursor) = match (request.checkpoint, request.progress_cursor)
+            {
+                (Some(checkpoint), None) => (
+                    (checkpoint != "before-first")
+                        .then(|| parse_event_id(&checkpoint))
+                        .transpose()?,
+                    None,
+                ),
+                (None, Some(cursor)) => {
+                    let bytes = parse_hex_bytes(&cursor)?;
+                    let cursor = bytes
+                        .try_into()
+                        .map_err(|_| conversion("invalid progress cursor"))?;
+                    (None, Some(cursor))
+                }
+                _ => {
+                    return Err(conversion(
+                        "exactly one of checkpoint or progress_cursor is required",
+                    ));
+                }
+            };
             Ok(McpFixedToolRequest::EventSeek {
                 module_hash: parse_hash32(&request.module_hash)?,
                 operation_name: request.operation_name,
                 parameters: request.parameters,
                 consumer_name: request.consumer_name,
-                checkpoint: (request.checkpoint != "before-first")
-                    .then(|| parse_event_id(&request.checkpoint))
-                    .transpose()?,
+                checkpoint,
+                progress_cursor,
             })
         }
         24 => {
@@ -1586,7 +1608,8 @@ struct RawEventSeek {
     #[serde(default)]
     parameters: Map<String, Value>,
     consumer_name: String,
-    checkpoint: String,
+    checkpoint: Option<String>,
+    progress_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2149,6 +2172,44 @@ mod tests {
         };
         assert_eq!(module_hash, [9; 32]);
         assert_eq!(cursor.as_deref(), Some([1, 2, 3, 4].as_slice()));
+
+        let protected_seek = decode_fixed_tool_request(
+            23,
+            &arguments(json!({
+                "module_hash": "0a".repeat(32),
+                "operation_name": "RowChanges",
+                "parameters": {},
+                "consumer_name": "Worker_1",
+                "progress_cursor": "0b".repeat(16)
+            })),
+        )
+        .expect("protected seek request");
+        let McpFixedToolRequest::EventSeek {
+            checkpoint,
+            progress_cursor,
+            ..
+        } = protected_seek
+        else {
+            panic!("wrong protected seek request");
+        };
+        assert_eq!(checkpoint, None);
+        assert_eq!(progress_cursor, Some([0x0b; 16]));
+
+        assert!(
+            decode_fixed_tool_request(
+                23,
+                &arguments(json!({
+                    "module_hash": "0a".repeat(32),
+                    "operation_name": "RowChanges",
+                    "parameters": {},
+                    "consumer_name": "Worker_1",
+                    "checkpoint": "before-first",
+                    "progress_cursor": "0b".repeat(16)
+                })),
+            )
+            .is_err(),
+            "a seek target is exact or opaque, never both"
+        );
     }
 
     #[test]

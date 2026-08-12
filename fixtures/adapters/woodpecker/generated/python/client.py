@@ -438,6 +438,10 @@ class AsyncWoodpeckerSchedulerReactiveClient(AsyncWoodpeckerSchedulerClient):
         encoded = encode_reactive_record(parameters, PipelineTransitions_PARAMETER_SCHEMA)
         return await self._transport._seek_event_consumer(reactive_module_hash=PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="PipelineTransitions", parameters=encoded, consumer_name=consumer_name, checkpoint=checkpoint)
 
+    async def seek_protected_pipeline_transitions(self, parameters: PipelineTransitionsParams, consumer_name: str, progress_cursor: str) -> str:
+        encoded = encode_reactive_record(parameters, PipelineTransitions_PARAMETER_SCHEMA)
+        return await self._transport._seek_event_consumer(reactive_module_hash=PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="PipelineTransitions", parameters=encoded, consumer_name=consumer_name, progress_cursor=progress_cursor)
+
     async def pipeline_transitions_status(self, parameters: PipelineTransitionsParams, consumer_name: str) -> dict[str, Any] | None:
         encoded = encode_reactive_record(parameters, PipelineTransitions_PARAMETER_SCHEMA)
         return await self._transport._event_consumer_status(reactive_module_hash=PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="PipelineTransitions", parameters=encoded, consumer_name=consumer_name)

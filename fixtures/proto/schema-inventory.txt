@@ -1977,9 +1977,10 @@ messages
   riffdb.v1.GetEventStreamConsumerStatusRequest fields=2
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
-  riffdb.v1.GetEventStreamConsumerStatusResponse fields=2
+  riffdb.v1.GetEventStreamConsumerStatusResponse fields=3
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.EventConsumerStatus oneof=result
+    3 protected optional .riffdb.v1.ProtectedEventConsumerStatus oneof=result
   riffdb.v1.GetOfflineMaintenanceOperationRequest fields=2
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -2351,10 +2352,11 @@ messages
   riffdb.v1.ScopedPartition fields=2
     1 contract_lineage optional string
     2 partition_key optional bytes
-  riffdb.v1.SeekEventStreamConsumerRequest fields=3
+  riffdb.v1.SeekEventStreamConsumerRequest fields=4
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
     3 checkpoint optional .riffdb.v1.EventConsumerCheckpoint
+    4 progress_cursor optional bytes
   riffdb.v1.SemanticDiagnostic fields=5
     1 code optional string
     2 summary optional string

@@ -1736,7 +1736,7 @@ fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCo
 fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 
 use riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
-use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus, ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
+use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus, ApplicationEventMutationResult, ApplicationEventProgressCursor, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
 
 pub const DOCUMENT_ACTIVITY_REACTIVE_MODULE_HASH: [u8; 32] = [238, 17, 91, 109, 31, 163, 58, 188, 231, 9, 9, 144, 20, 162, 37, 148, 241, 9, 175, 106, 80, 86, 244, 63, 136, 11, 82, 122, 202, 103, 243, 144];
 #[derive(Clone, Debug, Eq, PartialEq)]

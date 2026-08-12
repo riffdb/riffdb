@@ -22,7 +22,7 @@ use riffdb_service::{
     DescribeEventResult, DescribeSymbolicContractResult, DiscoverCommandToolsRequest,
     DiscoverCommandToolsResult, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoveryApplication, EventConsumerLeaseSelection, EventConsumerMutationResult,
-    EventConsumerSelection, EventConsumerServiceApplication, EventConsumerStatus,
+    EventConsumerPublicStatus, EventConsumerSelection, EventConsumerServiceApplication,
     EventServiceApplication, ExecuteCommandRequest, ExecuteCommandResult,
     ExecuteContextualReactionRequest, ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult,
     ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
@@ -277,7 +277,7 @@ delegate_operation! {
         get_event_stream_consumer_status(
             context: RequestContext,
             request: EventConsumerSelection
-        ) -> Option<EventConsumerStatus> => GetEventStreamConsumerStatus;
+        ) -> Option<EventConsumerPublicStatus> => GetEventStreamConsumerStatus;
     }
 }
 
@@ -335,7 +335,7 @@ impl ContextualSubscriptionApplication for LifecycleApplicationService {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>> {
+    ) -> ServiceFuture<'_, Option<EventConsumerPublicStatus>> {
         let Some(service) = self.admit(ServiceOperationV1::GetContextualSubscriptionStatus) else {
             return unavailable();
         };

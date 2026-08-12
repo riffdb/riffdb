@@ -1529,6 +1529,19 @@ impl ServiceResponseCharge for Option<EventConsumerStatus> {
     }
 }
 
+impl sealed::Sealed for Option<EventConsumerPublicStatus> {}
+impl ServiceResponseCharge for Option<EventConsumerPublicStatus> {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        if let Some(status) = self {
+            charge.nested(status)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
 impl sealed::Sealed for EventPage {}
 impl ServiceResponseCharge for EventPage {
     fn service_response_charge_v1(

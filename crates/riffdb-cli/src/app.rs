@@ -5793,21 +5793,30 @@ async fn event_command(
         EventCommand::Seek {
             consumer,
             checkpoint,
+            progress_cursor,
         } => {
             let selection = match event_consumer_selection(consumer) {
                 Ok(selection) => selection,
                 Err(()) => return invalid_input(identity),
             };
-            let checkpoint = match parse_consumer_checkpoint(&checkpoint) {
-                Ok(checkpoint) => checkpoint,
-                Err(()) => return invalid_input(identity),
+            let (checkpoint, progress_cursor) = match (checkpoint, progress_cursor) {
+                (Some(checkpoint), None) => match parse_consumer_checkpoint(&checkpoint) {
+                    Ok(checkpoint) => (Some(checkpoint), Vec::new()),
+                    Err(()) => return invalid_input(identity),
+                },
+                (None, Some(cursor)) => match STANDARD.decode(cursor.as_bytes()) {
+                    Ok(bytes) if bytes.len() == 16 => (None, bytes),
+                    _ => return invalid_input(identity),
+                },
+                _ => return invalid_input(identity),
             };
             match client
                 .seek_event_stream_consumer(
                     v1::SeekEventStreamConsumerRequest {
                         request_id,
                         selection: Some(selection),
-                        checkpoint: Some(checkpoint),
+                        checkpoint,
+                        progress_cursor,
                     },
                     &metadata,
                 )
@@ -6581,6 +6590,16 @@ fn render_consumer_status(
         }
         Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
             serde_json::json!({"found": true, "status": consumer_status_json(status)})
+        }
+        Some(v1::get_event_stream_consumer_status_response::Result::Protected(status)) => {
+            serde_json::json!({
+                "found": true,
+                "status": {
+                    "kind": "protected",
+                    "history_incarnation": status.history_incarnation.to_string(),
+                    "progress_cursor": STANDARD.encode(&status.progress_cursor),
+                }
+            })
         }
         None => {
             return local_error(

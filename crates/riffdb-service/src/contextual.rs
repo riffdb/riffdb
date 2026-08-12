@@ -18,8 +18,8 @@ use riffdb_types::{
 use crate::{
     ConsumedEvent, EventConsumerLeaseSelection, EventConsumerMutationResult,
     EventConsumerProgressCursor, EventConsumerPublicStatus, EventConsumerPullDisposition,
-    EventConsumerSelection, EventConsumerStatus, ExecuteCommandRequest, ExecuteCommandResult,
-    RequestContext, RiffDbService, ServiceDtoError, ServiceFuture,
+    EventConsumerSelection, ExecuteCommandRequest, ExecuteCommandResult, RequestContext,
+    RiffDbService, ServiceDtoError, ServiceFuture,
 };
 
 /// Maximum contextual long-poll wait.
@@ -351,7 +351,7 @@ pub trait ContextualSubscriptionApplication: Send + Sync {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>>;
+    ) -> ServiceFuture<'_, Option<crate::EventConsumerPublicStatus>>;
     /// Executes a causally fenced reaction through the ordinary command path.
     fn execute_contextual_reaction(
         &self,
@@ -434,7 +434,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>> {
+    ) -> ServiceFuture<'_, Option<crate::EventConsumerPublicStatus>> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(

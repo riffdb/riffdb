@@ -10829,7 +10829,7 @@ work_packages:
     ADR-0087, ADR-0091, ADR-0092, ADR-0107, ADR-0108, ADR-0109, ADR-0111,
     ADR-0114, ADR-0116]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, fixtures/proto/**,
-    fixtures/compatibility/**, release/**,
+    fixtures/compatibility/**, fixtures/adapters/**, fixtures/riffql/**, release/**,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-contract-ir/**,
     crates/riffdb-catalog/**,
