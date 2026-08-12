@@ -90,13 +90,37 @@ See the unsafe-pattern entry in
 [Unsafe Patterns and Corrections](../contracts/examples/NEGATIVE-EXAMPLES.md)
 for the misuse this non-promise guards against.
 
+## The classification is not sticky
+
+`secret` protects the **stored field's** read surfaces. It does not follow
+the value once your contract copies it somewhere else:
+
+```riff
+emit TokenIssued { t: session.token_hash }
+```
+
+moves the secret's value into an event payload — and event payloads flow to
+consumer streams, projections built over the event, command outcomes, and
+their renderings with **no gate anywhere**, because the classification is
+attached to the declared entity field, not to the data. This is deliberate
+(the same reason backups and changelog frames carry secrets at full
+fidelity: the database faithfully executes the contract it was given, and a
+creation-time token handout is the core of every auth flow), but it means
+the copy is YOUR declaration. If a destination must stay unreadable, do not
+copy the secret into it — there is no way to re-declare an event or outcome
+field as secret today, so the copy is visible plaintext on those surfaces.
+Every such copy is visible in the contract source; review `emit` and
+`return` payloads for secret-field reads.
+
 ## Current alpha limitations
 
 - Remote gRPC responses carry secret fields by omission (fail-closed): the
-  wire record simply lacks them, and the remote CLI shows absence rather
-  than the `[redacted:…]` marker. In-process surfaces (MCP, embedded
-  rendering) show the marker. Wire-level marker carriage is follow-up work.
+  wire record simply lacks them, and the remote CLI therefore shows
+  **absence, never the `[redacted:…]` marker**. The marker appears on the
+  MCP surface, which renders in-process from the service's views. Wire-level
+  marker carriage is follow-up work.
 - Generated language bindings do not yet mark secret fields in their types.
-- Copying a secret field's value into an event payload or a command outcome
-  is visible in the contract source and is the author's explicit choice; the
-  classification follows the declared field, not the value's copies.
+- No compiler warning fires when a contract copies a secret field's value
+  into an event or outcome payload (see "not sticky" above); the compiler's
+  diagnostic channel is error-only today, and a hard error would forbid the
+  legitimate creation-time token handout.

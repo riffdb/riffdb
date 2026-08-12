@@ -1098,25 +1098,34 @@ contract Invalid version 1 {
 
 /// The classification is unrepresentable outside stored entity fields: key
 /// fields, event fields, and command inputs reject the modifier position
-/// outright.
+/// with the closed unexpected-token code at the exact span where the
+/// grammar has no such position — `secret` parses as the field NAME and the
+/// following identifier is the unexpected token.
 #[test]
 fn secret_classification_is_rejected_outside_stored_entity_fields() {
-    for source in [
-        r#"
+    for (source, unexpected) in [
+        (
+            r#"
 contract Invalid version 1 {
   entity Session {
     key (secret id: uuid)
   }
 }
 "#,
-        r#"
+            "id",
+        ),
+        (
+            r#"
 contract Invalid version 1 {
   event TokenIssued {
     secret token_hash: string<256>
   }
 }
 "#,
-        r#"
+            "token_hash",
+        ),
+        (
+            r#"
 contract Invalid version 1 {
   command IssueToken {
     input secret token_hash: string<256>
@@ -1124,8 +1133,26 @@ contract Invalid version 1 {
   }
 }
 "#,
+            "token_hash",
+        ),
     ] {
-        parse_contract(source)
+        let diagnostics = parse_contract(source)
             .expect_err("the classification position must not exist outside entity fields");
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(
+            diagnostic.code(),
+            SyntaxDiagnosticCode::UnexpectedToken,
+            "closed rejection code for {unexpected:?}"
+        );
+        // Locate the exact token occurrence (followed by its `:`), not an
+        // incidental substring like the `id` inside `Invalid`.
+        let start = source
+            .find(&format!("{unexpected}:"))
+            .expect("unexpected token span");
+        assert_eq!(
+            diagnostic.span(),
+            Span::new(start, start + unexpected.len()).expect("span"),
+            "the diagnostic must land on the token following the misplaced modifier"
+        );
     }
 }

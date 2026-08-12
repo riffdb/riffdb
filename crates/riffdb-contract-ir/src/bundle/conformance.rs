@@ -1688,3 +1688,33 @@ fn ledger_schema_registry_and_compatibility_families_round_trip() {
     );
     assert_reader_finished(reader);
 }
+
+/// The optional schema extensions share one descending u32 marker namespace
+/// consumed one value at a time by concurrent work. The witness registry
+/// catches a FORGOTTEN registration; this catches the COLLIDING one — two
+/// branches each grabbing the same next-free marker merge cleanly
+/// everywhere else and would misparse each other's bundles.
+#[test]
+fn schema_extension_markers_are_unique_and_strictly_descending() {
+    let markers = [
+        super::RELATIONSHIP_SCHEMA_EXTENSION,
+        super::UNIQUE_KEY_SCHEMA_EXTENSION,
+        super::DELETE_POLICY_SCHEMA_EXTENSION,
+        super::VECTOR_FIELD_SPEC_SCHEMA_EXTENSION,
+        super::INDEX_FIELD_ENCODING_EXTENSION,
+        super::SECRET_FIELD_SPEC_SCHEMA_EXTENSION,
+    ];
+    for pair in markers.windows(2) {
+        assert!(
+            pair[0] > pair[1],
+            "extension markers must stay unique and strictly descending: {:#010x} !> {:#010x}",
+            pair[0],
+            pair[1]
+        );
+    }
+    // The eight-byte event-partition magic reuses a u32 word by design; its
+    // full value must still be distinct from every u32 marker's widened form.
+    for marker in markers {
+        assert_ne!(u64::from(marker), super::EVENT_PARTITION_SCHEMA_EXTENSION);
+    }
+}

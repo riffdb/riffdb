@@ -1102,11 +1102,14 @@ impl ResolvedBody {
         self.authz_fields.len() as u64
     }
 
-    /// Secret-classified fields whose VALUES this query would release
-    /// (ADR-0118): selected columns, aggregate inputs (min/max/sum reveal
-    /// derived values), and group-by keys (group identity reveals the
-    /// value). Predicates and order-by compare without returning and are
-    /// deliberately excluded.
+    /// Secret-classified fields whose VALUES this query would release or
+    /// make efficiently recoverable (ADR-0118): selected columns, aggregate
+    /// inputs (min/max/sum reveal derived values), group-by keys (group
+    /// identity reveals the value), and ORDER BY keys — ordering is outside
+    /// the ADR's named exemptions (predicates, uniqueness, index
+    /// participation) and, combined with row counts, is a binary-search
+    /// oracle on the plaintext. Predicates compare without returning and
+    /// stay exempt per the ADR.
     fn secret_projection_fields(&self, secret_fields: &[FieldId]) -> Vec<FieldId> {
         fn aggregate_field(op: &AggregateOp) -> Option<FieldId> {
             match op {
@@ -1120,6 +1123,7 @@ impl ResolvedBody {
             .select
             .iter()
             .copied()
+            .chain(self.order.iter().map(|spec| spec.field))
             .chain(self.aggregate.as_ref().and_then(aggregate_field))
             .chain(self.group_by.iter().flat_map(|group| {
                 group
