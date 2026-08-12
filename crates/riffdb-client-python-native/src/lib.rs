@@ -14,12 +14,12 @@ use pyo3::types::{PyAny, PyModule, PyType};
 use riffdb_client_rust::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContextualBatch,
     ApplicationContextualReaction, ApplicationContract, ApplicationEventBatch,
-    ApplicationEventCheckpoint, ApplicationEventId, ApplicationEventLeaseEvidence,
-    ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
-    ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
-    ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
-    NamedQuery, QueryOptions, StableApplicationClient, TraceParent,
-    load_protected_bearer_credential,
+    ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus, ApplicationEventId,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventPullDisposition,
+    ApplicationLiveQueryUpdate, ApplicationReactiveOperation, ApplicationRecord, ApplicationValue,
+    AttemptBudget, BearerCredential, CallMetadata, ClientError, DatabaseAlias, DetailsFreeStatus,
+    EventConsumerOptions, LiveQueryCursor, NamedQuery, QueryOptions, StableApplicationClient,
+    TraceParent, load_protected_bearer_credential,
 };
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
@@ -448,7 +448,7 @@ impl NativeAsyncClient {
                 .map_err(application_client_error)?;
             serialize(
                 &result
-                    .map(event_status_json)
+                    .map(exact_event_status_json)
                     .unwrap_or(serde_json::Value::Null),
             )
         })
@@ -541,7 +541,7 @@ impl NativeAsyncClient {
                 .map_err(application_client_error)?;
             serialize(
                 &result
-                    .map(event_status_json)
+                    .map(exact_event_status_json)
                     .unwrap_or(serde_json::Value::Null),
             )
         })
@@ -1214,6 +1214,7 @@ fn render_event_batch(batch: ApplicationEventBatch) -> PyResult<String> {
         "events": events,
         "status": event_status_json(batch.status),
         "wait_timed_out": batch.wait_timed_out,
+        "disposition": event_disposition_name(batch.disposition),
     }))
 }
 
@@ -1285,6 +1286,7 @@ fn render_contextual_batch(batch: ApplicationContextualBatch) -> PyResult<String
         "items": items,
         "status": event_status_json(batch.status),
         "wait_timed_out": batch.wait_timed_out,
+        "disposition": event_disposition_name(batch.disposition),
     }))
 }
 
@@ -1300,7 +1302,18 @@ fn render_event_mutation(result: ApplicationEventMutationResult) -> PyResult<Str
     serialize(&json!({"result": result}))
 }
 
-fn event_status_json(
+fn event_status_json(status: ApplicationEventConsumerPublicStatus) -> serde_json::Value {
+    match status {
+        ApplicationEventConsumerPublicStatus::Protected(status) => json!({
+            "kind": "protected",
+            "history_incarnation": status.history_incarnation,
+            "progress_cursor": hex(status.progress_cursor.as_bytes()),
+        }),
+        ApplicationEventConsumerPublicStatus::Exact(status) => exact_event_status_json(status),
+    }
+}
+
+fn exact_event_status_json(
     status: riffdb_client_rust::ApplicationEventConsumerStatus,
 ) -> serde_json::Value {
     let checkpoint = match status.checkpoint {
@@ -1317,6 +1330,14 @@ fn event_status_json(
         "retries": status.retries,
         "dead_letters": status.dead_letters,
     })
+}
+
+fn event_disposition_name(disposition: ApplicationEventPullDisposition) -> &'static str {
+    match disposition {
+        ApplicationEventPullDisposition::Ready => "ready",
+        ApplicationEventPullDisposition::WaitTimedOut => "wait_timed_out",
+        ApplicationEventPullDisposition::BoundedProgress => "bounded_progress",
+    }
 }
 
 fn render_live_update(update: ApplicationLiveQueryUpdate) -> PyResult<String> {

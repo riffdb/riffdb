@@ -570,6 +570,25 @@ pub enum EventConsumerTransitionV1 {
         /// Canonical leased candidates.
         candidates: Vec<ConsumerLeaseCandidateV1>,
     },
+    /// Atomically resolve policy-hidden candidates and lease only visible ones.
+    ///
+    /// Construction is reserved to the first-party protected-delivery adapter
+    /// after it evaluates current capability, row, and relationship authority
+    /// inside the same storage mutation fence.
+    PolicySelect {
+        /// Exact consumer identity hash.
+        consumer_identity_hash: EventConsumerIdentityHash,
+        /// Required current revision, or `None` only when creating a consumer.
+        expected_revision: Option<EventConsumerRevision>,
+        /// Exact post-selection consumer state.
+        replacement_consumer: StoredEventConsumerV1,
+        /// Canonical newly leased visible candidates.
+        candidates: Vec<ConsumerLeaseCandidateV1>,
+        /// Complete examined stream prefix in canonical order.
+        examined_events: Vec<EventId>,
+        /// Policy-visible subset in canonical order.
+        visible_events: Vec<EventId>,
+    },
     /// Acknowledge one live lease and replace terminal state.
     Acknowledge {
         /// Required current consumer revision.
@@ -632,6 +651,10 @@ impl EventConsumerTransitionV1 {
         match self {
             Self::CreateAndLease { consumer, .. } => consumer.identity().identity_hash(),
             Self::Lease {
+                consumer_identity_hash,
+                ..
+            }
+            | Self::PolicySelect {
                 consumer_identity_hash,
                 ..
             }
@@ -740,6 +763,87 @@ pub fn evaluate_event_consumer_transition(
             )?;
             let mut deliveries = current.deliveries().to_vec();
             for row in evaluate_candidates(current.consumer(), &deliveries, candidates)? {
+                match delivery_index(&deliveries, row.event_id()) {
+                    Ok(index) => deliveries[index] = row,
+                    Err(index) => deliveries.insert(index, row),
+                }
+            }
+            Ok(Replace(Box::new(EventConsumerSnapshotV1::new(
+                replacement_consumer,
+                deliveries,
+            )?)))
+        }
+        EventConsumerTransitionV1::PolicySelect {
+            expected_revision,
+            replacement_consumer,
+            candidates,
+            examined_events,
+            visible_events,
+            ..
+        } => {
+            if current
+                .as_ref()
+                .map(|snapshot| snapshot.consumer().revision())
+                != expected_revision
+            {
+                return Ok(NoChange(EventConsumerTransitionResultV1::StateChanged));
+            }
+            if !strict_event_order(&examined_events)
+                || !strict_event_order(&visible_events)
+                || !ordered_subset(&examined_events, &visible_events)
+            {
+                return Err(ConsumerStateError::InvalidShape);
+            }
+            let identity = replacement_consumer.identity().identity_hash();
+            let (checkpoint, sparse) = match current.as_ref() {
+                Some(snapshot) => {
+                    validate_consumer_replacement(
+                        snapshot.consumer(),
+                        &replacement_consumer,
+                        true,
+                        false,
+                        false,
+                    )?;
+                    resolve_policy_hidden_state(
+                        snapshot.consumer(),
+                        &examined_events,
+                        &visible_events,
+                    )?
+                }
+                None => {
+                    if replacement_consumer.revision() != EventConsumerRevision::first() {
+                        return Err(ConsumerStateError::InvalidShape);
+                    }
+                    let initial = StoredEventConsumerV1::initial(
+                        replacement_consumer.identity().clone(),
+                        replacement_consumer.partition_hash(),
+                        replacement_consumer.history_incarnation(),
+                    )?;
+                    resolve_policy_hidden_state(&initial, &examined_events, &visible_events)?
+                }
+            };
+            if replacement_consumer.checkpoint() != checkpoint
+                || replacement_consumer.sparse_resolutions() != sparse
+            {
+                return Err(ConsumerStateError::InvalidShape);
+            }
+            let existing = current
+                .as_ref()
+                .map_or(&[][..], |snapshot| snapshot.deliveries());
+            let mut deliveries = existing
+                .iter()
+                .filter(|row| {
+                    visible_events.binary_search(&row.event_id()).is_ok()
+                        || examined_events.binary_search(&row.event_id()).is_err()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for row in evaluate_candidates(&replacement_consumer, existing, candidates)? {
+                if !visible_events.contains(&row.event_id())
+                    || row.consumer_identity_hash() != identity
+                {
+                    return Err(ConsumerStateError::InvalidShape);
+                }
                 match delivery_index(&deliveries, row.event_id()) {
                     Ok(index) => deliveries[index] = row,
                     Err(index) => deliveries.insert(index, row),
@@ -1196,7 +1300,8 @@ fn validate_recovery_replacement(
     Ok(())
 }
 
-fn normalize_consumer_recovery(
+#[doc(hidden)]
+pub fn normalize_consumer_recovery(
     snapshot: &EventConsumerSnapshotV1,
     observed_at: Timestamp,
     history_incarnation: u64,
@@ -1332,6 +1437,19 @@ pub struct CoordinateConsumerNegativeAcknowledgementV1 {
     pub eligible_at: Timestamp,
     /// Complete selected prefix strictly after the current checkpoint.
     pub selected_prefix: Vec<EventId>,
+}
+
+/// One already-inspected acknowledgement preparation.
+///
+/// First-party storage adapters use this closed result to keep capability,
+/// current-row policy, and the resulting consumer transition inside one
+/// authoritative mutation fence.
+#[doc(hidden)]
+pub enum PreparedConsumerResolutionV1 {
+    /// No mutation is permitted or required.
+    NoChange(EventConsumerTransitionResultV1),
+    /// Exact transition derived from the supplied authoritative snapshot.
+    Transition(EventConsumerTransitionV1),
 }
 
 /// Public-safe consumer status derived from one durable snapshot.
@@ -1658,6 +1776,29 @@ fn coordinate_consumer_resolution<R: EventConsumerRepository>(
     else {
         return Ok(EventConsumerTransitionResultV1::NotFound);
     };
+    match prepare_consumer_resolution(&snapshot, &request, retry_at)? {
+        PreparedConsumerResolutionV1::NoChange(result) => Ok(result),
+        PreparedConsumerResolutionV1::Transition(transition) => {
+            repository.transition_event_consumer(transition)
+        }
+    }
+}
+
+/// Derives one acknowledgement transition from a snapshot read inside the
+/// caller's authoritative transaction.
+#[doc(hidden)]
+pub fn prepare_consumer_resolution(
+    snapshot: &EventConsumerSnapshotV1,
+    request: &CoordinateConsumerAcknowledgementV1,
+    retry_at: Option<Timestamp>,
+) -> Result<PreparedConsumerResolutionV1, StorageError> {
+    if request.selected_prefix.len() > MAX_CONSUMER_SPARSE_RESOLUTIONS + 1
+        || !strict_event_order(&request.selected_prefix)
+        || !request.selected_prefix.contains(&request.event_id)
+        || retry_at.is_some_and(|eligible_at| eligible_at < request.observed_at)
+    {
+        return Err(invariant_error("invalid selected acknowledgement prefix"));
+    }
     if snapshot.consumer().identity() != &request.identity {
         return Err(invariant_error(
             "consumer acknowledgement identity mismatch",
@@ -1668,10 +1809,14 @@ fn coordinate_consumer_resolution<R: EventConsumerRepository>(
         .iter()
         .find(|row| row.event_id() == request.event_id)
     else {
-        return Ok(EventConsumerTransitionResultV1::StaleLease);
+        return Ok(PreparedConsumerResolutionV1::NoChange(
+            EventConsumerTransitionResultV1::StaleLease,
+        ));
     };
     let ConsumerDeliveryStateV1::Leased { attempt, .. } = delivery.state() else {
-        return Ok(EventConsumerTransitionResultV1::StaleLease);
+        return Ok(PreparedConsumerResolutionV1::NoChange(
+            EventConsumerTransitionResultV1::StaleLease,
+        ));
     };
     let terminal_kind = match retry_at {
         None => Some(SparseResolutionKindV1::Acknowledged),
@@ -1727,7 +1872,7 @@ fn coordinate_consumer_resolution<R: EventConsumerRepository>(
             }
         }
     };
-    repository.transition_event_consumer(transition)
+    Ok(PreparedConsumerResolutionV1::Transition(transition))
 }
 
 /// Atomically seeks one consumer after service-side stream membership proof.
@@ -1769,7 +1914,8 @@ pub fn coordinate_consumer_retire<R: EventConsumerRepository>(
     })
 }
 
-fn status_from_snapshot(snapshot: &EventConsumerSnapshotV1) -> CoordinatedConsumerStatusV1 {
+#[doc(hidden)]
+pub fn status_from_snapshot(snapshot: &EventConsumerSnapshotV1) -> CoordinatedConsumerStatusV1 {
     let mut live_leases = 0_u8;
     let mut retries = 0_u16;
     let mut dead_letters = 0_u16;
@@ -1825,6 +1971,66 @@ fn resolved_terminal_state(
 
 fn strict_event_order(events: &[EventId]) -> bool {
     events.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn ordered_subset(complete: &[EventId], subset: &[EventId]) -> bool {
+    let mut next = subset.iter();
+    let mut expected = next.next();
+    for event in complete {
+        if expected == Some(event) {
+            expected = next.next();
+        }
+    }
+    expected.is_none()
+}
+
+/// Computes the exact terminal state after resolving every examined event
+/// absent from the policy-visible subset. Hidden events use the existing
+/// terminal disposition internally; no disposition is exposed publicly.
+#[doc(hidden)]
+pub fn resolve_policy_hidden_state(
+    consumer: &StoredEventConsumerV1,
+    examined_events: &[EventId],
+    visible_events: &[EventId],
+) -> Result<(ConsumerCheckpointV1, Vec<SparseConsumerResolutionV1>), ConsumerStateError> {
+    if examined_events.len() > MAX_CONSUMER_SPARSE_RESOLUTIONS + 1
+        || !strict_event_order(examined_events)
+        || !strict_event_order(visible_events)
+        || !ordered_subset(examined_events, visible_events)
+    {
+        return Err(ConsumerStateError::InvalidShape);
+    }
+    let mut terminal = consumer.sparse_resolutions().to_vec();
+    for event_id in examined_events {
+        if visible_events.binary_search(event_id).is_ok()
+            || !consumer.checkpoint().precedes(*event_id)
+        {
+            continue;
+        }
+        match terminal.binary_search_by_key(event_id, |resolution| resolution.event_id()) {
+            Ok(_) => {}
+            Err(index) => terminal.insert(
+                index,
+                SparseConsumerResolutionV1::new(*event_id, SparseResolutionKindV1::Acknowledged),
+            ),
+        }
+    }
+    let mut checkpoint = consumer.checkpoint();
+    for event_id in examined_events {
+        if !checkpoint.precedes(*event_id) {
+            continue;
+        }
+        let Ok(index) = terminal.binary_search_by_key(event_id, |resolution| resolution.event_id())
+        else {
+            break;
+        };
+        checkpoint = ConsumerCheckpointV1::After(*event_id);
+        terminal.remove(index);
+    }
+    if terminal.len() > MAX_CONSUMER_SPARSE_RESOLUTIONS {
+        return Err(ConsumerStateError::LimitExceeded);
+    }
+    Ok((checkpoint, terminal))
 }
 
 fn invariant_error(_safe_context: &'static str) -> StorageError {
@@ -1981,6 +2187,85 @@ mod tests {
     }
 
     #[test]
+    fn policy_hidden_prefix_advances_without_becoming_a_visible_lease() {
+        let consumer = initial_consumer();
+        let first = event(1, 0);
+        let second = event(2, 0);
+        let third = event(3, 0);
+        let (checkpoint, sparse) =
+            resolve_policy_hidden_state(&consumer, &[first, second, third], &[third])
+                .expect("bounded hidden selection");
+        assert_eq!(checkpoint, ConsumerCheckpointV1::After(second));
+        assert!(sparse.is_empty());
+    }
+
+    #[test]
+    fn policy_selection_atomically_resolves_hidden_and_leases_visible() {
+        let current_consumer = initial_consumer();
+        let hidden = event(1, 0);
+        let visible = event(2, 0);
+        let current =
+            EventConsumerSnapshotV1::new(current_consumer.clone(), Vec::new()).expect("snapshot");
+        let replacement_consumer = current_consumer
+            .advance(ConsumerCheckpointV1::After(hidden), Vec::new())
+            .expect("replacement");
+        let delivery = leased_delivery(visible);
+        let candidate =
+            ConsumerLeaseCandidateV1::new(ExpectedConsumerDeliveryV1::Absent, delivery.clone())
+                .expect("candidate");
+        let evaluated = evaluate_event_consumer_transition(
+            Some(current),
+            EventConsumerTransitionV1::PolicySelect {
+                consumer_identity_hash: identity().identity_hash(),
+                expected_revision: Some(EventConsumerRevision::first()),
+                replacement_consumer: replacement_consumer.clone(),
+                candidates: vec![candidate],
+                examined_events: vec![hidden, visible],
+                visible_events: vec![visible],
+            },
+        )
+        .expect("evaluate");
+        assert_eq!(
+            evaluated,
+            EvaluatedEventConsumerTransitionV1::Replace(Box::new(
+                EventConsumerSnapshotV1::new(replacement_consumer, vec![delivery])
+                    .expect("replacement snapshot")
+            ))
+        );
+    }
+
+    #[test]
+    fn policy_narrowing_closes_a_now_hidden_live_lease() {
+        let current_consumer = initial_consumer();
+        let hidden = event(1, 0);
+        let current =
+            EventConsumerSnapshotV1::new(current_consumer.clone(), vec![leased_delivery(hidden)])
+                .expect("snapshot");
+        let replacement_consumer = current_consumer
+            .advance(ConsumerCheckpointV1::After(hidden), Vec::new())
+            .expect("replacement");
+        let evaluated = evaluate_event_consumer_transition(
+            Some(current),
+            EventConsumerTransitionV1::PolicySelect {
+                consumer_identity_hash: identity().identity_hash(),
+                expected_revision: Some(EventConsumerRevision::first()),
+                replacement_consumer: replacement_consumer.clone(),
+                candidates: Vec::new(),
+                examined_events: vec![hidden],
+                visible_events: Vec::new(),
+            },
+        )
+        .expect("evaluate");
+        assert_eq!(
+            evaluated,
+            EvaluatedEventConsumerTransitionV1::Replace(Box::new(
+                EventConsumerSnapshotV1::new(replacement_consumer, Vec::new())
+                    .expect("replacement snapshot")
+            ))
+        );
+    }
+
+    #[test]
     fn retention_frontier_keeps_the_complete_checkpoint_commit() {
         assert_eq!(ConsumerCheckpointV1::BeforeFirst.retention_frontier(), 0);
         assert_eq!(
@@ -2049,6 +2334,35 @@ mod tests {
             EvaluatedEventConsumerTransitionV1::NoChange(
                 EventConsumerTransitionResultV1::LeaseExpired
             )
+        );
+    }
+
+    #[test]
+    fn acknowledgement_can_be_prepared_inside_an_authoritative_storage_fence() {
+        let event_id = event(1, 0);
+        let snapshot =
+            EventConsumerSnapshotV1::new(initial_consumer(), vec![leased_delivery(event_id)])
+                .expect("snapshot");
+        let request = CoordinateConsumerAcknowledgementV1 {
+            identity: identity(),
+            event_id,
+            token: EventLeaseToken::from_bytes([4; 32]),
+            history_incarnation: 1,
+            observed_at: Timestamp::new(9, 0).expect("time"),
+            selected_prefix: vec![event_id],
+        };
+        assert!(matches!(
+            prepare_consumer_resolution(&snapshot, &request, None).expect("resolution prepares"),
+            PreparedConsumerResolutionV1::Transition(EventConsumerTransitionV1::Acknowledge { .. })
+        ));
+        assert!(
+            prepare_consumer_resolution(
+                &snapshot,
+                &request,
+                Some(Timestamp::new(8, 0).expect("earlier retry")),
+            )
+            .is_err(),
+            "negative acknowledgement cannot move eligibility backward"
         );
     }
 

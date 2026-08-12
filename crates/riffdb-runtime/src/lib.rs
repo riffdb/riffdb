@@ -19,14 +19,14 @@ use riffdb_invariant::{
     InputDerivedCommandFacts, derive_input_command_facts,
 };
 use riffdb_storage_api::{
-    DeclaredOutcome, EntityMutation, EntityObservation, EntityPostImage, EntityTarget,
-    EvaluatedCommand, EvaluatedCommandBuilder, EvaluationBudget, EventIntent, ExecutablePlanRef,
-    ReadSnapshot, StorageValueError,
+    DeclaredOutcome, DurableKeySchemaBindingV1, EntityMutation, EntityObservation, EntityPostImage,
+    EntityTarget, EvaluatedCommand, EvaluatedCommandBuilder, EvaluationBudget, EventIntent,
+    ExecutablePlanRef, ReadSnapshot, StorageValueError, StoredEventPolicyAnchorV1,
 };
 use riffdb_types::{
-    AdmittedActorContext, CanonicalCodecError, CanonicalRecord, CanonicalValue, FieldId,
-    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKey, RequestId, Timestamp, ValueError,
-    encode_canonical_record, encode_canonical_value,
+    AdmittedActorContext, CanonicalCodecError, CanonicalRecord, CanonicalValue, EntityKey, FieldId,
+    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKey, RequestId, RowPolicyName, Timestamp,
+    ValueError, encode_canonical_record, encode_canonical_value,
 };
 
 /// Immutable values admitted for one deterministic command evaluation.
@@ -329,8 +329,7 @@ pub fn execute_command(
                 if plan.execution_class() != ExecutionClass::IdempotentMutation {
                     return Err(ExecutionFault::Integrity);
                 }
-                let event = EventIntent::new(event.event_type(), payload)
-                    .map_err(map_storage_value_error)?;
+                let event = event_intent(bundle, context, event.event_type(), payload)?;
                 let builder = match evaluated_builder.as_mut() {
                     Some(builder) => builder,
                     None => evaluated_builder.insert(
@@ -1066,10 +1065,7 @@ fn execute_collection_command(
                         let mut evaluation = evaluator.batch(&values);
                         construct_record(event.payload(), &mut evaluation)?
                     };
-                    events.push(
-                        EventIntent::new(event.event_type(), payload)
-                            .map_err(map_storage_value_error)?,
-                    );
+                    events.push(event_intent(bundle, context, event.event_type(), payload)?);
                 }
                 Instruction::WorkflowTransition { .. }
                 | Instruction::WorkflowLease { .. }
@@ -1153,6 +1149,71 @@ fn execute_collection_command(
     let mut evaluation = evaluator.batch(&values);
     let outcome = construct_outcome(outcome, &mut evaluation)?;
     finish_declared(plan, snapshot, budget, outcome, mutations, events)
+}
+
+fn event_intent(
+    bundle: &ContractBundle,
+    context: &TransactionContext,
+    event_type: riffdb_types::EventTypeId,
+    payload: CanonicalRecord,
+) -> Result<EventIntent, ExecutionFault> {
+    let schema = bundle
+        .schema()
+        .event(event_type)
+        .ok_or(ExecutionFault::Integrity)?;
+    let Some(anchor) = schema.policy_anchor() else {
+        return EventIntent::new(event_type, payload).map_err(map_storage_value_error);
+    };
+    let source = bundle
+        .schema()
+        .entity(anchor.source_entity())
+        .ok_or(ExecutionFault::Integrity)?;
+    let values = anchor
+        .key_fields()
+        .iter()
+        .map(|mapping| {
+            payload
+                .fields()
+                .binary_search_by_key(&mapping.payload_field(), |(field, _)| *field)
+                .ok()
+                .map(|index| payload.fields()[index].1.clone())
+                .ok_or(ExecutionFault::Integrity)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let key: EntityKey = source
+        .primary_key()
+        .encode_entity(&values)
+        .map_err(|_| ExecutionFault::Integrity)?;
+    let partition_width = schema
+        .partition()
+        .ok_or(ExecutionFault::Integrity)?
+        .fields()
+        .len();
+    let partition = schema
+        .partition()
+        .ok_or(ExecutionFault::Integrity)?
+        .key_schema()
+        .encode_partition(
+            values
+                .get(..partition_width)
+                .ok_or(ExecutionFault::Integrity)?,
+        )
+        .map_err(|_| ExecutionFault::Integrity)?;
+    if &partition != context.partition_key() {
+        return Err(ExecutionFault::Integrity);
+    }
+    let policy_anchor = StoredEventPolicyAnchorV1::new(
+        DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        ),
+        event_type,
+        EntityTarget::new(anchor.source_entity(), key).map_err(map_storage_value_error)?,
+        RowPolicyName::new(anchor.read_policy().to_owned())
+            .map_err(|_| ExecutionFault::Integrity)?,
+    );
+    EventIntent::new_anchored(event_type, payload, policy_anchor).map_err(map_storage_value_error)
 }
 
 fn validate_execution_identity<'a>(

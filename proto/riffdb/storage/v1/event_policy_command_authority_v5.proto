@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/command_capsule_v1.proto";
+import "riffdb/storage/v1/command_segment_v1.proto";
+import "riffdb/storage/v1/entity_transitions_v4.proto";
+import "riffdb/storage/v1/event_policy_anchor.proto";
+
+// Closed event variant used only inside the successor command authority. The
+// V1 and V2 messages remain byte-frozen and independently readable.
+message StoredDurableEventVariantV1 {
+  oneof value {
+    StoredDurableEventV1 unanchored = 1;
+    StoredDurableEventV2 anchored = 2;
+  }
+}
+
+// Successor command authority that replaces, rather than wraps, the V1-only
+// event collection in StoredCommandCapsuleV4. The payload-free V1 base keeps
+// all established reciprocal event references.
+message StoredCommandCapsuleV5 {
+  StoredCommandCapsuleV1 base = 1;
+  repeated StoredDurableEventVariantV1 events = 2;
+  repeated StoredIndexGenerationTransitionV1 index_generation_transitions = 3;
+  bytes canonical_service_values = 4;
+  repeated StoredCommittedEntityTransitionV1 entity_transitions = 5;
+}
+
+message StoredCommandSegmentBodyV4 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes predecessor_segment_hash = 3;
+  uint64 first_commit_sequence = 4;
+  uint64 last_commit_sequence = 5;
+  uint64 first_administration_sequence = 6;
+  uint64 last_administration_sequence = 7;
+  repeated StoredCommandCapsuleV5 commands = 8;
+  CommandSegmentManifestV1 manifest = 9;
+}
+
+message StoredCommandSegmentV4 {
+  StoredCommandSegmentBodyV4 body = 1;
+  bytes segment_digest = 2;
+}

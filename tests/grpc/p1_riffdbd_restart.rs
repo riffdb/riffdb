@@ -1451,6 +1451,7 @@ fn consume_stream_request(module_hash: &[u8]) -> TestResult<v1::ConsumeEventStre
         in_flight_limit: 4,
         lease_seconds: 30,
         maximum_wait_nanos: 0,
+        progress_cursor: Vec::new(),
     })
 }
 

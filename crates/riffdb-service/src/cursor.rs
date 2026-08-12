@@ -12,8 +12,9 @@ use riffdb_contract_ir::{IndexScanPrefix, MAX_DECLARATIONS_PER_KIND};
 use riffdb_policy::{FixedToolCandidate, PartitionConstraint};
 use riffdb_query_executor::QueryContinuation;
 use riffdb_types::{
-    ActorId, CanonicalValue, CapabilityId, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, EntityTypeId, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
+    ActorId, ApplicationRoleHash, CanonicalValue, CapabilityId, CommitSequence, ContractBundleHash,
+    ContractLineage, ContractVersion, EntityTypeId, EventConsumerIdentityHash,
+    EventConsumerRevision, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
     MAX_CAPABILITY_FIELD_VISIBILITY, ProjectionIdentity, QueryParameterHash, QueryPlanHash,
     TenantScope,
 };
@@ -1459,6 +1460,68 @@ pub(crate) struct QueryCursorState {
     continuation: QueryContinuation,
 }
 
+/// Caller-reconstructible protected-consumer binding.
+///
+/// The durable checkpoint is deliberately absent. It remains registry-only so
+/// neither a token nor a binding mismatch can disclose hidden event progress.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct EventConsumerProgressCursorLookup {
+    consumer: EventConsumerIdentityHash,
+    history_incarnation: u64,
+    capability_id: CapabilityId,
+    capability_revision: std::num::NonZeroU64,
+    application_role_hash: ApplicationRoleHash,
+}
+
+impl EventConsumerProgressCursorLookup {
+    #[must_use]
+    pub(crate) const fn new(
+        consumer: EventConsumerIdentityHash,
+        history_incarnation: u64,
+        capability_id: CapabilityId,
+        capability_revision: std::num::NonZeroU64,
+        application_role_hash: ApplicationRoleHash,
+    ) -> Self {
+        Self {
+            consumer,
+            history_incarnation,
+            capability_id,
+            capability_revision,
+            application_role_hash,
+        }
+    }
+}
+
+/// Registry-only protected-consumer progress.
+///
+/// This exact state is checked against storage before a supplied token may
+/// continue an invocation. It is never serialized into the public token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EventConsumerProgressCursorState {
+    revision: EventConsumerRevision,
+    checkpoint: Option<EventId>,
+}
+
+impl EventConsumerProgressCursorState {
+    #[must_use]
+    pub(crate) const fn new(revision: EventConsumerRevision, checkpoint: Option<EventId>) -> Self {
+        Self {
+            revision,
+            checkpoint,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn revision(&self) -> EventConsumerRevision {
+        self.revision
+    }
+
+    #[must_use]
+    pub(crate) const fn checkpoint(&self) -> Option<EventId> {
+        self.checkpoint
+    }
+}
+
 impl QueryCursorState {
     #[must_use]
     pub(crate) const fn new(continuation: QueryContinuation) -> Self {
@@ -1482,6 +1545,7 @@ pub(crate) enum ServiceCursorLookup {
     ResourceDiscovery(ResourceDiscoveryCursorLookup),
     ApplicationCatalog(ApplicationCatalogCursorLookup),
     Query(QueryCursorLookup),
+    EventConsumerProgress(EventConsumerProgressCursorLookup),
 }
 
 #[derive(Clone)]
@@ -1495,6 +1559,7 @@ pub(crate) enum ServiceCursorState {
     ResourceDiscovery(Arc<ResourceDiscoveryCursorState>),
     ApplicationCatalog(Arc<ApplicationCatalogCursorState>),
     Query(Arc<QueryCursorState>),
+    EventConsumerProgress(Arc<EventConsumerProgressCursorState>),
 }
 
 type SharedServiceCursorRegistry = CursorRegistry<
@@ -1943,6 +2008,41 @@ impl ServiceCursorRegistries {
         )?;
         match state.as_ref() {
             ServiceCursorState::Query(state) => Ok(Arc::clone(state)),
+            _ => Err(CursorAccessError::Unavailable),
+        }
+    }
+
+    pub(crate) fn register_event_consumer_progress_unpublished(
+        &self,
+        principal: &ActorId,
+        lookup: EventConsumerProgressCursorLookup,
+        state: EventConsumerProgressCursorState,
+    ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
+        let registration = self.registry.register_replacing(
+            CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::EventConsumerProgress(lookup),
+            ),
+            ServiceCursorState::EventConsumerProgress(Arc::new(state)),
+        )?;
+        Ok(self.publication_guard_exclusive(registration))
+    }
+
+    pub(crate) fn resolve_event_consumer_progress(
+        &self,
+        token: CursorToken,
+        principal: &ActorId,
+        lookup: &EventConsumerProgressCursorLookup,
+    ) -> Result<Arc<EventConsumerProgressCursorState>, CursorAccessError> {
+        let state = self.registry.resolve(
+            token,
+            &CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::EventConsumerProgress(lookup.clone()),
+            ),
+        )?;
+        match state.as_ref() {
+            ServiceCursorState::EventConsumerProgress(state) => Ok(Arc::clone(state)),
             _ => Err(CursorAccessError::Unavailable),
         }
     }
@@ -2574,6 +2674,78 @@ mod tests {
                 Err(CursorAccessError::InvalidCursor)
             ));
         }
+    }
+
+    #[test]
+    fn protected_consumer_cursor_binds_authority_without_serializing_progress() {
+        fn uuid_bytes(seed: u8) -> [u8; 16] {
+            let mut bytes = [seed; 16];
+            bytes[6] = 0x70 | (seed & 0x0f);
+            bytes[8] = 0x80 | (seed & 0x3f);
+            bytes
+        }
+
+        fn lookup(
+            consumer: u8,
+            incarnation: u64,
+            capability: u8,
+            revision: u64,
+            role: u8,
+        ) -> EventConsumerProgressCursorLookup {
+            EventConsumerProgressCursorLookup::new(
+                EventConsumerIdentityHash::from_bytes([consumer; 32]),
+                incarnation,
+                CapabilityId::from_bytes(uuid_bytes(capability)).expect("valid capability UUIDv7"),
+                NonZeroU64::new(revision).expect("nonzero capability revision"),
+                ApplicationRoleHash::from_bytes([role; 32]),
+            )
+        }
+
+        let generator: Arc<dyn CursorTokenGenerator> = Arc::new(SequentialGenerator::new());
+        let clock: Arc<dyn CursorMonotonicClock> = Arc::new(FixedClock::at(0));
+        let registry = ServiceCursorRegistries::new(generator, clock);
+        let principal = ActorId::new("protected-consumer").expect("bounded principal");
+        let exact = lookup(1, 2, 3, 4, 5);
+        let checkpoint = EventId::new(CommitSequence::first(), 7);
+        let token = registry
+            .register_event_consumer_progress_unpublished(
+                &principal,
+                exact.clone(),
+                EventConsumerProgressCursorState::new(
+                    EventConsumerRevision::first(),
+                    Some(checkpoint),
+                ),
+            )
+            .expect("cursor registers")
+            .publish();
+        let resolved = registry
+            .resolve_event_consumer_progress(token, &principal, &exact)
+            .expect("exact authority resolves");
+        assert_eq!(resolved.revision(), EventConsumerRevision::first());
+        assert_eq!(resolved.checkpoint(), Some(checkpoint));
+
+        let other_principal = ActorId::new("other-consumer").expect("bounded principal");
+        assert!(matches!(
+            registry.resolve_event_consumer_progress(token, &other_principal, &exact),
+            Err(CursorAccessError::InvalidCursor)
+        ));
+        for mismatch in [
+            lookup(9, 2, 3, 4, 5),
+            lookup(1, 9, 3, 4, 5),
+            lookup(1, 2, 9, 4, 5),
+            lookup(1, 2, 3, 9, 5),
+            lookup(1, 2, 3, 4, 9),
+        ] {
+            assert!(matches!(
+                registry.resolve_event_consumer_progress(token, &principal, &mismatch),
+                Err(CursorAccessError::InvalidCursor)
+            ));
+        }
+        assert_eq!(token.as_bytes().len(), CURSOR_TOKEN_BYTES);
+        assert_ne!(
+            &token.as_bytes()[..8],
+            &checkpoint.commit_sequence().get().to_be_bytes()
+        );
     }
 
     #[test]

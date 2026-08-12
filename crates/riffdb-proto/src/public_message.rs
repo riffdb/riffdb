@@ -8510,6 +8510,46 @@ fn validate_event_consumer_status(
     validate_event_consumer_checkpoint(status.checkpoint.as_ref())
 }
 
+fn validate_protected_event_consumer_status(
+    status: Option<&v1::ProtectedEventConsumerStatus>,
+) -> Result<(), PublicWireError> {
+    let status = status.ok_or(PublicWireError::MissingRequiredField)?;
+    if status.history_incarnation == 0 || status.progress_cursor.len() != 16 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_consumer_pull_shape(
+    exact: Option<&v1::EventConsumerStatus>,
+    protected: Option<&v1::ProtectedEventConsumerStatus>,
+    disposition: i32,
+    wait_timed_out: bool,
+    item_count: usize,
+) -> Result<u64, PublicWireError> {
+    let disposition = v1::EventConsumerPullDisposition::try_from(disposition)
+        .map_err(|_| PublicWireError::InvalidValue)?;
+    if disposition == v1::EventConsumerPullDisposition::Unspecified
+        || wait_timed_out != (disposition == v1::EventConsumerPullDisposition::WaitTimedOut)
+        || (disposition != v1::EventConsumerPullDisposition::Ready && item_count != 0)
+        || (disposition == v1::EventConsumerPullDisposition::BoundedProgress && protected.is_none())
+        || exact.is_some() == protected.is_some()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    match (exact, protected) {
+        (Some(status), None) => {
+            validate_event_consumer_status(Some(status))?;
+            Ok(status.history_incarnation)
+        }
+        (None, Some(status)) => {
+            validate_protected_event_consumer_status(Some(status))?;
+            Ok(status.history_incarnation)
+        }
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
 fn validate_consume_event_stream_request(
     message: &v1::ConsumeEventStreamRequest,
 ) -> Result<(), PublicWireError> {
@@ -8519,6 +8559,7 @@ fn validate_consume_event_stream_request(
         || !(1..=64).contains(&message.in_flight_limit)
         || !(5..=900).contains(&message.lease_seconds)
         || message.maximum_wait_nanos > MAX_PROJECTION_WAIT_NANOS
+        || (!message.progress_cursor.is_empty() && message.progress_cursor.len() != 16)
     {
         return Err(PublicWireError::InvalidValue);
     }
@@ -8531,12 +8572,13 @@ fn validate_consume_event_stream_response(
     if message.events.len() > 64 || (message.wait_timed_out && !message.events.is_empty()) {
         return Err(PublicWireError::TooManyItems);
     }
-    validate_event_consumer_status(message.status.as_ref())?;
-    let history_incarnation = message
-        .status
-        .as_ref()
-        .ok_or(PublicWireError::MissingRequiredField)?
-        .history_incarnation;
+    let history_incarnation = validate_consumer_pull_shape(
+        message.status.as_ref(),
+        message.protected_status.as_ref(),
+        message.disposition,
+        message.wait_timed_out,
+        message.events.len(),
+    )?;
     let mut prior = None;
     for item in &message.events {
         let event = item
@@ -8654,7 +8696,9 @@ fn validate_consume_contextual_subscription_request(
 ) -> Result<(), PublicWireError> {
     request_id(&message.request_id)?;
     validate_event_consumer_selection(message.selection.as_ref())?;
-    if message.maximum_wait_nanos > 30_000_000_000 {
+    if message.maximum_wait_nanos > 30_000_000_000
+        || (!message.progress_cursor.is_empty() && message.progress_cursor.len() != 16)
+    {
         return Err(PublicWireError::InvalidValue);
     }
     Ok(())
@@ -8722,12 +8766,13 @@ fn validate_consume_contextual_subscription_response(
     if message.items.len() > 1 || (message.wait_timed_out && !message.items.is_empty()) {
         return Err(PublicWireError::TooManyItems);
     }
-    validate_event_consumer_status(message.status.as_ref())?;
-    let history_incarnation = message
-        .status
-        .as_ref()
-        .ok_or(PublicWireError::MissingRequiredField)?
-        .history_incarnation;
+    let history_incarnation = validate_consumer_pull_shape(
+        message.status.as_ref(),
+        message.protected_status.as_ref(),
+        message.disposition,
+        message.wait_timed_out,
+        message.items.len(),
+    )?;
     for item in &message.items {
         if item.context_head == 0
             || item.hydrations.len() > 16
@@ -9113,7 +9158,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeEventStreamRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    6,
+    7,
     &[],
     &[],
     preflight_noop,
@@ -9122,7 +9167,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeEventStreamResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    3,
+    5,
     &[1],
     &[],
     preflight_noop,
@@ -9176,7 +9221,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeContextualSubscriptionRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    3,
+    4,
     &[],
     &[],
     preflight_noop,
@@ -9185,7 +9230,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeContextualSubscriptionResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    3,
+    5,
     &[1],
     &[],
     preflight_noop,

@@ -53,6 +53,8 @@ pub use changelog::{
     DEFAULT_CHANGELOG_BUFFER_ADVANCEMENTS, RedbChangelogEmitter, RedbChangelogEmitterHandle,
     start_changelog_emitter, start_changelog_emitter_v2,
 };
+#[doc(hidden)]
+pub use consumer::{ProtectedEventConsumerLeaseV1, ProtectedEventConsumerResolutionV1};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_set};

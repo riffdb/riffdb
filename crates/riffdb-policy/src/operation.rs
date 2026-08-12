@@ -2096,6 +2096,14 @@ impl OperationRequest {
             _ => None,
         }
     }
+
+    pub(crate) const fn event_delivery_target(&self) -> Option<&EventConsumerOperationTarget> {
+        match &self.0 {
+            OperationKind::ConsumeEventStream { target, .. }
+            | OperationKind::ConsumeContextualSubscription { target, .. } => Some(target),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Debug for OperationRequest {

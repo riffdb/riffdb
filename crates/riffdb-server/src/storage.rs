@@ -162,6 +162,26 @@ impl SharedRedbOperationalPorts {
         self.cell
             .with_mut(|ports| ports.write_validated_prefix_checkpoint())
     }
+
+    /// Executes protected event selection inside the same redb mutation fence
+    /// as current capability, row, relationship, checkpoint, and lease state.
+    pub(crate) fn coordinate_protected_event_consumer_lease(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventConsumerLeaseV1,
+    ) -> Result<riffdb_storage_api::CoordinateConsumerLeaseResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.coordinate_protected_event_consumer_lease(request))
+    }
+
+    /// Resolves one protected event lease only while its current authority and
+    /// anchored row remain valid in the same redb mutation fence.
+    pub(crate) fn coordinate_protected_event_consumer_resolution(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventConsumerResolutionV1,
+    ) -> Result<riffdb_storage_api::EventConsumerTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.coordinate_protected_event_consumer_resolution(request))
+    }
 }
 
 impl Clone for SharedRedbOperationalPorts {

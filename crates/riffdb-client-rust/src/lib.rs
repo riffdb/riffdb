@@ -79,13 +79,15 @@ pub use projected::{
 pub use reactive::{
     ApplicationContextualBatch, ApplicationContextualHydration, ApplicationContextualReaction,
     ApplicationContextualWorkItem, ApplicationEvent, ApplicationEventBatch,
-    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus,
-    ApplicationEventDelivery, ApplicationEventId, ApplicationEventLeaseEvidence,
-    ApplicationEventMutationResult, ApplicationEventResponseStream, ApplicationLiveQueryStream,
-    ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions,
-    LiveQueryCheckpoint, LiveQueryCursor, LiveQueryPatch, LiveQueryPatchOperation,
-    LiveQueryTerminal, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch,
-    TypedEventDelivery, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream,
+    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus,
+    ApplicationEventConsumerStatus, ApplicationEventDelivery, ApplicationEventId,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
+    ApplicationEventPullDisposition, ApplicationEventResponseStream, ApplicationLiveQueryStream,
+    ApplicationLiveQueryUpdate, ApplicationProtectedEventConsumerStatus,
+    ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor,
+    LiveQueryPatch, LiveQueryPatchOperation, LiveQueryTerminal, TypedContextualBatch,
+    TypedContextualWorkItem, TypedEventBatch, TypedEventDelivery, TypedLiveQueryReset,
+    TypedLiveQuerySnapshot, TypedLiveQueryStream,
 };
 /// Freshness policy and commit token types used by projected queries.
 pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};

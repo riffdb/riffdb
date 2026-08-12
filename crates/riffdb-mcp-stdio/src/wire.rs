@@ -305,6 +305,7 @@ pub(crate) fn fixed_request_to_proto(
             in_flight_limit,
             lease_seconds,
             maximum_wait_nanos,
+            progress_cursor: Vec::new(),
         }),
         McpFixedToolRequest::EventLeaseMutation {
             nack,
@@ -419,6 +420,7 @@ pub(crate) fn fixed_request_to_proto(
                 consumer_name,
             )?),
             maximum_wait_nanos,
+            progress_cursor: Vec::new(),
         }),
         McpFixedToolRequest::ContextualLeaseMutation {
             nack,

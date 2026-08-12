@@ -39,7 +39,8 @@ use riffdb_service::{
     DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
     DiscoveryRepresentation, EventConsumerCheckpoint, EventConsumerLeaseSelection,
-    EventConsumerMutationResult, EventConsumerSelection, EventConsumerStatus,
+    EventConsumerMutationResult, EventConsumerProgressCursor, EventConsumerPublicStatus,
+    EventConsumerPullDisposition, EventConsumerSelection, EventConsumerStatus,
     EventPartitionComponent, EventSelection, ExecuteCommandRequest, ExecuteCommandResult,
     ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
@@ -2023,7 +2024,7 @@ pub fn consume_event_stream_request_from_proto(
     let request_id = request_id_from_bytes(&value.request_id)?;
     let batch_limit = u8::try_from(value.batch_limit).map_err(|_| invalid_request())?;
     let in_flight_limit = u8::try_from(value.in_flight_limit).map_err(|_| invalid_request())?;
-    let request = ConsumeEventStreamRequest::new(
+    let mut request = ConsumeEventStreamRequest::new(
         event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
         batch_limit,
         in_flight_limit,
@@ -2031,6 +2032,13 @@ pub fn consume_event_stream_request_from_proto(
         Duration::from_nanos(value.maximum_wait_nanos),
     )
     .map_err(|_| invalid_request())?;
+    if !value.progress_cursor.is_empty() {
+        let bytes: [u8; riffdb_service::CURSOR_TOKEN_BYTES] = value
+            .progress_cursor
+            .try_into()
+            .map_err(|_| invalid_request())?;
+        request = request.with_progress_cursor(EventConsumerProgressCursor::from_bytes(bytes));
+    }
     Ok((request_id, request))
 }
 
@@ -2144,18 +2152,60 @@ fn event_consumer_status_to_proto(status: &EventConsumerStatus) -> v1::EventCons
     }
 }
 
+fn protected_event_consumer_status_to_proto(
+    status: &riffdb_service::ProtectedEventConsumerStatus,
+) -> v1::ProtectedEventConsumerStatus {
+    v1::ProtectedEventConsumerStatus {
+        history_incarnation: status.history_incarnation(),
+        progress_cursor: status.progress_cursor().as_bytes().to_vec(),
+    }
+}
+
+fn event_consumer_public_status_to_proto(
+    status: &EventConsumerPublicStatus,
+) -> (
+    Option<v1::EventConsumerStatus>,
+    Option<v1::ProtectedEventConsumerStatus>,
+) {
+    match status {
+        EventConsumerPublicStatus::Exact(status) => {
+            (Some(event_consumer_status_to_proto(status)), None)
+        }
+        EventConsumerPublicStatus::Protected(status) => {
+            (None, Some(protected_event_consumer_status_to_proto(status)))
+        }
+    }
+}
+
+fn event_consumer_pull_disposition_to_proto(
+    disposition: EventConsumerPullDisposition,
+) -> v1::EventConsumerPullDisposition {
+    match disposition {
+        EventConsumerPullDisposition::Ready => v1::EventConsumerPullDisposition::Ready,
+        EventConsumerPullDisposition::WaitTimedOut => {
+            v1::EventConsumerPullDisposition::WaitTimedOut
+        }
+        EventConsumerPullDisposition::BoundedProgress => {
+            v1::EventConsumerPullDisposition::BoundedProgress
+        }
+    }
+}
+
 /// Converts one successful consumer pull.
 pub fn consume_event_stream_result_to_proto(
     result: &ConsumeEventStreamResult,
 ) -> Result<v1::ConsumeEventStreamResponse, Status> {
+    let (status, protected_status) = event_consumer_public_status_to_proto(result.status());
     Ok(v1::ConsumeEventStreamResponse {
         events: result
             .events()
             .iter()
             .map(consumed_event_to_proto)
             .collect::<Result<Vec<_>, Status>>()?,
-        status: Some(event_consumer_status_to_proto(result.status())),
+        status,
         wait_timed_out: result.wait_timed_out(),
+        protected_status,
+        disposition: event_consumer_pull_disposition_to_proto(result.disposition()) as i32,
     })
 }
 
@@ -2178,14 +2228,20 @@ fn consumed_event_to_proto(
 pub fn consume_contextual_subscription_request_from_proto(
     value: v1::ConsumeContextualSubscriptionRequest,
 ) -> Result<(RequestId, ConsumeContextualSubscriptionRequest), Status> {
-    Ok((
-        request_id_from_bytes(&value.request_id)?,
-        ConsumeContextualSubscriptionRequest::new(
-            event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
-            Duration::from_nanos(value.maximum_wait_nanos),
-        )
-        .map_err(|_| invalid_request())?,
-    ))
+    let request_id = request_id_from_bytes(&value.request_id)?;
+    let mut request = ConsumeContextualSubscriptionRequest::new(
+        event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
+        Duration::from_nanos(value.maximum_wait_nanos),
+    )
+    .map_err(|_| invalid_request())?;
+    if !value.progress_cursor.is_empty() {
+        let bytes: [u8; riffdb_service::CURSOR_TOKEN_BYTES] = value
+            .progress_cursor
+            .try_into()
+            .map_err(|_| invalid_request())?;
+        request = request.with_progress_cursor(EventConsumerProgressCursor::from_bytes(bytes));
+    }
+    Ok((request_id, request))
 }
 
 fn contextual_lease_request_from_proto(
@@ -2343,14 +2399,17 @@ pub fn consume_contextual_subscription_result_to_proto(
             .enum_variant_name(type_id, variant_id)
             .map(str::to_owned)
     };
+    let (status, protected_status) = event_consumer_public_status_to_proto(result.status());
     Ok(v1::ConsumeContextualSubscriptionResponse {
         items: result
             .items()
             .iter()
             .map(|item| contextual_work_item_to_proto(item, &resolve))
             .collect::<Result<Vec<_>, Status>>()?,
-        status: Some(event_consumer_status_to_proto(result.status())),
+        status,
         wait_timed_out: result.wait_timed_out(),
+        protected_status,
+        disposition: event_consumer_pull_disposition_to_proto(result.disposition()) as i32,
     })
 }
 

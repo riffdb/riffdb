@@ -14,6 +14,7 @@ use riffdb_storage_api::{
     coordinate_consumer_lease_validation, coordinate_consumer_negative_acknowledgement,
     coordinate_consumer_retire, coordinate_consumer_seek, coordinate_consumer_status,
 };
+use riffdb_storage_redb::{ProtectedEventConsumerLeaseV1, ProtectedEventConsumerResolutionV1};
 use riffdb_types::DatabaseId;
 
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
@@ -147,6 +148,93 @@ fn coordinate_request(
                 status: result.status.map(service_status),
             })
         }
+        EventConsumerPortRequest::ProtectedLease {
+            identity,
+            partition_hash,
+            history_incarnation,
+            observed_at,
+            expires_at,
+            selected_events,
+            tokens,
+            batch_limit,
+            in_flight_limit,
+            policy,
+        } => {
+            let result = storage
+                .coordinate_protected_event_consumer_lease(ProtectedEventConsumerLeaseV1 {
+                    identity: storage_identity(database_id, identity),
+                    partition_hash,
+                    history_incarnation,
+                    observed_at,
+                    expires_at,
+                    selected_events,
+                    tokens,
+                    batch_limit,
+                    in_flight_limit,
+                    policy,
+                })
+                .map_err(map_storage)?;
+            Ok(EventConsumerPortResponse::Leased {
+                result: mutation_result(result.transition),
+                leases: result
+                    .leases
+                    .into_iter()
+                    .map(|lease| EventConsumerPortLease {
+                        event_id: lease.event_id,
+                        attempt: lease.attempt,
+                        token: lease.token,
+                        expires_at: lease.expires_at,
+                    })
+                    .collect(),
+                status: result.status.map(service_status),
+            })
+        }
+        EventConsumerPortRequest::ProtectedAcknowledge {
+            identity,
+            event_id,
+            token,
+            history_incarnation,
+            observed_at,
+            selected_prefix,
+            policy,
+        } => storage
+            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
+                acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                    identity: storage_identity(database_id, identity),
+                    event_id,
+                    token,
+                    history_incarnation,
+                    observed_at,
+                    selected_prefix,
+                },
+                retry_at: None,
+                policy,
+            })
+            .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
+            .map_err(map_storage),
+        EventConsumerPortRequest::ProtectedNegativeAcknowledge {
+            identity,
+            event_id,
+            token,
+            observed_at,
+            eligible_at,
+            selected_prefix,
+            policy,
+        } => storage
+            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
+                acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                    identity: storage_identity(database_id, identity),
+                    event_id,
+                    token,
+                    history_incarnation: 0,
+                    observed_at,
+                    selected_prefix,
+                },
+                retry_at: Some(eligible_at),
+                policy,
+            })
+            .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
+            .map_err(map_storage),
         EventConsumerPortRequest::Acknowledge {
             identity,
             event_id,

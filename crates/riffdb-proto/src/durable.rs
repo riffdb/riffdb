@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 84;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 86;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 61;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 63;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -242,6 +242,14 @@ const EXPORT_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const EXPORT_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-export-v1-record-bound.bin"
+));
+const EVENT_POLICY_COMMAND_AUTHORITY_V5_SCHEMA_HASH_BYTES: &[u8; 64] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin"
+));
+const EVENT_POLICY_COMMAND_AUTHORITY_V5_RECORD_BOUND_BYTES: &[u8; 16] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-policy-command-authority-v5-record-bounds.bin"
 ));
 const ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1216,6 +1224,55 @@ const APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA: RecordSchema<'static> =
     )
     .with_compact_identity(60, 1);
 
+const fn event_policy_command_authority_v5_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = EVENT_POLICY_COMMAND_AUTHORITY_V5_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn event_policy_command_authority_v5_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        EVENT_POLICY_COMMAND_AUTHORITY_V5_RECORD_BOUND_BYTES[start],
+        EVENT_POLICY_COMMAND_AUTHORITY_V5_RECORD_BOUND_BYTES[start + 1],
+        EVENT_POLICY_COMMAND_AUTHORITY_V5_RECORD_BOUND_BYTES[start + 2],
+        EVENT_POLICY_COMMAND_AUTHORITY_V5_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! event_policy_command_authority_v5_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal, $revision:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            event_policy_command_authority_v5_schema_hash($index),
+            event_policy_command_authority_v5_record_bound($index, 0),
+            event_policy_command_authority_v5_record_bound($index, 4),
+            preflight_payload::<{ 79 + $index }>,
+            validate_payload::<{ 79 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, $revision)
+    };
+}
+
+const COMMAND_CAPSULE_V5_RECORD_SCHEMA: RecordSchema<'static> = event_policy_command_authority_v5_schema!(
+    0,
+    "StoredCommandCapsuleV5",
+    v1::StoredCommandCapsuleV5,
+    54,
+    4
+);
+const COMMAND_SEGMENT_V4_RECORD_SCHEMA: RecordSchema<'static> = event_policy_command_authority_v5_schema!(
+    1,
+    "StoredCommandSegmentV4",
+    v1::StoredCommandSegmentV4,
+    55,
+    4
+);
+
 const fn entity_transitions_v4_schema_hash(index: usize) -> SchemaHash {
     let mut bytes = [0_u8; 32];
     let mut offset = 0;
@@ -1417,6 +1474,8 @@ readable_message!(
     v1::StoredApplicationExportOperationV1,
     APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA
 );
+readable_message!(v1::StoredCommandCapsuleV5, COMMAND_CAPSULE_V5_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandSegmentV4, COMMAND_SEGMENT_V4_RECORD_SCHEMA);
 readable_message!(
     v1::StoredValidatedPrefixCheckpointV1,
     VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA
@@ -1553,6 +1612,8 @@ writable_message!(v1::StoredExecutionFailedV3);
 writable_message!(v1::StoredOutcomeV3);
 writable_message!(v1::StoredApplicationInstallationCampaignV1);
 writable_message!(v1::StoredApplicationExportOperationV1);
+writable_message!(v1::StoredCommandCapsuleV5);
+writable_message!(v1::StoredCommandSegmentV4);
 writable_message!(v1::StoredEntityChainHeadV1);
 writable_message!(v1::StoredChangelogV2RotationReceiptV1);
 writable_message!(v1::StoredCommandCapsuleV4);
@@ -1734,6 +1795,8 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     DURABLE_EVENT_V2_RECORD_SCHEMA,
     CAPABILITY_V5_RECORD_SCHEMA,
     APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V5_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V4_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1803,6 +1866,8 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CAPABILITY_V4_RECORD_SCHEMA,
     CAPABILITY_V5_RECORD_SCHEMA,
     APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V5_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V4_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

@@ -10832,6 +10832,7 @@ work_packages:
     fixtures/compatibility/**, release/**,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-contract-ir/**,
+    crates/riffdb-catalog/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-runtime/**,
     crates/riffdb-query-executor/**, crates/riffdb-projection/**,
@@ -10839,8 +10840,10 @@ work_packages:
     crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
-    crates/riffdb-query-module/**, crates/riffdb-cli/**,
-    crates/riffdb-client-rust/**, crates/riffdb-diagnostics/**, examples/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**, crates/riffdb-server/**,
+    crates/riffdb-client-rust/**, crates/riffdb-client-python-native/**,
+    crates/riffdb-driver-host/**, crates/riffdb-diagnostics/**, examples/**,
     tests/**, fuzz/**, scripts/**, docs/**]
   deliverables:
   - Shared policy proof and evaluator used before selection, hydration, limit/cursor, aggregation,

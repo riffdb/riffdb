@@ -773,6 +773,8 @@ pub(crate) enum EventCommand {
         lease_seconds: String,
         #[arg(long, default_value = "0", value_name = "NANOSECONDS")]
         wait_nanos: String,
+        #[arg(long, value_name = "BASE64_CURSOR")]
+        progress_cursor: Option<String>,
     },
     /// Acknowledges one exact live event lease.
     Ack {
@@ -837,6 +839,8 @@ pub(crate) enum ContextualCommand {
         consumer: EventConsumerArgs,
         #[arg(long, default_value = "0", value_name = "NANOSECONDS")]
         wait_nanos: String,
+        #[arg(long, value_name = "BASE64_CURSOR")]
+        progress_cursor: Option<String>,
     },
     /// Acknowledges one exact contextual work-item lease.
     Ack {

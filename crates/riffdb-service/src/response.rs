@@ -25,18 +25,19 @@ use crate::{
     DescribeSymbolicContractResult, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
     DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
     DiscoveryCatalogStateRef, DurableEventView, EntityView, EventConsumerMutationResult,
-    EventConsumerStatus, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
-    ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
-    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult,
-    GetApplicationExportResultV1, GetApplicationInstallationResult, GetCommitResult,
-    GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, GetReactiveWakeupResult,
-    HealthReport, HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
-    ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation, LiveQueryUpdate,
-    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
-    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
+    EventConsumerPublicStatus, EventConsumerStatus, EventDescriptor, EventFieldDescriptor,
+    EventPage, ExecuteCommandResult, ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult,
+    ExplainCommandResult, ExplainSymbolicQueryResult, GeneratedSchemaIdentity,
+    GetActiveContractResult, GetApplicationExportResultV1, GetApplicationInstallationResult,
+    GetCommitResult, GetContractMigrationOperationResult, GetContractVersionResult,
+    GetEntityResult, GetOfflineMaintenanceOperationResult, GetProjectionStatusResult,
+    GetReactiveWakeupResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
+    JournaledCommandResult, ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
+    NormalCreateCapabilityResult, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliverySummary, Page,
+    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProtectedEventConsumerStatus,
     ProvenanceClaimsView, ProvenanceView, QueryModuleInspection, QueryProjectionResult,
     ReadOnlyCommandResult, ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult,
@@ -1353,6 +1354,30 @@ impl ServiceResponseCharge for EventConsumerStatus {
         charge.fields(6)?;
         charge.bytes(48)?;
         Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ProtectedEventConsumerStatus {}
+impl ServiceResponseCharge for ProtectedEventConsumerStatus {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        charge.fields(2)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventConsumerPublicStatus {}
+impl ServiceResponseCharge for EventConsumerPublicStatus {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        match self {
+            Self::Exact(status) => status.service_response_charge_v1(),
+            Self::Protected(status) => status.service_response_charge_v1(),
+        }
     }
 }
 

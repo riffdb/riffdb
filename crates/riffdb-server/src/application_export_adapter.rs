@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_ir::{RecordSchema, RecordTypeRef, ValueType};
 use riffdb_policy::{
-    AuthorizedApplicationExportV1, AuthorizedQueryRowPolicyContextV1,
+    AuthorizedApplicationExportV1, AuthorizedQueryRowPolicyContextV1, EventPolicyCandidateV1,
     resolve_authorized_application_export_row_policy_context,
 };
 use riffdb_service::{
@@ -1594,13 +1594,13 @@ fn record_visible(
                 .relationship_lookups(row.target().entity_type_id(), row.fields())
                 .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?;
             let evidence = relationship_evidence(snapshot, &lookups)?;
+            let candidate = EventPolicyCandidateV1::new(
+                event.event_id(),
+                event.policy_anchor().source().key().clone(),
+                event.policy_anchor().read_policy().clone(),
+            );
             Ok(policy
-                .authorize_event_release(
-                    event.event_id(),
-                    row.target().key(),
-                    row.fields(),
-                    &evidence,
-                )
+                .authorize_event_release(&candidate, row.fields(), &evidence)
                 .is_allowed())
         }
         ApplicationExportSourceRecordV1::Provenance(provenance) => {

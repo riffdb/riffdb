@@ -4327,6 +4327,13 @@ pub struct EventConsumerStatus {
     #[prost(uint32, tag = "6")]
     pub dead_letters: u32,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProtectedEventConsumerStatus {
+    #[prost(uint64, tag = "1")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub progress_cursor: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConsumedEvent {
     #[prost(message, optional, tag = "1")]
@@ -4352,6 +4359,8 @@ pub struct ConsumeEventStreamRequest {
     pub lease_seconds: u64,
     #[prost(uint64, tag = "6")]
     pub maximum_wait_nanos: u64,
+    #[prost(bytes = "vec", tag = "7")]
+    pub progress_cursor: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConsumeEventStreamResponse {
@@ -4361,6 +4370,10 @@ pub struct ConsumeEventStreamResponse {
     pub status: ::core::option::Option<EventConsumerStatus>,
     #[prost(bool, tag = "3")]
     pub wait_timed_out: bool,
+    #[prost(message, optional, tag = "4")]
+    pub protected_status: ::core::option::Option<ProtectedEventConsumerStatus>,
+    #[prost(enumeration = "EventConsumerPullDisposition", tag = "5")]
+    pub disposition: i32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AcknowledgeEventStreamRequest {
@@ -4443,6 +4456,8 @@ pub struct ConsumeContextualSubscriptionRequest {
     pub selection: ::core::option::Option<EventConsumerSelection>,
     #[prost(uint64, tag = "3")]
     pub maximum_wait_nanos: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub progress_cursor: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ContextualQueryRow {
@@ -4499,6 +4514,10 @@ pub struct ConsumeContextualSubscriptionResponse {
     pub status: ::core::option::Option<EventConsumerStatus>,
     #[prost(bool, tag = "3")]
     pub wait_timed_out: bool,
+    #[prost(message, optional, tag = "4")]
+    pub protected_status: ::core::option::Option<ProtectedEventConsumerStatus>,
+    #[prost(enumeration = "EventConsumerPullDisposition", tag = "5")]
+    pub disposition: i32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AcknowledgeContextualSubscriptionRequest {
@@ -4547,6 +4566,40 @@ pub struct ExecuteContextualReactionRequest {
     pub reaction_name: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "5")]
     pub command: ::core::option::Option<ExecuteCommandRequest>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EventConsumerPullDisposition {
+    Unspecified = 0,
+    Ready = 1,
+    WaitTimedOut = 2,
+    BoundedProgress = 3,
+}
+impl EventConsumerPullDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVENT_CONSUMER_PULL_DISPOSITION_UNSPECIFIED",
+            Self::Ready => "EVENT_CONSUMER_PULL_DISPOSITION_READY",
+            Self::WaitTimedOut => "EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT",
+            Self::BoundedProgress => "EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVENT_CONSUMER_PULL_DISPOSITION_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVENT_CONSUMER_PULL_DISPOSITION_READY" => Some(Self::Ready),
+            "EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT" => Some(Self::WaitTimedOut),
+            "EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS" => {
+                Some(Self::BoundedProgress)
+            }
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
