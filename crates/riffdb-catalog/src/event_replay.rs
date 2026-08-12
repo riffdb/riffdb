@@ -126,6 +126,21 @@ impl ResolvedReactiveEventStream {
         self.partition_hash
     }
 
+    /// Returns the exact active-contract source entities whose row policies
+    /// govern this stream's compiler-anchored event types.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn policy_anchor_entities(&self) -> Vec<riffdb_types::EntityTypeId> {
+        let mut entities = self
+            .materializers
+            .iter()
+            .filter_map(ResolvedEventMaterializer::policy_anchor_entity)
+            .collect::<Vec<_>>();
+        entities.sort_unstable();
+        entities.dedup();
+        entities
+    }
+
     /// Reads one bounded route page and materializes every selected event type in route order.
     pub fn replay_page<R>(
         &self,
@@ -364,6 +379,26 @@ pub struct SymbolicEventReplayPage {
 }
 
 impl SymbolicEventReplayPage {
+    /// Reconstitutes one page after a lower authoritative policy filter.
+    ///
+    /// The caller must preserve the original frozen route continuation and
+    /// upper fence. This constructor is intentionally hidden from application
+    /// APIs; it exists only for first-party storage adapters that filter a
+    /// page inside the same authoritative snapshot that supplied its events.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_policy_filtered_parts(
+        items: Vec<SymbolicEventEnvelope>,
+        continuation: Option<EventRouteContinuationV1>,
+        inclusive_upper: EventRouteUpperFenceV1,
+    ) -> Self {
+        Self {
+            items,
+            continuation,
+            inclusive_upper,
+        }
+    }
+
     /// Borrows matching symbolic events in exact partition order.
     #[must_use]
     pub fn items(&self) -> &[SymbolicEventEnvelope] {

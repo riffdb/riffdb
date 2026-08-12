@@ -8369,6 +8369,13 @@ fn validate_event_page(page: Option<&v1::EventPage>) -> Result<(), PublicWireErr
     if !page.next_cursor.is_empty() && page.next_cursor.len() != 16 {
         return Err(PublicWireError::InvalidBytes);
     }
+    let disposition = v1::EventPageDisposition::try_from(page.disposition)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if disposition == v1::EventPageDisposition::Unspecified
+        || (disposition == v1::EventPageDisposition::BoundedProgress && page.next_cursor.is_empty())
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
     // A partition route page may contain no selected event type while still
     // advancing its opaque physical continuation.
     let observed_upper = page
@@ -8443,10 +8450,11 @@ fn validate_tail_events_request(message: &v1::TailEventsRequest) -> Result<(), P
 fn validate_tail_events_response(message: &v1::TailEventsResponse) -> Result<(), PublicWireError> {
     validate_event_page(message.page.as_ref())?;
     if message.wait_timed_out
-        && message
-            .page
-            .as_ref()
-            .is_some_and(|page| !page.items.is_empty() || !page.next_cursor.is_empty())
+        && message.page.as_ref().is_some_and(|page| {
+            !page.items.is_empty()
+                || !page.next_cursor.is_empty()
+                || page.disposition != i32::from(v1::EventPageDisposition::Page)
+        })
     {
         return Err(PublicWireError::InconsistentFields);
     }

@@ -1034,6 +1034,40 @@ pub fn resolve_authorized_event_row_policy_context(
     }))
 }
 
+/// Resolves current-row authority for bounded operator replay or tail.
+///
+/// Unlike durable consumers, replay has no deployed reactive-module identity;
+/// the exact active contract and symbolic selection are already resolved by
+/// the catalog before this proof reaches storage. The move-only result still
+/// binds the current capability revision, role, principal facts, and every
+/// compiler-selected entity policy used by retained event anchors.
+#[doc(hidden)]
+pub fn resolve_authorized_event_replay_row_policy_context(
+    authorization: &AuthorizedOperation,
+    bundle: &ContractBundle,
+    entities: &[EntityTypeId],
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    let (lineage, version) = authorization
+        .request()
+        .event_replay_contract()
+        .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+    if lineage != bundle.lineage()
+        || version != bundle.contract_version()
+        || entities.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return Ok(None);
+    };
+    let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
+
 fn resolve_read_policies(
     authority: &AuthorizedRowPolicyAuthority,
     bundle: &ContractBundle,

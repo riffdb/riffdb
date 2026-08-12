@@ -988,6 +988,41 @@ fn expected_enum_values() -> BTreeSet<String> {
             "EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED",
         ),
         (
+            "riffdb.v1.EventConsumerPullDisposition",
+            0,
+            "EVENT_CONSUMER_PULL_DISPOSITION_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.EventConsumerPullDisposition",
+            1,
+            "EVENT_CONSUMER_PULL_DISPOSITION_READY",
+        ),
+        (
+            "riffdb.v1.EventConsumerPullDisposition",
+            2,
+            "EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT",
+        ),
+        (
+            "riffdb.v1.EventConsumerPullDisposition",
+            3,
+            "EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS",
+        ),
+        (
+            "riffdb.v1.EventPageDisposition",
+            0,
+            "EVENT_PAGE_DISPOSITION_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.EventPageDisposition",
+            1,
+            "EVENT_PAGE_DISPOSITION_PAGE",
+        ),
+        (
+            "riffdb.v1.EventPageDisposition",
+            2,
+            "EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS",
+        ),
+        (
             "riffdb.v1.ExecutionFailureCode",
             3,
             "EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT",

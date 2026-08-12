@@ -6389,8 +6389,17 @@ fn render_event_page(
         "observed_upper": page.observed_upper.as_ref().map(|id| format!("{}:{}", id.commit_sequence, id.event_ordinal)),
         "history_incarnation": page.history_incarnation.to_string(),
         "wait_timed_out": wait_timed_out,
+        "disposition": event_page_disposition_name(page.disposition),
     });
     success(identity, "read", &result)
+}
+
+fn event_page_disposition_name(value: i32) -> &'static str {
+    match v1::EventPageDisposition::try_from(value).ok() {
+        Some(v1::EventPageDisposition::Page) => "page",
+        Some(v1::EventPageDisposition::BoundedProgress) => "bounded_progress",
+        Some(v1::EventPageDisposition::Unspecified) | None => "unspecified",
+    }
 }
 
 fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Terminal {

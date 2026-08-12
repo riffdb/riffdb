@@ -1952,6 +1952,12 @@ fn event_page_to_proto(page: &riffdb_service::EventPage) -> Result<v1::EventPage
             .map_or_else(Vec::new, |cursor| cursor.as_bytes().to_vec()),
         observed_upper: page.observed_upper().map(event_id_to_proto),
         history_incarnation: page.history_incarnation(),
+        disposition: match page.disposition() {
+            riffdb_service::EventPageDisposition::Page => v1::EventPageDisposition::Page.into(),
+            riffdb_service::EventPageDisposition::BoundedProgress => {
+                v1::EventPageDisposition::BoundedProgress.into()
+            }
+        },
     })
 }
 

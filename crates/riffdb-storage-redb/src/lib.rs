@@ -54,7 +54,12 @@ pub use changelog::{
     start_changelog_emitter, start_changelog_emitter_v2,
 };
 #[doc(hidden)]
-pub use consumer::{ProtectedEventConsumerLeaseV1, ProtectedEventConsumerResolutionV1};
+pub use consumer::{
+    MAX_PROTECTED_EVENT_REPLAY_CANDIDATES, ProtectedEventConsumerLeaseV1,
+    ProtectedEventConsumerLeaseValidationResultV1, ProtectedEventConsumerLeaseValidationV1,
+    ProtectedEventConsumerResolutionV1, ProtectedEventReplayDispositionV1,
+    ProtectedEventReplayPageV1, ProtectedEventReplayResultV1, ProtectedEventReplayV1,
+};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_set};

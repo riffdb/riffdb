@@ -1836,11 +1836,12 @@ messages
   riffdb.v1.EventId fields=2
     1 commit_sequence optional uint64
     2 event_ordinal optional uint32
-  riffdb.v1.EventPage fields=4
+  riffdb.v1.EventPage fields=5
     1 items repeated .riffdb.v1.SymbolicEvent
     2 next_cursor optional bytes
     3 observed_upper optional .riffdb.v1.EventId
     4 history_incarnation optional uint64
+    5 disposition optional .riffdb.v1.EventPageDisposition
   riffdb.v1.EventPartitionComponent fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -3009,6 +3010,10 @@ enums
     1 EVENT_CONSUMER_PULL_DISPOSITION_READY
     2 EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT
     3 EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS
+  riffdb.v1.EventPageDisposition values=3
+    0 EVENT_PAGE_DISPOSITION_UNSPECIFIED
+    1 EVENT_PAGE_DISPOSITION_PAGE
+    2 EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS
   riffdb.v1.ExecuteCommandResponse.CompletionStatus values=4
     0 COMPLETION_STATUS_UNSPECIFIED
     1 COMMITTED

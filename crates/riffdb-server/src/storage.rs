@@ -173,6 +173,17 @@ impl SharedRedbOperationalPorts {
             .with_mut(|ports| ports.coordinate_protected_event_consumer_lease(request))
     }
 
+    /// Validates one reaction lease together with current trigger-event row
+    /// authority in one redb mutation fence.
+    pub(crate) fn validate_protected_event_consumer_lease(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventConsumerLeaseValidationV1,
+    ) -> Result<riffdb_storage_redb::ProtectedEventConsumerLeaseValidationResultV1, StorageError>
+    {
+        self.cell
+            .with_mut(|ports| ports.validate_protected_event_consumer_lease(request))
+    }
+
     /// Resolves one protected event lease only while its current authority and
     /// anchored row remain valid in the same redb mutation fence.
     pub(crate) fn coordinate_protected_event_consumer_resolution(
@@ -181,6 +192,15 @@ impl SharedRedbOperationalPorts {
     ) -> Result<riffdb_storage_api::EventConsumerTransitionResultV1, StorageError> {
         self.cell
             .with_mut(|ports| ports.coordinate_protected_event_consumer_resolution(request))
+    }
+
+    /// Executes protected replay under one current capability/row snapshot.
+    pub(crate) fn replay_protected_events(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventReplayV1,
+    ) -> Result<riffdb_storage_redb::ProtectedEventReplayResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.replay_protected_events(request))
     }
 }
 

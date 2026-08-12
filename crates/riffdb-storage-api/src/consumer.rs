@@ -1445,6 +1445,10 @@ pub struct CoordinateConsumerNegativeAcknowledgementV1 {
 /// current-row policy, and the resulting consumer transition inside one
 /// authoritative mutation fence.
 #[doc(hidden)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the move-only transition remains inline so the coordinator can consume it without a second allocation"
+)]
 pub enum PreparedConsumerResolutionV1 {
     /// No mutation is permitted or required.
     NoChange(EventConsumerTransitionResultV1),
@@ -1515,7 +1519,37 @@ pub fn coordinate_consumer_lease_validation<R: EventConsumerRepository>(
     history_incarnation: u64,
     observed_at: Timestamp,
 ) -> Result<CoordinatedConsumerLeaseValidationV1, StorageError> {
-    let Some(snapshot) = repository.inspect_event_consumer(identity.identity_hash())? else {
+    let snapshot = repository.inspect_event_consumer(identity.identity_hash())?;
+    evaluate_consumer_lease_validation(
+        snapshot.as_ref(),
+        identity,
+        partition_hash,
+        event_id,
+        attempt,
+        token,
+        history_incarnation,
+        observed_at,
+    )
+}
+
+/// Evaluates one exact lease against a caller-owned authoritative snapshot.
+///
+/// This first-party seam lets storage implementations combine lease validation
+/// with additional transaction-current authority checks without reopening a
+/// second storage snapshot.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_consumer_lease_validation(
+    snapshot: Option<&EventConsumerSnapshotV1>,
+    identity: &EventConsumerIdentityV1,
+    partition_hash: PartitionKeyHash,
+    event_id: EventId,
+    attempt: EventDeliveryAttempt,
+    token: EventLeaseToken,
+    history_incarnation: u64,
+    observed_at: Timestamp,
+) -> Result<CoordinatedConsumerLeaseValidationV1, StorageError> {
+    let Some(snapshot) = snapshot else {
         return Ok(CoordinatedConsumerLeaseValidationV1::NotFound);
     };
     if snapshot.consumer().identity() != identity

@@ -187,6 +187,15 @@ impl ResolvedEventMaterializer {
         self.event_type_id
     }
 
+    pub(crate) fn policy_anchor_entity(&self) -> Option<riffdb_types::EntityTypeId> {
+        self.active_bundle
+            .bundle()
+            .schema()
+            .event(self.event_type_id)
+            .and_then(|event| event.policy_anchor())
+            .map(|anchor| anchor.source_entity())
+    }
+
     pub(crate) fn derive_partition_hash<'a>(
         &self,
         supplied: impl IntoIterator<Item = (&'a str, CanonicalValue)>,
