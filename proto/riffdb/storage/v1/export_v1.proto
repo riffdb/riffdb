@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Opaque, engine-neutral persistence for one exact resumable symbolic export.
+// The application-export service owns canonical_state semantics; storage binds
+// it to the operation and lineage and applies exact compare-and-swap updates.
+message StoredApplicationExportOperationV1 {
+  bytes operation_id = 1;
+  string contract_lineage = 2;
+  bytes canonical_state = 3;
+}

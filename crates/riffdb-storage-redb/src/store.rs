@@ -759,6 +759,7 @@ enum RegistryMigration {
     ReactiveConsumers,
     ApplicationInstallationCampaign,
     EntityTransitions,
+    ApplicationExportOperation,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -825,6 +826,12 @@ pub(crate) const PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST: [u8; 32] = [
     0x2f, 0x0c, 0x23, 0xfd, 0x25, 0x65, 0x64, 0x42, 0xcf, 0x6a, 0x43, 0x8b, 0x39, 0x09, 0x5b, 0x92,
     0xa2, 0xf9, 0x56, 0xcd, 0x89, 0x8b, 0x95, 0x27, 0xde, 0x8f, 0x56, 0xa9, 0xbb, 0x08, 0x72, 0xa7,
+];
+/// Registry digest immediately before durable application-export operations
+/// became current in WP-575.
+pub(crate) const PRE_APPLICATION_EXPORT_REGISTRY_DIGEST: [u8; 32] = [
+    0x6e, 0xb5, 0x25, 0xfe, 0xdb, 0x4d, 0x6a, 0x17, 0xd0, 0x31, 0x87, 0x16, 0x4f, 0x03, 0xa5, 0x2c,
+    0x33, 0x95, 0x4a, 0x8c, 0x14, 0x5a, 0x00, 0xd3, 0x37, 0xa0, 0xe7, 0x9c, 0x49, 0xa5, 0x9d, 0xd3,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1261,6 +1268,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST)
                 {
                     RegistryMigration::EntityTransitions
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::ApplicationExportOperation
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1456,6 +1467,20 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST),
+            )?;
+        }
+        if format == StorageFormatVersion::V2
+            && (matches!(
+                registry_migration,
+                RegistryMigration::ApplicationExportOperation
+            ) || observed_registry_digest(&self.shared)?
+                == SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST))
+        {
+            install_application_export_operation_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -1594,6 +1619,12 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST),
+            )?;
+            install_application_export_operation_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -2774,6 +2805,19 @@ fn install_application_installation_campaign_table(
     drop(
         transaction
             .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)
+}
+
+fn install_application_export_operation_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
             .map_err(table_error)?,
     );
     shared.commit_durable(transaction)
@@ -6155,8 +6199,15 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
+    // The WP-575 predecessor lacks only durable application-export operation
+    // checkpoints. The table is installed before the registry advances.
+    let mut pre_application_export = expected.clone();
+    pre_application_export.remove("application_export_operations");
+    if tables == pre_application_export {
+        return Ok(LayoutState::Initialized);
+    }
     // The immediate predecessor lacks only delete-aware entity-chain heads.
-    let mut pre_entity_transitions = expected.clone();
+    let mut pre_entity_transitions = pre_application_export;
     pre_entity_transitions.remove("entity_chain_heads");
     if tables == pre_entity_transitions {
         return Ok(LayoutState::Initialized);
@@ -6398,6 +6449,70 @@ mod tests {
                 .is_empty()
                 .expect("head table length"),
             "a predecessor fixture must not retain successor chain heads"
+        );
+    }
+
+    #[test]
+    fn pre_export_registry_installs_operation_table_before_publication() {
+        let scope = crate::test_path::ScopedDirectory::new("pre-export-registry");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open");
+        let database_id = DatabaseId::from_bytes({
+            let mut bytes = [0x21; 16];
+            bytes[6] = 0x71;
+            bytes[8] = 0xa1;
+            bytes
+        })
+        .expect("database");
+        store.initialize_database(database_id).expect("initialize");
+        {
+            let mut transaction = store
+                .shared
+                .database
+                .begin_write()
+                .expect("begin predecessor write");
+            transaction
+                .set_durability(Durability::Immediate)
+                .expect("durability");
+            transaction
+                .delete_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
+                .expect("remove successor table");
+            let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+                PRE_APPLICATION_EXPORT_REGISTRY_DIGEST,
+            ))
+            .expect("predecessor registry");
+            transaction
+                .open_table(META)
+                .expect("metadata")
+                .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+                .expect("pin predecessor registry");
+            transaction.commit().expect("commit predecessor fixture");
+        }
+        drop(store);
+
+        let reopened = RedbStore::open(&path).expect("migrate predecessor");
+        let transaction = reopened
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        assert!(
+            transaction
+                .open_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
+                .expect("export operation table")
+                .is_empty()
+                .expect("table length")
+        );
+        let metadata = transaction.open_table(META).expect("metadata");
+        let encoded = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("registry read")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(encoded.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
         );
     }
 

@@ -1,6 +1,7 @@
 //! One-way checked mappings between semantic storage DTOs and durable Protobuf.
 
 mod application;
+mod application_export;
 mod application_installation;
 mod audit;
 mod bounds;
@@ -29,6 +30,7 @@ use crate::{EncodedContentCharge, EncodedPageItem};
 use common::*;
 
 pub use application::*;
+pub use application_export::*;
 pub use application_installation::*;
 pub use audit::*;
 pub use bounds::*;
