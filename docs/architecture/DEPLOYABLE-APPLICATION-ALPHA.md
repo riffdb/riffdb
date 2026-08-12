@@ -37,7 +37,7 @@ endurance work cannot be deferred into release day.
 | Workflow concurrency | ADR-0109 | WP-566–WP-567 | Revision checks, legal transitions, fenced leases, service time/IDs, and scheduler-through-commands only |
 | Provisioning/evolution | ADR-0110 | WP-568–WP-569 | Programmatic resumable install/upgrade, explicit authority diffs, migration integration, and adapter conformance manifests |
 | Per-row policy | ADR-0111 | WP-570, WP-572–WP-573 | Closed principal-aware predicates enforced before disclosure and transaction-current on writes; realistic Better Auth and MLflow policy proof |
-| Format compatibility and exit | ADR-0112 | WP-574–WP-575 | Release format manifest, refusal before mutation, snapshot-consistent symbolic export, and compiled reimport |
+| Format compatibility and exit | ADR-0112/0119 | WP-574–WP-575, WP-599 | Release format manifest, refusal before mutation, snapshot-consistent symbolic export, and compiler-owned workflow-safe reimport |
 | Disaster recovery | ADR-0050/0112 | WP-576 | Remote backup, total database-volume loss, verified restore, and full adapter reconciliation |
 | Endurance | durability ADRs | WP-577–WP-578 | Reproducible lifecycle harness and retained 72-hour growth/recycling/recovery evidence |
 
@@ -45,9 +45,9 @@ WP-550 freezes accepted text and adds normative requirement IDs before any
 track changes a public or durable interface. WP-551 and WP-552 close the two
 already-red release prerequisites rather than hiding them inside the final
 gate. WP-579 runs the installed final gate after all tracks close. P10 owns
-WP-550 through WP-570 and WP-572 through WP-579; WP-571 remains assigned to
-the independent repository-ownership program. Active replication packages
-must allocate outside those P10 ranges.
+WP-550 through WP-570, WP-572 through WP-579, and WP-599; WP-571 remains
+assigned to the independent repository-ownership program. Active replication
+packages must allocate outside those P10 ranges.
 
 As of 2026-08-09, `./scripts/check-application-bindings` exits nonzero at the
 agent-alpha manifest-versus-generated module-hash assertion, and no retained
@@ -125,8 +125,10 @@ framing or follower semantics.
    row policies (a principal sees only its own sessions and accounts) and
    MLflow ACLs.
 8. **Compatibility and exit.** WP-574–WP-575 publish the exact durable-format
-   promise, refuse unsupported data before mutation, and prove symbolic
-   export/reimport into an empty database.
+   promise, refuse unsupported data before mutation, and provide symbolic
+   export plus ordinary compiled reimport. WP-599 closes the workflow-shaped
+   reconstitution gap without admitting a normal workflow-state write, then
+   proves all-domain export/reimport into an empty database.
 9. **Disaster and endurance.** WP-576 exercises remote backup, volume loss, and
    restore for every adapter. WP-577 builds the lifecycle harness; WP-578 banks
    the uninterrupted 72-hour release receipt. A 24-hour run is rehearsal only.
