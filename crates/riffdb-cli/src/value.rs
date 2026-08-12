@@ -57,6 +57,9 @@ pub(crate) enum InputValue {
         #[serde(default, deserialize_with = "deserialize_optional_string")]
         name: Option<String>,
     },
+    Vector {
+        components: Vec<f32>,
+    },
     List {
         values: Vec<InputValue>,
     },
@@ -158,6 +161,9 @@ impl InputValue {
                     name: name.unwrap_or_default(),
                 })
             }
+            Self::Vector { components } => v1::value::Kind::VectorValue(v1::VectorValue {
+                components: canonical_vector_components(components)?,
+            }),
             Self::List { values } => v1::value::Kind::ListValue(v1::ValueList {
                 values: values
                     .into_iter()
@@ -199,6 +205,12 @@ pub(crate) struct OutputRecord<'a>(pub(crate) &'a v1::ValueRecord);
 pub(crate) struct PaddedBytes<'a>(pub(crate) &'a [u8]);
 pub(crate) struct LowerHex<'a>(pub(crate) &'a [u8]);
 pub(crate) struct UuidText<'a>(pub(crate) &'a [u8]);
+
+fn canonical_vector_components(components: Vec<f32>) -> Result<Vec<f32>, ValueError> {
+    riffdb_types::CanonicalVector::new(components)
+        .map(riffdb_types::CanonicalVector::into_components)
+        .map_err(|_| ValueError)
+}
 
 impl Serialize for OutputValue<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -277,6 +289,15 @@ impl Serialize for OutputValue<'_> {
                     map.serialize_entry("name", &value.name)?;
                 }
             }
+            Kind::VectorValue(value) => {
+                let canonical = riffdb_types::CanonicalVector::new(value.components.clone())
+                    .map_err(|_| S::Error::custom("invalid vector components"))?;
+                map.serialize_entry("type", "vector")?;
+                map.serialize_entry(
+                    "components",
+                    &CanonicalVectorComponents(canonical.components()),
+                )?;
+            }
             Kind::ListValue(value) => {
                 map.serialize_entry("type", "list")?;
                 map.serialize_entry("values", &OutputValues(&value.values))?;
@@ -310,6 +331,18 @@ impl Serialize for OutputDecimal<'_> {
 }
 
 struct OutputValues<'a>(&'a [v1::Value]);
+pub(crate) struct CanonicalVectorComponents<'a>(pub(crate) &'a [f32]);
+
+impl Serialize for CanonicalVectorComponents<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for component in self.0 {
+            let component = if *component == 0.0 { 0.0 } else { *component };
+            sequence.serialize_element(&component)?;
+        }
+        sequence.end()
+    }
+}
 
 impl Serialize for OutputValues<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -552,6 +585,114 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vector_json_round_trips_binary32_bits_and_enforces_closed_boundaries() {
+        fn bits(value: &v1::Value) -> Vec<u32> {
+            let Some(v1::value::Kind::VectorValue(vector)) = value.kind.as_ref() else {
+                panic!("vector value");
+            };
+            vector
+                .components
+                .iter()
+                .map(|component| component.to_bits())
+                .collect()
+        }
+
+        let simple = InputValue::Vector {
+            components: vec![-0.0, 1.5, -2.25],
+        }
+        .into_proto()
+        .expect("simple vector");
+        assert_eq!(
+            serde_json::to_string(&OutputValue(&simple)).expect("simple vector output"),
+            r#"{"type":"vector","components":[0.0,1.5,-2.25]}"#
+        );
+
+        let source_components = [
+            -0.0_f32,
+            f32::MAX,
+            f32::from_bits(1),
+            f32::from_bits(0x3eaa_aaab),
+            f32::from_bits(0x3f7f_ffff),
+            -2.25,
+        ];
+        let input_json = serde_json::to_string(&serde_json::json!({
+            "type": "vector",
+            "components": source_components,
+        }))
+        .expect("finite vector JSON");
+        let value = serde_json::from_str::<InputValue>(&input_json)
+            .expect("vector input")
+            .into_proto()
+            .expect("bounded finite vector");
+        let rendered = serde_json::to_string(&OutputValue(&value)).expect("render");
+        assert!(rendered.contains(r#""components":[0.0,"#));
+        let reparsed = serde_json::from_str::<InputValue>(&rendered)
+            .expect("rendered vector reparses")
+            .into_proto()
+            .expect("rendered vector remains canonical");
+        let mut expected_bits = source_components.map(f32::to_bits);
+        expected_bits[0] = 0.0_f32.to_bits();
+        assert_eq!(bits(&value), expected_bits);
+        assert_eq!(bits(&reparsed), expected_bits);
+
+        let exact_maximum = InputValue::Vector {
+            components: vec![0.0; riffdb_types::MAX_VECTOR_DIMENSION as usize],
+        }
+        .into_proto()
+        .expect("4,096 components");
+        let exact_maximum_json =
+            serde_json::to_string(&OutputValue(&exact_maximum)).expect("4,096 output");
+        let exact_maximum_reparsed = serde_json::from_str::<InputValue>(&exact_maximum_json)
+            .expect("4,096 output reparses")
+            .into_proto()
+            .expect("4,096 output remains bounded");
+        assert_eq!(
+            bits(&exact_maximum_reparsed).len(),
+            riffdb_types::MAX_VECTOR_DIMENSION as usize
+        );
+
+        let over_limit = InputValue::Vector {
+            components: vec![0.0; riffdb_types::MAX_VECTOR_DIMENSION as usize + 1],
+        };
+        assert!(over_limit.into_proto().is_err());
+
+        for input in [
+            r#"{"type":"vector","components":[]}"#,
+            r#"{"type":"vector","components":[1e100]}"#,
+            r#"{"type":"vector","components":["1.0"]}"#,
+            r#"{"type":"vector","components":["NaN"]}"#,
+            r#"{"type":"vector","components":["Infinity"]}"#,
+            r#"{"type":"vector","components":[1.0],"extra":true}"#,
+        ] {
+            let parsed = serde_json::from_str::<InputValue>(input);
+            assert!(
+                parsed.is_err() || parsed.expect("structural JSON").into_proto().is_err(),
+                "{input}"
+            );
+        }
+        for invalid_json_number in [
+            r#"{"type":"vector","components":[NaN]}"#,
+            r#"{"type":"vector","components":[Infinity]}"#,
+        ] {
+            assert!(serde_json::from_str::<InputValue>(invalid_json_number).is_err());
+        }
+
+        for invalid_components in [
+            vec![f32::NAN],
+            vec![f32::INFINITY],
+            vec![f32::NEG_INFINITY],
+            vec![0.0; riffdb_types::MAX_VECTOR_DIMENSION as usize + 1],
+        ] {
+            let invalid = v1::Value {
+                kind: Some(v1::value::Kind::VectorValue(v1::VectorValue {
+                    components: invalid_components,
+                })),
+            };
+            assert!(serde_json::to_string(&OutputValue(&invalid)).is_err());
+        }
+    }
+
+    #[test]
     fn exact_scalar_forms_round_trip_without_json_number_loss() {
         let input: InputValue =
             serde_json::from_str(r#"{"type":"u64","value":"18446744073709551615"}"#).expect("u64");
@@ -681,6 +822,7 @@ mod tests {
             r#"{"type":"date","days_since_unix_epoch":-1}"#,
             r#"{"type":"timestamp","seconds":"-1","nanos":999999999}"#,
             r#"{"type":"enum","type_id":1,"variant_id":1}"#,
+            r#"{"type":"vector","components":[0.0,1.0]}"#,
             r#"{"type":"list","values":[]}"#,
             r#"{"type":"record","fields":[]}"#,
         ];

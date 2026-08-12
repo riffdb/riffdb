@@ -67,10 +67,14 @@ use riffdb_types::{
     offline_maintenance_input_hash,
 };
 use tokio::sync::oneshot;
+use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
+use tonic::codegen::http::uri::PathAndQuery;
 use tonic::metadata::MetadataValue;
 use tonic::transport::server::TcpIncoming;
-use tonic::transport::{Endpoint, Server};
-use tonic::{Code, Request};
+use tonic::transport::{Channel, Endpoint, Server};
+use tonic::{Code, Request, Response, Status};
+use tonic_prost::prost::Message as _;
+use tonic_prost::prost::bytes::{Buf, BufMut};
 
 const CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
@@ -2645,6 +2649,227 @@ fn batch_command(ordinal: u8, name: &str) -> v1::ExecuteCommandRequest {
         expected_contract_version: None,
         input: Some(empty_command_input()),
     }
+}
+
+#[derive(Default)]
+struct RawExecuteCodec;
+
+struct RawExecuteEncoder;
+struct RawExecuteResponseDecoder;
+
+impl Codec for RawExecuteCodec {
+    type Encode = Vec<u8>;
+    type Decode = v1::ExecuteCommandResponse;
+    type Encoder = RawExecuteEncoder;
+    type Decoder = RawExecuteResponseDecoder;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        RawExecuteEncoder
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        RawExecuteResponseDecoder
+    }
+}
+
+impl Encoder for RawExecuteEncoder {
+    type Item = Vec<u8>;
+    type Error = Status;
+
+    fn encode(
+        &mut self,
+        item: Self::Item,
+        destination: &mut EncodeBuf<'_>,
+    ) -> Result<(), Self::Error> {
+        destination.put_slice(&item);
+        Ok(())
+    }
+}
+
+impl Decoder for RawExecuteResponseDecoder {
+    type Item = v1::ExecuteCommandResponse;
+    type Error = Status;
+
+    fn decode(&mut self, source: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
+        let bytes = source.copy_to_bytes(source.remaining());
+        v1::ExecuteCommandResponse::decode(bytes)
+            .map(Some)
+            .map_err(|_| Status::internal("test response decode failed"))
+    }
+}
+
+fn raw_varint(mut value: usize) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    loop {
+        let mut byte = u8::try_from(value & 0x7f).expect("seven-bit varint chunk");
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        encoded.push(byte);
+        if value == 0 {
+            return encoded;
+        }
+    }
+}
+
+fn raw_length_delimited(field_number: usize, payload: &[u8]) -> Vec<u8> {
+    let mut encoded = raw_varint((field_number << 3) | 2);
+    encoded.extend(raw_varint(payload.len()));
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
+fn raw_vector_value(component_count: usize, packed: bool) -> Vec<u8> {
+    let mut vector = Vec::new();
+    if packed {
+        vector = raw_length_delimited(1, &vec![0_u8; component_count * size_of::<f32>()]);
+    } else {
+        vector.reserve(component_count * 5);
+        for _ in 0..component_count {
+            vector.push(0x0d);
+            vector.extend_from_slice(&0.0_f32.to_le_bytes());
+        }
+    }
+    raw_length_delimited(15, &vector)
+}
+
+fn raw_execute_request_with_field_value(ordinal: u8, field_value: &[u8]) -> Vec<u8> {
+    let mut field = raw_length_delimited(2, b"embedding");
+    field.extend(raw_length_delimited(3, field_value));
+    let record = raw_length_delimited(1, &field);
+    let input = raw_length_delimited(14, &record);
+
+    let mut request = raw_length_delimited(1, &request_id(ordinal).into_bytes());
+    request.extend(raw_length_delimited(2, b"OkCommandA"));
+    request.extend(raw_length_delimited(4, &input));
+    request
+}
+
+async fn raw_execute(
+    channel: Channel,
+    bytes: Vec<u8>,
+) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
+    let mut client = tonic::client::Grpc::new(channel);
+    client.ready().await.expect("raw gRPC client ready");
+    let mut request = Request::new(bytes);
+    authorize(&mut request);
+    client
+        .unary(
+            request,
+            PathAndQuery::from_static("/riffdb.v1.CommandService/Execute"),
+            RawExecuteCodec,
+        )
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn execute_command_raw_vector_preflight_is_exact_before_prost_allocation() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(78, [0x78; 10]).expect("database ID");
+    let environment = Environment::new("grpc-vector-wire").expect("environment");
+    let audience = Audience::new("grpc-loopback").expect("audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let service = Arc::new(ProjectionService::new());
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: service.clone(),
+        security: CheckedGrpcSecurityContext::new(
+            Arc::new(AcceptingAuthenticator { principal }),
+            AuthenticationContext::new(database_id, environment, audience),
+            Arc::new(
+                CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+                    .expect("capability keys"),
+            ),
+        ),
+        read_stage_telemetry: None,
+    });
+    let application = GrpcApplication::new(
+        route,
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("request limits"),
+    );
+    let incoming =
+        TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address")).expect("bind listener");
+    let address = incoming.local_addr().expect("listener address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.command_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+    let channel = Endpoint::from_shared(format!("http://{address}"))
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+
+    for (ordinal, packed) in [(0x81, true), (0x82, false)] {
+        let response = raw_execute(
+            channel.clone(),
+            raw_execute_request_with_field_value(ordinal, &raw_vector_value(4_096, packed)),
+        )
+        .await
+        .expect("4,096 packed or unpacked components pass strict server decode");
+        assert_eq!(response.into_inner().outcome_type, "CompletedA");
+    }
+
+    for (ordinal, packed) in [(0x83, true), (0x84, false)] {
+        let status = raw_execute(
+            channel.clone(),
+            raw_execute_request_with_field_value(ordinal, &raw_vector_value(4_097, packed)),
+        )
+        .await
+        .expect_err("4,097 components must be refused");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(status.message(), "invalid protobuf message");
+        assert!(status.details().is_empty());
+    }
+
+    let malformed_vector = raw_length_delimited(15, &raw_length_delimited(1, &[0, 0, 0]));
+    let malformed = raw_execute(
+        channel.clone(),
+        raw_execute_request_with_field_value(0x85, &malformed_vector),
+    )
+    .await
+    .expect_err("malformed packed float length");
+    assert_eq!(malformed.code(), Code::InvalidArgument);
+
+    let mut duplicate_oneof = raw_vector_value(1, true);
+    duplicate_oneof.extend_from_slice(&[0x08, 0x00]);
+    let duplicate = raw_execute(
+        channel.clone(),
+        raw_execute_request_with_field_value(0x86, &duplicate_oneof),
+    )
+    .await
+    .expect_err("duplicate Value oneof branches");
+    assert_eq!(duplicate.code(), Code::InvalidArgument);
+
+    let mut later_unknown = vec![0x08, 0x00];
+    later_unknown.extend(raw_length_delimited(16, &[0xff; 4]));
+    let response = raw_execute(
+        channel,
+        raw_execute_request_with_field_value(0x87, &later_unknown),
+    )
+    .await
+    .expect("unknown Value field 16 remains forward-compatible");
+    assert_eq!(response.into_inner().outcome_type, "CompletedA");
+
+    assert_eq!(
+        service
+            .observed()
+            .iter()
+            .filter(|invocation| invocation.operation == ServiceOperationV1::ExecuteCommand)
+            .count(),
+        3,
+        "only packed/unpacked 4,096 and unknown field 16 reach the application service"
+    );
+
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task")
+        .expect("clean server shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

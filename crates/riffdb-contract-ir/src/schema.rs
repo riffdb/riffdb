@@ -1213,22 +1213,21 @@ pub struct VectorFieldSpecV1 {
     field: FieldId,
     metric: riffdb_types::DistanceMetric,
     source_fields: Vec<FieldId>,
-    staleness_slo_secs: u64,
+    stale_entity_count_threshold: u64,
 }
 
 impl VectorFieldSpecV1 {
     /// Constructs one checked vector-field spec.
     ///
-    /// Source fields must be nonempty, sorted, and unique; the staleness SLO
-    /// must be positive. (The SLO is carried as the declared number of
-    /// seconds; VEC-003's sequence-basis question is tracked as an open SPEC
-    /// clarification and deliberately not resolved by this type.)
+    /// Source fields must be nonempty, sorted, and unique; the v1
+    /// stale-entity count threshold must be positive. Duration-based
+    /// staleness is reserved for a future amendment.
     pub fn new(
         entity: EntityTypeId,
         field: FieldId,
         metric: riffdb_types::DistanceMetric,
         source_fields: Vec<FieldId>,
-        staleness_slo_secs: u64,
+        stale_entity_count_threshold: u64,
     ) -> Result<Self, IrValidationError> {
         if source_fields.is_empty() {
             return Err(IrValidationError::InvalidReference {
@@ -1250,13 +1249,9 @@ impl VectorFieldSpecV1 {
                 kind: "vector spec references itself as a source field",
             });
         }
-        if staleness_slo_secs == 0 {
-            // A floor violation reported as a floor violation — the previous
-            // `LimitExceeded { actual: 0, maximum: u64::MAX as usize }`
-            // rendered as "0 exceeds maximum 18446744073709551615" and
-            // truncated on 32-bit targets.
+        if stale_entity_count_threshold == 0 {
             return Err(IrValidationError::BelowMinimum {
-                kind: "vector spec staleness SLO",
+                kind: "vector spec stale-entity count threshold",
                 actual: 0,
                 minimum: 1,
             });
@@ -1266,7 +1261,7 @@ impl VectorFieldSpecV1 {
             field,
             metric,
             source_fields,
-            staleness_slo_secs,
+            stale_entity_count_threshold,
         })
     }
 
@@ -1294,10 +1289,10 @@ impl VectorFieldSpecV1 {
         &self.source_fields
     }
 
-    /// Declared staleness SLO in whole seconds.
+    /// Declared stale-entity count threshold.
     #[must_use]
-    pub const fn staleness_slo_secs(&self) -> u64 {
-        self.staleness_slo_secs
+    pub const fn stale_entity_count_threshold(&self) -> u64 {
+        self.stale_entity_count_threshold
     }
 }
 

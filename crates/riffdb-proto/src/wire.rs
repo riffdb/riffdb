@@ -3,7 +3,7 @@
 use riffdb_errors::{MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS};
 use riffdb_types::{
     MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
-    MAX_RECORD_FIELDS, MAX_STRING_BYTES,
+    MAX_RECORD_FIELDS, MAX_STRING_BYTES, MAX_VECTOR_DIMENSION,
 };
 
 use crate::{
@@ -257,7 +257,42 @@ fn value_at_depth(input: &[u8], depth: usize) -> Result<(), PreflightError> {
                 claim_singular(&mut saw_kind)?;
                 record(field.require_wire(2)?.bytes, depth)?;
             }
+            15 => {
+                claim_singular(&mut saw_kind)?;
+                vector(field.require_wire(2)?.bytes)?;
+            }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn vector(input: &[u8]) -> Result<(), PreflightError> {
+    let mut cursor = Cursor::new(input);
+    let mut component_count = 0_usize;
+    while let Some(field) = cursor.next()? {
+        if field.number != 1 {
+            continue;
+        }
+        match field.wire_type {
+            2 => {
+                let bytes = field.bytes;
+                if bytes.len() % size_of::<f32>() != 0 {
+                    return Err(PreflightError::Malformed);
+                }
+                component_count = component_count
+                    .checked_add(bytes.len() / size_of::<f32>())
+                    .ok_or(PreflightError::LimitExceeded)?;
+            }
+            5 => {
+                component_count = component_count
+                    .checked_add(1)
+                    .ok_or(PreflightError::LimitExceeded)?;
+            }
+            _ => return Err(PreflightError::Malformed),
+        }
+        if component_count > MAX_VECTOR_DIMENSION as usize {
+            return Err(PreflightError::LimitExceeded);
         }
     }
     Ok(())
@@ -750,6 +785,20 @@ mod tests {
         length_delimited(13, &list)
     }
 
+    fn vector_value(component_count: usize) -> Vec<u8> {
+        let packed = vec![0_u8; component_count * size_of::<f32>()];
+        length_delimited(15, &length_delimited(1, &packed))
+    }
+
+    fn unpacked_vector_value(component_count: usize) -> Vec<u8> {
+        let mut unpacked = Vec::with_capacity(component_count * (size_of::<f32>() + 1));
+        for _ in 0..component_count {
+            unpacked.push(0x0d);
+            unpacked.extend_from_slice(&0.0_f32.to_le_bytes());
+        }
+        length_delimited(15, &unpacked)
+    }
+
     fn nested_list(depth: usize) -> Vec<u8> {
         let mut value = vec![0x08, 0x00];
         for _ in 0..depth {
@@ -780,6 +829,50 @@ mod tests {
             crate::decode_value(&over_limit),
             Err(crate::ValueValidationError::PreflightLimitExceeded)
         );
+    }
+
+    #[test]
+    fn vector_field_15_is_preflight_bounded_for_packed_and_unpacked_wire() {
+        for accepted in [vector_value(4_096), unpacked_vector_value(4_096)] {
+            assert_eq!(value(&accepted), Ok(()));
+            let decoded = crate::decode_value(&accepted).expect("4,096 vector components");
+            let Some(crate::v1::value::Kind::VectorValue(vector)) = decoded.kind else {
+                panic!("vector branch");
+            };
+            assert_eq!(vector.components.len(), 4_096);
+        }
+
+        for refused in [vector_value(4_097), unpacked_vector_value(4_097)] {
+            assert_eq!(value(&refused), Err(PreflightError::LimitExceeded));
+            assert_eq!(
+                crate::decode_value(&refused),
+                Err(crate::ValueValidationError::PreflightLimitExceeded)
+            );
+        }
+
+        let malformed_packed = length_delimited(15, &length_delimited(1, &[0, 0, 0]));
+        assert_eq!(value(&malformed_packed), Err(PreflightError::Malformed));
+        assert_eq!(
+            crate::decode_value(&malformed_packed),
+            Err(crate::ValueValidationError::MalformedEncoding)
+        );
+
+        let mut duplicate_oneof = vector_value(1);
+        duplicate_oneof.extend_from_slice(&[0x08, 0x00]);
+        assert_eq!(value(&duplicate_oneof), Err(PreflightError::Malformed));
+        assert_eq!(
+            crate::decode_value(&duplicate_oneof),
+            Err(crate::ValueValidationError::MalformedEncoding)
+        );
+
+        let mut later_unknown = vec![0x08, 0x00];
+        later_unknown.extend(length_delimited(16, &[0xff; 4]));
+        assert_eq!(value(&later_unknown), Ok(()));
+        let decoded = crate::decode_value(&later_unknown).expect("unknown field 16 is ignored");
+        assert!(matches!(
+            decoded.kind,
+            Some(crate::v1::value::Kind::NullValue(_))
+        ));
     }
 
     #[test]

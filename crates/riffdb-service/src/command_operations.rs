@@ -1729,6 +1729,15 @@ fn materialize_value(
             materialize_exact_record(schema, record_schema, record, path)
                 .map(CanonicalValue::Record)
         }
+        (ValueTypeTag::Vector, SubmittedValue::Vector(vector)) => {
+            let expected = value_type
+                .vector_dimension()
+                .ok_or(MaterializationError::Integrity)?;
+            if vector.dimension() != expected.get() {
+                return Err(public_materialization(ValidationCode::TypeMismatch, path));
+            }
+            Ok(CanonicalValue::Vector(vector.clone()))
+        }
         _ => Err(public_materialization(ValidationCode::TypeMismatch, path)),
     }
 }
@@ -3381,6 +3390,37 @@ contract LargeDecimalInput version 1 {
         };
         assert_eq!(issues.as_slice().len(), 1);
         assert_eq!(issues.as_slice()[0].code(), ValidationCode::OutOfRange);
+        assert_eq!(issues.as_slice()[0].path().segments(), path);
+    }
+
+    #[test]
+    fn vector_materialization_enforces_the_exact_declared_dimension() {
+        let schema = riffdb_contract_ir::SchemaIr::new(vec![], vec![], vec![], vec![])
+            .expect("empty schema");
+        let declared =
+            ValueType::vector(riffdb_types::VectorDimension::new(3).expect("declared dimension"));
+        let path = vec![ValidationPathSegment::ListIndex(1)];
+        let matching = SubmittedValue::Vector(
+            riffdb_types::CanonicalVector::new(vec![1.0, 2.0, 3.0]).expect("finite vector"),
+        );
+        assert!(matches!(
+            materialize_submitted_value(&schema, &declared, &matching, path.clone()),
+            Ok(CanonicalValue::Vector(_))
+        ));
+
+        let mismatched = SubmittedValue::Vector(
+            riffdb_types::CanonicalVector::new(vec![1.0, 2.0]).expect("finite vector"),
+        );
+        let failure = materialize_submitted_value(&schema, &declared, &mismatched, path.clone())
+            .expect_err("dimension mismatch is caller-correctable");
+        let SubmittedValueMaterializationError::Public(error) = failure else {
+            panic!("dimension mismatch must not become an integrity failure");
+        };
+        let PublicErrorDetails::Validation(issues) = error.details() else {
+            panic!("vector materialization uses validation details");
+        };
+        assert_eq!(issues.as_slice().len(), 1);
+        assert_eq!(issues.as_slice()[0].code(), ValidationCode::TypeMismatch);
         assert_eq!(issues.as_slice()[0].path().segments(), path);
     }
 

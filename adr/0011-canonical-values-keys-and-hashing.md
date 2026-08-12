@@ -329,8 +329,8 @@ required before WP-010 publishes types or golden fixtures.
 ADR-0091 (native vector search projections, as amended) introduced
 `CanonicalValue::Vector` with canonical tag `0x0e`. The encoding landed in
 WP-591 (05eab14) without the amendment this registry requires; this section
-records it explicitly so the registry and the code agree. Pending maintainer
-ratification, flagged in the WP-591 fix-round report.
+records it explicitly so the registry and the code agree. The WP-596
+maintainer ruling recorded 2026-08-11 ratifies this amendment as written.
 
 | Tag | Value |
 |---|---|

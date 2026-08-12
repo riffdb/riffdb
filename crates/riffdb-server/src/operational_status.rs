@@ -190,6 +190,13 @@ fn required_health_snapshot(
         ComponentHealth::new(HealthComponentKind::CommitCoordinator, coordinator_status),
         ComponentHealth::new(HealthComponentKind::Outbox, outbox_status),
         ComponentHealth::new(HealthComponentKind::Projection, projection_status),
+        // Until the authoritative staleness observer is wired, emit an
+        // explicit unavailable component rather than silently reporting
+        // projection health under the wrong identity.
+        ComponentHealth::new(
+            HealthComponentKind::VectorStaleness,
+            HealthComponentStatus::Unavailable,
+        ),
     ])
     .map_err(|_| OperationalStatusError::Integrity)
 }
@@ -331,7 +338,7 @@ mod tests {
                 ColumnarWorkerReadiness::Ready,
             )
             .expect("fixed health shape");
-            assert_eq!(snapshot.components().len(), 5);
+            assert_eq!(snapshot.components().len(), 6);
             assert_eq!(
                 snapshot.components()[0].component(),
                 HealthComponentKind::AuthoritativeStorage
@@ -353,6 +360,10 @@ mod tests {
                 HealthComponentKind::Outbox
             );
             assert_eq!(
+                snapshot.components()[5].component(),
+                HealthComponentKind::VectorStaleness
+            );
+            assert_eq!(
                 status(&snapshot, HealthComponentKind::AuthoritativeStorage),
                 HealthComponentStatus::Healthy
             );
@@ -371,6 +382,10 @@ mod tests {
             assert_eq!(
                 status(&snapshot, HealthComponentKind::Projection),
                 HealthComponentStatus::Healthy
+            );
+            assert_eq!(
+                status(&snapshot, HealthComponentKind::VectorStaleness),
+                HealthComponentStatus::Unavailable
             );
         }
     }

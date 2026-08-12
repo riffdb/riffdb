@@ -6,10 +6,11 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_types::{
-    CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue, CurrencyCode,
-    Date, Decimal as CanonicalDecimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId,
-    MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
-    MAX_RECORD_FIELDS, MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
+    CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
+    CanonicalVector, CanonicalVectorError, CurrencyCode, Date, Decimal as CanonicalDecimal,
+    DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_BYTES_VALUE_BYTES,
+    MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_RECORD_FIELDS,
+    MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
 };
 
 use crate::v1;
@@ -166,6 +167,9 @@ fn canonical_value_from_proto_unchecked(
                 .map(CanonicalValue::Record)
                 .map_err(|_| ValueValidationError::InvalidFieldIdentity)
         }
+        Kind::VectorValue(value) => CanonicalVector::new(value.components)
+            .map(CanonicalValue::Vector)
+            .map_err(vector_error),
     }
 }
 
@@ -215,14 +219,9 @@ fn canonical_value_to_proto_unchecked(value: &CanonicalValue) -> v1::Value {
                 })
                 .collect(),
         }),
-        CanonicalValue::Vector(_) => {
-            // No wire variant exists for vectors. Emitting the kind-less
-            // value makes the fallible public wrapper reject it as
-            // MissingKind: a typed refusal instead of the previous silent
-            // pun through bytes_value, which changed Vector into Bytes on
-            // every round trip.
-            return v1::Value { kind: None };
-        }
+        CanonicalValue::Vector(vector) => Kind::VectorValue(v1::VectorValue {
+            components: vector.components().to_vec(),
+        }),
     };
     v1::Value { kind: Some(kind) }
 }
@@ -316,6 +315,20 @@ fn validate_value_at_depth(value: &v1::Value, depth: usize) -> Result<(), ValueV
             Ok(())
         }
         Kind::RecordValue(value) => validate_record(value, depth),
+        Kind::VectorValue(value) => CanonicalVector::new(value.components.clone())
+            .map(|_| ())
+            .map_err(vector_error),
+    }
+}
+
+fn vector_error(error: CanonicalVectorError) -> ValueValidationError {
+    match error {
+        CanonicalVectorError::DimensionOutOfRange { .. } => {
+            ValueValidationError::VectorDimensionOutOfRange
+        }
+        CanonicalVectorError::NonFiniteComponent { .. } => {
+            ValueValidationError::NonFiniteVectorComponent
+        }
     }
 }
 
@@ -568,6 +581,10 @@ pub enum ValueValidationError {
     InvalidEnumIdentity,
     /// Timestamp nanoseconds are not canonical.
     InvalidTimestamp,
+    /// A vector dimension is zero or exceeds the public 4096-component bound.
+    VectorDimensionOutOfRange,
+    /// A vector contains a NaN or infinite component.
+    NonFiniteVectorComponent,
 }
 
 impl fmt::Display for ValueValidationError {
@@ -580,17 +597,48 @@ impl Error for ValueValidationError {}
 
 #[cfg(test)]
 mod tests {
-    /// A canonical vector has no wire variant: conversion is a typed refusal,
-    /// never a silent pun through `bytes_value` (which turned Vector into
-    /// Bytes on every round trip).
+    /// Public vector conversion preserves canonical components and rejects
+    /// every native construction boundary before a value reaches schema
+    /// materialization.
     #[test]
-    fn vector_values_are_refused_not_punned_into_bytes() {
-        let vector = riffdb_types::CanonicalVector::new(vec![1.0_f32, 2.0]).expect("finite");
+    fn vector_values_round_trip_and_reject_noncanonical_boundaries() {
+        let vector = riffdb_types::CanonicalVector::new(vec![-0.0_f32, 2.0]).expect("finite");
         let value = riffdb_types::CanonicalValue::Vector(vector);
+        let proto = super::canonical_value_to_proto(&value).expect("typed vector wire value");
+        let v1::value::Kind::VectorValue(wire) = proto.kind.as_ref().expect("kind") else {
+            panic!("vector branch");
+        };
+        assert_eq!(wire.components[0].to_bits(), 0.0_f32.to_bits());
         assert_eq!(
-            super::canonical_value_to_proto(&value),
-            Err(super::ValueValidationError::MissingKind)
+            super::canonical_value_from_proto(proto),
+            Ok(value),
+            "public conversion is canonical and lossless"
         );
+
+        for (components, expected) in [
+            (Vec::new(), ValueValidationError::VectorDimensionOutOfRange),
+            (
+                vec![0.0; riffdb_types::MAX_VECTOR_DIMENSION as usize + 1],
+                ValueValidationError::VectorDimensionOutOfRange,
+            ),
+            (
+                vec![f32::NAN],
+                ValueValidationError::NonFiniteVectorComponent,
+            ),
+            (
+                vec![f32::INFINITY],
+                ValueValidationError::NonFiniteVectorComponent,
+            ),
+            (
+                vec![f32::NEG_INFINITY],
+                ValueValidationError::NonFiniteVectorComponent,
+            ),
+        ] {
+            let wire = v1::Value {
+                kind: Some(v1::value::Kind::VectorValue(v1::VectorValue { components })),
+            };
+            assert_eq!(validate_value(&wire), Err(expected));
+        }
     }
 
     use super::*;

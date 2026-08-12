@@ -289,7 +289,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "field",
                 "metric",
                 "source_fields",
-                "staleness_slo_secs",
+                "stale_entity_count_threshold",
             ],
         ),
         ("SecretFieldSpecV1", vec!["entity", "field"]),
