@@ -1073,12 +1073,9 @@ fn canonical_value_into_public_unchecked(value: riffdb_types::CanonicalValue) ->
             }
             Kind::RecordValue(v1::ValueRecord { fields })
         }
-        CanonicalValue::Vector(_) => {
-            // No wire variant exists for vectors; the kind-less value is
-            // rejected by the fallible wrapper's validation (MissingKind)
-            // instead of silently punning Vector into Bytes.
-            return v1::Value { kind: None };
-        }
+        CanonicalValue::Vector(vector) => Kind::VectorValue(v1::VectorValue {
+            components: vector.into_components(),
+        }),
     };
     v1::Value { kind: Some(kind) }
 }
@@ -3887,7 +3884,9 @@ pub fn health_result_to_proto(
                         }
                         HealthComponentKind::Projection => v1::HealthComponentKind::Projection,
                         HealthComponentKind::Outbox => v1::HealthComponentKind::Outbox,
-                        HealthComponentKind::VectorStaleness => v1::HealthComponentKind::Projection,
+                        HealthComponentKind::VectorStaleness => {
+                            v1::HealthComponentKind::VectorStaleness
+                        }
                     };
                     let status = match component.status() {
                         HealthComponentStatus::Healthy => v1::HealthComponentStatus::Healthy,
@@ -4978,6 +4977,9 @@ pub fn submitted_value_from_proto(value: v1::Value) -> Result<SubmittedValue, St
         )
         .map_err(|_| invalid_request()),
         Kind::RecordValue(value) => submitted_record_from_proto(value).map(SubmittedValue::Record),
+        Kind::VectorValue(value) => riffdb_types::CanonicalVector::new(value.components)
+            .map(SubmittedValue::Vector)
+            .map_err(|_| invalid_request()),
     }
 }
 
@@ -7082,5 +7084,70 @@ mod tests {
         let oversize = CanonicalValue::string("x".repeat(riffdb_types::MAX_STRING_BYTES))
             .expect("max-length string is constructible");
         assert!(canonical_value_into_public(oversize).is_err());
+    }
+}
+
+#[cfg(test)]
+mod vector_wire_tests {
+    use super::*;
+
+    fn wire(components: Vec<f32>) -> v1::Value {
+        v1::Value {
+            kind: Some(v1::value::Kind::VectorValue(v1::VectorValue { components })),
+        }
+    }
+
+    #[test]
+    fn vector_staleness_health_has_its_own_public_enum_value() {
+        let operational = riffdb_service::OperationalHealthSnapshot::new(vec![
+            riffdb_service::ComponentHealth::new(
+                riffdb_service::HealthComponentKind::VectorStaleness,
+                riffdb_service::HealthComponentStatus::Degraded,
+            ),
+        ])
+        .expect("health snapshot");
+        let report = riffdb_service::HealthReport::new(
+            Some(riffdb_types::ContractVersion::new(1).expect("version")),
+            None,
+            operational,
+            riffdb_types::Timestamp::new(1, 0).expect("timestamp"),
+            riffdb_service::BuildInfo::new("0.1.0", "rev", "rust", vec![], 1, 1, "baseline")
+                .expect("build"),
+        );
+        let response =
+            health_result_to_proto(&riffdb_service::HealthResult::Authenticated(report), 1);
+        let Some(v1::health_response::Result::Authenticated(report)) = response.result else {
+            panic!("authenticated health");
+        };
+        assert_eq!(report.components.len(), 1);
+        assert_eq!(
+            report.components[0].component,
+            v1::HealthComponentKind::VectorStaleness as i32
+        );
+        assert_ne!(
+            report.components[0].component,
+            v1::HealthComponentKind::Projection as i32
+        );
+    }
+
+    #[test]
+    fn server_vector_ingress_enforces_native_finiteness_and_dimension_bounds() {
+        let submitted =
+            submitted_value_from_proto(wire(vec![-0.0, 1.0])).expect("finite bounded vector");
+        let SubmittedValue::Vector(vector) = submitted else {
+            panic!("typed vector branch");
+        };
+        assert_eq!(vector.components()[0].to_bits(), 0.0_f32.to_bits());
+
+        assert!(submitted_value_from_proto(wire(vec![0.0; 4_096])).is_ok());
+        for components in [
+            Vec::new(),
+            vec![0.0; 4_097],
+            vec![f32::NAN],
+            vec![f32::INFINITY],
+            vec![f32::NEG_INFINITY],
+        ] {
+            assert!(submitted_value_from_proto(wire(components)).is_err());
+        }
     }
 }

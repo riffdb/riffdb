@@ -1436,7 +1436,8 @@ fn bind_schema_bound_value<'a>(
             | CanonicalValue::Bytes(_)
             | CanonicalValue::Timestamp(_)
             | CanonicalValue::Date(_)
-            | CanonicalValue::Uuid(_)),
+            | CanonicalValue::Uuid(_)
+            | CanonicalValue::Vector(_)),
         ) => Some(SchemaBoundOutcomeValue::Scalar(value)),
         _ => None,
     }
@@ -5211,7 +5212,9 @@ fn classify_health(
     if components.iter().any(|component| {
         matches!(
             component.component(),
-            HealthComponentKind::Projection | HealthComponentKind::Outbox
+            HealthComponentKind::Projection
+                | HealthComponentKind::Outbox
+                | HealthComponentKind::VectorStaleness
         ) && component.status() != HealthComponentStatus::Healthy
     }) {
         HealthStatus::Degraded
@@ -7332,8 +7335,8 @@ const COMMAND_OPERATION_ENVELOPE_SCHEMA_HASH: SchemaHash = SchemaHash::from_byte
     0xb7, 0xea, 0x37, 0x29, 0xf1, 0xd4, 0x69, 0xe0, 0xfd, 0x9a, 0xa8, 0xa1, 0x3f, 0x6b, 0x44, 0xd2,
 ]);
 const COMMAND_GET_OUTCOME_RESULT_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
-    0x0c, 0x1f, 0x33, 0xfb, 0xc6, 0x13, 0xb9, 0xe8, 0x7c, 0x4a, 0x54, 0xcc, 0xc2, 0xf7, 0xc1, 0xd4,
-    0x26, 0x62, 0x5c, 0xc0, 0xcb, 0x98, 0x23, 0x7e, 0x2b, 0xde, 0xd4, 0xbe, 0xc0, 0x73, 0xdd, 0xde,
+    0x10, 0x10, 0xf0, 0xf3, 0xa0, 0x52, 0xaa, 0x18, 0x63, 0x67, 0x39, 0xe2, 0xfb, 0x79, 0xfb, 0xaa,
+    0x8b, 0xf1, 0x91, 0x1e, 0xc0, 0x33, 0x8a, 0x30, 0x15, 0x81, 0x4b, 0x8e, 0x3d, 0x5a, 0x6b, 0xc8,
 ]);
 
 /// Body-free identity of one versioned operation schema.
@@ -10294,6 +10297,19 @@ contract OutcomeShapes version 1 {
     }
 
     #[test]
+    fn schema_bound_scalar_retains_canonical_vectors() {
+        let value = CanonicalValue::Vector(
+            riffdb_types::CanonicalVector::new(vec![-0.0, 1.5, -2.25]).expect("canonical vector"),
+        );
+        let bound = bind_schema_bound_value(&OutcomeValuePresentationPlan::Scalar, &value)
+            .expect("schema-bound vector scalar");
+        let SchemaBoundOutcomeValue::Scalar(CanonicalValue::Vector(vector)) = bound else {
+            panic!("vector was filtered before transport presentation")
+        };
+        assert_eq!(vector.components(), &[0.0, 1.5, -2.25]);
+    }
+
+    #[test]
     fn declared_outcomes_retain_exact_nested_field_and_enum_names() {
         let bundle = outcome_shapes_bundle();
         let change = fixture_command(&bundle, "Change");
@@ -11138,13 +11154,8 @@ contract OutcomeShapes version 1 {
 
 // ─── Vector staleness inspection (ADR-0091, VEC-003, VEC-004, VEC-012) ───
 //
-// PROVISIONAL SHAPE — no constructor call site, no service method, no wire
-// mapping. VEC-004's trigger clause compares a stale-entity COUNT against a
-// threshold that VEC-001 declares as a DURATION; that comparison is not
-// well-formed and its resolution is an open SPEC clarification awaiting the
-// maintainer (recorded in WP-592's deferred entry). These types must not be
-// read as having resolved it, and they may change shape when the ruling
-// lands.
+// V1 uses authoritative sequence comparison and a stale-entity count
+// threshold. Duration-based semantics are reserved for a future amendment.
 
 /// Request to inspect vector field staleness for one entity type.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11153,6 +11164,8 @@ pub struct VectorStalenessRequest {
     entity_type: riffdb_types::EntityTypeId,
     /// The vector field to inspect.
     vector_field: riffdb_types::VectorFieldId,
+    /// Bounded initial page or continuation.
+    page: PageRequest,
 }
 
 impl VectorStalenessRequest {
@@ -11161,10 +11174,12 @@ impl VectorStalenessRequest {
     pub const fn new(
         entity_type: riffdb_types::EntityTypeId,
         vector_field: riffdb_types::VectorFieldId,
+        page: PageRequest,
     ) -> Self {
         Self {
             entity_type,
             vector_field,
+            page,
         }
     }
 
@@ -11179,6 +11194,12 @@ impl VectorStalenessRequest {
     pub const fn vector_field(&self) -> riffdb_types::VectorFieldId {
         self.vector_field
     }
+
+    /// Requested bounded page.
+    #[must_use]
+    pub const fn page(&self) -> PageRequest {
+        self.page
+    }
 }
 
 /// Result of a vector staleness inspection.
@@ -11189,33 +11210,28 @@ pub struct VectorStalenessReport {
     /// Entities whose source fields have been written more recently than
     /// their embedding (stale embedding count).
     stale_count: u64,
-    /// The declared staleness SLO in seconds.
-    staleness_slo_seconds: u64,
-    /// Whether the SLO is currently breached.
-    ///
-    /// PROVISIONAL: the breach predicate is undecided — VEC-004 compares a
-    /// stale-entity count against a threshold VEC-001 declares as a
-    /// duration, and that clash awaits a SPEC clarification. This field
-    /// transports whatever decision the (not yet existing) producer makes;
-    /// it does not define one.
+    /// The declared positive stale-entity count threshold.
+    stale_entity_count_threshold: u64,
+    /// Whether the threshold is currently breached (`stale_count > threshold`).
     slo_breached: bool,
 }
 
 impl VectorStalenessReport {
     /// Creates a staleness report.
-    #[must_use]
-    pub const fn new(
+    pub fn new(
         total_entities: u64,
         stale_count: u64,
-        staleness_slo_seconds: u64,
-        slo_breached: bool,
-    ) -> Self {
-        Self {
+        stale_entity_count_threshold: u64,
+    ) -> Result<Self, ServiceDtoError> {
+        if stale_count > total_entities || stale_entity_count_threshold == 0 {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
             total_entities,
             stale_count,
-            staleness_slo_seconds,
-            slo_breached,
-        }
+            stale_entity_count_threshold,
+            slo_breached: stale_count > stale_entity_count_threshold,
+        })
     }
 
     /// Total entities with this vector field.
@@ -11230,14 +11246,13 @@ impl VectorStalenessReport {
         self.stale_count
     }
 
-    /// Declared staleness SLO in seconds.
+    /// Declared positive stale-entity count threshold.
     #[must_use]
-    pub const fn staleness_slo_seconds(&self) -> u64 {
-        self.staleness_slo_seconds
+    pub const fn stale_entity_count_threshold(&self) -> u64 {
+        self.stale_entity_count_threshold
     }
 
-    /// Whether the SLO is breached (provisional — see the field's note; the
-    /// breach predicate awaits a SPEC clarification).
+    /// Whether `stale_count` is strictly greater than the threshold.
     #[must_use]
     pub const fn slo_breached(&self) -> bool {
         self.slo_breached
@@ -11251,21 +11266,21 @@ pub struct VectorModelVersionRequest {
     entity_type: riffdb_types::EntityTypeId,
     /// The vector field to inspect.
     vector_field: riffdb_types::VectorFieldId,
-    /// The contract-declared current model version to compare against.
-    declared_model_version: String,
+    /// Bounded initial page or continuation.
+    page: PageRequest,
 }
 
 impl VectorModelVersionRequest {
     /// Creates a model-version inspection request.
-    pub fn new(
+    pub const fn new(
         entity_type: riffdb_types::EntityTypeId,
         vector_field: riffdb_types::VectorFieldId,
-        declared_model_version: impl Into<String>,
+        page: PageRequest,
     ) -> Self {
         Self {
             entity_type,
             vector_field,
-            declared_model_version: declared_model_version.into(),
+            page,
         }
     }
 
@@ -11281,10 +11296,10 @@ impl VectorModelVersionRequest {
         self.vector_field
     }
 
-    /// The declared model version.
+    /// Requested bounded page.
     #[must_use]
-    pub fn declared_model_version(&self) -> &str {
-        &self.declared_model_version
+    pub const fn page(&self) -> PageRequest {
+        self.page
     }
 }
 
@@ -11317,5 +11332,134 @@ impl VectorModelVersionReport {
     #[must_use]
     pub const fn outdated_count(&self) -> u64 {
         self.outdated_count
+    }
+}
+
+/// One stale entity proven from authoritative commit-sequence evidence.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorStalenessItem {
+    entity_key: EntityKey,
+    newest_source_write: CommitSequence,
+    embedding_write: CommitSequence,
+}
+
+impl VectorStalenessItem {
+    /// Constructs an item only when source state is strictly newer than the embedding.
+    pub fn new(
+        entity_key: EntityKey,
+        newest_source_write: CommitSequence,
+        embedding_write: CommitSequence,
+    ) -> Result<Self, ServiceDtoError> {
+        if newest_source_write <= embedding_write {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            entity_key,
+            newest_source_write,
+            embedding_write,
+        })
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn entity_key(&self) -> &EntityKey {
+        &self.entity_key
+    }
+
+    /// Returns the newest declared source-field write sequence.
+    #[must_use]
+    pub const fn newest_source_write(&self) -> CommitSequence {
+        self.newest_source_write
+    }
+
+    /// Returns the most recent embedding write sequence.
+    #[must_use]
+    pub const fn embedding_write(&self) -> CommitSequence {
+        self.embedding_write
+    }
+}
+
+impl fmt::Debug for VectorStalenessItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VectorStalenessItem")
+            .field("entity_key", &"[REDACTED]")
+            .field("newest_source_write", &self.newest_source_write)
+            .field("embedding_write", &self.embedding_write)
+            .finish()
+    }
+}
+
+/// Bounded stale-entity enumeration at one authoritative commit fence.
+pub type VectorStalenessPage = Page<VectorStalenessItem, Option<CommitSequence>>;
+
+/// One entity whose stored embedding model version is not contract-current.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorModelVersionItem {
+    entity_key: EntityKey,
+    metadata: riffdb_types::EmbeddingMetadata,
+    embedding_write: CommitSequence,
+}
+
+impl VectorModelVersionItem {
+    /// Retains checked authoritative embedding metadata.
+    #[must_use]
+    pub const fn new(
+        entity_key: EntityKey,
+        metadata: riffdb_types::EmbeddingMetadata,
+        embedding_write: CommitSequence,
+    ) -> Self {
+        Self {
+            entity_key,
+            metadata,
+            embedding_write,
+        }
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn entity_key(&self) -> &EntityKey {
+        &self.entity_key
+    }
+
+    /// Borrows the stored model identity and version.
+    #[must_use]
+    pub const fn metadata(&self) -> &riffdb_types::EmbeddingMetadata {
+        &self.metadata
+    }
+
+    /// Returns the embedding write sequence.
+    #[must_use]
+    pub const fn embedding_write(&self) -> CommitSequence {
+        self.embedding_write
+    }
+}
+
+impl fmt::Debug for VectorModelVersionItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VectorModelVersionItem")
+            .field("entity_key", &"[REDACTED]")
+            .field("metadata", &"[REDACTED]")
+            .field("embedding_write", &self.embedding_write)
+            .finish()
+    }
+}
+
+/// Bounded outdated-model enumeration at one authoritative commit fence.
+pub type VectorModelVersionPage = Page<VectorModelVersionItem, Option<CommitSequence>>;
+
+#[cfg(test)]
+mod vector_observability_tests {
+    use super::*;
+
+    #[test]
+    fn count_threshold_breach_is_strict_and_not_caller_selected() {
+        let at_threshold = VectorStalenessReport::new(7, 3, 3).expect("valid report");
+        assert!(!at_threshold.slo_breached());
+        let over_threshold = VectorStalenessReport::new(7, 4, 3).expect("valid report");
+        assert!(over_threshold.slo_breached());
+        assert!(VectorStalenessReport::new(3, 4, 3).is_err());
+        assert!(VectorStalenessReport::new(3, 1, 0).is_err());
     }
 }

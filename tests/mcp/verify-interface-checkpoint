@@ -200,9 +200,9 @@ jq -e '
         "source_path":"crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json"
       },
       {
-        "canonical_bytes":4739,
+        "canonical_bytes":4945,
         "owner":"riffdb-service",
-        "schema_hash":"0c1f33fbc613b9e87c4a54ccc2f7c1d426625cc0cb98237e2bded4bec073ddde",
+        "schema_hash":"1010f0f3a052aa18636739e2fb79fbaa8bf1911ec0338a3015814b8e3d5a6bc8",
         "schema_id":"riffdb.command-get-outcome-result/v1",
         "source_path":"crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
       }
@@ -296,9 +296,9 @@ fi
 
 jq -e '
     .schema == "riffdb.mcp.resource-registry/v1" and
-    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-30" and
-    .counts == {"concrete":9,"content_goldens":12,"entries":12,"subscribable":4,"templates":3} and
-    (.entries | length) == 12 and
+    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-08-04" and
+    .counts == {"concrete":10,"content_goldens":13,"entries":13,"subscribable":5,"templates":3} and
+    (.entries | length) == 13 and
     ([.entries[].descriptor_branch] == [
       "active_contract",
       "contract_version",
@@ -311,11 +311,12 @@ jq -e '
       "provenance.class_template",
       "provenance.provenance_id",
       "projection_status",
-      "server_health"
+      "server_health",
+      "reactive_wakeup"
     ]) and
-    ([.entries[] | select(.surface == "resources/list")] | length) == 9 and
+    ([.entries[] | select(.surface == "resources/list")] | length) == 10 and
     ([.entries[] | select(.surface == "resources/templates/list")] | length) == 3 and
-    ([.entries[] | select(.subscribable) | .descriptor_branch] == ["active_contract","command_plan","projection_status","server_health"]) and
+    ([.entries[] | select(.subscribable) | .descriptor_branch] == ["active_contract","command_plan","projection_status","server_health","reactive_wakeup"]) and
     ([.entries[] | select(.content_golden.uri != .golden_uri or .content_golden.mimeType != .mime_type)] | length) == 0
 ' "$resource_registry" >/dev/null
 
@@ -334,6 +335,7 @@ printf '%s\n' \
     'provenance.provenance_id|resources/list|riffdb://provenance/<provenance-id>|application/json|false' \
     'projection_status|resources/list|riffdb://projection/<lineage>/<projection-id>/status|application/json|true' \
     'server_health|resources/list|riffdb://server/health|application/json|true' \
+    'reactive_wakeup|resources/list|riffdb://reactive/wakeup|application/json|true' \
     > "$expected_resource_tuples"
 jq -r '
     .entries[] |

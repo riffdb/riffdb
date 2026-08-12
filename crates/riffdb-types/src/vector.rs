@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
-use std::time::Duration;
 
 /// The closed set of supported vector distance metrics.
 ///
@@ -89,38 +88,39 @@ impl fmt::Display for VectorDimension {
     }
 }
 
-/// A validated positive staleness SLO duration.
+/// A validated positive stale-entity count threshold.
 ///
-/// The minimum resolution is one second; zero is rejected.
+/// V1 compares this threshold directly with the authoritative count of stale
+/// entities. Duration-based staleness is reserved for a future amendment.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct StalenessSlo(Duration);
+pub struct StaleEntityCountThreshold(NonZeroU32);
 
-impl StalenessSlo {
-    /// Creates from seconds. Rejects zero.
+impl StaleEntityCountThreshold {
+    /// Creates a positive bounded count threshold. Zero is rejected.
     #[must_use]
-    pub const fn from_secs(secs: u64) -> Option<Self> {
-        if secs == 0 {
-            return None;
+    pub const fn new(value: u32) -> Option<Self> {
+        match NonZeroU32::new(value) {
+            Some(inner) => Some(Self(inner)),
+            None => None,
         }
-        Some(Self(Duration::from_secs(secs)))
     }
 
-    /// The staleness threshold duration.
+    /// Returns the declared stale-entity count threshold.
     #[must_use]
-    pub const fn duration(&self) -> Duration {
-        self.0
+    pub const fn get(self) -> u32 {
+        self.0.get()
     }
 
-    /// The staleness threshold in whole seconds.
+    /// Returns whether an authoritative stale count breaches this threshold.
     #[must_use]
-    pub const fn as_secs(&self) -> u64 {
-        self.0.as_secs()
+    pub const fn is_breached_by(self, stale_count: u64) -> bool {
+        stale_count > self.0.get() as u64
     }
 }
 
-impl fmt::Display for StalenessSlo {
+impl fmt::Display for StaleEntityCountThreshold {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}s", self.0.as_secs())
+        write!(f, "{} stale entities", self.0)
     }
 }
 
@@ -328,6 +328,15 @@ impl EmbeddingMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_entity_count_threshold_is_positive_and_strict() {
+        assert!(StaleEntityCountThreshold::new(0).is_none());
+        let threshold = StaleEntityCountThreshold::new(3).expect("positive threshold");
+        assert_eq!(threshold.get(), 3);
+        assert!(!threshold.is_breached_by(3));
+        assert!(threshold.is_breached_by(4));
+    }
 
     #[test]
     fn construction_rejects_non_finite_components_as_typed_errors() {

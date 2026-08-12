@@ -637,6 +637,7 @@ fn assert_derived_health_shape(response: &v1::HealthResponse) -> TestResult<()> 
         v1::HealthComponentKind::CommitCoordinator,
         v1::HealthComponentKind::Projection,
         v1::HealthComponentKind::Outbox,
+        v1::HealthComponentKind::VectorStaleness,
     ];
     let actual_kinds: Vec<_> = report
         .components
@@ -657,16 +658,28 @@ fn assert_derived_health_shape(response: &v1::HealthResponse) -> TestResult<()> 
         }
     }
     let mut derived_degraded = false;
-    for component in &report.components[3..] {
+    let mut unavailable_vector_staleness = 0;
+    for (kind, component) in expected_kinds[3..].iter().zip(&report.components[3..]) {
         match v1::HealthComponentStatus::try_from(component.status) {
             Ok(v1::HealthComponentStatus::Healthy) => {}
             Ok(v1::HealthComponentStatus::Degraded) => derived_degraded = true,
+            Ok(v1::HealthComponentStatus::Unavailable)
+                if *kind == v1::HealthComponentKind::VectorStaleness =>
+            {
+                unavailable_vector_staleness += 1;
+                derived_degraded = true;
+            }
             _ => {
                 return Err(test_failure(
                     "started derived Health component was unavailable",
                 ));
             }
         }
+    }
+    if unavailable_vector_staleness != 1 {
+        return Err(test_failure(
+            "Health did not exercise the explicit unavailable vector-staleness component",
+        ));
     }
     let expected_status = if derived_degraded {
         v1::HealthStatus::Degraded

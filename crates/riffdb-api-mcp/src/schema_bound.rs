@@ -128,10 +128,21 @@ pub enum McpSchemaBoundValue {
         /// Exact historical variant source name.
         variant_name: String,
     },
+    /// Fixed-dimension canonical vector.
+    Vector(riffdb_types::CanonicalVector),
     /// Ordered bounded list.
     List(Vec<Self>),
     /// Stable-ID-ordered historical-schema-bound record.
     Record(Vec<McpSchemaBoundField>),
+}
+
+impl McpSchemaBoundValue {
+    /// Validates and constructs one canonical vector value from public components.
+    pub fn vector(components: Vec<f32>) -> Result<Self, McpPresentationError> {
+        riffdb_types::CanonicalVector::new(components)
+            .map(Self::Vector)
+            .map_err(|_| McpPresentationError)
+    }
 }
 
 impl fmt::Debug for McpSchemaBoundValue {
@@ -640,6 +651,20 @@ fn render_schema_bound_value(
         {
             Ok(Value::String(variant_name.clone()))
         }
+        McpSchemaBoundValue::Vector(vector)
+            if vector_schema_matches(schema, vector.dimension()) =>
+        {
+            vector
+                .components()
+                .iter()
+                .copied()
+                .map(|component| {
+                    serde_json::to_value(crate::McpPresentedF32::new(component))
+                        .map_err(|_| McpPresentationError)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array)
+        }
         McpSchemaBoundValue::List(values) if schema_type(schema) == Some("array") => {
             let item_schema = schema.get("items").ok_or(McpPresentationError)?;
             if !item_schema.is_object() {
@@ -712,6 +737,26 @@ fn is_u64_schema(schema: &Map<String, Value>) -> bool {
 
 fn is_date_schema(schema: &Map<String, Value>) -> bool {
     exact_integer_bounds(schema, i128::from(i32::MIN), i32::MAX as u128)
+}
+
+fn vector_schema_matches(schema: &Map<String, Value>, dimension: u32) -> bool {
+    let Some(dimension) = riffdb_types::VectorDimension::new(dimension) else {
+        return false;
+    };
+    let dimension = u64::from(dimension.get());
+    schema_type(schema) == Some("array")
+        && schema
+            .get("x-riffdb-vectorDimension")
+            .and_then(Value::as_u64)
+            == Some(dimension)
+        && schema.get("minItems").and_then(Value::as_u64) == Some(dimension)
+        && schema.get("maxItems").and_then(Value::as_u64) == Some(dimension)
+        && schema
+            .get("items")
+            .and_then(Value::as_object)
+            .is_some_and(|items| {
+                items.len() == 1 && items.get("type").and_then(Value::as_str) == Some("number")
+            })
 }
 
 fn decimal_schema_matches(
@@ -1040,6 +1085,85 @@ mod tests {
             compose_dynamic_command_result(&read_only, &wrong_schema, &result_schema),
             Err(McpPresentationError)
         );
+    }
+
+    #[test]
+    fn vector_outcome_renders_for_committed_replayed_and_read_only_completions() {
+        const VECTOR_OUTCOME_SCHEMA: &str = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"embedding\":{\"items\":{\"type\":\"number\"},\"maxItems\":3,",
+            "\"minItems\":3,\"type\":\"array\",\"x-riffdb-vectorDimension\":3},",
+            "\"type\":{\"const\":\"Embedded\"}},",
+            "\"required\":[\"type\",\"embedding\"],\"type\":\"object\"}]}"
+        );
+        let outcome_schema = SchemaDocument::from_public_parts(
+            "riffdb.generated-schema/command-outcome-union/9/v1",
+            hash_schema(VECTOR_OUTCOME_SCHEMA.as_bytes()).as_bytes(),
+            VECTOR_OUTCOME_SCHEMA,
+        )
+        .expect("vector outcome schema");
+        let envelope = fixed_tool_registry()
+            .expect("registry")
+            .operation_schemas()
+            .first()
+            .expect("operation schema");
+        let result_schema =
+            compose_command_result_schema(&outcome_schema, envelope).expect("vector result schema");
+        let bound = McpSchemaBoundOutcome::new(
+            5,
+            "Embedded",
+            McpSchemaBoundValue::Record(vec![
+                McpSchemaBoundField::new(
+                    1,
+                    "embedding",
+                    McpSchemaBoundValue::vector(vec![-0.0, 1.5, -2.25]).expect("canonical vector"),
+                )
+                .expect("vector field"),
+            ]),
+        )
+        .expect("bound vector outcome");
+        let natural = McpNaturalOutcome::from_schema_bound(&bound, &outcome_schema)
+            .expect("natural vector outcome");
+        assert_eq!(
+            serde_json::to_value(&natural).expect("vector JSON"),
+            json!({"type": "Embedded", "embedding": [0.0, 1.5, -2.25]})
+        );
+
+        for status in [
+            McpJournaledCommandStatus::Committed,
+            McpJournaledCommandStatus::Replayed,
+        ] {
+            let completion = McpDynamicCommandCompletion::journaled(
+                status,
+                McpJournaledCommandResultParts {
+                    commit_sequence: 1,
+                    contract_version: 9,
+                    plan_hash: [0x44; 32],
+                    outcome: natural.clone(),
+                    provenance_uri: "riffdb://provenance/00000000-0001-7000-8000-000000000000"
+                        .to_owned(),
+                    durability: McpCommandDurability::Synchronous,
+                    outcome_uri: concat!(
+                        "riffdb://outcome/actor/orders/1/riffdb_cmd_orders_place/",
+                        "AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                    )
+                    .to_owned(),
+                },
+            )
+            .expect("journaled vector completion");
+            compose_dynamic_command_result(&completion, &outcome_schema, &result_schema)
+                .expect("journaled vector result");
+        }
+
+        let read_only = McpDynamicCommandCompletion::read_only(McpReadOnlyCommandResultParts {
+            contract_version: 9,
+            plan_hash: [0x44; 32],
+            outcome: natural,
+        })
+        .expect("read-only vector completion");
+        compose_dynamic_command_result(&read_only, &outcome_schema, &result_schema)
+            .expect("read-only vector result");
     }
 
     #[test]

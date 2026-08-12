@@ -1049,7 +1049,7 @@ layout!(VECTOR_FIELD_SPEC_LAYOUT, "VectorFieldSpecV1", {
     "field" => "FieldId",
     "metric" => "distance metric tag (0x01 cosine, 0x02 euclidean, 0x03 dot_product)",
     "source_fields" => "u32 count + FieldId[]",
-    "staleness_slo_secs" => "u64 declared staleness SLO in seconds",
+    "stale_entity_count_threshold" => "u64 declared stale-entity count threshold",
 });
 layout!(SECRET_FIELD_SPEC_LAYOUT, "SecretFieldSpecV1", {
     "entity" => "EntityTypeId",

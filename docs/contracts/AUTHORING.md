@@ -83,12 +83,17 @@ bundle, where it is part of the contract's durable identity:
 - The source fields name 1 to 1,024 distinct existing fields on the same
   entity — the fields whose edits make a stored embedding stale. A repeated
   name or the vector field itself is a compile error at its span.
-- `staleness_slo` is a positive whole number of seconds. The health-signal
-  trigger semantics for this SLO are an open SPEC clarification; declaring
-  the value is supported, acting on it is not yet implemented.
+- `staleness_slo` is the positive v1 stale-entity count threshold. A staleness
+  observer breaches the SLO only when `stale_count > staleness_slo`; equality
+  does not breach it. Duration-based or clock-based staleness is a named future
+  amendment, not a v1 interpretation of this declaration.
 
-Vector values themselves cannot yet be written or read through the typed wire
-surfaces, and `nearest()` execution stops at the storage boundary — see
+Typed vector values now cross the low-level native, Protobuf, gRPC, hosted MCP,
+and CLI conversion boundaries with finite-component and exact-dimension checks.
+Complete application embedding ingress is not yet available: authoritative
+storage still lacks the required model identity/version consumer, and stable
+generated application facades do not expose vector fields. The production
+staleness observer and `nearest()` storage path are also absent — see
 [Known Limitations](../known-limitations.md).
 
 ## Revision-checked workflow transitions

@@ -124,6 +124,7 @@ fn exact_value_execute_error_and_envelope_fields_are_frozen() {
                 ("enum_value", 12),
                 ("list_value", 13),
                 ("record_value", 14),
+                ("vector_value", 15),
             ],
         ),
         (
@@ -719,7 +720,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        261
+        262
     );
     assert_eq!(
         messages
@@ -732,15 +733,32 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
 }
 
 #[test]
-fn dynamic_values_never_use_floating_point_or_struct_fallbacks() {
+fn dynamic_values_use_only_the_explicit_bounded_vector_float_carrier() {
     let descriptors = descriptors();
     let messages = message_map(&descriptors);
-    for message in messages.values() {
-        assert!(message.field.iter().all(|field| {
-            !matches!(field.r#type(), Type::Double | Type::Float)
-                && field.type_name() != ".google.protobuf.Struct"
-        }));
+    let mut floating_fields = Vec::new();
+    for (message_name, message) in &messages {
+        for field in &message.field {
+            assert_ne!(
+                field.type_name(),
+                ".google.protobuf.Struct",
+                "dynamic Struct fallback is forbidden at {message_name}.{}",
+                field.name()
+            );
+            if matches!(field.r#type(), Type::Double | Type::Float) {
+                floating_fields.push((message_name.as_str(), field.name(), field.label()));
+            }
+        }
     }
+    assert_eq!(
+        floating_fields,
+        vec![(
+            "riffdb.v1.VectorValue",
+            "components",
+            prost_types::field_descriptor_proto::Label::Repeated,
+        )],
+        "binary32 is permitted only for the bounded typed vector carrier"
+    );
 }
 
 fn collect_hash_message_inputs(

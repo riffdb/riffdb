@@ -11699,19 +11699,15 @@ work_packages:
     gRPC and MCP with ADR-0040 parity.
   standing_design_tests:
     interface_safety: No public surface may accept an embedding without model identity and
-      version, and no wire path may pun a vector into another value kind (the proto surface
-      currently refuses vectors as a typed error until the wire variant is accepted).
+      version, and no wire path may pun a vector into another value kind.
     scale: Embedding writes are bounded by the declared dimension and the canonical document
       limits; staleness enumeration must be paginated under the standard query bounds.
   deferred:
-  - NOT STARTED beyond typed interface stubs. SubmittedValue::Vector has no construction
-    site, no wire variant carries a typed vector, EmbeddingMetadata has no consumer, the
-    staleness/model-version DTOs have no service methods, and
-    HealthComponentKind::VectorStaleness is never emitted (its gRPC mapping to Projection
-    breaks ADR-0040 parity and needs a proto enum decision). The declared metric, source
-    fields, and SLO now reach the compiled bundle (fix round), giving this package its
-    substrate. VEC-003's sequence-versus-duration SLO basis needs a SPEC clarification
-    before the staleness surface is built.
+  - Completion of the typed vector wire path, authoritative embedding consumer, count-based
+    staleness surface, model-version enumeration, and VectorStaleness health parity is assigned
+    to WP-596 under the maintainer rulings recorded 2026-08-11; no ruling remains open here.
+  - Duration-based staleness (an entity stale longer than a declared duration) is a named future
+    amendment; v1 enforces the declared stale-entity count threshold without clock machinery.
   human_review_triggers: *id001
 - id: WP-593
   name: Vectors exact tier — vector projection, exact KNN, nearest() with policy before ranking
@@ -11752,20 +11748,14 @@ work_packages:
     scale: K inherits the 499 page-take ceiling; the static plan cost charges the full
       partition-scan ceiling; the engine enforces its scan budget before allocation.
   deferred:
-  - The projection-plane integration (ProjectionController lifecycle, frontier reporting,
-    freshness service, snapshot rebuild, replay-budget detach) has no vector consumer yet;
-    nearest_query_snapshot is not wired into any QueryReadView adapter, so the executor path
-    is fail-closed but unserved
-  - Principal row-policy evaluation was absent at runtime when this round landed; the
-    alpha track has since begun landing the runtime evaluator (main 4e1f45e) — binding
-    compiled row policies into the nearest predicate set lands when that machinery wires
-    into the query paths, and the nearest path must be included in its coverage
-  - The service/wire surface for nearest results (vector cells refused on proto until a wire
-    variant is accepted; resolver still permits selecting a vector field into a result)
+  - Completion of vector projection lifecycle/frontier/freshness/rebuild/replay integration,
+    the production QueryReadView nearest adapter with the shared 500-row scan ceiling and
+    policy before ranking, parameterized-K binding, and typed vector result transport is
+    assigned to WP-596 under the maintainer rulings recorded 2026-08-11.
   human_review_triggers: *id001
 - id: WP-594
   name: Vectors approximate tier — first-party ANN structure under the declared-recall contract
-  depends_on: [WP-593]
+  depends_on: [WP-593, WP-596]
   objective: A first-party approximate structure engages above a declared row threshold, per
     organization, meeting each projection's declared recall target measured against exact scan
     at the same frontier; maintenance and compaction are bounded by recall regression at a
@@ -11773,12 +11763,18 @@ work_packages:
     centroids, codebooks) are computed per organization so no tenant's data influences
     another's rankings or timings.
   requirements: [VEC-008, VEC-009, VEC-010]
-  required_adrs: [ADR-0086, ADR-0091]
+  required_adrs: [ADR-0002, ADR-0086, ADR-0091]
   allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**, crates/riffdb-projection/**,
-    docs/**, fixtures/**, Cargo.toml, Cargo.lock, deny.toml]
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, docs/**, fixtures/**, Cargo.toml, Cargo.lock, deny.toml]
+  scope_expansion: Contract syntax, IR, and compiler are included solely because VEC-009 and
+    VEC-010 require the ANN row threshold and recall target to be declared on the projection;
+    the original ladder did not anticipate ownership of those declarations.
   deliverables:
   - First-party HNSW implementation with per-organization graph isolation, no external
     dependency (forbid(unsafe_code) preserved)
+  - Contract declarations for the per-organization ANN row threshold and recall target, with
+    bounded values, versioned encoding, span-carrying diagnostics, and compatibility fixtures
   - Declared recall target enforcement in the acceptance harness (recall@K against exact scan
     at matched frontiers across randomized histories)
   - Maintenance bounded by recall regression at a frozen frontier, harness-proven
@@ -11786,6 +11782,7 @@ work_packages:
   - Small-partition default routing (exact below the declared threshold) with the threshold a
     declared, observable property
   acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
   - cargo test -p riffdb-columnar -p riffdb-projection --all-features
   - cargo deny check
   exit_gate: The approximate tier meets each projection's declared recall target against
@@ -11797,8 +11794,8 @@ work_packages:
     scale: Graph memory and maintenance work bounded per organization; recall harness
       budgeted.
   deferred:
-  - NOT STARTED. Exact KNN (WP-593) currently full-sorts the candidate set; the bounded
-    heap and the approximate structure both land here.
+  - NOT STARTED. WP-596 must first close the exact-tier production path; the bounded exact
+    heap, declaration surface, and approximate structure then land here.
   human_review_triggers: *id001
 - id: WP-595
   name: Vectors pillar acceptance — end-to-end evidence and handbook graduation
@@ -11833,8 +11830,75 @@ work_packages:
       no silent staleness, no policy bypass, no recall opt-out.
     scale: Evidence harnesses bounded and replayable per seed.
   deferred:
-  - NOT STARTED. Depends on WP-592 (embedding ingress) and WP-594 (approximate tier),
-    both open; the obligation map's pending table enumerates what remains unproven.
+  - NOT STARTED. WP-596 supplies the exact-tier production prerequisites and WP-594 supplies
+    the approximate tier; the obligation map remains the authoritative pending evidence list.
+  human_review_triggers: *id001
+- id: WP-596
+  name: Vectors prerequisites completion — typed ingress, staleness, exact-tier reachability
+  depends_on: [WP-593]
+  objective: Close the deferred load-bearing WP-592/WP-593 surfaces before the approximate
+    tier — authoritative typed embedding ingress over native, gRPC, MCP, and CLI paths;
+    count-threshold staleness and model-version observability with a parity-preserving health
+    signal; vector projection lifecycle and exact nearest reachability with honest bounded
+    scan charging and policy before ranking; and parameterized K bound at execution.
+  requirements: [VEC-001, VEC-002, VEC-003, VEC-004, VEC-005, VEC-006, VEC-007, VEC-011,
+    VEC-012]
+  required_adrs: [ADR-0011, ADR-0040, ADR-0041, ADR-0086, ADR-0087, ADR-0091]
+  allowed_paths: [work_packages.yaml, SPEC.md,
+    adr/0011-canonical-values-keys-and-hashing.md,
+    adr/0040-public-grpc-mcp-parity-bridge.md,
+    adr/0041-cli-public-flow-and-output-contract.md, proto/**, fixtures/**,
+    crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-service/**, crates/riffdb-commit/**, crates/riffdb-runtime/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-cli/**,
+    crates/riffdb-client-rust/**,
+    crates/riffdb-server/**, crates/riffdb-columnar/**, crates/riffdb-projection/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**, docs/**, tests/**]
+  deliverables:
+  - VEC-001 amended to define the v1 staleness SLO as a declared stale-entity count threshold;
+    duration-based staleness remains a named future amendment
+  - Typed protobuf vector value with max-known-field pins, compatibility fixtures, and the same
+    canonical finiteness and declared-dimension validation as native ingress
+  - Authoritative embedding storage with provenance/idempotency, paginated staleness and
+    model-version enumeration, and a new VectorStaleness health component mapped in gRPC and
+    MCP lockstep under the additive ADR-0040 amendment
+  - Canonically round-tripping CLI vector JSON shape ratified by additive ADR-0041 amendment;
+    ADR-0011 durable canonical tag 0x0e amendment ratified as written
+  - Production vector projection consumer and QueryReadView adapter preserving ADR-0086
+    frontier/freshness/rebuild/replay semantics, shared 500-row scan ceiling, and row-policy
+    filtering before distance computation and ranking
+  - nearest(field, $vector, $k) compiled and bound end to end; K=499 succeeds while K=0 and
+    K=500 return typed span/bind errors; literal and parameter bounds share one definition
+  - DotProduct non-finite comments accurately document the deliberate defensive ranking
+    tradeoff without changing the independently reviewed behavior
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
+    -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-service -p riffdb-commit -p riffdb-runtime -p riffdb-server
+    -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-cli --all-features
+  - cargo test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-columnar
+    -p riffdb-projection --all-features
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  exit_gate: A remote application can write a canonical dimension-checked embedding and
+    observe typed staleness/model-version state and VectorStaleness health with gRPC/MCP
+    parity; exact nearest is production-reachable under policy and shared scan bounds with
+    literal or parameter K; all projection frontier/crash/replay guarantees remain intact.
+  standing_design_tests:
+    interface_safety: Organization scope, embedding metadata, dimension/finiteness checks,
+      staleness visibility, policy-before-ranking, and K bounds are structural or typed on
+      every public path; no transport can opt out of them.
+    scale: Vector dimension, stale/model enumeration pages, exact scans, K, projection replay,
+      diagnostics, and all wire collections are bounded before allocation or work.
+  deferred:
+  - Duration-based staleness is a future ADR amendment; v1 intentionally requires no clock.
+  - ANN threshold and recall-target declarations plus the first-party approximate structure
+    belong to WP-594, whose contract-owner path expansion is recorded above.
   human_review_triggers: *id001
 - id: WP-597
   name: Secret field classification with structural display-surface redaction

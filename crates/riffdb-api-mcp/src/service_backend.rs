@@ -62,26 +62,26 @@ use crate::{
     McpFixedResultBranch, McpFixedResultPayload, McpFixedToolRequest, McpFrontierPresentation,
     McpGeneratedSchemaKind, McpInvocationTarget, McpJournaledCommandResultParts,
     McpJournaledCommandStatus, McpNaturalOutcome, McpObservedInventory, McpObserverBackendError,
-    McpPageRequest, McpPostAuthenticationAdmission, McpPresentedBytes, McpPresentedField,
-    McpPresentedHash, McpPresentedI64, McpPresentedTimestamp, McpPresentedU64, McpPresentedUuid,
-    McpPresentedValue, McpProjectionFailureCode, McpProjectionFailurePresentation,
-    McpProjectionGenerationFrontierPresentation, McpProjectionIdentityPresentation,
-    McpProjectionLifecycle, McpProjectionStatusParts, McpProjectionStatusPresentation,
-    McpProvenanceSelector, McpPublishedApplyMode, McpRateTarget, McpReadOnlyCommandResultParts,
-    McpRequestId, McpResourceBody, McpResourceContent, McpResourceDescriptor,
-    McpResourceDiscoveryRequest, McpResourceDiscoverySurface, McpResourceJson, McpResourceLocator,
-    McpResourcePage, McpResourceReadRequest, McpSchemaBoundField, McpSchemaBoundOutcome,
-    McpSchemaBoundValue, McpSubmittedFieldIdentity, McpSubmittedValue,
-    McpSubscribedResourceObservation, McpSubscriptionRequest, McpToolDiscoveryItem,
-    McpToolInvocation, McpToolPage, McpToolResult, McpTransportKind, McpVisibleFingerprint,
-    RequestIdSource, RequestIdSourceError, SchemaDocument, compose_dynamic_command_result,
-    compose_fixed_tool_result, decode_dynamic_command_input, decode_fixed_tool_request,
-    decode_mcp_cursor, encode_mcp_cursor, fixed_tool_registry, format_active_contract_locator,
-    format_command_documentation_locator, format_command_plan_locator, format_commit_locator,
-    format_commit_template_locator, format_contract_version_locator, format_entity_schema_locator,
-    format_outcome_locator, format_outcome_template_locator_from_public,
-    format_projection_status_locator, format_provenance_locator,
-    format_provenance_template_locator, format_reactive_wakeup_locator,
+    McpPageRequest, McpPostAuthenticationAdmission, McpPresentedBytes, McpPresentedF32,
+    McpPresentedField, McpPresentedHash, McpPresentedI64, McpPresentedTimestamp, McpPresentedU64,
+    McpPresentedUuid, McpPresentedValue, McpProjectionFailureCode,
+    McpProjectionFailurePresentation, McpProjectionGenerationFrontierPresentation,
+    McpProjectionIdentityPresentation, McpProjectionLifecycle, McpProjectionStatusParts,
+    McpProjectionStatusPresentation, McpProvenanceSelector, McpPublishedApplyMode, McpRateTarget,
+    McpReadOnlyCommandResultParts, McpRequestId, McpResourceBody, McpResourceContent,
+    McpResourceDescriptor, McpResourceDiscoveryRequest, McpResourceDiscoverySurface,
+    McpResourceJson, McpResourceLocator, McpResourcePage, McpResourceReadRequest,
+    McpSchemaBoundField, McpSchemaBoundOutcome, McpSchemaBoundValue, McpSubmittedFieldIdentity,
+    McpSubmittedValue, McpSubscribedResourceObservation, McpSubscriptionRequest,
+    McpToolDiscoveryItem, McpToolInvocation, McpToolPage, McpToolResult, McpTransportKind,
+    McpVisibleFingerprint, RequestIdSource, RequestIdSourceError, SchemaDocument,
+    compose_dynamic_command_result, compose_fixed_tool_result, decode_dynamic_command_input,
+    decode_fixed_tool_request, decode_mcp_cursor, encode_mcp_cursor, fixed_tool_registry,
+    format_active_contract_locator, format_command_documentation_locator,
+    format_command_plan_locator, format_commit_locator, format_commit_template_locator,
+    format_contract_version_locator, format_entity_schema_locator, format_outcome_locator,
+    format_outcome_template_locator_from_public, format_projection_status_locator,
+    format_provenance_locator, format_provenance_template_locator, format_reactive_wakeup_locator,
     format_server_health_locator,
 };
 
@@ -3158,6 +3158,7 @@ fn submitted_value_from_mcp(value: McpSubmittedValue) -> Result<SubmittedValue, 
                 SourceName::new(name).map_err(invalid_response)?,
             ),
         )),
+        McpSubmittedValue::Vector(vector) => Ok(SubmittedValue::Vector(vector)),
         McpSubmittedValue::List(values) => SubmittedList::new(
             values
                 .into_iter()
@@ -4529,10 +4530,19 @@ fn canonical_natural_value(value: &CanonicalValue) -> Result<serde_json::Value, 
             "days_since_unix_epoch": value.days_since_unix_epoch(),
         })),
         CanonicalValue::Uuid(value) => Ok(serde_json::Value::String(format_uuid(*value))),
-        CanonicalValue::Enum { .. }
-        | CanonicalValue::List(_)
-        | CanonicalValue::Record(_)
-        | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
+        CanonicalValue::Vector(vector) => vector
+            .components()
+            .iter()
+            .copied()
+            .map(|component| {
+                serde_json::to_value(McpPresentedF32::new(component))
+                    .map_err(|_| McpBackendError::InvalidResponse)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        CanonicalValue::Enum { .. } | CanonicalValue::List(_) | CanonicalValue::Record(_) => {
+            Err(McpBackendError::InvalidResponse)
+        }
     }
 }
 
@@ -4806,11 +4816,11 @@ fn schema_bound_scalar(value: &CanonicalValue) -> Result<McpSchemaBoundValue, Mc
         }),
         CanonicalValue::Date(value) => Ok(McpSchemaBoundValue::Date(value.days_since_unix_epoch())),
         CanonicalValue::Uuid(value) => Ok(McpSchemaBoundValue::Uuid(*value)),
+        CanonicalValue::Vector(value) => Ok(McpSchemaBoundValue::Vector(value.clone())),
         CanonicalValue::Null
         | CanonicalValue::Enum { .. }
         | CanonicalValue::List(_)
-        | CanonicalValue::Record(_)
-        | CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
+        | CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
     }
 }
 
@@ -5026,10 +5036,14 @@ fn presented_value(value: &CanonicalValue) -> Result<McpPresentedValue, McpBacke
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         CanonicalValue::Record(record) => presented_record(record),
-        // SPEC's closed MCP Value union has no vector variant and forbids
-        // display aliases; presenting a vector is refused until the union is
-        // amended (fail closed, like the sibling refusals above).
-        CanonicalValue::Vector(_) => Err(McpBackendError::InvalidResponse),
+        CanonicalValue::Vector(vector) => Ok(McpPresentedValue::Vector {
+            components: vector
+                .components()
+                .iter()
+                .copied()
+                .map(McpPresentedF32::new)
+                .collect(),
+        }),
     }
 }
 
@@ -6066,6 +6080,125 @@ mod tests {
         assert_eq!(submitted.type_id(), None);
         assert_eq!(submitted.variant_id(), None);
         assert_eq!(submitted.name().map(SourceName::as_str), Some("Approved"));
+    }
+
+    #[test]
+    fn dynamic_mcp_vector_reaches_the_shared_service_as_a_typed_vector() {
+        let source = r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"embedding":{"description":"finite f32 vector components in declaration order; length must equal the declared dimension","items":{"type":"number"},"maxItems":3,"minItems":3,"type":"array","x-riffdb-vectorDimension":3}},"required":["embedding"],"type":"object"}"#;
+        let schema = SchemaDocument::from_public_parts(
+            "riffdb.command-input/vector-service/v1",
+            riffdb_types::hash_schema(source.as_bytes()).as_bytes(),
+            source,
+        )
+        .expect("checked vector schema");
+        let input = serde_json::json!({"embedding": [-0.0, 1.5, -2.25]});
+        crate::schema::RiffDbSchemaValidator
+            .validate(&schema, &input)
+            .expect("vector input is schema-approved");
+        let fields =
+            decode_dynamic_command_input(&crate::McpToolArguments::from_validated(input), &schema)
+                .expect("dynamic vector decoding");
+        let submitted = submitted_record_from_mcp(McpSubmittedValue::Record(fields))
+            .expect("shared service record");
+        let SubmittedValue::Vector(vector) = submitted.fields()[0].value() else {
+            panic!("dynamic MCP vector reached the service as list or bytes");
+        };
+        assert_eq!(
+            vector
+                .components()
+                .iter()
+                .map(|component| component.to_bits())
+                .collect::<Vec<_>>(),
+            [0.0_f32, 1.5, -2.25]
+                .into_iter()
+                .map(f32::to_bits)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vector_output_uses_fixed_tagged_and_symbolic_natural_shapes() {
+        let vector =
+            riffdb_types::CanonicalVector::new(vec![-0.0, 1.5, -2.25]).expect("canonical vector");
+        let value = CanonicalValue::Vector(vector);
+        assert_eq!(
+            serde_json::to_value(presented_value(&value).expect("fixed vector"))
+                .expect("fixed vector JSON"),
+            serde_json::json!({
+                "kind": "vector",
+                "components": [0.0, 1.5, -2.25],
+            })
+        );
+        assert_eq!(
+            canonical_natural_value(&value).expect("symbolic natural vector"),
+            serde_json::json!([0.0, 1.5, -2.25])
+        );
+    }
+
+    #[test]
+    fn authenticated_health_publishes_provisional_vector_staleness_exactly() {
+        use riffdb_service::{
+            BuildInfo, ComponentHealth, HealthComponentKind, HealthComponentStatus, HealthReport,
+            OperationalHealthSnapshot,
+        };
+
+        let operational = OperationalHealthSnapshot::new(vec![
+            ComponentHealth::new(
+                HealthComponentKind::AuthoritativeStorage,
+                HealthComponentStatus::Healthy,
+            ),
+            ComponentHealth::new(HealthComponentKind::Catalog, HealthComponentStatus::Healthy),
+            ComponentHealth::new(
+                HealthComponentKind::CommitCoordinator,
+                HealthComponentStatus::Healthy,
+            ),
+            ComponentHealth::new(
+                HealthComponentKind::Projection,
+                HealthComponentStatus::Healthy,
+            ),
+            ComponentHealth::new(HealthComponentKind::Outbox, HealthComponentStatus::Healthy),
+            ComponentHealth::new(
+                HealthComponentKind::VectorStaleness,
+                HealthComponentStatus::Unavailable,
+            ),
+        ])
+        .expect("six distinct health components");
+        let report = HealthReport::new(
+            Some(riffdb_types::ContractVersion::new(1).expect("contract version")),
+            Some(riffdb_types::CommitSequence::first()),
+            operational,
+            riffdb_types::Timestamp::new(1, 0).expect("timestamp"),
+            BuildInfo::new("0.1.0", "test", "1.97.0", vec![], 1, 1, "2025-11-25")
+                .expect("build metadata"),
+        );
+        let authenticated = serde_json::to_value(AuthenticatedHealthToolPayload {
+            database: "default",
+            audience: "riffdb-grpc-loopback",
+            health: authenticated_health_payload(&report),
+        })
+        .expect("health presentation");
+        let output = serde_json::json!({"authenticated": authenticated});
+        let definition = fixed_tool_registry()
+            .expect("fixed registry")
+            .tools()
+            .iter()
+            .find(|definition| definition.name() == "riffdb_server_health")
+            .expect("health definition");
+        crate::schema::RiffDbSchemaValidator
+            .validate(definition.result_schema(), &output)
+            .expect("published health output matches its schema");
+        assert_eq!(output["authenticated"]["status"], "degraded");
+        assert_eq!(
+            output["authenticated"]["components"],
+            serde_json::json!([
+                {"component":"authoritative_storage","status":"healthy"},
+                {"component":"catalog","status":"healthy"},
+                {"component":"commit_coordinator","status":"healthy"},
+                {"component":"projection","status":"healthy"},
+                {"component":"outbox","status":"healthy"},
+                {"component":"vector_staleness","status":"unavailable"}
+            ])
+        );
     }
 
     #[test]

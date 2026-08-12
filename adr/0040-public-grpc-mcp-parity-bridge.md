@@ -1460,3 +1460,40 @@ ADR-0006/ADR-0028, ADR-0009/ADR-0018/ADR-0037, ADR-0041, and work-package-DAG
 reconciliation. The exact-text deadline was satisfied on 2026-07-22; the
 separately named operation-schema byte checkpoint remains mandatory before
 conversion, client, or consumer implementation proceeds.
+
+
+## Amendment: vector values and staleness health identity (Accepted 2026-08-11)
+
+Status: Accepted by the maintainer on 2026-08-11.
+
+WP-596 adds one typed public value branch and one authenticated-health component identity. This amendment is additive: existing field numbers, enum numbers, RPCs, service placement, authorization, request identity, and error mappings are unchanged.
+
+`proto/riffdb/v1/value.proto` appends exactly:
+
+```protobuf
+message VectorValue {
+  repeated float components = 1;
+}
+
+message Value {
+  oneof kind {
+    // Existing fields 1 through 14 are unchanged.
+    VectorValue vector_value = 15;
+  }
+}
+```
+
+A vector contains 1 through 4,096 IEEE 754 binary32 components. Public decoders bound packed and unpacked forms before allocation, reject NaN and both infinities, and canonicalize negative zero to positive zero through the same `CanonicalVector` constructor used by native ingress. The selected compiled command schema then enforces exact equality with its declared dimension. No transport may encode a vector through `bytes_value` or skip schema materialization.
+
+`proto/riffdb/v1/admin.proto` appends exactly:
+
+```protobuf
+enum HealthComponentKind {
+  // Existing values 0 through 5 are unchanged.
+  HEALTH_COMPONENT_KIND_VECTOR_STALENESS = 6;
+}
+```
+
+The gRPC conversion of service `HealthComponentKind::VectorStaleness` MUST map to public `VECTOR_STALENESS`, and MCP MUST render the same component as `vector_staleness`. It is forbidden to map this signal to `Projection`: vector staleness is authoritative embedding quality state, while projection health remains derived index readiness. Both transports expose or omit the component from the same API-neutral `HealthReport`; neither transport manufactures a transport-local signal.
+
+Compatibility fixtures pin `Value.vector_value` as the maximum known field 15, the packed component representation, malformed packed lengths, the 4,096-component boundary, and health enum number 6. Unknown later fields remain ignored under the existing additive policy, while duplicate known oneof branches fail preflight. This amendment does not authorize direct storage access, an MCP-only method, a generic vector endpoint, or a database-owned embedding model call.

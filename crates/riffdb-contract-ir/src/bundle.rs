@@ -2586,7 +2586,7 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             for source in spec.source_fields() {
                 writer.u32(source.get())?;
             }
-            writer.u64(spec.staleness_slo_secs())?;
+            writer.u64(spec.stale_entity_count_threshold())?;
         }
     }
     // Conditional extension (ADR-0118): contracts without secret-classified
@@ -4099,13 +4099,13 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             for _ in 0..source_count {
                 source_fields.push(decode_field_id(reader)?);
             }
-            let staleness_slo_secs = reader.u64()?;
+            let stale_entity_count_threshold = reader.u64()?;
             vector_field_specs.push(crate::VectorFieldSpecV1::new(
                 entity,
                 field,
                 metric,
                 source_fields,
-                staleness_slo_secs,
+                stale_entity_count_threshold,
             )?);
         }
     }

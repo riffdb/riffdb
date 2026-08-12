@@ -1176,6 +1176,14 @@ fn public_natural_value(value: v1::Value) -> Result<serde_json::Value, ResponseC
             Ok(serde_json::Value::String(value.name))
         }
         Kind::EnumValue(_) => Err(ResponseConversionError),
+        Kind::VectorValue(value) => {
+            let McpPresentedValue::Vector { components } =
+                McpPresentedValue::vector(value.components).map_err(|_| ResponseConversionError)?
+            else {
+                return Err(ResponseConversionError);
+            };
+            serde_json::to_value(components).map_err(|_| ResponseConversionError)
+        }
         Kind::ListValue(values) => values
             .values
             .into_iter()
@@ -1537,6 +1545,9 @@ fn schema_bound_value(value: v1::Value) -> Result<McpSchemaBoundValue, ResponseC
             })
         }
         Kind::EnumValue(_) => Err(ResponseConversionError),
+        Kind::VectorValue(value) => {
+            McpSchemaBoundValue::vector(value.components).map_err(|_| ResponseConversionError)
+        }
         Kind::ListValue(value) => value
             .values
             .into_iter()
@@ -2807,6 +2818,9 @@ pub(crate) fn presented_value(
             })
         }
         Kind::EnumValue(_) => Err(ResponseConversionError),
+        Kind::VectorValue(value) => {
+            McpPresentedValue::vector(value.components).map_err(|_| ResponseConversionError)
+        }
         Kind::ListValue(value) => Ok(McpPresentedValue::List {
             values: value
                 .values
@@ -2986,6 +3000,7 @@ fn health_component(value: i32) -> Result<&'static str, ResponseConversionError>
         Some(v1::HealthComponentKind::CommitCoordinator) => Ok("commit_coordinator"),
         Some(v1::HealthComponentKind::Projection) => Ok("projection"),
         Some(v1::HealthComponentKind::Outbox) => Ok("outbox"),
+        Some(v1::HealthComponentKind::VectorStaleness) => Ok("vector_staleness"),
         Some(v1::HealthComponentKind::Unspecified) | None => Err(ResponseConversionError),
     }
 }
@@ -3333,6 +3348,97 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn dynamic_vector_result_preserves_committed_replayed_and_read_only_parity() {
+        const VECTOR_OUTCOME_SCHEMA: &str = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"embedding\":{\"items\":{\"type\":\"number\"},\"maxItems\":3,",
+            "\"minItems\":3,\"type\":\"array\",\"x-riffdb-vectorDimension\":3},",
+            "\"type\":{\"const\":\"Embedded\"}},",
+            "\"required\":[\"type\",\"embedding\"],\"type\":\"object\"}]}"
+        );
+        let outcome_schema = SchemaDocument::from_public_parts(
+            "riffdb.generated-schema/command-outcome-union/9/v1",
+            riffdb_types::hash_schema(VECTOR_OUTCOME_SCHEMA.as_bytes()).as_bytes(),
+            VECTOR_OUTCOME_SCHEMA,
+        )
+        .expect("vector outcome schema");
+        let input_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{},",
+            "\"required\":[],\"type\":\"object\"}"
+        );
+        let input_schema = SchemaDocument::from_public_parts(
+            "riffdb.generated-schema/command-input/9/v1",
+            riffdb_types::hash_schema(input_source.as_bytes()).as_bytes(),
+            input_source,
+        )
+        .expect("vector input schema");
+        let definition = riffdb_api_mcp::McpDynamicToolDefinition::from_discovered_command(
+            "riffdb_cmd_vectors_embed",
+            input_schema,
+            outcome_schema,
+        )
+        .expect("vector command definition");
+        let response = |status| {
+            let read_only =
+                status == v1::execute_command_response::CompletionStatus::ExecutedReadOnly;
+            v1::ExecuteCommandResponse {
+                status: status as i32,
+                commit_sequence: if read_only { 0 } else { 1 },
+                contract_version: 9,
+                plan_hash: vec![0x44; 32],
+                outcome_type: "Embedded".to_owned(),
+                outcome: Some(v1::Value {
+                    kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                        fields: vec![v1::ValueField {
+                            field_id: Some(1),
+                            name: "embedding".to_owned(),
+                            value: Some(v1::Value {
+                                kind: Some(v1::value::Kind::VectorValue(v1::VectorValue {
+                                    components: vec![-0.0, 1.5, -2.25],
+                                })),
+                            }),
+                        }],
+                    })),
+                }),
+                provenance_uri: if read_only {
+                    String::new()
+                } else {
+                    "riffdb://provenance/00000000-0001-7000-8000-000000000000".to_owned()
+                },
+                durability_mode: if read_only {
+                    String::new()
+                } else {
+                    "sync".to_owned()
+                },
+                outcome_uri: (!read_only).then(|| {
+                    concat!(
+                        "riffdb://outcome/actor/orders/1/riffdb_cmd_orders_place/",
+                        "AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                    )
+                    .to_owned()
+                }),
+                history_incarnation: 1,
+            }
+        };
+
+        for status in [
+            v1::execute_command_response::CompletionStatus::Committed,
+            v1::execute_command_response::CompletionStatus::Replayed,
+            v1::execute_command_response::CompletionStatus::ExecutedReadOnly,
+        ] {
+            dynamic_command_result(
+                response(status),
+                9,
+                definition.outcome_schema(),
+                definition.result_schema(),
+            )
+            .expect("vector dynamic result");
+        }
     }
 
     #[test]

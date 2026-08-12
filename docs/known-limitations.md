@@ -56,24 +56,24 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
-- Vector search is compile-complete but not client-reachable. Contracts may
-  declare `vector_field`s and `nearest()` queries compile to bounded
-  org-scoped plans, but no public write surface accepts a vector value (the
-  typed wire variant is pending human review), and no production storage
-  adapter serves nearest execution — both row stores refuse the step as a
-  typed error. Generated Rust, Go, and Python client models exclude vector
-  fields entirely until the wire variant lands.
-- Until then the read surfaces deliberately disagree about vector cells: CLI
-  JSON output carries the complete value as `{"type": "vector", ...}` with
-  base64 big-endian f32 components — an interim form outside ADR-0041's
-  closed output list, pending its amendment — while gRPC and hosted MCP
-  refuse any response containing a vector value as a typed error rather than
-  punning, truncating, or aliasing it.
-- Vector staleness tracking (VEC-003/VEC-004/VEC-012) is typed-interface
-  staging only: nothing computes staleness, counts stale entities, or emits
-  the vector-staleness health component, and the SLO breach predicate
-  (stale-entity count versus a duration-typed threshold) awaits a SPEC
-  clarification.
+- Vector search remains compile-complete but is not application-reachable end
+  to end. The low-level native and typed Protobuf value branches, gRPC and
+  hosted MCP conversions, and CLI numeric component arrays now preserve finite
+  binary32 vectors without bytes punning. Stable generated Rust, Go, and Python
+  application models still exclude vector fields, and authoritative embedding
+  persistence does not yet consume the required model identity/version or
+  stamp embedding provenance and write-sequence evidence.
+- Vector staleness now has v1 count semantics: a declared positive stale-entity
+  threshold breaches only when `stale_count > threshold`; duration-based
+  semantics are future work. Paginated staleness and model-version DTOs exist,
+  but no authoritative storage producer or public operation currently
+  enumerates them. The dedicated `vector_staleness` health component is emitted
+  as `unavailable` rather than being overloaded onto `projection` or reported
+  healthy without an observer.
+- No production storage adapter serves `nearest()` execution — both row stores
+  refuse the step as a typed error. Vector projection lifecycle integration,
+  policy-before-ranking production reachability, parameterized K, and the ANN
+  tier/recall contract remain deferred.
 - Reactive applications are partition-local and bounded. P8 does not provide
   raw CDC, global or cross-partition order, physical time-based event
   retention, exactly-once external effects, event-sourced reconstruction,
