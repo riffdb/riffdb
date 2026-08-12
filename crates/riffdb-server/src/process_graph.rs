@@ -34,13 +34,13 @@ use riffdb_policy::{
 };
 use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
-    ApplicationService, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
-    ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
-    CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
-    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
-    RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors,
-    ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata,
-    ServiceProviders, ServiceTelemetry,
+    ApplicationExportApplication, ApplicationService, AuthoritativeReadPort, BuildInfo,
+    CapabilityTokenIssuer, CatalogReadPort, ColumnarProjectionPort, ContractMigrationApplication,
+    CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator, EventConsumerClock,
+    EventConsumerPort, EventLeaseTokenSource, OperationalStatusPort, ProjectionQueryPort,
+    QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler, RiffDbServiceActivator,
+    ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
+    ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -48,6 +48,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{Audience, Environment, Timestamp};
 
+use crate::application_export_adapter::ServerApplicationExportCoordinator;
 use crate::auth_adapters::{
     ServerCapabilityTokenIssuer, ServerCredentialAuthenticator, ServerCurrentPolicyPort,
     ServerIdempotencyDigestProvider,
@@ -511,6 +512,11 @@ impl ProductionGraphBuilder {
             maintenance.installation_migration_receipts(),
             &blocking,
         ));
+        let application_export = Arc::new(ServerApplicationExportCoordinator::new(
+            storage.clone(),
+            &blocking,
+            clocks.application_export(),
+        ));
         // Retained for the graceful-shutdown validated-prefix write (ADR-0019 A1).
         let shutdown_storage = storage.clone();
         let providers = ServiceProviders::new(
@@ -545,6 +551,7 @@ impl ProductionGraphBuilder {
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration)
         .with_application_installation(installation);
+        let providers = providers.with_application_export(application_export);
         let identity = ServiceIdentity::new(
             database_id,
             environment,
@@ -553,7 +560,8 @@ impl ProductionGraphBuilder {
         );
         let service = Arc::new(activator.activate(identity, process, executors, providers));
         let application_service: Arc<dyn ApplicationService> = service.clone();
-        let migration_service: Arc<dyn ContractMigrationApplication> = service;
+        let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
+        let export_service: Arc<dyn ApplicationExportApplication> = service;
 
         if let Err(source) = lifecycle.install_activated_with_telemetry(
             application_service,
@@ -575,6 +583,17 @@ impl ProductionGraphBuilder {
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         if let Err(source) = lifecycle.install_contract_migration(migration_service) {
+            lifecycle.stop();
+            let cleanup = cleanup_unpublished_graph(
+                columnar_worker,
+                projection_worker,
+                coordinator,
+                blocking,
+                &notifications,
+            );
+            return Err(ProductionGraphBuildError::Activation { source, cleanup });
+        }
+        if let Err(source) = lifecycle.install_application_export(export_service) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
                 columnar_worker,

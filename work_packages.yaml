@@ -10985,6 +10985,7 @@ work_packages:
     crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-observability/**, crates/riffdb-server/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
     crates/riffdb-cli/**, clients/**, tests/**, scripts/**, docs/**, release/**]
   deliverables:

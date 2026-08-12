@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportOperationId, ApplicationExportSnapshotBindingV1,
-    ContractLineage,
+    ContractLineage, PartitionKey,
 };
 
 use crate::{
-    StorageError, StorageScanLimit, StorageValueError, StoredAdministrationAuditRecordV1,
-    StoredDurableEventV1, StoredDurableEventV2, StoredEntityRecordV1, StoredProvenanceRecordV1,
+    EntityTarget, StorageError, StorageScanLimit, StorageValueError,
+    StoredAdministrationAuditRecordV1, StoredDurableEventV1, StoredDurableEventV2,
+    StoredEntityRecordV1, StoredProvenanceRecordV1,
 };
 
 /// Maximum canonical durable progress bytes retained for one export operation.
@@ -134,6 +135,13 @@ pub trait ApplicationExportSnapshotReader: Send + Sync {
     /// Exact database/history/frontier/application identity of this snapshot.
     fn binding(&self) -> &ApplicationExportSnapshotBindingV1;
 
+    /// Exact compiler-produced contract bundle owning symbolic interpretation.
+    ///
+    /// These bytes remain inside the trusted service/compiler boundary. They
+    /// are never returned by an export transport and cannot be selected by a
+    /// caller.
+    fn contract_bundle_bytes(&self) -> &[u8];
+
     /// Reads one bounded ascending class page after an internal continuation.
     fn read_application_export_source_page(
         &self,
@@ -141,6 +149,23 @@ pub trait ApplicationExportSnapshotReader: Send + Sync {
         after: Option<&[u8]>,
         limit: StorageScanLimit,
     ) -> Result<ApplicationExportSourcePageV1, StorageError>;
+
+    /// Resolves one compiler-derived indexed relationship against the same
+    /// immutable snapshot used by the export page.
+    ///
+    /// The prefix is never caller supplied: current row-policy authority
+    /// derives it from compiler IR and transaction-current principal facts.
+    fn application_export_indexed_relationship_exists(
+        &self,
+        index_prefix: &[u8],
+        partition: &PartitionKey,
+    ) -> Result<bool, StorageError>;
+
+    /// Reads one policy-anchor row from the same immutable publication root.
+    fn read_application_export_policy_anchor(
+        &self,
+        target: &EntityTarget,
+    ) -> Result<Option<StoredEntityRecordV1>, StorageError>;
 }
 
 /// Captures one current immutable published snapshot after full validation.

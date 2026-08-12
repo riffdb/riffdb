@@ -124,6 +124,10 @@ impl ProductionWallClocks {
         ServerOutboxClock(Arc::clone(&self.shared))
     }
 
+    pub(crate) fn application_export(&self) -> ServerApplicationExportClock {
+        ServerApplicationExportClock(Arc::clone(&self.shared))
+    }
+
     /// Samples server-owned process metadata without borrowing a semantic consumer port.
     pub(crate) fn process_time(&self) -> Result<Timestamp, ServerProcessClockError> {
         self.shared.now().map_err(|_| ServerProcessClockError)
@@ -159,6 +163,22 @@ impl fmt::Display for ServerProcessClockError {
 }
 
 impl std::error::Error for ServerProcessClockError {}
+
+/// Server-owned wall clock used only for export lease boundaries.
+#[derive(Clone)]
+pub(crate) struct ServerApplicationExportClock(Arc<CanonicalWallClock>);
+
+impl ServerApplicationExportClock {
+    pub(crate) fn now(&self) -> Result<Timestamp, ServerProcessClockError> {
+        self.0.now().map_err(|_| ServerProcessClockError)
+    }
+}
+
+impl fmt::Debug for ServerApplicationExportClock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerApplicationExportClock([REDACTED])")
+    }
+}
 
 /// A settable wall-time source used only by this crate's tests.
 ///

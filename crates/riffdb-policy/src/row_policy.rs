@@ -4,9 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use riffdb_auth::PrincipalFactBindingV1;
+#[cfg(feature = "test-fixtures")]
+use riffdb_contract_ir::SchemaIr;
 use riffdb_contract_ir::{
     ContractBundle, KeySchema, RowPolicyExpressionNodeV1, RowPolicyOperandV1, RowPolicyOperationV1,
-    RowPolicyPlanV1, RowPolicyValueSourceV1, SchemaIr,
+    RowPolicyPlanV1, RowPolicyValueSourceV1,
 };
 use riffdb_types::{
     ActorKind, CanonicalRecord, CanonicalValue, CanonicalValueHash, CapabilityId,
@@ -15,8 +17,8 @@ use riffdb_types::{
 };
 
 use crate::{
-    AuthorizedApplicationQuery, AuthorizedCommandExecution, AuthorizedOperation,
-    AuthorizedRowPolicyAuthority,
+    AuthorizedApplicationExportV1, AuthorizedApplicationQuery, AuthorizedCommandExecution,
+    AuthorizedOperation, AuthorizedRowPolicyAuthority,
 };
 
 /// Failure to reconstruct exact compiler-owned row-policy execution authority.
@@ -845,6 +847,38 @@ pub fn resolve_authorized_query_row_policy_context(
             },
         );
     }
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
+
+/// Resolves the complete read-policy context for a principal-filtered export.
+///
+/// The entity set comes only from the exact immutable compiler bundle. A
+/// whole-application operator export has no row-policy context; a principal
+/// export without current V4 policy authority fails closed.
+#[doc(hidden)]
+pub fn resolve_authorized_application_export_row_policy_context(
+    authorization: &AuthorizedApplicationExportV1,
+    bundle: &ContractBundle,
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    if authorization.request().selection().lineage() != bundle.lineage() {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    if authorization.request().selection().scope()
+        == riffdb_types::CapabilityApplicationExportScopeV1::WholeApplication
+    {
+        return Ok(None);
+    }
+    let authority = authorization
+        .internal_row_policy_authority()
+        .ok_or(QueryRowPolicyContextErrorV1::MissingReadBinding)?;
+    let policies = resolve_read_policies(
+        authority,
+        bundle,
+        bundle.schema().entities().iter().map(|entity| entity.id()),
+    )?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
         principal: authority.internal_principal().clone(),
         policies,

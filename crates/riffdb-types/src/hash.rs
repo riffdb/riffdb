@@ -119,11 +119,13 @@ pub enum HashDomain {
     ApplicationExportManifest,
     /// One terminal symbolic application-export receipt.
     ApplicationExportReceipt,
+    /// One opaque checkpoint cursor for a symbolic application export.
+    ApplicationExportCursor,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 46] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -169,6 +171,7 @@ impl HashDomain {
         Self::ApplicationExportPage,
         Self::ApplicationExportManifest,
         Self::ApplicationExportReceipt,
+        Self::ApplicationExportCursor,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -219,6 +222,7 @@ impl HashDomain {
             Self::ApplicationExportPage => "riffdb.application-export-page/v1",
             Self::ApplicationExportManifest => "riffdb.application-export-manifest/v1",
             Self::ApplicationExportReceipt => "riffdb.application-export-receipt/v1",
+            Self::ApplicationExportCursor => "riffdb.application-export-cursor/v1",
         }
     }
 }

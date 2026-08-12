@@ -3180,6 +3180,10 @@ services
     GetContractMigrationOperation .riffdb.v1.GetContractMigrationOperationRequest -> .riffdb.v1.GetContractMigrationOperationResponse (unary)
     StartApplicationInstallation .riffdb.v1.StartApplicationInstallationRequest -> .riffdb.v1.StartApplicationInstallationResponse (unary)
     GetApplicationInstallation .riffdb.v1.GetApplicationInstallationRequest -> .riffdb.v1.GetApplicationInstallationResponse (unary)
+    StartApplicationExport .riffdb.v1.StartApplicationExportRequest -> .riffdb.v1.StartApplicationExportResponse (unary)
+    GetApplicationExportPage .riffdb.v1.GetApplicationExportPageRequest -> .riffdb.v1.GetApplicationExportPageResponse (unary)
+    GetApplicationExport .riffdb.v1.GetApplicationExportRequest -> .riffdb.v1.GetApplicationExportResponse (unary)
+    CancelApplicationExport .riffdb.v1.CancelApplicationExportRequest -> .riffdb.v1.CancelApplicationExportResponse (unary)
   riffdb.v1.CommandService
     Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
     ExecuteBatch .riffdb.v1.ExecuteCommandBatchRequest -> .riffdb.v1.ExecuteCommandBatchResponse (unary)
