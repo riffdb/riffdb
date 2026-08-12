@@ -68,6 +68,26 @@ visibility at all: predicates on the field, uniqueness enforcement, and
 index participation run inside the command and query engines against full
 records.
 
+## Revealing a secret explicitly
+
+The escape hatch is a capability whose field-visibility entry names the
+secret field in its dedicated `secret_field_ids` list (distinct from the
+ordinary `field_ids`, which never reveals). The naming survives storage at
+full fidelity (capability record V6) and delegation can only narrow it. A
+read that explicitly selects the named field under such a capability
+returns the value; the same read one grant short fails with a typed
+field-visibility denial. When creating a capability through the CLI or the
+admin API, add `secret_field_ids` to the field-visibility entry:
+
+```json
+{
+  "contract_lineage": "myapp",
+  "entity_type_id": 3,
+  "field_ids": [1, 2],
+  "secret_field_ids": [7]
+}
+```
+
 ## What is stored
 
 Durable records, backups, exports, and changelog frames carry secret fields
