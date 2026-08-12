@@ -1250,6 +1250,21 @@ impl ServiceHarness {
         self.deadline_scheduler.elapse_projection_deadline();
     }
 
+    /// Deterministic guarantee probe: a controlled projection-deadline
+    /// future that is created (and enrolled) but never yet polled must still
+    /// receive an elapse fired before its first poll. Guards the tokio
+    /// `notify_waiters`-reaches-created-futures guarantee the barrier fix
+    /// relies on.
+    pub(crate) async fn probe_projection_deadline_wakeup_before_first_poll(&self) {
+        self.deadline_scheduler.control_projection_deadline();
+        let future = self
+            .deadline_scheduler
+            .wait_until(std::time::Instant::now() + Duration::from_secs(5));
+        assert_eq!(self.deadline_scheduler.projection_waiters(), 1);
+        self.deadline_scheduler.elapse_projection_deadline();
+        future.await;
+    }
+
     pub(crate) fn revoke_after_next_projection_observation(&self) {
         let policy = Arc::clone(&self.policy);
         self.ports
@@ -4408,6 +4423,10 @@ impl HarnessDeadlineScheduler {
         self.projection_deadline.notify_waiters();
     }
 
+    fn projection_waiters(&self) -> usize {
+        self.projection_waiters.load(Ordering::Acquire)
+    }
+
     fn control_stream_lifetime(&self) {
         let prior = self
             .controlled_stream_lifetime_waits
@@ -4430,10 +4449,22 @@ impl RequestDeadlineScheduler for HarnessDeadlineScheduler {
             self.admission_wait_registrations
                 .fetch_add(1, Ordering::AcqRel);
         }
+        // Lost-wakeup hazard closed by ORDER: the waiter counters are what
+        // the tests' barriers observe, and `Notify::notify_waiters` only
+        // reaches `Notified` futures that already EXIST (tokio's creation
+        // guarantee; it stores no permit). The old order incremented the
+        // counter BEFORE creating the future, so on the multi-thread test
+        // runtime a barrier could observe the count and fire the elapse
+        // inside the create window, losing the wakeup (deterministically
+        // reproducible by widening that window). Creation — plus `enable()`
+        // as an explicit enrolment — now happens-before the increment, so an
+        // observed counter implies a reachable waiter.
         if self.control_request_deadline.swap(false, Ordering::AcqRel) {
+            let mut notified = Box::pin(self.request_deadline.notified());
+            notified.as_mut().enable();
             self.request_waiters.fetch_add(1, Ordering::AcqRel);
             self.request_registered.notify_waiters();
-            return Box::pin(self.request_deadline.notified());
+            return notified;
         }
         if self
             .controlled_stream_lifetime_waits
@@ -4442,15 +4473,19 @@ impl RequestDeadlineScheduler for HarnessDeadlineScheduler {
             })
             .is_ok_and(|remaining| remaining == 1)
         {
+            let mut notified = Box::pin(self.stream_lifetime.notified());
+            notified.as_mut().enable();
             self.stream_lifetime_waiters.fetch_add(1, Ordering::AcqRel);
-            return Box::pin(self.stream_lifetime.notified());
+            return notified;
         }
         if self.control_projection_deadline.load(Ordering::Acquire)
             && deadline.saturating_duration_since(Instant::now()) < Duration::from_secs(10)
         {
+            let mut notified = Box::pin(self.projection_deadline.notified());
+            notified.as_mut().enable();
             self.projection_waiters.fetch_add(1, Ordering::AcqRel);
             self.projection_registered.notify_waiters();
-            return Box::pin(self.projection_deadline.notified());
+            return notified;
         }
         Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
             deadline,
