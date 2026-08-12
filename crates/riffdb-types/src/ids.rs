@@ -474,6 +474,18 @@ hash_id!(
     /// The digest of one complete staged contract migration validation.
     ContractMigrationValidationDigest
 );
+hash_id!(
+    /// The hash of one canonical symbolic application-export page.
+    ApplicationExportPageHash
+);
+hash_id!(
+    /// The identity of one canonical symbolic application-export manifest.
+    ApplicationExportManifestHash
+);
+hash_id!(
+    /// The identity of one terminal symbolic application-export receipt.
+    ApplicationExportReceiptHash
+);
 
 /// A validation failure for a UUIDv7 identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -662,6 +674,10 @@ uuid_v7_id!(
 uuid_v7_id!(
     /// The caller-stable identifier of one application installation campaign.
     ApplicationInstallationCampaignId
+);
+uuid_v7_id!(
+    /// The caller-stable identifier of one symbolic application export.
+    ApplicationExportOperationId
 );
 
 /// A safe validation failure for a bounded textual identifier.

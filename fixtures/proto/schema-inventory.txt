@@ -1299,6 +1299,45 @@ messages
   riffdb.v1.AffectedEntity fields=2
     1 entity_key optional bytes
     2 entity_version optional uint64
+  riffdb.v1.ApplicationExportOperation fields=13
+    1 operation_id optional bytes
+    2 selection optional .riffdb.v1.ApplicationExportSelection
+    3 snapshot optional .riffdb.v1.ApplicationExportSnapshotBinding
+    4 phase optional .riffdb.v1.ApplicationExportPhase
+    5 lease_expires_at optional .riffdb.v1.Timestamp
+    6 pages_released optional uint64
+    7 rows_released optional uint64
+    8 bytes_released optional uint64
+    9 failure optional .riffdb.v1.ApplicationExportFailure
+    10 canonical_manifest_json optional bytes
+    11 canonical_receipt_json optional bytes
+    12 manifest_hash optional bytes
+    13 receipt_hash optional bytes
+  riffdb.v1.ApplicationExportPage fields=8
+    1 operation_id optional bytes
+    2 page_number optional uint64
+    3 record_class optional .riffdb.v1.ApplicationExportRecordClass
+    4 canonical_json_lines repeated bytes
+    5 next_cursor optional bytes
+    6 class_complete optional bool
+    7 operation_complete optional bool
+    8 page_hash optional bytes
+  riffdb.v1.ApplicationExportSelection fields=6
+    1 contract_lineage optional string
+    2 scope optional .riffdb.v1.CapabilityApplicationExportScope
+    3 entities optional bool
+    4 events optional bool
+    5 provenance optional bool
+    6 public_audit optional bool
+  riffdb.v1.ApplicationExportSnapshotBinding fields=8
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 application_frontier optional uint64
+    4 administration_frontier optional uint64
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 query_module_hashes repeated bytes
+    8 reactive_module_hashes repeated bytes
   riffdb.v1.ApplicationInstallationDriverProof fields=1
     1 drivers repeated .riffdb.v1.ApplicationInstallationDriver
   riffdb.v1.ApplicationInstallationExternalCompletion fields=2
@@ -1363,6 +1402,12 @@ messages
     5 storage_format_version optional uint32
     6 contract_ir_version optional uint32
     7 mcp_protocol_baseline optional string
+  riffdb.v1.CancelApplicationExportRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.CancelApplicationExportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationExportOperation oneof=result
   riffdb.v1.CapabilityApplicationExportGrant fields=6
     1 contract_lineage optional string
     2 scope optional .riffdb.v1.CapabilityApplicationExportScope
@@ -1857,6 +1902,19 @@ messages
     1 absent optional .riffdb.v1.Unit oneof=result
     2 present optional .riffdb.v1.ContractDescriptor oneof=result
     3 database_alias optional string
+  riffdb.v1.GetApplicationExportPageRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 cursor optional bytes
+    4 max_rows optional uint32
+  riffdb.v1.GetApplicationExportPageResponse fields=1
+    1 page optional .riffdb.v1.ApplicationExportPage
+  riffdb.v1.GetApplicationExportRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.GetApplicationExportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationExportOperation oneof=result
   riffdb.v1.GetApplicationInstallationRequest fields=2
     1 request_id optional bytes
     2 campaign_id optional bytes
@@ -2285,6 +2343,15 @@ messages
   riffdb.v1.SourceSpan fields=2
     1 start optional uint32
     2 end optional uint32
+  riffdb.v1.StartApplicationExportRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 selection optional .riffdb.v1.ApplicationExportSelection
+    4 lease_seconds optional uint32
+  riffdb.v1.StartApplicationExportResponse fields=3
+    1 disposition optional .riffdb.v1.ApplicationExportStartDisposition
+    2 operation optional .riffdb.v1.ApplicationExportOperation
+    3 cursor optional bytes
   riffdb.v1.StartApplicationInstallationRequest fields=4
     1 request_id optional bytes
     2 campaign_id optional bytes
@@ -2713,6 +2780,34 @@ enums
     1 ACTOR_KIND_HUMAN
     2 ACTOR_KIND_AGENT
     3 ACTOR_KIND_SERVICE
+  riffdb.v1.ApplicationExportFailure values=8
+    0 APPLICATION_EXPORT_FAILURE_UNSPECIFIED
+    1 APPLICATION_EXPORT_FAILURE_AUTHORITY_CHANGED
+    2 APPLICATION_EXPORT_FAILURE_SNAPSHOT_UNAVAILABLE
+    3 APPLICATION_EXPORT_FAILURE_SOURCE_INVALID
+    4 APPLICATION_EXPORT_FAILURE_LEASE_EXPIRED
+    5 APPLICATION_EXPORT_FAILURE_CANCELLED
+    6 APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED
+    7 APPLICATION_EXPORT_FAILURE_INTERNAL
+  riffdb.v1.ApplicationExportPhase values=7
+    0 APPLICATION_EXPORT_PHASE_UNSPECIFIED
+    1 APPLICATION_EXPORT_PHASE_ACCEPTED
+    2 APPLICATION_EXPORT_PHASE_EXPORTING
+    3 APPLICATION_EXPORT_PHASE_COMPLETED
+    4 APPLICATION_EXPORT_PHASE_CANCELLED
+    5 APPLICATION_EXPORT_PHASE_EXPIRED
+    6 APPLICATION_EXPORT_PHASE_FAILED_CLOSED
+  riffdb.v1.ApplicationExportRecordClass values=5
+    0 APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED
+    1 APPLICATION_EXPORT_RECORD_CLASS_ENTITY
+    2 APPLICATION_EXPORT_RECORD_CLASS_EVENT
+    3 APPLICATION_EXPORT_RECORD_CLASS_PROVENANCE
+    4 APPLICATION_EXPORT_RECORD_CLASS_PUBLIC_AUDIT
+  riffdb.v1.ApplicationExportStartDisposition values=4
+    0 APPLICATION_EXPORT_START_DISPOSITION_UNSPECIFIED
+    1 APPLICATION_EXPORT_START_DISPOSITION_ACCEPTED
+    2 APPLICATION_EXPORT_START_DISPOSITION_ALREADY_ACCEPTED
+    3 APPLICATION_EXPORT_START_DISPOSITION_TERMINAL
   riffdb.v1.ApplicationInstallationDriver values=5
     0 APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED
     1 APPLICATION_INSTALLATION_DRIVER_RUST
