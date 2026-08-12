@@ -632,7 +632,7 @@ pub trait AuthoritativeReadPort: Send + Sync {
         'a,
         BoxPortCapacityPermit<
             AuthoritativeEventReplayRequest,
-            riffdb_catalog::SymbolicEventReplayPage,
+            crate::AuthoritativeEventReplayPage,
             AuthoritativeReadError,
         >,
         PortAdmissionError,

@@ -5,9 +5,10 @@ application roles. They are intended to make a forgotten application-side row
 check impossible: a request carries ordinary operation values only, while the
 compiler and authorization path own the exact policy proof.
 
-WP-570 freezes authoring, IR, identities, and capability-fact delegation. The
-first WP-572 increment adds the shared pure evaluator: it denies missing rules,
-facts, rows, and exact relationship evidence; evaluates read/create/delete
+WP-570 freezes authoring, IR, identities, and capability-fact delegation.
+WP-572 applies the shared pure evaluator across authoritative, projected,
+search, live, event, contextual, workflow, scheduler, and bulk safe points. It
+denies missing rules, facts, rows, and exact relationship evidence; evaluates read/create/delete
 against the required row; evaluates update against both transaction-current and
 successor state; and issues a move-only proof bound to the exact capability
 revision and row hashes. The same evaluator filters rows before limits and
@@ -49,18 +50,17 @@ Contextual hydration has a policy-aware grouped-query path that executes every
 declared hydration for one work item inside one shared authoritative snapshot.
 The service derives the protected entity union only from exact deployed
 reactive and query modules, resolves it against current V4 authority, and
-reauthorizes before hydration and release. That is not sufficient to authorize
-the trigger event itself: until its compiler-owned current-row anchor is
-resolved and checked, V4 credentials cannot consume, acknowledge, inspect, or
-react to contextual work. An adapter that implements only the older
-unprotected grouped-query port also fails closed.
+reauthorizes before cursor publication, hydration, and release. The trigger
+event is independently checked through its compiler-owned current-row anchor
+before it can be leased. Acknowledgement and negative acknowledgement repeat
+that event check in the same authoritative transaction as consumer mutation.
 
-After anchored trigger release is enabled, contextual reaction helpers will
-continue to validate the exact live lease and causation token before invoking
-the ordinary compiled-command service. They cannot submit an evaluated
-mutation or bypass the transaction-current command policy verifier; a denied
-current or successor row commits nothing. During the staged rollout, V4
-credentials are denied before this helper can act on an unanchored lease.
+Contextual reaction helpers validate the sealed causation token and exact live
+lease, then repeat current capability, trigger-row, relationship, and event
+policy evaluation in one storage safe point before invoking the ordinary
+compiled-command service. They cannot submit an evaluated mutation or bypass
+the transaction-current command verifier; a denied event, current row, or
+successor row commits nothing. Old events without an anchor remain hidden.
 
 Native projected queries now derive the complete candidate-key set from one
 organization partition and one immutable projection snapshot. The configured
@@ -73,15 +73,20 @@ The operation refuses a candidate set above the fixed 100,000-row admission
 ceiling; it never post-filters or returns a partial aggregate.
 
 Event replay/tail, durable streams, contextual trigger delivery and reactions,
-consumer status/checkpoint operations, wakeup visibility, and export remain
-deliberately closed for V4 credentials until their respective safe points
-consume the same authority. Export additionally requires a distinct current
-Capability V5 grant; V4 row policy alone never implies it. Event policy cannot
-be guessed from payload field names: the accepted anchor surface binds an
-event to an explicit current source-entity key and read policy, but
-compiler/runtime activation remains fail-closed during its exact-identity
-rollout. Do not implement a temporary middleware filter or weaken this
-refusal.
+consumer status, protected opaque seek, and acknowledgement now consume the
+same current anchor authority. Filtering occurs before visible limits, leases,
+hydration, cursor release, and reaction command admission. Protected replay
+returns a typed `bounded_progress` result after at most 1,024 physical
+candidates so hidden history cannot force unbounded work or disclose its
+cardinality. Cursors bind capability revision and application-role policy
+identity. The untargeted global reactive-wakeup resource remains denied for V4
+credentials because it has no subscription identity with which to suppress
+hidden commit timing.
+
+Export additionally requires a distinct current Capability V5 grant; V4 row
+policy alone never implies it. Event policy is never guessed from payload field
+names. An event without the compiler-owned source entity/key and policy anchor
+is indistinguishable hidden history for ordinary protected consumers.
 Provisioning rejects missing, extra, or mistyped facts as `RDB-AR010`; it does
 not silently drop an unknown fact or substitute a default value. A role whose
 selected policy reads `principal.id` also rejects a principal that is not
@@ -183,11 +188,12 @@ row-policy extension, and its decoder rejects missing extensions, noncanonical
 fact or binding order, duplicate entity selection, unknown operation tags, and
 role-identity substitution. Current authorization reconstructs facts only from
 the transaction-current retained record. Authoritative RiffQL, native projected
-queries, compiled commands, and live named RiffQL watches are the enabled
-protected surfaces. Contextual RiffQL hydration has its shared evaluator but
-remains unreachable for V4 credentials until trigger-event anchor enforcement
-lands. Other protected surfaces remain unavailable until their shared policy
-and final-safe-point enforcement lands.
+queries, compiled commands, live named RiffQL watches, compiler-anchored event
+replay/streams, protected consumer state, and contextual subscriptions/reactions
+are enabled protected surfaces. The generic database-wide reactive wakeup
+remains unavailable because it cannot prove subscription-specific visibility.
+Other protected surfaces remain unavailable until their shared policy and
+final-safe-point enforcement lands.
 
 ## Binding a protected role
 

@@ -66,11 +66,18 @@ message SymbolicEvent {
   repeated SymbolicEventField fields = 13;
 }
 
+enum EventPageDisposition {
+  EVENT_PAGE_DISPOSITION_UNSPECIFIED = 0;
+  EVENT_PAGE_DISPOSITION_PAGE = 1;
+  EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS = 2;
+}
+
 message EventPage {
   repeated SymbolicEvent items = 1;
   bytes next_cursor = 2;
   EventId observed_upper = 3;
   uint64 history_incarnation = 4;
+  EventPageDisposition disposition = 5;
 }
 
 message ReplayEventsRequest {

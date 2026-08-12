@@ -364,7 +364,7 @@ pub(crate) fn fixed_request_to_proto(
             )?),
             checkpoint: progress_cursor
                 .is_none()
-                .then(|| v1::EventConsumerCheckpoint {
+                .then_some(v1::EventConsumerCheckpoint {
                     position: Some(match checkpoint {
                         None => v1::event_consumer_checkpoint::Position::BeforeFirst(v1::Unit {}),
                         Some((commit_sequence, event_ordinal)) => {

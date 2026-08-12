@@ -289,6 +289,9 @@ enum-value riffdb.v1.EventConsumerPullDisposition 0 EVENT_CONSUMER_PULL_DISPOSIT
 enum-value riffdb.v1.EventConsumerPullDisposition 1 EVENT_CONSUMER_PULL_DISPOSITION_READY
 enum-value riffdb.v1.EventConsumerPullDisposition 2 EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT
 enum-value riffdb.v1.EventConsumerPullDisposition 3 EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS
+enum-value riffdb.v1.EventPageDisposition 0 EVENT_PAGE_DISPOSITION_UNSPECIFIED
+enum-value riffdb.v1.EventPageDisposition 1 EVENT_PAGE_DISPOSITION_PAGE
+enum-value riffdb.v1.EventPageDisposition 2 EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS
 enum-value riffdb.v1.ExecutionFailureCode 3 EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT
 enum-value riffdb.v1.FixedToolKind 0 FIXED_TOOL_KIND_UNSPECIFIED
 enum-value riffdb.v1.FixedToolKind 1 FIXED_TOOL_KIND_VALIDATE_CONTRACT

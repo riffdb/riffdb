@@ -22,18 +22,18 @@ use riffdb_service::{
     AbsentCapabilityRevokeTargetSnapshot, AffectedEntityView, AuthoritativeCommitPage,
     AuthoritativeCommitScanRequest, AuthoritativeCommitSnapshot,
     AuthoritativeCommitSubscriptionRequest, AuthoritativeEntityRequest,
-    AuthoritativeEntitySnapshot, AuthoritativeEventReplayRequest, AuthoritativeIndexPage,
-    AuthoritativeIndexRequest, AuthoritativeIndexRow, AuthoritativeJournaledOutcome,
-    AuthoritativeOutcomeFacts, AuthoritativeOutcomeRequest, AuthoritativeOutcomeSelectorRef,
-    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
-    AuthoritativeReactiveEventWindow, AuthoritativeReactiveEventWindowRequest,
-    AuthoritativeReadError, AuthoritativeReadPort, AuthoritativeSchemaBinding,
-    BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest,
-    CatalogReadPort, CommandDurability, CommitNotificationSource, ContractVersionReadPermit,
-    DeclaredOutcomeView, DurableEventView, OutcomeLocatorDigestEvidence, PortAdmissionError,
-    PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView,
-    QueryModuleReadError, QueryModuleReadPort, ReactiveModuleReadError, ReactiveModuleReadPort,
-    RequestControl,
+    AuthoritativeEntitySnapshot, AuthoritativeEventReplayDisposition, AuthoritativeEventReplayPage,
+    AuthoritativeEventReplayRequest, AuthoritativeIndexPage, AuthoritativeIndexRequest,
+    AuthoritativeIndexRow, AuthoritativeJournaledOutcome, AuthoritativeOutcomeFacts,
+    AuthoritativeOutcomeRequest, AuthoritativeOutcomeSelectorRef, AuthoritativeOutcomeSnapshot,
+    AuthoritativeProvenanceSnapshot, AuthoritativeReactiveEventWindow,
+    AuthoritativeReactiveEventWindowRequest, AuthoritativeReadError, AuthoritativeReadPort,
+    AuthoritativeSchemaBinding, BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot,
+    CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability, CommitNotificationSource,
+    ContractVersionReadPermit, DeclaredOutcomeView, DurableEventView, OutcomeLocatorDigestEvidence,
+    PortAdmissionError, PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot,
+    ProvenanceClaimsView, QueryModuleReadError, QueryModuleReadPort, ReactiveModuleReadError,
+    ReactiveModuleReadPort, RequestControl,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
@@ -645,7 +645,7 @@ pub(crate) struct ServerAuthoritativeReadPort {
     application_head: BlockingPortExecutor<(), FrontierPosition, AuthoritativeReadError>,
     event_replay: BlockingPortExecutor<
         AuthoritativeEventReplayRequest,
-        riffdb_catalog::SymbolicEventReplayPage,
+        AuthoritativeEventReplayPage,
         AuthoritativeReadError,
     >,
     reactive_event_window: BlockingPortExecutor<
@@ -712,11 +712,49 @@ impl ServerAuthoritativeReadPort {
 
         let event_storage = storage.clone();
         let event_replay = driver.executor(move |request: AuthoritativeEventReplayRequest| {
-            let (replay, position, limit, history_incarnation) = request.into_parts();
+            let (replay, position, limit, history_incarnation, protected) = request.into_parts();
             let limit = EventRoutePageLimit::new(limit.get())
                 .map_err(|_| AuthoritativeReadError::Integrity)?;
+            if let Some((observed_at, policy)) = protected {
+                let candidate_limit = EventRoutePageLimit::new(
+                    std::num::NonZeroU16::new(
+                        riffdb_storage_redb::MAX_PROTECTED_EVENT_REPLAY_CANDIDATES,
+                    )
+                    .ok_or(AuthoritativeReadError::Integrity)?,
+                )
+                .map_err(|_| AuthoritativeReadError::Integrity)?;
+                return match event_storage
+                    .replay_protected_events(riffdb_storage_redb::ProtectedEventReplayV1 {
+                        replay,
+                        position,
+                        return_limit: limit,
+                        candidate_limit,
+                        history_incarnation,
+                        observed_at,
+                        policy,
+                    })
+                    .map_err(map_storage_error)?
+                {
+                    riffdb_storage_redb::ProtectedEventReplayResultV1::AuthorizationChanged => {
+                        Ok(AuthoritativeEventReplayPage::AuthorizationChanged)
+                    }
+                    riffdb_storage_redb::ProtectedEventReplayResultV1::Page(page) => {
+                        let (page, disposition) = page.into_parts();
+                        let disposition = match disposition {
+                            riffdb_storage_redb::ProtectedEventReplayDispositionV1::Page => {
+                                AuthoritativeEventReplayDisposition::Page
+                            }
+                            riffdb_storage_redb::ProtectedEventReplayDispositionV1::BoundedProgress => {
+                                AuthoritativeEventReplayDisposition::BoundedProgress
+                            }
+                        };
+                        Ok(AuthoritativeEventReplayPage::protected(page, disposition))
+                    }
+                };
+            }
             replay
                 .replay_page(&event_storage, position, limit, history_incarnation)
+                .map(AuthoritativeEventReplayPage::unrestricted)
                 .map_err(|error| map_event_replay_error(error.kind()))
         });
 
@@ -826,7 +864,7 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         'a,
         BoxPortCapacityPermit<
             AuthoritativeEventReplayRequest,
-            riffdb_catalog::SymbolicEventReplayPage,
+            AuthoritativeEventReplayPage,
             AuthoritativeReadError,
         >,
         PortAdmissionError,

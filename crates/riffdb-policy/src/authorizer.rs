@@ -772,19 +772,12 @@ fn evaluate(
     ))
 }
 
-/// Event payload, availability, consumer position, and causal reactions all
-/// require the same compiler-owned current-row anchor. Until the event release
-/// path consumes that proof, a V4 row-policy grant must not reach any surface
-/// that can disclose or act on an event. Keeping this inventory together makes
-/// the staged denial cover contextual subscriptions as well as plain streams.
+/// The singleton global wakeup has no stream, partition, or consumer identity
+/// against which current-row visibility could be evaluated. Protected roles
+/// therefore cannot observe it; targeted consumer pulls are the only safe
+/// wakeup authority until a subscription-bound successor exists.
 const fn unanchored_event_policy_surface(operation: ServiceOperationV1) -> bool {
-    matches!(
-        operation,
-        ServiceOperationV1::ReplayEvents
-            | ServiceOperationV1::TailEvents
-            | ServiceOperationV1::ExecuteContextualReaction
-            | ServiceOperationV1::GetReactiveWakeup
-    )
+    matches!(operation, ServiceOperationV1::GetReactiveWakeup)
 }
 
 fn application_query_accesses_visible(
@@ -1447,7 +1440,7 @@ mod tests {
             anchored_contextual.is_ok(),
             "contextual delivery is authorized because its lower release path consumes compiler-owned event policy anchors"
         );
-        let unanchored_reaction = evaluate(
+        let anchored_reaction = evaluate(
             &principal,
             &current,
             database_id(),
@@ -1455,21 +1448,15 @@ mod tests {
             timestamp(15),
             &OperationRequest::execute_contextual_reaction(contextual_target),
         );
-        assert_eq!(
-            unanchored_reaction,
-            Err(PolicyCode::MissingPermission),
-            "a lease acquired before row-policy activation cannot authorize an unanchored reaction"
+        assert!(
+            anchored_reaction.is_ok(),
+            "a protected reaction proceeds only because its lower lease-validation safe point consumes current event policy authority"
         );
     }
 
     #[test]
     fn unanchored_event_policy_surface_inventory_is_exact() {
-        let denied = [
-            ServiceOperationV1::ReplayEvents,
-            ServiceOperationV1::TailEvents,
-            ServiceOperationV1::ExecuteContextualReaction,
-            ServiceOperationV1::GetReactiveWakeup,
-        ];
+        let denied = [ServiceOperationV1::GetReactiveWakeup];
 
         for operation in ServiceOperationV1::ALL {
             assert_eq!(

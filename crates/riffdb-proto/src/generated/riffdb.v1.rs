@@ -4238,6 +4238,8 @@ pub struct EventPage {
     pub observed_upper: ::core::option::Option<EventId>,
     #[prost(uint64, tag = "4")]
     pub history_incarnation: u64,
+    #[prost(enumeration = "EventPageDisposition", tag = "5")]
+    pub disposition: i32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReplayEventsRequest {
@@ -4573,6 +4575,35 @@ pub struct ExecuteContextualReactionRequest {
     pub reaction_name: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "5")]
     pub command: ::core::option::Option<ExecuteCommandRequest>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EventPageDisposition {
+    Unspecified = 0,
+    Page = 1,
+    BoundedProgress = 2,
+}
+impl EventPageDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVENT_PAGE_DISPOSITION_UNSPECIFIED",
+            Self::Page => "EVENT_PAGE_DISPOSITION_PAGE",
+            Self::BoundedProgress => "EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVENT_PAGE_DISPOSITION_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVENT_PAGE_DISPOSITION_PAGE" => Some(Self::Page),
+            "EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS" => Some(Self::BoundedProgress),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

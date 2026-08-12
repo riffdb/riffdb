@@ -2100,7 +2100,26 @@ impl OperationRequest {
     pub(crate) const fn event_delivery_target(&self) -> Option<&EventConsumerOperationTarget> {
         match &self.0 {
             OperationKind::ConsumeEventStream { target, .. }
-            | OperationKind::ConsumeContextualSubscription { target, .. } => Some(target),
+            | OperationKind::AcknowledgeEventStream { target }
+            | OperationKind::NegativeAcknowledgeEventStream { target }
+            | OperationKind::ConsumeContextualSubscription { target, .. }
+            | OperationKind::AcknowledgeContextualSubscription { target }
+            | OperationKind::NegativeAcknowledgeContextualSubscription { target }
+            | OperationKind::ExecuteContextualReaction { target } => Some(target),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn event_replay_contract(
+        &self,
+    ) -> Option<(&ContractLineage, ContractVersion)> {
+        match &self.0 {
+            OperationKind::ReplayEvents {
+                lineage, version, ..
+            }
+            | OperationKind::TailEvents {
+                lineage, version, ..
+            } => Some((lineage, *version)),
             _ => None,
         }
     }

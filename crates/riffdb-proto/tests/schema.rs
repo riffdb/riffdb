@@ -457,7 +457,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 57);
+    assert_eq!(methods.len(), 61);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -559,6 +559,10 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "GetContractMigrationOperation",
             "StartApplicationInstallation",
             "GetApplicationInstallation",
+            "StartApplicationExport",
+            "GetApplicationExportPage",
+            "GetApplicationExport",
+            "CancelApplicationExport",
         ]
     );
     assert_eq!(
@@ -715,7 +719,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        260
+        261
     );
     assert_eq!(
         messages

@@ -15,12 +15,12 @@ use riffdb_client_rust::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContextualBatch,
     ApplicationContextualReaction, ApplicationContract, ApplicationEventBatch,
     ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus, ApplicationEventId,
-    ApplicationEventLeaseEvidence, ApplicationEventMutationResult,
-    ApplicationEventProgressCursor, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
-    ApplicationReactiveOperation, ApplicationRecord, ApplicationValue, AttemptBudget,
-    BearerCredential, CallMetadata, ClientError, DatabaseAlias, DetailsFreeStatus,
-    EventConsumerOptions, LiveQueryCursor, NamedQuery, QueryOptions, StableApplicationClient,
-    TraceParent, load_protected_bearer_credential,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
+    ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
+    ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
+    ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
+    NamedQuery, QueryOptions, StableApplicationClient, TraceParent,
+    load_protected_bearer_credential,
 };
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,

@@ -2,20 +2,43 @@
 
 //! Cross-operation differential acceptance for the shared row-policy evaluator.
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU16, NonZeroU64};
+use std::path::PathBuf;
 
 use riffdb_auth::PrincipalFactBindingV1;
+use riffdb_catalog::validate_catalog_history;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{ContractBundle, RowPolicyOperationV1, RowPolicyPlanV1};
 use riffdb_policy::{
-    AuthorizedQueryRowPolicyContextV1, EventPolicyCandidateV1, EventPolicyReleaseDecisionV1,
-    IndexedRelationshipEvidenceV1, RowPolicyDecisionV1, evaluate_row_policy,
-    evaluate_row_transition, revalidate_event_release_proof, revalidate_row_policy_proof,
+    AuthorizationClock, AuthorizationClockError, AuthorizedQueryRowPolicyContextV1,
+    CurrentAuthorizer, Decision, EventConsumerOperationTarget, EventPolicyCandidateV1,
+    EventPolicyReleaseDecisionV1, IndexedRelationshipEvidenceV1, NoopAuthorizationTelemetry,
+    OperationRequest, OperationTenantScope, RowPolicyDecisionV1, evaluate_row_policy,
+    evaluate_row_transition, resolve_authorized_event_row_policy_context,
+    revalidate_event_release_proof, revalidate_row_policy_proof,
+};
+use riffdb_storage_api::{
+    DatabaseInitializationPort, DatabaseInitializationResult, EventConsumerIdentityV1,
+    EvidencePageLimit, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
+};
+use riffdb_storage_redb::{
+    ProtectedEventConsumerLeaseValidationResultV1, ProtectedEventConsumerLeaseValidationV1,
+    RedbDormantPorts, RedbOperationalPorts, RedbStore,
+};
+use riffdb_testkit::authorization::{
+    AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityId,
-    CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CommitSequence, DatabaseId, EntityKey,
-    Environment, EventId, RowPolicyName, TenantScope, Timestamp,
+    ActorId, ActorKind, AggregateTypeId, ApplicationRoleHash, Audience, CanonicalRecord,
+    CanonicalValue, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
+    CapabilityPermissionsV1, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
+    CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
+    CommitSequence, ContractVersion, DatabaseId, DigestKeyId, EntityFieldVisibilityV1, EntityKey,
+    Environment, EventConsumerName, EventDeliveryAttempt, EventId, EventLeaseToken,
+    PartitionKeyBuilder, PartitionScopeV1, QueryParameterHash, ReactiveModuleHash,
+    ReactiveOperationName, RowPolicyName, TenantScope, Timestamp,
 };
 
 const SOURCE: &str = include_str!("../fixtures/compiler/row-policy/valid/document-access.riff");
@@ -24,6 +47,14 @@ const RELATIONSHIP_SOURCE: &str =
 const OWNER: [u8; 16] = [0x11; 16];
 const TEAM: [u8; 16] = [0x22; 16];
 const OUTSIDER: [u8; 16] = [0x33; 16];
+
+struct FixedAuthorizationClock(Timestamp);
+
+impl AuthorizationClock for FixedAuthorizationClock {
+    fn now(&self) -> Result<Timestamp, AuthorizationClockError> {
+        Ok(self.0)
+    }
+}
 
 #[test]
 fn owner_public_and_capability_facts_agree_for_every_operation_class() {
@@ -349,6 +380,150 @@ fn event_release_proof_binds_event_key_row_and_capability_revision() {
     );
 }
 
+#[test]
+fn protected_reaction_safe_point_denies_when_durable_capability_is_absent() {
+    let bundle = compile_contract_source(SOURCE).expect("policy contract compiles");
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Document")
+        .expect("document entity");
+    let owner_field = entity
+        .record()
+        .fields()
+        .iter()
+        .find(|field| field.name() == "owner_id")
+        .expect("owner field")
+        .id();
+    let role = ApplicationRoleHash::from_bytes([0x71; 32]);
+    let module = ReactiveModuleHash::from_bytes([0x72; 32]);
+    let operation = ReactiveOperationName::new("DocumentAgent").expect("operation");
+    let facts = CapabilityPrincipalFactsV1::new(vec![
+        CapabilityPrincipalFactV1::new(
+            "team_ids",
+            CanonicalValue::list(Vec::new()).expect("empty team set"),
+        )
+        .expect("team fact"),
+    ])
+    .expect("principal facts");
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::ConsumeContextualSubscription(
+                bundle.lineage().clone(),
+                module,
+                operation.clone(),
+            ),
+            CapabilityPermissionV1::ApplicationRoleIdentity(role),
+        ])
+        .expect("permissions"),
+        vec![
+            EntityFieldVisibilityV1::new(bundle.lineage().clone(), entity.id(), vec![owner_field])
+                .expect("field visibility"),
+        ],
+        NonZeroU16::new(8).expect("row limit"),
+        Vec::new(),
+    )
+    .expect("base grant")
+    .with_row_policy(
+        CapabilityRowPolicyGrantV1::new(
+            role,
+            facts,
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    bundle.lineage().clone(),
+                    RowPolicyName::new("DocumentAccess").expect("policy name"),
+                    entity.id(),
+                    vec![CapabilityRowPolicyOperationV1::Read],
+                )
+                .expect("policy binding"),
+            ],
+        )
+        .expect("row-policy grant"),
+    )
+    .expect("V4 grant");
+    let database_id = protected_database_id();
+    let environment = Environment::new("test").expect("environment");
+    let audience = Audience::new("riffdb-row-policy-test").expect("audience");
+    let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+        database_id,
+        environment.clone(),
+        ActorId::new(uuid_text(OWNER)).expect("principal"),
+        ActorKind::Human,
+        audience,
+        AuthorizationFixtureTimes::new(
+            Timestamp::new(1, 0).expect("issued"),
+            Timestamp::new(10, 0).expect("expires"),
+            Timestamp::new(5, 0).expect("authenticated"),
+        ),
+        grant,
+    ))
+    .expect("authorization fixture");
+    let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+    partition
+        .push_uuid(&[0x01; 16])
+        .expect("partition component");
+    let parameter_hash = QueryParameterHash::from_bytes([0x73; 32]);
+    let consumer_name = EventConsumerName::new("worker").expect("consumer name");
+    let target = EventConsumerOperationTarget::new(
+        bundle.lineage().clone(),
+        ContractVersion::new(1).expect("contract version"),
+        bundle.bundle_hash(),
+        module,
+        operation.clone(),
+        parameter_hash,
+        consumer_name.clone(),
+        OperationTenantScope::global_only(),
+        partition.finish().expect("partition"),
+    );
+    let resolver = fixture.current_capability_resolver();
+    let decision = CurrentAuthorizer::new(
+        &resolver,
+        &FixedAuthorizationClock(Timestamp::new(5, 0).expect("authorization time")),
+        &NoopAuthorizationTelemetry,
+        database_id,
+        environment,
+    )
+    .authorize(
+        fixture.authenticated_principal(),
+        OperationRequest::execute_contextual_reaction(target),
+    )
+    .expect("authorization evaluates");
+    let Decision::Allow(authorization) = decision else {
+        panic!("protected reaction is authorized at the service boundary");
+    };
+    let policy_context =
+        resolve_authorized_event_row_policy_context(&authorization, &bundle, &[entity.id()])
+            .expect("policy context resolves")
+            .expect("protected policy context");
+
+    let (_scope, mut ports) = empty_operational_database(database_id);
+    let result = ports
+        .validate_protected_event_consumer_lease(ProtectedEventConsumerLeaseValidationV1 {
+            identity: EventConsumerIdentityV1::new(
+                database_id,
+                module,
+                operation,
+                parameter_hash,
+                consumer_name,
+            ),
+            partition_hash: riffdb_types::PartitionKeyHash::from_bytes([0x74; 32]),
+            event_id: EventId::new(CommitSequence::first(), 0),
+            attempt: EventDeliveryAttempt::first(),
+            token: EventLeaseToken::from_bytes([0x75; 32]),
+            history_incarnation: 1,
+            observed_at: Timestamp::new(5, 0).expect("observed time"),
+            policy: policy_context,
+        })
+        .expect("missing current capability is a closed denial, not a storage failure");
+    assert_eq!(
+        result,
+        ProtectedEventConsumerLeaseValidationResultV1::Denied
+    );
+}
+
 fn policy(bundle: &ContractBundle) -> &RowPolicyPlanV1 {
     bundle
         .row_policies()
@@ -520,4 +695,78 @@ fn uuid_text(bytes: [u8; 16]) -> String {
             write!(output, "{byte:02x}").expect("write UUID");
             output
         })
+}
+
+struct ProtectedTestDatabase {
+    root: PathBuf,
+}
+
+impl Drop for ProtectedTestDatabase {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn protected_database_id() -> DatabaseId {
+    DatabaseId::from_unix_milliseconds_and_random(1, [0x52; 10]).expect("database ID")
+}
+
+fn empty_operational_database(
+    database_id: DatabaseId,
+) -> (ProtectedTestDatabase, RedbOperationalPorts) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wp572-event-policy")
+        .join(format!("reaction-safe-point-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create test database directory");
+    let path = root.join("db.redb");
+    let mut store = RedbStore::open(&path).expect("open test database");
+    assert_eq!(
+        store
+            .initialize_database(database_id)
+            .expect("initialize test database"),
+        DatabaseInitializationResult::Installed(database_id)
+    );
+    let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key ID"));
+    let startup = StartupValidationInputs::new(
+        Timestamp::new(1, 0).expect("startup time"),
+        ReadableCapabilityDigestInventory::new(vec![key]).expect("capability keys"),
+        ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency keys"),
+    );
+    let mut session = store
+        .begin_structural_evidence(startup)
+        .expect("begin structural validation");
+    let open_session_id = session.open_session_id();
+    let mut cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
+    let limit = EvidencePageLimit::new(64).expect("evidence page limit");
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(cursor, limit)
+            .expect("read structural evidence")
+        {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+                cursor = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let (history, historical_end) = validate_catalog_history(&mut session)
+        .expect("validate empty catalog history")
+        .into_parts();
+    let opened = session
+        .finish(structural_end, historical_end)
+        .expect("finish structural validation");
+    let riffdb_catalog::CatalogHistoryOutcome::Ready(history) = history else {
+        panic!("empty database must have ready catalog history");
+    };
+    let riffdb_storage_api::StructuralOpenOutcome::Clean(opened) = opened else {
+        panic!("empty database must open cleanly");
+    };
+    assert!(history.matches(opened.database_id(), opened.open_session_id()));
+    let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
+    let ports = dormant
+        .into_operational_after_catalog_validation()
+        .expect("activate test database");
+    (ProtectedTestDatabase { root }, ports)
 }

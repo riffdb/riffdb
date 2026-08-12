@@ -411,7 +411,7 @@ impl ServiceResponseCharge for LiveQueryUpdate {
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
-        charge.fields(4)?;
+        charge.fields(3)?;
         match self {
             LiveQueryUpdate::Snapshot(snapshot) => {
                 charge.nested(snapshot.result())?;
@@ -529,7 +529,7 @@ impl ServiceResponseCharge for DeployQueryModuleResult {
         let mut charge = ChargeAccumulator::message();
         let module = self.module();
         charge.bytes(module.name().as_str().len())?;
-        charge.fields(3)?;
+        charge.fields(4)?;
         charge.bytes(module.hash().as_bytes().len())?;
         charge_lineage(&mut charge, module.contract_lineage())?;
         charge.fields(1)?;
@@ -1552,7 +1552,7 @@ impl ServiceResponseCharge for EventPage {
         if self.next_cursor().is_some() {
             charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
         }
-        charge.fields(3)?;
+        charge.fields(4)?;
         Ok(charge.finish())
     }
 }

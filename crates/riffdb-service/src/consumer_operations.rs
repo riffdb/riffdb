@@ -619,6 +619,26 @@ pub enum EventConsumerPortRequest {
         /// Canonical current time used for exclusive-expiry validation.
         observed_at: Timestamp,
     },
+    /// Validate one exact reaction lease together with current trigger-event
+    /// capability and row-policy authority.
+    ProtectedValidateLease {
+        /// Exact immutable consumer identity.
+        identity: EventConsumerPortIdentity,
+        /// Catalog-resolved stream partition.
+        partition_hash: PartitionKeyHash,
+        /// Leased trigger event.
+        event_id: EventId,
+        /// Exact attempt number.
+        attempt: EventDeliveryAttempt,
+        /// Attempt-specific opaque token.
+        token: EventLeaseToken,
+        /// Restore fence.
+        history_incarnation: u64,
+        /// Canonical current time used for exclusive-expiry validation.
+        observed_at: Timestamp,
+        /// Move-only current capability and compiled row-policy authority.
+        policy: AuthorizedQueryRowPolicyContextV1,
+    },
     /// Lease a catalog-selected window.
     Lease {
         /// Exact immutable consumer identity.
@@ -794,6 +814,8 @@ pub enum EventConsumerLeaseValidation {
     Stale,
     /// The exact lease expired.
     Expired,
+    /// Current capability or trigger-event row authority denied release.
+    Denied,
 }
 
 /// Closed lower-port failure.
@@ -1470,7 +1492,7 @@ async fn validate_event_policy_anchors(
             })?;
         if declared.source_entity() != entity.id()
             || declared.read_policy() != anchor.read_policy().as_str()
-            || &source_partition != &prepared.partition
+            || source_partition != prepared.partition
             || !historical
                 .bundle()
                 .row_policies()
@@ -2669,6 +2691,25 @@ pub(crate) async fn execute_contextual_reaction_operation(
         policy_request(&prepared, ServiceOperationV1::ExecuteContextualReaction, 1)?,
     )
     .await?;
+    let authorization = begun.reauthorize(&service, &context).await?;
+    ensure_consumer_authorization(
+        &service,
+        &authorization,
+        ServiceOperationV1::ExecuteContextualReaction,
+        &prepared,
+    )?;
+    let stream_entities = prepared.resolve_stream()?.policy_anchor_entities();
+    let row_policy = resolve_authorized_event_row_policy_context(
+        &authorization,
+        prepared.catalog.bundle().bundle(),
+        &stream_entities,
+    )
+    .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteContextualReaction,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
     let observed_at = service
         .providers
         .consumer_clock
@@ -2681,12 +2722,18 @@ pub(crate) async fn execute_contextual_reaction_operation(
         })?
         .now()
         .map_err(|_| PublicError::storage_unavailable())?;
-    let validation = submit_consumer_mutation(
-        &service,
-        &context,
-        &begun,
-        &prepared,
-        EventConsumerPortRequest::ValidateLease {
+    let validation_request = match row_policy {
+        Some(policy) => EventConsumerPortRequest::ProtectedValidateLease {
+            identity: prepared.port_identity(),
+            partition_hash: prepared.partition_hash,
+            event_id: claims.event_id(),
+            attempt: claims.attempt(),
+            token: claims.lease_token(),
+            history_incarnation: claims.history_incarnation(),
+            observed_at,
+            policy,
+        },
+        None => EventConsumerPortRequest::ValidateLease {
             identity: prepared.port_identity(),
             partition_hash: prepared.partition_hash,
             event_id: claims.event_id(),
@@ -2695,8 +2742,9 @@ pub(crate) async fn execute_contextual_reaction_operation(
             history_incarnation: claims.history_incarnation(),
             observed_at,
         },
-    )
-    .await;
+    };
+    let validation =
+        submit_consumer_mutation(&service, &context, &begun, &prepared, validation_request).await;
     let validation = match validation {
         Ok(EventConsumerPortResponse::LeaseValidation(validation)) => validation,
         Ok(_) => {
@@ -2714,7 +2762,8 @@ pub(crate) async fn execute_contextual_reaction_operation(
         EventConsumerLeaseValidation::Live
         | EventConsumerLeaseValidation::Expired
         | EventConsumerLeaseValidation::NotFound
-        | EventConsumerLeaseValidation::Stale => {
+        | EventConsumerLeaseValidation::Stale
+        | EventConsumerLeaseValidation::Denied => {
             return Err(finish_failure(
                 &service,
                 &context,
@@ -2724,6 +2773,13 @@ pub(crate) async fn execute_contextual_reaction_operation(
             .await);
         }
     };
+    let authorization = begun.reauthorize(&service, &context).await?;
+    ensure_consumer_authorization(
+        &service,
+        &authorization,
+        ServiceOperationV1::ExecuteContextualReaction,
+        &prepared,
+    )?;
     let mode = crate::command_operations::CommandInvocationMode::Contextual {
         causation: crate::command_operations::TrustedCommandCausation {
             causing_event_id: claims.event_id(),

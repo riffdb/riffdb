@@ -618,6 +618,29 @@ pub(crate) struct EventReplayCursorLookup {
     contract: CursorContractIdentity,
     selection: EventSelection,
     requested_limit: PageLimit,
+    protected: Option<EventReplayPolicyBinding>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct EventReplayPolicyBinding {
+    capability_id: CapabilityId,
+    capability_revision: NonZeroU64,
+    application_role_hash: ApplicationRoleHash,
+}
+
+impl EventReplayPolicyBinding {
+    #[must_use]
+    pub(crate) const fn new(
+        capability_id: CapabilityId,
+        capability_revision: NonZeroU64,
+        application_role_hash: ApplicationRoleHash,
+    ) -> Self {
+        Self {
+            capability_id,
+            capability_revision,
+            application_role_hash,
+        }
+    }
 }
 
 impl EventReplayCursorLookup {
@@ -628,11 +651,13 @@ impl EventReplayCursorLookup {
         bundle_hash: ContractBundleHash,
         selection: EventSelection,
         requested_limit: PageLimit,
+        protected: Option<EventReplayPolicyBinding>,
     ) -> Self {
         Self {
             contract: CursorContractIdentity::new(lineage, version, bundle_hash),
             selection,
             requested_limit,
+            protected,
         }
     }
 
@@ -2679,6 +2704,84 @@ mod tests {
                 Err(CursorAccessError::InvalidCursor)
             ));
         }
+    }
+
+    #[test]
+    fn protected_event_replay_cursor_binds_current_authority() {
+        fn uuid_bytes(seed: u8) -> [u8; 16] {
+            let mut bytes = [seed; 16];
+            bytes[6] = 0x70 | (seed & 0x0f);
+            bytes[8] = 0x80 | (seed & 0x3f);
+            bytes
+        }
+
+        fn selection() -> EventSelection {
+            EventSelection::new(
+                "TicketCreated".to_owned(),
+                vec![
+                    crate::EventPartitionComponent::new(
+                        "organization_id".to_owned(),
+                        CanonicalValue::Uuid([0x44; 16]),
+                    )
+                    .expect("valid partition component"),
+                ],
+                vec!["ticket_id".to_owned()],
+            )
+            .expect("valid event selection")
+        }
+
+        fn policy_binding(capability: u8, revision: u64, role: u8) -> EventReplayPolicyBinding {
+            EventReplayPolicyBinding::new(
+                CapabilityId::from_bytes(uuid_bytes(capability)).expect("valid capability UUIDv7"),
+                NonZeroU64::new(revision).expect("nonzero capability revision"),
+                ApplicationRoleHash::from_bytes([role; 32]),
+            )
+        }
+
+        fn lookup(protected: Option<EventReplayPolicyBinding>) -> EventReplayCursorLookup {
+            EventReplayCursorLookup::new(
+                ContractLineage::new("ticketdesk").expect("bounded lineage"),
+                ContractVersion::new(7).expect("nonzero contract version"),
+                ContractBundleHash::from_bytes([0x11; 32]),
+                selection(),
+                PageLimit::new(25).expect("bounded limit"),
+                protected,
+            )
+        }
+
+        let registry = ServiceCursorRegistries::new(
+            Arc::new(SequentialGenerator::new()),
+            Arc::new(FixedClock::at(0)),
+        );
+        let principal = ActorId::new("event-reader").expect("bounded principal");
+        let exact = lookup(Some(policy_binding(1, 2, 3)));
+        let token = registry
+            .register_event_replay_unpublished(
+                &principal,
+                exact.clone(),
+                EventReplayCursorState::new(
+                    EventReplayPosition::Initial { after: None },
+                    PageLimit::new(25).expect("bounded limit"),
+                ),
+            )
+            .expect("cursor registers")
+            .publish();
+
+        registry
+            .resolve_event_replay(token, &principal, &exact)
+            .expect("exact protected authority resolves");
+        for mismatch in [
+            lookup(None),
+            lookup(Some(policy_binding(9, 2, 3))),
+            lookup(Some(policy_binding(1, 9, 3))),
+            lookup(Some(policy_binding(1, 2, 9))),
+        ] {
+            assert!(matches!(
+                registry.resolve_event_replay(token, &principal, &mismatch),
+                Err(CursorAccessError::InvalidCursor)
+            ));
+        }
+        assert_eq!(token.as_bytes().len(), CURSOR_TOKEN_BYTES);
     }
 
     #[test]
