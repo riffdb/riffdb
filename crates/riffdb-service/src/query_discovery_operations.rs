@@ -465,6 +465,7 @@ async fn get_entity(
                 &entity,
                 request.key(),
                 &visible_fields,
+                request.fields().as_slice(),
                 &secret_fields,
                 &secret_reveal,
                 snapshot,
@@ -758,6 +759,7 @@ async fn scan_index(
         &lineage,
         return_policy.partition_constraint(),
         return_policy.visible_fields().as_slice(),
+        request.fields().as_slice(),
         &secret_fields,
         &secret_reveal,
         &lower_page,
@@ -3162,6 +3164,7 @@ fn entity_view(
     entity: &EntitySchema,
     requested_key: &EntityKey,
     visible_fields: &[FieldId],
+    requested_fields: &[FieldId],
     secret_fields: &[FieldId],
     reveal: &[riffdb_policy::SecretRevealAuthority],
     snapshot: AuthoritativeEntitySnapshot,
@@ -3173,6 +3176,7 @@ fn entity_view(
         entity.record(),
         snapshot.fields(),
         visible_fields,
+        requested_fields,
         secret_fields,
         reveal,
     )
@@ -3192,6 +3196,7 @@ fn index_views(
     lineage: &ContractLineage,
     constraint: &PartitionConstraint,
     visible_fields: &[FieldId],
+    requested_fields: &[FieldId],
     secret_fields: &[FieldId],
     reveal: &[riffdb_policy::SecretRevealAuthority],
     page: &AuthoritativeIndexPage,
@@ -3209,6 +3214,7 @@ fn index_views(
             entity.record(),
             row.values(),
             visible_fields,
+            requested_fields,
             secret_fields,
             reveal,
         )?;
@@ -3267,6 +3273,7 @@ fn filter_record(
     schema: &RecordSchema,
     record: &CanonicalRecord,
     visible_fields: &[FieldId],
+    requested_fields: &[FieldId],
     secret_fields: &[FieldId],
     reveal: &[riffdb_policy::SecretRevealAuthority],
 ) -> Result<(CanonicalRecord, Vec<riffdb_types::RedactedSecretField>), ()> {
@@ -3280,6 +3287,14 @@ fn filter_record(
         };
         field.value_type().validate_value(value).map_err(|_| ())?;
         if secret_fields.binary_search(field_id).is_ok() {
+            // Selection-consistent markers: an explicit field selection that
+            // does not name this secret omits it entirely, exactly like any
+            // other unselected field. (Explicitly SELECTING a secret either
+            // denies upstream or arrives here with reveal authority, so the
+            // marker appears only under the default whole-record selection.)
+            if !requested_fields.is_empty() && requested_fields.binary_search(field_id).is_err() {
+                continue;
+            }
             let secret =
                 riffdb_policy::SecretValue::classify(*field_id, field.name(), value.clone());
             let authority = reveal
@@ -4174,8 +4189,8 @@ mod tests {
         let (schema, record, plain_field, secret_field) = secret_release_fixture();
         let visible = [plain_field, secret_field];
         let secrets = [secret_field];
-        let (fields, redacted) =
-            filter_record(&schema, &record, &visible, &secrets, &[]).expect("release succeeds");
+        let (fields, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &[])
+            .expect("release succeeds");
         // Control: the ordinary field released through the same mask.
         assert_eq!(
             fields
@@ -4193,6 +4208,32 @@ mod tests {
         assert_eq!(format!("{:?}", redacted[0]), "[redacted:token_hash]");
     }
 
+    /// Markers are selection-consistent: an explicit field selection that
+    /// does not name the secret omits it entirely — exactly like any other
+    /// unselected field — while the default whole-record selection shows
+    /// the marker.
+    #[test]
+    fn release_point_markers_follow_the_field_selection() {
+        let (schema, record, plain_field, secret_field) = secret_release_fixture();
+        let visible = [plain_field];
+        let secrets = [secret_field];
+        // Explicit narrow selection: no marker, no value.
+        let requested = [plain_field];
+        let (fields, redacted) =
+            filter_record(&schema, &record, &visible, &requested, &secrets, &[])
+                .expect("release succeeds");
+        assert_eq!(fields.fields().len(), 1);
+        assert!(
+            redacted.is_empty(),
+            "an unselected secret field must be omitted, not marked"
+        );
+        // Default whole-record selection: the marker appears.
+        let (_, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &[])
+            .expect("release succeeds");
+        assert_eq!(redacted.len(), 1);
+        assert_eq!(redacted[0].field(), secret_field);
+    }
+
     /// Explicit reveal authority for the exact field releases the value;
     /// authority for a different field stays withheld (fail closed).
     #[test]
@@ -4204,8 +4245,8 @@ mod tests {
         let exact = [riffdb_policy::SecretRevealAuthority::test_fixture(
             secret_field,
         )];
-        let (fields, redacted) =
-            filter_record(&schema, &record, &visible, &secrets, &exact).expect("release succeeds");
+        let (fields, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &exact)
+            .expect("release succeeds");
         assert!(redacted.is_empty());
         let revealed = fields
             .fields()
@@ -4225,8 +4266,8 @@ mod tests {
         let wrong = [riffdb_policy::SecretRevealAuthority::test_fixture(
             plain_field,
         )];
-        let (fields, redacted) =
-            filter_record(&schema, &record, &visible, &secrets, &wrong).expect("release succeeds");
+        let (fields, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &wrong)
+            .expect("release succeeds");
         assert!(
             fields.fields().iter().all(|(id, _)| *id != secret_field),
             "wrong-field authority must not release the value"
