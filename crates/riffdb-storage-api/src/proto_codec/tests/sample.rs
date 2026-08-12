@@ -707,6 +707,45 @@ pub(super) fn capability_record_with_export_authority() -> StoredCapabilityRecor
     .expect("export capability")
 }
 
+/// A record whose grant explicitly names one secret field for reveal
+/// (ADR-0118): rides the dedicated V6 extension, never the ordinary list.
+pub(super) fn capability_record_with_secret_naming() -> StoredCapabilityRecordV1 {
+    let (base, _, _, _) = capability_records();
+    let visibility = EntityFieldVisibilityV1::with_secret_fields(
+        lineage(),
+        EntityTypeId::first(),
+        vec![FieldId::first(), FieldId::new(2).expect("field two")],
+        vec![FieldId::new(7).expect("secret field")],
+    )
+    .expect("secret naming");
+    let grant = CapabilityGrantV1::new(
+        base.grant().tenant_scope().clone(),
+        base.grant().partition_scope().clone(),
+        base.grant().permissions().clone(),
+        vec![visibility],
+        base.grant().max_scan_rows(),
+        base.grant().approval_required().to_vec(),
+    )
+    .expect("secret grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("secret capability")
+}
+
 pub(super) fn capability_record_with_complete_export_authority() -> StoredCapabilityRecordV1 {
     let base = capability_record_with_row_policy_authority();
     let mut permissions = base.grant().permissions().as_slice().to_vec();

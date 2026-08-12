@@ -7202,6 +7202,11 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
                     .iter()
                     .map(|field| field.get())
                     .collect(),
+                secret_field_ids: visibility
+                    .secret_fields()
+                    .iter()
+                    .map(|field| field.get())
+                    .collect(),
             })
             .collect(),
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
@@ -7578,6 +7583,10 @@ struct FieldVisibilityInput {
     contract_lineage: String,
     entity_type_id: u32,
     field_ids: Vec<u32>,
+    /// Dedicated explicit naming that reveals secret-classified fields
+    /// (ADR-0118); the ordinary field_ids list never does.
+    #[serde(default)]
+    secret_field_ids: Vec<u32>,
 }
 
 async fn capability_command(
@@ -7831,13 +7840,17 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
         .field_visibility
         .into_iter()
         .map(|visibility| {
-            if visibility.entity_type_id == 0 || visibility.field_ids.contains(&0) {
+            if visibility.entity_type_id == 0
+                || visibility.field_ids.contains(&0)
+                || visibility.secret_field_ids.contains(&0)
+            {
                 return Err(());
             }
             Ok(v1::EntityFieldVisibility {
                 contract_lineage: visibility.contract_lineage,
                 entity_type_id: visibility.entity_type_id,
                 field_ids: visibility.field_ids,
+                secret_field_ids: visibility.secret_field_ids,
             })
         })
         .collect::<Result<_, _>>()?;
