@@ -120,6 +120,8 @@ fn export_capability_request_is_strict_and_unknown_scope_is_rejected() {
         }],
     });
     validate_public_message(&request).expect("export capability request");
+    decode_public_message::<v1::CreateCapabilityRequest>(&request.encode_to_vec())
+        .expect("export capability wire request");
 
     request
         .grant
@@ -145,9 +147,20 @@ fn export_capability_request_is_strict_and_unknown_scope_is_rejected() {
             contract_lineage: "TicketDesk".to_owned(),
             policy_name: "VisibleTicket".to_owned(),
             entity_type_id: 1,
-            operations: vec![i32::MAX],
+            operations: vec![v1::CapabilityRowPolicyOperation::Read as i32],
         }],
     });
+    decode_public_message::<v1::CreateCapabilityRequest>(&request.encode_to_vec())
+        .expect("row policy plus export wire request");
+    request
+        .grant
+        .as_mut()
+        .expect("grant")
+        .row_policy
+        .as_mut()
+        .expect("row policy")
+        .policies[0]
+        .operations[0] = i32::MAX;
     assert_eq!(
         validate_public_message(&request),
         Err(riffdb_proto::PublicWireError::InvalidEnum)

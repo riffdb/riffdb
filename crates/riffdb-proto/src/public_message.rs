@@ -6429,6 +6429,88 @@ fn preflight_field_visibility(input: &[u8]) -> Result<(), PublicWireError> {
     )
 }
 
+fn preflight_capability_principal_fact(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_value,
+        }],
+        &[],
+    )
+}
+
+fn preflight_capability_row_policy_binding(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[4],
+        &[],
+        &[],
+        &[RepeatedRule {
+            field: 4,
+            maximum: 4,
+            wire: RepeatedWire::PackableVarint,
+        }],
+    )
+}
+
+fn preflight_capability_row_policy_grant(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[2, 3],
+        &[],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_capability_principal_fact,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_capability_row_policy_binding,
+            },
+        ],
+        &[
+            RepeatedRule {
+                field: 2,
+                maximum: MAX_PRINCIPAL_FACTS_V1,
+                wire: RepeatedWire::LengthDelimited,
+            },
+            RepeatedRule {
+                field: 3,
+                maximum: MAX_CAPABILITY_ROW_POLICY_BINDINGS,
+                wire: RepeatedWire::LengthDelimited,
+            },
+        ],
+    )
+}
+
+fn preflight_capability_application_export_grant(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 6, &[], &[], &[], &[])
+}
+
+fn preflight_capability_export_grant(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[1],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_capability_application_export_grant,
+        }],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
 fn count_packed_field(input: &[u8], field_number: u32) -> Result<usize, PublicWireError> {
     let mut total = 0usize;
     let mut cursor = Cursor::new(input);
@@ -6451,7 +6533,7 @@ fn preflight_capability_grant(input: &[u8]) -> Result<(), PublicWireError> {
     }
     preflight_nested_message(
         input,
-        6,
+        8,
         &[3, 4, 6],
         &[],
         &[
@@ -6470,6 +6552,14 @@ fn preflight_capability_grant(input: &[u8]) -> Result<(), PublicWireError> {
             NestedRule {
                 field: 4,
                 preflight: preflight_field_visibility,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_capability_row_policy_grant,
+            },
+            NestedRule {
+                field: 8,
+                preflight: preflight_capability_export_grant,
             },
         ],
         &[
