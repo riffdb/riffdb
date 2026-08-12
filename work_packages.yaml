@@ -10986,8 +10986,9 @@ work_packages:
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
     crates/riffdb-observability/**, crates/riffdb-server/**,
+    crates/riffdb-application/**, crates/riffdb-testkit/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
-    crates/riffdb-cli/**, clients/**, tests/**, scripts/**, docs/**, release/**]
+    crates/riffdb-cli/**, clients/**, examples/**, tests/**, scripts/**, docs/**, release/**]
   deliverables:
   - Closed start/page/status/cancel export operations and CLI over one immutable published snapshot,
     bounded rows/bytes/time/state, opaque scoped cursor, lease, durable checkpoint, and receipt

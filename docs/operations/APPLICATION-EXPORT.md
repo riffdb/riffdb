@@ -110,6 +110,31 @@ therefore re-applies current types, invariants, references, row policies,
 provenance, declared outcomes, and command idempotency. Commit sequences and
 physical identities are not portable identities.
 
-Current POC limitation: the public export operation and canonical files are
-available, while the cross-adapter compiled reimport acceptance harness is
-still part of WP-575 and is not yet a release claim.
+The adapter-owned `riffdb.application-portability-manifest/v1` binds the exact
+adapter manifest, contract lineage, contract version, and bundle hash. Each
+portable entity or event symbol selects only one of these closed strategies:
+
+- a named compiled command with exhaustive symbolic field inputs; or
+- a named bounded-list command whose record element is the exact exported
+  entity/event record; or
+- one exact migration hash already accepted by the adapter's evolution
+  manifest.
+
+There is no callback, method path, table name, field ID, transaction handle, or
+generic entity writer. Command idempotency input is compiler-checked and the
+reimport runner derives its value from the exported stable record identity; it
+is not caller-selected data from the export. Reconciliation runs declared,
+bounded named queries and publishes a canonical
+`riffdb.application-reimport-receipt/v1` only when every mapping outcome and
+observation digest agrees with the portability manifest. The receipt records
+the new database identity and deliberately does not claim preservation of
+physical commit sequences.
+
+Current POC limitation: OpenFGA- and Payload-shaped mappings compile and have
+canonical reconciliation fixtures. The all-adapter release claim remains
+blocked for the MLflow and Woodpecker workflow shapes. An ordinary command
+cannot directly initialize a protected workflow-state field, which is the safe
+failure; RiffDB does not yet have an accepted compiler-owned reconstitution
+operation that can restore workflow state and lease evidence without creating
+a normal state-write bypass. Until that design is accepted and implemented,
+the four-domain `EXP-014` gate is intentionally incomplete.
