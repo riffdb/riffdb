@@ -1,0 +1,23 @@
+query GetSession(
+    $organization_id: Session.organization_id,
+    $user_id: Session.user_id,
+    $session_id: Session.session_id,
+) {
+    one session from Session
+        where organization_id == $organization_id
+          && user_id == $user_id
+          && session_id == $session_id
+        else Missing
+
+    return Found {
+        session: session {
+            organization_id
+            user_id
+            session_id
+            state
+            expires_at
+        }
+    }
+
+    outcomes Found | Missing
+}

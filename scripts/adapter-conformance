@@ -25,7 +25,7 @@ cargo +1.97.0 test -p riffdb-application --all-features --quiet
 cargo +1.97.0 test -p riffdb-testkit --test adapter_conformance --all-features --quiet
 cargo +1.97.0 build -p riffdb-cli --bin riffdb --quiet
 
-domains=(openfga mlflow payload woodpecker)
+domains=(openfga mlflow better-auth woodpecker)
 for domain in "${domains[@]}"; do
     root="fixtures/adapters/conformance/$domain"
     for plan in empty-install-plan upgrade-plan; do
@@ -82,4 +82,4 @@ if rg -n \
     exit 1
 fi
 
-echo "OpenFGA, MLflow, Payload, and Woodpecker passed exact install/evolution and public Rust, Go, TypeScript, and Python conformance."
+echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact install/evolution and public Rust, Go, TypeScript, and Python conformance."

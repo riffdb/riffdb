@@ -2638,7 +2638,7 @@ pub(crate) async fn execute_reimport_observation(
         .providers
         .query_executor
         .as_ref()
-        .ok_or_else(|| PublicError::storage_unavailable())?;
+        .ok_or_else(PublicError::storage_unavailable)?;
     let snapshot = execute_authorized_query_page(
         &authorization,
         executor.as_ref(),
@@ -2657,7 +2657,13 @@ pub(crate) async fn execute_reimport_observation(
     if items > u64::from(observation.maximum_items()) {
         return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
     }
-    let actual = hash_reimport_query_snapshot(&snapshot)
+    let result = ExecuteSymbolicQueryResult::from_named_snapshot(
+        &program,
+        module_hash,
+        snapshot,
+        Arc::clone(bundle.enum_variant_names()),
+    );
+    let actual = hash_reimport_query_result(&result)
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     Ok(ReimportObservationResult::new(
         observation.name().clone(),
@@ -2677,41 +2683,30 @@ fn query_snapshot_item_count(snapshot: &QueryOwnedSnapshot) -> Option<u64> {
     })
 }
 
-fn hash_reimport_query_snapshot(
-    snapshot: &QueryOwnedSnapshot,
+fn hash_reimport_query_result(
+    result: &ExecuteSymbolicQueryResult,
 ) -> Option<riffdb_types::GeneratedArtifactHash> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"riffdb.reimport-observation/v1\0");
-    push_observation_bytes(&mut bytes, snapshot.outcome().as_bytes())?;
-    bytes.extend_from_slice(&u32::try_from(snapshot.fields().len()).ok()?.to_be_bytes());
-    for (name, value) in snapshot.fields() {
+    push_observation_bytes(&mut bytes, result.outcome().as_bytes())?;
+    bytes.extend_from_slice(&u32::try_from(result.fields().len()).ok()?.to_be_bytes());
+    for (name, value) in result.fields() {
         push_observation_bytes(&mut bytes, name.as_bytes())?;
         match value {
-            QueryResultValue::One(row) => {
+            SymbolicResultField::One(row) => {
                 bytes.push(1);
                 hash_observation_row(&mut bytes, row)?;
             }
-            QueryResultValue::Maybe(None) => bytes.push(2),
-            QueryResultValue::Maybe(Some(row)) => {
+            SymbolicResultField::Maybe(None) => bytes.push(2),
+            SymbolicResultField::Maybe(Some(row)) => {
                 bytes.push(3);
                 hash_observation_row(&mut bytes, row)?;
             }
-            QueryResultValue::Many(rows) => {
+            SymbolicResultField::Many(rows) => {
                 bytes.push(4);
                 bytes.extend_from_slice(&u32::try_from(rows.len()).ok()?.to_be_bytes());
                 for row in rows {
                     hash_observation_row(&mut bytes, row)?;
-                }
-            }
-            QueryResultValue::AggregateOne(row) => {
-                bytes.push(5);
-                hash_observation_aggregate_row(&mut bytes, row)?;
-            }
-            QueryResultValue::AggregateMany(rows) => {
-                bytes.push(6);
-                bytes.extend_from_slice(&u32::try_from(rows.len()).ok()?.to_be_bytes());
-                for row in rows {
-                    hash_observation_aggregate_row(&mut bytes, row)?;
                 }
             }
         }
@@ -2719,34 +2714,21 @@ fn hash_reimport_query_snapshot(
     Some(hash_generated_artifact(&bytes))
 }
 
-fn hash_observation_row(bytes: &mut Vec<u8>, row: &QueryRow) -> Option<()> {
+fn hash_observation_row(bytes: &mut Vec<u8>, row: &SymbolicResultRecord) -> Option<()> {
     push_observation_bytes(bytes, row.entity().as_bytes())?;
-    bytes.extend_from_slice(&u32::try_from(row.fields().len()).ok()?.to_be_bytes());
+    let count = row.fields().len().checked_add(row.exact_decimals().len())?;
+    bytes.extend_from_slice(&u32::try_from(count).ok()?.to_be_bytes());
     for (name, value) in row.fields() {
         push_observation_bytes(bytes, name.as_bytes())?;
+        bytes.push(1);
         let value = encode_canonical_value(value).ok()?;
         push_observation_bytes(bytes, &value)?;
     }
-    Some(())
-}
-
-fn hash_observation_aggregate_row(bytes: &mut Vec<u8>, row: &QueryAggregateRow) -> Option<()> {
-    push_observation_bytes(bytes, row.entity().as_bytes())?;
-    bytes.extend_from_slice(&u32::try_from(row.fields().len()).ok()?.to_be_bytes());
-    for (name, value) in row.fields() {
+    for (name, value) in row.exact_decimals() {
         push_observation_bytes(bytes, name.as_bytes())?;
-        match value {
-            QueryAggregateCell::Canonical(value) => {
-                bytes.push(1);
-                let value = encode_canonical_value(value).ok()?;
-                push_observation_bytes(bytes, &value)?;
-            }
-            QueryAggregateCell::ExactDecimal { coefficient, scale } => {
-                bytes.push(2);
-                bytes.extend_from_slice(&coefficient.to_be_bytes());
-                bytes.push(*scale);
-            }
-        }
+        bytes.push(2);
+        bytes.extend_from_slice(&value.coefficient().to_be_bytes());
+        bytes.push(value.scale());
     }
     Some(())
 }
@@ -3855,6 +3837,7 @@ contract EnumShare version 1 {
     return Created { item: item }
   }
 }
+
 "#;
         let compiled = riffdb_contract_compiler::compile_contract_source(source).expect("contract");
         let first = riffdb_catalog::ValidatedContractBundle::from_compiler_bundle(compiled.clone())
@@ -3878,5 +3861,82 @@ contract EnumShare version 1 {
             first.bundle().schema().enums()[0].id().get(),
             first.bundle().schema().enums()[0].variants()[0].id().get()
         )));
+    }
+}
+
+#[cfg(test)]
+mod reimport_observation_tests {
+    use super::*;
+
+    fn expected_hash(value: &str) -> riffdb_types::GeneratedArtifactHash {
+        let mut bytes = [0_u8; 32];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let digit = |value: u8| match value {
+                b'0'..=b'9' => value - b'0',
+                b'a'..=b'f' => value - b'a' + 10,
+                _ => panic!("invalid fixture hash"),
+            };
+            bytes[index] = (digit(pair[0]) << 4) | digit(pair[1]);
+        }
+        riffdb_types::GeneratedArtifactHash::from_bytes(bytes)
+    }
+
+    fn result(head: u64, title: &str) -> ExecuteSymbolicQueryResult {
+        let record = SymbolicResultRecord {
+            entity: Arc::from("Ticket"),
+            fields: BTreeMap::from([
+                (Arc::from("ticket_id"), CanonicalValue::Uuid([0x11; 16])),
+                (
+                    Arc::from("title"),
+                    CanonicalValue::string(title).expect("title"),
+                ),
+            ]),
+            exact_decimals: BTreeMap::new(),
+        };
+        ExecuteSymbolicQueryResult {
+            identity: SymbolicQueryIdentity {
+                lineage: ContractLineage::new("TicketDesk").expect("lineage"),
+                version: ContractVersion::new(1).expect("version"),
+                bundle_hash: ContractBundleHash::from_bytes([0x22; 32]),
+                name: Some("GetTicket".to_owned()),
+                plan_hash: QueryPlanHash::from_bytes([0x33; 32]),
+                module_hash: Some(QueryModuleHash::from_bytes([0x44; 32])),
+            },
+            outcome: "Found".to_owned(),
+            application_head: head,
+            fields: BTreeMap::from([("ticket".to_owned(), SymbolicResultField::One(record))]),
+            enum_variant_names: Arc::new(BTreeMap::new()),
+            next_cursor: None,
+        }
+    }
+
+    #[test]
+    fn reconciliation_digest_excludes_physical_frontier_but_includes_semantic_values() {
+        let first = hash_reimport_query_result(&result(10, "Cannot sign in")).expect("hash");
+        let same_state =
+            hash_reimport_query_result(&result(999, "Cannot sign in")).expect("same hash");
+        let changed =
+            hash_reimport_query_result(&result(10, "Cannot reset password")).expect("changed hash");
+        assert_eq!(first, same_state);
+        assert_ne!(first, changed);
+    }
+
+    #[test]
+    fn empty_reconciliation_shapes_match_portability_fixture_digests() {
+        let mut missing = result(1, "unused");
+        missing.outcome = "Missing".to_owned();
+        missing.fields.clear();
+        assert_eq!(
+            hash_reimport_query_result(&missing).expect("missing hash"),
+            expected_hash("cc9fc643cfeb58b06e79e478e37d05aebfde348589c64d94a991daf878cbea9d")
+        );
+
+        let mut collection = result(1, "unused");
+        collection.fields =
+            BTreeMap::from([("tuples".to_owned(), SymbolicResultField::Many(Vec::new()))]);
+        assert_eq!(
+            hash_reimport_query_result(&collection).expect("collection hash"),
+            expected_hash("a9b45a1bfe185d2cd91261ef6544a53eaf9fc020c7c2edc096159db5ea09969a")
+        );
     }
 }

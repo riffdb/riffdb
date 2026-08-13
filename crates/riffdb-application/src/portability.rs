@@ -1778,7 +1778,7 @@ fn parse_uuid(value: &str) -> Result<[u8; 16], ApplicationPortabilityError> {
 
 fn parse_hex_vec(value: &str) -> Result<Vec<u8>, ApplicationPortabilityError> {
     if value.is_empty()
-        || value.len() % 2 != 0
+        || !value.len().is_multiple_of(2)
         || value.len() > riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES * 2
         || !value
             .bytes()

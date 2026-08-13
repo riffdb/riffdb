@@ -54,6 +54,14 @@ const OPENFGA_REQUIRED: &[InstallationFeature] = &[
     InstallationFeature::OperationalQueries,
     InstallationFeature::InstallationCampaigns,
 ];
+const BETTER_AUTH_REQUIRED: &[InstallationFeature] = &[
+    InstallationFeature::RemoteTls,
+    InstallationFeature::BulkCommands,
+    InstallationFeature::OperationalQueries,
+    InstallationFeature::WorkflowConcurrency,
+    InstallationFeature::InstallationCampaigns,
+    InstallationFeature::RowPolicies,
+];
 const PAYLOAD_REQUIRED: &[InstallationFeature] = OPENFGA_REQUIRED;
 const MLFLOW_REQUIRED: &[InstallationFeature] = &[
     InstallationFeature::RemoteTls,
@@ -79,6 +87,20 @@ const OPENFGA_PROBES: &[ProbeSpec] = &[
         kind: RoleOperationKind::Query,
         operation: "ListFgaTuples",
         maximum_items: 25,
+    },
+];
+const BETTER_AUTH_PROBES: &[ProbeSpec] = &[
+    ProbeSpec {
+        name: "create-user-account-sessions",
+        kind: RoleOperationKind::Command,
+        operation: "CreateUserAccountSessions",
+        maximum_items: 8,
+    },
+    ProbeSpec {
+        name: "get-session",
+        kind: RoleOperationKind::Query,
+        operation: "GetSession",
+        maximum_items: 1,
     },
 ];
 const PAYLOAD_PROBES: &[ProbeSpec] = &[
@@ -140,11 +162,11 @@ const ADAPTERS: &[AdapterSpec] = &[
         probes: MLFLOW_PROBES,
     },
     AdapterSpec {
-        name: "payload",
-        application_root: "fixtures/adapters/operational-conformance",
-        primary_role: "AdapterOperationalApplication",
-        required: PAYLOAD_REQUIRED,
-        probes: PAYLOAD_PROBES,
+        name: "better-auth",
+        application_root: "fixtures/adapters/better-auth",
+        primary_role: "BetterAuthApplication",
+        required: BETTER_AUTH_REQUIRED,
+        probes: BETTER_AUTH_PROBES,
     },
     AdapterSpec {
         name: "woodpecker",
@@ -152,6 +174,14 @@ const ADAPTERS: &[AdapterSpec] = &[
         primary_role: "WoodpeckerSchedulerWorker",
         required: WOODPECKER_REQUIRED,
         probes: WOODPECKER_PROBES,
+    },
+    // Retained post-alpha regression after Better Auth replaced Payload in the gate.
+    AdapterSpec {
+        name: "payload",
+        application_root: "fixtures/adapters/operational-conformance",
+        primary_role: "AdapterOperationalApplication",
+        required: PAYLOAD_REQUIRED,
+        probes: PAYLOAD_PROBES,
     },
 ];
 

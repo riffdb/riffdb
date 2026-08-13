@@ -15,7 +15,9 @@ use riffdb_contract_ir::ContractBundle;
 const PORTABLE_DOMAINS: &[(&str, &str)] = &[
     ("openfga", "fixtures/adapters/operational-conformance"),
     ("mlflow", "fixtures/adapters/mlflow"),
+    ("better-auth", "fixtures/adapters/better-auth"),
     ("woodpecker", "fixtures/adapters/woodpecker"),
+    // Retained post-alpha portability regression after the accepted adapter substitution.
     ("payload", "fixtures/adapters/operational-conformance"),
 ];
 

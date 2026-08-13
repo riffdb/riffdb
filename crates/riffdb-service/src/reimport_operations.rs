@@ -1168,3 +1168,113 @@ fn observation_failure(
 fn integrity(service: &RiffDbServiceInner) -> ServiceFailure {
     service.maintenance_internal_failure(MaintenanceInternalDefect::LowerIntegrity)
 }
+
+#[cfg(test)]
+mod reimport_page_fixture_tests {
+    use super::*;
+    use riffdb_contract_ir::ContractBundle;
+
+    fn field_value<'a>(
+        record: &'a ParsedEntityLine,
+        bundle: &ContractBundle,
+        field_name: &str,
+    ) -> &'a CanonicalValue {
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == record.entity)
+            .expect("entity");
+        let field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == field_name)
+            .expect("field");
+        record
+            .fields
+            .fields()
+            .iter()
+            .find_map(|(id, value)| (*id == field.id()).then_some(value))
+            .expect("field value")
+    }
+
+    fn assert_workflow_fixture(
+        bundle_bytes: &[u8],
+        line_bytes: &[u8],
+        entity_name: &str,
+        expected_state: &str,
+        expected_fence: u64,
+        expected_attempts: u64,
+    ) {
+        let bundle = ContractBundle::decode(bundle_bytes).expect("exact adapter bundle");
+        let line = line_bytes
+            .strip_suffix(b"\n")
+            .expect("canonical JSONL newline");
+        let record = parse_entity_line(line, &bundle).expect("compiler-owned reimport page");
+        assert_eq!(record.entity, entity_name);
+        assert_eq!(
+            field_value(&record, &bundle, "lease_owner"),
+            &CanonicalValue::Null
+        );
+        assert_eq!(
+            field_value(&record, &bundle, "lease_expires_at"),
+            &CanonicalValue::Null
+        );
+        assert_eq!(
+            field_value(&record, &bundle, "lease_fence"),
+            &CanonicalValue::U64(expected_fence)
+        );
+        assert_eq!(
+            field_value(&record, &bundle, "lease_attempts"),
+            &CanonicalValue::U64(expected_attempts)
+        );
+        let CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } = field_value(&record, &bundle, "state")
+        else {
+            panic!("workflow state must remain an enum");
+        };
+        let enumeration = bundle
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.id() == *type_id)
+            .expect("state enum");
+        assert_eq!(
+            enumeration
+                .variants()
+                .iter()
+                .find(|variant| variant.id() == *variant_id)
+                .map(|variant| variant.name()),
+            Some(expected_state)
+        );
+    }
+
+    #[test]
+    fn mlflow_fixture_preserves_quiescent_noninitial_workflow_state() {
+        assert_workflow_fixture(
+            include_bytes!("../../../fixtures/adapters/mlflow/generated/riffdb.contract.bundle"),
+            include_bytes!("../../../fixtures/export/mlflow/workflow-entity-page.jsonl"),
+            "ScheduledRun",
+            "Complete",
+            7,
+            3,
+        );
+    }
+
+    #[test]
+    fn woodpecker_fixture_preserves_quiescent_noninitial_workflow_state() {
+        assert_workflow_fixture(
+            include_bytes!(
+                "../../../fixtures/adapters/woodpecker/generated/riffdb.contract.bundle"
+            ),
+            include_bytes!("../../../fixtures/export/woodpecker/workflow-entity-page.jsonl"),
+            "ScheduledPipeline",
+            "Running",
+            11,
+            4,
+        );
+    }
+}

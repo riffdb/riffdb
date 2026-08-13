@@ -163,13 +163,18 @@ physical commit sequences.
 Frozen v1 and v2 portability manifests and receipts remain readable for
 compatibility inspection, but neither older format can be emitted as v3
 authority and a v1 application-command mapping cannot be compiled as a modern
-reimport command. OpenFGA, MLflow, Payload, and Woodpecker compiler fixtures now prove
-the closed mapping boundary, including exact workflow records. Portability-
+reimport command. OpenFGA, MLflow, Better Auth, and Woodpecker compiler
+fixtures prove the closed mapping boundary. The MLflow and Woodpecker JSONL
+fixtures additionally carry noninitial workflow state, nonzero fencing tokens
+and attempts, and null owner/expiry fields; the same parser used by the service
+acceptance tests rejects noncanonical or type-inexact variants. Portability-
 intent export and its source-side quiescence proof are available through the
 public start/page/status/cancel export campaign. A distinct operator-only
 destination campaign accepts that exact completed source through
 `reimport start`, `reimport page`, `reimport status`, and `reimport cancel`.
 It remains unavailable to application roles and MCP discovery.
+The earlier Payload fixture remains a post-alpha portability regression; it is
+not one of the four alpha acceptance adapters.
 
 ## Reimport an exact completed source
 

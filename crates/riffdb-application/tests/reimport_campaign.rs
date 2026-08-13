@@ -1,6 +1,6 @@
 //! Fail-closed durable reimport campaign semantics.
 
-use std::num::NonZeroU64;
+use std::{fs, num::NonZeroU64, path::Path};
 
 use riffdb_application::{
     ApplicationPortabilityManifest, ApplicationReimportCampaignErrorKind,
@@ -28,7 +28,7 @@ fn capability(last: u8) -> CapabilityId {
 
 fn fixtures() -> (ApplicationPortabilityManifest, ApplicationReimportReceipt) {
     let manifest = ApplicationPortabilityManifest::decode_canonical(include_bytes!(
-        "../../../fixtures/export/openfga/portability-manifest-v2.json"
+        "../../../fixtures/export/openfga/portability-manifest-v3.json"
     ))
     .expect("manifest");
     let receipt = ApplicationReimportReceipt::decode_canonical(
@@ -59,6 +59,22 @@ fn source(
 
 fn authority(revision: u64) -> ApplicationReimportAuthorityV1 {
     ApplicationReimportAuthorityV1::new(capability(7), NonZeroU64::new(revision).expect("revision"))
+}
+
+fn domain_fixtures(domain: &str) -> (ApplicationPortabilityManifest, ApplicationReimportReceipt) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/export")
+        .join(domain);
+    let manifest = ApplicationPortabilityManifest::decode_canonical(
+        &fs::read(root.join("portability-manifest-v3.json")).expect("portability manifest"),
+    )
+    .expect("canonical V3 manifest");
+    let receipt = ApplicationReimportReceipt::decode_canonical(
+        &fs::read(root.join("reimport-receipt-v2.json")).expect("reimport receipt"),
+        &manifest,
+    )
+    .expect("receipt reconciles the V3 manifest");
+    (manifest, receipt)
 }
 
 #[test]
@@ -230,4 +246,108 @@ fn capability_revision_change_closes_the_campaign_without_progress() {
         Some(ApplicationReimportFailureV1::AuthorityChanged)
     );
     assert_eq!(campaign.mappings()[0].records(), 0);
+}
+
+#[test]
+fn four_alpha_domains_resume_and_reconcile_from_canonical_v3_evidence() {
+    for (ordinal, domain) in ["openfga", "mlflow", "better-auth", "woodpecker"]
+        .into_iter()
+        .enumerate()
+    {
+        let (manifest, expected_receipt) = domain_fixtures(domain);
+        let page_hash = ApplicationExportPageHash::from_bytes([0x60 + ordinal as u8; 32]);
+        let rows = expected_receipt
+            .input()
+            .mappings
+            .iter()
+            .map(|mapping| mapping.records())
+            .sum();
+        let workflow_quiescence = match domain {
+            "mlflow" => vec![
+                ReimportWorkflowQuiescenceV1::new(
+                    InstallationSymbol::new("RunLifecycle").expect("workflow"),
+                    2,
+                    2,
+                    0,
+                )
+                .expect("quiescent workflow"),
+            ],
+            "woodpecker" => vec![
+                ReimportWorkflowQuiescenceV1::new(
+                    InstallationSymbol::new("PipelineLifecycle").expect("workflow"),
+                    2,
+                    2,
+                    0,
+                )
+                .expect("quiescent workflow"),
+            ],
+            _ => Vec::new(),
+        };
+        let source = ApplicationReimportSourceV1::new(
+            expected_receipt.input().export_manifest_hash,
+            ApplicationExportReceiptHash::from_bytes([0x70 + ordinal as u8; 32]),
+            manifest.identity(),
+            database(0x40 + ordinal as u8),
+            expected_receipt.input().target_database_id,
+            rows,
+            vec![page_hash],
+            workflow_quiescence,
+        )
+        .expect("exact source evidence");
+        let campaign = ApplicationReimportCampaignV1::start(
+            source,
+            authority(1),
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+            &manifest,
+        )
+        .expect("start campaign");
+
+        // Simulate a process loss immediately after the durable start checkpoint.
+        let mut recovered = ApplicationReimportCampaignV1::decode_canonical(
+            &campaign.encode_canonical().expect("start checkpoint"),
+        )
+        .expect("recover start checkpoint");
+        let outcomes = expected_receipt
+            .input()
+            .mappings
+            .iter()
+            .map(|mapping| {
+                ReimportPageMappingOutcomeV1::new(
+                    mapping.class(),
+                    mapping.symbol().clone(),
+                    mapping.records(),
+                    false,
+                    mapping.outcome_hash(),
+                )
+                .expect("compiler-owned mapping result")
+            })
+            .collect();
+        recovered
+            .complete_page(NonZeroU64::MIN, page_hash, outcomes)
+            .expect("durable page");
+        assert_eq!(
+            recovered.phase(),
+            ApplicationReimportCampaignPhaseV1::Reconciling
+        );
+
+        // A second process loss must resume at reconciliation, never replay page mutation.
+        let mut recovered = ApplicationReimportCampaignV1::decode_canonical(
+            &recovered.encode_canonical().expect("page checkpoint"),
+        )
+        .expect("recover page checkpoint");
+        assert_eq!(recovered.rows_applied(), rows);
+        let actual = recovered
+            .reconcile(&manifest, expected_receipt.input().observations.clone())
+            .expect("exact named-query reconciliation");
+        assert_eq!(actual.identity(), expected_receipt.identity(), "{domain}");
+        assert_eq!(
+            ApplicationReimportCampaignV1::decode_canonical(
+                &recovered.encode_canonical().expect("terminal checkpoint")
+            )
+            .expect("recover terminal checkpoint")
+            .phase(),
+            ApplicationReimportCampaignPhaseV1::Reconciled,
+            "{domain}"
+        );
+    }
 }
