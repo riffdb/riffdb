@@ -185,11 +185,13 @@ impl ApplicationCatalog {
             "riffdb.application-lock/v3"
                 | "riffdb.application-lock/v5"
                 | "riffdb.application-lock/v6"
+                | "riffdb.application-lock/v7"
         ) || !matches!(
             manifest.schema.as_str(),
             "riffdb.application-manifest/v1"
                 | "riffdb.application-manifest/v2"
                 | "riffdb.application-manifest/v3"
+                | "riffdb.application-manifest/v4"
         ) || tools.schema != "riffdb-generated-application-operations/v2"
             || lock.exact_manifest_hash != tools.application_manifest_hash
             || manifest.contract.lineage != lock.contract.lineage

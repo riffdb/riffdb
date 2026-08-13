@@ -14,7 +14,8 @@ use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
 };
 use riffdb_policy::{
-    AuditClass, AuthorizedOperation, OperationRequest, OutputClassification, PartitionConstraint,
+    AuditClass, AuthorizedOperation, AuthorizedQueryRowPolicyContextV1, OperationRequest,
+    OutputClassification, PartitionConstraint, resolve_authorized_event_replay_row_policy_context,
 };
 use riffdb_types::{
     ActorKind, CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, EventId,
@@ -27,10 +28,10 @@ use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     AuthoritativeCommitNotification, AuthoritativeCommitSubscriptionRequest,
     AuthoritativeReadError, AuthoritativeReadinessFailure, CommitNotificationSource,
-    CursorAccessError, EventReplayCursorLookup, EventReplayCursorState, EventServiceApplication,
-    InternalDefect, PageLimit, PageRequest, PortAdmissionError, PortDriverStopped, RequestContext,
-    RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture,
-    ServiceResult, ensure_response_budget,
+    CursorAccessError, EventReplayCursorLookup, EventReplayCursorState, EventReplayPolicyBinding,
+    EventServiceApplication, InternalDefect, PageLimit, PageRequest, PortAdmissionError,
+    PortDriverStopped, RequestContext, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
+    ServiceFailure, ServiceFuture, ServiceResult, ensure_response_budget,
 };
 
 /// Maximum partition components accepted by a symbolic event request.
@@ -514,6 +515,16 @@ pub struct EventPage {
     next_cursor: Option<crate::CursorToken>,
     observed_upper: Option<EventId>,
     history_incarnation: u64,
+    disposition: EventPageDisposition,
+}
+
+/// Closed result class for bounded symbolic event replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventPageDisposition {
+    /// The visible limit or frozen route end produced an ordinary page.
+    Page,
+    /// Hidden/irrelevant candidate work reached its fixed ceiling.
+    BoundedProgress,
 }
 
 impl EventPage {
@@ -536,6 +547,11 @@ impl EventPage {
     #[must_use]
     pub const fn history_incarnation(&self) -> u64 {
         self.history_incarnation
+    }
+    /// Returns the inference-safe bounded-work class.
+    #[must_use]
+    pub const fn disposition(&self) -> EventPageDisposition {
+        self.disposition
     }
 }
 
@@ -575,17 +591,129 @@ pub struct AuthoritativeEventReplayRequest {
     position: EventReplayPosition,
     limit: PageLimit,
     history_incarnation: u64,
+    protected: Option<ProtectedEventReplayAuthority>,
+}
+
+/// Move-only transaction-current authority for one protected replay page.
+pub struct ProtectedEventReplayAuthority {
+    observed_at: Timestamp,
+    policy: AuthorizedQueryRowPolicyContextV1,
+}
+
+/// Closed lower replay work disposition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthoritativeEventReplayDisposition {
+    /// Visible limit or frozen exact end was reached.
+    Page,
+    /// Candidate work ceiling was reached; caller may resume opaquely.
+    BoundedProgress,
+}
+
+/// One lower symbolic page or a transaction-current authority change.
+pub enum AuthoritativeEventReplayPage {
+    /// Checked page plus its inference-safe work class.
+    Page {
+        /// Symbolic events already filtered inside the authoritative snapshot.
+        page: riffdb_catalog::SymbolicEventReplayPage,
+        /// Whether the fixed candidate-work ceiling stopped the scan.
+        disposition: AuthoritativeEventReplayDisposition,
+    },
+    /// The storage safe point found stale or revoked authority.
+    AuthorizationChanged,
+}
+
+impl AuthoritativeEventReplayPage {
+    /// Creates an unrestricted lower page.
+    #[must_use]
+    pub const fn unrestricted(page: riffdb_catalog::SymbolicEventReplayPage) -> Self {
+        Self::Page {
+            page,
+            disposition: AuthoritativeEventReplayDisposition::Page,
+        }
+    }
+
+    /// Creates a protected lower page.
+    #[must_use]
+    pub const fn protected(
+        page: riffdb_catalog::SymbolicEventReplayPage,
+        disposition: AuthoritativeEventReplayDisposition,
+    ) -> Self {
+        Self::Page { page, disposition }
+    }
+
+    /// Consumes the lower response.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> Option<(
+        riffdb_catalog::SymbolicEventReplayPage,
+        AuthoritativeEventReplayDisposition,
+    )> {
+        match self {
+            Self::Page { page, disposition } => Some((page, disposition)),
+            Self::AuthorizationChanged => None,
+        }
+    }
 }
 
 impl AuthoritativeEventReplayRequest {
+    /// Creates one unrestricted operator replay.
+    #[must_use]
+    pub const fn unrestricted(
+        replay: ResolvedEventReplay,
+        position: EventReplayPosition,
+        limit: PageLimit,
+        history_incarnation: u64,
+    ) -> Self {
+        Self {
+            replay,
+            position,
+            limit,
+            history_incarnation,
+            protected: None,
+        }
+    }
+
+    /// Creates one replay whose events require current-row authorization.
+    #[must_use]
+    pub const fn protected(
+        replay: ResolvedEventReplay,
+        position: EventReplayPosition,
+        limit: PageLimit,
+        history_incarnation: u64,
+        observed_at: Timestamp,
+        policy: AuthorizedQueryRowPolicyContextV1,
+    ) -> Self {
+        Self {
+            replay,
+            position,
+            limit,
+            history_incarnation,
+            protected: Some(ProtectedEventReplayAuthority {
+                observed_at,
+                policy,
+            }),
+        }
+    }
+
     /// Decomposes the move-only request for one blocking storage call.
     #[must_use]
-    pub fn into_parts(self) -> (ResolvedEventReplay, EventReplayPosition, PageLimit, u64) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        ResolvedEventReplay,
+        EventReplayPosition,
+        PageLimit,
+        u64,
+        Option<(Timestamp, AuthorizedQueryRowPolicyContextV1)>,
+    ) {
         (
             self.replay,
             self.position,
             self.limit,
             self.history_incarnation,
+            self.protected
+                .map(|authority| (authority.observed_at, authority.policy)),
         )
     }
 }
@@ -771,12 +899,25 @@ async fn execute_event_read(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
 
+    let replay_policy_binding = begun
+        .initial_authorization()
+        .internal_row_policy_authority()
+        .map(|authority| {
+            let (capability_id, revision) =
+                begun.initial_authorization().internal_capability_identity();
+            EventReplayPolicyBinding::new(
+                capability_id,
+                revision,
+                authority.internal_grant().application_role_hash(),
+            )
+        });
     let lookup = EventReplayCursorLookup::new(
         pointer.lineage().clone(),
         pointer.contract_version(),
         pointer.bundle_hash(),
         request.selection().clone(),
         request.page().limit(),
+        replay_policy_binding,
     );
     let cursor_state = match request.page().cursor() {
         Some(token) => match service.cursors.resolve_event_replay(
@@ -863,7 +1004,7 @@ async fn execute_event_read(
             )
             .await);
         }
-        let (lower_page, return_limit) = read_event_page(
+        let (lower_page, return_limit, disposition) = read_event_page(
             &service,
             &context,
             &begun,
@@ -884,7 +1025,10 @@ async fn execute_event_read(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
 
-        if !items.is_empty() || tail_source.is_none() {
+        if !items.is_empty()
+            || tail_source.is_none()
+            || disposition == AuthoritativeEventReplayDisposition::BoundedProgress
+        {
             let page = publish_event_page(
                 &service,
                 &context,
@@ -893,6 +1037,7 @@ async fn execute_event_read(
                 lower_page,
                 items,
                 return_limit,
+                disposition,
             )
             .await?;
             return Ok((page, false));
@@ -976,6 +1121,7 @@ async fn execute_event_read(
                     next_cursor: None,
                     observed_upper,
                     history_incarnation: service.identity.history_incarnation(),
+                    disposition: EventPageDisposition::Page,
                 };
                 if let Err(failure) = ensure_response_budget(&page) {
                     return Err(finish_failure(&service, &context, &begun, failure).await);
@@ -1073,7 +1219,11 @@ async fn read_event_page(
     position: EventReplayPosition,
     maximum_limit: PageLimit,
     operation: ServiceOperationV1,
-) -> ServiceResult<(riffdb_catalog::SymbolicEventReplayPage, PageLimit)> {
+) -> ServiceResult<(
+    riffdb_catalog::SymbolicEventReplayPage,
+    PageLimit,
+    AuthoritativeEventReplayDisposition,
+)> {
     let resolved = match catalog.resolve_event_replay(
         selection.event_name(),
         selection
@@ -1108,16 +1258,51 @@ async fn read_event_page(
     }
     let current_limit = effective_limit(maximum_limit, &authorization)
         .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
-    let receipt = match permit.submit(AuthoritativeEventReplayRequest {
-        replay: resolved,
-        position,
-        limit: current_limit,
-        history_incarnation: service.identity.history_incarnation(),
-    }) {
+    let protected_binding = authorization
+        .internal_row_policy_authority()
+        .map(|authority| {
+            (
+                authorization.internal_capability_identity(),
+                authority.internal_grant().clone(),
+            )
+        });
+    let lower_request = if protected_binding.is_some() {
+        let entities = replay_policy_entities(catalog, selection.event_name())?;
+        let policy = resolve_authorized_event_replay_row_policy_context(
+            &authorization,
+            catalog.bundle().bundle(),
+            &entities,
+        )
+        .map_err(|_| service.internal_failure(operation, InternalDefect::ProofMismatch))?
+        .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
+        let observed_at = service
+            .providers
+            .consumer_clock
+            .as_ref()
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?
+            .now()
+            .map_err(|_| PublicError::storage_unavailable())?;
+        AuthoritativeEventReplayRequest::protected(
+            resolved,
+            position,
+            current_limit,
+            service.identity.history_incarnation(),
+            observed_at,
+            policy,
+        )
+    } else {
+        AuthoritativeEventReplayRequest::unrestricted(
+            resolved,
+            position,
+            current_limit,
+            service.identity.history_incarnation(),
+        )
+    };
+    let receipt = match permit.submit(lower_request) {
         Ok(receipt) => receipt,
         Err(error) => return Err(finish_admission(service, context, begun, error).await),
     };
-    let lower_page = match wait_with_control(
+    let lower = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
         receipt,
@@ -1139,9 +1324,47 @@ async fn read_event_page(
     if !valid_event_authorization(service, &return_authorization, operation, true) {
         return Err(begun.finish_authorization_denial(service, context).await);
     }
+    let return_binding = return_authorization
+        .internal_row_policy_authority()
+        .map(|authority| {
+            (
+                return_authorization.internal_capability_identity(),
+                authority.internal_grant(),
+            )
+        });
+    if protected_binding
+        .as_ref()
+        .map(|(identity, grant)| (identity, grant))
+        != return_binding
+            .as_ref()
+            .map(|(identity, grant)| (identity, *grant))
+    {
+        return Err(begun.finish_authorization_denial(service, context).await);
+    }
     let return_limit = effective_limit(current_limit, &return_authorization)
         .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
-    Ok((lower_page, return_limit))
+    let Some((lower_page, disposition)) = lower.into_parts() else {
+        return Err(begun.finish_authorization_denial(service, context).await);
+    };
+    Ok((lower_page, return_limit, disposition))
+}
+
+fn replay_policy_entities(
+    catalog: &riffdb_catalog::ActiveCatalogSnapshot,
+    event_name: &str,
+) -> ServiceResult<Vec<riffdb_types::EntityTypeId>> {
+    let event = catalog
+        .bundle()
+        .bundle()
+        .schema()
+        .events()
+        .iter()
+        .find(|event| event.name() == event_name)
+        .ok_or_else(PublicError::storage_unavailable)?;
+    Ok(event
+        .policy_anchor()
+        .map(|anchor| vec![anchor.source_entity()])
+        .unwrap_or_default())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1153,6 +1376,7 @@ async fn publish_event_page(
     lower_page: riffdb_catalog::SymbolicEventReplayPage,
     items: Vec<SymbolicEvent>,
     return_limit: PageLimit,
+    disposition: AuthoritativeEventReplayDisposition,
 ) -> ServiceResult<EventPage> {
     let cursor_guard = match lower_page.continuation() {
         Some(continuation) => {
@@ -1186,6 +1410,12 @@ async fn publish_event_page(
             .map(crate::CursorPublicationGuard::token),
         observed_upper: lower_page.observed_upper(),
         history_incarnation: service.identity.history_incarnation(),
+        disposition: match disposition {
+            AuthoritativeEventReplayDisposition::Page => EventPageDisposition::Page,
+            AuthoritativeEventReplayDisposition::BoundedProgress => {
+                EventPageDisposition::BoundedProgress
+            }
+        },
     };
     if let Err(failure) = ensure_response_budget(&page) {
         return Err(finish_failure(service, context, begun, failure).await);

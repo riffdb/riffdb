@@ -9,11 +9,12 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use riffdb_client_rust::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContextualBatch,
     ApplicationContextualReaction, ApplicationContract, ApplicationEventBatch,
-    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus,
-    ApplicationEventId, ApplicationEventLeaseEvidence, ApplicationEventMutationResult,
-    ApplicationLiveQueryUpdate, ApplicationReactiveOperation, ApplicationRecord, ApplicationUuid,
-    ApplicationValue, AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor,
-    LiveQueryPatchOperation, NamedQuery, QueryOptions, StableApplicationClient,
+    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus,
+    ApplicationEventConsumerStatus, ApplicationEventId, ApplicationEventLeaseEvidence,
+    ApplicationEventMutationResult, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
+    ApplicationReactiveOperation, ApplicationRecord, ApplicationUuid, ApplicationValue,
+    AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
+    NamedQuery, QueryOptions, StableApplicationClient,
 };
 use riffdb_config::TlsClientConfig;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
@@ -814,7 +815,7 @@ impl DriverHost {
                             .await?;
                         Ok((
                             status
-                                .map(raise_consumer_status)
+                                .map(raise_consumer_public_status)
                                 .unwrap_or(DriverValue::Null),
                             None,
                             None,
@@ -872,7 +873,7 @@ impl DriverHost {
                             .await?;
                         Ok((
                             status
-                                .map(raise_consumer_status)
+                                .map(raise_consumer_public_status)
                                 .unwrap_or(DriverValue::Null),
                             None,
                             None,
@@ -1447,6 +1448,36 @@ fn raise_consumer_status(value: ApplicationEventConsumerStatus) -> DriverValue {
         ),
     ]))
 }
+
+fn raise_consumer_public_status(value: ApplicationEventConsumerPublicStatus) -> DriverValue {
+    match value {
+        ApplicationEventConsumerPublicStatus::Exact(status) => raise_consumer_status(status),
+        ApplicationEventConsumerPublicStatus::Protected(status) => {
+            DriverValue::Record(BTreeMap::from([
+                ("kind".to_owned(), DriverValue::Enum("protected".to_owned())),
+                (
+                    "history_incarnation".to_owned(),
+                    DriverValue::U64(status.history_incarnation.to_string()),
+                ),
+                (
+                    "progress_cursor".to_owned(),
+                    DriverValue::Bytes(BASE64.encode(status.progress_cursor.as_bytes())),
+                ),
+            ]))
+        }
+    }
+}
+
+fn raise_event_disposition(value: ApplicationEventPullDisposition) -> DriverValue {
+    DriverValue::Enum(
+        match value {
+            ApplicationEventPullDisposition::Ready => "ready",
+            ApplicationEventPullDisposition::WaitTimedOut => "wait_timed_out",
+            ApplicationEventPullDisposition::BoundedProgress => "bounded_progress",
+        }
+        .to_owned(),
+    )
+}
 fn raise_delivery(value: riffdb_client_rust::ApplicationEventDelivery) -> DriverValue {
     let event = value.event;
     DriverValue::Record(BTreeMap::from([
@@ -1502,7 +1533,14 @@ fn raise_event_batch(value: ApplicationEventBatch) -> DriverValue {
             "events".to_owned(),
             DriverValue::List(value.events.into_iter().map(raise_delivery).collect()),
         ),
-        ("status".to_owned(), raise_consumer_status(value.status)),
+        (
+            "status".to_owned(),
+            raise_consumer_public_status(value.status),
+        ),
+        (
+            "disposition".to_owned(),
+            raise_event_disposition(value.disposition),
+        ),
         (
             "wait_timed_out".to_owned(),
             DriverValue::Bool(value.wait_timed_out),
@@ -1577,7 +1615,14 @@ fn raise_contextual_batch(value: ApplicationContextualBatch) -> DriverValue {
         .collect();
     DriverValue::Record(BTreeMap::from([
         ("items".to_owned(), DriverValue::List(items)),
-        ("status".to_owned(), raise_consumer_status(value.status)),
+        (
+            "status".to_owned(),
+            raise_consumer_public_status(value.status),
+        ),
+        (
+            "disposition".to_owned(),
+            raise_event_disposition(value.disposition),
+        ),
         (
             "wait_timed_out".to_owned(),
             DriverValue::Bool(value.wait_timed_out),

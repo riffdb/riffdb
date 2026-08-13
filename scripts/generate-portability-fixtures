@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+
+case "${1:-}" in
+    --write)
+        [[ "$#" -eq 1 ]] || {
+            echo "usage: ./scripts/generate-portability-fixtures --check|--write" >&2
+            exit 2
+        }
+        cargo +1.97.0 run --quiet -p riffdb-application \
+            --example generate_portability_fixtures -- --write
+        echo "Generated compiler-owned application portability fixtures."
+        ;;
+    --check)
+        [[ "$#" -eq 1 ]] || {
+            echo "usage: ./scripts/generate-portability-fixtures --check|--write" >&2
+            exit 2
+        }
+        cargo +1.97.0 run --quiet -p riffdb-application \
+            --example generate_portability_fixtures
+        echo "Application portability fixtures are current."
+        ;;
+    *)
+        echo "usage: ./scripts/generate-portability-fixtures --check|--write" >&2
+        exit 2
+        ;;
+esac

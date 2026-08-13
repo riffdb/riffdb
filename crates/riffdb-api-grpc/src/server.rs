@@ -21,11 +21,11 @@ use riffdb_proto::{
     PublicWireError, app::v1 as app_v1, application_error_to_proto, v1, validate_public_message,
 };
 use riffdb_service::{
-    ApplicationErrorContextBuilder, ApplicationService, BootstrapCapabilityResult,
-    BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
-    ContractMigrationApplication, CreateCapabilityInvocation, CreateCapabilityResult,
-    DeployContractResult, HealthContext, HealthRequest, HealthResult, LiveQuerySubscription,
-    LiveQueryUpdate, MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage,
+    ApplicationErrorContextBuilder, ApplicationExportApplication, ApplicationService,
+    BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
+    CommitSubscriptionEvent, ContractMigrationApplication, CreateCapabilityInvocation,
+    CreateCapabilityResult, DeployContractResult, HealthContext, HealthRequest, HealthResult,
+    LiveQuerySubscription, LiveQueryUpdate, MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage,
     RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
     RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
     RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
@@ -93,6 +93,14 @@ pub trait GrpcLifecycleRoute: Send + Sync {
         &self,
         _operation: GrpcContractMigrationOperation,
     ) -> Option<Arc<dyn ContractMigrationApplication>> {
+        None
+    }
+
+    /// Atomically admits one current-database symbolic export action.
+    fn admit_application_export(
+        &self,
+        _operation: GrpcApplicationExportOperation,
+    ) -> Option<Arc<dyn ApplicationExportApplication>> {
         None
     }
 
@@ -289,6 +297,19 @@ pub enum GrpcContractMigrationOperation {
     Apply,
     /// Observe one protected external receipt.
     GetOperation,
+}
+
+/// Closed transport-local application-export admission registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GrpcApplicationExportOperation {
+    /// Start or exactly replay one immutable snapshot export.
+    Start,
+    /// Release one bounded canonical JSONL page.
+    GetPage,
+    /// Observe one protected durable checkpoint or receipt.
+    GetOperation,
+    /// Close one nonterminal operation with an incomplete receipt.
+    Cancel,
 }
 
 /// Transport-observed terminal classification for one admitted bootstrap attempt.
@@ -707,6 +728,24 @@ impl GrpcApplication {
     > {
         let service = lifecycle
             .admit_contract_migration(operation)
+            .ok_or_else(service_not_ready)?;
+        let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+        Ok((service, security))
+    }
+
+    fn ready_application_export_admission(
+        &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
+        operation: GrpcApplicationExportOperation,
+    ) -> Result<
+        (
+            Arc<dyn ApplicationExportApplication>,
+            CheckedGrpcSecurityContext,
+        ),
+        Status,
+    > {
+        let service = lifecycle
+            .admit_application_export(operation)
             .ok_or_else(service_not_ready)?;
         let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
         Ok((service, security))
@@ -2493,6 +2532,92 @@ impl AdminService for GrpcApplication {
         )?;
         let result = map_service(service.get_application_installation(context, request).await)?;
         Ok(Response::new(get_application_installation_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn start_application_export(
+        &self,
+        request: Request<v1::StartApplicationExportRequest>,
+    ) -> Result<Response<v1::StartApplicationExportResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_export_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationExportOperation::Start,
+        )?;
+        let (request_id, request) = start_application_export_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .start_application_export(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(application_export_start_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn get_application_export_page(
+        &self,
+        request: Request<v1::GetApplicationExportPageRequest>,
+    ) -> Result<Response<v1::GetApplicationExportPageResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_export_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationExportOperation::GetPage,
+        )?;
+        let (request_id, request) = get_application_export_page_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let page = map_service(
+            service
+                .get_application_export_page(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(application_export_page_to_proto(&page)))
+    }
+
+    async fn get_application_export(
+        &self,
+        request: Request<v1::GetApplicationExportRequest>,
+    ) -> Result<Response<v1::GetApplicationExportResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_export_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationExportOperation::GetOperation,
+        )?;
+        let (request_id, request) = get_application_export_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .get_application_export(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(get_application_export_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn cancel_application_export(
+        &self,
+        request: Request<v1::CancelApplicationExportRequest>,
+    ) -> Result<Response<v1::CancelApplicationExportResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_export_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationExportOperation::Cancel,
+        )?;
+        let (request_id, request) = cancel_application_export_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .cancel_application_export(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(cancel_application_export_result_to_proto(
             &result,
         )))
     }

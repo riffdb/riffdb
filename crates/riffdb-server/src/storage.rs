@@ -15,6 +15,8 @@ use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
     AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, ApplicationCommandTransactionPort,
+    ApplicationExportOperationRepository, ApplicationExportOperationWriteResultV1,
+    ApplicationExportSnapshotPort, ApplicationExportSnapshotReader,
     ApplicationInstallationCampaignRepository, ApplicationInstallationCampaignWriteResultV1,
     AuditedAdmissionRepository, AuditedAdmissionRequestV1, AuditedAdmissionResultV1,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
@@ -47,10 +49,11 @@ use riffdb_storage_api::{
     ReactiveModulePublicationResult, ReactiveModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredApplicationInstallationCampaignV1, StoredCapabilityRecordV1, StoredCommitRecordV1,
-    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
-    StoredReactiveModuleV1, UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
+    StoredApplicationExportOperationV1, StoredApplicationInstallationCampaignV1,
+    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
+    StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
@@ -158,6 +161,46 @@ impl SharedRedbOperationalPorts {
     pub(crate) fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         self.cell
             .with_mut(|ports| ports.write_validated_prefix_checkpoint())
+    }
+
+    /// Executes protected event selection inside the same redb mutation fence
+    /// as current capability, row, relationship, checkpoint, and lease state.
+    pub(crate) fn coordinate_protected_event_consumer_lease(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventConsumerLeaseV1,
+    ) -> Result<riffdb_storage_api::CoordinateConsumerLeaseResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.coordinate_protected_event_consumer_lease(request))
+    }
+
+    /// Validates one reaction lease together with current trigger-event row
+    /// authority in one redb mutation fence.
+    pub(crate) fn validate_protected_event_consumer_lease(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventConsumerLeaseValidationV1,
+    ) -> Result<riffdb_storage_redb::ProtectedEventConsumerLeaseValidationResultV1, StorageError>
+    {
+        self.cell
+            .with_mut(|ports| ports.validate_protected_event_consumer_lease(request))
+    }
+
+    /// Resolves one protected event lease only while its current authority and
+    /// anchored row remain valid in the same redb mutation fence.
+    pub(crate) fn coordinate_protected_event_consumer_resolution(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventConsumerResolutionV1,
+    ) -> Result<riffdb_storage_api::EventConsumerTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.coordinate_protected_event_consumer_resolution(request))
+    }
+
+    /// Executes protected replay under one current capability/row snapshot.
+    pub(crate) fn replay_protected_events(
+        &self,
+        request: riffdb_storage_redb::ProtectedEventReplayV1,
+    ) -> Result<riffdb_storage_redb::ProtectedEventReplayResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.replay_protected_events(request))
     }
 }
 
@@ -975,6 +1018,54 @@ impl ApplicationInstallationCampaignRepository for SharedRedbOperationalPorts {
                 expected,
                 replacement,
             )
+        })
+    }
+}
+
+impl ApplicationExportOperationRepository for SharedRedbOperationalPorts {
+    fn read_application_export_operation(
+        &self,
+        operation_id: riffdb_types::ApplicationExportOperationId,
+    ) -> Result<Option<StoredApplicationExportOperationV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportOperationRepository::read_application_export_operation(
+                ports,
+                operation_id,
+            )
+        })
+    }
+
+    fn compare_and_swap_application_export_operation(
+        &mut self,
+        expected: Option<&StoredApplicationExportOperationV1>,
+        replacement: &StoredApplicationExportOperationV1,
+    ) -> Result<ApplicationExportOperationWriteResultV1, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportOperationRepository::compare_and_swap_application_export_operation(
+                ports,
+                expected,
+                replacement,
+            )
+        })
+    }
+
+    fn list_application_export_operations(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<StoredApplicationExportOperationV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportOperationRepository::list_application_export_operations(ports, maximum)
+        })
+    }
+}
+
+impl ApplicationExportSnapshotPort for SharedRedbOperationalPorts {
+    fn capture_application_export_snapshot(
+        &self,
+        lineage: &ContractLineage,
+    ) -> Result<Arc<dyn ApplicationExportSnapshotReader>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ApplicationExportSnapshotPort::capture_application_export_snapshot(ports, lineage)
         })
     }
 }

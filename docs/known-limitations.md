@@ -79,6 +79,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   retention, exactly-once external effects, event-sourced reconstruction,
   persisted hydration, direct browser credentials, webhooks, connectors,
   arbitrary callbacks, or in-process agent inference.
+- Protected event replay and reaction validation currently enter the redb
+  mutation fence to obtain one transaction-current capability/row/relationship
+  view, even though replay aborts without mutation. This is a correctness-first
+  alpha path and can contend with the writer under heavy protected replay. The
+  singleton global reactive wakeup is unavailable to protected roles because
+  it cannot suppress hidden-commit timing without a subscription identity;
+  protected workers use bounded consumer long-poll instead.
 - Contract migration source, canonical artifacts, Application Source V3, Lock
   V4, read-only planning, dedicated authorization, public check/apply/status,
   Gate-A through Gate-C memory semantics, redb staged execution, crash recovery,

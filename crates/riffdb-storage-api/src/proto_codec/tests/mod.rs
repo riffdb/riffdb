@@ -396,6 +396,55 @@ fn sample_command_capsule_v1() -> (crate::StoredCommandCapsuleV1, crate::AtomicC
     (capsule, atomic)
 }
 
+fn sample_anchored_command_capsule_v2() -> crate::StoredCommandCapsuleV2 {
+    let (base, atomic) = sample_command_capsule_v1();
+    let (outcome, provenance, commit, started, terminal) = base.into_parts();
+    let original = &commit.events()[0];
+    let anchor = crate::StoredEventPolicyAnchorV1::new(
+        crate::DurableKeySchemaBindingV1::from_plan(commit.plan()),
+        original.event_type_id(),
+        sample::entity_target(),
+        RowPolicyName::new("TicketAccess").expect("policy"),
+    );
+    let hash = crate::derive_event_hash_v2(
+        original.event_id(),
+        original.event_type_id(),
+        original.payload(),
+        &anchor,
+    )
+    .expect("anchored hash");
+    let event = crate::StoredDurableEventV1::new_anchored(
+        original.event_id(),
+        original.event_type_id(),
+        original.payload().clone(),
+        hash,
+        anchor,
+    )
+    .expect("anchored event");
+    let commit = crate::StoredCommitRecordV1::new(
+        commit.commit_sequence(),
+        commit.admission_request_id(),
+        commit.plan().clone(),
+        commit.canonical_input_hash(),
+        commit.actor().clone(),
+        commit.logical_time(),
+        commit.partition_hash(),
+        commit.conflict_hashes().to_vec(),
+        commit.read_dependencies().clone(),
+        commit.entity_references().to_vec(),
+        vec![event.clone()],
+        commit.declared_outcome().clone(),
+        commit.provenance_id(),
+        commit.outbox_event_ids().to_vec(),
+        commit.durability_mode(),
+    )
+    .expect("anchored commit");
+    let base = crate::StoredCommandCapsuleV1::new(outcome, provenance, commit, started, terminal)
+        .expect("anchored reciprocal capsule");
+    crate::StoredCommandCapsuleV2::new(base, vec![event], atomic.index_epochs().to_vec())
+        .expect("anchored command authority")
+}
+
 fn sample_command_capsule_v1_from_atomic(
     atomic: &crate::AtomicCommandRecordSet,
     started_sequence: AdministrationSequence,
@@ -841,6 +890,62 @@ fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fie
     assert_eq!(
         decode_command_segment_v1(streamed.as_bytes())
             .expect("streamed segment decodes")
+            .value(),
+        &sealed
+    );
+}
+
+#[test]
+fn anchored_event_uses_successor_command_and_segment_authority() {
+    let capsule = sample_anchored_command_capsule_v2();
+    let capsule_encoded = assert_round_trip(
+        capsule.clone(),
+        encode_command_capsule_v2,
+        decode_command_capsule_v2,
+    );
+    assert_eq!(
+        riffdb_proto::durable::readable_record_registry()
+            .decode(capsule_encoded.as_bytes())
+            .expect("successor capsule envelope")
+            .record_type(),
+        "riffdb.storage.v1.StoredCommandCapsuleV5"
+    );
+    assert!(capsule.events()[0].policy_anchor().is_some());
+
+    let first = capsule.commit_sequence();
+    let manifest = crate::CommandSegmentManifestV1::new(vec![
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::EventRoute,
+            crate::CommandDerivedMemberV1::Event,
+            vec![0x31],
+            0,
+            0,
+            first,
+        )
+        .expect("event route manifest"),
+    ])
+    .expect("manifest");
+    let draft = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        None,
+        vec![capsule],
+        manifest,
+        crate::CommandSegmentDigestV1::from_bytes([0; 32]),
+    )
+    .expect("segment draft");
+    let (sealed, encoded) =
+        seal_and_encode_command_segment_v1(draft).expect("anchored segment seals");
+    assert_eq!(
+        riffdb_proto::durable::readable_record_registry()
+            .decode(encoded.as_bytes())
+            .expect("successor segment envelope")
+            .record_type(),
+        "riffdb.storage.v1.StoredCommandSegmentV4"
+    );
+    assert_eq!(
+        decode_command_segment_v1(encoded.as_bytes())
+            .expect("anchored segment decodes")
             .value(),
         &sealed
     );

@@ -16,6 +16,9 @@ use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_valu
 use riffdb_service::{
     APPLICATION_CATALOG_SCHEMA_V1, ApplicationCatalogFeatureStateV1, ApplicationCatalogFeatureV1,
     ApplicationCatalogRequest, ApplicationCatalogResult, ApplicationCatalogSymbolKindV1,
+    ApplicationExportCursor, ApplicationExportFailureV1, ApplicationExportOperationRequest,
+    ApplicationExportOperationV1, ApplicationExportPageV1, ApplicationExportPhaseV1,
+    ApplicationExportStartDispositionV1, ApplicationExportStartResultV1,
     ApplyContractMigrationRequest, BootstrapCapabilityRequest, BootstrapCapabilityResult,
     CapabilityIdentityView, CapabilityTransitionView, CheckContractMigrationRequest,
     CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
@@ -36,11 +39,13 @@ use riffdb_service::{
     DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
     DiscoveryRepresentation, EventConsumerCheckpoint, EventConsumerLeaseSelection,
-    EventConsumerMutationResult, EventConsumerSelection, EventConsumerStatus,
+    EventConsumerMutationResult, EventConsumerProgressCursor, EventConsumerPublicStatus,
+    EventConsumerPullDisposition, EventConsumerSelection, EventConsumerStatus,
     EventPartitionComponent, EventSelection, ExecuteCommandRequest, ExecuteCommandResult,
     ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
     FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult,
+    GetApplicationExportPageRequest, GetApplicationExportResultV1,
     GetApplicationInstallationRequest, GetApplicationInstallationResult, GetCommitRequest,
     GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
     GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
@@ -66,17 +71,18 @@ use riffdb_service::{
     ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
     RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
     ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    SeekEventStreamConsumerRequest, SourceName, StartApplicationInstallationRequest,
-    StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField,
-    SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
-    SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent,
-    SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
-    SymbolicResultField, SymbolicResultRecord, TailEventsRequest, TailEventsResult,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    SeekEventStreamConsumerRequest, SourceName, StartApplicationExportRequest,
+    StartApplicationInstallationRequest, StatisticsRequest, StatisticsResult, SubmittedDecimal,
+    SubmittedEnum, SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord,
+    SubmittedValue, SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic,
+    SymbolicEvent, SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema,
+    SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord, TailEventsRequest,
+    TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
     WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AdmittedActorContext, ApplicationInstallationCampaignId,
+    ActorId, ActorKind, AdmittedActorContext, ApplicationExportClassV1,
+    ApplicationExportOperationId, ApplicationExportSelectionV1, ApplicationInstallationCampaignId,
     ApplicationRoleHash, Audience, BackupNameV1, CapabilityApplicationExportGrantV1,
     CapabilityApplicationExportScopeV1, CapabilityExportGrantV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
@@ -1946,6 +1952,12 @@ fn event_page_to_proto(page: &riffdb_service::EventPage) -> Result<v1::EventPage
             .map_or_else(Vec::new, |cursor| cursor.as_bytes().to_vec()),
         observed_upper: page.observed_upper().map(event_id_to_proto),
         history_incarnation: page.history_incarnation(),
+        disposition: match page.disposition() {
+            riffdb_service::EventPageDisposition::Page => v1::EventPageDisposition::Page.into(),
+            riffdb_service::EventPageDisposition::BoundedProgress => {
+                v1::EventPageDisposition::BoundedProgress.into()
+            }
+        },
     })
 }
 
@@ -2018,7 +2030,7 @@ pub fn consume_event_stream_request_from_proto(
     let request_id = request_id_from_bytes(&value.request_id)?;
     let batch_limit = u8::try_from(value.batch_limit).map_err(|_| invalid_request())?;
     let in_flight_limit = u8::try_from(value.in_flight_limit).map_err(|_| invalid_request())?;
-    let request = ConsumeEventStreamRequest::new(
+    let mut request = ConsumeEventStreamRequest::new(
         event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
         batch_limit,
         in_flight_limit,
@@ -2026,6 +2038,13 @@ pub fn consume_event_stream_request_from_proto(
         Duration::from_nanos(value.maximum_wait_nanos),
     )
     .map_err(|_| invalid_request())?;
+    if !value.progress_cursor.is_empty() {
+        let bytes: [u8; riffdb_service::CURSOR_TOKEN_BYTES] = value
+            .progress_cursor
+            .try_into()
+            .map_err(|_| invalid_request())?;
+        request = request.with_progress_cursor(EventConsumerProgressCursor::from_bytes(bytes));
+    }
     Ok((request_id, request))
 }
 
@@ -2094,13 +2113,21 @@ fn checkpoint_from_proto(
 pub fn seek_event_stream_consumer_request_from_proto(
     value: v1::SeekEventStreamConsumerRequest,
 ) -> Result<(RequestId, SeekEventStreamConsumerRequest), Status> {
-    Ok((
-        request_id_from_bytes(&value.request_id)?,
-        SeekEventStreamConsumerRequest::new(
-            event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
-            checkpoint_from_proto(value.checkpoint.ok_or_else(invalid_request)?)?,
+    let selection =
+        event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?;
+    let request = match (value.checkpoint, value.progress_cursor.as_slice()) {
+        (Some(checkpoint), []) => {
+            SeekEventStreamConsumerRequest::new(selection, checkpoint_from_proto(checkpoint)?)
+        }
+        (None, bytes) => SeekEventStreamConsumerRequest::protected(
+            selection,
+            EventConsumerProgressCursor::from_bytes(
+                bytes.try_into().map_err(|_| invalid_request())?,
+            ),
         ),
-    ))
+        _ => return Err(invalid_request()),
+    };
+    Ok((request_id_from_bytes(&value.request_id)?, request))
 }
 
 /// Converts a selection-only consumer request.
@@ -2139,18 +2166,60 @@ fn event_consumer_status_to_proto(status: &EventConsumerStatus) -> v1::EventCons
     }
 }
 
+fn protected_event_consumer_status_to_proto(
+    status: &riffdb_service::ProtectedEventConsumerStatus,
+) -> v1::ProtectedEventConsumerStatus {
+    v1::ProtectedEventConsumerStatus {
+        history_incarnation: status.history_incarnation(),
+        progress_cursor: status.progress_cursor().as_bytes().to_vec(),
+    }
+}
+
+fn event_consumer_public_status_to_proto(
+    status: &EventConsumerPublicStatus,
+) -> (
+    Option<v1::EventConsumerStatus>,
+    Option<v1::ProtectedEventConsumerStatus>,
+) {
+    match status {
+        EventConsumerPublicStatus::Exact(status) => {
+            (Some(event_consumer_status_to_proto(status)), None)
+        }
+        EventConsumerPublicStatus::Protected(status) => {
+            (None, Some(protected_event_consumer_status_to_proto(status)))
+        }
+    }
+}
+
+fn event_consumer_pull_disposition_to_proto(
+    disposition: EventConsumerPullDisposition,
+) -> v1::EventConsumerPullDisposition {
+    match disposition {
+        EventConsumerPullDisposition::Ready => v1::EventConsumerPullDisposition::Ready,
+        EventConsumerPullDisposition::WaitTimedOut => {
+            v1::EventConsumerPullDisposition::WaitTimedOut
+        }
+        EventConsumerPullDisposition::BoundedProgress => {
+            v1::EventConsumerPullDisposition::BoundedProgress
+        }
+    }
+}
+
 /// Converts one successful consumer pull.
 pub fn consume_event_stream_result_to_proto(
     result: &ConsumeEventStreamResult,
 ) -> Result<v1::ConsumeEventStreamResponse, Status> {
+    let (status, protected_status) = event_consumer_public_status_to_proto(result.status());
     Ok(v1::ConsumeEventStreamResponse {
         events: result
             .events()
             .iter()
             .map(consumed_event_to_proto)
             .collect::<Result<Vec<_>, Status>>()?,
-        status: Some(event_consumer_status_to_proto(result.status())),
+        status,
         wait_timed_out: result.wait_timed_out(),
+        protected_status,
+        disposition: event_consumer_pull_disposition_to_proto(result.disposition()) as i32,
     })
 }
 
@@ -2173,14 +2242,20 @@ fn consumed_event_to_proto(
 pub fn consume_contextual_subscription_request_from_proto(
     value: v1::ConsumeContextualSubscriptionRequest,
 ) -> Result<(RequestId, ConsumeContextualSubscriptionRequest), Status> {
-    Ok((
-        request_id_from_bytes(&value.request_id)?,
-        ConsumeContextualSubscriptionRequest::new(
-            event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
-            Duration::from_nanos(value.maximum_wait_nanos),
-        )
-        .map_err(|_| invalid_request())?,
-    ))
+    let request_id = request_id_from_bytes(&value.request_id)?;
+    let mut request = ConsumeContextualSubscriptionRequest::new(
+        event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
+        Duration::from_nanos(value.maximum_wait_nanos),
+    )
+    .map_err(|_| invalid_request())?;
+    if !value.progress_cursor.is_empty() {
+        let bytes: [u8; riffdb_service::CURSOR_TOKEN_BYTES] = value
+            .progress_cursor
+            .try_into()
+            .map_err(|_| invalid_request())?;
+        request = request.with_progress_cursor(EventConsumerProgressCursor::from_bytes(bytes));
+    }
+    Ok((request_id, request))
 }
 
 fn contextual_lease_request_from_proto(
@@ -2338,14 +2413,17 @@ pub fn consume_contextual_subscription_result_to_proto(
             .enum_variant_name(type_id, variant_id)
             .map(str::to_owned)
     };
+    let (status, protected_status) = event_consumer_public_status_to_proto(result.status());
     Ok(v1::ConsumeContextualSubscriptionResponse {
         items: result
             .items()
             .iter()
             .map(|item| contextual_work_item_to_proto(item, &resolve))
             .collect::<Result<Vec<_>, Status>>()?,
-        status: Some(event_consumer_status_to_proto(result.status())),
+        status,
         wait_timed_out: result.wait_timed_out(),
+        protected_status,
+        disposition: event_consumer_pull_disposition_to_proto(result.disposition()) as i32,
     })
 }
 
@@ -2370,12 +2448,17 @@ pub fn event_consumer_mutation_result_to_proto(
 
 /// Converts optional consumer status.
 pub fn event_consumer_status_result_to_proto(
-    status: Option<&EventConsumerStatus>,
+    status: Option<&EventConsumerPublicStatus>,
 ) -> v1::GetEventStreamConsumerStatusResponse {
     use v1::get_event_stream_consumer_status_response::Result;
     v1::GetEventStreamConsumerStatusResponse {
         result: Some(match status {
-            Some(status) => Result::Found(event_consumer_status_to_proto(status)),
+            Some(EventConsumerPublicStatus::Exact(status)) => {
+                Result::Found(event_consumer_status_to_proto(status))
+            }
+            Some(EventConsumerPublicStatus::Protected(status)) => {
+                Result::Protected(protected_event_consumer_status_to_proto(status))
+            }
             None => Result::NotFound(v1::Unit {}),
         }),
     }
@@ -3658,6 +3741,91 @@ fn application_installation_external_completion_from_proto(
     }
 }
 
+/// Converts one closed symbolic application-export start request.
+pub fn start_application_export_request_from_proto(
+    request: v1::StartApplicationExportRequest,
+) -> Result<(RequestId, StartApplicationExportRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = application_export_operation_id_from_bytes(&request.operation_id)?;
+    let selection =
+        application_export_selection_from_proto(request.selection.ok_or_else(invalid_request)?)?;
+    let request =
+        StartApplicationExportRequest::new(operation_id, selection, request.lease_seconds)
+            .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts one bounded application-export page request.
+pub fn get_application_export_page_request_from_proto(
+    request: v1::GetApplicationExportPageRequest,
+) -> Result<(RequestId, GetApplicationExportPageRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = application_export_operation_id_from_bytes(&request.operation_id)?;
+    let cursor = ApplicationExportCursor::new(request.cursor).map_err(|_| invalid_request())?;
+    let max_rows = u16::try_from(request.max_rows).map_err(|_| invalid_request())?;
+    let request = GetApplicationExportPageRequest::new(operation_id, cursor, max_rows)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts one application-export status selector.
+pub fn get_application_export_request_from_proto(
+    request: v1::GetApplicationExportRequest,
+) -> Result<(RequestId, ApplicationExportOperationRequest), Status> {
+    application_export_operation_request_from_parts(&request.request_id, &request.operation_id)
+}
+
+/// Converts one application-export cancellation selector.
+pub fn cancel_application_export_request_from_proto(
+    request: v1::CancelApplicationExportRequest,
+) -> Result<(RequestId, ApplicationExportOperationRequest), Status> {
+    application_export_operation_request_from_parts(&request.request_id, &request.operation_id)
+}
+
+fn application_export_operation_request_from_parts(
+    request_id: &[u8],
+    operation_id: &[u8],
+) -> Result<(RequestId, ApplicationExportOperationRequest), Status> {
+    let request_id = request_id_from_bytes(request_id)?;
+    let operation_id = application_export_operation_id_from_bytes(operation_id)?;
+    Ok((
+        request_id,
+        ApplicationExportOperationRequest::new(operation_id),
+    ))
+}
+
+fn application_export_operation_id_from_bytes(
+    bytes: &[u8],
+) -> Result<ApplicationExportOperationId, Status> {
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
+    ApplicationExportOperationId::from_bytes(bytes).map_err(|_| invalid_request())
+}
+
+fn application_export_selection_from_proto(
+    selection: v1::ApplicationExportSelection,
+) -> Result<ApplicationExportSelectionV1, Status> {
+    let scope = match v1::CapabilityApplicationExportScope::try_from(selection.scope)
+        .map_err(|_| invalid_request())?
+    {
+        v1::CapabilityApplicationExportScope::PrincipalFiltered => {
+            CapabilityApplicationExportScopeV1::PrincipalFiltered
+        }
+        v1::CapabilityApplicationExportScope::WholeApplication => {
+            CapabilityApplicationExportScopeV1::WholeApplication
+        }
+        v1::CapabilityApplicationExportScope::Unspecified => return Err(invalid_request()),
+    };
+    ApplicationExportSelectionV1::new(
+        ContractLineage::new(selection.contract_lineage).map_err(|_| invalid_request())?,
+        scope,
+        selection.entities,
+        selection.events,
+        selection.provenance,
+        selection.public_audit,
+    )
+    .map_err(|_| invalid_request())
+}
+
 /// Converts one protected exact campaign selector.
 pub fn get_application_installation_request_from_proto(
     request: v1::GetApplicationInstallationRequest,
@@ -3998,6 +4166,200 @@ pub fn get_application_installation_result_to_proto(
     };
     v1::GetApplicationInstallationResponse {
         result: Some(result),
+    }
+}
+
+/// Converts one application-export start/replay result without reinterpretation.
+#[must_use]
+pub fn application_export_start_result_to_proto(
+    result: &ApplicationExportStartResultV1,
+) -> v1::StartApplicationExportResponse {
+    let disposition = match result.disposition() {
+        ApplicationExportStartDispositionV1::Accepted => {
+            v1::ApplicationExportStartDisposition::Accepted
+        }
+        ApplicationExportStartDispositionV1::AlreadyAccepted => {
+            v1::ApplicationExportStartDisposition::AlreadyAccepted
+        }
+        ApplicationExportStartDispositionV1::Terminal => {
+            v1::ApplicationExportStartDisposition::Terminal
+        }
+    };
+    v1::StartApplicationExportResponse {
+        disposition: disposition as i32,
+        operation: Some(application_export_operation_to_proto(result.operation())),
+        cursor: result
+            .cursor()
+            .map_or_else(Vec::new, |cursor| cursor.as_bytes().to_vec()),
+    }
+}
+
+/// Converts one bounded canonical JSONL export page.
+#[must_use]
+pub fn application_export_page_to_proto(
+    page: &ApplicationExportPageV1,
+) -> v1::GetApplicationExportPageResponse {
+    let record_class = match page.class() {
+        ApplicationExportClassV1::Entity => v1::ApplicationExportRecordClass::Entity,
+        ApplicationExportClassV1::Event => v1::ApplicationExportRecordClass::Event,
+        ApplicationExportClassV1::Provenance => v1::ApplicationExportRecordClass::Provenance,
+        ApplicationExportClassV1::PublicAudit => v1::ApplicationExportRecordClass::PublicAudit,
+    };
+    v1::GetApplicationExportPageResponse {
+        page: Some(v1::ApplicationExportPage {
+            operation_id: page.operation_id().into_bytes().to_vec(),
+            page_number: page.page_number().get(),
+            record_class: record_class as i32,
+            canonical_json_lines: page
+                .lines()
+                .iter()
+                .map(|line| line.as_bytes().to_vec())
+                .collect(),
+            next_cursor: page
+                .next_cursor()
+                .map_or_else(Vec::new, |cursor| cursor.as_bytes().to_vec()),
+            class_complete: page.class_complete(),
+            operation_complete: page.operation_complete(),
+            page_hash: page.page_hash().into_bytes().to_vec(),
+        }),
+    }
+}
+
+/// Converts one protected application-export status lookup.
+#[must_use]
+pub fn get_application_export_result_to_proto(
+    result: &GetApplicationExportResultV1,
+) -> v1::GetApplicationExportResponse {
+    let result = match result {
+        GetApplicationExportResultV1::NotFound => {
+            v1::get_application_export_response::Result::NotFound(v1::Unit {})
+        }
+        GetApplicationExportResultV1::Found(operation) => {
+            v1::get_application_export_response::Result::Found(
+                application_export_operation_to_proto(operation),
+            )
+        }
+    };
+    v1::GetApplicationExportResponse {
+        result: Some(result),
+    }
+}
+
+/// Converts one protected application-export cancellation lookup.
+#[must_use]
+pub fn cancel_application_export_result_to_proto(
+    result: &GetApplicationExportResultV1,
+) -> v1::CancelApplicationExportResponse {
+    let result = match result {
+        GetApplicationExportResultV1::NotFound => {
+            v1::cancel_application_export_response::Result::NotFound(v1::Unit {})
+        }
+        GetApplicationExportResultV1::Found(operation) => {
+            v1::cancel_application_export_response::Result::Found(
+                application_export_operation_to_proto(operation),
+            )
+        }
+    };
+    v1::CancelApplicationExportResponse {
+        result: Some(result),
+    }
+}
+
+fn application_export_operation_to_proto(
+    operation: &ApplicationExportOperationV1,
+) -> v1::ApplicationExportOperation {
+    let selection = operation.selection();
+    let scope = match selection.scope() {
+        CapabilityApplicationExportScopeV1::PrincipalFiltered => {
+            v1::CapabilityApplicationExportScope::PrincipalFiltered
+        }
+        CapabilityApplicationExportScopeV1::WholeApplication => {
+            v1::CapabilityApplicationExportScope::WholeApplication
+        }
+    };
+    let snapshot = operation.snapshot();
+    let phase = match operation.phase() {
+        ApplicationExportPhaseV1::Accepted => v1::ApplicationExportPhase::Accepted,
+        ApplicationExportPhaseV1::Exporting => v1::ApplicationExportPhase::Exporting,
+        ApplicationExportPhaseV1::Completed => v1::ApplicationExportPhase::Completed,
+        ApplicationExportPhaseV1::Cancelled => v1::ApplicationExportPhase::Cancelled,
+        ApplicationExportPhaseV1::Expired => v1::ApplicationExportPhase::Expired,
+        ApplicationExportPhaseV1::FailedClosed => v1::ApplicationExportPhase::FailedClosed,
+    };
+    let failure = match operation.failure() {
+        None => v1::ApplicationExportFailure::Unspecified,
+        Some(ApplicationExportFailureV1::AuthorityChanged) => {
+            v1::ApplicationExportFailure::AuthorityChanged
+        }
+        Some(ApplicationExportFailureV1::SnapshotUnavailable) => {
+            v1::ApplicationExportFailure::SnapshotUnavailable
+        }
+        Some(ApplicationExportFailureV1::SourceInvalid) => {
+            v1::ApplicationExportFailure::SourceInvalid
+        }
+        Some(ApplicationExportFailureV1::LeaseExpired) => {
+            v1::ApplicationExportFailure::LeaseExpired
+        }
+        Some(ApplicationExportFailureV1::Cancelled) => v1::ApplicationExportFailure::Cancelled,
+        Some(ApplicationExportFailureV1::LimitExceeded) => {
+            v1::ApplicationExportFailure::LimitExceeded
+        }
+        Some(ApplicationExportFailureV1::Internal) => v1::ApplicationExportFailure::Internal,
+    };
+    let lease_expires_at = operation.lease_expires_at();
+    v1::ApplicationExportOperation {
+        operation_id: operation.operation_id().into_bytes().to_vec(),
+        selection: Some(v1::ApplicationExportSelection {
+            contract_lineage: selection.lineage().as_str().to_owned(),
+            scope: scope as i32,
+            entities: selection.entities(),
+            events: selection.events(),
+            provenance: selection.provenance(),
+            public_audit: selection.public_audit(),
+        }),
+        snapshot: Some(v1::ApplicationExportSnapshotBinding {
+            database_id: snapshot.database_id().into_bytes().to_vec(),
+            history_incarnation: snapshot.history_incarnation().get(),
+            application_frontier: snapshot
+                .application_frontier()
+                .map_or(0, CommitSequence::get),
+            administration_frontier: snapshot
+                .administration_frontier()
+                .map_or(0, riffdb_types::AdministrationSequence::get),
+            contract_version: snapshot.contract_version().get(),
+            contract_bundle_hash: snapshot.contract_bundle_hash().into_bytes().to_vec(),
+            query_module_hashes: snapshot
+                .query_modules()
+                .iter()
+                .map(|hash| hash.into_bytes().to_vec())
+                .collect(),
+            reactive_module_hashes: snapshot
+                .reactive_modules()
+                .iter()
+                .map(|hash| hash.into_bytes().to_vec())
+                .collect(),
+        }),
+        phase: phase as i32,
+        lease_expires_at: Some(v1::Timestamp {
+            seconds: lease_expires_at.seconds(),
+            nanos: lease_expires_at.nanoseconds(),
+        }),
+        pages_released: operation.pages_released(),
+        rows_released: operation.rows_released(),
+        bytes_released: operation.bytes_released(),
+        failure: failure as i32,
+        canonical_manifest_json: operation
+            .manifest()
+            .map_or_else(Vec::new, |document| document.as_bytes().to_vec()),
+        canonical_receipt_json: operation
+            .receipt()
+            .map_or_else(Vec::new, |document| document.as_bytes().to_vec()),
+        manifest_hash: operation
+            .manifest_hash()
+            .map_or_else(Vec::new, |hash| hash.into_bytes().to_vec()),
+        receipt_hash: operation
+            .receipt_hash()
+            .map_or_else(Vec::new, |hash| hash.into_bytes().to_vec()),
     }
 }
 

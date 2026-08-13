@@ -2314,6 +2314,64 @@ pub struct StoredDurableEventV2 {
     pub policy_anchor: ::core::option::Option<StoredEventPolicyAnchorV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredDurableEventVariantV1 {
+    #[prost(oneof = "stored_durable_event_variant_v1::Value", tags = "1, 2")]
+    pub value: ::core::option::Option<stored_durable_event_variant_v1::Value>,
+}
+/// Nested message and enum types in `StoredDurableEventVariantV1`.
+pub mod stored_durable_event_variant_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Value {
+        #[prost(message, tag = "1")]
+        Unanchored(super::StoredDurableEventV1),
+        #[prost(message, tag = "2")]
+        Anchored(super::StoredDurableEventV2),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandCapsuleV5 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredCommandCapsuleV1>,
+    #[prost(message, repeated, tag = "2")]
+    pub events: ::prost::alloc::vec::Vec<StoredDurableEventVariantV1>,
+    #[prost(message, repeated, tag = "3")]
+    pub index_generation_transitions: ::prost::alloc::vec::Vec<
+        StoredIndexGenerationTransitionV1,
+    >,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_service_values: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "5")]
+    pub entity_transitions: ::prost::alloc::vec::Vec<StoredCommittedEntityTransitionV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentBodyV4 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub predecessor_segment_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub first_commit_sequence: u64,
+    #[prost(uint64, tag = "5")]
+    pub last_commit_sequence: u64,
+    #[prost(uint64, tag = "6")]
+    pub first_administration_sequence: u64,
+    #[prost(uint64, tag = "7")]
+    pub last_administration_sequence: u64,
+    #[prost(message, repeated, tag = "8")]
+    pub commands: ::prost::alloc::vec::Vec<StoredCommandCapsuleV5>,
+    #[prost(message, optional, tag = "9")]
+    pub manifest: ::core::option::Option<CommandSegmentManifestV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentV4 {
+    #[prost(message, optional, tag = "1")]
+    pub body: ::core::option::Option<StoredCommandSegmentBodyV4>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub segment_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EventReferenceV2 {
     #[prost(message, optional, tag = "1")]
     pub event_id: ::core::option::Option<EventIdV1>,

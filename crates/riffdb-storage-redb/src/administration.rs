@@ -143,7 +143,7 @@ fn read_administration_allocator_access(
     decode_administration_sequence_allocator_v1(&encoded).map(decoded_value)
 }
 
-fn read_administration_record_access(
+pub(crate) fn read_administration_record_access(
     ports: &RedbOperationalPorts,
     access: &RedbReadAccess,
     sequence: AdministrationSequence,
@@ -1611,7 +1611,7 @@ impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
     }
 }
 
-fn capability_from_tables<C, L>(
+pub(crate) fn capability_from_tables<C, L>(
     capabilities: &C,
     lookups: &L,
     database_id: riffdb_types::DatabaseId,

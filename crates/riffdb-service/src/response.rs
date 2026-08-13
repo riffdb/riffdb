@@ -11,30 +11,33 @@ use riffdb_types::{
 };
 
 use crate::{
-    ApplicationCatalogResult, ApplicationInstallationOperationResult, AvailableContextualReaction,
-    BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery, CommandToolDescriptor,
-    CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
-    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
-    CompactResourceDescriptor, CompactResourceDescriptorRef, ConsumeContextualSubscriptionResult,
-    ConsumeEventStreamResult, ConsumedEvent, ContextualHydration, ContextualWorkItem,
-    ContractDescriptor, ContractMigrationOperationObservation, ContractMigrationStartResult,
-    ContractValidationResult, CreateCapabilityResult, CursorToken, DeclaredOutcomeView,
-    DeployContractResult, DeployQueryModuleResult, DeployReactiveModuleResult, DescribeEventResult,
+    ApplicationCatalogResult, ApplicationExportOperationV1, ApplicationExportPageV1,
+    ApplicationExportStartResultV1, ApplicationInstallationOperationResult,
+    AvailableContextualReaction, BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery,
+    CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent,
+    CommitView, CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem,
+    CompactNamedQueryToolDescriptor, CompactResourceDescriptor, CompactResourceDescriptorRef,
+    ConsumeContextualSubscriptionResult, ConsumeEventStreamResult, ConsumedEvent,
+    ContextualHydration, ContextualWorkItem, ContractDescriptor,
+    ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
+    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
+    DeployQueryModuleResult, DeployReactiveModuleResult, DescribeEventResult,
     DescribeSymbolicContractResult, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
     DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
     DiscoveryCatalogStateRef, DurableEventView, EntityView, EventConsumerMutationResult,
-    EventConsumerStatus, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
-    ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
-    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult,
-    GetApplicationInstallationResult, GetCommitResult, GetContractMigrationOperationResult,
-    GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusResult, GetReactiveWakeupResult, HealthReport, HealthResult, IndexRowView,
-    IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
-    LiveQueryPatchOperation, LiveQueryUpdate, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
-    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
+    EventConsumerPublicStatus, EventConsumerStatus, EventDescriptor, EventFieldDescriptor,
+    EventPage, ExecuteCommandResult, ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult,
+    ExplainCommandResult, ExplainSymbolicQueryResult, GeneratedSchemaIdentity,
+    GetActiveContractResult, GetApplicationExportResultV1, GetApplicationInstallationResult,
+    GetCommitResult, GetContractMigrationOperationResult, GetContractVersionResult,
+    GetEntityResult, GetOfflineMaintenanceOperationResult, GetProjectionStatusResult,
+    GetReactiveWakeupResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
+    JournaledCommandResult, ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
+    NormalCreateCapabilityResult, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliverySummary, Page,
+    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProtectedEventConsumerStatus,
     ProvenanceClaimsView, ProvenanceView, QueryModuleInspection, QueryProjectionResult,
     ReadOnlyCommandResult, ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult,
@@ -408,7 +411,7 @@ impl ServiceResponseCharge for LiveQueryUpdate {
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
-        charge.fields(4)?;
+        charge.fields(3)?;
         match self {
             LiveQueryUpdate::Snapshot(snapshot) => {
                 charge.nested(snapshot.result())?;
@@ -526,7 +529,7 @@ impl ServiceResponseCharge for DeployQueryModuleResult {
         let mut charge = ChargeAccumulator::message();
         let module = self.module();
         charge.bytes(module.name().as_str().len())?;
-        charge.fields(3)?;
+        charge.fields(4)?;
         charge.bytes(module.hash().as_bytes().len())?;
         charge_lineage(&mut charge, module.contract_lineage())?;
         charge.fields(1)?;
@@ -1354,6 +1357,30 @@ impl ServiceResponseCharge for EventConsumerStatus {
     }
 }
 
+impl sealed::Sealed for ProtectedEventConsumerStatus {}
+impl ServiceResponseCharge for ProtectedEventConsumerStatus {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        charge.fields(2)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventConsumerPublicStatus {}
+impl ServiceResponseCharge for EventConsumerPublicStatus {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        match self {
+            Self::Exact(status) => status.service_response_charge_v1(),
+            Self::Protected(status) => status.service_response_charge_v1(),
+        }
+    }
+}
+
 impl sealed::Sealed for ConsumeEventStreamResult {}
 impl ServiceResponseCharge for ConsumeEventStreamResult {
     fn service_response_charge_v1(
@@ -1502,6 +1529,19 @@ impl ServiceResponseCharge for Option<EventConsumerStatus> {
     }
 }
 
+impl sealed::Sealed for Option<EventConsumerPublicStatus> {}
+impl ServiceResponseCharge for Option<EventConsumerPublicStatus> {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        if let Some(status) = self {
+            charge.nested(status)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
 impl sealed::Sealed for EventPage {}
 impl ServiceResponseCharge for EventPage {
     fn service_response_charge_v1(
@@ -1512,7 +1552,7 @@ impl ServiceResponseCharge for EventPage {
         if self.next_cursor().is_some() {
             charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
         }
-        charge.fields(3)?;
+        charge.fields(4)?;
         Ok(charge.finish())
     }
 }
@@ -1844,6 +1884,82 @@ impl ServiceResponseCharge for GetApplicationInstallationResult {
         charge.fields(1)?;
         if let Self::Found(found) = self {
             charge.nested(found.as_ref())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for ApplicationExportOperationV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(18)?;
+        charge.add(16 + 32 + 32)?;
+        charge.bytes(self.selection().lineage().as_bytes().len())?;
+        charge.add(
+            self.snapshot()
+                .query_modules()
+                .len()
+                .checked_mul(32)
+                .ok_or(ServiceResponseChargeOverflow)?,
+        )?;
+        charge.add(
+            self.snapshot()
+                .reactive_modules()
+                .len()
+                .checked_mul(32)
+                .ok_or(ServiceResponseChargeOverflow)?,
+        )?;
+        if let Some(manifest) = self.manifest() {
+            charge.bytes(manifest.as_bytes().len())?;
+        }
+        if let Some(receipt) = self.receipt() {
+            charge.bytes(receipt.as_bytes().len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for ApplicationExportPageV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(8)?;
+        charge.add(16 + 32)?;
+        for line in self.lines() {
+            charge.bytes(line.as_bytes().len())?;
+        }
+        if let Some(cursor) = self.next_cursor() {
+            charge.bytes(cursor.as_bytes().len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for ApplicationExportStartResultV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(2)?;
+        charge.nested(self.operation())?;
+        if let Some(cursor) = self.cursor() {
+            charge.bytes(cursor.as_bytes().len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for GetApplicationExportResultV1 {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        if let Self::Found(operation) = self {
+            charge.nested(operation.as_ref())?;
         }
         Ok(charge.finish())
     }
@@ -2290,6 +2406,10 @@ seal_response_types!(
     GetContractMigrationOperationResult,
     ApplicationInstallationOperationResult,
     GetApplicationInstallationResult,
+    ApplicationExportOperationV1,
+    ApplicationExportPageV1,
+    ApplicationExportStartResultV1,
+    GetApplicationExportResultV1,
     OutboxDeliverySummary,
     ListPendingOutboxDeliveriesResult,
     CommandToolDescriptor,

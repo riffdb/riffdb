@@ -829,6 +829,17 @@ impl AuthorizedOperation {
         self.row_policy_authority.as_ref()
     }
 
+    /// Exact current capability identity retained for final reactive safe-point
+    /// binding. This is never released through an application response.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_capability_identity(&self) -> (CapabilityId, NonZeroU64) {
+        (
+            self.identity.capability_id,
+            self.identity.capability_revision,
+        )
+    }
+
     /// Re-issues this allow proof only when live state proves it still holds.
     ///
     /// `baseline_generation` is the capability-view generation observed

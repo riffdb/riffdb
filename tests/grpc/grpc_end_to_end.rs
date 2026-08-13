@@ -769,7 +769,7 @@ impl riffdb_service::EventConsumerServiceApplication for ProjectionService {
         get_event_stream_consumer_status,
         RequestContext,
         riffdb_service::EventConsumerSelection,
-        Option<riffdb_service::EventConsumerStatus>
+        Option<riffdb_service::EventConsumerPublicStatus>
     );
 }
 
@@ -800,7 +800,7 @@ impl riffdb_service::ContextualSubscriptionApplication for ProjectionService {
         get_contextual_subscription_status,
         RequestContext,
         riffdb_service::EventConsumerSelection,
-        Option<riffdb_service::EventConsumerStatus>
+        Option<riffdb_service::EventConsumerPublicStatus>
     );
     denied_operation!(
         execute_contextual_reaction,

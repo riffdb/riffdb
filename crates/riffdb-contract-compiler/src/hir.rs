@@ -201,7 +201,16 @@ pub(crate) struct HirEvent {
     pub(crate) span: Span,
     pub(crate) partition_fields: Vec<(FieldId, Span)>,
     pub(crate) partition_span: Option<Span>,
+    pub(crate) policy_anchor: Option<HirEventPolicyAnchor>,
     pub(crate) fields: Vec<HirField>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirEventPolicyAnchor {
+    pub(crate) source_entity: EntityTypeId,
+    pub(crate) key_fields: Vec<(FieldId, FieldId)>,
+    pub(crate) read_policy: String,
+    pub(crate) span: Span,
 }
 
 impl HirEvent {
@@ -1054,8 +1063,8 @@ fn lower_events(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            if let Some(anchor) = &source.policy_anchor
-                && validate_event_policy_anchor(
+            let policy_anchor = source.policy_anchor.as_ref().and_then(|anchor| {
+                lower_event_policy_anchor(
                     document,
                     symbols,
                     entities,
@@ -1065,21 +1074,14 @@ fn lower_events(
                     anchor,
                     diagnostics,
                 )
-            {
-                // The source has passed ADR-0116's semantic gate. Keep the
-                // deployment fail-closed until WP-597's concurrent bundle-version
-                // rotation has landed and this checked result can be retained in IR.
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::InvalidEvent,
-                    anchor.span,
-                ));
-            }
+            });
             Some(HirEvent {
                 id,
                 name: source.name.value.clone(),
                 span: source.name.span,
                 partition_fields,
                 partition_span: source.partition_by.as_ref().map(|partition| partition.span),
+                policy_anchor,
                 fields,
             })
         })
@@ -1087,7 +1089,7 @@ fn lower_events(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_event_policy_anchor(
+fn lower_event_policy_anchor(
     document: &ContractDocument,
     symbols: &GenesisSymbols,
     entities: &[HirEntity],
@@ -1096,21 +1098,21 @@ fn validate_event_policy_anchor(
     partition_fields: &[(FieldId, Span)],
     anchor: &Spanned<EventPolicyAnchorDeclaration>,
     diagnostics: &mut Vec<CompilerDiagnostic>,
-) -> bool {
+) -> Option<HirEventPolicyAnchor> {
     let diagnostic_start = diagnostics.len();
     let Some(entity_id) = symbols.entities.get(&anchor.value.entity.value).copied() else {
         diagnostics.push(CompilerDiagnostic::new(
             CompilerDiagnosticCode::UnknownName,
             anchor.value.entity.span,
         ));
-        return false;
+        return None;
     };
     let Some(entity) = entities.iter().find(|candidate| candidate.id == entity_id) else {
         diagnostics.push(CompilerDiagnostic::new(
             CompilerDiagnosticCode::InvalidEvent,
             anchor.value.entity.span,
         ));
-        return false;
+        return None;
     };
 
     let mut mapped_entity_fields = Vec::with_capacity(anchor.value.fields.len());
@@ -1211,8 +1213,15 @@ fn validate_event_policy_anchor(
             anchor.value.entity.span,
         ));
     }
-
-    diagnostics.len() == diagnostic_start
+    (diagnostics.len() == diagnostic_start).then(|| HirEventPolicyAnchor {
+        source_entity: entity_id,
+        key_fields: mapped_entity_fields
+            .into_iter()
+            .zip(mapped_payload_fields)
+            .collect(),
+        read_policy: policies[0].name.value.clone(),
+        span: anchor.span,
+    })
 }
 
 fn lower_aggregates(

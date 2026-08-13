@@ -17,7 +17,8 @@ use riffdb_catalog::{
 use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
 use riffdb_policy::{
-    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, AuthorizedContractMigration,
+    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1, AuthorizationClock,
+    AuthorizationError, AuthorizationTelemetry, AuthorizedContractMigration,
     AuthorizedOfflineMaintenance, CapabilityViewCheckpoint, ContractMigrationAuthorizationRequest,
     ContractMigrationDecision, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
     OfflineMaintenanceDecision, OperationRequest, ProvenanceSelector,
@@ -263,6 +264,15 @@ pub trait CurrentPolicyPort: Send + Sync {
         Err(AuthorizationError::CurrentCapabilityUnavailable)
     }
 
+    /// Reloads current V5 authority and decides one export release safe point.
+    fn authorize_application_export(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: ApplicationExportAuthorizationRequestV1,
+    ) -> Result<ApplicationExportDecisionV1, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Returns the live capability-view generation without sampling the clock.
     ///
     /// Captured immediately *before* a full evaluation so a publication racing
@@ -296,6 +306,14 @@ where
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError> {
         CurrentAuthorizer::authorize(self, principal, request)
+    }
+
+    fn authorize_application_export(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ApplicationExportAuthorizationRequestV1,
+    ) -> Result<ApplicationExportDecisionV1, AuthorizationError> {
+        CurrentAuthorizer::authorize_application_export(self, principal, request)
     }
 
     fn authorize_offline_maintenance(
@@ -614,7 +632,7 @@ pub trait AuthoritativeReadPort: Send + Sync {
         'a,
         BoxPortCapacityPermit<
             AuthoritativeEventReplayRequest,
-            riffdb_catalog::SymbolicEventReplayPage,
+            crate::AuthoritativeEventReplayPage,
             AuthoritativeReadError,
         >,
         PortAdmissionError,

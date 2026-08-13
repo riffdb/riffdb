@@ -1,0 +1,1917 @@
+{
+  "application_manifest_hash": "9ab105fed090e285393deae8df591f978ded9b06561375ca5a22df2a7717b600",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact AttemptDocumentTransfer compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "new_owner_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "document_id",
+          "new_owner_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_attempt_document_transfer",
+      "operation_name": "AttemptDocumentTransfer",
+      "plan_hash": "5628368a203e7893833379fee69cc84b3b68770a0cf5bd03d016d2eadadaf2cb",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "document": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body",
+                  "state",
+                  "title",
+                  "group_id",
+                  "owner_id",
+                  "visibility",
+                  "document_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "DocumentTransferred",
+                "type": "string"
+              }
+            },
+            "required": [
+              "document",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run AttemptDocumentTransfer"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact ChangeDocumentAccess compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id",
+          "request_id",
+          "visibility",
+          "document_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_change_document_access",
+      "operation_name": "ChangeDocumentAccess",
+      "plan_hash": "44d76955f1da9a19af449bd5effa06a148b9dd3476553ef9ba5105efd0d6f849",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "document": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body",
+                  "state",
+                  "title",
+                  "group_id",
+                  "owner_id",
+                  "visibility",
+                  "document_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "DocumentAccessChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "document",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ChangeDocumentAccess"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact CreateArtifact compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "group_id",
+          "owner_id",
+          "request_id",
+          "visibility",
+          "artifact_id",
+          "experiment_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_create_artifact",
+      "operation_name": "CreateArtifact",
+      "plan_hash": "4f8eb2e06be26e50945798fac92d129c64e32bd73648e0358c6a5a36610f231c",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ArtifactExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_id": {
+                    "type": "string"
+                  },
+                  "experiment_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "run_id",
+                  "group_id",
+                  "owner_id",
+                  "visibility",
+                  "artifact_id",
+                  "experiment_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "ArtifactCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateArtifact"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact CreateDocument compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "state",
+          "title",
+          "group_id",
+          "owner_id",
+          "request_id",
+          "visibility",
+          "document_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_create_document",
+      "operation_name": "CreateDocument",
+      "plan_hash": "755bde93e90422196e3d65ce7be1e019b5a0f3b97b6b0200ff07275748a0e4cd",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DocumentExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "document": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body",
+                  "state",
+                  "title",
+                  "group_id",
+                  "owner_id",
+                  "visibility",
+                  "document_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "DocumentCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "document",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateDocument"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact CreateExperiment compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "group_id",
+          "owner_id",
+          "request_id",
+          "visibility",
+          "experiment_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_create_experiment",
+      "operation_name": "CreateExperiment",
+      "plan_hash": "e22d12eeaf51efd84cd5162f8886f0b9c7bba7047eb0684b63b90069495b6d9f",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ExperimentExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "additionalProperties": false,
+                "properties": {
+                  "experiment_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "group_id",
+                  "owner_id",
+                  "visibility",
+                  "experiment_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "ExperimentCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "experiment",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateExperiment"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact CreateRun compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "run_id",
+          "group_id",
+          "owner_id",
+          "request_id",
+          "visibility",
+          "experiment_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_create_run",
+      "operation_name": "CreateRun",
+      "plan_hash": "47730edbfd3c86b1cb2e72e58a7eda68abae08887a71b4c0a8c2924962b9390a",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunCreated",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "experiment_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "run_id",
+                  "group_id",
+                  "owner_id",
+                  "revision",
+                  "visibility",
+                  "experiment_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateRun"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact FinishRun compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "request_id",
+          "experiment_id",
+          "organization_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_finish_run",
+      "operation_name": "FinishRun",
+      "plan_hash": "2d827a6bdfa4b17f523dc47bdc7059936bdf1cb9c19d2a428336a8df54f9bad1",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "FinishStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RunFinished",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "experiment_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "run_id",
+                  "group_id",
+                  "owner_id",
+                  "revision",
+                  "visibility",
+                  "experiment_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "FinishIllegal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run FinishRun"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b",
+      "description": "Execute the exact LogMetric compiled command from contract AdapterRowPolicyConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "value_micros": {
+            "type": "integer"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "run_id",
+          "group_id",
+          "owner_id",
+          "metric_id",
+          "request_id",
+          "visibility",
+          "value_micros",
+          "experiment_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_row_policy_conformance_log_metric",
+      "operation_name": "LogMetric",
+      "plan_hash": "c51e64754310c2d223f2c2a3e9cfa2f4b144cc3146c197f0b21bf450ee89beab",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "MetricExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "metric": {
+                "additionalProperties": false,
+                "properties": {
+                  "experiment_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "metric_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "value_micros": {
+                    "type": "integer"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "run_id",
+                  "group_id",
+                  "owner_id",
+                  "metric_id",
+                  "visibility",
+                  "value_micros",
+                  "experiment_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "MetricLogged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "metric",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run LogMetric"
+    }
+  ],
+  "reactive_tools": [
+    {
+      "action": "watch",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Run the authorized watch action for exact reactive operation DocumentListWatch.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "organization_id": {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "uuid"
+                  },
+                  "value": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value",
+                  "type"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "organization_id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "parameters"
+        ],
+        "type": "object"
+      },
+      "name": "document_activity_document_list_watch_watch",
+      "operation_kind": "watch",
+      "operation_name": "DocumentListWatch",
+      "reaction_command_id": null,
+      "reaction_command_name": null,
+      "reaction_name": null,
+      "reactive_module_hash": "ee115b6d1fa33abce709099014a22594f109af6a5056f43f880b527aca67f390",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "watch DocumentListWatch"
+    }
+  ],
+  "schema": "riffdb-generated-application-operations/v2",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact DocumentSummary named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_document_summary",
+      "operation_name": "DocumentSummary",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "summary": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_count": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "document_count"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "summary"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run DocumentSummary"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetDocument named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "document_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_get_document",
+      "operation_name": "GetDocument",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "document": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "document_id",
+                  "owner_id",
+                  "group_id",
+                  "visibility",
+                  "state",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "document"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetDocument"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListDocuments named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_list_documents",
+      "operation_name": "ListDocuments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "body": {
+                      "type": "string"
+                    },
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "group_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "owner_id": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "owner_id",
+                    "group_id",
+                    "visibility",
+                    "state",
+                    "title",
+                    "body"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListDocuments"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListDraftDocuments named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_list_draft_documents",
+      "operation_name": "ListDraftDocuments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "title",
+                    "visibility",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListDraftDocuments"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListExperiments named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_list_experiments",
+      "operation_name": "ListExperiments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "experiments": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "experiment_id": {
+                      "type": "string"
+                    },
+                    "group_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "owner_id": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "experiment_id",
+                    "owner_id",
+                    "group_id",
+                    "visibility",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "experiments"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListExperiments"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact MetricDashboard named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_metric_dashboard",
+      "operation_name": "MetricDashboard",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "summary": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maximum_micros": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "minimum_micros": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "sample_count": {
+                      "type": "string"
+                    },
+                    "total_micros": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "sample_count",
+                    "total_micros",
+                    "minimum_micros",
+                    "maximum_micros"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "summary"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run MetricDashboard"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact RunPage named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "experiment_id",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_run_page",
+      "operation_name": "RunPage",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "artifact_id",
+                    "path"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "metrics": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "metric_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "value_micros": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "metric_id",
+                    "name",
+                    "value_micros"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "run": {
+                "additionalProperties": false,
+                "properties": {
+                  "group_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "owner_id": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "visibility": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "run_id",
+                  "owner_id",
+                  "group_id",
+                  "visibility",
+                  "state"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "run",
+              "metrics",
+              "artifacts"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run RunPage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact SearchDocuments named query from immutable module adapter_row_policy_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "title_prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "title_prefix"
+        ],
+        "type": "object"
+      },
+      "module_hash": "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2",
+      "name": "adapter_row_policy_conformance_search_documents",
+      "operation_name": "SearchDocuments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "title",
+                    "visibility",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run SearchDocuments"
+    }
+  ]
+}

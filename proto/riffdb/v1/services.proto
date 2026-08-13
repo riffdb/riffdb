@@ -75,4 +75,8 @@ service AdminService {
   rpc GetContractMigrationOperation(GetContractMigrationOperationRequest) returns (GetContractMigrationOperationResponse);
   rpc StartApplicationInstallation(StartApplicationInstallationRequest) returns (StartApplicationInstallationResponse);
   rpc GetApplicationInstallation(GetApplicationInstallationRequest) returns (GetApplicationInstallationResponse);
+  rpc StartApplicationExport(StartApplicationExportRequest) returns (StartApplicationExportResponse);
+  rpc GetApplicationExportPage(GetApplicationExportPageRequest) returns (GetApplicationExportPageResponse);
+  rpc GetApplicationExport(GetApplicationExportRequest) returns (GetApplicationExportResponse);
+  rpc CancelApplicationExport(CancelApplicationExportRequest) returns (CancelApplicationExportResponse);
 }

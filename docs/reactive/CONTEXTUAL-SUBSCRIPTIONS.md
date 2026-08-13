@@ -32,6 +32,15 @@ database, history incarnation, reactive identity, canonical parameter and
 consumer identity, event and lease attempt, principal and capability revision,
 target command, and expiry against durable lease truth.
 
+For a protected role, lease truth alone is insufficient. Immediately before a
+reaction command begins, the storage safe point also reloads the exact current
+capability revision, the trigger event's compiler-owned policy anchor, its
+current source row, and bounded relationship evidence in one authoritative
+snapshot. A revoked capability, deleted or newly hidden row, changed role, old
+unanchored event, or stale lease all produce the same authorization denial and
+no new command admission. The nested command then performs its own ordinary
+transaction-current authorization and commit verification.
+
 RiffDB derives the direct UUID or bounded-string idempotency input from the
 reactive module hash, contextual operation hash, event ID, command ID, and
 declared reaction name. It replaces caller input at the service boundary. The
@@ -78,6 +87,11 @@ reactive identity. MCP fixed tools use underscore-only names:
 MCP uses the same authorization and service path as every other transport. A
 resource update is only a coalescible, payload-free wakeup; durable consumer
 truth remains the source of correctness.
+
+The singleton database-wide reactive wakeup is unavailable to protected roles
+because it would expose hidden commit timing without a subscription identity.
+Protected agents should long-poll `riffdb_contextual_next`; reconnecting or a
+spurious host wakeup always returns to that durable, policy-revalidated path.
 
 See [Reactive Modules](MODULES.md), [Reactive Application Clients](CLIENTS.md),
 and [MCP for Agents](../mcp/agent-cookbook.md).

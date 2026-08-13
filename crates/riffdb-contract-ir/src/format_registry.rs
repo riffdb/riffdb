@@ -1019,7 +1019,7 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "unique_keys" => "optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty",
     "delete_policies" => "IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty",
     "vector_field_specs" => "IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty",
-    "secret_field_specs" => "IR v7+: optional u32 marker 0xfffffff9 + u32 count + SecretFieldSpecV1[]; omitted when empty",
+    "secret_field_specs" => "IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",

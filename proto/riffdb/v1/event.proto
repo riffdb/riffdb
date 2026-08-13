@@ -66,11 +66,18 @@ message SymbolicEvent {
   repeated SymbolicEventField fields = 13;
 }
 
+enum EventPageDisposition {
+  EVENT_PAGE_DISPOSITION_UNSPECIFIED = 0;
+  EVENT_PAGE_DISPOSITION_PAGE = 1;
+  EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS = 2;
+}
+
 message EventPage {
   repeated SymbolicEvent items = 1;
   bytes next_cursor = 2;
   EventId observed_upper = 3;
   uint64 history_incarnation = 4;
+  EventPageDisposition disposition = 5;
 }
 
 message ReplayEventsRequest {
@@ -127,6 +134,18 @@ message EventConsumerStatus {
   uint32 dead_letters = 6;
 }
 
+message ProtectedEventConsumerStatus {
+  uint64 history_incarnation = 1;
+  bytes progress_cursor = 2;
+}
+
+enum EventConsumerPullDisposition {
+  EVENT_CONSUMER_PULL_DISPOSITION_UNSPECIFIED = 0;
+  EVENT_CONSUMER_PULL_DISPOSITION_READY = 1;
+  EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT = 2;
+  EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS = 3;
+}
+
 message ConsumedEvent {
   SymbolicEvent event = 1;
   uint32 attempt = 2;
@@ -141,12 +160,15 @@ message ConsumeEventStreamRequest {
   uint32 in_flight_limit = 4;
   uint64 lease_seconds = 5;
   uint64 maximum_wait_nanos = 6;
+  bytes progress_cursor = 7;
 }
 
 message ConsumeEventStreamResponse {
   repeated ConsumedEvent events = 1;
   EventConsumerStatus status = 2;
   bool wait_timed_out = 3;
+  ProtectedEventConsumerStatus protected_status = 4;
+  EventConsumerPullDisposition disposition = 5;
 }
 
 message AcknowledgeEventStreamRequest {
@@ -170,6 +192,7 @@ message SeekEventStreamConsumerRequest {
   bytes request_id = 1;
   EventConsumerSelection selection = 2;
   EventConsumerCheckpoint checkpoint = 3;
+  bytes progress_cursor = 4;
 }
 
 message RetireEventStreamConsumerRequest {
@@ -200,6 +223,7 @@ message GetEventStreamConsumerStatusResponse {
   oneof result {
     Unit not_found = 1;
     EventConsumerStatus found = 2;
+    ProtectedEventConsumerStatus protected = 3;
   }
 }
 
@@ -207,6 +231,7 @@ message ConsumeContextualSubscriptionRequest {
   bytes request_id = 1;
   EventConsumerSelection selection = 2;
   uint64 maximum_wait_nanos = 3;
+  bytes progress_cursor = 4;
 }
 
 enum ContextualQueryCardinality {
@@ -251,6 +276,8 @@ message ConsumeContextualSubscriptionResponse {
   repeated ContextualWorkItem items = 1;
   EventConsumerStatus status = 2;
   bool wait_timed_out = 3;
+  ProtectedEventConsumerStatus protected_status = 4;
+  EventConsumerPullDisposition disposition = 5;
 }
 
 message AcknowledgeContextualSubscriptionRequest {

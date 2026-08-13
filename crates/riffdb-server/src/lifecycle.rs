@@ -8,15 +8,15 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use riffdb_api_grpc::{
-    CheckedGrpcRestoreRetrySecurityContext, CheckedGrpcSecurityContext, GrpcBootstrapCompletion,
-    GrpcContractMigrationOperation, GrpcDeploymentCompletion, GrpcLifecycleRoute,
-    GrpcOfflineMaintenanceOperation,
+    CheckedGrpcRestoreRetrySecurityContext, CheckedGrpcSecurityContext,
+    GrpcApplicationExportOperation, GrpcBootstrapCompletion, GrpcContractMigrationOperation,
+    GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcOfflineMaintenanceOperation,
 };
 use riffdb_service::{
-    ApplicationService, ContractMigrationApplication, HealthContext, HealthRequest, HealthResult,
-    InitializingRiffDbService, PreBootstrapHealthContextIssuer, PreBootstrapLifecycle,
-    RecoveryOfflineMaintenanceApplication, RestoreRetryOfflineMaintenanceApplication,
-    ServiceFuture, ServiceTelemetry,
+    ApplicationExportApplication, ApplicationService, ContractMigrationApplication, HealthContext,
+    HealthRequest, HealthResult, InitializingRiffDbService, PreBootstrapHealthContextIssuer,
+    PreBootstrapLifecycle, RecoveryOfflineMaintenanceApplication,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceTelemetry,
 };
 use riffdb_types::{OfflineMaintenanceOperationId, ServiceOperationV1};
 
@@ -30,6 +30,7 @@ pub(crate) struct ProductionLifecycleRoute {
     initializing: InitializingRiffDbService,
     activated: OnceLock<Arc<dyn ApplicationService>>,
     migration: OnceLock<Arc<dyn ContractMigrationApplication>>,
+    application_export: OnceLock<Arc<dyn ApplicationExportApplication>>,
     security: OnceLock<CheckedGrpcSecurityContext>,
     server_generation: OnceLock<ServerGenerationV1>,
     history_incarnation: OnceLock<u64>,
@@ -68,6 +69,7 @@ impl ProductionLifecycleRoute {
             initializing,
             activated: OnceLock::new(),
             migration: OnceLock::new(),
+            application_export: OnceLock::new(),
             security: OnceLock::new(),
             server_generation: OnceLock::new(),
             history_incarnation: OnceLock::new(),
@@ -90,6 +92,16 @@ impl ProductionLifecycleRoute {
         service: Arc<dyn ContractMigrationApplication>,
     ) -> Result<(), LifecycleInstallError> {
         self.migration
+            .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
+    }
+
+    /// Installs the disjoint symbolic-export surface owned by the activated service.
+    pub(crate) fn install_application_export(
+        &self,
+        service: Arc<dyn ApplicationExportApplication>,
+    ) -> Result<(), LifecycleInstallError> {
+        self.application_export
             .set(service)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)
     }
@@ -296,6 +308,30 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             .model
             .allows_offline_maintenance(runtime_ready)
             .then(|| self.migration.get().cloned())
+            .flatten()
+    }
+
+    fn admit_application_export(
+        &self,
+        operation: GrpcApplicationExportOperation,
+    ) -> Option<Arc<dyn ApplicationExportApplication>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        let operation = match operation {
+            GrpcApplicationExportOperation::Start => ServiceOperationV1::StartApplicationExport,
+            GrpcApplicationExportOperation::GetPage => ServiceOperationV1::GetApplicationExportPage,
+            GrpcApplicationExportOperation::GetOperation => {
+                ServiceOperationV1::GetApplicationExport
+            }
+            GrpcApplicationExportOperation::Cancel => ServiceOperationV1::CancelApplicationExport,
+        };
+        let runtime_ready = self.runtime.is_routing_allowed();
+        let state = self.lock_state();
+        state
+            .model
+            .allows_authenticated(operation, runtime_ready)
+            .then(|| self.application_export.get().cloned())
             .flatten()
     }
 
@@ -868,7 +904,7 @@ mod tests {
             get_event_stream_consumer_status,
             RequestContext,
             riffdb_service::EventConsumerSelection,
-            Option<riffdb_service::EventConsumerStatus>
+            Option<riffdb_service::EventConsumerPublicStatus>
         );
     }
 
@@ -899,7 +935,7 @@ mod tests {
             get_contextual_subscription_status,
             RequestContext,
             riffdb_service::EventConsumerSelection,
-            Option<riffdb_service::EventConsumerStatus>
+            Option<riffdb_service::EventConsumerPublicStatus>
         );
         denied_operation!(
             execute_contextual_reaction,

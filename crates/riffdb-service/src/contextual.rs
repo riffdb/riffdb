@@ -17,8 +17,9 @@ use riffdb_types::{
 
 use crate::{
     ConsumedEvent, EventConsumerLeaseSelection, EventConsumerMutationResult,
-    EventConsumerSelection, EventConsumerStatus, ExecuteCommandRequest, ExecuteCommandResult,
-    RequestContext, RiffDbService, ServiceDtoError, ServiceFuture,
+    EventConsumerProgressCursor, EventConsumerPublicStatus, EventConsumerPullDisposition,
+    EventConsumerSelection, ExecuteCommandRequest, ExecuteCommandResult, RequestContext,
+    RiffDbService, ServiceDtoError, ServiceFuture,
 };
 
 /// Maximum contextual long-poll wait.
@@ -29,6 +30,7 @@ pub const MAX_CONTEXTUAL_SUBSCRIPTION_WAIT: Duration = Duration::from_secs(30);
 pub struct ConsumeContextualSubscriptionRequest {
     selection: EventConsumerSelection,
     maximum_wait: Duration,
+    progress_cursor: Option<EventConsumerProgressCursor>,
 }
 
 impl ConsumeContextualSubscriptionRequest {
@@ -43,7 +45,15 @@ impl ConsumeContextualSubscriptionRequest {
         Ok(Self {
             selection,
             maximum_wait,
+            progress_cursor: None,
         })
+    }
+
+    /// Supplies the last protected-consumer continuation returned by RiffDB.
+    #[must_use]
+    pub const fn with_progress_cursor(mut self, cursor: EventConsumerProgressCursor) -> Self {
+        self.progress_cursor = Some(cursor);
+        self
     }
     /// Exact immutable subscription and consumer identity.
     #[must_use]
@@ -55,8 +65,20 @@ impl ConsumeContextualSubscriptionRequest {
     pub const fn maximum_wait(&self) -> Duration {
         self.maximum_wait
     }
-    pub(crate) fn into_parts(self) -> (EventConsumerSelection, Duration) {
-        (self.selection, self.maximum_wait)
+
+    /// Optional protected-consumer continuation.
+    #[must_use]
+    pub const fn progress_cursor(&self) -> Option<EventConsumerProgressCursor> {
+        self.progress_cursor
+    }
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        EventConsumerSelection,
+        Duration,
+        Option<EventConsumerProgressCursor>,
+    ) {
+        (self.selection, self.maximum_wait, self.progress_cursor)
     }
 }
 
@@ -191,22 +213,22 @@ impl ContextualWorkItem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsumeContextualSubscriptionResult {
     items: Vec<ContextualWorkItem>,
-    status: EventConsumerStatus,
-    wait_timed_out: bool,
+    status: EventConsumerPublicStatus,
+    disposition: EventConsumerPullDisposition,
     enum_variant_names: crate::SharedEnumVariantNames,
 }
 
 impl ConsumeContextualSubscriptionResult {
     pub(crate) const fn new(
         items: Vec<ContextualWorkItem>,
-        status: EventConsumerStatus,
-        wait_timed_out: bool,
+        status: EventConsumerPublicStatus,
+        disposition: EventConsumerPullDisposition,
         enum_variant_names: crate::SharedEnumVariantNames,
     ) -> Self {
         Self {
             items,
             status,
-            wait_timed_out,
+            disposition,
             enum_variant_names,
         }
     }
@@ -217,13 +239,18 @@ impl ConsumeContextualSubscriptionResult {
     }
     /// Post-operation durable consumer status.
     #[must_use]
-    pub const fn status(&self) -> &EventConsumerStatus {
+    pub const fn status(&self) -> &EventConsumerPublicStatus {
         &self.status
+    }
+    /// Closed completion class.
+    #[must_use]
+    pub const fn disposition(&self) -> EventConsumerPullDisposition {
+        self.disposition
     }
     /// Whether the bounded wait elapsed without work.
     #[must_use]
     pub const fn wait_timed_out(&self) -> bool {
-        self.wait_timed_out
+        matches!(self.disposition, EventConsumerPullDisposition::WaitTimedOut)
     }
 
     /// Resolves one canonical enum identity through the active contract schema.
@@ -324,7 +351,7 @@ pub trait ContextualSubscriptionApplication: Send + Sync {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>>;
+    ) -> ServiceFuture<'_, Option<crate::EventConsumerPublicStatus>>;
     /// Executes a causally fenced reaction through the ordinary command path.
     fn execute_contextual_reaction(
         &self,
@@ -345,12 +372,13 @@ impl ContextualSubscriptionApplication for RiffDbService {
             riffdb_types::ServiceOperationV1::ConsumeContextualSubscription,
             ingress,
             async move {
-                let (selection, maximum_wait) = request.into_parts();
+                let (selection, maximum_wait, progress_cursor) = request.into_parts();
                 crate::consumer_operations::consume_contextual_events(
                     service,
                     context,
                     selection,
                     maximum_wait,
+                    progress_cursor,
                 )
                 .await
             },
@@ -406,7 +434,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         &self,
         context: RequestContext,
         selection: EventConsumerSelection,
-    ) -> ServiceFuture<'_, Option<EventConsumerStatus>> {
+    ) -> ServiceFuture<'_, Option<crate::EventConsumerPublicStatus>> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(

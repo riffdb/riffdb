@@ -12,7 +12,8 @@ use riffdb_idempotency::{
     IdempotencyDigestCandidatesV1, IdempotencyDigestError, IdempotencyDigestProvider,
 };
 use riffdb_policy::{
-    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, CapabilityViewCheckpoint,
+    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1, AuthorizationClock,
+    AuthorizationError, AuthorizationTelemetry, CapabilityViewCheckpoint,
     ContractMigrationAuthorizationRequest, ContractMigrationDecision, CurrentAuthorizer, Decision,
     OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
     TrustedAudienceCatalog,
@@ -158,6 +159,23 @@ impl CurrentPolicyPort for ServerCurrentPolicyPort {
         )
         .with_trusted_audience_catalog(&self.trusted_audiences);
         authorizer.authorize_contract_migration(principal, request)
+    }
+
+    fn authorize_application_export(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ApplicationExportAuthorizationRequestV1,
+    ) -> Result<ApplicationExportDecisionV1, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .with_trusted_audience_catalog(&self.trusted_audiences);
+        authorizer.authorize_application_export(principal, request)
     }
 
     fn capability_view_generation(&self) -> Option<u64> {

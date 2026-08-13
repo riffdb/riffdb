@@ -11,6 +11,7 @@ mod capability;
 mod client;
 mod command;
 mod credential_file;
+mod export;
 mod ids;
 mod installation;
 mod maintenance;
@@ -30,6 +31,8 @@ pub use riffdb_proto::app::v1 as app_v1;
 /// Re-exporting the generated package lets public-API consumers construct
 /// requests without taking a second direct dependency on the Proto owner.
 pub use riffdb_proto::v1;
+#[doc(hidden)]
+pub use riffdb_proto::{canonical_value_from_proto, canonical_value_to_proto};
 
 pub use application::{
     ApplicationCardinality, ApplicationCatalogFeature, ApplicationCatalogFeatureState,
@@ -51,8 +54,10 @@ pub use client::{
 };
 pub use command::{AttemptBudget, CommandShapeError, IdempotentCommand};
 pub use credential_file::{BearerCredentialFileError, load_protected_bearer_credential};
+pub use export::StartApplicationExport;
 pub use ids::{
-    IdentifierGenerationError, SystemIdSource, generate_agent_session_id, generate_capability_id,
+    IdentifierGenerationError, SystemIdSource, generate_agent_session_id,
+    generate_application_export_operation_id, generate_capability_id,
     generate_contract_migration_operation_id, generate_offline_maintenance_operation_id,
     generate_request_id,
 };
@@ -74,13 +79,15 @@ pub use projected::{
 pub use reactive::{
     ApplicationContextualBatch, ApplicationContextualHydration, ApplicationContextualReaction,
     ApplicationContextualWorkItem, ApplicationEvent, ApplicationEventBatch,
-    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus,
-    ApplicationEventDelivery, ApplicationEventId, ApplicationEventLeaseEvidence,
-    ApplicationEventMutationResult, ApplicationEventResponseStream, ApplicationLiveQueryStream,
-    ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions,
-    LiveQueryCheckpoint, LiveQueryCursor, LiveQueryPatch, LiveQueryPatchOperation,
-    LiveQueryTerminal, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch,
-    TypedEventDelivery, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream,
+    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus,
+    ApplicationEventConsumerStatus, ApplicationEventDelivery, ApplicationEventId,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
+    ApplicationEventPullDisposition, ApplicationEventResponseStream, ApplicationLiveQueryStream,
+    ApplicationLiveQueryUpdate, ApplicationProtectedEventConsumerStatus,
+    ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor,
+    LiveQueryPatch, LiveQueryPatchOperation, LiveQueryTerminal, TypedContextualBatch,
+    TypedContextualWorkItem, TypedEventBatch, TypedEventDelivery, TypedLiveQueryReset,
+    TypedLiveQuerySnapshot, TypedLiveQueryStream,
 };
 /// Freshness policy and commit token types used by projected queries.
 pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
@@ -96,7 +103,8 @@ pub use riffdb_errors::{
     ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
 };
 pub use riffdb_types::{
-    BackupNameV1, BackupNameV1Error, ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS,
+    ApplicationExportOperationId, ApplicationExportSelectionV1, BackupNameV1, BackupNameV1Error,
+    CapabilityApplicationExportScopeV1, ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS,
     DatabaseAlias, MigrationBundleHash, OfflineMaintenanceOperationId,
     OfflineMaintenanceReplacementConfirmation, RequestId,
 };

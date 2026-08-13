@@ -1113,6 +1113,10 @@ fn append_reactive_tools(
                     "checkpoint".to_owned(),
                     serde_json::json!({"type":"string", "minLength":3, "maxLength":32}),
                 );
+                properties.insert(
+                    "progress_cursor".to_owned(),
+                    serde_json::json!({"type":"string", "pattern":"^[0-9a-f]{32}$"}),
+                );
             }
             let mut values = vec![
                 "module_hash",
@@ -1123,22 +1127,43 @@ fn append_reactive_tools(
             if matches!(kind, 21 | 22) {
                 values.extend(["event_id", "lease_token", "history_incarnation"]);
             }
-            if kind == 23 {
-                values.push("checkpoint");
-            }
             values
         };
         let input_id = format!("riffdb.fixed-tool/{name}/input/v1");
         let result_id = format!("riffdb.fixed-tool/{name}/result/v1");
-        let input_schema = generated_schema(
-            input_id.clone(),
-            serde_json::json!({
-                "$schema": SCHEMA_DIALECT,
-                "type":"object", "additionalProperties":false,
-                "properties": properties,
-                "required": required,
-            }),
-        )?;
+        let mut input_schema_value = serde_json::json!({
+            "$schema": SCHEMA_DIALECT,
+            "type":"object", "additionalProperties":false,
+            "properties": properties,
+            "required": required,
+        });
+        if kind == 23 {
+            input_schema_value["anyOf"] = serde_json::json!([
+                {
+                    "type":"object",
+                    "properties":{
+                        "checkpoint":{"type":"string", "minLength":3, "maxLength":32}
+                    },
+                    "required":["checkpoint"]
+                },
+                {
+                    "type":"object",
+                    "properties":{
+                        "progress_cursor":{"type":"string", "pattern":"^[0-9a-f]{32}$"}
+                    },
+                    "required":["progress_cursor"]
+                }
+            ]);
+            input_schema_value["not"] = serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "checkpoint":{"type":"string", "minLength":3, "maxLength":32},
+                    "progress_cursor":{"type":"string", "pattern":"^[0-9a-f]{32}$"}
+                },
+                "required":["checkpoint", "progress_cursor"]
+            });
+        }
+        let input_schema = generated_schema(input_id.clone(), input_schema_value)?;
         let result_schema =
             generated_schema(result_id.clone(), wrapped_result_schema("completed"))?;
         manifest.extend([input_id, result_id]);

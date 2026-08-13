@@ -422,6 +422,34 @@ fn event_tail_registers_its_wakeup_source_before_authoritative_catch_up() {
 }
 
 #[test]
+fn protected_event_replay_uses_authoritative_filtering_and_policy_bound_cursors() {
+    let read = EVENT_SOURCE
+        .split_once("async fn read_event_page(")
+        .expect("event-page orchestration exists")
+        .1
+        .split_once("fn replay_policy_entities(")
+        .expect("event-page orchestration has a closed boundary")
+        .0;
+    assert!(read.contains("resolve_authorized_event_replay_row_policy_context("));
+    assert!(read.contains("AuthoritativeEventReplayRequest::protected("));
+    assert!(read.contains("protected_binding"));
+
+    let publish = EVENT_SOURCE
+        .split_once("async fn publish_event_page(")
+        .expect("event-page publication exists")
+        .1
+        .split_once("fn min_page_limit(")
+        .expect("event-page publication has a closed boundary")
+        .0;
+    assert!(publish.contains("EventPageDisposition::BoundedProgress"));
+    assert!(publish.contains("register_event_replay_unpublished("));
+
+    let cursor = include_str!("../src/cursor.rs");
+    assert!(cursor.contains("EventReplayPolicyBinding"));
+    assert!(cursor.contains("policy_binding"));
+}
+
+#[test]
 fn contextual_hydration_cannot_fall_back_to_an_unprotected_query_group() {
     let hydration = CONSUMER_SOURCE
         .split_once("async fn hydrate_contextual_delivery(")
@@ -445,8 +473,8 @@ fn contextual_hydration_cannot_fall_back_to_an_unprotected_query_group() {
         release
             .matches("begun.reauthorize(service, context)")
             .count(),
-        2,
-        "contextual delivery must reauthorize immediately before hydration and release"
+        3,
+        "protected contextual delivery must reauthorize before cursor publication, hydration, and final release"
     );
 }
 
@@ -480,6 +508,8 @@ fn contextual_reaction_reuses_the_authoritative_command_policy_path() {
         .split_once("pub(crate) fn bind_reaction_idempotency(")
         .expect("contextual reaction has a closed boundary")
         .0;
+    assert!(reaction.contains("resolve_authorized_event_row_policy_context("));
+    assert!(reaction.contains("EventConsumerPortRequest::ProtectedValidateLease"));
     assert!(reaction.contains("EventConsumerPortRequest::ValidateLease"));
     assert!(reaction.contains("CommandInvocationMode::Contextual"));
     assert!(reaction.contains("crate::command_operations::execute_command("));

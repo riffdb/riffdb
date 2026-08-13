@@ -127,6 +127,11 @@ path = "../../tests/adapter_operational_remote_client.rs"
 test = false
 
 [[example]]
+name = "adapter_row_policy_remote_client"
+path = "../../tests/adapter_row_policy_remote_client.rs"
+test = false
+
+[[example]]
 name = "generate_adapter_conformance"
 path = "../../tests/generate_adapter_conformance.rs"
 test = false
@@ -182,6 +187,10 @@ path = "../../tests/deployable_alpha_gate.rs"
 [[test]]
 name = "release_format_compatibility"
 path = "../../tests/release_format_compatibility.rs"
+
+[[test]]
+name = "application_export"
+path = "../../tests/application_export.rs"
 
 [lints]
 workspace = true

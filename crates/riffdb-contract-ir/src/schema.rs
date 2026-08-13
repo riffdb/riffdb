@@ -540,6 +540,122 @@ pub struct EventPartitionSchema {
     key_schema: KeySchema,
 }
 
+/// One compiler-owned mapping from an entity key component to an event field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventPolicyAnchorFieldV1 {
+    source_field: FieldId,
+    payload_field: FieldId,
+}
+
+impl EventPolicyAnchorFieldV1 {
+    /// Creates one exact source-key to payload-field mapping.
+    #[must_use]
+    pub const fn new(source_field: FieldId, payload_field: FieldId) -> Self {
+        Self {
+            source_field,
+            payload_field,
+        }
+    }
+
+    /// Entity primary-key field.
+    #[must_use]
+    pub const fn source_field(self) -> FieldId {
+        self.source_field
+    }
+
+    /// Event payload field carrying the component.
+    #[must_use]
+    pub const fn payload_field(self) -> FieldId {
+        self.payload_field
+    }
+}
+
+/// Exact current-row authority input retained by one protected event schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventPolicyAnchorV1 {
+    source_entity: EntityTypeId,
+    key_fields: Vec<EventPolicyAnchorFieldV1>,
+    read_policy: String,
+}
+
+impl EventPolicyAnchorV1 {
+    /// Creates a canonical complete-key anchor.
+    pub fn new(
+        source_entity: EntityTypeId,
+        key_fields: Vec<EventPolicyAnchorFieldV1>,
+        read_policy: impl Into<String>,
+        entity: &EntitySchema,
+        payload: &RecordSchema,
+        partition: &EventPartitionSchema,
+    ) -> Result<Self, IrValidationError> {
+        let read_policy = read_policy.into();
+        validate_source_name(&read_policy, "event read policy")?;
+        if entity.id() != source_entity
+            || key_fields.len() != entity.primary_key_fields().len()
+            || key_fields.is_empty()
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "event policy anchor entity key",
+            });
+        }
+        let mut seen_payload = BTreeSet::new();
+        for ((mapping, source_field), component) in key_fields
+            .iter()
+            .zip(entity.primary_key_fields())
+            .zip(entity.primary_key().components())
+        {
+            let payload_field = payload.field(mapping.payload_field()).ok_or(
+                IrValidationError::InvalidReference {
+                    kind: "event policy anchor payload field",
+                },
+            )?;
+            if mapping.source_field() != *source_field
+                || payload_field.value_type().is_optional()
+                || payload_field.value_type() != component.value_type()
+                || !seen_payload.insert(mapping.payload_field())
+            {
+                return Err(IrValidationError::InvalidKey {
+                    reason: "event policy anchor key mapping mismatch",
+                });
+            }
+        }
+        if key_fields.get(..partition.fields().len()).map(|fields| {
+            fields
+                .iter()
+                .map(|field| field.payload_field())
+                .eq(partition.fields().iter().copied())
+        }) != Some(true)
+        {
+            return Err(IrValidationError::InvalidKey {
+                reason: "event policy anchor partition mismatch",
+            });
+        }
+        Ok(Self {
+            source_entity,
+            key_fields,
+            read_policy,
+        })
+    }
+
+    /// Entity whose current row controls release.
+    #[must_use]
+    pub const fn source_entity(&self) -> EntityTypeId {
+        self.source_entity
+    }
+
+    /// Complete canonical entity-key projection.
+    #[must_use]
+    pub fn key_fields(&self) -> &[EventPolicyAnchorFieldV1] {
+        &self.key_fields
+    }
+
+    /// Exact selected read-policy symbol in the originating bundle.
+    #[must_use]
+    pub fn read_policy(&self) -> &str {
+        &self.read_policy
+    }
+}
+
 impl EventPartitionSchema {
     /// Creates an exact event-payload derivation of one command partition key.
     pub fn new(
@@ -593,6 +709,7 @@ pub struct EventSchema {
     name: String,
     payload: RecordSchema,
     partition: Option<EventPartitionSchema>,
+    policy_anchor: Option<EventPolicyAnchorV1>,
 }
 
 impl EventSchema {
@@ -614,6 +731,7 @@ impl EventSchema {
             name,
             payload,
             partition: None,
+            policy_anchor: None,
         })
     }
 
@@ -637,6 +755,29 @@ impl EventSchema {
         event.partition = Some(partition);
         Ok(event)
     }
+
+    /// Attaches one checked compiler-owned current-row policy anchor.
+    pub fn with_policy_anchor(
+        mut self,
+        anchor: EventPolicyAnchorV1,
+        entity: &EntitySchema,
+    ) -> Result<Self, IrValidationError> {
+        let partition = self
+            .partition
+            .as_ref()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "event policy anchor partition",
+            })?;
+        self.policy_anchor = Some(EventPolicyAnchorV1::new(
+            anchor.source_entity,
+            anchor.key_fields,
+            anchor.read_policy,
+            entity,
+            &self.payload,
+            partition,
+        )?);
+        Ok(self)
+    }
     /// Stable event ID.
     #[must_use]
     pub const fn id(&self) -> EventTypeId {
@@ -656,6 +797,12 @@ impl EventSchema {
     #[must_use]
     pub const fn partition(&self) -> Option<&EventPartitionSchema> {
         self.partition.as_ref()
+    }
+
+    /// Compiler-owned current-row release anchor, when declared.
+    #[must_use]
+    pub const fn policy_anchor(&self) -> Option<&EventPolicyAnchorV1> {
+        self.policy_anchor.as_ref()
     }
 }
 
@@ -1049,42 +1196,6 @@ pub struct SchemaIr {
     secret_field_specs: Vec<SecretFieldSpecV1>,
 }
 
-/// One contract-declared secret field classification (ADR-0118 / WP-597).
-///
-/// The classification marks a stored entity field whose value must never be
-/// rendered by a display surface without explicit field-visibility authority.
-/// It is display-and-visibility metadata only: durable records, backups,
-/// exports, and changelog frames carry the field at full fidelity, and no
-/// cryptographic property is implied.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SecretFieldSpecV1 {
-    entity: EntityTypeId,
-    field: FieldId,
-}
-
-impl SecretFieldSpecV1 {
-    /// Constructs one secret-field classification.
-    ///
-    /// Existence and key-field exclusion are validated when the spec is
-    /// attached to a schema via [`SchemaIr::with_secret_field_specs`].
-    #[must_use]
-    pub const fn new(entity: EntityTypeId, field: FieldId) -> Self {
-        Self { entity, field }
-    }
-
-    /// Owning entity type.
-    #[must_use]
-    pub const fn entity(&self) -> EntityTypeId {
-        self.entity
-    }
-
-    /// The secret-classified stored field.
-    #[must_use]
-    pub const fn field(&self) -> FieldId {
-        self.field
-    }
-}
-
 /// Maximum source fields on one vector field spec. Shared with the bundle
 /// decoder's length preflight so the constructor and the durable decode path
 /// cannot drift (previously a bare `1_024` duplicated in both places).
@@ -1187,6 +1298,42 @@ impl VectorFieldSpecV1 {
     #[must_use]
     pub const fn staleness_slo_secs(&self) -> u64 {
         self.staleness_slo_secs
+    }
+}
+
+/// One contract-declared secret field classification (ADR-0118 / WP-597).
+///
+/// The classification marks a stored entity field whose value must never be
+/// rendered by a display surface without explicit field-visibility
+/// authority. It is display-and-visibility metadata only: durable records,
+/// backups, exports, and changelog frames carry the field at full fidelity,
+/// and no cryptographic property is implied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretFieldSpecV1 {
+    entity: EntityTypeId,
+    field: FieldId,
+}
+
+impl SecretFieldSpecV1 {
+    /// Constructs one secret-field classification.
+    ///
+    /// Existence and key-field exclusion are validated when the spec is
+    /// attached to a schema via [`SchemaIr::with_secret_field_specs`].
+    #[must_use]
+    pub const fn new(entity: EntityTypeId, field: FieldId) -> Self {
+        Self { entity, field }
+    }
+
+    /// Owning entity type.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+
+    /// The secret-classified stored field.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
     }
 }
 
@@ -1619,10 +1766,17 @@ impl SchemaIr {
     pub fn requires_ir_v6(&self) -> bool {
         !self.vector_field_specs.is_empty()
     }
-    /// Whether this structural schema requires IR v7 (secret-field
-    /// classifications, ADR-0118).
+    /// Whether this structural schema requires IR v7 event-policy anchors.
     #[must_use]
     pub fn requires_ir_v7(&self) -> bool {
+        self.events
+            .iter()
+            .any(|event| event.policy_anchor.is_some())
+    }
+    /// Whether this structural schema requires IR v8 (secret-field
+    /// classifications, ADR-0118).
+    #[must_use]
+    pub fn requires_ir_v8(&self) -> bool {
         !self.secret_field_specs.is_empty()
     }
     /// Resolves an entity.

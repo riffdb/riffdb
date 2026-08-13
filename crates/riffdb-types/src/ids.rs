@@ -486,6 +486,14 @@ hash_id!(
     /// The identity of one terminal symbolic application-export receipt.
     ApplicationExportReceiptHash
 );
+hash_id!(
+    /// The identity of one adapter-owned compiled reimport mapping manifest.
+    ApplicationPortabilityManifestHash
+);
+hash_id!(
+    /// The identity of one terminal application reimport reconciliation receipt.
+    ApplicationReimportReceiptHash
+);
 
 /// A validation failure for a UUIDv7 identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

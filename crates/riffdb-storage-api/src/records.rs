@@ -299,7 +299,7 @@ impl IndexEntryMutationV1 {
         }
     }
 
-    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         match self {
             Self::Delete(key) => framed_bytes(key.as_bytes().len())?
                 .checked_add(1)
@@ -875,6 +875,7 @@ pub struct StoredDurableEventV1 {
     payload: Arc<CanonicalRecord>,
     payload_encoded: Arc<[u8]>,
     event_hash: EventHash,
+    policy_anchor: Option<StoredEventPolicyAnchorV1>,
 }
 
 /// Compiler-owned current-row authority retained with one protected event.
@@ -927,7 +928,7 @@ impl StoredEventPolicyAnchorV1 {
         &self.read_policy
     }
 
-    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         self.contract
             .semantic_bytes()?
             .checked_add(4)
@@ -1013,6 +1014,17 @@ impl StoredDurableEventV2 {
     #[must_use]
     pub const fn policy_anchor(&self) -> &StoredEventPolicyAnchorV1 {
         &self.policy_anchor
+    }
+
+    /// Converts the version-specific wire semantic into the common command graph.
+    pub fn into_common(self) -> Result<StoredDurableEventV1, StorageValueError> {
+        StoredDurableEventV1::new_anchored(
+            self.event_id,
+            self.event_type_id,
+            (*self.payload).clone(),
+            self.event_hash,
+            self.policy_anchor,
+        )
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
@@ -1238,7 +1250,37 @@ impl StoredDurableEventV1 {
             payload: Arc::new(payload),
             payload_encoded: Arc::from(payload_encoded),
             event_hash,
+            policy_anchor: None,
         })
+    }
+
+    /// Constructs the anchored V2 semantic event while retaining one common
+    /// in-memory command-graph type. Frozen V1 encoders reject this variant.
+    pub fn new_anchored(
+        event_id: EventId,
+        event_type_id: EventTypeId,
+        payload: CanonicalRecord,
+        event_hash: EventHash,
+        policy_anchor: StoredEventPolicyAnchorV1,
+    ) -> Result<Self, StorageValueError> {
+        if policy_anchor.event_type_id() != event_type_id
+            || derive_event_hash_v2(event_id, event_type_id, &payload, &policy_anchor)?
+                != event_hash
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let payload_encoded = encode_canonical_record(&payload)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
+        let value = Self {
+            event_id,
+            event_type_id,
+            payload: Arc::new(payload),
+            payload_encoded: Arc::from(payload_encoded),
+            event_hash,
+            policy_anchor: Some(policy_anchor),
+        };
+        value.semantic_bytes()?;
+        Ok(value)
     }
 
     /// Returns the stable commit-sequence and ordinal identity.
@@ -1277,8 +1319,21 @@ impl StoredDurableEventV1 {
         self.event_hash
     }
 
+    /// Compiler-owned current-row anchor for V2 events.
+    #[must_use]
+    pub const fn policy_anchor(&self) -> Option<&StoredEventPolicyAnchorV1> {
+        self.policy_anchor.as_ref()
+    }
+
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        stored_event_semantic_bytes(self.event_type_id, self.payload_encoded.len())
+        let base = stored_event_semantic_bytes(self.event_type_id, self.payload_encoded.len())?;
+        match &self.policy_anchor {
+            Some(anchor) => base
+                .checked_add(anchor.semantic_bytes()?)
+                .and_then(|value| value.checked_add(4))
+                .ok_or(StorageValueError::SizeOverflow),
+            None => Ok(base),
+        }
     }
 }
 

@@ -21,6 +21,7 @@ use riffdb_service::{
     DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryRepresentation,
     EventConsumerCheckpoint, EventConsumerLeaseSelection, EventConsumerMutationResult,
+    EventConsumerProgressCursor, EventConsumerPublicStatus, EventConsumerPullDisposition,
     EventConsumerSelection, EventConsumerStatus, ExecuteCommandRequest,
     ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
@@ -1360,6 +1361,7 @@ impl HostedServiceMcpBackend {
                 parameters,
                 consumer_name,
                 checkpoint,
+                progress_cursor,
             } => {
                 let selection = service_event_selection(
                     module_hash,
@@ -1367,20 +1369,28 @@ impl HostedServiceMcpBackend {
                     parameters,
                     consumer_name,
                 )?;
-                let checkpoint = checkpoint
-                    .map_or(Ok(EventConsumerCheckpoint::BeforeFirst), |id| {
-                        service_event_id(id).map(EventConsumerCheckpoint::After)
-                    })?;
+                let request = match progress_cursor {
+                    Some(cursor) if checkpoint.is_none() => {
+                        SeekEventStreamConsumerRequest::protected(
+                            selection,
+                            EventConsumerProgressCursor::from_bytes(cursor),
+                        )
+                    }
+                    None => SeekEventStreamConsumerRequest::new(
+                        selection,
+                        checkpoint.map_or(Ok(EventConsumerCheckpoint::BeforeFirst), |id| {
+                            service_event_id(id).map(EventConsumerCheckpoint::After)
+                        })?,
+                    ),
+                    Some(_) => return Err(invalid_response(())),
+                };
                 let mut call = self.prepare_call(
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::SeekEventStreamConsumer),
                 )?;
                 let result = self
                     .service
-                    .seek_event_stream_consumer(
-                        call.take_context()?,
-                        SeekEventStreamConsumerRequest::new(selection, checkpoint),
-                    )
+                    .seek_event_stream_consumer(call.take_context()?, request)
                     .await
                     .map_err(map_service_failure)?;
                 call.complete();
@@ -3945,8 +3955,9 @@ fn render_event_next(
         McpFixedResultBranch::EventNextCompleted,
         Some(payload_from(&serde_json::json!({
             "events": events,
-            "status": event_consumer_status_payload(result.status()),
+            "status": event_consumer_public_status_payload(result.status()),
             "wait_timed_out": result.wait_timed_out(),
+            "disposition": event_consumer_disposition_payload(result.disposition()),
         }))?),
     )
 }
@@ -3977,11 +3988,11 @@ fn render_event_mutation(
 }
 
 fn render_event_status(
-    result: Option<EventConsumerStatus>,
+    result: Option<EventConsumerPublicStatus>,
 ) -> Result<McpToolResult, McpBackendError> {
     let payload = result.map_or_else(
         || serde_json::json!({"found": false}),
-        |status| serde_json::json!({"found": true, "status": event_consumer_status_payload(&status)}),
+        |status| serde_json::json!({"found": true, "status": event_consumer_public_status_payload(&status)}),
     );
     compose(
         24,
@@ -4094,8 +4105,9 @@ fn render_contextual_next(
         McpFixedResultBranch::ContextualNextCompleted,
         Some(payload_from(&serde_json::json!({
             "items": items,
-            "status": event_consumer_status_payload(result.status()),
+            "status": event_consumer_public_status_payload(result.status()),
             "wait_timed_out": result.wait_timed_out(),
+            "disposition": event_consumer_disposition_payload(result.disposition()),
         }))?),
     )
 }
@@ -4127,11 +4139,11 @@ fn render_contextual_mutation(
 }
 
 fn render_contextual_status(
-    result: Option<EventConsumerStatus>,
+    result: Option<EventConsumerPublicStatus>,
 ) -> Result<McpToolResult, McpBackendError> {
     let payload = result.map_or_else(
         || serde_json::json!({"found": false}),
-        |status| serde_json::json!({"found": true, "status": event_consumer_status_payload(&status)}),
+        |status| serde_json::json!({"found": true, "status": event_consumer_public_status_payload(&status)}),
     );
     compose(
         29,
@@ -4148,6 +4160,25 @@ fn render_contextual_reaction(
         McpFixedResultBranch::ContextualReactionCompleted,
         result,
     )
+}
+
+fn event_consumer_public_status_payload(status: &EventConsumerPublicStatus) -> serde_json::Value {
+    match status {
+        EventConsumerPublicStatus::Exact(status) => event_consumer_status_payload(status),
+        EventConsumerPublicStatus::Protected(status) => serde_json::json!({
+            "kind": "protected",
+            "history_incarnation": status.history_incarnation().to_string(),
+            "progress_cursor": lower_hex(status.progress_cursor().as_bytes()),
+        }),
+    }
+}
+
+fn event_consumer_disposition_payload(disposition: EventConsumerPullDisposition) -> &'static str {
+    match disposition {
+        EventConsumerPullDisposition::Ready => "ready",
+        EventConsumerPullDisposition::WaitTimedOut => "wait_timed_out",
+        EventConsumerPullDisposition::BoundedProgress => "bounded_progress",
+    }
 }
 
 fn event_consumer_status_payload(status: &EventConsumerStatus) -> serde_json::Value {

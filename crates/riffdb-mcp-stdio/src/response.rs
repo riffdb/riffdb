@@ -32,7 +32,9 @@ struct Unit {}
 pub(crate) fn event_next(
     response: v1::ConsumeEventStreamResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
-    let status = response.status.as_ref().ok_or(ResponseConversionError)?;
+    let status =
+        consumer_public_status(response.status.as_ref(), response.protected_status.as_ref())?;
+    let disposition = consumer_disposition(response.disposition)?;
     let events = response
         .events
         .into_iter()
@@ -70,8 +72,9 @@ pub(crate) fn event_next(
         McpFixedResultBranch::EventNextCompleted,
         Some(payload_from(&serde_json::json!({
             "events": events,
-            "status": consumer_status(status)?,
+            "status": status,
             "wait_timed_out": response.wait_timed_out,
+            "disposition": disposition,
         }))?),
     )
 }
@@ -115,6 +118,10 @@ pub(crate) fn event_status(
         Result::Found(status) => {
             serde_json::json!({"found": true, "status": consumer_status(&status)?})
         }
+        Result::Protected(status) => serde_json::json!({
+            "found": true,
+            "status": consumer_public_status(None, Some(&status))?,
+        }),
     };
     compose(
         24,
@@ -132,6 +139,10 @@ pub(crate) fn contextual_status(
         Result::Found(status) => {
             serde_json::json!({"found": true, "status": consumer_status(&status)?})
         }
+        Result::Protected(status) => serde_json::json!({
+            "found": true,
+            "status": consumer_public_status(None, Some(&status))?,
+        }),
     };
     compose(
         29,
@@ -143,7 +154,9 @@ pub(crate) fn contextual_status(
 pub(crate) fn contextual_next(
     response: v1::ConsumeContextualSubscriptionResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
-    let status = response.status.as_ref().ok_or(ResponseConversionError)?;
+    let status =
+        consumer_public_status(response.status.as_ref(), response.protected_status.as_ref())?;
+    let disposition = consumer_disposition(response.disposition)?;
     let items = response
         .items
         .into_iter()
@@ -207,7 +220,8 @@ pub(crate) fn contextual_next(
         26,
         McpFixedResultBranch::ContextualNextCompleted,
         Some(payload_from(&serde_json::json!({
-            "items":items,"status":consumer_status(status)?,"wait_timed_out":response.wait_timed_out,
+            "items":items,"status":status,"wait_timed_out":response.wait_timed_out,
+            "disposition":disposition,
         }))?),
     )
 }
@@ -265,6 +279,30 @@ fn consumer_status(
         "history_incarnation":status.history_incarnation.to_string(),
         "live_leases":status.live_leases, "retries":status.retries, "dead_letters":status.dead_letters,
     }))
+}
+
+fn consumer_public_status(
+    exact: Option<&v1::EventConsumerStatus>,
+    protected: Option<&v1::ProtectedEventConsumerStatus>,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    match (exact, protected) {
+        (Some(status), None) => consumer_status(status),
+        (None, Some(status)) if status.history_incarnation != 0 => Ok(serde_json::json!({
+            "kind":"protected",
+            "history_incarnation":status.history_incarnation.to_string(),
+            "progress_cursor":McpPresentedBytes::new(status.progress_cursor.clone()),
+        })),
+        _ => Err(ResponseConversionError),
+    }
+}
+
+fn consumer_disposition(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match v1::EventConsumerPullDisposition::try_from(value).ok() {
+        Some(v1::EventConsumerPullDisposition::Ready) => Ok("ready"),
+        Some(v1::EventConsumerPullDisposition::WaitTimedOut) => Ok("wait_timed_out"),
+        Some(v1::EventConsumerPullDisposition::BoundedProgress) => Ok("bounded_progress"),
+        _ => Err(ResponseConversionError),
+    }
 }
 
 fn live_frontier(
@@ -3049,6 +3087,8 @@ mod tests {
                 dead_letters: 0,
             }),
             wait_timed_out: false,
+            protected_status: None,
+            disposition: v1::EventConsumerPullDisposition::Ready as i32,
         })
         .expect("empty pull response");
 
@@ -3065,7 +3105,8 @@ mod tests {
                         "retries": 0,
                         "dead_letters": 0
                     },
-                    "wait_timed_out": false
+                    "wait_timed_out": false,
+                    "disposition": "ready"
                 }
             }))
             .expect("expected MCP result")

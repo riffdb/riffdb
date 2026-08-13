@@ -8,7 +8,7 @@
 //! while contracts without the keyword keep their exact prior encoding.
 
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V7, ContractBundle, SchemaIr, SecretFieldSpecV1};
+use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V8, ContractBundle, SchemaIr, SecretFieldSpecV1};
 
 const SECRET_CONTRACT: &str = r#"
 contract AuthShape version 1 {
@@ -84,8 +84,8 @@ fn secret_classification_compiles_through_the_public_front_door() {
     assert!(schema.is_secret_field(entity, field_id(&bundle, "refresh_secret")));
     assert!(!schema.is_secret_field(entity, field_id(&bundle, "expires_at")));
     assert!(!schema.is_secret_field(entity, field_id(&bundle, "org_id")));
-    assert!(schema.requires_ir_v7());
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V7);
+    assert!(schema.requires_ir_v8());
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V8);
 }
 
 /// The classification MUST survive the durable round trip byte-exactly.
@@ -100,7 +100,7 @@ fn secret_classification_round_trips_through_canonical_bytes() {
         bundle.schema().secret_field_specs(),
         "the classification must survive the durable round trip"
     );
-    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V7);
+    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V8);
 }
 
 /// Rebuilds `bundle` around `schema`, holding every other constructor input —
@@ -177,10 +177,10 @@ fn secret_classification_is_part_of_the_bundle_identity() {
 #[test]
 fn unclassified_contracts_keep_their_prior_encoding_and_version() {
     let bundle = compile_contract_source(UNCLASSIFIED_CONTRACT).expect("compiles");
-    assert!(!bundle.schema().requires_ir_v7());
+    assert!(!bundle.schema().requires_ir_v8());
     assert!(
-        bundle.format_version() < BUNDLE_FORMAT_VERSION_V7,
-        "a contract without secret fields must not require the v7 framing"
+        bundle.format_version() < BUNDLE_FORMAT_VERSION_V8,
+        "a contract without secret fields must not require the v8 framing"
     );
 }
 
@@ -192,7 +192,7 @@ fn checked_in_secret_bundle_fixture_decodes_with_classification_intact() {
     let bytes: &[u8] = include_bytes!("../../../fixtures/compiler/secret/bundle.bin");
     let pinned_hash = include_str!("../../../fixtures/compiler/secret/bundle-hash.txt").trim_end();
     let decoded = ContractBundle::decode(bytes).expect("the pinned v7 fixture must decode");
-    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V7);
+    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V8);
     assert_eq!(decoded.schema().secret_field_specs().len(), 2);
     let rendered: String = decoded
         .bundle_hash()

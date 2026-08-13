@@ -1,0 +1,26 @@
+query MetricDashboard($organization_id: Metric.organization_id) {
+    many metrics from Metric
+        where organization_id == $organization_id
+        order by metric_id asc
+        take 50
+
+    aggregate summary from metrics {
+        group by name
+        count() as sample_count
+        sum(value_micros) as total_micros
+        min(value_micros) as minimum_micros
+        max(value_micros) as maximum_micros
+    }
+
+    return Found {
+        summary: summary {
+            name
+            sample_count
+            total_micros
+            minimum_micros
+            maximum_micros
+        }
+    }
+
+    outcomes Found
+}

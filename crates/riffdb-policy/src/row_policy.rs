@@ -4,19 +4,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use riffdb_auth::PrincipalFactBindingV1;
+#[cfg(feature = "test-fixtures")]
+use riffdb_contract_ir::SchemaIr;
 use riffdb_contract_ir::{
     ContractBundle, KeySchema, RowPolicyExpressionNodeV1, RowPolicyOperandV1, RowPolicyOperationV1,
-    RowPolicyPlanV1, RowPolicyValueSourceV1, SchemaIr,
+    RowPolicyPlanV1, RowPolicyValueSourceV1,
 };
 use riffdb_types::{
     ActorKind, CanonicalRecord, CanonicalValue, CanonicalValueHash, CapabilityId,
     CapabilityRowPolicyOperationV1, EntityKey, EntityTypeId, EventId, FieldId, IndexId,
-    PartitionKey, encode_canonical_record, hash_canonical_value,
+    PartitionKey, RowPolicyName, encode_canonical_record, hash_canonical_value,
 };
 
 use crate::{
-    AuthorizedApplicationQuery, AuthorizedCommandExecution, AuthorizedOperation,
-    AuthorizedRowPolicyAuthority,
+    AuthorizedApplicationExportV1, AuthorizedApplicationQuery, AuthorizedCommandExecution,
+    AuthorizedOperation, AuthorizedRowPolicyAuthority,
 };
 
 /// Failure to reconstruct exact compiler-owned row-policy execution authority.
@@ -360,8 +362,64 @@ impl AuthorizedCommandRowPolicyContextV1 {
 /// cannot be supplied by an application request.
 #[derive(Eq, PartialEq)]
 pub struct AuthorizedQueryRowPolicyContextV1 {
+    authority: Option<AuthorizedRowPolicyAuthority>,
     principal: PrincipalFactBindingV1,
     policies: BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>,
+}
+
+/// One compiler-anchored event candidate supplied only to first-party policy
+/// execution. It is an input to evaluation, never an allow decision.
+#[derive(Clone, Eq, PartialEq)]
+pub struct EventPolicyCandidateV1 {
+    event_id: EventId,
+    source_key: EntityKey,
+    read_policy: RowPolicyName,
+}
+
+impl EventPolicyCandidateV1 {
+    /// Binds one durable event to its compiler-owned source key and policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(event_id: EventId, source_key: EntityKey, read_policy: RowPolicyName) -> Self {
+        Self {
+            event_id,
+            source_key,
+            read_policy,
+        }
+    }
+
+    /// Stable event identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+
+    /// Exact compiler-owned current-row key.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn source_key(&self) -> &EntityKey {
+        &self.source_key
+    }
+
+    /// Exact selected read-policy symbol.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn read_policy(&self) -> &RowPolicyName {
+        &self.read_policy
+    }
+}
+
+impl std::fmt::Debug for EventPolicyCandidateV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EventPolicyCandidateV1")
+            .field("event_id", &self.event_id)
+            .field("entity", &self.source_key.entity_type_id())
+            .field("policy", &self.read_policy)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Move-only proof that one exact event may be released under current-row authority.
@@ -471,6 +529,7 @@ impl AuthorizedQueryRowPolicyContextV1 {
             }
         }
         Ok(Self {
+            authority: None,
             principal,
             policies: selected,
         })
@@ -481,6 +540,28 @@ impl AuthorizedQueryRowPolicyContextV1 {
     #[must_use]
     pub fn protects(&self, entity: EntityTypeId) -> bool {
         self.policies.contains_key(&entity)
+    }
+
+    /// Exact current capability identity used to construct shipped policy
+    /// contexts. Test fixtures deliberately have no durable authority.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_capability_identity(&self) -> Option<(CapabilityId, NonZeroU64)> {
+        self.authority.as_ref().map(|authority| {
+            (
+                authority.internal_principal().capability_id(),
+                authority.internal_principal().revision(),
+            )
+        })
+    }
+
+    /// Exact V4 grant which must still match at the final storage safe point.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_row_policy_grant(&self) -> Option<&riffdb_types::CapabilityRowPolicyGrantV1> {
+        self.authority
+            .as_ref()
+            .map(AuthorizedRowPolicyAuthority::internal_grant)
     }
 
     /// Derives the complete bounded relationship lookups required for a row.
@@ -576,16 +657,19 @@ impl AuthorizedQueryRowPolicyContextV1 {
     #[must_use]
     pub fn authorize_event_release(
         &self,
-        event_id: EventId,
-        source_key: &EntityKey,
+        candidate: &EventPolicyCandidateV1,
         row: &CanonicalRecord,
         relationship_exists: &[bool],
     ) -> EventPolicyReleaseDecisionV1 {
+        let event_id = candidate.event_id();
+        let source_key = candidate.source_key();
         let entity = source_key.entity_type_id();
         let Some(selected) = self.policies.get(&entity) else {
             return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::MissingRule);
         };
-        if row_entity_key(selected, row).as_ref() != Some(source_key) {
+        if selected.policy.name() != candidate.read_policy().as_str()
+            || row_entity_key(selected, row).as_ref() != Some(source_key)
+        {
             return EventPolicyReleaseDecisionV1::Deny(RowPolicyDenyReasonV1::InvalidPlanOrRow);
         }
         let Ok(probes) = required_indexed_relationship_probes(
@@ -846,6 +930,40 @@ pub fn resolve_authorized_query_row_policy_context(
         );
     }
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
+
+/// Resolves the complete read-policy context for a principal-filtered export.
+///
+/// The entity set comes only from the exact immutable compiler bundle. A
+/// whole-application operator export has no row-policy context; a principal
+/// export without current V4 policy authority fails closed.
+#[doc(hidden)]
+pub fn resolve_authorized_application_export_row_policy_context(
+    authorization: &AuthorizedApplicationExportV1,
+    bundle: &ContractBundle,
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    if authorization.request().selection().lineage() != bundle.lineage() {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    if authorization.request().selection().scope()
+        == riffdb_types::CapabilityApplicationExportScopeV1::WholeApplication
+    {
+        return Ok(None);
+    }
+    let authority = authorization
+        .internal_row_policy_authority()
+        .ok_or(QueryRowPolicyContextErrorV1::MissingReadBinding)?;
+    let policies = resolve_read_policies(
+        authority,
+        bundle,
+        bundle.schema().entities().iter().map(|entity| entity.id()),
+    )?;
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
     }))
@@ -880,6 +998,71 @@ pub fn resolve_authorized_contextual_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
+
+/// Resolves the complete current-row policy context for compiler-anchored
+/// trigger events in one plain or contextual durable-consumer pull.
+#[doc(hidden)]
+pub fn resolve_authorized_event_row_policy_context(
+    authorization: &AuthorizedOperation,
+    bundle: &ContractBundle,
+    entities: &[EntityTypeId],
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    let target = authorization
+        .request()
+        .event_delivery_target()
+        .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+    if target.lineage() != bundle.lineage()
+        || target.version() != bundle.contract_version()
+        || target.bundle_hash() != bundle.bundle_hash()
+        || entities.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return Ok(None);
+    };
+    let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
+        principal: authority.internal_principal().clone(),
+        policies,
+    }))
+}
+
+/// Resolves current-row authority for bounded operator replay or tail.
+///
+/// Unlike durable consumers, replay has no deployed reactive-module identity;
+/// the exact active contract and symbolic selection are already resolved by
+/// the catalog before this proof reaches storage. The move-only result still
+/// binds the current capability revision, role, principal facts, and every
+/// compiler-selected entity policy used by retained event anchors.
+#[doc(hidden)]
+pub fn resolve_authorized_event_replay_row_policy_context(
+    authorization: &AuthorizedOperation,
+    bundle: &ContractBundle,
+    entities: &[EntityTypeId],
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    let (lineage, version) = authorization
+        .request()
+        .event_replay_contract()
+        .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+    if lineage != bundle.lineage()
+        || version != bundle.contract_version()
+        || entities.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return Ok(None);
+    };
+    let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
     }))

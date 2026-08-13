@@ -1804,6 +1804,10 @@ class AsyncTicketDeskReactiveClient(AsyncTicketDeskClient):
         encoded = encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA)
         return await self._transport._seek_event_consumer(reactive_module_hash=TICKET_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="TicketEvents", parameters=encoded, consumer_name=consumer_name, checkpoint=checkpoint)
 
+    async def seek_protected_ticket_events(self, parameters: TicketEventsParams, consumer_name: str, progress_cursor: str) -> str:
+        encoded = encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA)
+        return await self._transport._seek_event_consumer(reactive_module_hash=TICKET_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="TicketEvents", parameters=encoded, consumer_name=consumer_name, progress_cursor=progress_cursor)
+
     async def ticket_events_status(self, parameters: TicketEventsParams, consumer_name: str) -> dict[str, Any] | None:
         encoded = encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA)
         return await self._transport._event_consumer_status(reactive_module_hash=TICKET_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="TicketEvents", parameters=encoded, consumer_name=consumer_name)
