@@ -2732,6 +2732,7 @@ impl Serialize for HealthComponentDto<'_> {
             Ok(v1::HealthComponentKind::CommitCoordinator) => "commit_coordinator",
             Ok(v1::HealthComponentKind::Projection) => "projection",
             Ok(v1::HealthComponentKind::Outbox) => "outbox",
+            Ok(v1::HealthComponentKind::VectorStaleness) => "vector_staleness",
             _ => return Err(S::Error::custom("health component")),
         };
         let status = match v1::HealthComponentStatus::try_from(self.0.status) {
@@ -3726,6 +3727,14 @@ mod tests {
                     .collect(),
             }),
             "record" => v1::value::Kind::RecordValue(record(value)),
+            "vector" => v1::value::Kind::VectorValue(v1::VectorValue {
+                components: value["components"]
+                    .as_array()
+                    .expect("vector components")
+                    .iter()
+                    .map(|component| component.as_f64().expect("finite component") as f32)
+                    .collect(),
+            }),
             unknown => panic!("unknown value type {unknown}"),
         };
         v1::Value { kind: Some(kind) }
@@ -4035,6 +4044,7 @@ mod tests {
             "commit_coordinator" => v1::HealthComponentKind::CommitCoordinator,
             "projection" => v1::HealthComponentKind::Projection,
             "outbox" => v1::HealthComponentKind::Outbox,
+            "vector_staleness" => v1::HealthComponentKind::VectorStaleness,
             unknown => panic!("unknown health component {unknown}"),
         };
         let status = match value["status"].as_str().expect("component status") {

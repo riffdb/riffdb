@@ -1,14 +1,16 @@
 # Values and Identifiers
 
 Generated schemas and clients preserve RiffDB values exactly. Do not substitute
-JSON floating-point values or infer internal numeric identities.
+JSON floating-point values for exact decimals or infer internal numeric
+identities.
 
 | Value | Public representation | Notes |
 |---|---|---|
 | UUID | Canonical lowercase UUID string | Generated clients use native UUID types where available |
 | Decimal | Exact generated decimal value/object | Never a JSON float |
 | Money | Currency plus fixed-scale amount | Currency and scale are checked |
-| Signed/unsigned integer | Checked integer | MCP accepts an ordinary JSON integer when its generated schema permits it |
+| Signed/unsigned integer | Checked integer | Low-level CLI tagged `i64`/`u64` values use decimal strings; generated schema-directed inputs may accept JSON integers |
+| Vector | Finite binary32 component array | Length and declared field dimension are checked; no bytes alias is accepted |
 | Timestamp | Nanosecond-precision value | No implicit operating-system clock in command evaluation |
 | Date | Exact epoch-day domain | Python supports values outside `datetime.date` |
 | Bytes | Generated binary representation | Bounded before decoding or persistence |
@@ -27,6 +29,33 @@ values.
 Command input is materialized under the selected contract schema and encoded in
 a canonical order before hashing. The hash is part of idempotency identity: the
 same key with a different canonical input is rejected.
+
+## Vector transport shapes
+
+The low-level typed Protobuf value branch is
+`Value.vector_value = 15`, containing `VectorValue.components = 1` as repeated
+binary32 values. CLI output uses the exact JSON shape:
+
+```json
+{"type":"vector","components":[0.0,1.5,-2.25]}
+```
+
+Hosted MCP uses its existing tagged-value convention:
+
+```json
+{"kind":"vector","components":[0.0,1.5,-2.25]}
+```
+
+Every transport accepts 1 to 4,096 finite components, converts each value to
+IEEE-754 binary32, and canonicalizes negative zero to positive zero. Command
+materialization additionally requires the component count to equal the selected
+contract field's declared dimension. A vector is never represented as bytes or
+another value kind. Canonical durable value encoding uses the internal tag
+`0x0e`; that tag is not an application-facing spelling.
+
+The low-level transport branch does not by itself provide complete embedding
+persistence or stable generated application-facade support. See
+[Known Limitations](../known-limitations.md).
 
 ## Limits
 

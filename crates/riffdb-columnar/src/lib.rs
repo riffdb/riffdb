@@ -84,9 +84,10 @@ pub use outcome::{
 };
 pub use query::{
     AggregateOp, AggregateValue, ColumnPredicate, ColumnarQueryRequest, GroupBySpec,
-    NearestQueryRequest, NearestQueryResult, NearestResultRow, OrderSpec, QueryBudget, QueryError,
-    QueryResult, QueryRow, QueryRows, SortDirection, nearest_query_snapshot, query_snapshot,
-    query_snapshot_with_policy_admission,
+    NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError, NearestQueryRequest,
+    NearestQueryResult, NearestResultRow, OrderSpec, QueryBudget, QueryError, QueryResult,
+    QueryRow, QueryRows, SortDirection, nearest_query_snapshot,
+    nearest_query_snapshot_with_admission, query_snapshot, query_snapshot_with_policy_admission,
 };
 pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,

@@ -14,7 +14,8 @@ The v1 planner accepts only:
   exactly one complete-key component through `in`, the target bound does not
   exceed the source bound, and a missing-target outcome is declared;
 - one wholly forward or wholly reverse traversal direction;
-- explicit row bounds no greater than the 500-row service ceiling.
+- explicit application-visible row bounds no greater than the 499-row page
+  ceiling (the 500-row physical scan ceiling reserves one continuation probe).
 
 Operational version-2 members may additionally use null/existence or binary
 prefix predicates when the selected contract index carries the matching sealed
@@ -128,10 +129,12 @@ existing maximum visible-field multiplier, and encoded bytes retain the fixed
 consumed as execution fuel, so these derived ceilings do not create ambient or
 unmetered read authority.
 
-A `Limit` parameter is charged at its complete 500-row type range. Therefore,
+A `Limit` parameter is charged at its complete 499-row page range. Therefore,
 two index scans each controlled by an independent `Limit` parameter require
-1,000 aggregate scan rows and fail role derivation. Fixed `take` bounds let a
-multi-collection page divide the 500-row aggregate deliberately.
+998 aggregate index rows and fail a role whose whole-query allowance is only
+500. Fixed `take` bounds let a multi-collection page divide that allowance
+deliberately. The separate 500-row physical scan ceiling reserves one row for
+a continuation probe; it is not an application-visible page size.
 
 At runtime the executor creates a move-only fuel value from the exact program
 cost. It decrements fuel for every access step, backend-reported scanned row,

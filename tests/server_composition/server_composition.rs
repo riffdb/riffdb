@@ -646,7 +646,7 @@ fn assert_derived_health_shape(response: &v1::HealthResponse) -> TestResult<()> 
         .map_err(|_| test_failure("Health returned an unknown component kind"))?;
     if actual_kinds != expected_kinds {
         return Err(test_failure(
-            "Health omitted or reordered the authoritative/derived component shape",
+            "Health omitted, reordered, or fabricated an authoritative/derived component",
         ));
     }
     for component in &report.components[..3] {

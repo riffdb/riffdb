@@ -160,6 +160,7 @@ struct NearestView {
     rows: Vec<QueryRow>,
     scanned_rows: u64,
     reported_calls: usize,
+    received_k: Option<u32>,
 }
 
 impl QueryReadView for NearestView {
@@ -206,10 +207,11 @@ impl QueryReadView for NearestView {
         &mut self,
         _step: &QueryAccessStep,
         _predicates: &[BoundPredicate],
-        _k: u32,
+        k: u32,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryNearestPage, Self::Error> {
         self.reported_calls += 1;
+        self.received_k = Some(k);
         Ok(QueryNearestPage {
             rows: self.rows.clone(),
             scanned_rows: self.scanned_rows,
@@ -226,6 +228,22 @@ fn parameters() -> QueryParameters {
         ),
     ]))
     .expect("parameters")
+}
+
+fn parameters_with_k_value(value: CanonicalValue) -> QueryParameters {
+    QueryParameters::checked(BTreeMap::from([
+        ("org_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        (
+            "query_vec".to_owned(),
+            CanonicalValue::Vector(CanonicalVector::new(vec![1.0, 0.0, 0.0]).expect("finite")),
+        ),
+        ("k".to_owned(), value),
+    ]))
+    .expect("parameters with k")
+}
+
+fn parameters_with_k(k: u64) -> QueryParameters {
+    parameters_with_k_value(CanonicalValue::U64(k))
 }
 
 fn result_row() -> QueryRow {
@@ -248,10 +266,12 @@ fn nearest_execution_charges_reported_scan_work_and_succeeds_within_budget() {
         rows: vec![result_row()],
         scanned_rows: MAX_QUERY_SCANNED_ROWS,
         reported_calls: 0,
+        received_k: None,
     };
     let snapshot = execute_in_snapshot(&program, &parameters(), &mut view)
         .expect("a full-ceiling scan is funded by the honest static charge");
     assert_eq!(view.reported_calls, 1);
+    assert_eq!(view.received_k, Some(10));
     drop(snapshot);
 }
 
@@ -264,6 +284,7 @@ fn nearest_execution_refuses_scans_beyond_the_ceiling() {
         rows: vec![result_row()],
         scanned_rows: MAX_QUERY_SCANNED_ROWS + 1,
         reported_calls: 0,
+        received_k: None,
     };
     let error = execute_in_snapshot(&program, &parameters(), &mut view)
         .expect_err("an over-ceiling scan must be refused");
@@ -278,10 +299,141 @@ fn nearest_execution_refuses_more_rows_than_k() {
         rows: (0..11).map(|_| result_row()).collect(),
         scanned_rows: 11,
         reported_calls: 0,
+        received_k: None,
     };
     let error = execute_in_snapshot(&program, &parameters(), &mut view)
         .expect_err("more rows than K must be refused");
     assert!(matches!(error, QueryExecutionError::BoundExceeded));
+}
+
+const PARAMETERIZED_NEAREST_QUERY: &str = r#"
+query SimilarDocuments(
+    $org_id: Document.org_id,
+    $query_vec: Document.embedding,
+    $k: Limit,
+) {
+    many results from Document
+        where org_id == $org_id
+        nearest(embedding, $query_vec, $k)
+    return Found { results: results { title } }
+    outcomes Found
+}
+"#;
+
+fn parameterized_nearest_program() -> riffdb_query_ir::QueryAccessProgramV1 {
+    let bundle = compile_contract_source(CONTRACT).expect("vector contract compiles");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    compile_query(
+        &parse_query(PARAMETERIZED_NEAREST_QUERY).expect("parse"),
+        &catalog,
+    )
+    .expect("parameterized nearest program")
+}
+
+/// A typed Limit parameter retains its runtime binding while the durable
+/// nearest access carries the compiler-proven 499 maximum.
+#[test]
+fn parameterized_nearest_k_499_compiles_binds_and_executes() {
+    let program = parameterized_nearest_program();
+    let step = &program.steps()[0];
+    assert_eq!(step.maximum_rows(), 499);
+    assert_eq!(
+        step.row_limit(),
+        &riffdb_query_ir::QueryRowLimit::Parameter {
+            name: "k".to_owned(),
+            default: None,
+        }
+    );
+    match step.access() {
+        QueryAccessKind::Nearest { k, .. } => assert_eq!(*k, 499),
+        other => panic!("expected a Nearest access kind, found {other:?}"),
+    }
+
+    let mut view = NearestView {
+        rows: vec![result_row()],
+        scanned_rows: 1,
+        reported_calls: 0,
+        received_k: None,
+    };
+    execute_in_snapshot(&program, &parameters_with_k(499), &mut view)
+        .expect("k = 499 is accepted and executed");
+    assert_eq!(view.reported_calls, 1);
+    assert_eq!(view.received_k, Some(499));
+}
+
+/// Invalid runtime K values are typed input refusals before nearest storage
+/// work begins.
+#[test]
+fn parameterized_nearest_k_zero_and_500_are_refused_before_backend_work() {
+    let program = parameterized_nearest_program();
+    for k in [0, 500] {
+        let mut view = NearestView {
+            rows: vec![result_row()],
+            scanned_rows: 1,
+            reported_calls: 0,
+            received_k: None,
+        };
+        let error = execute_in_snapshot(&program, &parameters_with_k(k), &mut view)
+            .expect_err("an out-of-bound runtime k must be refused");
+        assert_eq!(
+            error,
+            QueryExecutionError::InvalidParameter {
+                parameter: "k".to_owned(),
+            }
+        );
+        assert_eq!(view.reported_calls, 0, "k = {k} reached the backend");
+        assert_eq!(view.received_k, None);
+    }
+}
+
+#[test]
+fn parameterized_nearest_negative_k_is_a_caller_error_before_backend_work() {
+    let program = parameterized_nearest_program();
+    let mut view = NearestView {
+        rows: vec![result_row()],
+        scanned_rows: 1,
+        reported_calls: 0,
+        received_k: None,
+    };
+    let error = execute_in_snapshot(
+        &program,
+        &parameters_with_k_value(CanonicalValue::I64(-1)),
+        &mut view,
+    )
+    .expect_err("negative runtime k must be refused as caller input");
+    assert_eq!(
+        error,
+        QueryExecutionError::InvalidParameter {
+            parameter: "k".to_owned(),
+        }
+    );
+    assert_eq!(view.reported_calls, 0, "negative k reached the backend");
+    assert_eq!(view.received_k, None);
+}
+
+#[test]
+fn parameterized_nearest_mistyped_k_is_a_caller_error_before_backend_work() {
+    let program = parameterized_nearest_program();
+    let mut view = NearestView {
+        rows: vec![result_row()],
+        scanned_rows: 1,
+        reported_calls: 0,
+        received_k: None,
+    };
+    let error = execute_in_snapshot(
+        &program,
+        &parameters_with_k_value(CanonicalValue::Bool(true)),
+        &mut view,
+    )
+    .expect_err("mistyped runtime k must be refused as caller input");
+    assert_eq!(
+        error,
+        QueryExecutionError::InvalidParameter {
+            parameter: "k".to_owned(),
+        }
+    );
+    assert_eq!(view.reported_calls, 0, "mistyped k reached the backend");
+    assert_eq!(view.received_k, None);
 }
 
 // ─── K ceiling (S2/N14): K inherits the 499 page-take ceiling ───

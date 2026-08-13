@@ -849,6 +849,9 @@ fn submitted_value_to_proto(value: McpSubmittedValue) -> Result<v1::Value, WireC
             variant_id: 0,
             name,
         }),
+        McpSubmittedValue::Vector(vector) => Kind::VectorValue(v1::VectorValue {
+            components: vector.into_components(),
+        }),
         McpSubmittedValue::List(values) => Kind::ListValue(v1::ValueList {
             values: values
                 .into_iter()
@@ -933,6 +936,28 @@ mod tests {
         assert_eq!(value.coefficient_twos_complement, [0x7b]);
         assert_eq!(value.scale, 2);
         assert_eq!(value.precision, Some(4));
+    }
+
+    #[test]
+    fn vector_input_preserves_typed_canonical_components() {
+        let vector =
+            riffdb_types::CanonicalVector::new(vec![-0.0, 1.5, -2.25]).expect("canonical vector");
+        let value =
+            submitted_value_to_proto(McpSubmittedValue::Vector(vector)).expect("vector lowers");
+        let Some(v1::value::Kind::VectorValue(value)) = value.kind else {
+            panic!("expected vector value");
+        };
+        assert_eq!(
+            value
+                .components
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            [0.0_f32, 1.5, -2.25]
+                .into_iter()
+                .map(f32::to_bits)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

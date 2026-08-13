@@ -973,6 +973,7 @@ pub enum HealthComponentKind {
     CommitCoordinator = 3,
     Projection = 4,
     Outbox = 5,
+    VectorStaleness = 6,
 }
 impl HealthComponentKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -987,6 +988,7 @@ impl HealthComponentKind {
             Self::CommitCoordinator => "HEALTH_COMPONENT_KIND_COMMIT_COORDINATOR",
             Self::Projection => "HEALTH_COMPONENT_KIND_PROJECTION",
             Self::Outbox => "HEALTH_COMPONENT_KIND_OUTBOX",
+            Self::VectorStaleness => "HEALTH_COMPONENT_KIND_VECTOR_STALENESS",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1000,6 +1002,7 @@ impl HealthComponentKind {
             "HEALTH_COMPONENT_KIND_COMMIT_COORDINATOR" => Some(Self::CommitCoordinator),
             "HEALTH_COMPONENT_KIND_PROJECTION" => Some(Self::Projection),
             "HEALTH_COMPONENT_KIND_OUTBOX" => Some(Self::Outbox),
+            "HEALTH_COMPONENT_KIND_VECTOR_STALENESS" => Some(Self::VectorStaleness),
             _ => None,
         }
     }
@@ -5490,7 +5493,7 @@ pub struct ScanIndexResponse {
 pub struct Value {
     #[prost(
         oneof = "value::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub kind: ::core::option::Option<value::Kind>,
 }
@@ -5526,6 +5529,8 @@ pub mod value {
         ListValue(super::ValueList),
         #[prost(message, tag = "14")]
         RecordValue(super::ValueRecord),
+        #[prost(message, tag = "15")]
+        VectorValue(super::VectorValue),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5583,6 +5588,11 @@ pub struct ValueField {
 pub struct ValueRecord {
     #[prost(message, repeated, tag = "1")]
     pub fields: ::prost::alloc::vec::Vec<ValueField>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VectorValue {
+    #[prost(float, repeated, tag = "1")]
+    pub components: ::prost::alloc::vec::Vec<f32>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

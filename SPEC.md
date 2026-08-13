@@ -4898,10 +4898,13 @@ Requirements registered here; evidence is delivered by WP-591 through WP-595.
 - `VEC-001`: A contract MUST be able to declare a vector field on an entity
   with dimension (positive integer), distance metric (closed enum: cosine,
   euclidean, dot product), source-field binding (one or more entity fields
-  whose content the embedding semantically derives from), and staleness SLO
-  (duration). The compiler MUST reject a zero or negative dimension, an
-  unrecognized metric, an empty source-field list, a source field that does
-  not exist on the entity, and a non-positive staleness SLO.
+  whose content the embedding semantically derives from), and a positive
+  stale-entity count threshold. The compiler MUST reject a zero or negative
+  dimension, an unrecognized metric, an empty source-field list, a source
+  field that does not exist on the entity, and a zero stale-entity count
+  threshold. Duration-based staleness (an entity remaining stale longer than
+  a declared duration) is reserved for a future amendment and is not part of
+  the v1 contract or runtime semantics.
 
 - `VEC-002`: An application MUST write an embedding to a declared vector
   field through a typed command that carries the vector value (exactly

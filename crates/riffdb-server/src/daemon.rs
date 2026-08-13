@@ -4826,7 +4826,7 @@ mod tests {
         let root = scope.path().to_path_buf();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("protect socket directory");
-        let socket_path = root.join("application.sock");
+        let socket_path = root.join("s");
 
         let (initializing, _activator, issuer) = RiffDbService::begin_initialization();
         let lifecycle = Arc::new(ProductionLifecycleRoute::new(

@@ -24,10 +24,10 @@ pub const JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/sch
 /// Description carried by the generated vector schema node.
 ///
 /// The exact-match size preflight and the rendered node must agree byte for
-/// byte, so both read this one constant (the hardcoded preflight size this
-/// replaces under-counted and made every vector-bearing contract fail
-/// compilation with `HashMismatch`).
-const JSON_VECTOR_DESCRIPTION: &str = "f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components";
+/// byte, so both read this one constant.
+const JSON_VECTOR_DESCRIPTION: &str =
+    "finite f32 vector components in declaration order; length must equal the declared dimension";
+const JSON_VECTOR_DIMENSION: &str = "x-riffdb-vectorDimension";
 
 /// Maximum canonical bytes in one generated schema artifact.
 pub const MAX_JSON_SCHEMA_ARTIFACT_BYTES: usize = 1024 * 1024;
@@ -736,11 +736,20 @@ fn type_node_size(
                 object_entries: 4,
             })
         }
-        JsonSchemaValueConstruction::Vector => object_size([
-            ("description", string_value_size(JSON_VECTOR_DESCRIPTION)?),
-            ("format", string_value_size("byte")?),
-            ("type", string_value_size("string")?),
-        ]),
+        JsonSchemaValueConstruction::Vector => {
+            let dimension = value_type.vector_dimension().expect("vector tag").get();
+            object_size([
+                ("description", string_value_size(JSON_VECTOR_DESCRIPTION)?),
+                (
+                    "items",
+                    object_size([("type", string_value_size("number")?)])?.bytes,
+                ),
+                ("maxItems", number_size(dimension)),
+                ("minItems", number_size(dimension)),
+                ("type", string_value_size("array")?),
+                (JSON_VECTOR_DIMENSION, number_size(dimension)),
+            ])
+        }
     }
 }
 
@@ -924,14 +933,23 @@ fn type_node(value_type: &ValueType, schema: &SchemaIr) -> Result<Json, IrValida
             })?;
             record_node(record, schema, RecordShape::Output, false)?
         }
-        JsonSchemaValueConstruction::Vector => Json::object([
-            (
-                "description",
-                Json::String(JSON_VECTOR_DESCRIPTION.to_owned()),
-            ),
-            ("format", Json::String("byte".to_owned())),
-            ("type", Json::String("string".to_owned())),
-        ]),
+        JsonSchemaValueConstruction::Vector => {
+            let dimension = value_type.vector_dimension().expect("vector tag").get();
+            Json::object([
+                (
+                    "description",
+                    Json::String(JSON_VECTOR_DESCRIPTION.to_owned()),
+                ),
+                (
+                    "items",
+                    Json::object([("type", Json::String("number".to_owned()))]),
+                ),
+                ("maxItems", Json::Number(dimension.to_string())),
+                ("minItems", Json::Number(dimension.to_string())),
+                ("type", Json::String("array".to_owned())),
+                (JSON_VECTOR_DIMENSION, Json::Number(dimension.to_string())),
+            ])
+        }
     })
 }
 
@@ -1213,7 +1231,7 @@ mod tests {
             ),
             (
                 ValueType::vector(riffdb_types::VectorDimension::new(1536).expect("dim")),
-                r#"{"description":"f32 vector encoded as big-endian bytes: 4-byte dimension followed by dimension * 4 bytes of f32 components","format":"byte","type":"string"}"#,
+                r#"{"description":"finite f32 vector components in declaration order; length must equal the declared dimension","items":{"type":"number"},"maxItems":1536,"minItems":1536,"type":"array","x-riffdb-vectorDimension":1536}"#,
             ),
         ];
         assert_eq!(

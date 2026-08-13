@@ -5,12 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use prost::Message;
 use prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorSet};
 use riffdb_proto::{
-    PRODUCTION_FILE_DESCRIPTOR_SET, PublicMessage, PublicWireError, decode_public_message, v1,
+    PRODUCTION_FILE_DESCRIPTOR_SET, PublicMessage, PublicWireError, ValueValidationError,
+    decode_public_message, decode_value, v1,
 };
 
 const VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/public-client-vectors.txt"
+));
+const VECTOR_WIRE_BOUNDARIES: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/vector-wire-boundaries-v1.txt"
 ));
 const PRE_WP137_PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -148,7 +153,7 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 141);
+    assert_eq!(count, 142);
     assert_eq!(rpcs.len(), 26);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
@@ -194,6 +199,133 @@ fn fixture_sections() -> (BTreeMap<String, FixtureVector<'static>>, BTreeSet<Str
     }
     assert!(in_registry, "missing registry section");
     (vectors, registry)
+}
+
+fn boundary_varint(mut value: usize) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    loop {
+        let mut byte = u8::try_from(value & 0x7f).expect("seven-bit varint chunk");
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        encoded.push(byte);
+        if value == 0 {
+            return encoded;
+        }
+    }
+}
+
+fn boundary_length_delimited(field_number: usize, payload: &[u8]) -> Vec<u8> {
+    let mut encoded = boundary_varint((field_number << 3) | 2);
+    encoded.extend(boundary_varint(payload.len()));
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
+fn boundary_vector(component_count: usize, packed: bool) -> Vec<u8> {
+    let mut vector = Vec::new();
+    if packed {
+        vector = boundary_length_delimited(1, &vec![0_u8; component_count * size_of::<f32>()]);
+    } else {
+        vector.reserve(component_count * 5);
+        for _ in 0..component_count {
+            vector.push(0x0d);
+            vector.extend_from_slice(&0.0_f32.to_le_bytes());
+        }
+    }
+    boundary_length_delimited(15, &vector)
+}
+
+#[test]
+fn canonical_client_vector_pins_branch_order_and_positive_zero_bits() {
+    let (vectors, _) = fixture_sections();
+    let fixture = vectors
+        .get("CommandService.Execute:request:vector-canonical")
+        .expect("canonical vector fixture");
+    assert_eq!(fixture.message_type, "riffdb.v1.ExecuteCommandRequest");
+    let request = v1::ExecuteCommandRequest::decode(fixture.bytes.as_slice()).expect("request");
+    let Some(v1::value::Kind::VectorValue(vector)) =
+        request.input.as_ref().and_then(|value| value.kind.as_ref())
+    else {
+        panic!("field 15 vector branch");
+    };
+    assert_eq!(
+        vector
+            .components
+            .iter()
+            .map(|component| component.to_bits())
+            .collect::<Vec<_>>(),
+        [0.0_f32, 1.5, -2.25]
+            .into_iter()
+            .map(f32::to_bits)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(request.encode_to_vec(), fixture.bytes);
+}
+
+#[test]
+fn checked_in_vector_wire_boundary_recipes_hit_every_strict_trigger() {
+    let mut lines = VECTOR_WIRE_BOUNDARIES.lines();
+    assert_eq!(lines.next(), Some("riffdb-vector-wire-boundaries-v1"));
+    let mut observed = BTreeSet::new();
+    for line in lines {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 4, "boundary fixture row");
+        let id = fields[0];
+        let encoding = fields[1];
+        let bytes = match encoding {
+            "packed" | "unpacked" => boundary_vector(
+                fields[2].parse().expect("component count"),
+                encoding == "packed",
+            ),
+            "literal" => decode_hex(fields[2]),
+            other => panic!("unknown vector boundary encoding {other}"),
+        };
+        match fields[3] {
+            "accepted-vector" => {
+                let value = decode_value(&bytes).expect("accepted vector boundary");
+                let Some(v1::value::Kind::VectorValue(vector)) = value.kind else {
+                    panic!("vector branch");
+                };
+                assert_eq!(vector.components.len(), 4_096);
+                assert!(
+                    vector
+                        .components
+                        .iter()
+                        .all(|component| component.to_bits() == 0.0_f32.to_bits())
+                );
+            }
+            "accepted-null" => {
+                let value = decode_value(&bytes).expect("unknown field remains ignorable");
+                assert!(matches!(value.kind, Some(v1::value::Kind::NullValue(_))));
+            }
+            "preflight-limit" => assert_eq!(
+                decode_value(&bytes),
+                Err(ValueValidationError::PreflightLimitExceeded)
+            ),
+            "malformed" => assert_eq!(
+                decode_value(&bytes),
+                Err(ValueValidationError::MalformedEncoding)
+            ),
+            other => panic!("unknown vector boundary outcome {other}"),
+        }
+        assert!(observed.insert(id));
+    }
+    assert_eq!(
+        observed,
+        [
+            "duplicate-oneof",
+            "field-16-unknown",
+            "malformed-packed",
+            "packed-4096",
+            "packed-4097",
+            "unpacked-4096",
+            "unpacked-4097",
+        ]
+        .into_iter()
+        .collect()
+    );
 }
 
 fn baseline_symbols() -> BTreeSet<String> {
@@ -526,6 +658,34 @@ fn expected_enum_values() -> BTreeSet<String> {
             "riffdb.v1.CapabilityPermissionKind",
             31,
             "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
+        ),
+        // Inherited-base completeness repair, not a WP-596 enum addition:
+        // bac8c0db added this enum and its generated fixture rows before the
+        // WP-596 base, but omitted them from this exhaustive expected set.
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            0,
+            "CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            1,
+            "CAPABILITY_ROW_POLICY_OPERATION_READ",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            2,
+            "CAPABILITY_ROW_POLICY_OPERATION_CREATE",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            3,
+            "CAPABILITY_ROW_POLICY_OPERATION_UPDATE",
+        ),
+        (
+            "riffdb.v1.CapabilityRowPolicyOperation",
+            4,
+            "CAPABILITY_ROW_POLICY_OPERATION_DELETE",
         ),
         (
             "riffdb.v1.ApplicationInstallationDriver",
@@ -1166,6 +1326,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "FIXED_TOOL_KIND_CONTEXTUAL_REACT",
         ),
         (
+            "riffdb.v1.HealthComponentKind",
+            6,
+            "HEALTH_COMPONENT_KIND_VECTOR_STALENESS",
+        ),
+        (
             "riffdb.v1.OutboxDeliveryState",
             0,
             "OUTBOX_DELIVERY_STATE_UNSPECIFIED",
@@ -1759,7 +1924,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 141);
+    assert_eq!(vectors.len(), 142);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

@@ -106,8 +106,20 @@ confirming whether that alias exists.
 Database readiness is a separate authenticated probe. Supply the selected
 database and a protected credential authorized for health; the response may
 then include lifecycle, readiness, database alias, audience, and component
-status. Container routing must use authenticated readiness, while process
-restart may use unauthenticated liveness. Neither probe prints bearer material.
+status. The canonical component names are `authoritative_storage`, `catalog`,
+`commit_coordinator`, `projection`, `outbox`, and `vector_staleness`; each is
+`healthy`, `degraded`, or `unavailable`. `vector_staleness` reports embedding
+quality state under its own identity and must not be interpreted as projection
+or vector-index readiness.
+
+The POC does not yet have an authoritative staleness observer, so production
+reports `vector_staleness: unavailable` rather than claiming healthy state.
+Once authoritative serving is available, a non-healthy projection, outbox, or
+vector-staleness component makes aggregate authenticated health `degraded`;
+the current unavailable vector-staleness component therefore prevents an
+overall `ready` report. Container routing must use authenticated readiness,
+while process restart may use unauthenticated liveness. Neither probe prints
+bearer material.
 
 ## Application credential rotation
 

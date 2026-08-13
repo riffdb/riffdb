@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "c1effc1f6684b2786f0b436bc691d6d9e82181d9e656902c6cbd1a553270f642"
+const QueryModuleHash = "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2"
 const ContractLineage = "TicketDesk"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"

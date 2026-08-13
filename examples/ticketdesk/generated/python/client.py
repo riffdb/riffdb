@@ -18,7 +18,7 @@ from riffdb_application._binding import decode_variant, encode_record
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
-QUERY_MODULE_HASH: Final[str] = "4b7d345da5723cf41bf543b0526d25d454fc85cc4c05a934d28715527fdeeb2f"
+QUERY_MODULE_HASH: Final[str] = "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -212,7 +212,7 @@ class GetUserNotFound:
 
 GetUserResult: TypeAlias = GetUserFound | GetUserNotFound
 
-LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "e84f36413f039176575f94ca592aed2a81b914d39aa0a89d8e5228c2c20bd6d3"
+LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "a92d1ac5b4549fc66d4726e423f1da27959a02beda7f92254297402c666802c7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListCommentsParams:
@@ -235,7 +235,7 @@ class ListCommentsFound:
 
 ListCommentsResult: TypeAlias = ListCommentsFound
 
-LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "995f86da488685d9b7c32d13e43893fe278793246a2b7dd33bb9c019964d335b"
+LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "52bbabe150cd501efd4a007bf753a1116f42a1d7b6b3a94dd2e7455b5a98a366"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsParams:
@@ -262,7 +262,7 @@ class ListTicketsFound:
 
 ListTicketsResult: TypeAlias = ListTicketsFound
 
-LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "aea9cbc9f3fb7de36b6f3504ea536921ae008204b7ef7472437f701f0c5b300c"
+LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "42dede464162450d9c0e5f50c54944d2a7517daaa6f1ac206168eede200c2718"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsByAssigneeParams:
@@ -1633,7 +1633,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
 
-TICKET_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "fe070fde66deaac7fe7e8f0e76fc997b67d30fa6658d9bd92e1ff835da685d70"
+TICKET_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "7f5b5a17f32823108e661686e9bbb155e908f76cc1a75969aff8f32db00ab442"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketEventsParams:

@@ -225,7 +225,7 @@ fn operation_catalog_checkpoint_is_encoded_by_the_public_types() {
     let identity = schema_identity();
     assert_eq!(full.encode_to_vec(), FULL_CATALOG);
     assert_eq!(identity.encode_to_vec(), IDENTITY_CATALOG);
-    assert_eq!(FULL_CATALOG.len(), 7_536);
+    assert_eq!(FULL_CATALOG.len(), 7_742);
     assert_eq!(IDENTITY_CATALOG.len(), 148);
 }
 

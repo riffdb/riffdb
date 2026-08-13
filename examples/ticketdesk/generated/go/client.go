@@ -9,7 +9,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "4b7d345da5723cf41bf543b0526d25d454fc85cc4c05a934d28715527fdeeb2f"
+const QueryModuleHash = "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
 const ContractLineage = "TicketDesk"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
@@ -1296,7 +1296,7 @@ func leaseInput(parameters map[string]riffdb.Value, consumer string, deliveryID,
 func requiredString(fields map[string]riffdb.Value, name string) (string, error) { value, err := requiredField(fields, name); if err != nil { return "", err }; return riffdb.StringValue(value) }
 func requiredU64(fields map[string]riffdb.Value, name string) (uint64, error) { value, err := requiredField(fields, name); if err != nil { return 0, err }; return riffdb.U64Value(value) }
 func requiredU32(fields map[string]riffdb.Value, name string) (uint32, error) { value, err := requiredU64(fields, name); if err != nil || value > uint64(^uint32(0)) { return 0, errors.New("invalid RiffDB driver u32") }; return uint32(value), nil }
-const TicketActivityReactiveModuleHash = "fe070fde66deaac7fe7e8f0e76fc997b67d30fa6658d9bd92e1ff835da685d70"
+const TicketActivityReactiveModuleHash = "7f5b5a17f32823108e661686e9bbb155e908f76cc1a75969aff8f32db00ab442"
 
 type TicketEventsParams struct {
 	OrganizationId string

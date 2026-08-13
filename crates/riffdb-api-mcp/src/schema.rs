@@ -16,6 +16,7 @@ const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_INSTANCE_DEPTH: usize = 32;
 const MAX_VALIDATION_NODES: usize = 262_144;
 const MAX_INPUT_VIOLATION_PATH_BYTES: usize = 512;
+const JSON_VECTOR_DIMENSION: &str = "x-riffdb-vectorDimension";
 
 /// The fail-closed validator for the exact JSON Schema subset emitted by RiffDB.
 #[derive(Clone, Copy, Debug, Default)]
@@ -406,7 +407,7 @@ fn validate_schema_node(
     if let Some(kind) = object.get("type")
         && !matches!(
             kind.as_str(),
-            Some("null" | "boolean" | "integer" | "string" | "object" | "array")
+            Some("null" | "boolean" | "integer" | "number" | "string" | "object" | "array")
         )
     {
         return Err(SchemaValidationError);
@@ -508,6 +509,7 @@ fn is_schema_keyword(key: &str, root: bool) -> bool {
             | "const"
             | "contentEncoding"
             | "default"
+            | "description"
             | "enum"
             | "items"
             | "maxItems"
@@ -537,6 +539,7 @@ fn is_schema_keyword(key: &str, root: bool) -> bool {
             | "x-riffdb-strictlyIncreasing"
             | "x-riffdb-strictlyIncreasingBy"
             | "x-riffdb-uniqueBy"
+            | "x-riffdb-vectorDimension"
     ) || (root && matches!(key, "$defs" | "$schema"))
 }
 
@@ -596,6 +599,34 @@ fn validate_extension_shapes(object: &Map<String, Value>) -> Result<(), SchemaVa
             return Err(SchemaValidationError);
         }
     }
+    if object
+        .get("description")
+        .is_some_and(|value| value.as_str().is_none())
+    {
+        return Err(SchemaValidationError);
+    }
+    let vector_dimension = object.get(JSON_VECTOR_DIMENSION).map(|value| {
+        value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .and_then(riffdb_types::VectorDimension::new)
+            .ok_or(SchemaValidationError)
+    });
+    if let Some(vector_dimension) = vector_dimension.transpose()? {
+        let dimension = u64::from(vector_dimension.get());
+        let items = object
+            .get("items")
+            .and_then(Value::as_object)
+            .ok_or(SchemaValidationError)?;
+        if object.get("type").and_then(Value::as_str) != Some("array")
+            || object.get("minItems").and_then(Value::as_u64) != Some(dimension)
+            || object.get("maxItems").and_then(Value::as_u64) != Some(dimension)
+            || items.len() != 1
+            || items.get("type").and_then(Value::as_str) != Some("number")
+        {
+            return Err(SchemaValidationError);
+        }
+    }
     let precision = object
         .get("x-riffdb-decimalPrecision")
         .and_then(Value::as_u64);
@@ -641,6 +672,7 @@ impl ValidationState<'_> {
                 "null" => instance.is_null(),
                 "boolean" => instance.is_boolean(),
                 "integer" => instance.as_i64().is_some() || instance.as_u64().is_some(),
+                "number" => instance.is_number(),
                 "string" => instance.is_string(),
                 "object" => instance.is_object(),
                 "array" => instance.is_array(),
@@ -877,6 +909,17 @@ fn validate_semantic_extensions(
         }
     }
     if let Some(items) = instance.as_array() {
+        if let Some(dimension) = schema.get(JSON_VECTOR_DIMENSION).and_then(Value::as_u64) {
+            if items.len() as u64 != dimension {
+                return Err(SchemaValidationError);
+            }
+            let components = items
+                .iter()
+                .map(|item| item.as_f64().map(|value| value as f32))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(SchemaValidationError)?;
+            riffdb_types::CanonicalVector::new(components).map_err(|_| SchemaValidationError)?;
+        }
         if schema.get("x-riffdb-strictlyIncreasing") == Some(&Value::Bool(true)) {
             validate_strictly_increasing(items, None)?;
         }
@@ -1255,6 +1298,44 @@ mod tests {
             validate_schema_source(&Value::Object(tool.result_schema().json_object()))
                 .expect("result subset");
         }
+    }
+
+    #[test]
+    fn fixed_tagged_vector_schema_accepts_only_bounded_numeric_components() {
+        let registry = fixed_tool_registry().expect("accepted registry");
+        let schema = registry
+            .by_name("riffdb_entity_scan_index")
+            .expect("scan-index tool")
+            .input_schema();
+        let request = |components: Value| {
+            json!({
+                "contract": {"active": {}},
+                "index_id": 1,
+                "leading_components": [{"kind": "vector", "components": components}],
+                "fields": [],
+                "page": {},
+            })
+        };
+
+        RiffDbSchemaValidator
+            .validate(schema, &request(json!([0.0, 1.5, -2.25])))
+            .expect("bounded vector");
+        for invalid in [
+            request(json!([])),
+            request(Value::Array(vec![Value::from(0.0); 4_097])),
+            request(json!(["not-a-number"])),
+        ] {
+            assert_eq!(
+                RiffDbSchemaValidator.validate(schema, &invalid),
+                Err(SchemaValidationError)
+            );
+        }
+        let mut extra = request(json!([1.0]));
+        extra["leading_components"][0]["extra"] = Value::Bool(true);
+        assert_eq!(
+            RiffDbSchemaValidator.validate(schema, &extra),
+            Err(SchemaValidationError)
+        );
     }
 
     #[test]

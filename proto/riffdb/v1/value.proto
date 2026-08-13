@@ -19,6 +19,7 @@ message Value {
     EnumValue enum_value = 12;
     ValueList list_value = 13;
     ValueRecord record_value = 14;
+    VectorValue vector_value = 15;
   }
 }
 
@@ -66,4 +67,12 @@ message ValueField {
 
 message ValueRecord {
   repeated ValueField fields = 1;
+}
+
+
+// A vector value at a public transport boundary. Components are IEEE 754
+// binary32 values; servers reject non-finite values and dimensions outside
+// 1..=4096 before schema-specific declared-dimension validation.
+message VectorValue {
+  repeated float components = 1;
 }

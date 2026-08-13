@@ -29,8 +29,8 @@ use riffdb_proto::{
     v1, validate_public_message,
 };
 use riffdb_types::{
-    BackupNameV1, CanonicalValue, ContractVersion, CurrencyCode, Date, Decimal, DecimalSpec,
-    EnumTypeId, EnumVariantId, ExecutionFailureCode, FieldId, IncidentId,
+    BackupNameV1, CanonicalValue, CanonicalVector, ContractVersion, CurrencyCode, Date, Decimal,
+    DecimalSpec, EnumTypeId, EnumVariantId, ExecutionFailureCode, FieldId, IncidentId,
     MAX_CONTRACT_LINEAGE_BYTES, Money, OfflineMaintenanceOperationKind,
     OfflineMaintenanceReplacementConfirmation, Timestamp, hash_schema,
     offline_maintenance_input_hash,
@@ -802,14 +802,14 @@ const OPERATION_ENVELOPE_SCHEMA_PATH: &str =
 const GET_OUTCOME_RESULT_SCHEMA_PATH: &str =
     "crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json";
 const OPERATION_ENVELOPE_SCHEMA_BYTES: usize = 2_549;
-const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_739;
+const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_945;
 const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
     "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2";
 const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
-    "0c1f33fbc613b9e87c4a54ccc2f7c1d426625cc0cb98237e2bded4bec073ddde";
+    "1010f0f3a052aa18636739e2fb79fbaa8bf1911ec0338a3015814b8e3d5a6bc8";
 const OPERATION_SCHEMA_SOURCE_MAX_BYTES: usize = 65_536;
 const OPERATION_SCHEMA_AGGREGATE_CHARGE_MAX_BYTES: usize = 131_584;
-const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_536;
+const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_742;
 const OPERATION_SCHEMA_IDENTITY_CATALOG_BYTES: usize = 148;
 const OPERATION_SCHEMA_COMPOSITION_BYTES: usize = 4_880;
 const OPERATION_SCHEMA_COMPOSITION_HASH: &str =
@@ -3154,6 +3154,21 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             },
         );
     }
+    append_client_vector(
+        &mut output,
+        "CommandService.Execute",
+        "request",
+        "vector-canonical",
+        "riffdb.v1.ExecuteCommandRequest",
+        &v1::ExecuteCommandRequest {
+            request_id: request_id.clone(),
+            command_name: "embedding.write".to_owned(),
+            expected_contract_version: Some(1),
+            input: Some(canonical_value_to_proto(&CanonicalValue::Vector(
+                CanonicalVector::new(vec![-0.0, 1.5, -2.25])?,
+            ))?),
+        },
+    );
     for (branch, response) in [
         ("committed", public_execute_response(1)),
         ("replayed", public_execute_response(2)),
