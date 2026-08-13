@@ -117,11 +117,19 @@ pub enum ServiceOperationV1 {
     GetApplicationExport,
     /// Close one nonterminal application export with an incomplete receipt.
     CancelApplicationExport,
+    /// Start or exactly resume one not-ready application reimport campaign.
+    StartApplicationReimport,
+    /// Apply one exact bounded export page through compiler-owned commands.
+    ApplyApplicationReimportPage,
+    /// Observe one protected application-reimport checkpoint or receipt.
+    GetApplicationReimport,
+    /// Close one nonterminal application reimport without publishing readiness.
+    CancelApplicationReimport,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 56] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -174,6 +182,10 @@ impl ServiceOperationV1 {
         Self::GetApplicationExportPage,
         Self::GetApplicationExport,
         Self::CancelApplicationExport,
+        Self::StartApplicationReimport,
+        Self::ApplyApplicationReimportPage,
+        Self::GetApplicationReimport,
+        Self::CancelApplicationReimport,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -232,6 +244,10 @@ impl ServiceOperationV1 {
             Self::GetApplicationExportPage => 0x32,
             Self::GetApplicationExport => 0x33,
             Self::CancelApplicationExport => 0x34,
+            Self::StartApplicationReimport => 0x35,
+            Self::ApplyApplicationReimportPage => 0x36,
+            Self::GetApplicationReimport => 0x37,
+            Self::CancelApplicationReimport => 0x38,
         }
     }
 
@@ -291,6 +307,10 @@ impl ServiceOperationV1 {
             0x32 => Some(Self::GetApplicationExportPage),
             0x33 => Some(Self::GetApplicationExport),
             0x34 => Some(Self::CancelApplicationExport),
+            0x35 => Some(Self::StartApplicationReimport),
+            0x36 => Some(Self::ApplyApplicationReimportPage),
+            0x37 => Some(Self::GetApplicationReimport),
+            0x38 => Some(Self::CancelApplicationReimport),
             _ => None,
         }
     }
@@ -725,7 +745,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x34).collect();
+        let expected: Vec<u8> = (0x01..=0x38).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -756,7 +776,11 @@ mod tests {
             ServiceOperationV1::from_tag(0x34),
             Some(ServiceOperationV1::CancelApplicationExport)
         );
-        assert_eq!(ServiceOperationV1::from_tag(0x35), None);
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x38),
+            Some(ServiceOperationV1::CancelApplicationReimport)
+        );
+        assert_eq!(ServiceOperationV1::from_tag(0x39), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

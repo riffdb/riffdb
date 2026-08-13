@@ -25,8 +25,8 @@ use crate::orchestration::{
 };
 use crate::{
     ApplicationExportCoordinatorPort, ApplicationInstallationCoordinatorPort,
-    AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
-    ColumnarProjectionPort, ContractMigrationCoordinatorPort, CurrentPolicyPort,
+    ApplicationReimportCoordinatorPort, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer,
+    CatalogReadPort, ColumnarProjectionPort, ContractMigrationCoordinatorPort, CurrentPolicyPort,
     CursorMonotonicClock, CursorTokenGenerator, EventConsumerClock, EventConsumerPort,
     EventLeaseTokenSource, HealthRequest, HealthResult, LiveQueryClock,
     OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
@@ -161,6 +161,7 @@ pub struct ServiceProviders {
     pub(crate) migration: Option<Arc<dyn ContractMigrationCoordinatorPort>>,
     pub(crate) installation: Option<Arc<dyn ApplicationInstallationCoordinatorPort>>,
     pub(crate) application_export: Option<Arc<dyn ApplicationExportCoordinatorPort>>,
+    pub(crate) application_reimport: Option<Arc<dyn ApplicationReimportCoordinatorPort>>,
     pub(crate) operational: Arc<dyn OperationalStatusPort>,
     pub(crate) token_issuer: Arc<dyn CapabilityTokenIssuer>,
     pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
@@ -213,6 +214,7 @@ impl ServiceProviders {
             migration: None,
             installation: None,
             application_export: None,
+            application_reimport: None,
             operational,
             token_issuer,
             incident_ids,
@@ -331,6 +333,16 @@ impl ServiceProviders {
         application_export: Arc<dyn ApplicationExportCoordinatorPort>,
     ) -> Self {
         self.application_export = Some(application_export);
+        self
+    }
+
+    /// Installs the server-private compiler-owned reimport coordinator.
+    #[must_use]
+    pub fn with_application_reimport(
+        mut self,
+        application_reimport: Arc<dyn ApplicationReimportCoordinatorPort>,
+    ) -> Self {
+        self.application_reimport = Some(application_reimport);
         self
     }
 }

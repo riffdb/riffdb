@@ -29,6 +29,8 @@ mod ports;
 mod projected_query;
 mod query_discovery_operations;
 mod read_retry;
+mod reimport;
+mod reimport_operations;
 mod response;
 mod service;
 mod submitted;
@@ -54,6 +56,7 @@ pub use maintenance_operations::{
 };
 pub use ports::*;
 pub use projected_query::*;
+pub use reimport::*;
 pub use response::*;
 pub use riffdb_query_executor::{QueryParameters, QueryResultValue, QueryRow};
 pub use service::*;

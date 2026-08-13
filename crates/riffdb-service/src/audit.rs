@@ -255,6 +255,19 @@ impl ServiceAuditTargetMap {
         ServiceAuditTargetsV1::empty()
     }
 
+    /// Start/page reimport operations target the exact protected lineage.
+    pub(crate) fn application_reimport(
+        lineage: ContractLineage,
+    ) -> Result<ServiceAuditTargetsV1, ServiceAuditTargetsError> {
+        one(ServiceAuditTargetV1::ContractLineage(lineage))
+    }
+
+    /// Status/cancel first resolve an opaque campaign identity under policy.
+    #[must_use]
+    pub(crate) const fn application_reimport_operation() -> ServiceAuditTargetsV1 {
+        ServiceAuditTargetsV1::empty()
+    }
+
     /// Target for one exact durable event consumer.
     pub(crate) fn event_consumer(
         lineage: ContractLineage,
@@ -836,6 +849,24 @@ mod tests {
                 ServiceOperationV1::CancelApplicationExport,
                 ServiceAuditTargetMap::application_export_operation(),
             ),
+            (
+                ServiceOperationV1::StartApplicationReimport,
+                ServiceAuditTargetMap::application_reimport(lineage.clone())
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::ApplyApplicationReimportPage,
+                ServiceAuditTargetMap::application_reimport(lineage.clone())
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::GetApplicationReimport,
+                ServiceAuditTargetMap::application_reimport_operation(),
+            ),
+            (
+                ServiceOperationV1::CancelApplicationReimport,
+                ServiceAuditTargetMap::application_reimport_operation(),
+            ),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -853,7 +884,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

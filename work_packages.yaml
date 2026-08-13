@@ -11994,7 +11994,8 @@ work_packages:
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-application/**,
     crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**,
-    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-observability/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-cli/**,
     crates/riffdb-testkit/**, clients/**, examples/**, tests/**, scripts/**, docs/**,
     release/**]
   deliverables:
