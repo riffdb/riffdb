@@ -303,6 +303,21 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION",
         ),
         (
+            "riffdb.v1.CapabilityApplicationReimportScope",
+            0,
+            "CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.CapabilityApplicationReimportScope",
+            1,
+            "CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED",
+        ),
+        (
+            "riffdb.v1.CapabilityApplicationReimportScope",
+            2,
+            "CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION",
+        ),
+        (
             "riffdb.v1.ApplicationExportRecordClass",
             0,
             "APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED",

@@ -8,8 +8,9 @@ use prost::Message;
 use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
     AgentSessionId, ApplicationExportClassV1, ApplicationExportOperationId,
-    ApplicationInstallationCampaignId, ApplicationRoleHash, Audience, BackupNameV1,
-    CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+    ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash, ApplicationRoleHash,
+    Audience, BackupNameV1, CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+    CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1,
     CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
     ContractLineage, ContractMigrationOperationId, DatabaseId, EntityKey, EntityTypeId,
@@ -2955,6 +2956,56 @@ fn validate_capability_export(
         })
 }
 
+fn validate_capability_reimport(
+    reimport: Option<&v1::CapabilityApplicationReimportGrant>,
+) -> Result<usize, PublicWireError> {
+    let Some(reimport) = reimport else {
+        return Ok(0);
+    };
+    let lineage = ContractLineage::new(reimport.contract_lineage.clone())
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    let campaign_id = ApplicationInstallationCampaignId::from_bytes(
+        reimport
+            .campaign_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicWireError::InvalidIdentity)?,
+    )
+    .map_err(|_| PublicWireError::InvalidIdentity)?;
+    let portability_manifest_hash = ApplicationPortabilityManifestHash::from_bytes(
+        reimport
+            .portability_manifest_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicWireError::InvalidIdentity)?,
+    );
+    let scope = match v1::CapabilityApplicationReimportScope::try_from(reimport.scope)
+        .map_err(|_| PublicWireError::InvalidEnum)?
+    {
+        v1::CapabilityApplicationReimportScope::PrincipalFiltered => {
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered
+        }
+        v1::CapabilityApplicationReimportScope::WholeApplication => {
+            CapabilityApplicationReimportScopeV1::WholeApplication
+        }
+        v1::CapabilityApplicationReimportScope::Unspecified => {
+            return Err(PublicWireError::InvalidEnum);
+        }
+    };
+    let grant = CapabilityApplicationReimportGrantV1::new(
+        lineage,
+        campaign_id,
+        portability_manifest_hash,
+        scope,
+    );
+    checked_capability_sum([
+        framed_capability_bytes(grant.lineage().as_bytes().len())?,
+        16,
+        32,
+        1,
+    ])
+}
+
 fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize, PublicWireError> {
     let tenant_scope = grant
         .tenant_scope
@@ -3040,6 +3091,7 @@ fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize,
         checked_capability_sum([4, grant.approval_required.len()])?,
         validate_capability_row_policy(grant.row_policy.as_ref())?,
         validate_capability_export(grant.export.as_ref())?,
+        validate_capability_reimport(grant.reimport.as_ref())?,
     ])
 }
 
@@ -3084,6 +3136,30 @@ fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), 
         || !(1..=500).contains(&grant.max_scan_rows)
     {
         return Err(PublicWireError::TooManyItems);
+    }
+    if grant.reimport.is_some() && grant.row_policy.is_none() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    if let Some(reimport) = &grant.reimport {
+        let whole =
+            reimport.scope == v1::CapabilityApplicationReimportScope::WholeApplication as i32;
+        let global = matches!(
+            grant
+                .tenant_scope
+                .as_ref()
+                .and_then(|scope| scope.scope.as_ref()),
+            Some(v1::tenant_scope::Scope::Global(_))
+        );
+        let all = matches!(
+            grant
+                .partition_scope
+                .as_ref()
+                .and_then(|scope| scope.scope.as_ref()),
+            Some(v1::partition_scope::Scope::All(_))
+        );
+        if whole && !(global && all) {
+            return Err(PublicWireError::InconsistentFields);
+        }
     }
     let mut previous_permission = None;
     for permission in &grant.permissions {

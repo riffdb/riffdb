@@ -26,6 +26,12 @@ multi-tenant service.
   do not imply export. Principal-filtered scope requires the exact current V4
   role/policy extension; whole-application scope requires an explicit named
   lineage under global tenant and all-partition scope.
+- Compiler-owned application reimport has distinct Capability V7 authority.
+  It binds one exact destination installation campaign, contract lineage,
+  portability-manifest hash, and principal-filtered or whole-application
+  scope. Every reimport grant also carries an exact compiled application-role
+  identity and row-policy grant; whole-application scope does not disable that
+  policy.
 
 ## Primary Threats
 
@@ -92,6 +98,23 @@ Capability-create JSON may include a bounded `grant.export.applications`
 array. Each entry names one contract lineage, selects `principal_filtered` or
 `whole_application`, and explicitly selects entities, events, provenance, and
 public audit. At least one of entities or events is required. This authority
-surface is available for provisioning, but the export execution commands
-remain unavailable until WP-575 completes; ordinary read or administrator
-credentials must not be treated as substitutes.
+surface is separate from ordinary read or administrator credentials.
+
+An operator capability for reimport adds `grant.reimport` alongside its
+compiler-derived `grant.row_policy` and matching
+`application_role_identity` permission. The reimport object accepts only:
+
+```json
+{
+  "contract_lineage": "TicketDesk",
+  "campaign_id": "01900000-0000-7000-8000-000000000043",
+  "portability_manifest_hash": "4343434343434343434343434343434343434343434343434343434343434343",
+  "scope": "whole_application"
+}
+```
+
+The campaign ID must be the exact destination installation UUIDv7 and the
+hash must identify the canonical adapter-owned portability manifest. Changing
+either identity, using the capability against another database, dropping the
+row-policy grant, or widening a principal-filtered grant fails closed. This
+authority is not advertised through application command discovery or MCP.

@@ -279,6 +279,17 @@ pub struct CapabilityExportGrant {
     #[prost(message, repeated, tag = "1")]
     pub applications: ::prost::alloc::vec::Vec<CapabilityApplicationExportGrant>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityApplicationReimportGrant {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub portability_manifest_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "CapabilityApplicationReimportScope", tag = "4")]
+    pub scope: i32,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityGrant {
     #[prost(message, optional, tag = "1")]
@@ -297,6 +308,8 @@ pub struct CapabilityGrant {
     pub row_policy: ::core::option::Option<CapabilityRowPolicyGrant>,
     #[prost(message, optional, tag = "8")]
     pub export: ::core::option::Option<CapabilityExportGrant>,
+    #[prost(message, optional, tag = "9")]
+    pub reimport: ::core::option::Option<CapabilityApplicationReimportGrant>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateCapabilityRequest {
@@ -1276,6 +1289,45 @@ impl CapabilityApplicationExportScope {
                 Some(Self::PrincipalFiltered)
             }
             "CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION" => {
+                Some(Self::WholeApplication)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CapabilityApplicationReimportScope {
+    Unspecified = 0,
+    PrincipalFiltered = 1,
+    WholeApplication = 2,
+}
+impl CapabilityApplicationReimportScope {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED",
+            Self::PrincipalFiltered => {
+                "CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED"
+            }
+            Self::WholeApplication => {
+                "CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED" => {
+                Some(Self::PrincipalFiltered)
+            }
+            "CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION" => {
                 Some(Self::WholeApplication)
             }
             _ => None,

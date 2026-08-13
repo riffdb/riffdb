@@ -439,6 +439,7 @@ fn bootstrap_request(
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }
@@ -491,6 +492,7 @@ fn normal_capability_request() -> TestResult<v1::CreateCapabilityRequest> {
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }

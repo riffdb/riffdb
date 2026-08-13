@@ -7843,6 +7843,7 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> Result<v1::Capa
         approval_required: Vec::new(),
         row_policy,
         export: None,
+        reimport: None,
     })
 }
 
@@ -8040,7 +8041,45 @@ struct CapabilityGrantInput {
     max_scan_rows: u32,
     approval_required: Vec<CapabilityPermissionKindInput>,
     #[serde(default)]
+    row_policy: Option<CapabilityRowPolicyGrantInput>,
+    #[serde(default)]
     export: Option<CapabilityExportGrantInput>,
+    #[serde(default)]
+    reimport: Option<CapabilityApplicationReimportGrantInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityRowPolicyGrantInput {
+    application_role_hash: String,
+    #[serde(default)]
+    principal_facts: Vec<CapabilityPrincipalFactInput>,
+    policies: Vec<CapabilityRowPolicyBindingInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityPrincipalFactInput {
+    name: String,
+    value: InputValue,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityRowPolicyBindingInput {
+    contract_lineage: String,
+    policy_name: String,
+    entity_type_id: u32,
+    operations: Vec<CapabilityRowPolicyOperationInput>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CapabilityRowPolicyOperationInput {
+    Read,
+    Create,
+    Update,
+    Delete,
 }
 
 #[derive(Deserialize)]
@@ -8063,6 +8102,22 @@ struct CapabilityApplicationExportGrantInput {
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum CapabilityApplicationExportScopeInput {
+    PrincipalFiltered,
+    WholeApplication,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityApplicationReimportGrantInput {
+    contract_lineage: String,
+    campaign_id: String,
+    portability_manifest_hash: String,
+    scope: CapabilityApplicationReimportScopeInput,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CapabilityApplicationReimportScopeInput {
     PrincipalFiltered,
     WholeApplication,
 }
@@ -8149,6 +8204,9 @@ enum CapabilityPermissionInput {
         contract_lineage: String,
         query_module_hash: String,
         query_name: String,
+    },
+    ApplicationRoleIdentity {
+        application_role_hash: String,
     },
     ConsumeEventStream {
         contract_lineage: String,
@@ -8435,7 +8493,18 @@ fn capability_request(
 }
 
 fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, ()> {
-    let tenant_scope = match input.tenant_scope {
+    let CapabilityGrantInput {
+        tenant_scope,
+        partition_scope,
+        permissions,
+        field_visibility,
+        max_scan_rows,
+        approval_required,
+        row_policy,
+        export,
+        reimport,
+    } = input;
+    let tenant_scope = match tenant_scope {
         TenantScopeInput::Global {} => v1::TenantScope {
             scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
         },
@@ -8443,7 +8512,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             scope: Some(v1::tenant_scope::Scope::TenantId(tenant_id)),
         },
     };
-    let partition_scope = match input.partition_scope {
+    let partition_scope = match partition_scope {
         PartitionScopeInput::All {} => v1::PartitionScope {
             scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
         },
@@ -8461,13 +8530,11 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             )),
         },
     };
-    let permissions = input
-        .permissions
+    let permissions = permissions
         .into_iter()
         .map(capability_permission)
         .collect::<Result<_, _>>()?;
-    let field_visibility = input
-        .field_visibility
+    let field_visibility = field_visibility
         .into_iter()
         .map(|visibility| {
             if visibility.entity_type_id == 0
@@ -8484,7 +8551,57 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             })
         })
         .collect::<Result<_, _>>()?;
-    let export = input.export.map(|export| v1::CapabilityExportGrant {
+    let row_policy = row_policy
+        .map(|row_policy| {
+            Ok(v1::CapabilityRowPolicyGrant {
+                application_role_hash: parse_lower_hash(&row_policy.application_role_hash)?
+                    .to_vec(),
+                principal_facts: row_policy
+                    .principal_facts
+                    .into_iter()
+                    .map(|fact| {
+                        Ok(v1::CapabilityPrincipalFact {
+                            name: fact.name,
+                            value: Some(fact.value.into_proto().map_err(|_| ())?),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ()>>()?,
+                policies: row_policy
+                    .policies
+                    .into_iter()
+                    .map(|binding| {
+                        if binding.entity_type_id == 0 {
+                            return Err(());
+                        }
+                        Ok(v1::CapabilityRowPolicyBinding {
+                            contract_lineage: binding.contract_lineage,
+                            policy_name: binding.policy_name,
+                            entity_type_id: binding.entity_type_id,
+                            operations: binding
+                                .operations
+                                .into_iter()
+                                .map(|operation| match operation {
+                                    CapabilityRowPolicyOperationInput::Read => {
+                                        v1::CapabilityRowPolicyOperation::Read as i32
+                                    }
+                                    CapabilityRowPolicyOperationInput::Create => {
+                                        v1::CapabilityRowPolicyOperation::Create as i32
+                                    }
+                                    CapabilityRowPolicyOperationInput::Update => {
+                                        v1::CapabilityRowPolicyOperation::Update as i32
+                                    }
+                                    CapabilityRowPolicyOperationInput::Delete => {
+                                        v1::CapabilityRowPolicyOperation::Delete as i32
+                                    }
+                                })
+                                .collect(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ()>>()?,
+            })
+        })
+        .transpose()?;
+    let export = export.map(|export| v1::CapabilityExportGrant {
         applications: export
             .applications
             .into_iter()
@@ -8505,19 +8622,36 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             })
             .collect(),
     });
+    let reimport = reimport
+        .map(|reimport| {
+            Ok(v1::CapabilityApplicationReimportGrant {
+                contract_lineage: reimport.contract_lineage,
+                campaign_id: parse_application_installation_campaign_id(&reimport.campaign_id)?
+                    .into_bytes()
+                    .to_vec(),
+                portability_manifest_hash: parse_lower_hash(&reimport.portability_manifest_hash)?
+                    .to_vec(),
+                scope: match reimport.scope {
+                    CapabilityApplicationReimportScopeInput::PrincipalFiltered => {
+                        v1::CapabilityApplicationReimportScope::PrincipalFiltered as i32
+                    }
+                    CapabilityApplicationReimportScopeInput::WholeApplication => {
+                        v1::CapabilityApplicationReimportScope::WholeApplication as i32
+                    }
+                },
+            })
+        })
+        .transpose()?;
     Ok(v1::CapabilityGrant {
         tenant_scope: Some(tenant_scope),
         partition_scope: Some(partition_scope),
         permissions,
         field_visibility,
-        max_scan_rows: input.max_scan_rows,
-        approval_required: input
-            .approval_required
-            .into_iter()
-            .map(permission_kind)
-            .collect(),
-        row_policy: None,
+        max_scan_rows,
+        approval_required: approval_required.into_iter().map(permission_kind).collect(),
+        row_policy,
         export,
+        reimport,
     })
 }
 
@@ -8610,6 +8744,11 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
             query_module_hash,
             query_name,
         )?),
+        CapabilityPermissionInput::ApplicationRoleIdentity {
+            application_role_hash,
+        } => {
+            Permission::ApplicationRoleIdentity(parse_lower_hash(&application_role_hash)?.to_vec())
+        }
         CapabilityPermissionInput::ConsumeEventStream {
             contract_lineage,
             reactive_module_hash,
@@ -11441,6 +11580,7 @@ mod tests {
                 approval_required: Vec::new(),
                 row_policy: None,
                 export: None,
+                reimport: None,
             }),
         }
     }
@@ -12280,6 +12420,63 @@ query GetDocument(
             v1::CapabilityApplicationExportScope::WholeApplication as i32
         );
         assert!(application.public_audit);
+    }
+
+    #[test]
+    fn capability_json_carries_exact_reimport_authority_and_compiled_row_policy() {
+        let input: CapabilityCreateInput = serde_json::from_str(
+            r#"{
+              "principal_id":"reimport-operator",
+              "actor_kind":"service",
+              "requested_lifetime_seconds":600,
+              "audiences":["riffdb-cli"],
+              "grant":{
+                "tenant_scope":{"type":"global"},
+                "partition_scope":{"type":"all"},
+                "permissions":[{
+                  "type":"application_role_identity",
+                  "application_role_hash":"4242424242424242424242424242424242424242424242424242424242424242"
+                }],
+                "field_visibility":[],
+                "max_scan_rows":64,
+                "approval_required":[],
+                "row_policy":{
+                  "application_role_hash":"4242424242424242424242424242424242424242424242424242424242424242",
+                  "principal_facts":[],
+                  "policies":[{
+                    "contract_lineage":"TicketDesk",
+                    "policy_name":"TicketReimport",
+                    "entity_type_id":1,
+                    "operations":["create"]
+                  }]
+                },
+                "reimport":{
+                  "contract_lineage":"TicketDesk",
+                  "campaign_id":"01900000-0000-7000-8000-000000000043",
+                  "portability_manifest_hash":"4343434343434343434343434343434343434343434343434343434343434343",
+                  "scope":"whole_application"
+                }
+              }
+            }"#,
+        )
+        .expect("reimport capability JSON");
+        let request = capability_request(
+            input,
+            parse_uuid_v7("01900000-0000-7000-8000-000000000044")
+                .expect("capability ID")
+                .to_vec(),
+            v1::CapabilityCreateMode::Normal,
+        )
+        .expect("reimport capability request");
+        NormalCapabilityCreateTemplate::new(request.clone()).expect("canonical public request");
+        let grant = request.grant.expect("grant");
+        assert!(grant.row_policy.is_some());
+        let reimport = grant.reimport.expect("reimport");
+        assert_eq!(reimport.contract_lineage, "TicketDesk");
+        assert_eq!(
+            reimport.scope,
+            v1::CapabilityApplicationReimportScope::WholeApplication as i32
+        );
     }
 
     fn i64_bound(value: i64) -> String {

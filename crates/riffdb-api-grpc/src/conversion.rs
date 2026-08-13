@@ -84,7 +84,8 @@ use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationExportClassV1,
     ApplicationExportOperationId, ApplicationExportSelectionV1, ApplicationInstallationCampaignId,
     ApplicationRoleHash, Audience, BackupNameV1, CapabilityApplicationExportGrantV1,
-    CapabilityApplicationExportScopeV1, CapabilityExportGrantV1, CapabilityGrantV1, CapabilityId,
+    CapabilityApplicationExportScopeV1, CapabilityApplicationReimportGrantV1,
+    CapabilityApplicationReimportScopeV1, CapabilityExportGrantV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
     CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
     CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
@@ -4633,6 +4634,7 @@ pub fn capability_grant_from_proto(
 ) -> Result<CapabilityGrantV1, Status> {
     let row_policy = grant.row_policy;
     let export = grant.export;
+    let reimport = grant.reimport;
     let tenant_scope = tenant_scope_from_proto(grant.tenant_scope.ok_or_else(invalid_request)?)?;
     let partition_scope =
         partition_scope_from_proto(grant.partition_scope.ok_or_else(invalid_request)?)?;
@@ -4753,40 +4755,80 @@ pub fn capability_grant_from_proto(
                 .map_err(|_| invalid_request())?
         }
     };
-    let Some(export) = export else {
+    let grant = match export {
+        None => grant,
+        Some(export) => {
+            let applications = export
+                .applications
+                .into_iter()
+                .map(|application| {
+                    let scope =
+                        match v1::CapabilityApplicationExportScope::try_from(application.scope)
+                            .map_err(|_| invalid_request())?
+                        {
+                            v1::CapabilityApplicationExportScope::PrincipalFiltered => {
+                                CapabilityApplicationExportScopeV1::PrincipalFiltered
+                            }
+                            v1::CapabilityApplicationExportScope::WholeApplication => {
+                                CapabilityApplicationExportScopeV1::WholeApplication
+                            }
+                            v1::CapabilityApplicationExportScope::Unspecified => {
+                                return Err(invalid_request());
+                            }
+                        };
+                    CapabilityApplicationExportGrantV1::new(
+                        ContractLineage::new(application.contract_lineage)
+                            .map_err(|_| invalid_request())?,
+                        scope,
+                        application.entities,
+                        application.events,
+                        application.provenance,
+                        application.public_audit,
+                    )
+                    .map_err(|_| invalid_request())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            grant
+                .with_export(
+                    CapabilityExportGrantV1::new(applications).map_err(|_| invalid_request())?,
+                )
+                .map_err(|_| invalid_request())?
+        }
+    };
+    let Some(reimport) = reimport else {
         return Ok(grant);
     };
-    let applications = export
-        .applications
-        .into_iter()
-        .map(|application| {
-            let scope = match v1::CapabilityApplicationExportScope::try_from(application.scope)
-                .map_err(|_| invalid_request())?
-            {
-                v1::CapabilityApplicationExportScope::PrincipalFiltered => {
-                    CapabilityApplicationExportScopeV1::PrincipalFiltered
-                }
-                v1::CapabilityApplicationExportScope::WholeApplication => {
-                    CapabilityApplicationExportScopeV1::WholeApplication
-                }
-                v1::CapabilityApplicationExportScope::Unspecified => {
-                    return Err(invalid_request());
-                }
-            };
-            CapabilityApplicationExportGrantV1::new(
-                ContractLineage::new(application.contract_lineage)
-                    .map_err(|_| invalid_request())?,
-                scope,
-                application.entities,
-                application.events,
-                application.provenance,
-                application.public_audit,
-            )
-            .map_err(|_| invalid_request())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let scope = match v1::CapabilityApplicationReimportScope::try_from(reimport.scope)
+        .map_err(|_| invalid_request())?
+    {
+        v1::CapabilityApplicationReimportScope::PrincipalFiltered => {
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered
+        }
+        v1::CapabilityApplicationReimportScope::WholeApplication => {
+            CapabilityApplicationReimportScopeV1::WholeApplication
+        }
+        v1::CapabilityApplicationReimportScope::Unspecified => return Err(invalid_request()),
+    };
     grant
-        .with_export(CapabilityExportGrantV1::new(applications).map_err(|_| invalid_request())?)
+        .with_reimport(CapabilityApplicationReimportGrantV1::new(
+            ContractLineage::new(reimport.contract_lineage).map_err(|_| invalid_request())?,
+            ApplicationInstallationCampaignId::from_bytes(
+                reimport
+                    .campaign_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| invalid_request())?,
+            )
+            .map_err(|_| invalid_request())?,
+            riffdb_types::ApplicationPortabilityManifestHash::from_bytes(
+                reimport
+                    .portability_manifest_hash
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| invalid_request())?,
+            ),
+            scope,
+        ))
         .map_err(|_| invalid_request())
 }
 
@@ -5760,6 +5802,7 @@ mod tests {
                 }],
             }),
             export: None,
+            reimport: None,
         };
         let grant = capability_grant_from_proto(request.clone()).expect("checked public V4 grant");
 
@@ -5816,6 +5859,7 @@ mod tests {
                     public_audit: false,
                 }],
             }),
+            reimport: None,
         };
         let checked = capability_grant_from_proto(principal.clone())
             .expect("principal-filtered export grant");
@@ -5853,6 +5897,7 @@ mod tests {
                     public_audit: true,
                 }],
             }),
+            reimport: None,
         };
         capability_grant_from_proto(whole.clone()).expect("whole-application export grant");
         whole.tenant_scope = Some(v1::TenantScope {
@@ -5884,8 +5929,65 @@ mod tests {
                     })
                     .collect(),
             }),
+            reimport: None,
         };
         assert!(capability_grant_from_proto(over_bound).is_err());
+    }
+
+    #[test]
+    fn reimport_capability_crosses_public_transport_only_with_exact_v7_identity() {
+        let role_hash = vec![0x53; 32];
+        let campaign =
+            ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(12, [0x54; 10])
+                .expect("campaign");
+        let manifest_hash = vec![0x55; 32];
+        let mut request = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: vec![v1::CapabilityPermission {
+                permission: Some(
+                    v1::capability_permission::Permission::ApplicationRoleIdentity(
+                        role_hash.clone(),
+                    ),
+                ),
+            }],
+            field_visibility: Vec::new(),
+            max_scan_rows: 64,
+            approval_required: Vec::new(),
+            row_policy: Some(v1::CapabilityRowPolicyGrant {
+                application_role_hash: role_hash,
+                principal_facts: Vec::new(),
+                policies: vec![v1::CapabilityRowPolicyBinding {
+                    contract_lineage: "TicketDesk".to_owned(),
+                    policy_name: "TicketReimport".to_owned(),
+                    entity_type_id: 1,
+                    operations: vec![v1::CapabilityRowPolicyOperation::Create as i32],
+                }],
+            }),
+            export: None,
+            reimport: Some(v1::CapabilityApplicationReimportGrant {
+                contract_lineage: "TicketDesk".to_owned(),
+                campaign_id: campaign.into_bytes().to_vec(),
+                portability_manifest_hash: manifest_hash.clone(),
+                scope: v1::CapabilityApplicationReimportScope::WholeApplication as i32,
+            }),
+        };
+        let checked = capability_grant_from_proto(request.clone()).expect("exact V7 grant");
+        let reimport = checked.internal_reimport().expect("reimport extension");
+        assert_eq!(reimport.campaign_id(), campaign);
+        assert_eq!(
+            reimport.portability_manifest_hash(),
+            riffdb_types::ApplicationPortabilityManifestHash::from_bytes(
+                manifest_hash.as_slice().try_into().expect("hash")
+            )
+        );
+
+        request.reimport.as_mut().expect("grant").campaign_id = vec![0; 16];
+        assert!(capability_grant_from_proto(request).is_err());
     }
 
     #[test]
