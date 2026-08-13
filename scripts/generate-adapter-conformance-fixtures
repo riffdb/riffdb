@@ -9,7 +9,7 @@ case "${1:-}" in
         [[ "$#" -eq 1 ]] || { echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2; exit 2; }
         cargo +1.97.0 run --quiet -p riffdb-testkit --example generate_adapter_conformance -- \
             "$repo_root" "$repo_root"
-        echo "Generated four-domain adapter conformance fixtures."
+        echo "Generated four alpha adapter fixtures plus the Payload regression."
         ;;
     --check)
         [[ "$#" -eq 1 ]] || { echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2; exit 2; }
@@ -28,7 +28,7 @@ case "${1:-}" in
         diff -ru -- \
             "$repo_root/fixtures/adapters/conformance" \
             "$generated/fixtures/adapters/conformance"
-        echo "Four-domain adapter conformance fixtures are current."
+        echo "Four alpha adapter fixtures and the Payload regression are current."
         ;;
     *)
         echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2

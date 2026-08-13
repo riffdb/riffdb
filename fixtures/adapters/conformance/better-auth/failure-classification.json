@@ -1,0 +1,1 @@
+{"action":"inspect_remote_identity_and_resume_same_campaign","adapter":"better-auth","campaign_state_hash":"e8c0cc9f9b1b6bbfe05b6ac2b18554c0be6842d85abe96f92246e4a3a29030f6","classification":"riffdb_product_defect","code":"remote_identity_mismatch","immutable":true,"schema":"riffdb.adapter-failure-classification/v1"}

@@ -148,6 +148,62 @@ fn reclaimed_work_rejects_the_previous_holder_and_accepts_only_the_new_fence() {
     assert_eq!(accepted.mutations().len(), 1);
 }
 
+#[test]
+fn first_claim_after_reimport_mints_strictly_above_the_preserved_fence() {
+    let bundle = compile_contract_source(SOURCE).expect("workflow fixture compiles");
+    let claim = command(&bundle, "ClaimWork");
+    let claim_input = claim_input(claim, "post-reimport-claim", [0xc1; 16], 1);
+    let target = derive_target(claim, &claim_input);
+    let preserved_fence = 11;
+    let reimported = stored_work(
+        &bundle,
+        claim,
+        target,
+        EntityVersion::first(),
+        LeaseState {
+            owner: CanonicalValue::Null,
+            expiry: CanonicalValue::Null,
+            fence: preserved_fence,
+            attempts: 4,
+        },
+    );
+
+    let claimed = evaluate(
+        &bundle,
+        claim,
+        &claim_input,
+        reimported,
+        Timestamp::new(100, 0).expect("time"),
+    );
+    assert_eq!(claimed.outcome().outcome_id(), outcome_id(claim, "Claimed"));
+    let post_image = claimed.mutations()[0].post_image();
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "WorkItem")
+        .expect("WorkItem");
+    let value = |name: &str| {
+        let field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == name)
+            .expect("workflow field");
+        post_image
+            .fields()
+            .fields()
+            .iter()
+            .find_map(|(id, value)| (*id == field.id()).then_some(value))
+            .expect("post-image field")
+    };
+    assert_eq!(
+        value("lease_fence"),
+        &CanonicalValue::U64(preserved_fence + 1)
+    );
+    assert_eq!(value("lease_attempts"), &CanonicalValue::U64(5));
+}
+
 fn evaluate(
     bundle: &ContractBundle,
     plan: &CommandPlan,

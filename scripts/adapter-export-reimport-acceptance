@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 2 || "$1" != "--all-domains" || "$2" != "--all-languages" ]]; then
+    echo "usage: ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages" >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+export PYTHONPYCACHEPREFIX="$task_tmp_root/riffdb-python-cache"
+export GOCACHE="$task_tmp_root/riffdb-go-cache"
+
+for tool in cargo go jq node npm python3 rg; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "adapter export/reimport acceptance requires $tool" >&2
+        exit 1
+    }
+done
+
+./scripts/generate-adapter-conformance-fixtures --check
+./scripts/generate-portability-fixtures --check
+cargo +1.97.0 test -p riffdb-testkit --test application_export --all-features --quiet
+cargo +1.97.0 test -p riffdb-application --all-features --test reimport_campaign --quiet
+cargo +1.97.0 test -p riffdb-service --all-features reimport_observation_tests --lib --quiet
+cargo +1.97.0 test -p riffdb-service --all-features reimport_page_fixture_tests --lib --quiet
+cargo +1.97.0 test -p riffdb-policy --all-features reimport --lib --quiet
+cargo +1.97.0 test -p riffdb-testkit --test workflow_concurrency --all-features \
+    first_claim_after_reimport_mints_strictly_above_the_preserved_fence --quiet
+
+domains=(openfga mlflow better-auth woodpecker)
+for domain in "${domains[@]}"; do
+    root="fixtures/export/$domain"
+    jq -e '
+        .schema == "riffdb.application-portability-manifest/v3"
+        and (.observations | length) > 0
+        and all(.observations[];
+            (.module_hash | test("^[0-9a-f]{64}$"))
+            and (.expected_hash | test("^[0-9a-f]{64}$"))
+            and (.parameters | length) > 0
+            and .maximum_items > 0)
+    ' "$root/portability-manifest-v3.json" >/dev/null
+    jq -e '
+        .schema == "riffdb.application-reimport-receipt/v2"
+        and (.portability_manifest_hash | test("^[0-9a-f]{64}$"))
+        and (.observations | length) > 0
+    ' "$root/reimport-receipt-v2.json" >/dev/null
+done
+
+jq -e '
+    .roles == [{
+        name: "BetterAuthApplication",
+        environment: "development",
+        tenant_scope: "global",
+        queries: ["GetSession"],
+        commands: ["ConsumeVerificationToken", "CreateUserAccountSessions", "IssueVerificationToken", "RefreshSession", "RevokeSession"],
+        event_streams: [],
+        watch_queries: [],
+        agent_subscriptions: [],
+        row_policies: ["AccountAccess", "SessionAccess", "UserAccess", "VerificationTokenAccess"]
+    }]
+' fixtures/adapters/better-auth/riffdb.application.json >/dev/null
+
+if rg -n 'Reconstitute(Users|Accounts|Sessions|VerificationTokens)' \
+    fixtures/adapters/better-auth/generated/rust/client.rs \
+    fixtures/adapters/better-auth/generated/go/client.go \
+    fixtures/adapters/better-auth/generated/typescript/client.ts \
+    fixtures/adapters/better-auth/generated/python/client.py \
+    fixtures/adapters/better-auth/generated/mcp/tools.json; then
+    echo "compiler-only reimport command escaped into an application binding" >&2
+    exit 1
+fi
+
+cargo +1.97.0 test -p riffdb-driver-host --all-features --quiet
+(
+    cd clients/go/operator
+    GO111MODULE=on GOEXPERIMENT= go test ./...
+)
+npm --prefix clients/typescript/runtime test --silent
+./scripts/check-python-runtime
+
+echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact portability, hidden-command, and Rust/Go/TypeScript/Python operator gates; Payload remains a generated regression fixture."

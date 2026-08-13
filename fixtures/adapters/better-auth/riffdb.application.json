@@ -1,0 +1,41 @@
+{
+  "schema": "riffdb.application-source/v6",
+  "application": "better-auth-acceptance",
+  "contract": {
+    "source": "contract.riff",
+    "lineage": "BetterAuthAcceptance",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "better_auth_acceptance",
+      "version": 1,
+      "queries": [
+        { "name": "GetSession", "source": "queries/get_session.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "name": "BetterAuthApplication",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["GetSession"],
+      "commands": ["ConsumeVerificationToken", "CreateUserAccountSessions", "IssueVerificationToken", "RefreshSession", "RevokeSession"],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": [],
+      "row_policies": ["AccountAccess", "SessionAccess", "UserAccess", "VerificationTokenAccess"]
+    }
+  ],
+  "seed_inputs": []
+}

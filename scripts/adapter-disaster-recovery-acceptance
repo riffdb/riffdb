@@ -23,7 +23,7 @@ done
 ./scripts/generate-adapter-conformance-fixtures --check
 cargo +1.97.0 build --quiet --release -p riffdb-cli --bin riffdb
 
-for domain in openfga mlflow payload woodpecker; do
+for domain in openfga mlflow better-auth woodpecker; do
     root="fixtures/adapters/conformance/$domain"
     for plan in empty-install-plan upgrade-plan; do
         target/release/riffdb application conformance \
@@ -42,4 +42,4 @@ done
 
 ./scripts/remote-compose-acceptance --backup-restore
 
-echo "OpenFGA, MLflow, Payload, and Woodpecker passed remote destructive backup/restore reconciliation."
+echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed remote destructive backup/restore reconciliation."

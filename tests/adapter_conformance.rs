@@ -13,7 +13,7 @@ use riffdb_application::{
 };
 use riffdb_types::hash_generated_artifact;
 
-const DOMAINS: &[&str] = &["openfga", "mlflow", "payload", "woodpecker"];
+const DOMAINS: &[&str] = &["openfga", "mlflow", "better-auth", "woodpecker"];
 
 #[test]
 fn four_domain_manifests_bind_empty_and_populated_evolution_receipts() {
@@ -71,6 +71,7 @@ fn every_claim_has_exact_public_observation_and_closed_catalog_support() {
         InstallationFeature::OperationalQueries,
         InstallationFeature::WorkflowConcurrency,
         InstallationFeature::InstallationCampaigns,
+        InstallationFeature::RowPolicies,
     ];
     for domain in DOMAINS {
         let root = fixture_root().join(domain);

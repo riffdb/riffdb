@@ -86,7 +86,7 @@ fn adapter_gate_binds_all_four_manifests_to_the_remote_drill() {
     let root = repository_root();
     let script = fs::read_to_string(root.join("scripts/adapter-disaster-recovery-acceptance"))
         .expect("adapter disaster gate is readable");
-    assert!(script.contains("for domain in openfga mlflow payload woodpecker"));
+    assert!(script.contains("for domain in openfga mlflow better-auth woodpecker"));
     assert!(script.contains("application conformance"));
     assert!(script.contains("./scripts/remote-compose-acceptance --backup-restore"));
 }
