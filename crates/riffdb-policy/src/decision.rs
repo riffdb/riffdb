@@ -600,6 +600,78 @@ impl fmt::Debug for AuthorizedApplicationInstallation {
 }
 
 impl AuthorizedApplicationQuery {
+    pub(crate) fn bind_reimport(
+        authorization: crate::AuthorizedApplicationReimportV1,
+        target: ApplicationQueryTarget,
+    ) -> Result<Self, crate::ReimportQueryAuthorizationBindingError> {
+        use crate::ReimportQueryAuthorizationBindingError as BindingError;
+
+        if authorization.request().operation() != crate::ApplicationReimportPolicyOperationV1::Page
+            || authorization.request().lineage() != target.lineage()
+        {
+            return Err(BindingError::OperationMismatch);
+        }
+        let obligations = authorization.obligations();
+        let partition_allowed = match obligations.partition_constraint() {
+            None => true,
+            Some(crate::PartitionConstraint::Filter(PartitionScopeV1::All)) => true,
+            Some(crate::PartitionConstraint::Filter(PartitionScopeV1::Explicit(entries))) => {
+                entries
+                    .binary_search_by_key(
+                        &target.partition().canonical_key(),
+                        ScopedPartitionV1::canonical_key,
+                    )
+                    .is_ok()
+            }
+            Some(crate::PartitionConstraint::Exact(_)) => false,
+        };
+        let Some(row_limit) = obligations.row_limit() else {
+            return Err(BindingError::ObligationMismatch);
+        };
+        if !partition_allowed
+            || obligations.effective_tenant_scope() != target.tenant_scope()
+            || target
+                .accesses()
+                .iter()
+                .any(|access| access.maximum_rows() > row_limit)
+            || obligations.field_mask().is_some()
+            || obligations.validated_approval().is_some()
+            || obligations.audit_class().is_some()
+            || obligations.output_classification()
+                != OutputClassification::PolicyFilteredApplicationData
+        {
+            return Err(BindingError::ObligationMismatch);
+        }
+        let authority = authorization.internal_row_policy_authority().clone();
+        let principal = authority.internal_principal();
+        let identity = CurrentAuthorizationIdentity::new(
+            principal.capability_id(),
+            principal.revision(),
+            principal.principal_id().clone(),
+            principal.actor_kind(),
+            CheckedCapabilityValidity::new(principal.issued_at(), principal.expires_at()),
+        );
+        let exact_obligations = Obligations::new(
+            obligations.effective_tenant_scope().clone(),
+            Some(crate::PartitionConstraint::Exact(
+                target.partition().clone(),
+            )),
+            None,
+            Some(row_limit),
+            None,
+            None,
+            OutputClassification::PolicyFilteredApplicationData,
+        );
+        Ok(Self {
+            database_id: authorization.database_id(),
+            environment: authorization.environment().clone(),
+            target,
+            identity,
+            obligations: exact_obligations,
+            row_policy_authority: Some(authority),
+        })
+    }
+
     /// Returns the exact database boundary checked by policy.
     #[must_use]
     pub const fn database_id(&self) -> DatabaseId {

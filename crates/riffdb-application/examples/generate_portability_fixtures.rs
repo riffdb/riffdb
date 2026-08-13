@@ -7,13 +7,16 @@ use std::path::{Path, PathBuf};
 
 use riffdb_application::{
     AdapterConformanceManifest, ApplicationPortabilityManifest,
-    ApplicationPortabilityManifestInput, ApplicationReimportReceipt, InstallationSymbol,
-    PortableOmission, PortableOmissionClass, PortableOmissionReason, PortableRecordClass,
-    PortableRecordMapping, PortableReimportStrategy, ReimportMappingResult, ReimportObservation,
-    ReimportObservationResult,
+    ApplicationPortabilityManifestInput, ApplicationReimportReceipt, InstallationArtifactKind,
+    InstallationSymbol, PortableOmission, PortableOmissionClass, PortableOmissionReason,
+    PortableRecordClass, PortableRecordMapping, PortableReimportStrategy, ReimportMappingResult,
+    ReimportObservation, ReimportObservationParameter, ReimportObservationResult,
 };
 use riffdb_contract_ir::ContractBundle;
-use riffdb_types::{ApplicationExportManifestHash, DatabaseId, hash_generated_artifact};
+use riffdb_types::{
+    ApplicationExportManifestHash, CanonicalValue, DatabaseId, QueryModuleHash,
+    hash_generated_artifact,
+};
 
 struct Domain<'a> {
     name: &'a str,
@@ -21,6 +24,7 @@ struct Domain<'a> {
     entity: &'a str,
     command: &'a str,
     query: &'a str,
+    parameters: &'a [(&'a str, u16)],
     seed: u8,
 }
 
@@ -31,6 +35,7 @@ const DOMAINS: [Domain<'static>; 4] = [
         entity: "FgaTuple",
         command: "ReconstituteFgaTuples",
         query: "ListFgaTuples",
+        parameters: &[("store_id", 10)],
         seed: 1,
     },
     Domain {
@@ -39,6 +44,7 @@ const DOMAINS: [Domain<'static>; 4] = [
         entity: "Document",
         command: "ReconstituteDocuments",
         query: "ListDraftDocuments",
+        parameters: &[("site_id", 30)],
         seed: 2,
     },
     Domain {
@@ -47,6 +53,7 @@ const DOMAINS: [Domain<'static>; 4] = [
         entity: "ScheduledRun",
         command: "ReconstituteScheduledRuns",
         query: "DueRun",
+        parameters: &[("organization_id", 50), ("run_id", 51)],
         seed: 3,
     },
     Domain {
@@ -55,6 +62,7 @@ const DOMAINS: [Domain<'static>; 4] = [
         entity: "ScheduledPipeline",
         command: "ReconstituteScheduledPipelines",
         query: "GetPipeline",
+        parameters: &[("organization_id", 60), ("pipeline_id", 61)],
         seed: 4,
     },
 ];
@@ -92,6 +100,13 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
     )
     .expect("read observation");
     let observation_hash = hash_generated_artifact(&observation_bytes);
+    let module_hash = adapter
+        .input()
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind() == InstallationArtifactKind::QueryModule)
+        .map(|artifact| QueryModuleHash::from_bytes(*artifact.content_hash().as_bytes()))
+        .expect("adapter query module");
     let manifest = ApplicationPortabilityManifest::compile(ApplicationPortabilityManifestInput {
         adapter_manifest_hash: adapter.identity(),
         contract_lineage: bundle.lineage().clone(),
@@ -117,9 +132,21 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
             .expect("audit omission"),
         ],
         observations: vec![
-            ReimportObservation::new(
+            ReimportObservation::new_with_parameters(
                 symbol("application_observation"),
                 symbol(domain.query),
+                module_hash,
+                domain
+                    .parameters
+                    .iter()
+                    .map(|(name, suffix)| {
+                        ReimportObservationParameter::new(
+                            symbol(name),
+                            CanonicalValue::Uuid(application_uuid(*suffix)),
+                        )
+                        .expect("observation parameter")
+                    })
+                    .collect(),
                 observation_hash,
                 500,
             )
@@ -170,7 +197,7 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
 
     let destination = root.join("fixtures/export").join(domain.name);
     update(
-        destination.join("portability-manifest-v2.json"),
+        destination.join("portability-manifest-v3.json"),
         manifest.canonical_bytes(),
         write,
     );
@@ -188,6 +215,14 @@ fn symbol(value: &str) -> InstallationSymbol {
 fn database_id(seed: u8) -> DatabaseId {
     DatabaseId::from_bytes([0, 0, 0, 0, 0, seed, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, seed])
         .expect("fixture database ID")
+}
+
+fn application_uuid(suffix: u16) -> [u8; 16] {
+    let mut value = [
+        0x01, 0x8f, 0x0f, 0x8b, 0x7c, 0x6d, 0x7e, 0x31, 0x8a, 0x4f, 0, 0, 0, 0, 0, 0,
+    ];
+    value[14..].copy_from_slice(&suffix.to_be_bytes());
+    value
 }
 
 fn update(path: PathBuf, expected: &[u8], write: bool) {

@@ -10,9 +10,29 @@ use riffdb_types::{
 };
 
 use crate::{
-    AuthorizedCommandExecution, AuthorizedRowPolicyAuthority, CommandAuthorizationBindingError,
-    Obligations, PolicyCode,
+    ApplicationQueryTarget, AuthorizedApplicationQuery, AuthorizedCommandExecution,
+    AuthorizedRowPolicyAuthority, CommandAuthorizationBindingError, Obligations, PolicyCode,
 };
+
+/// Safe failure to consume current reimport authority as one reconciliation query proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReimportQueryAuthorizationBindingError {
+    /// The proof was not issued for page application/reconciliation.
+    OperationMismatch,
+    /// The compiled target is outside the exact reimport authority.
+    ObligationMismatch,
+}
+
+impl fmt::Display for ReimportQueryAuthorizationBindingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::OperationMismatch => "reimport authorization is not for reconciliation",
+            Self::ObligationMismatch => "reimport query authorization is inconsistent",
+        })
+    }
+}
+
+impl std::error::Error for ReimportQueryAuthorizationBindingError {}
 
 /// Closed safe point checked independently during one reimport campaign.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,6 +215,19 @@ impl AuthorizedApplicationReimportV1 {
     ) -> Result<AuthorizedCommandExecution, CommandAuthorizationBindingError> {
         AuthorizedCommandExecution::bind_reimport(self, version, command_id, partition)
     }
+
+    /// Consumes one current V7 page safe point into a bounded reconciliation-query proof.
+    ///
+    /// This is not ordinary application-query authority. The compiler-derived
+    /// target must remain inside the reimport grant's exact lineage, partition,
+    /// row limit, and current row-policy role.
+    #[doc(hidden)]
+    pub fn into_query_execution(
+        self,
+        target: ApplicationQueryTarget,
+    ) -> Result<AuthorizedApplicationQuery, ReimportQueryAuthorizationBindingError> {
+        AuthorizedApplicationQuery::bind_reimport(self, target)
+    }
 }
 
 impl fmt::Debug for AuthorizedApplicationReimportV1 {
@@ -233,8 +266,9 @@ mod tests {
     use riffdb_auth::PrincipalFactBindingV1;
     use riffdb_types::{
         ApplicationRoleHash, Audience, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
-        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, EntityTypeId,
-        PartitionKeyBuilder, PartitionScopeV1, RowPolicyName, TenantScope, Timestamp,
+        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, ContractBundleHash,
+        EntityTypeId, PartitionKeyBuilder, PartitionScopeV1, QueryCostVectorV1, QueryPlanHash,
+        RowPolicyName, ServiceIngressKindV1, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -332,6 +366,29 @@ mod tests {
         )
     }
 
+    fn query_target(value: u64, maximum_rows: u16) -> ApplicationQueryTarget {
+        ApplicationQueryTarget::new(
+            lineage(),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([8; 32]),
+            QueryPlanHash::from_bytes([9; 32]),
+            ServiceIngressKindV1::Grpc,
+            crate::OperationTenantScope::global_only(),
+            partition(value),
+            vec![
+                crate::ApplicationQueryAccessRequirement::new(
+                    EntityTypeId::first(),
+                    None,
+                    Vec::new(),
+                    NonZeroU16::new(maximum_rows).expect("rows"),
+                )
+                .expect("access"),
+            ],
+            QueryCostVectorV1::new(1, u64::from(maximum_rows), 0, 0, 1, 1, 16).expect("cost"),
+        )
+        .expect("target")
+    }
+
     #[test]
     fn request_is_closed_exact_and_redacted() {
         let campaign_id =
@@ -406,6 +463,34 @@ mod tests {
                 partition(8),
             ),
             Err(CommandAuthorizationBindingError::ObligationMismatch)
+        );
+    }
+
+    #[test]
+    fn reconciliation_query_is_bounded_by_current_page_authority() {
+        let allowed = riffdb_types::ScopedPartitionV1::new(lineage(), partition(7));
+        let filter = PartitionScopeV1::explicit(vec![allowed]).expect("explicit scope");
+        let query = authorization(
+            ApplicationReimportPolicyOperationV1::Page,
+            Some(crate::PartitionConstraint::Filter(filter.clone())),
+        )
+        .into_query_execution(query_target(7, 1))
+        .expect("in-scope bounded query");
+        assert_eq!(query.target().partition().partition_key(), &partition(7));
+        assert!(query.internal_row_policy_authority().is_some());
+
+        assert_eq!(
+            authorization(
+                ApplicationReimportPolicyOperationV1::Page,
+                Some(crate::PartitionConstraint::Filter(filter)),
+            )
+            .into_query_execution(query_target(8, 1)),
+            Err(ReimportQueryAuthorizationBindingError::ObligationMismatch)
+        );
+        assert_eq!(
+            authorization(ApplicationReimportPolicyOperationV1::Start, None)
+                .into_query_execution(query_target(7, 1)),
+            Err(ReimportQueryAuthorizationBindingError::OperationMismatch)
         );
     }
 }

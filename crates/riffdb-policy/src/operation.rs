@@ -713,6 +713,13 @@ impl ApplicationQueryTarget {
         &self.scope.partition
     }
 
+    /// Exact compiler-declared tenant scope.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn tenant_scope(&self) -> &TenantScope {
+        self.scope.tenant_scope.tenant_scope()
+    }
+
     /// Complete ordered compiler access requirements.
     #[must_use]
     pub fn accesses(&self) -> &[ApplicationQueryAccessRequirement] {

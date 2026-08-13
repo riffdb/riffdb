@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use riffdb_application::{
     ApplicationPortabilityManifest, ApplicationReimportCampaignPhaseV1,
-    ApplicationReimportCampaignV1, ApplicationReimportReceipt, ReimportPageMappingOutcomeV1,
+    ApplicationReimportCampaignV1, ApplicationReimportReceipt, ReimportObservationResult,
+    ReimportPageMappingOutcomeV1,
 };
 use riffdb_policy::AuthorizedApplicationReimportV1;
 use riffdb_types::{
@@ -273,6 +274,7 @@ pub struct ApplicationReimportPolicyBindingV1 {
 pub struct ApplicationReimportPagePreparationV1 {
     lineage: ContractLineage,
     portability_manifest: Arc<ApplicationPortabilityManifest>,
+    phase: ApplicationReimportCampaignPhaseV1,
     expected_page: NonZeroU64,
     expected_hash: ApplicationExportPageHash,
 }
@@ -282,12 +284,14 @@ impl ApplicationReimportPagePreparationV1 {
     pub fn new(
         lineage: ContractLineage,
         portability_manifest: ApplicationPortabilityManifest,
+        phase: ApplicationReimportCampaignPhaseV1,
         expected_page: NonZeroU64,
         expected_hash: ApplicationExportPageHash,
     ) -> Self {
         Self {
             lineage,
             portability_manifest: Arc::new(portability_manifest),
+            phase,
             expected_page,
             expected_hash,
         }
@@ -303,6 +307,12 @@ impl ApplicationReimportPagePreparationV1 {
     #[must_use]
     pub fn portability_manifest(&self) -> &ApplicationPortabilityManifest {
         self.portability_manifest.as_ref()
+    }
+
+    /// Exact durable phase observed with the retained manifest and final page.
+    #[must_use]
+    pub const fn phase(&self) -> ApplicationReimportCampaignPhaseV1 {
+        self.phase
     }
 
     /// Exact next page number.
@@ -439,6 +449,39 @@ pub struct AuthorizedApplicationReimportOperationV1 {
     authorization: Box<AuthorizedApplicationReimportV1>,
 }
 
+/// Move-only terminal reconciliation mutation with compiler-produced observations.
+pub struct AuthorizedApplicationReimportReconcileV1 {
+    campaign_id: ApplicationInstallationCampaignId,
+    authorization: Box<AuthorizedApplicationReimportV1>,
+    observations: Vec<ReimportObservationResult>,
+}
+
+impl AuthorizedApplicationReimportReconcileV1 {
+    pub(crate) const fn new(
+        campaign_id: ApplicationInstallationCampaignId,
+        authorization: Box<AuthorizedApplicationReimportV1>,
+        observations: Vec<ReimportObservationResult>,
+    ) -> Self {
+        Self {
+            campaign_id,
+            authorization,
+            observations,
+        }
+    }
+
+    /// Separates compiler-produced evidence from the final current V7 proof.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        ApplicationInstallationCampaignId,
+        Box<AuthorizedApplicationReimportV1>,
+        Vec<ReimportObservationResult>,
+    ) {
+        (self.campaign_id, self.authorization, self.observations)
+    }
+}
+
 impl AuthorizedApplicationReimportOperationV1 {
     pub(crate) const fn new(
         request: ApplicationReimportOperationRequestV1,
@@ -502,6 +545,12 @@ pub type ApplicationReimportPagePermitV1 = BoxPortCapacityPermit<
     ApplicationReimportOperationResultV1,
     ApplicationReimportMutationPortErrorV1,
 >;
+/// Reserved terminal reconciliation capacity.
+pub type ApplicationReimportReconcilePermitV1 = BoxPortCapacityPermit<
+    AuthorizedApplicationReimportReconcileV1,
+    ApplicationReimportOperationResultV1,
+    ApplicationReimportMutationPortErrorV1,
+>;
 /// Reserved protected-observation capacity.
 pub type ApplicationReimportObservationPermitV1 = BoxPortCapacityPermit<
     AuthorizedApplicationReimportOperationV1,
@@ -550,6 +599,12 @@ pub trait ApplicationReimportCoordinatorPort: Send + Sync {
         &self,
         control: &RequestControl,
     ) -> PortFuture<'_, ApplicationReimportPagePermitV1, PortAdmissionError>;
+
+    /// Reserves capacity before the final current-authority reconciliation seal.
+    fn reserve_application_reimport_reconcile(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ApplicationReimportReconcilePermitV1, PortAdmissionError>;
 
     /// Reserves capacity before a protected status observation.
     fn reserve_application_reimport_observation(

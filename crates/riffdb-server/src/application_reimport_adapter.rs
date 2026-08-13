@@ -12,8 +12,9 @@ use riffdb_service::{
     ApplicationReimportMutationPortErrorV1, ApplicationReimportObservationPermitV1,
     ApplicationReimportObservationPortErrorV1, ApplicationReimportOperationResultV1,
     ApplicationReimportPagePermitV1, ApplicationReimportPagePreparationV1,
-    ApplicationReimportPolicyBindingV1, ApplicationReimportStartPermitV1,
-    AuthorizedApplicationReimportOperationV1, AuthorizedApplicationReimportPageV1,
+    ApplicationReimportPolicyBindingV1, ApplicationReimportReconcilePermitV1,
+    ApplicationReimportStartPermitV1, AuthorizedApplicationReimportOperationV1,
+    AuthorizedApplicationReimportPageV1, AuthorizedApplicationReimportReconcileV1,
     AuthorizedApplicationReimportStartV1, CanonicalApplicationExportJsonDocument,
     PortAdmissionError, PortFuture, RequestControl,
 };
@@ -57,6 +58,11 @@ pub(crate) struct ServerApplicationReimportCoordinator {
         ApplicationReimportOperationResultV1,
         ApplicationReimportMutationPortErrorV1,
     >,
+    reconcile: BlockingPortExecutor<
+        AuthorizedApplicationReimportReconcileV1,
+        ApplicationReimportOperationResultV1,
+        ApplicationReimportMutationPortErrorV1,
+    >,
     observation: BlockingPortExecutor<
         AuthorizedApplicationReimportOperationV1,
         Option<ApplicationReimportOperationResultV1>,
@@ -75,6 +81,7 @@ impl ServerApplicationReimportCoordinator {
         let preparation_storage = storage.clone();
         let start_storage = storage.clone();
         let page_storage = storage.clone();
+        let reconcile_storage = storage.clone();
         let observation_storage = storage.clone();
         Self {
             binding: driver
@@ -83,6 +90,7 @@ impl ServerApplicationReimportCoordinator {
                 .executor(move |campaign_id| prepare_page(&preparation_storage, campaign_id)),
             start: driver.executor(move |request| start(start_storage.clone(), request)),
             page: driver.executor(move |request| apply_page(&page_storage, request)),
+            reconcile: driver.executor(move |request| reconcile(&reconcile_storage, request)),
             observation: driver.executor(move |request| observe(&observation_storage, request)),
             cancel: driver.executor(move |request| cancel(storage.clone(), request)),
         }
@@ -146,6 +154,14 @@ impl ApplicationReimportCoordinatorPort for ServerApplicationReimportCoordinator
         control: &RequestControl,
     ) -> PortFuture<'_, ApplicationReimportPagePermitV1, PortAdmissionError> {
         let reservation = self.page.reserve(control);
+        Box::pin(async move { reservation })
+    }
+
+    fn reserve_application_reimport_reconcile(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ApplicationReimportReconcilePermitV1, PortAdmissionError> {
+        let reservation = self.reconcile.reserve(control);
         Box::pin(async move { reservation })
     }
 
@@ -277,7 +293,12 @@ fn prepare_page(
     let progress = campaign
         .reimport()
         .ok_or(ApplicationReimportObservationPortErrorV1::Integrity)?;
-    if progress.phase() != ApplicationReimportCampaignPhaseV1::Applying {
+    if !matches!(
+        progress.phase(),
+        ApplicationReimportCampaignPhaseV1::Applying
+            | ApplicationReimportCampaignPhaseV1::Reconciling
+            | ApplicationReimportCampaignPhaseV1::Reconciled
+    ) {
         return Err(ApplicationReimportObservationPortErrorV1::Integrity);
     }
     let index = usize::try_from(progress.next_page().get() - 1)
@@ -293,6 +314,7 @@ fn prepare_page(
     Ok(Some(ApplicationReimportPagePreparationV1::new(
         record.contract_lineage().clone(),
         manifest,
+        progress.phase(),
         progress.next_page(),
         expected_hash,
     )))
@@ -333,19 +355,74 @@ fn apply_page(
         persist(&mut storage, &retained, &campaign, &plan)?;
         return Err(ApplicationReimportMutationPortErrorV1::AuthorityChanged);
     }
-    progress
-        .complete_page(
-            request.page().page_number(),
-            request.page().page_hash(),
-            outcomes,
-        )
-        .map_err(|_| ApplicationReimportMutationPortErrorV1::SourceMismatch)?;
+    if progress.phase() == ApplicationReimportCampaignPhaseV1::Applying {
+        progress
+            .complete_page(
+                request.page().page_number(),
+                request.page().page_hash(),
+                outcomes,
+            )
+            .map_err(|_| ApplicationReimportMutationPortErrorV1::SourceMismatch)?;
+    } else if !matches!(
+        progress.phase(),
+        ApplicationReimportCampaignPhaseV1::Reconciling
+            | ApplicationReimportCampaignPhaseV1::Reconciled
+    ) {
+        return Err(ApplicationReimportMutationPortErrorV1::InvalidPhase);
+    }
     persist(&mut storage, &retained, &campaign, &plan)?;
     operation_result(
         request.campaign_id(),
         retained.contract_lineage().clone(),
         &campaign,
     )
+}
+
+fn reconcile(
+    storage: &SharedRedbOperationalPorts,
+    request: AuthorizedApplicationReimportReconcileV1,
+) -> Result<ApplicationReimportOperationResultV1, ApplicationReimportMutationPortErrorV1> {
+    let (campaign_id, authorization, observations) = request.into_parts();
+    let mut storage = storage.clone();
+    let retained = storage
+        .read_application_installation_campaign(campaign_id)
+        .map_err(map_mutation_storage)?
+        .ok_or(ApplicationReimportMutationPortErrorV1::IdentityMismatch)?;
+    let state =
+        decode_state(&retained).map_err(|()| ApplicationReimportMutationPortErrorV1::Integrity)?;
+    let (plan, mut campaign) = state.into_parts();
+    let progress = campaign
+        .reimport_mut()
+        .ok_or(ApplicationReimportMutationPortErrorV1::InvalidPhase)?;
+    if authorization.request().campaign_id() != campaign_id
+        || authorization.request().lineage() != retained.contract_lineage()
+        || authorization.request().portability_manifest_hash()
+            != progress.source().portability_manifest_hash()
+        || authorization.request().scope() != progress.scope()
+    {
+        return Err(ApplicationReimportMutationPortErrorV1::IdentityMismatch);
+    }
+    if progress
+        .verify_authority(authorization.authority())
+        .is_err()
+    {
+        persist(&mut storage, &retained, &campaign, &plan)?;
+        return Err(ApplicationReimportMutationPortErrorV1::AuthorityChanged);
+    }
+    if progress.phase() == ApplicationReimportCampaignPhaseV1::Reconciling {
+        let manifest = ApplicationPortabilityManifest::decode_canonical(
+            progress.portability_manifest_document(),
+        )
+        .map_err(|_| ApplicationReimportMutationPortErrorV1::Integrity)?;
+        if progress.reconcile(&manifest, observations).is_err() {
+            persist(&mut storage, &retained, &campaign, &plan)?;
+            return Err(ApplicationReimportMutationPortErrorV1::SourceMismatch);
+        }
+        persist(&mut storage, &retained, &campaign, &plan)?;
+    } else if progress.phase() != ApplicationReimportCampaignPhaseV1::Reconciled {
+        return Err(ApplicationReimportMutationPortErrorV1::InvalidPhase);
+    }
+    operation_result(campaign_id, retained.contract_lineage().clone(), &campaign)
 }
 
 fn observe(

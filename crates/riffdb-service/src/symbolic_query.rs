@@ -5,6 +5,7 @@ use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::Instant;
 
+use riffdb_application::{ReimportObservation, ReimportObservationResult};
 pub use riffdb_catalog::{
     APPLICATION_CATALOG_SCHEMA_V1, ApplicationCatalogFeatureStateV1, ApplicationCatalogFeatureV1,
     ApplicationCatalogFeatureViewV1, ApplicationCatalogPageV1, ApplicationCatalogSourceSpanV1,
@@ -29,9 +30,9 @@ use riffdb_errors::{
 };
 use riffdb_policy::{
     ApplicationCatalogQueryCandidate, ApplicationQueryAccessRequirement, ApplicationQueryTarget,
-    AuthorizedApplicationQuery, AuthorizedQueryRowPolicyContextV1, CommandToolCandidate,
-    DiscoveryVisibility, MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate, OperationRequest,
-    OperationTenantScope, OutputClassification, PartitionConstraint,
+    AuthorizedApplicationQuery, AuthorizedApplicationReimportV1, AuthorizedQueryRowPolicyContextV1,
+    CommandToolCandidate, DiscoveryVisibility, MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate,
+    OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
     resolve_authorized_query_row_policy_context,
 };
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
@@ -51,7 +52,7 @@ use riffdb_types::{
     CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
     QueryModuleName, QueryModuleVersion, QueryOperationName, QueryPlanHash, ReactiveModuleHash,
     ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value,
-    hash_query_parameters,
+    hash_generated_artifact, hash_query_parameters,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -2535,6 +2536,225 @@ async fn execute_named_query(
         request.minimum_application_head,
     )
     .await
+}
+
+/// Executes one compiler-owned portability observation under current V7 authority.
+///
+/// No cursor or application result escapes this boundary. Only a deterministic
+/// semantic digest is returned to the reimport coordinator.
+pub(crate) async fn execute_reimport_observation(
+    service: &Arc<RiffDbServiceInner>,
+    context: &RequestContext,
+    manifest: &riffdb_application::ApplicationPortabilityManifest,
+    observation: &ReimportObservation,
+    authorization: Box<AuthorizedApplicationReimportV1>,
+) -> ServiceResult<ReimportObservationResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ApplyApplicationReimportPage;
+    let catalog = wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service
+            .providers
+            .catalog
+            .prepare_active_catalog(context.control()),
+    )
+    .await
+    .map_err(controlled_failure)?
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+    .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let bundle = catalog.bundle();
+    manifest
+        .validate_compiled_contract(bundle.bundle())
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let module_hash = observation
+        .module_hash()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let module = load_query_module(
+        service,
+        context,
+        bundle.clone(),
+        Some(module_hash),
+        OPERATION,
+    )
+    .await?
+    .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let query = module
+        .module()
+        .query(observation.query().as_str())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let submitted = SymbolicQueryParameters::new(
+        observation
+            .parameters()
+            .iter()
+            .map(|parameter| {
+                let value = parameter.value().map_err(|_| {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                })?;
+                let value = SubmittedValue::try_from(value).map_err(|_| {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                })?;
+                Ok((parameter.name().as_str().to_owned(), value))
+            })
+            .collect::<ServiceResult<BTreeMap<_, _>>>()?,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let presence = query
+        .operational_family()
+        .map(|family| {
+            family
+                .presence_parameters()
+                .iter()
+                .map(|name| {
+                    submitted
+                        .get(name)
+                        .is_some_and(|value| !matches!(value, SubmittedValue::Null))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let program = query
+        .select_program(&presence)
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let aggregates = query
+        .operational_family()
+        .map_or_else(|| Arc::from([]), |family| Arc::from(family.aggregates()));
+    let parameters = materialize_query_parameters(
+        service,
+        OPERATION,
+        bundle.bundle(),
+        query.shared_document().as_ref(),
+        &submitted,
+    )?;
+    let target =
+        application_query_target(bundle.bundle(), &program, &parameters, context.ingress())
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let authorization = authorization
+        .into_query_execution(target)
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let executor = service
+        .providers
+        .query_executor
+        .as_ref()
+        .ok_or_else(|| PublicError::storage_unavailable())?;
+    let snapshot = execute_authorized_query_page(
+        &authorization,
+        executor.as_ref(),
+        &program,
+        &aggregates,
+        &parameters,
+        None,
+        row_policy.as_ref(),
+    )
+    .map_err(|error| execution_failure(service, OPERATION, error))?;
+    if snapshot.continuation().is_some() {
+        return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
+    }
+    let items = query_snapshot_item_count(&snapshot)
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    if items > u64::from(observation.maximum_items()) {
+        return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
+    }
+    let actual = hash_reimport_query_snapshot(&snapshot)
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    Ok(ReimportObservationResult::new(
+        observation.name().clone(),
+        actual,
+    ))
+}
+
+fn query_snapshot_item_count(snapshot: &QueryOwnedSnapshot) -> Option<u64> {
+    snapshot.fields().values().try_fold(0_u64, |total, field| {
+        let count = match field {
+            QueryResultValue::One(_) | QueryResultValue::AggregateOne(_) => 1,
+            QueryResultValue::Maybe(value) => u64::from(value.is_some()),
+            QueryResultValue::Many(values) => u64::try_from(values.len()).ok()?,
+            QueryResultValue::AggregateMany(values) => u64::try_from(values.len()).ok()?,
+        };
+        total.checked_add(count)
+    })
+}
+
+fn hash_reimport_query_snapshot(
+    snapshot: &QueryOwnedSnapshot,
+) -> Option<riffdb_types::GeneratedArtifactHash> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"riffdb.reimport-observation/v1\0");
+    push_observation_bytes(&mut bytes, snapshot.outcome().as_bytes())?;
+    bytes.extend_from_slice(&u32::try_from(snapshot.fields().len()).ok()?.to_be_bytes());
+    for (name, value) in snapshot.fields() {
+        push_observation_bytes(&mut bytes, name.as_bytes())?;
+        match value {
+            QueryResultValue::One(row) => {
+                bytes.push(1);
+                hash_observation_row(&mut bytes, row)?;
+            }
+            QueryResultValue::Maybe(None) => bytes.push(2),
+            QueryResultValue::Maybe(Some(row)) => {
+                bytes.push(3);
+                hash_observation_row(&mut bytes, row)?;
+            }
+            QueryResultValue::Many(rows) => {
+                bytes.push(4);
+                bytes.extend_from_slice(&u32::try_from(rows.len()).ok()?.to_be_bytes());
+                for row in rows {
+                    hash_observation_row(&mut bytes, row)?;
+                }
+            }
+            QueryResultValue::AggregateOne(row) => {
+                bytes.push(5);
+                hash_observation_aggregate_row(&mut bytes, row)?;
+            }
+            QueryResultValue::AggregateMany(rows) => {
+                bytes.push(6);
+                bytes.extend_from_slice(&u32::try_from(rows.len()).ok()?.to_be_bytes());
+                for row in rows {
+                    hash_observation_aggregate_row(&mut bytes, row)?;
+                }
+            }
+        }
+    }
+    Some(hash_generated_artifact(&bytes))
+}
+
+fn hash_observation_row(bytes: &mut Vec<u8>, row: &QueryRow) -> Option<()> {
+    push_observation_bytes(bytes, row.entity().as_bytes())?;
+    bytes.extend_from_slice(&u32::try_from(row.fields().len()).ok()?.to_be_bytes());
+    for (name, value) in row.fields() {
+        push_observation_bytes(bytes, name.as_bytes())?;
+        let value = encode_canonical_value(value).ok()?;
+        push_observation_bytes(bytes, &value)?;
+    }
+    Some(())
+}
+
+fn hash_observation_aggregate_row(bytes: &mut Vec<u8>, row: &QueryAggregateRow) -> Option<()> {
+    push_observation_bytes(bytes, row.entity().as_bytes())?;
+    bytes.extend_from_slice(&u32::try_from(row.fields().len()).ok()?.to_be_bytes());
+    for (name, value) in row.fields() {
+        push_observation_bytes(bytes, name.as_bytes())?;
+        match value {
+            QueryAggregateCell::Canonical(value) => {
+                bytes.push(1);
+                let value = encode_canonical_value(value).ok()?;
+                push_observation_bytes(bytes, &value)?;
+            }
+            QueryAggregateCell::ExactDecimal { coefficient, scale } => {
+                bytes.push(2);
+                bytes.extend_from_slice(&coefficient.to_be_bytes());
+                bytes.push(*scale);
+            }
+        }
+    }
+    Some(())
+}
+
+fn push_observation_bytes(target: &mut Vec<u8>, value: &[u8]) -> Option<()> {
+    target.extend_from_slice(&u32::try_from(value.len()).ok()?.to_be_bytes());
+    target.extend_from_slice(value);
+    Some(())
 }
 
 pub(crate) async fn load_query_module(
