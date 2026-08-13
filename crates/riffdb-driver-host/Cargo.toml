@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
