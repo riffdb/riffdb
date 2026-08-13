@@ -1854,7 +1854,11 @@ fn resolve_row_limit(
         QueryRowLimit::Parameter { name, default } => {
             let value = match parameters.get(name) {
                 Some(CanonicalValue::U64(value)) => *value,
-                Some(_) => return Err(QueryExecutionError::InvalidProgram),
+                Some(_) => {
+                    return Err(QueryExecutionError::InvalidParameter {
+                        parameter: name.clone(),
+                    });
+                }
                 None => default.ok_or_else(|| QueryExecutionError::MissingParameter {
                     parameter: name.clone(),
                 })?,

@@ -230,16 +230,20 @@ fn parameters() -> QueryParameters {
     .expect("parameters")
 }
 
-fn parameters_with_k(k: u64) -> QueryParameters {
+fn parameters_with_k_value(value: CanonicalValue) -> QueryParameters {
     QueryParameters::checked(BTreeMap::from([
         ("org_id".to_owned(), CanonicalValue::Uuid([1; 16])),
         (
             "query_vec".to_owned(),
             CanonicalValue::Vector(CanonicalVector::new(vec![1.0, 0.0, 0.0]).expect("finite")),
         ),
-        ("k".to_owned(), CanonicalValue::U64(k)),
+        ("k".to_owned(), value),
     ]))
     .expect("parameters with k")
+}
+
+fn parameters_with_k(k: u64) -> QueryParameters {
+    parameters_with_k_value(CanonicalValue::U64(k))
 }
 
 fn result_row() -> QueryRow {
@@ -380,6 +384,56 @@ fn parameterized_nearest_k_zero_and_500_are_refused_before_backend_work() {
         assert_eq!(view.reported_calls, 0, "k = {k} reached the backend");
         assert_eq!(view.received_k, None);
     }
+}
+
+#[test]
+fn parameterized_nearest_negative_k_is_a_caller_error_before_backend_work() {
+    let program = parameterized_nearest_program();
+    let mut view = NearestView {
+        rows: vec![result_row()],
+        scanned_rows: 1,
+        reported_calls: 0,
+        received_k: None,
+    };
+    let error = execute_in_snapshot(
+        &program,
+        &parameters_with_k_value(CanonicalValue::I64(-1)),
+        &mut view,
+    )
+    .expect_err("negative runtime k must be refused as caller input");
+    assert_eq!(
+        error,
+        QueryExecutionError::InvalidParameter {
+            parameter: "k".to_owned(),
+        }
+    );
+    assert_eq!(view.reported_calls, 0, "negative k reached the backend");
+    assert_eq!(view.received_k, None);
+}
+
+#[test]
+fn parameterized_nearest_mistyped_k_is_a_caller_error_before_backend_work() {
+    let program = parameterized_nearest_program();
+    let mut view = NearestView {
+        rows: vec![result_row()],
+        scanned_rows: 1,
+        reported_calls: 0,
+        received_k: None,
+    };
+    let error = execute_in_snapshot(
+        &program,
+        &parameters_with_k_value(CanonicalValue::Bool(true)),
+        &mut view,
+    )
+    .expect_err("mistyped runtime k must be refused as caller input");
+    assert_eq!(
+        error,
+        QueryExecutionError::InvalidParameter {
+            parameter: "k".to_owned(),
+        }
+    );
+    assert_eq!(view.reported_calls, 0, "mistyped k reached the backend");
+    assert_eq!(view.received_k, None);
 }
 
 // ─── K ceiling (S2/N14): K inherits the 499 page-take ceiling ───

@@ -6412,6 +6412,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn secret_vector_rendering_releases_the_control_and_only_the_secret_marker() {
+        let visible_field = riffdb_types::FieldId::first();
+        let secret_field = visible_field.checked_next().expect("second field");
+        let mut key = riffdb_types::EntityKeyBuilder::new(riffdb_types::EntityTypeId::first());
+        key.push_u64(7).expect("key component");
+        let key = key.finish().expect("entity key");
+        let record = CanonicalRecord::new(vec![(
+            visible_field,
+            CanonicalValue::Vector(
+                riffdb_types::CanonicalVector::new(vec![1.5, -2.25, 0.5]).expect("visible vector"),
+            ),
+        )])
+        .expect("record");
+        let redacted = vec![riffdb_types::RedactedSecretField::new(
+            secret_field,
+            "secret_embedding",
+        )];
+
+        let payload = EntityPayload {
+            entity_key: McpPresentedBytes::new(key.as_bytes().to_vec()),
+            entity_version: McpPresentedU64::new(1),
+            written_by_contract_version: McpPresentedU64::new(1),
+            fields: presented_record_with_redactions(&record, &redacted).expect("record renders"),
+        };
+        let raw = serde_json::to_string(&payload).expect("raw JSON bytes");
+        assert!(
+            raw.contains("\"kind\":\"vector\""),
+            "the non-secret vector control must use the vector rendering arm"
+        );
+        assert!(raw.contains("\"components\":[1.5,-2.25,0.5]"));
+        assert!(raw.contains("\"kind\":\"redacted\""));
+        assert!(raw.contains("[redacted:secret_embedding]"));
+        for canary in ["12345.5", "-9876.25", "0.125"] {
+            assert!(
+                !raw.contains(canary),
+                "secret vector component escaped into MCP output: {canary}"
+            );
+        }
+
+        let view = riffdb_service::EntityView::new(
+            key,
+            riffdb_types::EntityVersion::first(),
+            riffdb_types::ContractVersion::new(1).expect("nonzero version"),
+            record,
+        )
+        .with_redacted_fields(redacted);
+        render_entity_result(riffdb_service::GetEntityResult::Found(view)).expect(
+            "the vector plus redaction cross-product must pass fixed-tool schema validation",
+        );
+    }
+
     /// End-to-end through the REAL composition path: `render_entity_result`
     /// and `render_index_result` run `compose_fixed_tool_result`, which
     /// validates the composed value against the registry's pinned result
