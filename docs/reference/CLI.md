@@ -29,6 +29,7 @@ Commands:
   server
   backup
   export       Exports one authorized symbolic application snapshot as canonical JSONL pages
+  reimport     Reconstitutes one empty not-ready database from an exact portability export
   storage      Inspects or upgrades one closed database's durable format
   retention    Offline exclusive retention maintenance on a closed database file
   demo
@@ -428,6 +429,29 @@ Commands:
   page    Writes one exact bounded page to a newly created canonical JSONL file
   status  Observes one durable export checkpoint or terminal receipt
   cancel  Closes one nonterminal export with a durable incomplete receipt
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb reimport`
+
+```text
+Reconstitutes one empty not-ready database from an exact portability export
+
+Usage: riffdb reimport [OPTIONS] <COMMAND>
+
+Commands:
+  start   Starts or exactly replays one immutable reimport campaign
+  page    Applies one exact hash-bearing entity page from the source export
+  status  Observes one durable reimport checkpoint or terminal receipt
+  cancel  Cancels one nonterminal reimport campaign
 
 Options:
       --config <PATH>
@@ -2006,6 +2030,117 @@ Usage: riffdb export cancel [OPTIONS] --operation-id <UUID_V7>
 Options:
       --config <PATH>
       --operation-id <UUID_V7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb reimport start`
+
+```text
+Starts or exactly replays one immutable reimport campaign
+
+Usage: riffdb reimport start [OPTIONS] --lineage <CONTRACT_LINEAGE> --scope <principal|whole> --portability-manifest <PORTABILITY_MANIFEST_JSON> --export-manifest <EXPORT_MANIFEST_JSON> --export-receipt <EXPORT_RECEIPT_JSON>
+
+Options:
+      --config <PATH>
+
+
+      --lineage <CONTRACT_LINEAGE>
+
+
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+
+      --scope <principal|whole>
+          Possible values:
+          - principal: Reconstitute only the principal-filtered source authorized by the grant
+          - whole:     Reconstitute the explicitly authorized whole-application source
+
+      --database <DATABASE>
+
+
+      --portability-manifest <PORTABILITY_MANIFEST_JSON>
+
+
+      --export-manifest <EXPORT_MANIFEST_JSON>
+
+
+      --output <human|json>
+          [possible values: human, json]
+
+      --export-receipt <EXPORT_RECEIPT_JSON>
+
+
+      --max-attempts <1..10>
+
+
+      --campaign-id <UUID_V7>
+
+
+      --credential-file <PATH>
+
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+#### `riffdb reimport page`
+
+```text
+Applies one exact hash-bearing entity page from the source export
+
+Usage: riffdb reimport page [OPTIONS] --campaign-id <UUID_V7> --export-operation-id <UUID_V7> --page-number <POSITIVE_INTEGER> --jsonl <CANONICAL_JSONL_FILE> --page-hash <LOWER_HEX_SHA256>
+
+Options:
+      --campaign-id <UUID_V7>
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --export-operation-id <UUID_V7>
+      --database <DATABASE>
+      --page-number <POSITIVE_INTEGER>
+      --jsonl <CANONICAL_JSONL_FILE>
+      --output <human|json>                 [possible values: human, json]
+      --max-attempts <1..10>
+      --page-hash <LOWER_HEX_SHA256>
+      --class-complete
+      --credential-file <PATH>
+      --operation-complete
+      --next-cursor <OPAQUE_BASE64_CURSOR>
+  -h, --help                                Print help
+```
+
+#### `riffdb reimport status`
+
+```text
+Observes one durable reimport checkpoint or terminal receipt
+
+Usage: riffdb reimport status [OPTIONS] --campaign-id <UUID_V7>
+
+Options:
+      --campaign-id <UUID_V7>
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb reimport cancel`
+
+```text
+Cancels one nonterminal reimport campaign
+
+Usage: riffdb reimport cancel [OPTIONS] --campaign-id <UUID_V7>
+
+Options:
+      --campaign-id <UUID_V7>
+      --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]

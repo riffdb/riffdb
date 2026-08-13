@@ -162,6 +162,65 @@ but a v1 application-command mapping cannot be compiled as v2 reimport
 authority. OpenFGA, MLflow, Payload, and Woodpecker compiler fixtures now prove
 the closed mapping boundary, including exact workflow records. Portability-
 intent export and its source-side quiescence proof are available through the
-public start/page/status/cancel export campaign. The destination reimport
-campaign remains under implementation; these fixtures do not imply that raw
-JSONL can be submitted to a ready database.
+public start/page/status/cancel export campaign. A distinct operator-only
+destination campaign accepts that exact completed source through
+`reimport start`, `reimport page`, `reimport status`, and `reimport cancel`.
+It remains unavailable to application roles and MCP discovery.
+
+## Reimport an exact completed source
+
+Reimport targets a new, empty database that has not been published ready. The
+credential must carry one Capability V7 reimport grant bound to the campaign
+ID, lineage, portability-manifest hash, scope, and compiled application-role
+identity. Export authority, installation authority, and an ordinary
+application role do not imply this grant.
+
+Start with all three terminal source documents. Reuse `--campaign-id` for
+every uncertain retry:
+
+```console
+riffdb --database restored --credential-file operator-reimport.credential \
+  reimport start \
+  --campaign-id 019f... \
+  --lineage TicketDesk \
+  --scope whole \
+  --portability-manifest riffdb/portability-manifest-v2.json \
+  --export-manifest export/manifest.json \
+  --export-receipt export/receipt.json
+```
+
+Apply each entity page in its original order. The page arguments come from
+the corresponding `export page` result and must not be recomputed or edited:
+
+```console
+riffdb --database restored --credential-file operator-reimport.credential \
+  reimport page \
+  --campaign-id 019f... \
+  --export-operation-id 019e... \
+  --page-number 1 \
+  --jsonl export/entities-0001.jsonl \
+  --page-hash 7d6f... \
+  --next-cursor RF...
+```
+
+For a terminal page, omit `--next-cursor` and pass both
+`--class-complete --operation-complete`. RiffDB verifies the domain-separated
+page hash, exact expected page position, source manifest, current authority,
+and every canonical row before compiler-owned commands can mutate the empty
+destination. A repeated page is an exact replay; a different page at the same
+position fails closed.
+
+Observe or cancel with the same campaign identity:
+
+```console
+riffdb --database restored reimport status --campaign-id 019f...
+riffdb --database restored reimport cancel --campaign-id 019f...
+```
+
+Cancellation and partial failure never publish the destination ready. After
+all pages, the coordinator performs the portability manifest's bounded
+observations and publishes a canonical reimport receipt only when every
+mapping and observation reconciles. The installation campaign may advance to
+credentials only after that receipt is retained. There is no CLI verb that
+accepts raw JSONL without its export operation, page number, page hash,
+completion flags, and cursor evidence.
