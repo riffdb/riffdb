@@ -11963,3 +11963,29 @@ work_packages:
       diagnostics, observations, and retained replay state are bounded and stream without whole-state
       memory; unsupported dependency cycles fail compilation.
   human_review_triggers: *id001
+- id: WP-600
+  name: Sticky secret classification with declared reveals annotations
+  depends_on: [WP-597]
+  objective: Implement ADR-0118 Amendment 1. A secret-classified value flowing into a
+    non-secret contract destination is a compile error unless the flow site carries an
+    explicit reveals annotation naming the source field; diagnostics carry spans for both
+    ends; the annotation rides AST, versioned IR, bundle hash, and generated catalogs; the
+    handbook's laundering section is rewritten around the annotation; the gate workload's
+    token-handout fixture becomes the canonical annotated example.
+  requirements: []
+  required_adrs: [ADR-0117, ADR-0118]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/0118-secret-field-classification.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, docs/**, fixtures/**]
+  deliverables:
+  - Flow analysis from secret-classified fields to contract-declared destinations in the
+    compiler, fail-closed with two-ended span diagnostics
+  - The reveals annotation through grammar, AST, versioned IR with compatibility fixtures,
+    and bundle hash under the exact-identity ceremony
+  - SECF requirement additions registered; handbook and negative examples updated; the
+    annotated token-handout fixture
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  human_review_triggers: *id001

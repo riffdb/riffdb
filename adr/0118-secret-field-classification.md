@@ -125,3 +125,21 @@ diagnostics may name a field as secret-classified.
 
 Exact acceptance before WP-597 merges grammar, IR, or any redaction-surface
 change.
+
+### Amendment 1: sticky classification with declared reveals (2026-08-13)
+
+- **Status:** Proposed (direction approved by the maintainer 2026-08-11)
+
+A secret-classified value flowing into a non-secret destination — an event
+payload field, a projection field, or any other contract-declared data path —
+is a compile error unless the flow site carries an explicit `reveals`
+annotation naming the source field. The annotation makes every intentional
+disclosure visible and greppable in contract source; span diagnostics name
+both ends of the flow. This supersedes the documentation-only posture for the
+laundering channel recorded at WP-597: full-fidelity propagation remains the
+runtime semantics (no crypto promise is added), but the contract must declare
+it. Rationale: this compiler has no warning severity, and an unconditional
+hard error would make legitimate one-time disclosure flows (a verification
+token handed out exactly once at creation) inexpressible.
+
+Delivered by WP-600.
