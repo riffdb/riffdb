@@ -174,7 +174,7 @@ service-owned values, scheduler operations, or generated signatures change.
 
 ### Amendment 1: compiler-owned initial state and revision-checked self-transitions (2026-08-13)
 
-- **Status:** Proposed (direction approved by the maintainer 2026-08-13)
+- **Status:** Accepted (exact text accepted by the maintainer 2026-08-13)
 
 A workflow may declare exactly one explicit initial state:
 
