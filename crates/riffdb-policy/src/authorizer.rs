@@ -7,22 +7,25 @@ use riffdb_auth::{
 };
 use riffdb_types::{
     ActorId, ActorKind, ApplicationExportSelectionV1, Audience, CapabilityApplicationExportScopeV1,
-    CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1, DatabaseId, Environment,
-    PartitionScopeV1, ServiceOperationV1, TenantScope, Timestamp,
+    CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
+    CapabilityPermissionKindV1, DatabaseId, Environment, PartitionScopeV1, ServiceOperationV1,
+    TenantScope, Timestamp,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
 use crate::operation::PartitionRequirement;
 use crate::{
-    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1, AuthorizationClock,
+    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
+    ApplicationReimportAuthorizationRequestV1, ApplicationReimportDecisionV1, AuthorizationClock,
     AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
-    AuthorizedApplicationExportV1, AuthorizedCapabilityMutationPreparation,
-    AuthorizedContractMigration, AuthorizedOfflineMaintenance, AuthorizedOperation,
-    AuthorizedRowPolicyAuthority, CapabilityActivity, CapabilityMutationRequest,
-    CheckedCapabilityValidity, ContractMigrationAuthorizationRequest, ContractMigrationDecision,
-    CurrentAuthorizationIdentity, Decision, Obligations, OfflineMaintenanceAuthorizationRequest,
-    OfflineMaintenanceDecision, OperationRequest, OutputClassification, PolicyCode,
-    TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
+    AuthorizedApplicationExportV1, AuthorizedApplicationReimportV1,
+    AuthorizedCapabilityMutationPreparation, AuthorizedContractMigration,
+    AuthorizedOfflineMaintenance, AuthorizedOperation, AuthorizedRowPolicyAuthority,
+    CapabilityActivity, CapabilityMutationRequest, CheckedCapabilityValidity,
+    ContractMigrationAuthorizationRequest, ContractMigrationDecision, CurrentAuthorizationIdentity,
+    Decision, Obligations, OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision,
+    OperationRequest, OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts,
+    TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -171,6 +174,73 @@ where
                 self.telemetry
                     .record(AuthorizationTelemetryEvent::Denied(code));
                 Ok(ApplicationExportDecisionV1::Deny(code))
+            }
+        }
+    }
+
+    /// Reloads current state and evaluates one application-reimport safe point.
+    ///
+    /// Reimport requires its exact V7 campaign/manifest binding and a compiled
+    /// row-policy role even when whole-application scope is selected.
+    pub fn authorize_application_reimport(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ApplicationReimportAuthorizationRequestV1,
+    ) -> Result<ApplicationReimportDecisionV1, AuthorizationError> {
+        let current = self.resolver.resolve_current(principal).map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::CurrentCapabilityUnavailable,
+            ));
+            AuthorizationError::CurrentCapabilityUnavailable
+        })?;
+        let now = self.clock.now().map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::ClockUnavailable,
+            ));
+            AuthorizationError::ClockUnavailable
+        })?;
+        let row_policy_authority = match (
+            current.row_policy_principal_binding(),
+            current.grant().internal_row_policy(),
+        ) {
+            (Some(Ok(binding)), Some(grant)) => {
+                AuthorizedRowPolicyAuthority::new(binding, grant.clone())
+            }
+            _ => {
+                self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                    AuthorizationDefect::CurrentCapabilityUnavailable,
+                ));
+                return Err(AuthorizationError::CurrentCapabilityUnavailable);
+            }
+        };
+
+        let principal_facts = PrincipalFacts::from(principal);
+        let current_facts = CurrentFacts::from(&current);
+        match evaluate_application_reimport(
+            &principal_facts,
+            &current_facts,
+            self.expected_database_id,
+            &self.expected_environment,
+            now,
+            &request,
+        ) {
+            Ok(obligations) => Ok(ApplicationReimportDecisionV1::Allow(Box::new(
+                AuthorizedApplicationReimportV1::new(
+                    self.expected_database_id,
+                    self.expected_environment.clone(),
+                    request,
+                    obligations,
+                    current_facts.capability_id,
+                    current_facts.revision,
+                    principal_facts.principal_id,
+                    principal_facts.actor_kind,
+                    row_policy_authority,
+                ),
+            ))),
+            Err(code) => {
+                self.telemetry
+                    .record(AuthorizationTelemetryEvent::Denied(code));
+                Ok(ApplicationReimportDecisionV1::Deny(code))
             }
         }
     }
@@ -550,6 +620,56 @@ fn evaluate_application_export(
     ))
 }
 
+fn evaluate_application_reimport(
+    principal: &PrincipalFacts,
+    current: &CurrentFacts,
+    expected_database_id: DatabaseId,
+    expected_environment: &Environment,
+    now: Timestamp,
+    request: &ApplicationReimportAuthorizationRequestV1,
+) -> Result<Obligations, PolicyCode> {
+    validate_current(
+        principal,
+        current,
+        expected_database_id,
+        expected_environment,
+        now,
+    )?;
+    let grant = current
+        .grant
+        .internal_reimport()
+        .ok_or(PolicyCode::MissingPermission)?;
+    if grant.lineage() != request.lineage()
+        || grant.campaign_id() != request.campaign_id()
+        || grant.portability_manifest_hash() != request.portability_manifest_hash()
+    {
+        return Err(PolicyCode::MissingPermission);
+    }
+    match (request.scope(), grant.scope()) {
+        (
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered
+            | CapabilityApplicationReimportScopeV1::WholeApplication,
+        ) => {}
+        (
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+        ) if current.grant.tenant_scope() == &TenantScope::Global
+            && current.grant.partition_scope() == &PartitionScopeV1::All => {}
+        _ => return Err(PolicyCode::MissingPermission),
+    }
+    Ok(Obligations::new(
+        current.grant.tenant_scope().clone(),
+        (request.scope() == CapabilityApplicationReimportScopeV1::PrincipalFiltered)
+            .then(|| crate::PartitionConstraint::Filter(current.grant.partition_scope().clone())),
+        None,
+        Some(current.grant.max_scan_rows()),
+        None,
+        None,
+        OutputClassification::PolicyFilteredApplicationData,
+    ))
+}
+
 fn evaluate_contract_migration(
     principal: &PrincipalFacts,
     current: &CurrentFacts,
@@ -851,15 +971,15 @@ mod tests {
     };
     use riffdb_types::{
         AggregateTypeId, ApplicationExportOperationId, ApplicationRoleHash,
-        CapabilityApplicationExportGrantV1, CapabilityExportGrantV1, CapabilityPermissionKindV1,
-        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityPrincipalFactsV1,
-        CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
-        CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
-        EntityFieldVisibilityV1, EntityTypeId, EventConsumerName, FieldId, IndexId,
-        PartitionKeyBuilder, ProjectionId, ProjectionIdentity, ProjectionPlanHash, QueryModuleHash,
-        QueryOperationName, QueryParameterHash, QueryPlanHash, ReactiveModuleHash,
-        ReactiveOperationName, RequestId, RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1,
-        TenantId,
+        CapabilityApplicationExportGrantV1, CapabilityApplicationReimportGrantV1,
+        CapabilityExportGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
+        CapabilityPermissionsV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
+        ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1,
+        EntityTypeId, EventConsumerName, FieldId, IndexId, PartitionKeyBuilder, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, QueryModuleHash, QueryOperationName,
+        QueryParameterHash, QueryPlanHash, ReactiveModuleHash, ReactiveOperationName, RequestId,
+        RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1, TenantId,
     };
 
     use super::*;
@@ -1038,6 +1158,178 @@ mod tests {
             .expect("application export grant"),
         ])
         .expect("export extension")
+    }
+
+    fn reimport_campaign_id() -> riffdb_types::ApplicationInstallationCampaignId {
+        riffdb_types::ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(
+            9, [9; 10],
+        )
+        .expect("campaign")
+    }
+
+    fn reimport_grant(
+        campaign_id: riffdb_types::ApplicationInstallationCampaignId,
+        manifest_hash: riffdb_types::ApplicationPortabilityManifestHash,
+        scope: CapabilityApplicationReimportScopeV1,
+    ) -> CapabilityGrantV1 {
+        let role = ApplicationRoleHash::from_bytes([0x81; 32]);
+        grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::ApplicationRoleIdentity(role)],
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                )
+                .expect("visibility"),
+            ],
+            41,
+            Vec::new(),
+        )
+        .with_row_policy(
+            CapabilityRowPolicyGrantV1::new(
+                role,
+                CapabilityPrincipalFactsV1::empty(),
+                vec![
+                    CapabilityRowPolicyBindingV1::new(
+                        lineage(),
+                        RowPolicyName::new("TicketReimport").expect("policy"),
+                        EntityTypeId::first(),
+                        vec![CapabilityRowPolicyOperationV1::Create],
+                    )
+                    .expect("binding"),
+                ],
+            )
+            .expect("row policy"),
+        )
+        .expect("V4 grant")
+        .with_reimport(CapabilityApplicationReimportGrantV1::new(
+            lineage(),
+            campaign_id,
+            manifest_hash,
+            scope,
+        ))
+        .expect("V7 grant")
+    }
+
+    #[test]
+    fn reimport_requires_exact_campaign_manifest_and_scope() {
+        let campaign_id = reimport_campaign_id();
+        let manifest_hash =
+            riffdb_types::ApplicationPortabilityManifestHash::from_bytes([0x82; 32]);
+        let (principal, current, environment) = facts(reimport_grant(
+            campaign_id,
+            manifest_hash,
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+        ));
+        let request = |campaign_id, manifest_hash, scope| {
+            ApplicationReimportAuthorizationRequestV1::new(
+                campaign_id,
+                lineage(),
+                manifest_hash,
+                scope,
+                crate::ApplicationReimportPolicyOperationV1::Page,
+            )
+        };
+
+        let obligations = evaluate_application_reimport(
+            &principal,
+            &current,
+            current.database_id,
+            &environment,
+            timestamp(15),
+            &request(
+                campaign_id,
+                manifest_hash,
+                CapabilityApplicationReimportScopeV1::WholeApplication,
+            ),
+        )
+        .expect("exact V7 authority");
+        assert_eq!(obligations.row_limit(), NonZeroU16::new(41));
+        assert_eq!(
+            obligations.output_classification(),
+            OutputClassification::PolicyFilteredApplicationData
+        );
+
+        let other_campaign =
+            riffdb_types::ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(
+                10, [10; 10],
+            )
+            .expect("other campaign");
+        for substituted in [
+            request(
+                other_campaign,
+                manifest_hash,
+                CapabilityApplicationReimportScopeV1::WholeApplication,
+            ),
+            request(
+                campaign_id,
+                riffdb_types::ApplicationPortabilityManifestHash::from_bytes([0x83; 32]),
+                CapabilityApplicationReimportScopeV1::WholeApplication,
+            ),
+        ] {
+            assert_eq!(
+                evaluate_application_reimport(
+                    &principal,
+                    &current,
+                    current.database_id,
+                    &environment,
+                    timestamp(15),
+                    &substituted,
+                ),
+                Err(PolicyCode::MissingPermission)
+            );
+        }
+    }
+
+    #[test]
+    fn reimport_principal_scope_is_a_narrowing_but_never_bypasses_row_policy() {
+        let campaign_id = reimport_campaign_id();
+        let manifest_hash =
+            riffdb_types::ApplicationPortabilityManifestHash::from_bytes([0x84; 32]);
+        let (principal, current, environment) = facts(reimport_grant(
+            campaign_id,
+            manifest_hash,
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+        ));
+        let request = ApplicationReimportAuthorizationRequestV1::new(
+            campaign_id,
+            lineage(),
+            manifest_hash,
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+            crate::ApplicationReimportPolicyOperationV1::Start,
+        );
+        let obligations = evaluate_application_reimport(
+            &principal,
+            &current,
+            current.database_id,
+            &environment,
+            timestamp(15),
+            &request,
+        )
+        .expect("principal-filtered narrowing");
+        assert!(obligations.partition_constraint().is_some());
+
+        let unprotected = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            Vec::new(),
+            41,
+            Vec::new(),
+        );
+        assert!(
+            unprotected
+                .with_reimport(CapabilityApplicationReimportGrantV1::new(
+                    lineage(),
+                    campaign_id,
+                    manifest_hash,
+                    CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+                ))
+                .is_err()
+        );
     }
 
     #[test]
