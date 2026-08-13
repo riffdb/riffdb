@@ -166,6 +166,7 @@ fn contextual_result(kind: &str, bytes: Vec<u8>, owner: u32) -> bool {
                 approval_required: Vec::new(),
                 row_policy: None,
                 export: None,
+                reimport: None,
             }),
         })
         .is_ok(),

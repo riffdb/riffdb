@@ -1359,6 +1359,7 @@ fn pruned_history_bootstrap_request(
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }
@@ -1407,6 +1408,7 @@ fn consumer_capability_request(module_hash: &[u8]) -> TestResult<v1::CreateCapab
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }
@@ -1714,6 +1716,7 @@ fn bootstrap_request(
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }
@@ -1768,6 +1771,7 @@ fn explicit_partition_capability_request() -> TestResult<v1::CreateCapabilityReq
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }

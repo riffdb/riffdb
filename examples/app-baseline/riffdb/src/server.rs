@@ -741,6 +741,7 @@ fn bootstrap_request(
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }
@@ -837,6 +838,7 @@ fn application_role_grant_to_proto(
         approval_required: Vec::new(),
         row_policy: None,
         export: None,
+        reimport: None,
     })
 }
 

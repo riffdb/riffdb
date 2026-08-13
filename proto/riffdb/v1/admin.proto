@@ -260,6 +260,20 @@ message CapabilityExportGrant {
   repeated CapabilityApplicationExportGrant applications = 1;
 }
 
+enum CapabilityApplicationReimportScope {
+  CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED = 0;
+  CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED = 1;
+  CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION = 2;
+}
+
+// Distinct operator authority for one exact not-ready reimport campaign.
+message CapabilityApplicationReimportGrant {
+  string contract_lineage = 1;
+  bytes campaign_id = 2;
+  bytes portability_manifest_hash = 3;
+  CapabilityApplicationReimportScope scope = 4;
+}
+
 message CapabilityGrant {
   TenantScope tenant_scope = 1;
   PartitionScope partition_scope = 2;
@@ -269,6 +283,7 @@ message CapabilityGrant {
   repeated CapabilityPermissionKind approval_required = 6;
   CapabilityRowPolicyGrant row_policy = 7;
   CapabilityExportGrant export = 8;
+  CapabilityApplicationReimportGrant reimport = 9;
 }
 
 message CreateCapabilityRequest {

@@ -5520,6 +5520,7 @@ fn public_capability_grant() -> v1::CapabilityGrant {
         approval_required: Vec::new(),
         row_policy: None,
         export: None,
+        reimport: None,
     }
 }
 

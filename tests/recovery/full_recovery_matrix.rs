@@ -1227,6 +1227,7 @@ fn bootstrap_request(
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
+            reimport: None,
         }),
     })
 }
