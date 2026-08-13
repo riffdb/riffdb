@@ -627,7 +627,7 @@ fn observe(
         .map_err(|()| ApplicationInstallationObservationPortError::Integrity)
 }
 
-fn encode_state(
+pub(crate) fn encode_state(
     campaign: &ApplicationInstallationCampaign,
     plan: &ApplicationInstallationPlan,
 ) -> Result<StoredApplicationInstallationCampaignV1, ()> {
@@ -641,7 +641,7 @@ fn encode_state(
     .map_err(|_| ())
 }
 
-fn decode_state(
+pub(crate) fn decode_state(
     record: &StoredApplicationInstallationCampaignV1,
 ) -> Result<ApplicationInstallationCampaignState, ()> {
     let state = ApplicationInstallationCampaignState::decode_canonical(record.canonical_state())

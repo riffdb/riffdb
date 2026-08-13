@@ -2157,6 +2157,8 @@ dependencies = [
  "riffdb-storage-redb",
  "riffdb-testkit",
  "riffdb-types",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
