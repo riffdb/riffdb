@@ -5,11 +5,14 @@ use std::num::NonZeroU64;
 
 use riffdb_types::{
     ActorId, ActorKind, ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash,
-    ApplicationReimportAuthorityV1, CapabilityApplicationReimportScopeV1, CapabilityId,
-    ContractLineage, DatabaseId, Environment,
+    ApplicationReimportAuthorityV1, CapabilityApplicationReimportScopeV1, CapabilityId, CommandId,
+    ContractLineage, ContractVersion, DatabaseId, Environment, PartitionKey,
 };
 
-use crate::{AuthorizedRowPolicyAuthority, Obligations, PolicyCode};
+use crate::{
+    AuthorizedCommandExecution, AuthorizedRowPolicyAuthority, CommandAuthorizationBindingError,
+    Obligations, PolicyCode,
+};
 
 /// Closed safe point checked independently during one reimport campaign.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -176,6 +179,22 @@ impl AuthorizedApplicationReimportV1 {
     pub const fn internal_row_policy_authority(&self) -> &AuthorizedRowPolicyAuthority {
         &self.row_policy_authority
     }
+
+    /// Consumes one current V7 page safe point into exact compiler-owned command authority.
+    ///
+    /// This is not an application-command authorization path. It succeeds only
+    /// for the `Page` operation, retains the current reimport row-policy role,
+    /// and checks a principal-filtered partition before producing a move-only
+    /// command proof.
+    #[doc(hidden)]
+    pub fn into_command_execution(
+        self,
+        version: ContractVersion,
+        command_id: CommandId,
+        partition: PartitionKey,
+    ) -> Result<AuthorizedCommandExecution, CommandAuthorizationBindingError> {
+        AuthorizedCommandExecution::bind_reimport(self, version, command_id, partition)
+    }
 }
 
 impl fmt::Debug for AuthorizedApplicationReimportV1 {
@@ -209,7 +228,109 @@ impl fmt::Debug for ApplicationReimportDecisionV1 {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU16;
+
+    use riffdb_auth::PrincipalFactBindingV1;
+    use riffdb_types::{
+        ApplicationRoleHash, Audience, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, EntityTypeId,
+        PartitionKeyBuilder, PartitionScopeV1, RowPolicyName, TenantScope, Timestamp,
+    };
+
     use super::*;
+
+    fn database() -> DatabaseId {
+        DatabaseId::from_unix_milliseconds_and_random(1, [1; 10]).expect("database")
+    }
+
+    fn environment() -> Environment {
+        Environment::new("reimport-test").expect("environment")
+    }
+
+    fn lineage() -> ContractLineage {
+        ContractLineage::new("TicketDesk").expect("lineage")
+    }
+
+    fn campaign_id() -> ApplicationInstallationCampaignId {
+        ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(1, [4; 10])
+            .expect("campaign")
+    }
+
+    fn capability_id() -> CapabilityId {
+        CapabilityId::from_unix_milliseconds_and_random(1, [5; 10]).expect("capability")
+    }
+
+    fn partition(value: u64) -> PartitionKey {
+        let mut builder = PartitionKeyBuilder::new(riffdb_types::AggregateTypeId::first());
+        builder.push_u64(value).expect("component");
+        builder.finish().expect("partition")
+    }
+
+    fn row_policy_authority() -> AuthorizedRowPolicyAuthority {
+        let principal = ActorId::new("reimport-operator").expect("principal");
+        let facts = CapabilityPrincipalFactsV1::empty();
+        let binding = PrincipalFactBindingV1::new(
+            capability_id(),
+            NonZeroU64::MIN,
+            database(),
+            environment(),
+            principal,
+            ActorKind::Human,
+            vec![Audience::new("reimport-test").expect("audience")],
+            TenantScope::Global,
+            Timestamp::new(1, 0).expect("issued"),
+            Timestamp::new(100, 0).expect("expires"),
+            facts.clone(),
+        )
+        .expect("principal facts");
+        let role = ApplicationRoleHash::from_bytes([7; 32]);
+        let grant = CapabilityRowPolicyGrantV1::new(
+            role,
+            facts,
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    lineage(),
+                    RowPolicyName::new("TicketReimport").expect("policy"),
+                    EntityTypeId::first(),
+                    vec![CapabilityRowPolicyOperationV1::Create],
+                )
+                .expect("binding"),
+            ],
+        )
+        .expect("grant");
+        AuthorizedRowPolicyAuthority::new(binding, grant)
+    }
+
+    fn authorization(
+        operation: ApplicationReimportPolicyOperationV1,
+        constraint: Option<crate::PartitionConstraint>,
+    ) -> AuthorizedApplicationReimportV1 {
+        AuthorizedApplicationReimportV1::new(
+            database(),
+            environment(),
+            ApplicationReimportAuthorizationRequestV1::new(
+                campaign_id(),
+                lineage(),
+                ApplicationPortabilityManifestHash::from_bytes([6; 32]),
+                CapabilityApplicationReimportScopeV1::WholeApplication,
+                operation,
+            ),
+            Obligations::new(
+                TenantScope::Global,
+                constraint,
+                None,
+                Some(NonZeroU16::MIN),
+                None,
+                None,
+                crate::OutputClassification::PolicyFilteredApplicationData,
+            ),
+            capability_id(),
+            NonZeroU64::MIN,
+            ActorId::new("reimport-operator").expect("principal"),
+            ActorKind::Human,
+            row_policy_authority(),
+        )
+    }
 
     #[test]
     fn request_is_closed_exact_and_redacted() {
@@ -231,6 +352,60 @@ mod tests {
         assert_eq!(
             format!("{request:?}"),
             "ApplicationReimportAuthorizationRequestV1([REDACTED])"
+        );
+    }
+
+    #[test]
+    fn only_page_authority_can_be_consumed_as_reimport_command_authority() {
+        let command = authorization(ApplicationReimportPolicyOperationV1::Page, None)
+            .into_command_execution(
+                ContractVersion::new(1).expect("version"),
+                CommandId::first(),
+                partition(7),
+            )
+            .expect("page authority");
+        assert!(command.internal_is_reimport());
+        assert_eq!(command.database_id(), database());
+        assert_eq!(command.partition().partition_key(), &partition(7));
+
+        assert_eq!(
+            authorization(ApplicationReimportPolicyOperationV1::Start, None)
+                .into_command_execution(
+                    ContractVersion::new(1).expect("version"),
+                    CommandId::first(),
+                    partition(7),
+                ),
+            Err(CommandAuthorizationBindingError::ObligationMismatch)
+        );
+    }
+
+    #[test]
+    fn principal_filtered_reimport_cannot_escape_its_exact_partition_set() {
+        let allowed = riffdb_types::ScopedPartitionV1::new(lineage(), partition(7));
+        let filter = PartitionScopeV1::explicit(vec![allowed]).expect("explicit scope");
+        let command = authorization(
+            ApplicationReimportPolicyOperationV1::Page,
+            Some(crate::PartitionConstraint::Filter(filter.clone())),
+        )
+        .into_command_execution(
+            ContractVersion::new(1).expect("version"),
+            CommandId::first(),
+            partition(7),
+        )
+        .expect("in-scope partition");
+        assert!(command.internal_is_reimport());
+
+        assert_eq!(
+            authorization(
+                ApplicationReimportPolicyOperationV1::Page,
+                Some(crate::PartitionConstraint::Filter(filter)),
+            )
+            .into_command_execution(
+                ContractVersion::new(1).expect("version"),
+                CommandId::first(),
+                partition(8),
+            ),
+            Err(CommandAuthorizationBindingError::ObligationMismatch)
         );
     }
 }

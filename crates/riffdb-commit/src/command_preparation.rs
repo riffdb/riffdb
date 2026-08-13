@@ -377,6 +377,76 @@ impl CommandExecutionPreparation {
         })
     }
 
+    /// Joins one operator-only reimport plan with server-derived idempotency and V7 authority.
+    ///
+    /// The ordinary constructor intentionally rejects this shape. This entry
+    /// point accepts only compiler-marked reimport plans and authorization
+    /// proofs consumed from the dedicated application-reimport page safe point.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_reimport(
+        database_id: DatabaseId,
+        environment: &Environment,
+        resolved_plan: ResolvedExecutablePlan,
+        normalized_input: CanonicalRecord,
+        idempotency: PreparedIdempotencyRecheckV1,
+        input_facts: InputDerivedCommandFacts,
+        authorization: AuthorizedCommandExecution,
+        request_id: RequestId,
+        ingress: ServiceIngressKindV1,
+        control: CommandRequestControl,
+    ) -> Result<Self, CommandExecutionPreparationError> {
+        let reference = resolved_plan.reference();
+        let plan = resolved_plan.plan();
+        if !plan.is_reimport()
+            || plan.idempotency_input().is_some()
+            || !idempotency.matches_server_derived_preparation(reference, &normalized_input)
+            || !input_facts.matches_command(plan, &normalized_input)
+            || !authorization.internal_is_reimport()
+            || authorization.lineage() != reference.contract_lineage()
+            || authorization.version() != reference.contract_version()
+            || authorization.command_id() != reference.command_id()
+            || authorization.database_id() != database_id
+            || authorization.environment() != environment
+            || plan.execution_class() != ExecutionClass::IdempotentMutation
+            || authorization.class() != CommandExecutionClass::Mutation
+            || authorization.partition().lineage() != reference.contract_lineage()
+            || authorization.partition().partition_key() != input_facts.partition_key()
+            || !idempotency.matches_scope(
+                database_id,
+                environment,
+                authorization.actor().tenant_scope(),
+                authorization.actor().principal_id(),
+                reference.contract_lineage(),
+                reference.command_id(),
+            )
+        {
+            return Err(CommandExecutionPreparationError::proof_mismatch());
+        }
+        let row_policy = resolve_authorized_command_row_policy_context(
+            &authorization,
+            resolved_plan.bundle().bundle(),
+        )
+        .map_err(|_| CommandExecutionPreparationError::proof_mismatch())?;
+        if row_policy.is_none() {
+            return Err(CommandExecutionPreparationError::proof_mismatch());
+        }
+
+        Ok(Self {
+            resolved_plan,
+            normalized_input,
+            idempotency,
+            input_facts,
+            authorization,
+            row_policy,
+            request_id,
+            ingress,
+            control,
+            audited_lifecycle: None,
+            post_evaluation_authorizer: None,
+            causation: None,
+        })
+    }
+
     /// Attaches the exact service start record after the final policy allow.
     ///
     /// The complete-outcome proof is minted only from the same resolved plan
