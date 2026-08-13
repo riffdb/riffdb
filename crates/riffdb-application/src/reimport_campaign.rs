@@ -436,7 +436,7 @@ impl ApplicationReimportCampaignV1 {
             ));
         }
         let index = usize::try_from(page_number.get() - 1).map_err(|_| limit())?;
-        if self.source.page_hashes.get(index) != Some(&page_hash) || outcomes.is_empty() {
+        if self.source.page_hashes.get(index) != Some(&page_hash) {
             self.fail(ApplicationReimportFailureV1::SourceMismatch);
             return Err(ApplicationReimportCampaignError::new(
                 ApplicationReimportCampaignErrorKind::PageMismatch,

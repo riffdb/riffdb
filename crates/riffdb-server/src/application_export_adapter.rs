@@ -268,6 +268,10 @@ struct ExportStateWireV1 {
     portability_manifest_hash: Option<[u8; 32]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_quiescence: Vec<WorkflowQuiescenceWireV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    portability_entity_schedule: Vec<u32>,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    portability_entity_schedule_index: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -308,6 +312,8 @@ struct ExportState {
     receipt: Option<Vec<u8>>,
     portability_manifest_hash: Option<ApplicationPortabilityManifestHash>,
     workflow_quiescence: Vec<WorkflowQuiescenceWireV1>,
+    portability_entity_schedule: Vec<riffdb_types::EntityTypeId>,
+    portability_entity_schedule_index: u16,
 }
 
 fn resolve_selection(
@@ -369,7 +375,7 @@ fn start_or_replay(
         .map_err(map_mutation_storage)?;
     let bundle = ValidatedContractBundle::decode(snapshot.contract_bundle_bytes())
         .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?;
-    let (portability_manifest_hash, workflow_quiescence) =
+    let (portability_manifest_hash, workflow_quiescence, portability_entity_schedule) =
         match request.intent().portability_manifest() {
             Some(manifest) => {
                 manifest
@@ -378,9 +384,12 @@ fn start_or_replay(
                 (
                     Some(manifest.identity()),
                     portability_workflows(manifest, &bundle)?,
+                    manifest
+                        .compiled_reimport_entity_schedule(bundle.bundle())
+                        .map_err(|_| ApplicationExportMutationPortErrorV1::InputMismatch)?,
                 )
             }
-            None => (None, Vec::new()),
+            None => (None, Vec::new(), Vec::new()),
         };
     let now = clock
         .now()
@@ -427,6 +436,8 @@ fn start_or_replay(
         receipt: None,
         portability_manifest_hash,
         workflow_quiescence,
+        portability_entity_schedule,
+        portability_entity_schedule_index: 0,
     };
     let replacement = stored_state(&state)?;
     insert_snapshot_candidate(snapshots, state.operation_id, Arc::clone(&snapshot))?;
@@ -551,14 +562,23 @@ fn release_page(
         let chunk = u16::try_from(remaining)
             .unwrap_or(MAX_EXPORT_LINES_PER_STORAGE_CHUNK)
             .min(MAX_EXPORT_LINES_PER_STORAGE_CHUNK);
-        let source = snapshot
-            .read_application_export_source_page(
-                class,
-                continuation.as_deref(),
-                StorageScanLimit::new(chunk)
-                    .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?,
-            )
-            .map_err(map_mutation_storage)?;
+        let limit =
+            StorageScanLimit::new(chunk).ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+        let source = if class == ApplicationExportClassV1::Entity
+            && !state.portability_entity_schedule.is_empty()
+        {
+            let entity_type = *state
+                .portability_entity_schedule
+                .get(usize::from(state.portability_entity_schedule_index))
+                .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+            snapshot
+                .read_application_export_entity_page(entity_type, continuation.as_deref(), limit)
+                .map_err(map_mutation_storage)?
+        } else {
+            snapshot
+                .read_application_export_source_page(class, continuation.as_deref(), limit)
+                .map_err(map_mutation_storage)?
+        };
         source_rows = source_rows
             .checked_add(source.records().len())
             .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
@@ -587,7 +607,18 @@ fn release_page(
             total.checked_add(u64::try_from(line.as_bytes().len() + 1).ok()?)
         })
         .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
-    let next_class = if class_complete {
+    let next_class = if class_complete
+        && class == ApplicationExportClassV1::Entity
+        && !state.portability_entity_schedule.is_empty()
+        && usize::from(state.portability_entity_schedule_index) + 1
+            < state.portability_entity_schedule.len()
+    {
+        state.portability_entity_schedule_index = state
+            .portability_entity_schedule_index
+            .checked_add(1)
+            .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
+        Some(ApplicationExportClassV1::Entity)
+    } else if class_complete {
         next_selected_class(&state.selection, class)
     } else {
         Some(class)
@@ -1329,6 +1360,12 @@ fn state_to_wire(state: &ExportState) -> ExportStateWireV1 {
             .portability_manifest_hash
             .map(ApplicationPortabilityManifestHash::into_bytes),
         workflow_quiescence: state.workflow_quiescence.clone(),
+        portability_entity_schedule: state
+            .portability_entity_schedule
+            .iter()
+            .map(|entity| entity.get())
+            .collect(),
+        portability_entity_schedule_index: state.portability_entity_schedule_index,
     }
 }
 
@@ -1354,6 +1391,18 @@ fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
             };
             evidence.checked_rows != classified_rows || evidence.non_quiescent_rows > 1
         })
+        || wire.portability_entity_schedule.len()
+            > riffdb_application::MAX_APPLICATION_PORTABLE_MAPPINGS
+        || wire
+            .portability_entity_schedule
+            .iter()
+            .any(|entity| riffdb_types::EntityTypeId::new(*entity).is_none())
+        || (!wire.portability_entity_schedule.is_empty()
+            && usize::from(wire.portability_entity_schedule_index)
+                >= wire.portability_entity_schedule.len())
+        || (!portability
+            && (!wire.portability_entity_schedule.is_empty()
+                || wire.portability_entity_schedule_index != 0))
     {
         return Err(());
     }
@@ -1463,9 +1512,19 @@ fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
             .portability_manifest_hash
             .map(ApplicationPortabilityManifestHash::from_bytes),
         workflow_quiescence: wire.workflow_quiescence,
+        portability_entity_schedule: wire
+            .portability_entity_schedule
+            .into_iter()
+            .map(|entity| riffdb_types::EntityTypeId::new(entity).ok_or(()))
+            .collect::<Result<Vec<_>, _>>()?,
+        portability_entity_schedule_index: wire.portability_entity_schedule_index,
     };
     operation(&state).map_err(|_| ())?;
     Ok(state)
+}
+
+const fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
 }
 
 fn phase_tag(value: ApplicationExportPhaseV1) -> u8 {
@@ -2177,6 +2236,8 @@ mod tests {
             receipt: None,
             portability_manifest_hash: None,
             workflow_quiescence: Vec::new(),
+            portability_entity_schedule: Vec::new(),
+            portability_entity_schedule_index: 0,
         }
     }
 

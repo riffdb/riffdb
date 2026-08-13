@@ -1696,6 +1696,7 @@ dependencies = [
 name = "riffdb-application"
 version = "0.1.0"
 dependencies = [
+ "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-types",
  "serde",

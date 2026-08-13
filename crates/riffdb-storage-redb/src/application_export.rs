@@ -15,7 +15,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportOperationId, ApplicationExportSnapshotBindingV1,
-    ContractLineage, QueryModuleHash, ReactiveModuleHash,
+    ContractLineage, EntityKeyBuilder, EntityTypeId, QueryModuleHash, ReactiveModuleHash,
 };
 
 use crate::codec::{
@@ -123,32 +123,14 @@ impl RedbApplicationExportSnapshot {
             }
         }
     }
-}
 
-impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
-    fn binding(&self) -> &ApplicationExportSnapshotBindingV1 {
-        &self.binding
-    }
-
-    fn contract_bundle_bytes(&self) -> &[u8] {
-        &self.contract_bundle_bytes
-    }
-
-    fn read_application_export_source_page(
+    fn read_source_page_range(
         &self,
         class: ApplicationExportClassV1,
-        after: Option<&[u8]>,
+        start: Vec<u8>,
+        end_exclusive: Option<&[u8]>,
         limit: StorageScanLimit,
     ) -> Result<ApplicationExportSourcePageV1, StorageError> {
-        if after.is_some_and(|value| {
-            value.is_empty() || value.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
-        }) {
-            return Err(storage_error(StorageErrorKind::LimitExceeded));
-        }
-        let mut start = after.map_or_else(Vec::new, ToOwned::to_owned);
-        if after.is_some() {
-            start.push(0);
-        }
         let requested = usize::from(limit.get());
         let inspected = requested
             .checked_add(1)
@@ -163,7 +145,7 @@ impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
             .access
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let rows = access.read_range_to(table, &start, None, inspected)?;
+        let rows = access.read_range_to(table, &start, end_exclusive, inspected)?;
         let mut records = Vec::with_capacity(requested.min(rows.len()));
         let mut encoded_bytes = 0usize;
         let mut continuation = None;
@@ -193,6 +175,57 @@ impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
                 }
                 _ => storage_error(StorageErrorKind::InvariantViolation),
             })
+    }
+}
+
+impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
+    fn binding(&self) -> &ApplicationExportSnapshotBindingV1 {
+        &self.binding
+    }
+
+    fn contract_bundle_bytes(&self) -> &[u8] {
+        &self.contract_bundle_bytes
+    }
+
+    fn read_application_export_source_page(
+        &self,
+        class: ApplicationExportClassV1,
+        after: Option<&[u8]>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        if after.is_some_and(|value| {
+            value.is_empty() || value.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
+        }) {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let mut start = after.map_or_else(Vec::new, ToOwned::to_owned);
+        if after.is_some() {
+            start.push(0);
+        }
+        self.read_source_page_range(class, start, None, limit)
+    }
+
+    fn read_application_export_entity_page(
+        &self,
+        entity_type: EntityTypeId,
+        after: Option<&[u8]>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        let prefix = EntityKeyBuilder::new(entity_type).as_bytes().to_vec();
+        if after.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
+                || !value.starts_with(&prefix)
+        }) {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let mut start = after.map_or_else(|| prefix.clone(), ToOwned::to_owned);
+        if after.is_some() {
+            start.push(0);
+        }
+        let end = exclusive_prefix_end(&prefix)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.read_source_page_range(ApplicationExportClassV1::Entity, start, Some(&end), limit)
     }
 
     fn application_export_indexed_relationship_exists(

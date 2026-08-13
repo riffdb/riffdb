@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportOperationId, ApplicationExportSnapshotBindingV1,
-    ContractLineage, PartitionKey,
+    ContractLineage, EntityTypeId, PartitionKey,
 };
 
 use crate::{
@@ -146,6 +146,17 @@ pub trait ApplicationExportSnapshotReader: Send + Sync {
     fn read_application_export_source_page(
         &self,
         class: ApplicationExportClassV1,
+        after: Option<&[u8]>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError>;
+
+    /// Reads one bounded entity page constrained to a compiler-selected type.
+    ///
+    /// This is the portability scheduling primitive. The type is derived from
+    /// the exact compiled manifest and never accepted from a public request.
+    fn read_application_export_entity_page(
+        &self,
+        entity_type: EntityTypeId,
         after: Option<&[u8]>,
         limit: StorageScanLimit,
     ) -> Result<ApplicationExportSourcePageV1, StorageError>;
