@@ -11,9 +11,11 @@ mod campaign;
 mod diff;
 mod plan;
 mod portability;
+mod reimport_campaign;
 
 pub use adapter::*;
 pub use campaign::*;
 pub use diff::*;
 pub use plan::*;
 pub use portability::*;
+pub use reimport_campaign::*;

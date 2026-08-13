@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 pub use riffdb_types::MAX_APPLICATION_INSTALLATION_CAMPAIGN_STATE_BYTES;
 
 use crate::{
-    ApplicationInstallationPlan, InstallationArtifact, InstallationArtifactKind,
-    InstallationDriver, InstallationPlanError, InstallationPlanErrorKind, InstallationSymbol,
-    parse_hex16, parse_hex32,
+    ApplicationInstallationPlan, ApplicationReimportCampaignV1, ApplicationReimportSourceV1,
+    InstallationArtifact, InstallationArtifactKind, InstallationDriver, InstallationPlanError,
+    InstallationPlanErrorKind, InstallationSymbol, parse_hex16, parse_hex32,
 };
 
 /// Canonical schema version for terminal installation receipts.
@@ -37,6 +37,9 @@ pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1: &str =
 /// Canonical durable campaign state containing the reimport publication gate.
 pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2: &str =
     "riffdb.application-installation-campaign-state/v2";
+/// Canonical durable campaign state carrying resumable reimport progress.
+pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V3: &str =
+    "riffdb.application-installation-campaign-state/v3";
 /// Maximum canonical bytes in one redacted terminal receipt.
 pub const MAX_INSTALLATION_RECEIPT_BYTES: usize = 2 * 1_024 * 1_024;
 /// Compatibility alias for the shared exact campaign-state storage boundary.
@@ -510,6 +513,7 @@ pub struct ApplicationInstallationCampaign {
     plan_hash: ApplicationInstallationPlanHash,
     completed: Vec<InstallationStageEvidence>,
     failure: Option<InstallationFailure>,
+    reimport: Option<ApplicationReimportCampaignV1>,
 }
 
 impl ApplicationInstallationCampaign {
@@ -524,6 +528,7 @@ impl ApplicationInstallationCampaign {
             plan_hash,
             completed: Vec::new(),
             failure: None,
+            reimport: None,
         }
     }
 
@@ -573,10 +578,57 @@ impl ApplicationInstallationCampaign {
                 InstallationCampaignErrorKind::StageOutOfOrder,
             ));
         }
+        if expected == InstallationStage::Reimport && plan.input().reimport.is_some() {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::StageOutOfOrder,
+            ));
+        }
         validate_stage_evidence(plan, &evidence)?;
         self.completed.push(evidence);
         self.failure = None;
         Ok(self.observe())
+    }
+
+    /// Starts the exact nested reimport checkpoint at the sole reimport stage.
+    pub fn start_reimport(
+        &mut self,
+        plan: &ApplicationInstallationPlan,
+        source: ApplicationReimportSourceV1,
+        authority: riffdb_types::ApplicationReimportAuthorityV1,
+        scope: riffdb_types::CapabilityApplicationReimportScopeV1,
+        portability_manifest: &crate::ApplicationPortabilityManifest,
+    ) -> Result<&ApplicationReimportCampaignV1, InstallationCampaignError> {
+        self.verify_plan(plan)?;
+        if self.next_stage() != Some(InstallationStage::Reimport) || self.reimport.is_some() {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::StageOutOfOrder,
+            ));
+        }
+        let expected = plan.input().reimport.ok_or_else(evidence_mismatch)?;
+        if source.export_manifest_hash() != expected.export_manifest_hash()
+            || source.export_receipt_hash() != expected.export_receipt_hash()
+            || source.portability_manifest_hash() != expected.portability_manifest_hash()
+            || portability_manifest.identity() != expected.portability_manifest_hash()
+        {
+            return Err(evidence_mismatch());
+        }
+        self.reimport = Some(
+            ApplicationReimportCampaignV1::start(source, authority, scope, portability_manifest)
+                .map_err(|_| evidence_mismatch())?,
+        );
+        self.failure = None;
+        Ok(self.reimport.as_ref().expect("nested reimport just set"))
+    }
+
+    /// Current durable reimport progress, absent before a portability campaign starts.
+    #[must_use]
+    pub const fn reimport(&self) -> Option<&ApplicationReimportCampaignV1> {
+        self.reimport.as_ref()
+    }
+
+    /// Mutable reimport progress for the API-neutral service coordinator.
+    pub fn reimport_mut(&mut self) -> Option<&mut ApplicationReimportCampaignV1> {
+        self.reimport.as_mut()
     }
 
     /// Verifies and records terminal reimport reconciliation for this exact plan.
@@ -595,6 +647,7 @@ impl ApplicationInstallationCampaign {
         }
         let expected = plan.input().reimport.ok_or_else(evidence_mismatch)?;
         let receipt = reimport_receipt.input();
+        let progress = self.reimport.as_ref().ok_or_else(evidence_mismatch)?;
         if portability_manifest.identity() != expected.portability_manifest_hash()
             || portability_manifest.input().contract_lineage != *plan.input().target.lineage()
             || portability_manifest.input().contract_version != plan.input().contract.version()
@@ -603,20 +656,21 @@ impl ApplicationInstallationCampaign {
             || receipt.portability_manifest_hash != expected.portability_manifest_hash()
             || receipt.export_manifest_hash != expected.export_manifest_hash()
             || receipt.target_database_id != target_database_id
+            || progress.phase() != crate::ApplicationReimportCampaignPhaseV1::Reconciled
+            || progress.receipt_hash() != Some(reimport_receipt.identity())
         {
             return Err(evidence_mismatch());
         }
-        self.complete_stage(
-            plan,
-            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled(
-                InstalledReimportReceiptEvidence {
-                    export_manifest_hash: expected.export_manifest_hash(),
-                    export_receipt_hash: expected.export_receipt_hash(),
-                    portability_manifest_hash: expected.portability_manifest_hash(),
-                    reimport_receipt_hash: reimport_receipt.identity(),
-                },
-            )),
-        )
+        self.completed.push(InstallationStageEvidence::Reimport(
+            InstalledReimportEvidence::Reconciled(InstalledReimportReceiptEvidence {
+                export_manifest_hash: expected.export_manifest_hash(),
+                export_receipt_hash: expected.export_receipt_hash(),
+                portability_manifest_hash: expected.portability_manifest_hash(),
+                reimport_receipt_hash: reimport_receipt.identity(),
+            }),
+        ));
+        self.failure = None;
+        Ok(self.observe())
     }
 
     /// Stops the current stage with a typed partial result and exact next action.
@@ -1254,6 +1308,31 @@ fn validate_campaign_state(
     plan: &ApplicationInstallationPlan,
 ) -> Result<(), InstallationCampaignError> {
     campaign.verify_plan(plan)?;
+    match (&campaign.reimport, plan.input().reimport) {
+        (None, _) => {}
+        (Some(progress), Some(expected)) => {
+            if progress.source().export_manifest_hash() != expected.export_manifest_hash()
+                || progress.source().export_receipt_hash() != expected.export_receipt_hash()
+                || progress.source().portability_manifest_hash()
+                    != expected.portability_manifest_hash()
+            {
+                return Err(evidence_mismatch());
+            }
+            let completed_reimport = campaign
+                .completed
+                .iter()
+                .any(|evidence| matches!(evidence, InstallationStageEvidence::Reimport(_)));
+            if completed_reimport
+                && progress.phase() != crate::ApplicationReimportCampaignPhaseV1::Reconciled
+            {
+                return Err(evidence_mismatch());
+            }
+            if !completed_reimport && campaign.next_stage() != Some(InstallationStage::Reimport) {
+                return Err(evidence_mismatch());
+            }
+        }
+        (Some(_), None) => return Err(evidence_mismatch()),
+    }
     if campaign.completed.len() > InstallationStage::ALL.len() {
         return Err(InstallationCampaignError::new(
             InstallationCampaignErrorKind::StageOutOfOrder,
@@ -1278,6 +1357,7 @@ fn validate_campaign_state(
                     plan_hash: campaign.plan_hash,
                     completed: campaign.completed[..index].to_vec(),
                     failure: None,
+                    reimport: campaign.reimport.clone(),
                 };
                 ApplicationInstallationReceipt::seal_matching(&prefix, plan, *hash)?;
             }
@@ -1326,12 +1406,15 @@ struct CampaignStateDto {
     plan: String,
     completed: Vec<CampaignEvidenceDto>,
     failure: Option<CampaignFailureDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reimport: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CampaignStateSchema {
     V1,
     V2,
+    V3,
 }
 
 impl CampaignStateSchema {
@@ -1339,6 +1422,7 @@ impl CampaignStateSchema {
         match value {
             APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1 => Ok(Self::V1),
             APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2 => Ok(Self::V2),
+            APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V3 => Ok(Self::V3),
             _ => Err(InstallationCampaignError::new(
                 InstallationCampaignErrorKind::UnsupportedVersion,
             )),
@@ -1352,7 +1436,12 @@ impl CampaignStateDto {
         plan: &ApplicationInstallationPlan,
     ) -> Self {
         Self {
-            schema: APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2.to_owned(),
+            schema: if campaign.reimport.is_some() {
+                APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V3
+            } else {
+                APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2
+            }
+            .to_owned(),
             campaign_id: hex16(campaign.campaign_id.as_bytes()),
             plan_hash: hex32(campaign.plan_hash.as_bytes()),
             plan: String::from_utf8(plan.canonical_bytes().to_vec())
@@ -1363,6 +1452,14 @@ impl CampaignStateDto {
                 .map(CampaignEvidenceDto::from_evidence)
                 .collect(),
             failure: campaign.failure.map(CampaignFailureDto::from_failure),
+            reimport: campaign.reimport.as_ref().map(|progress| {
+                String::from_utf8(
+                    progress
+                        .encode_canonical()
+                        .expect("validated reimport progress is canonical"),
+                )
+                .expect("canonical reimport progress is JSON UTF-8")
+            }),
         }
     }
 
@@ -1401,6 +1498,19 @@ impl CampaignStateDto {
                 );
             }
         }
+        let reimport = self
+            .reimport
+            .as_ref()
+            .map(|value| ApplicationReimportCampaignV1::decode_canonical(value.as_bytes()))
+            .transpose()
+            .map_err(|_| invalid())?;
+        if (schema != CampaignStateSchema::V3 && reimport.is_some())
+            || (schema == CampaignStateSchema::V3 && reimport.is_none())
+        {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::UnsupportedVersion,
+            ));
+        }
         let failure = self
             .failure
             .as_ref()
@@ -1411,6 +1521,7 @@ impl CampaignStateDto {
             plan_hash,
             completed,
             failure,
+            reimport,
         })
     }
 }
