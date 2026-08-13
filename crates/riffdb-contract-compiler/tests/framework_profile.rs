@@ -183,6 +183,51 @@ fn unknown_initial_state_has_a_source_spanned_semantic_error() {
 }
 
 #[test]
+fn unique_entity_delete_remains_sealed_out_of_the_first_delete_format() {
+    // WP-598 escalation evidence: the profile's session sign-out-by-delete
+    // shape (entity delete on a unique-carrying entity) is refused at
+    // compile time by the sealed ADR-0107 first delete format. Lifting the
+    // seal is its own package; this pin keeps the boundary honest until it
+    // lands.
+    let source = PROFILE
+        .replacen(
+            "    unique session_token (organization_id, token_digest)",
+            "    unique session_token (organization_id, token_digest)\n    delete_policy no_inbound",
+            1,
+        )
+        .replacen(
+            "  command RevokeSession {",
+            concat!(
+                "  command DeleteSession {\n",
+                "    input request_id: uuid\n",
+                "    input organization_id: uuid\n",
+                "    input user_id: uuid\n",
+                "    input session_id: uuid\n",
+                "    idempotency_key request_id\n",
+                "    delete Session(organization_id, user_id, session_id) as session\n",
+                "      else DeleteSessionMissing {}\n",
+                "    return SessionDeleted {}\n",
+                "  }\n\n",
+                "  command RevokeSession {",
+            ),
+            1,
+        );
+    let expected_start = source
+        .find("session_token (organization_id, token_digest)")
+        .expect("unique declaration marker");
+    let error = validate_contract_source(&source)
+        .expect_err("unique-carrying entity delete must stay refused");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostic")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| diagnostic.code().as_str() == "RDB-C044")
+        .expect("sealed delete-format diagnostic");
+    assert_eq!(diagnostic.primary_span().start() as usize, expected_start);
+}
+
+#[test]
 fn caller_authored_workflow_state_assignment_remains_rejected() {
     let source = PROFILE.replacen(
         "set session.token_digest = signup.token_digest",

@@ -594,6 +594,144 @@ fn equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence() {
 }
 
 #[test]
+fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
+    let database = UniqueUserDatabase::create("release-reinsert");
+    let ports = database.open();
+    let organization = database.prepare_organization(&ports);
+    let first_user = [0x45; 16];
+    let second_user = [0x46; 16];
+    let third_user = [0x47; 16];
+    let first = database.prepare(
+        &ports,
+        first_user,
+        "owner@example.test",
+        "create-first-owner",
+        0x66,
+        0x58,
+    );
+    // A fresh identity (new user, caller key, and request) re-inserting the
+    // committed unique value sequentially: not a replay, a new admission.
+    let sequential_reinsert = database.prepare(
+        &ports,
+        second_user,
+        "owner@example.test",
+        "create-second-owner",
+        0x67,
+        0x59,
+    );
+    // Entity delete on a unique-carrying entity is still RDB-C044-refused by
+    // the sealed first delete format, so the release path expressible today
+    // is mutation: moving the owner off the value must free it atomically.
+    let release_first = database.prepare_email_change(
+        &ports,
+        first_user,
+        "moved@example.test",
+        "release-first-owner",
+        0x68,
+        0x5a,
+    );
+    let reinsert_after_release = database.prepare(
+        &ports,
+        third_user,
+        "owner@example.test",
+        "create-third-owner",
+        0x69,
+        0x5b,
+    );
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x79)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (refused, released, reinserted) = runtime().block_on(async {
+        for preparation in [organization, first] {
+            let seeded = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve unique seed")
+                .submit(preparation)
+                .expect("submit unique seed")
+                .completion()
+                .await
+                .expect("complete unique seed");
+            assert!(matches!(seeded, CommandExecutionResult::Committed(_)));
+        }
+        let refused = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve sequential reinsert")
+            .submit(sequential_reinsert)
+            .expect("submit sequential reinsert")
+            .completion()
+            .await
+            .expect("complete sequential reinsert");
+        let released = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve owner release")
+            .submit(release_first)
+            .expect("submit owner release")
+            .completion()
+            .await
+            .expect("complete owner release");
+        let reinserted = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve post-release reinsert")
+            .submit(reinsert_after_release)
+            .expect("submit post-release reinsert")
+            .completion()
+            .await
+            .expect("complete post-release reinsert");
+        (refused, released, reinserted)
+    });
+
+    // Refusal side: the sequential re-insert of an owned unique value is the
+    // declared typed conflict, not a duplicate row and not a replay.
+    let CommandExecutionResult::ExecutionFailed(refused) = refused else {
+        panic!("sequential reinsert of an owned unique value must fail deterministically");
+    };
+    assert_eq!(refused.code(), ExecutionFailureCode::UniqueConflict);
+    assert_eq!(
+        refused.disposition(),
+        riffdb_commit::CommittedOutcomeDisposition::FirstCommit
+    );
+    // Success side: moving the owner off the value frees it for a new
+    // admission, proving the refusal above was the live unique index and
+    // that release rides the same transactional machinery.
+    assert!(matches!(released, CommandExecutionResult::Committed(_)));
+    assert!(matches!(reinserted, CommandExecutionResult::Committed(_)));
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("first-owner sequence"),
+            CommitSequence::new(3).expect("release sequence"),
+            CommitSequence::new(4).expect("reinsert sequence"),
+        ],
+        "the refused reinsert must not allocate a commit sequence"
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain release-reinsert coordinator");
+    let ports = database.open();
+    database.assert_user_email(&ports, first_user, "moved@example.test");
+    database.assert_user_exists(&ports, second_user, false);
+    database.assert_user_email(&ports, third_user, "owner@example.test");
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(5).expect("fifth sequence"))
+            .expect("read fifth sequence")
+            .is_none(),
+        "exactly four commands may commit in the release-reinsert schedule"
+    );
+}
+
+#[test]
 fn changing_to_an_owned_unique_value_preserves_the_original_entity_and_replays() {
     let database = UniqueUserDatabase::create("change-email");
     let ports = database.open();
