@@ -8,8 +8,8 @@ use riffdb_contract_ir::{ContractBundle, RecordSchema};
 use riffdb_types::{
     AdapterConformanceManifestHash, ApplicationExportManifestHash,
     ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash, ContractBundleHash,
-    ContractLineage, ContractVersion, DatabaseId, GeneratedArtifactHash, MigrationBundleHash,
-    hash_application_portability_manifest, hash_application_reimport_receipt,
+    ContractLineage, ContractVersion, DatabaseId, EntityTypeId, GeneratedArtifactHash,
+    MigrationBundleHash, hash_application_portability_manifest, hash_application_reimport_receipt,
 };
 use serde::{Deserialize, Serialize};
 
@@ -686,6 +686,116 @@ impl ApplicationPortabilityManifest {
             }
         }
         Ok(())
+    }
+
+    /// Derives the only legal entity reconstitution order from required relationships.
+    ///
+    /// The returned stable IDs are internal compiler evidence. They are used to
+    /// constrain symbolic portability export and reimport; they never cross an
+    /// application-facing boundary. Every required target must itself be mapped,
+    /// parents precede children, and cycles fail closed.
+    pub fn compiled_reimport_entity_schedule(
+        &self,
+        bundle: &ContractBundle,
+    ) -> Result<Vec<EntityTypeId>, ApplicationPortabilityError> {
+        self.validate_compiled_contract(bundle)?;
+        let selected = self
+            .input
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.class == PortableRecordClass::Entity)
+            .map(|mapping| {
+                if !matches!(
+                    mapping.strategy,
+                    PortableReimportStrategy::ReimportCommand { .. }
+                ) {
+                    return Err(ApplicationPortabilityError::new(
+                        ApplicationPortabilityErrorKind::InvalidShape,
+                    ));
+                }
+                let entity = bundle
+                    .schema()
+                    .entities()
+                    .iter()
+                    .find(|entity| entity.name() == mapping.symbol.as_str())
+                    .ok_or_else(|| {
+                        ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        )
+                    })?;
+                Ok((entity.id(), entity.name()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if selected.is_empty() {
+            return Err(ApplicationPortabilityError::new(
+                ApplicationPortabilityErrorKind::InvalidShape,
+            ));
+        }
+        let selected_ids = selected
+            .iter()
+            .map(|(entity, _)| *entity)
+            .collect::<BTreeSet<_>>();
+        let mut indegree = selected_ids
+            .iter()
+            .map(|entity| (*entity, 0_usize))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut dependents = selected_ids
+            .iter()
+            .map(|entity| (*entity, BTreeSet::new()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for relationship in bundle.schema().relationships() {
+            if !selected_ids.contains(&relationship.source_entity()) {
+                continue;
+            }
+            if !selected_ids.contains(&relationship.target_entity()) {
+                return Err(ApplicationPortabilityError::new(
+                    ApplicationPortabilityErrorKind::InvalidShape,
+                ));
+            }
+            if dependents
+                .get_mut(&relationship.target_entity())
+                .ok_or_else(|| {
+                    ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidShape)
+                })?
+                .insert(relationship.source_entity())
+            {
+                let count = indegree
+                    .get_mut(&relationship.source_entity())
+                    .ok_or_else(|| {
+                        ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        )
+                    })?;
+                *count = count.checked_add(1).ok_or_else(|| {
+                    ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::LimitExceeded)
+                })?;
+            }
+        }
+        let mut ready = indegree
+            .iter()
+            .filter_map(|(entity, count)| (*count == 0).then_some(*entity))
+            .collect::<BTreeSet<_>>();
+        let mut schedule = Vec::with_capacity(selected_ids.len());
+        while let Some(entity) = ready.pop_first() {
+            schedule.push(entity);
+            for dependent in dependents.get(&entity).into_iter().flatten() {
+                let count = indegree.get_mut(dependent).ok_or_else(|| {
+                    ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidShape)
+                })?;
+                *count = count.checked_sub(1).ok_or_else(|| {
+                    ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidShape)
+                })?;
+                if *count == 0 {
+                    ready.insert(*dependent);
+                }
+            }
+        }
+        if schedule.len() != selected_ids.len() {
+            return Err(ApplicationPortabilityError::new(
+                ApplicationPortabilityErrorKind::InvalidShape,
+            ));
+        }
+        Ok(schedule)
     }
 
     /// Binds mappings and observations to one exact adapter-owned public surface.
@@ -1529,6 +1639,7 @@ const fn invalid() -> ApplicationPortabilityError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_contract_compiler::compile_contract_source;
 
     fn symbol(value: &str) -> InstallationSymbol {
         InstallationSymbol::new(value).expect("symbol")
@@ -1572,6 +1683,76 @@ mod tests {
         .expect("manifest")
     }
 
+    fn scheduled_manifest(
+        bundle: &ContractBundle,
+        include_parent: bool,
+    ) -> ApplicationPortabilityManifest {
+        let mut mappings = vec![PortableRecordMapping::new(
+            PortableRecordClass::Entity,
+            symbol("Child"),
+            PortableReimportStrategy::reimport_command(symbol("ReconstituteChildren")),
+        )];
+        if include_parent {
+            mappings.push(PortableRecordMapping::new(
+                PortableRecordClass::Entity,
+                symbol("Parent"),
+                PortableReimportStrategy::reimport_command(symbol("ReconstituteParents")),
+            ));
+        }
+        ApplicationPortabilityManifest::compile(ApplicationPortabilityManifestInput {
+            adapter_manifest_hash: AdapterConformanceManifestHash::from_bytes([9; 32]),
+            contract_lineage: bundle.lineage().clone(),
+            contract_version: bundle.contract_version(),
+            contract_bundle_hash: bundle.bundle_hash(),
+            mappings,
+            omissions: Vec::new(),
+            observations: vec![
+                ReimportObservation::new(
+                    symbol("family_count"),
+                    symbol("ListFamilies"),
+                    GeneratedArtifactHash::from_bytes([8; 32]),
+                    64,
+                )
+                .expect("observation"),
+            ],
+        })
+        .expect("scheduled manifest")
+    }
+
+    fn relationship_bundle() -> ContractBundle {
+        compile_contract_source(
+            r#"
+contract PortableFamilies version 1 {
+  entity Parent {
+    key (tenant_id: uuid, parent_id: uuid)
+  }
+  entity Child {
+    key (tenant_id: uuid, parent_id: uuid, child_id: uuid)
+    field label: string<64>
+    reference parent (tenant_id, parent_id) -> Parent(tenant_id, parent_id)
+  }
+  aggregate Families {
+    root Parent
+    child Child
+    partition_by tenant_id
+    conflict_key (tenant_id, parent_id)
+  }
+  reimport command ReconstituteParents {
+    input records: list<Parent, 1..64>
+    reconstitute Parent from records else ParentExists {}
+    return ParentsReconstituted {}
+  }
+  reimport command ReconstituteChildren {
+    input records: list<Child, 1..64>
+    reconstitute Child from records else DependencyUnavailable {}
+    return ChildrenReconstituted {}
+  }
+}
+"#,
+        )
+        .expect("relationship bundle")
+    }
+
     #[test]
     fn canonical_manifest_round_trips_and_has_no_execution_escape() {
         let manifest = manifest();
@@ -1590,6 +1771,30 @@ mod tests {
         ] {
             assert!(!text.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn compiler_schedule_places_required_parent_before_child() {
+        let bundle = relationship_bundle();
+        let manifest = scheduled_manifest(&bundle, true);
+        let schedule = manifest
+            .compiled_reimport_entity_schedule(&bundle)
+            .expect("acyclic complete schedule");
+        let names = schedule
+            .iter()
+            .map(|id| bundle.schema().entity(*id).expect("entity").name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Parent", "Child"]);
+    }
+
+    #[test]
+    fn compiler_schedule_rejects_an_unmapped_required_parent() {
+        let bundle = relationship_bundle();
+        let manifest = scheduled_manifest(&bundle, false);
+        let error = manifest
+            .compiled_reimport_entity_schedule(&bundle)
+            .expect_err("required parent cannot be omitted");
+        assert_eq!(error.kind(), ApplicationPortabilityErrorKind::InvalidShape);
     }
 
     #[test]

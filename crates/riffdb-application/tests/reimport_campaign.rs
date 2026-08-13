@@ -176,6 +176,37 @@ fn page_checkpoint_is_atomic_canonical_and_resumes_at_the_exact_next_page() {
 }
 
 #[test]
+fn an_exact_empty_source_page_advances_without_fabricating_a_command_outcome() {
+    let (manifest, receipt) = fixtures();
+    let hashes = vec![ApplicationExportPageHash::from_bytes([21; 32])];
+    let empty_source = ApplicationReimportSourceV1::new(
+        receipt.input().export_manifest_hash,
+        ApplicationExportReceiptHash::from_bytes(hash32(11)),
+        manifest.identity(),
+        database(1),
+        receipt.input().target_database_id,
+        0,
+        hashes.clone(),
+        vec![],
+    )
+    .expect("empty source");
+    let mut campaign = ApplicationReimportCampaignV1::start(
+        empty_source,
+        authority(1),
+        CapabilityApplicationReimportScopeV1::WholeApplication,
+        &manifest,
+    )
+    .expect("campaign");
+    campaign
+        .complete_page(NonZeroU64::MIN, hashes[0], Vec::new())
+        .expect("exact empty page");
+    assert_eq!(
+        campaign.phase(),
+        ApplicationReimportCampaignPhaseV1::Reconciling
+    );
+}
+
+#[test]
 fn capability_revision_change_closes_the_campaign_without_progress() {
     let (manifest, receipt) = fixtures();
     let page = ApplicationExportPageHash::from_bytes(hash32(41));
