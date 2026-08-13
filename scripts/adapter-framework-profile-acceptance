@@ -22,8 +22,26 @@ cargo +1.97.0 test -p riffdb-runtime --test runtime framework_profile --quiet
 cargo +1.97.0 test -p riffdb-client-rust \
     adapter_minted_idempotency_survives_driver_retries_with_fresh_transport_ids \
     --quiet
-cargo +1.97.0 test --test command_concurrency \
-    equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence \
-    --quiet -- --exact
+# An exact filter that matches nothing still exits 0, so every named
+# schedule must prove its triggering set is non-empty.
+run_exact_concurrency_test() {
+    local name="$1" output
+    output="$(cargo +1.97.0 test --test command_concurrency "$name" --quiet -- --exact 2>&1)" || {
+        printf '%s\n' "$output" >&2
+        return 1
+    }
+    printf '%s\n' "$output"
+    if ! grep -q "1 passed" <<<"$output"; then
+        echo "expected exactly one exact-match schedule to run: $name" >&2
+        return 1
+    fi
+}
+
+run_exact_concurrency_test \
+    equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence
+run_exact_concurrency_test \
+    sequential_reinsert_refuses_typed_until_release_frees_the_unique_value
+run_exact_concurrency_test \
+    framework_profile_declared_refusal_commits_terminally_on_the_v9_bundle
 
 echo "Framework-profile compilation, atomicity, token, workflow, uniqueness, and retry identity: passed"
