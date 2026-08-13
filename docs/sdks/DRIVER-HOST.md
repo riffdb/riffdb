@@ -122,6 +122,86 @@ action, checked operation and symbol path, authorized contract identity, trace
 identity, incident identity, and command uncertainty flag. Local parsing never
 classifies failures from prose.
 
+## Reimport operator host
+
+Application reimport uses a different process, socket, protocol, capability,
+and target-language binding: `riffdb-operator-driverd`. It is not a mode of
+`riffdb-driverd`, and the normal generated application client has no reimport
+method. The Rust process owns verified TLS, the Capability V7 credential, the
+exact portability artifacts, and the campaign identity. A target-language
+operator sees only the protected socket and the public handshake identity.
+
+The operator configuration is a protected regular TOML file (mode `0600`),
+and every referenced path is absolute, normalized, non-symlinked, and
+non-writable by group or other users:
+
+```toml
+[driver]
+socket = "/run/riffdb/reimport-018f.sock"
+
+[campaign]
+database = "restored"
+campaign_id = "018f2f85-3c20-7a31-8f11-112233445566"
+contract_lineage = "orders"
+scope = "whole_application"
+portability_manifest = "/srv/orders/riffdb.portability.json"
+export_manifest = "/srv/orders/export-manifest.json"
+export_receipt = "/srv/orders/export-receipt.json"
+
+[remote]
+endpoint = "https://riffdb.internal:7443"
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "riffdb.internal"
+credential_file = "/run/secrets/orders-reimport.credential"
+```
+
+Start the protected host with exactly that path:
+
+```bash
+riffdb-operator-driverd /run/riffdb/orders-reimport.toml
+```
+
+The V1 local protocol admits only `start`, `apply_page`, `status`, and
+`cancel`. `start` must repeat the exact manifest and receipt already loaded by
+the Rust host; `apply_page` carries one bounded canonical export page and its
+exact hash. The host rejects alternate campaign, database, manifest, receipt,
+page, cursor, or completion identities before invoking the server. It cannot
+express an application command, raw row write, caller-selected idempotency,
+remote endpoint, bearer credential, or storage operation.
+
+The language bindings are deliberately separate from generated application
+facades:
+
+```go
+session, err := operator.ConnectOperator(ctx, socketPath, operator.OperatorIdentity{
+    Database: "restored", CampaignID: campaignID,
+    PortabilityManifestHash: portabilityHash,
+})
+```
+
+```ts
+import { OperatorTransport } from "@riffdb/application/operator";
+
+const operator = await OperatorTransport.connect(socketPath, {
+  database: "restored", campaignId, portabilityManifestHash,
+});
+```
+
+```python
+from riffdb_application.operator import OperatorIdentity, OperatorTransport
+
+operator = OperatorTransport.connect(
+    socket_path,
+    OperatorIdentity("restored", campaign_id, portability_manifest_hash),
+)
+```
+
+One operator session is serial and bounded because it advances one durable
+campaign. Closing the local connection does not cancel or roll back the
+campaign; reconnect with the same identity and call `status`. Target-language
+bindings decode structured public errors and never receive credentials or
+secret diagnostic values.
+
 ## Cross-language conformance
 
 The alpha freezes one shared corpus under `fixtures/driver`. Rust, Go,
