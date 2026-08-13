@@ -17,7 +17,8 @@ use riffdb_catalog::{
 use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
 use riffdb_policy::{
-    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1, AuthorizationClock,
+    ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
+    ApplicationReimportAuthorizationRequestV1, ApplicationReimportDecisionV1, AuthorizationClock,
     AuthorizationError, AuthorizationTelemetry, AuthorizedContractMigration,
     AuthorizedOfflineMaintenance, CapabilityViewCheckpoint, ContractMigrationAuthorizationRequest,
     ContractMigrationDecision, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
@@ -273,6 +274,15 @@ pub trait CurrentPolicyPort: Send + Sync {
         Err(AuthorizationError::CurrentCapabilityUnavailable)
     }
 
+    /// Reloads current V7 authority and decides one reimport campaign safe point.
+    fn authorize_application_reimport(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: ApplicationReimportAuthorizationRequestV1,
+    ) -> Result<ApplicationReimportDecisionV1, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Returns the live capability-view generation without sampling the clock.
     ///
     /// Captured immediately *before* a full evaluation so a publication racing
@@ -314,6 +324,14 @@ where
         request: ApplicationExportAuthorizationRequestV1,
     ) -> Result<ApplicationExportDecisionV1, AuthorizationError> {
         CurrentAuthorizer::authorize_application_export(self, principal, request)
+    }
+
+    fn authorize_application_reimport(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ApplicationReimportAuthorizationRequestV1,
+    ) -> Result<ApplicationReimportDecisionV1, AuthorizationError> {
+        CurrentAuthorizer::authorize_application_reimport(self, principal, request)
     }
 
     fn authorize_offline_maintenance(
