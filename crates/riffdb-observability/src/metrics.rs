@@ -1593,6 +1593,10 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::GetApplicationExportPage => "get_application_export_page",
         ServiceOperationV1::GetApplicationExport => "get_application_export",
         ServiceOperationV1::CancelApplicationExport => "cancel_application_export",
+        ServiceOperationV1::StartApplicationReimport => "start_application_reimport",
+        ServiceOperationV1::ApplyApplicationReimportPage => "apply_application_reimport_page",
+        ServiceOperationV1::GetApplicationReimport => "get_application_reimport",
+        ServiceOperationV1::CancelApplicationReimport => "cancel_application_reimport",
     }
 }
 

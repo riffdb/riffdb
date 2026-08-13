@@ -12,7 +12,9 @@ use riffdb_commit::{
 use riffdb_errors::PublicError;
 use riffdb_policy::{
     ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
-    ApplicationExportPolicyOperationV1, AuditClass, AuthorizedApplicationExportV1,
+    ApplicationExportPolicyOperationV1, ApplicationReimportAuthorizationRequestV1,
+    ApplicationReimportDecisionV1, ApplicationReimportPolicyOperationV1, AuditClass,
+    AuthorizedApplicationExportV1, AuthorizedApplicationReimportV1,
     AuthorizedCapabilityMutationPreparation, AuthorizedOperation, Decision, OperationRequest,
 };
 use riffdb_types::{
@@ -77,6 +79,12 @@ pub(crate) struct BegunInvocationCompletion {
 /// One export invocation after a specialized current-V5 safe point and durable start.
 pub(crate) struct BegunApplicationExportInvocation {
     authorization: Box<AuthorizedApplicationExportV1>,
+    completion: BegunInvocationCompletion,
+}
+
+/// One reimport invocation after a specialized current-V7 safe point and durable start.
+pub(crate) struct BegunApplicationReimportInvocation {
+    authorization: Box<AuthorizedApplicationReimportV1>,
     completion: BegunInvocationCompletion,
 }
 
@@ -1089,6 +1097,30 @@ impl BegunApplicationExportInvocation {
     }
 }
 
+impl BegunApplicationReimportInvocation {
+    /// Closed operation retained by this audit lifecycle.
+    pub(crate) const fn operation(&self) -> ServiceOperationV1 {
+        self.completion.operation()
+    }
+
+    /// Borrows the one-use proof only until the final post-capacity safe point.
+    pub(crate) const fn initial_authorization(&self) -> &AuthorizedApplicationReimportV1 {
+        &self.authorization
+    }
+
+    /// Appends the terminal audit before any protected output is released.
+    pub(crate) async fn finish(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+        phase: ServiceAuditPhaseV1,
+    ) -> Result<(), AuditAppendFailure> {
+        self.completion
+            .finish(service, context, phase, ServiceAuditLinkV1::None)
+            .await
+    }
+}
+
 impl RiffDbServiceInner {
     /// Performs the specialized V5 export safe point and durably starts its
     /// intrinsic audit lifecycle. Export authority never passes through the
@@ -1205,6 +1237,136 @@ impl RiffDbServiceInner {
             .confirm_start()
             .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
         Ok(BegunApplicationExportInvocation {
+            authorization,
+            completion: BegunInvocationCompletion {
+                operation,
+                targets,
+                approval_id: None,
+                started: true,
+                lifecycle,
+            },
+        })
+    }
+
+    /// Performs the specialized V7 reimport safe point and durably starts its
+    /// intrinsic audit lifecycle. Reimport authority never passes through the
+    /// ordinary application command registry.
+    pub(crate) async fn begin_application_reimport_invocation(
+        &self,
+        context: &RequestContext,
+        request: ApplicationReimportAuthorizationRequestV1,
+        operation: ServiceOperationV1,
+        targets: ServiceAuditTargetsV1,
+    ) -> ServiceResult<BegunApplicationReimportInvocation> {
+        let expected = match request.operation() {
+            ApplicationReimportPolicyOperationV1::Start => {
+                ServiceOperationV1::StartApplicationReimport
+            }
+            ApplicationReimportPolicyOperationV1::Page => {
+                ServiceOperationV1::ApplyApplicationReimportPage
+            }
+            ApplicationReimportPolicyOperationV1::Status => {
+                ServiceOperationV1::GetApplicationReimport
+            }
+            ApplicationReimportPolicyOperationV1::Cancel => {
+                ServiceOperationV1::CancelApplicationReimport
+            }
+        };
+        if operation != expected {
+            return Err(self.internal_failure(operation, InternalDefect::ProofMismatch));
+        }
+        self.classify_intrinsic_prestart(context, operation, targets.clone())?;
+        if context.control().is_cancelled() || context.control().is_deadline_exceeded() {
+            self.append_prestart_terminal_if_intrinsic(
+                context,
+                operation,
+                targets,
+                AuditScope::Intrinsic,
+                ServiceAuditPhaseV1::Cancelled,
+            )
+            .await?;
+            return if context.control().is_cancelled() {
+                Err(ServiceFailure::Cancelled)
+            } else {
+                Err(ServiceFailure::DeadlineExceeded)
+            };
+        }
+        let authorization = match self
+            .providers
+            .policy
+            .authorize_application_reimport(context.principal(), request.clone())
+        {
+            Ok(ApplicationReimportDecisionV1::Allow(authorization)) => authorization,
+            Ok(ApplicationReimportDecisionV1::Deny(_)) => {
+                self.append_prestart_terminal_if_intrinsic(
+                    context,
+                    operation,
+                    targets,
+                    AuditScope::Intrinsic,
+                    ServiceAuditPhaseV1::Denied,
+                )
+                .await?;
+                return Err(PublicError::authorization_denied().into());
+            }
+            Err(_) => {
+                self.append_prestart_terminal_if_intrinsic(
+                    context,
+                    operation,
+                    targets,
+                    AuditScope::Intrinsic,
+                    ServiceAuditPhaseV1::Failed,
+                )
+                .await?;
+                return Err(PublicError::storage_unavailable().into());
+            }
+        };
+        if authorization.database_id() != self.identity.database_id()
+            || authorization.environment() != self.identity.environment()
+            || authorization.request() != &request
+            || authorization.authority().capability_id() != context.principal().capability_id()
+            || authorization.authority().capability_revision()
+                != context.principal().capability_revision()
+            || authorization.principal_id() != context.principal().principal_id()
+            || authorization.actor_kind() != context.principal().actor_kind()
+        {
+            self.append_prestart_terminal_if_intrinsic(
+                context,
+                operation,
+                targets,
+                AuditScope::Intrinsic,
+                ServiceAuditPhaseV1::Failed,
+            )
+            .await?;
+            return Err(self.internal_failure(operation, InternalDefect::ProofMismatch));
+        }
+
+        let lifecycle = current_operation_audit_lifecycle(operation);
+        let panic_terminal = PanicTerminalAudit::new(context, operation, targets.clone(), None)
+            .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
+        lifecycle
+            .prepare_start(operation, panic_terminal)
+            .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
+        if let Err(failure) = self
+            .append_audit(
+                context,
+                operation,
+                ServiceAuditPhaseV1::Started,
+                targets.clone(),
+                None,
+                ServiceAuditLinkV1::None,
+                AuditAppendControl::Invocation,
+            )
+            .await
+        {
+            lifecycle.fail_start();
+            self.note_audit_failure_with_cause(operation, failure.cause());
+            return Err(PublicError::storage_unavailable().into());
+        }
+        lifecycle.mark_durable_start();
+        lifecycle
+            .confirm_start()
+            .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
+        Ok(BegunApplicationReimportInvocation {
             authorization,
             completion: BegunInvocationCompletion {
                 operation,
