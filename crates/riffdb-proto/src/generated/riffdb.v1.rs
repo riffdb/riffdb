@@ -229,6 +229,8 @@ pub struct EntityFieldVisibility {
     pub entity_type_id: u32,
     #[prost(uint32, repeated, tag = "3")]
     pub field_ids: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, repeated, tag = "4")]
+    pub secret_field_ids: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityPrincipalFact {

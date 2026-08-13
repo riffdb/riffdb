@@ -777,6 +777,7 @@ fn capability_grant_uses_the_complete_semantic_byte_bound() {
         contract_lineage: "a".repeat(lineage_bytes),
         entity_type_id,
         field_ids: vec![1],
+        secret_field_ids: Vec::new(),
     };
     let mut exact = create_request(v1::CapabilityCreateMode::Normal);
     let fields = &mut exact.grant.as_mut().expect("grant").field_visibility;
@@ -1370,6 +1371,7 @@ fn capability_grant_order_uses_the_authoritative_length_framed_keys() {
         contract_lineage: lineage.to_owned(),
         entity_type_id: 1,
         field_ids: vec![1],
+        secret_field_ids: Vec::new(),
     };
     let mut request = create_request(v1::CapabilityCreateMode::Normal);
     let grant = request.grant.as_mut().expect("grant");

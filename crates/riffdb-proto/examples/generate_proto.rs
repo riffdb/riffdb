@@ -73,6 +73,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_installation.proto",
     "riffdb/storage/v1/capability_row_policy.proto",
     "riffdb/storage/v1/capability_export.proto",
+    "riffdb/storage/v1/capability_secret.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/app/v1/application.proto",
@@ -112,6 +113,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_installation.proto",
     "riffdb/storage/v1/capability_row_policy.proto",
     "riffdb/storage/v1/capability_export.proto",
+    "riffdb/storage/v1/capability_secret.proto",
     "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/commit.proto",
@@ -583,6 +585,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredCommandSegmentV4",
         PayloadBound::EnvelopeMaximum,
     ),
+    durable(
+        "capability_secret.proto",
+        "CapabilityRecordV6",
+        PayloadBound::Document,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1011,6 +1018,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable event-policy command-authority registry is incomplete")
         })?;
+    let capability_v6_record = durable_registry
+        .get(current_v1_record_count + 52)
+        .ok_or_else(|| io::Error::other("durable capability-v6 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1308,6 +1318,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-capability-v6-schema-hash.bin",
+        &capability_v6_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-capability-v6-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(capability_v6_record)),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin",
         &durable_schema_hashes(event_policy_command_authority_records),
     )?;
@@ -1593,9 +1613,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 81 {
+    if DURABLE_RECORDS.len() != 82 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 81 records").into(),
+            io::Error::other("readable durable registry must contain exactly 82 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1619,9 +1639,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 161 || enum_count != 21 {
+    if message_count != 164 || enum_count != 21 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 161 messages and 21 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 164 messages and 21 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1918,6 +1938,9 @@ fn durable_writable_registry_fixture(
         .ok_or_else(|| {
             io::Error::other("durable registry is missing event-policy command authority")
         })?;
+    let capability_v6 = records
+        .get(current_v1_record_count + 52)
+        .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV6"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1951,10 +1974,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(capability_v5))
         .chain(std::iter::once(export_v1))
         .chain(event_policy_command_authority.iter())
+        .chain(std::iter::once(capability_v6))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 34);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 35);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

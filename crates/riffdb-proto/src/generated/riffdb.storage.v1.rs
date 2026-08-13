@@ -1451,6 +1451,35 @@ impl CapabilityRowPolicyOperationV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilitySecretVisibilityV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(uint32, repeated, tag = "3")]
+    pub secret_field_ids: ::prost::alloc::vec::Vec<u32>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilitySecretGrantExtensionV1 {
+    #[prost(message, repeated, tag = "1")]
+    pub entries: ::prost::alloc::vec::Vec<CapabilitySecretVisibilityV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityRecordV6 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<CapabilityRecordV1>,
+    #[prost(message, optional, tag = "2")]
+    pub migration: ::core::option::Option<CapabilityMigrationGrantExtensionV1>,
+    #[prost(message, optional, tag = "3")]
+    pub installation: ::core::option::Option<CapabilityInstallationGrantExtensionV1>,
+    #[prost(message, optional, tag = "4")]
+    pub row_policy: ::core::option::Option<CapabilityRowPolicyGrantExtensionV1>,
+    #[prost(message, optional, tag = "5")]
+    pub export: ::core::option::Option<CapabilityExportGrantExtensionV1>,
+    #[prost(message, optional, tag = "6")]
+    pub secret: ::core::option::Option<CapabilitySecretGrantExtensionV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredContractBundleV1 {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,

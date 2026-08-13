@@ -25,6 +25,7 @@
 - [Consistency and Recovery](concepts/CONSISTENCY.md)
 - [Safety by Construction](safety-by-construction.md)
 - [Compiled Row Policies](security/ROW-POLICIES.md)
+- [Secret Field Classification](security/SECRET-FIELDS.md)
 
 # Build Applications
 

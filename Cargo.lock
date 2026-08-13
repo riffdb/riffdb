@@ -1971,6 +1971,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-testkit",
  "riffdb-types",
+ "serde",
 ]
 
 [[package]]

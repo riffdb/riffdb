@@ -42,3 +42,16 @@ Changing any file under `generated/` makes
 `riffdb application lock --check` fail. Restore it with
 `riffdb application generate --locked`; if symbolic intent changed, review and
 write a new lock instead.
+
+## Treating `secret` as encryption
+
+Declaring `field secret token: string<256>` and then storing a plaintext
+bearer token treats a display-and-visibility classification as a
+cryptographic control it never was. `secret` withholds the value from
+display surfaces and field-visibility grants (surfaces show
+`[redacted:token]`); the durable record, backups, exports, and changelog
+frames still carry the value at full fidelity by design. Store the at-rest
+form you would store anyway — a hash for verification secrets, an opaque
+provider token where recovery is required — and keep the `secret`
+classification on that stored field. See
+[Secret Field Classification](../../security/SECRET-FIELDS.md).

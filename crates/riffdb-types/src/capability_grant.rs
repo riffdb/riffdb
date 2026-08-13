@@ -496,34 +496,61 @@ impl PartitionScopeV1 {
 }
 
 /// One canonical entity-field visibility entry.
+///
+/// Ordinary `fields` never reveal a secret-classified field (ADR-0118):
+/// enumerating every field — the de-facto wildcard and the shape every role
+/// default produces — is inert for secrets. Revealing one requires naming it
+/// in the separate `secret_fields` list, which no derivation path populates
+/// implicitly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntityFieldVisibilityV1 {
     lineage: ContractLineage,
     entity_type: EntityTypeId,
     fields: Arc<[FieldId]>,
+    secret_fields: Arc<[FieldId]>,
 }
 
 impl EntityFieldVisibilityV1 {
-    /// Sorts and validates a nonempty field set.
+    /// Sorts and validates a nonempty field set with no secret-field naming.
     pub fn new(
         lineage: ContractLineage,
         entity_type: EntityTypeId,
+        fields: Vec<FieldId>,
+    ) -> Result<Self, CapabilityGrantError> {
+        Self::with_secret_fields(lineage, entity_type, fields, Vec::new())
+    }
+
+    /// Sorts and validates a visibility entry that explicitly names
+    /// secret-classified fields for reveal (ADR-0118 item 3).
+    ///
+    /// The named secret fields count against the same bounds as ordinary
+    /// visibility. The ordinary list must stay nonempty; the secret list may
+    /// be empty.
+    pub fn with_secret_fields(
+        lineage: ContractLineage,
+        entity_type: EntityTypeId,
         mut fields: Vec<FieldId>,
+        mut secret_fields: Vec<FieldId>,
     ) -> Result<Self, CapabilityGrantError> {
         if fields.is_empty() {
             return Err(CapabilityGrantError::Empty);
         }
-        if fields.len() > MAX_CAPABILITY_FIELD_VISIBILITY {
+        if fields.len().saturating_add(secret_fields.len()) > MAX_CAPABILITY_FIELD_VISIBILITY {
             return Err(CapabilityGrantError::LimitExceeded);
         }
         fields.sort_unstable();
         if fields.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(CapabilityGrantError::Duplicate);
         }
+        secret_fields.sort_unstable();
+        if secret_fields.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(CapabilityGrantError::Duplicate);
+        }
         Ok(Self {
             lineage,
             entity_type,
             fields: fields.into(),
+            secret_fields: secret_fields.into(),
         })
     }
 
@@ -550,6 +577,13 @@ impl EntityFieldVisibilityV1 {
     #[must_use]
     pub fn fields(&self) -> &[FieldId] {
         &self.fields
+    }
+
+    /// Returns explicitly named secret-classified fields in increasing order
+    /// (ADR-0118): the only naming surface that reveals a secret field.
+    #[must_use]
+    pub fn secret_fields(&self) -> &[FieldId] {
+        &self.secret_fields
     }
 }
 
@@ -977,6 +1011,7 @@ impl CapabilityGrantV1 {
         let total_fields = field_visibility.iter().try_fold(0usize, |count, entry| {
             count
                 .checked_add(entry.fields.len())
+                .and_then(|count| count.checked_add(entry.secret_fields.len()))
                 .ok_or(CapabilityGrantError::SizeOverflow)
         })?;
         if total_fields > MAX_CAPABILITY_FIELD_VISIBILITY {
@@ -1242,7 +1277,8 @@ fn field_visibility_semantic_bytes(
         let fields = entry
             .fields
             .len()
-            .checked_mul(4)
+            .checked_add(entry.secret_fields.len())
+            .and_then(|count| count.checked_mul(4))
             .ok_or(CapabilityGrantError::SizeOverflow)?;
         let value = checked_capability_sum([
             framed_capability_bytes(entry.lineage.as_bytes().len())?,

@@ -3135,6 +3135,60 @@ mod tests {
         }
     }
 
+    /// ADR-0118 CLI sweep: both output modes pass the stable redaction
+    /// marker through to the raw output bytes verbatim, alongside released
+    /// values (the visible canary proves the display channel is live).
+    ///
+    /// The secret VALUE's absence on this surface is enforced server-side:
+    /// the service release point strips secret fields before any response
+    /// exists, so the wire record this renderer consumes cannot carry one
+    /// (`release_point_withholds_secret_fields_from_an_enumerate_all_mask`
+    /// in riffdb-service is the upstream red).
+    #[test]
+    fn redaction_markers_survive_machine_and_human_rendering_verbatim() {
+        const VISIBLE_CANARY: &str = "wp597-cli-visible-canary-4e08";
+        const MARKER: &str = "[redacted:token_hash]";
+        let response = v1::GetEntityResponse {
+            result: Some(v1::get_entity_response::Result::Found(v1::Entity {
+                entity_key: vec![1, 2, 3],
+                entity_version: 1,
+                written_by_contract_version: 1,
+                fields: Some(v1::ValueRecord {
+                    fields: vec![
+                        v1::ValueField {
+                            field_id: Some(1),
+                            name: String::new(),
+                            value: Some(v1::Value {
+                                kind: Some(v1::value::Kind::StringValue(VISIBLE_CANARY.to_owned())),
+                            }),
+                        },
+                        v1::ValueField {
+                            field_id: Some(2),
+                            name: String::new(),
+                            value: Some(v1::Value {
+                                kind: Some(v1::value::Kind::StringValue(MARKER.to_owned())),
+                            }),
+                        },
+                    ],
+                }),
+            })),
+        };
+        for mode in [OutputMode::Json, OutputMode::Human] {
+            let terminal = render_entity(&response);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let _ = terminal.emit(mode, &mut stdout, &mut stderr);
+            assert!(
+                contains(&stdout, VISIBLE_CANARY.as_bytes()),
+                "released values must reach the raw bytes"
+            );
+            assert!(
+                contains(&stdout, MARKER.as_bytes()),
+                "the redaction marker must survive rendering verbatim"
+            );
+        }
+    }
+
     fn result_terminal(name: &str, result: &JsonValue) -> Terminal {
         let status = result["status"].as_str().expect("result status");
         if name.starts_with("contract.validate.") {

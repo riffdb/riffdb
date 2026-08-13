@@ -187,6 +187,10 @@ pub struct FieldMask {
     lineage: ContractLineage,
     entity_type_id: EntityTypeId,
     fields: Vec<FieldId>,
+    /// Secret-classified fields the grant explicitly names for reveal
+    /// (ADR-0118). Always disjoint from `fields`: a secret field can never
+    /// enter the ordinary mask, only this explicitly granted set.
+    secret_fields: Vec<FieldId>,
 }
 
 impl FieldMask {
@@ -199,7 +203,20 @@ impl FieldMask {
             lineage,
             entity_type_id,
             fields,
+            secret_fields: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_secret_fields(mut self, secret_fields: Vec<FieldId>) -> Self {
+        self.secret_fields = secret_fields;
+        self
+    }
+
+    /// Secret-classified fields explicitly granted for reveal, in increasing
+    /// stable-ID order (ADR-0118).
+    #[must_use]
+    pub fn secret_fields(&self) -> &[FieldId] {
+        &self.secret_fields
     }
 
     /// Returns the exact contract lineage owning the entity type.
@@ -218,6 +235,23 @@ impl FieldMask {
     #[must_use]
     pub fn fields(&self) -> &[FieldId] {
         &self.fields
+    }
+
+    /// Mints sealed reveal authority for every secret field this mask's
+    /// grant explicitly names (ADR-0118).
+    ///
+    /// This is the ONLY mint for [`crate::SecretRevealAuthority`]: the type
+    /// has no constructor outside the policy crate, and a `FieldMask` can be
+    /// produced only by the authorizer's evaluation of a real capability
+    /// grant — so holding an authority IS the proof that a policy decision
+    /// named the field. The display-surface architecture test enumerates
+    /// this method's call sites.
+    #[must_use]
+    pub fn secret_reveal_authorities(&self) -> Vec<crate::SecretRevealAuthority> {
+        self.secret_fields
+            .iter()
+            .map(|field| crate::SecretRevealAuthority::sealed(*field))
+            .collect()
     }
 }
 
@@ -1398,7 +1432,7 @@ impl AuthorizedDiscovery {
                         &self.grant,
                         candidate.operation().lineage(),
                         candidate.accesses(),
-                    )
+                    ) == QueryAccessVisibility::Visible
                 {
                     DiscoveryVisibility::Visible
                 } else {
@@ -1440,8 +1474,16 @@ impl AuthorizedDiscovery {
                 {
                     return ResourceDiscoveryVisibility::Hidden;
                 }
-                let field_mask = resource_field_requirement(candidate)
-                    .map(|requirement| derive_field_mask(&self.grant, requirement));
+                // Discovery candidates keep secrets out of `non_key_fields`,
+                // so mask derivation cannot deny here; a defensive error
+                // still fails closed to Hidden.
+                let field_mask = match resource_field_requirement(candidate)
+                    .map(|requirement| derive_field_mask(&self.grant, requirement))
+                    .transpose()
+                {
+                    Ok(field_mask) => field_mask,
+                    Err(_) => return ResourceDiscoveryVisibility::Hidden,
+                };
                 ResourceDiscoveryVisibility::Visible { field_mask }
             })
             .collect())
@@ -1482,27 +1524,56 @@ impl AuthorizedDiscovery {
     }
 }
 
+/// Outcome of the application-query visibility gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QueryAccessVisibility {
+    /// Every access is visible under the grant.
+    Visible,
+    /// An access exceeds row bounds or names an invisible ordinary field.
+    Denied,
+    /// An access projects a secret-classified field the grant's dedicated
+    /// secret naming does not reveal (ADR-0118).
+    SecretDenied,
+}
+
 pub(crate) fn application_query_accesses_visible(
     grant: &CapabilityGrantV1,
     lineage: &ContractLineage,
     accesses: &[ApplicationQueryAccessRequirement],
-) -> bool {
-    accesses.iter().all(|access| {
+) -> QueryAccessVisibility {
+    for access in accesses {
         if access.maximum_rows() > grant.max_scan_rows() {
-            return false;
+            return QueryAccessVisibility::Denied;
+        }
+        let entry = grant.field_visibility().iter().find(|visibility| {
+            visibility.lineage() == lineage && visibility.entity_type() == access.entity_type_id()
+        });
+        // Projected secrets are gated FIRST and only against the dedicated
+        // secret naming: presence in the ordinary visibility list — the
+        // shape every role default produces — never reveals (ADR-0118).
+        if !access.projected_secret_fields().is_empty() {
+            let named = entry.map_or(&[][..], |entry| entry.secret_fields());
+            if access
+                .projected_secret_fields()
+                .iter()
+                .any(|field| named.binary_search(field).is_err())
+            {
+                return QueryAccessVisibility::SecretDenied;
+            }
         }
         if access.non_key_fields().is_empty() {
-            return true;
+            continue;
         }
-        grant.field_visibility().iter().any(|visibility| {
-            visibility.lineage() == lineage
-                && visibility.entity_type() == access.entity_type_id()
-                && access
-                    .non_key_fields()
-                    .iter()
-                    .all(|field| visibility.fields().binary_search(field).is_ok())
-        })
-    })
+        let visible = entry.map_or(&[][..], |entry| entry.fields());
+        if access
+            .non_key_fields()
+            .iter()
+            .any(|field| visible.binary_search(field).is_err())
+        {
+            return QueryAccessVisibility::Denied;
+        }
+    }
+    QueryAccessVisibility::Visible
 }
 
 impl fmt::Debug for AuthorizedDiscovery {
@@ -1567,29 +1638,49 @@ pub(crate) fn check_permission(
     })
 }
 
+/// Derives the visible-field mask, denying observably when the request names
+/// a secret-classified field the grant does not explicitly reveal.
+///
+/// Default-deny for secrets (ADR-0118 item 3): the ordinary visibility list —
+/// however it was derived, including a role default or harness enumeration of
+/// every field — NEVER admits a secret-classified field into the ordinary
+/// mask. A secret enters the mask's separate reveal set only when the grant's
+/// dedicated `secret_fields` naming lists it. Requesting a secret without
+/// that naming is an observed typed denial, not a silent narrowing.
 pub(crate) fn derive_field_mask(
     grant: &CapabilityGrantV1,
     requirement: FieldRequirement<'_>,
-) -> FieldMask {
-    let visible = grant
-        .field_visibility()
-        .iter()
-        .find(|entry| {
-            entry.lineage() == requirement.lineage
-                && entry.entity_type() == requirement.entity_type_id
-        })
-        .map_or(&[][..], |entry| entry.fields());
+) -> Result<FieldMask, PolicyCode> {
+    let entry = grant.field_visibility().iter().find(|entry| {
+        entry.lineage() == requirement.lineage && entry.entity_type() == requirement.entity_type_id
+    });
+    let visible = entry.map_or(&[][..], |entry| entry.fields());
+    let visible_secret = entry.map_or(&[][..], |entry| entry.secret_fields());
+    if requirement.non_key_fields.iter().any(|field| {
+        requirement.secret_fields.binary_search(field).is_ok()
+            && visible_secret.binary_search(field).is_err()
+    }) {
+        return Err(PolicyCode::FieldVisibilityDenied);
+    }
     let fields = requirement
         .non_key_fields
         .iter()
         .copied()
+        .filter(|field| requirement.secret_fields.binary_search(field).is_err())
         .filter(|field| visible.binary_search(field).is_ok())
         .collect();
-    FieldMask::new(
+    let secret_fields = requirement
+        .secret_fields
+        .iter()
+        .copied()
+        .filter(|field| visible_secret.binary_search(field).is_ok())
+        .collect();
+    Ok(FieldMask::new(
         requirement.lineage.clone(),
         requirement.entity_type_id,
         fields,
     )
+    .with_secret_fields(secret_fields))
 }
 
 fn resource_scope_is_discoverable(
@@ -2580,5 +2671,222 @@ mod tests {
             OutputClassification::PolicyFilteredApplicationData,
         );
         assert_eq!(obligations.kinds().collect::<Vec<_>>(), ObligationKind::ALL);
+    }
+
+    // ─── Secret-field default-deny (ADR-0118, WP-597) ───
+
+    fn secret_field() -> FieldId {
+        FieldId::new(7).expect("nonzero field")
+    }
+
+    fn plain_field() -> FieldId {
+        FieldId::new(2).expect("nonzero field")
+    }
+
+    /// The de-facto wildcard — every field named in the ORDINARY visibility
+    /// list, exactly the shape a role default or harness enumeration
+    /// produces — must provably NOT reveal a secret-classified field.
+    ///
+    /// The triggering set is non-empty by construction: the unclassified
+    /// control shows the same grant WOULD admit the same field through the
+    /// ordinary rule, so the denial below is the classification working,
+    /// not a vacuously absent path.
+    #[test]
+    fn enumerate_all_visibility_never_reveals_secret_fields() {
+        let lineage_value = lineage();
+        let wildcard = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage_value.clone(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first(), plain_field(), secret_field()],
+                )
+                .expect("valid visibility"),
+            ],
+            Vec::new(),
+        );
+        let secret_fields = [secret_field()];
+
+        // Control (non-empty triggering set): with no classification the
+        // ordinary rule admits the field.
+        let unclassified = derive_field_mask(
+            &wildcard,
+            FieldRequirement {
+                lineage: &lineage_value,
+                entity_type_id: EntityTypeId::first(),
+                non_key_fields: &[secret_field()],
+                secret_fields: &[],
+            },
+        )
+        .expect("without classification the ordinary rule admits the field");
+        assert_eq!(unclassified.fields(), &[secret_field()]);
+
+        // Classified and explicitly requested: an OBSERVED typed denial,
+        // not silent narrowing.
+        let denied = derive_field_mask(
+            &wildcard,
+            FieldRequirement {
+                lineage: &lineage_value,
+                entity_type_id: EntityTypeId::first(),
+                non_key_fields: &[secret_field()],
+                secret_fields: &secret_fields,
+            },
+        );
+        assert_eq!(denied, Err(PolicyCode::FieldVisibilityDenied));
+
+        // Classified and not requested: neither the field nor any reveal
+        // authority enters the mask.
+        let mask = derive_field_mask(
+            &wildcard,
+            FieldRequirement {
+                lineage: &lineage_value,
+                entity_type_id: EntityTypeId::first(),
+                non_key_fields: &[FieldId::first()],
+                secret_fields: &secret_fields,
+            },
+        )
+        .expect("plain request stays visible");
+        assert_eq!(mask.fields(), &[FieldId::first()]);
+        assert!(mask.secret_fields().is_empty());
+    }
+
+    /// Explicit naming through the dedicated secret list reveals; the same
+    /// call one grant short fails typed (the boundary in both directions).
+    #[test]
+    fn explicit_secret_naming_reveals_and_one_grant_short_fails_typed() {
+        let lineage_value = lineage();
+        let secret_fields = [secret_field()];
+        let requested = [FieldId::first(), secret_field()];
+        let requirement = || FieldRequirement {
+            lineage: &lineage_value,
+            entity_type_id: EntityTypeId::first(),
+            non_key_fields: &requested,
+            secret_fields: &secret_fields,
+        };
+
+        let named = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::with_secret_fields(
+                    lineage_value.clone(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                    vec![secret_field()],
+                )
+                .expect("valid secret naming"),
+            ],
+            Vec::new(),
+        );
+        let mask = derive_field_mask(&named, requirement()).expect("named secret reveals");
+        assert_eq!(mask.fields(), &[FieldId::first()]);
+        assert_eq!(mask.secret_fields(), &[secret_field()]);
+
+        let one_short = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage_value.clone(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                )
+                .expect("valid visibility"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            derive_field_mask(&one_short, requirement()),
+            Err(PolicyCode::FieldVisibilityDenied)
+        );
+    }
+
+    /// Application queries: projecting a secret requires the dedicated
+    /// naming; predicate-only secret use passes without any secret grant.
+    #[test]
+    fn query_projection_of_secret_requires_dedicated_naming() {
+        let lineage_value = lineage();
+        let rows = NonZeroU16::new(5).expect("rows");
+        let projecting = ApplicationQueryAccessRequirement::new(
+            EntityTypeId::first(),
+            None,
+            vec![FieldId::first()],
+            rows,
+        )
+        .expect("access")
+        .with_projected_secret_fields(vec![secret_field()])
+        .expect("projected secrets");
+        let predicate_only = ApplicationQueryAccessRequirement::new(
+            EntityTypeId::first(),
+            None,
+            vec![FieldId::first()],
+            rows,
+        )
+        .expect("access");
+
+        // Enumerate-all ordinary visibility (the wildcard shape) does not
+        // satisfy a secret projection.
+        let enumerated = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage_value.clone(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first(), plain_field(), secret_field()],
+                )
+                .expect("valid visibility"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            application_query_accesses_visible(
+                &enumerated,
+                &lineage_value,
+                std::slice::from_ref(&projecting)
+            ),
+            QueryAccessVisibility::SecretDenied
+        );
+        // Predicate-only use of the same entity stays visible under the
+        // same grant: the value is compared, never returned.
+        assert_eq!(
+            application_query_accesses_visible(
+                &enumerated,
+                &lineage_value,
+                std::slice::from_ref(&predicate_only)
+            ),
+            QueryAccessVisibility::Visible
+        );
+
+        // The dedicated naming satisfies the projection.
+        let named = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::with_secret_fields(
+                    lineage_value.clone(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                    vec![secret_field()],
+                )
+                .expect("valid secret naming"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            application_query_accesses_visible(
+                &named,
+                &lineage_value,
+                std::slice::from_ref(&projecting)
+            ),
+            QueryAccessVisibility::Visible
+        );
     }
 }

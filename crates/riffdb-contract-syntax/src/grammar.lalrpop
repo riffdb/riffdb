@@ -171,7 +171,17 @@ EntityItem: Spanned<EntityItem> = {
     <lo:@L> "key" "(" <fields:TypedFieldList> ")" <hi:@R>
         => parser::spanned(EntityItem::Key(KeyDeclaration { fields }), lo, hi),
     <lo:@L> "field" <field:TypedField> <hi:@R>
-        => parser::spanned(EntityItem::Field(field), lo, hi),
+        => parser::spanned(EntityItem::Field(FieldDeclaration {
+            secret: None,
+            name: field.name,
+            ty: field.ty,
+        }), lo, hi),
+    // Contextual: the classification modifier is an ordinary identifier
+    // everywhere except between `field` and the field name, so `field
+    // secret: ...` stays a valid field named `secret` (ADR-0118 additive
+    // compatibility).
+    <lo:@L> "field" <modifier:Identifier> <field:TypedField> <hi:@R>
+        =>? parser::grammar_result(parser::classified_field_item(modifier, field, lo, hi)),
     <lo:@L> <invariant:InvariantDeclaration> <hi:@R>
         => parser::spanned(EntityItem::Invariant(invariant), lo, hi),
     <lo:@L> "index" <name:Identifier> "(" <fields:IdentifierList> ")"

@@ -160,6 +160,34 @@ pub(crate) fn vector_field_item(
     ))
 }
 
+/// Builds a stored entity field carrying a contextual classification
+/// modifier.
+///
+/// `secret` is the only accepted classification (ADR-0118); it is an
+/// ordinary identifier everywhere else in the grammar.
+pub(crate) fn classified_field_item(
+    modifier: Spanned<String>,
+    field: TypedField,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<EntityItem>, SyntaxDiagnostic> {
+    if modifier.value != "secret" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            modifier.span,
+        ));
+    }
+    Ok(spanned(
+        EntityItem::Field(FieldDeclaration {
+            secret: Some(modifier.span),
+            name: field.name,
+            ty: field.ty,
+        }),
+        lo,
+        hi,
+    ))
+}
+
 /// A temporary parser value that enforces expression bounds before boxing.
 pub(crate) struct ParsedExpression {
     syntax: Spanned<Expression>,
@@ -894,7 +922,14 @@ impl NodeCounter {
                             self.add(1, item.span)?;
                             self.typed_fields(&key.fields, item.span)?;
                         }
-                        EntityItem::Field(field) => self.typed_field(field)?,
+                        EntityItem::Field(field) => {
+                            if field.secret.is_some() {
+                                self.add(1, item.span)?;
+                            }
+                            self.add(1, field.name.span)?;
+                            self.name(&field.name)?;
+                            self.type_expression(&field.ty)?;
+                        }
                         EntityItem::Invariant(invariant) => self.invariant(invariant)?,
                         EntityItem::Index(index) => {
                             self.add(1, item.span)?;

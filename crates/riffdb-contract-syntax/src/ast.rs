@@ -190,7 +190,7 @@ pub enum EntityItem {
     /// The entity's key declaration.
     Key(KeyDeclaration),
     /// A stored entity field.
-    Field(TypedField),
+    Field(FieldDeclaration),
     /// A named entity invariant.
     Invariant(InvariantDeclaration),
     /// An exact-prefix index declaration.
@@ -224,6 +224,22 @@ pub enum DeletePolicyDeclaration {
 pub struct KeyDeclaration {
     /// Key fields in source order.
     pub fields: Vec<Spanned<TypedField>>,
+}
+
+/// A stored entity field declaration with its optional classification.
+///
+/// Only stored entity fields accept the contextual `secret` classification
+/// modifier (ADR-0118). Key fields, event fields, and command inputs remain
+/// plain [`TypedField`]s, so the classification is unrepresentable there by
+/// construction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FieldDeclaration {
+    /// Span of the contextual `secret` classification modifier, when present.
+    pub secret: Option<Span>,
+    /// The field identifier.
+    pub name: Spanned<String>,
+    /// The unresolved source type.
+    pub ty: Spanned<TypeExpression>,
 }
 
 /// A source-spelled field name and unresolved type.

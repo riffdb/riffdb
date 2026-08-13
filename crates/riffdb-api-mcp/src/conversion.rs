@@ -358,6 +358,20 @@ pub enum McpPresentedValue {
         /// Ordered fields.
         fields: Vec<McpPresentedField>,
     },
+    /// A secret-classified field's value withheld by structural redaction
+    /// (ADR-0118). Carries only the stable marker — the value never reached
+    /// this surface.
+    ///
+    /// The value-bearing wrapper itself (`riffdb_policy::SecretValue`) is
+    /// unserializable — neither `riffdb-policy` nor `riffdb-types` carries a
+    /// serde dependency, so by the orphan rule no `Serialize` impl can exist
+    /// anywhere; the compile-fail doctests pinning this (and the
+    /// unforgeability of the sealed reveal authority) live on
+    /// `riffdb_policy::secret`.
+    Redacted {
+        /// The stable redaction marker, `[redacted:field_name]`-shaped.
+        marker: String,
+    },
 }
 
 /// Fixed provenance selector.

@@ -185,6 +185,24 @@ impl EntitySchemaCandidate {
     pub fn non_key_fields(&self) -> &[FieldId] {
         &self.0.non_key_fields
     }
+
+    /// Declares the entity's schema-declared secret-classified fields
+    /// (ADR-0118). Keep them OUT of `non_key_fields`: discovery classifies
+    /// them against the grant's dedicated secret naming instead of the
+    /// ordinary visibility list.
+    pub fn with_secret_classified_fields(
+        mut self,
+        secret_fields: Vec<FieldId>,
+    ) -> Result<Self, OperationRequestError> {
+        self.0.set_secret_fields(secret_fields)?;
+        Ok(self)
+    }
+
+    /// Returns the declared secret-classified fields in increasing order.
+    #[must_use]
+    pub fn secret_fields(&self) -> &[FieldId] {
+        &self.0.secret_fields
+    }
 }
 
 impl fmt::Debug for EntitySchemaCandidate {
@@ -435,6 +453,9 @@ pub enum OperationRequestError {
     TooManyQueryAccesses,
     /// The named permission and compiler-derived target name different contracts.
     ApplicationQueryContractMismatch,
+    /// A secret-classification declaration was attached to an operation kind
+    /// that carries no field request.
+    UnsupportedOperation,
 }
 
 impl fmt::Display for OperationRequestError {
@@ -452,6 +473,9 @@ impl fmt::Display for OperationRequestError {
             Self::ApplicationQueryContractMismatch => {
                 "application query permission and target contracts do not match"
             }
+            Self::UnsupportedOperation => {
+                "secret classification applies only to entity reads and index scans"
+            }
         })
     }
 }
@@ -463,6 +487,11 @@ struct FieldRequest {
     lineage: ContractLineage,
     entity_type_id: EntityTypeId,
     non_key_fields: Vec<FieldId>,
+    /// Schema-declared secret-classified fields for the target entity
+    /// (ADR-0118), supplied by the service from the compiled bundle. The
+    /// authorizer denies requested secrets absent explicit secret visibility
+    /// and derives reveal authority only from the grant's secret naming.
+    secret_fields: Vec<FieldId>,
 }
 
 impl FieldRequest {
@@ -482,7 +511,23 @@ impl FieldRequest {
             lineage,
             entity_type_id,
             non_key_fields,
+            secret_fields: Vec::new(),
         })
+    }
+
+    fn set_secret_fields(
+        &mut self,
+        mut secret_fields: Vec<FieldId>,
+    ) -> Result<(), OperationRequestError> {
+        if secret_fields.len() > MAX_CAPABILITY_FIELD_VISIBILITY {
+            return Err(OperationRequestError::TooManyFields);
+        }
+        secret_fields.sort_unstable();
+        if secret_fields.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(OperationRequestError::DuplicateField);
+        }
+        self.secret_fields = secret_fields;
+        Ok(())
     }
 }
 
@@ -499,6 +544,10 @@ pub struct ApplicationQueryAccessRequirement {
     index_id: Option<IndexId>,
     non_key_fields: Vec<FieldId>,
     maximum_rows: NonZeroU16,
+    /// Secret-classified fields this access PROJECTS into results
+    /// (ADR-0118). Predicate-only secret use is deliberately excluded: the
+    /// value is compared, never returned, so it needs no read visibility.
+    projected_secret_fields: Vec<FieldId>,
 }
 
 impl ApplicationQueryAccessRequirement {
@@ -521,7 +570,34 @@ impl ApplicationQueryAccessRequirement {
             index_id,
             non_key_fields,
             maximum_rows,
+            projected_secret_fields: Vec::new(),
         })
+    }
+
+    /// Declares which secret-classified fields this access projects into
+    /// results (ADR-0118). Each must require explicit secret visibility.
+    pub fn with_projected_secret_fields(
+        mut self,
+        mut projected_secret_fields: Vec<FieldId>,
+    ) -> Result<Self, OperationRequestError> {
+        if projected_secret_fields.len() > MAX_CAPABILITY_FIELD_VISIBILITY {
+            return Err(OperationRequestError::TooManyFields);
+        }
+        projected_secret_fields.sort_unstable();
+        if projected_secret_fields
+            .windows(2)
+            .any(|pair| pair[0] == pair[1])
+        {
+            return Err(OperationRequestError::DuplicateField);
+        }
+        self.projected_secret_fields = projected_secret_fields;
+        Ok(self)
+    }
+
+    /// Secret-classified fields this access projects, in increasing order.
+    #[must_use]
+    pub fn projected_secret_fields(&self) -> &[FieldId] {
+        &self.projected_secret_fields
     }
 
     /// Returns the compiler-resolved entity identity.
@@ -1908,9 +1984,30 @@ impl OperationRequest {
                     lineage: &fields.lineage,
                     entity_type_id: fields.entity_type_id,
                     non_key_fields: &fields.non_key_fields,
+                    secret_fields: &fields.secret_fields,
                 })
             }
             _ => None,
+        }
+    }
+
+    /// Declares the target entity's schema-declared secret-classified fields
+    /// (ADR-0118) on an entity read or index scan.
+    ///
+    /// Only the service supplies this, from the compiled bundle; without it
+    /// the authorizer treats the entity as having no secret fields, which is
+    /// exact for every pre-ADR-0118 contract. Any other operation kind
+    /// rejects the declaration.
+    pub fn with_secret_classified_fields(
+        mut self,
+        secret_fields: Vec<FieldId>,
+    ) -> Result<Self, OperationRequestError> {
+        match &mut self.0 {
+            OperationKind::GetEntity { fields, .. } | OperationKind::ScanIndex { fields, .. } => {
+                fields.set_secret_fields(secret_fields)?;
+                Ok(self)
+            }
+            _ => Err(OperationRequestError::UnsupportedOperation),
         }
     }
 
@@ -2153,6 +2250,9 @@ pub(crate) struct FieldRequirement<'a> {
     pub(crate) lineage: &'a ContractLineage,
     pub(crate) entity_type_id: EntityTypeId,
     pub(crate) non_key_fields: &'a [FieldId],
+    /// Schema-declared secret-classified fields for the entity (ADR-0118),
+    /// in increasing order.
+    pub(crate) secret_fields: &'a [FieldId],
 }
 
 pub(crate) struct OutcomeOwnerRequirement<'a> {
@@ -2279,6 +2379,7 @@ pub(crate) fn resource_field_requirement(
             lineage: candidate.lineage(),
             entity_type_id: candidate.entity_type_id(),
             non_key_fields: candidate.non_key_fields(),
+            secret_fields: candidate.secret_fields(),
         }),
         _ => None,
     }
