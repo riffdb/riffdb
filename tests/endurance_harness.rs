@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! Process-boundary acceptance for the closed endurance receipt validator.
 
-use std::path::PathBuf;
 use std::process::Command;
+use std::{fs, path::PathBuf};
 
 fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -86,4 +86,25 @@ fn controller_rejects_unreceipted_lifecycle_success() {
     assert!(stdout.contains("bounded_action_result: passed"));
     assert!(stdout.contains("silent_loss_conformance: rejected"));
     assert!(stdout.contains("bounded_conformance_result: passed"));
+}
+
+#[test]
+fn endurance_receipts_use_the_accepted_four_alpha_domains() {
+    let root = repository_root();
+    for script in [
+        "scripts/alpha-endurance",
+        "scripts/alpha-endurance-controller",
+    ] {
+        let source = fs::read_to_string(root.join(script)).expect("endurance source is readable");
+        assert!(
+            source.contains(
+                "REQUIRED_DOMAINS = {\"openfga\", \"mlflow\", \"better-auth\", \"woodpecker\"}"
+            ),
+            "{script} does not bind the accepted alpha adapter inventory"
+        );
+        assert!(
+            !source.contains("\"payload\""),
+            "{script} incorrectly promotes the retained Payload regression into the alpha gate"
+        );
+    }
 }

@@ -121,7 +121,9 @@ The inventory uses schema
 `riffdb.alpha-endurance-release-inventory/v1`, fixes the durable-format path to
 `release/durable-format-manifest-v1.json`, and supplies export/reimport,
 disaster-recovery, and conformance receipt paths for exactly `openfga`,
-`mlflow`, `payload`, and `woodpecker`. The binder derives all hashes itself,
+`mlflow`, `better-auth`, and `woodpecker`. Payload remains a post-alpha
+regression fixture and does not occupy one of the four release receipt slots.
+The binder derives all hashes itself,
 validates each referenced schema, adds canonical environment and observation
 digests, re-runs full 72-hour validation, and publishes through an atomic
 same-directory replacement. Paths outside the closed release prefixes or

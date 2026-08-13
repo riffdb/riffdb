@@ -22,7 +22,7 @@ MAX_ACTION_RESULT_BYTES = 64 * 1024
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
-REQUIRED_DOMAINS = {"openfga", "mlflow", "payload", "woodpecker"}
+REQUIRED_DOMAINS = {"openfga", "mlflow", "better-auth", "woodpecker"}
 REQUIRED_LIFECYCLES = {
     "journal_recycle",
     "checkpoint",

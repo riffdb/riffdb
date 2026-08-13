@@ -23,7 +23,7 @@ ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
 MAX_JSON_BYTES = 4 * 1024 * 1024
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
-REQUIRED_DOMAINS = {"openfga", "mlflow", "payload", "woodpecker"}
+REQUIRED_DOMAINS = {"openfga", "mlflow", "better-auth", "woodpecker"}
 REQUIRED_WORKLOADS = {
     "reads",
     "writes",
@@ -753,7 +753,7 @@ def self_test() -> None:
         bound = bind_release_receipt(release_candidate, inventory, manifest, release_root)
         validate_release_receipt(bound, manifest, release_root)
         forged = copy.deepcopy(bound)
-        forged["release_bindings"]["adapters"]["payload"]["conformance"]["sha256"] = "0" * 64
+        forged["release_bindings"]["adapters"]["better-auth"]["conformance"]["sha256"] = "0" * 64
         try:
             validate_release_receipt(forged, manifest, release_root)
         except EvidenceError as error:
