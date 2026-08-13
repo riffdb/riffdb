@@ -121,6 +121,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: ExportCommand,
     },
+    /// Reconstitutes one empty not-ready database from an exact portability export.
+    Reimport {
+        #[command(subcommand)]
+        command: ReimportCommand,
+    },
     /// Inspects or upgrades one closed database's durable format.
     Storage {
         #[command(subcommand)]
@@ -189,6 +194,67 @@ pub(crate) enum ExportCommand {
     Cancel {
         #[arg(long, value_name = "UUID_V7")]
         operation_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ReimportScope {
+    /// Reconstitute only the principal-filtered source authorized by the grant.
+    Principal,
+    /// Reconstitute the explicitly authorized whole-application source.
+    Whole,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReimportCommand {
+    /// Starts or exactly replays one immutable reimport campaign.
+    Start {
+        #[arg(long, value_name = "CONTRACT_LINEAGE")]
+        lineage: String,
+        #[arg(long, value_enum, value_name = "principal|whole")]
+        scope: ReimportScope,
+        #[arg(long, value_name = "PORTABILITY_MANIFEST_JSON")]
+        portability_manifest: OsString,
+        #[arg(long, value_name = "EXPORT_MANIFEST_JSON")]
+        export_manifest: OsString,
+        #[arg(long, value_name = "EXPORT_RECEIPT_JSON")]
+        export_receipt: OsString,
+        #[arg(long, value_name = "UUID_V7")]
+        campaign_id: Option<String>,
+    },
+    /// Applies one exact hash-bearing entity page from the source export.
+    Page {
+        #[arg(long, value_name = "UUID_V7")]
+        campaign_id: String,
+        #[arg(long, value_name = "UUID_V7")]
+        export_operation_id: String,
+        #[arg(long, value_name = "POSITIVE_INTEGER")]
+        page_number: String,
+        #[arg(long, value_name = "CANONICAL_JSONL_FILE")]
+        jsonl: OsString,
+        #[arg(long, value_name = "LOWER_HEX_SHA256")]
+        page_hash: String,
+        #[arg(long)]
+        class_complete: bool,
+        #[arg(long)]
+        operation_complete: bool,
+        #[arg(
+            long,
+            value_name = "OPAQUE_BASE64_CURSOR",
+            required_unless_present = "operation_complete",
+            conflicts_with = "operation_complete"
+        )]
+        next_cursor: Option<String>,
+    },
+    /// Observes one durable reimport checkpoint or terminal receipt.
+    Status {
+        #[arg(long, value_name = "UUID_V7")]
+        campaign_id: String,
+    },
+    /// Cancels one nonterminal reimport campaign.
+    Cancel {
+        #[arg(long, value_name = "UUID_V7")]
+        campaign_id: String,
     },
 }
 
@@ -2028,6 +2094,82 @@ mod tests {
                 "2",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn reimport_commands_require_exact_source_identity_and_never_accept_raw_rows() {
+        let campaign = "018f2f85-3c20-7a31-8f11-112233445566";
+        let operation = "018f2f85-3c20-7a31-8f11-112233445577";
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "reimport",
+                "start",
+                "--lineage",
+                "TicketDesk",
+                "--scope",
+                "whole",
+                "--portability-manifest",
+                "portability.json",
+                "--export-manifest",
+                "manifest.json",
+                "--export-receipt",
+                "receipt.json",
+                "--campaign-id",
+                campaign,
+            ])
+            .expect("closed reimport start")
+            .command,
+            TopLevel::Reimport {
+                command: ReimportCommand::Start {
+                    scope: ReimportScope::Whole,
+                    campaign_id: Some(parsed),
+                    ..
+                }
+            } if parsed == campaign
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "reimport",
+                "page",
+                "--campaign-id",
+                campaign,
+                "--export-operation-id",
+                operation,
+                "--page-number",
+                "1",
+                "--jsonl",
+                "page.jsonl",
+                "--page-hash",
+                "0101010101010101010101010101010101010101010101010101010101010101",
+                "--operation-complete",
+                "--class-complete",
+            ])
+            .expect("hash-bound terminal page")
+            .command,
+            TopLevel::Reimport {
+                command: ReimportCommand::Page {
+                    operation_complete: true,
+                    class_complete: true,
+                    next_cursor: None,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "reimport",
+                "page",
+                "--campaign-id",
+                campaign,
+                "--jsonl",
+                "page.jsonl",
+            ])
+            .is_err(),
+            "a raw JSONL import without source operation/page/hash is unrepresentable"
         );
     }
 

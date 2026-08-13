@@ -231,12 +231,13 @@ remains a symbolic next action, and conflicting identity becomes a typed
 partial campaign. This makes resuming existing deployment operations safe
 without accepting caller-asserted remote identities.
 
-The current implementation recognizes and retains a plan-bound reimport stage,
-but the public reimport coordinator is not yet available. Consequently a v2
-reimport campaign remains safely stopped at `reimport` and reports the
-`reimport_application` next action; it cannot advance to credential
-publication. This is an intentional intermediate WP-599 boundary, not a manual
-attestation surface.
+The public operator-only reimport coordinator now owns the plan-bound reimport
+stage. A v2 reimport installation remains safely stopped at
+`reimport_application` until the separate Capability V7-authorized campaign
+has applied every exact page through compiler-owned commands and retained its
+canonical reconciliation receipt. The installation service observes that
+receipt from authoritative state; callers cannot submit a completion flag or
+advance directly to credential publication.
 
 The CLI and Rust operator SDK can resume the exact current `driver_proof` stage with
 `StartApplicationInstallation::with_driver_proof` and the exact current

@@ -16,17 +16,19 @@ use riffdb_application::{
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationExportOperationId,
-    ApplicationExportSelectionV1, ApplicationOperation, ApplicationUuid, ApplicationValue,
-    ApplyContractMigration, AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate,
-    CallMetadata, CapabilityApplicationExportScopeV1, CheckContractMigration, ClientError,
-    CommitToken, ContractMigrationOperationId, CreateOfflineBackup, FreshnessPolicy,
-    IdempotentCommand, MigrationBundleHash, NormalCapabilityCreateTemplate,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedAggregate,
-    ProjectedAggregateValue, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
-    ProjectedQueryOutcome, ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup,
-    RiffDbClient, StartApplicationExport, StartApplicationInstallation, app_v1,
+    ApplicationExportSelectionV1, ApplicationInstallationCampaignId, ApplicationOperation,
+    ApplicationUuid, ApplicationValue, ApplyContractMigration, AttemptBudget, BackupNameV1,
+    BootstrapCapabilityCreateTemplate, CallMetadata, CapabilityApplicationExportScopeV1,
+    CheckContractMigration, ClientError, CommitToken, ContractMigrationOperationId,
+    CreateOfflineBackup, FreshnessPolicy, IdempotentCommand, MigrationBundleHash,
+    NormalCapabilityCreateTemplate, OfflineMaintenanceOperationId,
+    OfflineMaintenanceReplacementConfirmation, ProjectedAggregate, ProjectedAggregateValue,
+    ProjectedOrder, ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome,
+    ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup, RiffDbClient,
+    StartApplicationExport, StartApplicationInstallation, StartApplicationReimport, app_v1,
     canonical_value_from_proto, canonical_value_to_proto, generate_application_export_operation_id,
-    generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
+    generate_application_installation_campaign_id, generate_capability_id,
+    generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -37,7 +39,7 @@ use riffdb_query_module::{
     compile_application_role_v2, compile_reactive_source,
 };
 use riffdb_types::{
-    ActorId, ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
+    ActorId, CanonicalValue, CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPrincipalFactV1,
     CapabilityPrincipalFactsV1, CapabilityRowPolicyOperationV1, ContractLineage,
     GeneratedArtifactHash, PartitionScopeV1, TenantId, TenantScope, hash_generated_artifact,
@@ -54,8 +56,9 @@ use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
     EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope, MigrationCommand,
-    OutputMode, ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand,
-    RevocationReason, RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
+    OutputMode, ProjectionCommand, QueryCommand, ReimportCommand, ReimportScope, RetentionCommand,
+    RetentionHoldCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand,
+    StorageCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -780,6 +783,7 @@ async fn dispatch(
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
         TopLevel::Export { command } => export_command(command, config, environment).await,
+        TopLevel::Reimport { command } => reimport_command(command, config, environment).await,
         TopLevel::Storage { command } => storage_command(command),
         TopLevel::Retention { command } => retention_command(command),
         TopLevel::Demo { command } => demo_command(command, config, environment),
@@ -5091,6 +5095,301 @@ fn export_uncertain(
         }),
         "outcome_unknown",
         "the application export outcome remains unknown",
+        3,
+    )
+}
+
+async fn reimport_command(
+    command: ReimportCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = match command {
+        ReimportCommand::Start { .. } => CommandIdentity::ReimportStart,
+        ReimportCommand::Page { .. } => CommandIdentity::ReimportPage,
+        ReimportCommand::Status { .. } => CommandIdentity::ReimportStatus,
+        ReimportCommand::Cancel { .. } => CommandIdentity::ReimportCancel,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    match command {
+        ReimportCommand::Start {
+            lineage,
+            scope,
+            portability_manifest,
+            export_manifest,
+            export_receipt,
+            campaign_id,
+        } => {
+            let campaign_id = match campaign_id {
+                Some(value) => match parse_application_installation_campaign_id(&value) {
+                    Ok(value) => value,
+                    Err(()) => return invalid_input(identity),
+                },
+                None => match generate_application_installation_campaign_id() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return client_error(identity, &ClientError::IdentifierGeneration(error));
+                    }
+                },
+            };
+            let lineage = match ContractLineage::new(lineage) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let scope = match scope {
+                ReimportScope::Principal => CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+                ReimportScope::Whole => CapabilityApplicationReimportScopeV1::WholeApplication,
+            };
+            let portability_bytes = match read_file(
+                Path::new(&portability_manifest),
+                MAX_APPLICATION_PORTABILITY_DOCUMENT_BYTES,
+            ) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let portability =
+                match ApplicationPortabilityManifest::decode_canonical(&portability_bytes) {
+                    Ok(value) => value,
+                    Err(_) => return invalid_input(identity),
+                };
+            let export_manifest = match read_file(Path::new(&export_manifest), 256 * 1024) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let export_receipt = match read_file(Path::new(&export_receipt), 256 * 1024) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let start = match StartApplicationReimport::new(
+                campaign_id,
+                lineage,
+                scope,
+                portability,
+                export_manifest,
+                export_receipt,
+            ) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            match client
+                .start_application_reimport_with_retry(&start, attempts, &metadata)
+                .await
+            {
+                Ok(response) => match response.operation.as_ref() {
+                    Some(operation) => render_reimport_operation(identity, "started", operation),
+                    None => invalid_input(identity),
+                },
+                Err(ClientError::OutcomeUnknown(_)) => reimport_uncertain(identity, campaign_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ReimportCommand::Page {
+            campaign_id,
+            export_operation_id,
+            page_number,
+            jsonl,
+            page_hash,
+            class_complete,
+            operation_complete,
+            next_cursor,
+        } => {
+            let campaign_id = match parse_application_installation_campaign_id(&campaign_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let export_operation_id =
+                match parse_application_export_operation_id(&export_operation_id) {
+                    Ok(value) => value,
+                    Err(()) => return invalid_input(identity),
+                };
+            let page_number = match page_number.parse::<u64>() {
+                Ok(value) if value > 0 => value,
+                _ => return invalid_input(identity),
+            };
+            let page_hash = match parse_hash(&page_hash) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let next_cursor = match next_cursor {
+                Some(value) => match STANDARD.decode(value.as_bytes()) {
+                    Ok(value) if !value.is_empty() && value.len() <= 512 => value,
+                    _ => return invalid_input(identity),
+                },
+                None => Vec::new(),
+            };
+            let canonical_json_lines = match read_canonical_jsonl_page(Path::new(&jsonl)) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let page = v1::ApplicationExportPage {
+                operation_id: export_operation_id.into_bytes().to_vec(),
+                page_number,
+                record_class: v1::ApplicationExportRecordClass::Entity as i32,
+                canonical_json_lines,
+                next_cursor,
+                class_complete,
+                operation_complete,
+                page_hash,
+            };
+            match client
+                .apply_application_reimport_page_with_retry(campaign_id, &page, attempts, &metadata)
+                .await
+            {
+                Ok(response) => match response.operation.as_ref() {
+                    Some(operation) => {
+                        render_reimport_operation(identity, "page_applied", operation)
+                    }
+                    None => invalid_input(identity),
+                },
+                Err(ClientError::OutcomeUnknown(_)) => reimport_uncertain(identity, campaign_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ReimportCommand::Status { campaign_id } => {
+            let campaign_id = match parse_application_installation_campaign_id(&campaign_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .get_application_reimport_operation(campaign_id, &metadata)
+                .await
+            {
+                Ok(response) => match response.result.as_ref() {
+                    Some(v1::get_application_reimport_response::Result::NotFound(_)) => {
+                        success(identity, "not_found", &serde_json::json!({"found": false}))
+                    }
+                    Some(v1::get_application_reimport_response::Result::Found(operation)) => {
+                        render_reimport_operation(identity, "found", operation)
+                    }
+                    None => invalid_input(identity),
+                },
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ReimportCommand::Cancel { campaign_id } => {
+            let campaign_id = match parse_application_installation_campaign_id(&campaign_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .cancel_application_reimport_with_retry(campaign_id, attempts, &metadata)
+                .await
+            {
+                Ok(response) => match response.result.as_ref() {
+                    Some(v1::cancel_application_reimport_response::Result::NotFound(_)) => {
+                        success(identity, "not_found", &serde_json::json!({"found": false}))
+                    }
+                    Some(v1::cancel_application_reimport_response::Result::Found(operation)) => {
+                        render_reimport_operation(identity, "cancelled", operation)
+                    }
+                    None => invalid_input(identity),
+                },
+                Err(ClientError::OutcomeUnknown(_)) => reimport_uncertain(identity, campaign_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+    }
+}
+
+fn read_canonical_jsonl_page(path: &Path) -> Result<Vec<Vec<u8>>, ()> {
+    let bytes = read_file(path, 4 * 1024 * 1024).map_err(|_| ())?;
+    if bytes.is_empty() || !bytes.ends_with(b"\n") || bytes.contains(&b'\r') {
+        return Err(());
+    }
+    let lines = bytes[..bytes.len() - 1]
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.to_vec())
+        .collect::<Vec<_>>();
+    if lines.is_empty() || lines.len() > 500 || lines.iter().any(Vec::is_empty) {
+        return Err(());
+    }
+    Ok(lines)
+}
+
+fn render_reimport_operation(
+    identity: CommandIdentity,
+    status: &'static str,
+    operation: &v1::ApplicationReimportOperation,
+) -> Terminal {
+    let phase = match v1::ApplicationReimportPhase::try_from(operation.phase) {
+        Ok(v1::ApplicationReimportPhase::Applying) => "applying",
+        Ok(v1::ApplicationReimportPhase::Reconciling) => "reconciling",
+        Ok(v1::ApplicationReimportPhase::Reconciled) => "reconciled",
+        Ok(v1::ApplicationReimportPhase::Cancelled) => "cancelled",
+        Ok(v1::ApplicationReimportPhase::Failed) => "failed",
+        _ => return invalid_input(identity),
+    };
+    let failure = match v1::ApplicationReimportFailure::try_from(operation.failure) {
+        Ok(v1::ApplicationReimportFailure::Unspecified) => None,
+        Ok(v1::ApplicationReimportFailure::AuthorityChanged) => Some("authority_changed"),
+        Ok(v1::ApplicationReimportFailure::SourceMismatch) => Some("source_mismatch"),
+        Ok(v1::ApplicationReimportFailure::CommandFailed) => Some("command_failed"),
+        Ok(v1::ApplicationReimportFailure::ObservationMismatch) => Some("observation_mismatch"),
+        Ok(v1::ApplicationReimportFailure::Cancelled) => Some("cancelled"),
+        Err(_) => return invalid_input(identity),
+    };
+    let scope = match v1::CapabilityApplicationReimportScope::try_from(operation.scope) {
+        Ok(v1::CapabilityApplicationReimportScope::PrincipalFiltered) => "principal_filtered",
+        Ok(v1::CapabilityApplicationReimportScope::WholeApplication) => "whole_application",
+        _ => return invalid_input(identity),
+    };
+    let receipt = if operation.canonical_reimport_receipt_json.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(
+            &operation.canonical_reimport_receipt_json,
+        ) {
+            Ok(value) => Some(value),
+            Err(_) => return invalid_input(identity),
+        }
+    };
+    success(
+        identity,
+        status,
+        &serde_json::json!({
+            "campaign_id": format_uuid(&operation.campaign_id),
+            "contract_lineage": operation.contract_lineage,
+            "scope": scope,
+            "portability_manifest_hash": hex(&operation.portability_manifest_hash),
+            "export_manifest_hash": hex(&operation.export_manifest_hash),
+            "export_receipt_hash": hex(&operation.export_receipt_hash),
+            "source_database_id": format_uuid(&operation.source_database_id),
+            "target_database_id": format_uuid(&operation.target_database_id),
+            "source_rows": operation.source_rows.to_string(),
+            "source_pages": operation.source_pages.to_string(),
+            "next_page": operation.next_page.to_string(),
+            "rows_applied": operation.rows_applied.to_string(),
+            "phase": phase,
+            "failure": failure,
+            "reimport_receipt": receipt,
+            "reimport_receipt_hash": (!operation.reimport_receipt_hash.is_empty())
+                .then(|| hex(&operation.reimport_receipt_hash)),
+        }),
+    )
+}
+
+fn reimport_uncertain(
+    identity: CommandIdentity,
+    campaign_id: ApplicationInstallationCampaignId,
+) -> Terminal {
+    local_error_with(
+        identity,
+        &serde_json::json!({
+            "code": "outcome_unknown",
+            "message": "the application reimport outcome remains unknown",
+            "recovery_action": "retry_or_observe_with_the_same_campaign_id",
+            "campaign_id": campaign_id.to_string(),
+        }),
+        "outcome_unknown",
+        "the application reimport outcome remains unknown",
         3,
     )
 }
@@ -9998,6 +10297,18 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Export {
             command: ExportCommand::Cancel { .. },
         } => CommandIdentity::ExportCancel,
+        TopLevel::Reimport {
+            command: ReimportCommand::Start { .. },
+        } => CommandIdentity::ReimportStart,
+        TopLevel::Reimport {
+            command: ReimportCommand::Page { .. },
+        } => CommandIdentity::ReimportPage,
+        TopLevel::Reimport {
+            command: ReimportCommand::Status { .. },
+        } => CommandIdentity::ReimportStatus,
+        TopLevel::Reimport {
+            command: ReimportCommand::Cancel { .. },
+        } => CommandIdentity::ReimportCancel,
         TopLevel::Storage {
             command: StorageCommand::Preflight { .. },
         } => CommandIdentity::StoragePreflight,
