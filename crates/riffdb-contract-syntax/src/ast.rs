@@ -139,6 +139,8 @@ pub struct WorkflowDeclaration {
     pub entity: Spanned<String>,
     /// The stored enum field containing authoritative workflow state.
     pub state_field: Spanned<String>,
+    /// Compiler-owned state assigned to every ordinary create, when declared.
+    pub initial_state: Option<Spanned<String>>,
     /// Legal directed transitions in source order.
     pub transitions: Vec<Spanned<WorkflowTransitionDeclaration>>,
     /// The optional aggregate-local fenced lease.

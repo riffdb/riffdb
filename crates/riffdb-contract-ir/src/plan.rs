@@ -4017,7 +4017,6 @@ fn validate_instruction_stream(
                         .iter()
                         .any(|source| !variants.contains(source))
                     || !variants.contains(destination)
-                    || source_states.binary_search(destination).is_ok()
                     || arena.get(*expected_revision).is_none_or(|node| {
                         node.result_type().tag() != ValueTypeTag::U64
                             || !matches!(node.kind(), ExpressionKind::InputField(_))

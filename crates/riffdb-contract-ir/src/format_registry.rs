@@ -1134,6 +1134,7 @@ layout!(WORKFLOW_LAYOUT, "WorkflowSchema", {
     "entity" => "EntityTypeId",
     "state_field" => "FieldId",
     "state_enum" => "EnumTypeId",
+    "initial_state" => "IR v9+: optional EnumVariantId; omitted in v2-v8",
     "transitions" => "u32 count + WorkflowTransitionSchema[]",
     "lease" => "optional WorkflowLeaseSchema",
 });

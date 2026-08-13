@@ -39,6 +39,7 @@
 - [Live Named Queries](reactive/LIVE-QUERIES.md)
 - [Contextual Agent Subscriptions](reactive/CONTEXTUAL-SUBSCRIPTIONS.md)
 - [Safe Application Profiles](getting-started/SAFE-APPLICATION-PROFILES.md)
+- [Compiled Framework Profiles](integrations/COMPILED-FRAMEWORK-PROFILES.md)
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
 - [Application Errors](getting-started/APPLICATION-ERRORS.md)
 - [Resumable Command Batches](getting-started/COMMAND-BATCHES.md)
@@ -89,6 +90,7 @@
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Deployable Application Alpha Plan](architecture/DEPLOYABLE-APPLICATION-ALPHA.md)
   - [Alpha Architecture Freeze](architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md)
+  - [WP-598 Framework Profile Verification](architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md)
 
 # Performance
 

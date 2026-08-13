@@ -1,0 +1,164 @@
+contract FrameworkProfileAcceptance version 1 {
+  enum SessionState {
+    Active,
+    Revoked,
+  }
+
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<320>
+    unique user_email (organization_id, email)
+  }
+
+  entity Account {
+    key (organization_id: uuid, user_id: uuid, account_id: uuid)
+    field provider: string<64>
+    field provider_account_id: string<256>
+    unique provider_identity (organization_id, provider, provider_account_id)
+    reference account_user (organization_id, user_id) -> User(organization_id, user_id)
+  }
+
+  entity Session {
+    key (organization_id: uuid, user_id: uuid, session_id: uuid)
+    field state: SessionState
+    field secret token_digest: string<128>
+    field expires_at: timestamp
+    unique session_token (organization_id, token_digest)
+    reference session_user (organization_id, user_id) -> User(organization_id, user_id)
+  }
+
+  entity VerificationToken {
+    key (organization_id: uuid, user_id: uuid, verification_token_id: uuid)
+    field secret token_digest: string<128>
+    field expires_at: timestamp
+    field consumed: bool
+    field issued_at: timestamp
+    unique verification_token_value (organization_id, token_digest)
+    reference token_user (organization_id, user_id) -> User(organization_id, user_id)
+  }
+
+  entity SignupGraphInput {
+    key (organization_id: uuid, user_id: uuid, account_id: uuid, session_id: uuid)
+    field email: string<320>
+    field provider: string<64>
+    field provider_account_id: string<256>
+    field secret token_digest: string<128>
+    field expires_at: timestamp
+  }
+
+  aggregate UserAccounts {
+    root User
+    child Account
+    child Session
+    child VerificationToken
+    child SignupGraphInput
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+
+  workflow SessionLifecycle {
+    entity Session
+    state state
+    initial Active
+    transition Refresh from (Active) to Active
+    transition Revoke from (Active) to Revoked
+  }
+
+  bulk command CreateUserAccountSessions {
+    input request_id: uuid
+    input signups: list<SignupGraphInput, 1..8>
+    idempotency_key request_id
+    for signup in signups {
+      create User(signup.organization_id, signup.user_id) as user
+        else SignupUserExists {}
+      create Account(signup.organization_id, signup.user_id, signup.account_id) as account
+        else SignupAccountExists {}
+      create Session(signup.organization_id, signup.user_id, signup.session_id) as session
+        else SignupSessionExists {}
+      set user.email = signup.email
+      set account.provider = signup.provider
+      set account.provider_account_id = signup.provider_account_id
+      set session.token_digest = signup.token_digest
+      set session.expires_at = signup.expires_at
+    }
+    return UserAccountSessionsCreated {}
+  }
+
+  command IssueVerificationToken {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_id: uuid
+    input verification_token_id: uuid
+    input token_digest: string<128>
+    input expires_at: timestamp
+    service issued_at: transaction_time
+    service issuance_id: uuid_v7
+    idempotency_key request_id
+    read User(organization_id, user_id) as token_owner
+      else VerificationTokenUserMissing {}
+    create VerificationToken(organization_id, user_id, verification_token_id) as token
+      else VerificationTokenExists {}
+    set token.token_digest = token_digest
+    set token.expires_at = expires_at
+    set token.consumed = false
+    set token.issued_at = issued_at
+    return VerificationTokenIssued {
+      verification_token_id: verification_token_id,
+      issuance_id: issuance_id,
+      issued_at: issued_at
+    }
+  }
+
+  command ConsumeVerificationToken {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_id: uuid
+    input verification_token_id: uuid
+    idempotency_key request_id
+    mutate VerificationToken(organization_id, user_id, verification_token_id) as token
+      else VerificationTokenMissing {}
+    require verification_token_unused: token.consumed == false
+      else VerificationTokenAlreadyConsumed {}
+    require verification_token_unexpired: tx.time <= token.expires_at
+      else VerificationTokenExpired {}
+    set token.consumed = true
+    return VerificationTokenConsumed {
+      verification_token_id: verification_token_id,
+      user_id: token.user_id
+    }
+  }
+
+  command RefreshSession {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_id: uuid
+    input session_id: uuid
+    input expected_revision: u64
+    input successor_token_digest: string<128>
+    idempotency_key request_id
+    mutate Session(organization_id, user_id, session_id) as session
+      else RefreshSessionMissing {}
+    require refresh_unexpired: tx.time <= session.expires_at
+      else RefreshSessionExpired {}
+    transition Refresh on session revision expected_revision
+      stale RefreshSessionStale {}
+      illegal RefreshSessionRevoked {}
+    set session.token_digest = successor_token_digest
+    return SessionRefreshed { session: session }
+  }
+
+  command RevokeSession {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_id: uuid
+    input session_id: uuid
+    input expected_revision: u64
+    idempotency_key request_id
+    mutate Session(organization_id, user_id, session_id) as session
+      else RevokeSessionMissing {}
+    transition Revoke on session revision expected_revision
+      stale RevokeSessionStale {}
+      illegal SessionAlreadyRevoked {}
+    return SessionRevoked { session: session }
+  }
+}

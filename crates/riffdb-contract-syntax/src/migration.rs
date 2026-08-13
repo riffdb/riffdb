@@ -749,6 +749,7 @@ fn token_identifier(token: &Token) -> Option<&str> {
     match token {
         Token::Identifier(value) => Some(value.as_str()),
         Token::Workflow => Some("workflow"),
+        Token::Initial => Some("initial"),
         Token::State => Some("state"),
         Token::Transition => Some("transition"),
         Token::From => Some("from"),

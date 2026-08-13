@@ -63,6 +63,7 @@ pub(crate) fn lower_workflow_catalog(
                 workflow.entity_id,
                 workflow.state_field,
                 workflow.state_enum,
+                workflow.initial_state,
                 transitions,
                 lease,
             )
