@@ -2741,6 +2741,7 @@ fn installation_next_action(value: i32) -> Option<&'static str> {
                 "deploy_reactive_modules"
             }
             v1::ApplicationInstallationNextAction::ReconcileRoles => "reconcile_roles",
+            v1::ApplicationInstallationNextAction::ReimportApplication => "reimport_application",
             v1::ApplicationInstallationNextAction::RotateCredentials => "rotate_credentials",
             v1::ApplicationInstallationNextAction::ProveDrivers => "prove_drivers",
             v1::ApplicationInstallationNextAction::RunSeeds => "run_seeds",
@@ -10706,6 +10707,7 @@ mod tests {
             artifacts,
             migration: None,
             roles: vec![installation_role],
+            reimport: None,
             credential_destinations: vec![credential],
             drivers: vec![InstallationDriver::Rust],
             seeds,

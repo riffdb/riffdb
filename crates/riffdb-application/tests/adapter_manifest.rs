@@ -216,6 +216,7 @@ fn manifest_binds_the_exact_installation_plan_and_receipt_identity() {
         ],
         migration: None,
         roles: vec![role],
+        reimport: None,
         credential_destinations: vec![
             CredentialDestination::new(
                 symbol("runtime"),

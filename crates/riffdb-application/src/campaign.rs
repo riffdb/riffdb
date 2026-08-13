@@ -2,8 +2,9 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_types::{
-    ApplicationInstallationCampaignId, ApplicationInstallationPlanHash,
-    ApplicationInstallationReceiptHash, ApplicationLockHash, ApplicationManifestHash,
+    ApplicationExportManifestHash, ApplicationExportReceiptHash, ApplicationInstallationCampaignId,
+    ApplicationInstallationPlanHash, ApplicationInstallationReceiptHash, ApplicationLockHash,
+    ApplicationManifestHash, ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash,
     ApplicationRoleHash, ApplicationSourceHash, CapabilityId, ContractBundleHash,
     ContractMigrationOperationId, ContractVersion, GeneratedArtifactHash, MigrationBundleHash,
     hash_application_installation_receipt,
@@ -30,6 +31,9 @@ pub const APPLICATION_INSTALLATION_RECEIPT_SCHEMA_CURRENT: &str =
 /// Canonical schema version for durable resumable campaign state.
 pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1: &str =
     "riffdb.application-installation-campaign-state/v1";
+/// Canonical durable campaign state containing the reimport publication gate.
+pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2: &str =
+    "riffdb.application-installation-campaign-state/v2";
 /// Maximum canonical bytes in one redacted terminal receipt.
 pub const MAX_INSTALLATION_RECEIPT_BYTES: usize = 2 * 1_024 * 1_024;
 /// Compatibility alias for the shared exact campaign-state storage boundary.
@@ -51,6 +55,8 @@ pub enum InstallationStage {
     ReactiveModules,
     /// Provision or reconcile exact application roles.
     Roles,
+    /// Reconstitute exact portable state, or record that reimport is not required.
+    Reimport,
     /// Rotate or verify application credentials without exposing their bytes.
     Credentials,
     /// Prove every required public driver against the installed identity.
@@ -63,13 +69,14 @@ pub enum InstallationStage {
 
 impl InstallationStage {
     /// Every stage in the only valid execution order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Preflight,
         Self::Contract,
         Self::Migration,
         Self::QueryModules,
         Self::ReactiveModules,
         Self::Roles,
+        Self::Reimport,
         Self::Credentials,
         Self::DriverProof,
         Self::Seeds,
@@ -86,6 +93,7 @@ impl InstallationStage {
             Self::QueryModules => "query_modules",
             Self::ReactiveModules => "reactive_modules",
             Self::Roles => "roles",
+            Self::Reimport => "reimport",
             Self::Credentials => "credentials",
             Self::DriverProof => "driver_proof",
             Self::Seeds => "seeds",
@@ -137,6 +145,24 @@ impl InstalledRoleEvidence {
     pub const fn role_hash(&self) -> ApplicationRoleHash {
         self.role_hash
     }
+}
+
+/// Exact completion evidence for the publication-gating reimport stage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstalledReimportEvidence {
+    /// This ordinary installation has no portable source state.
+    NotRequired,
+    /// Exact source, mapping, and terminal reconciliation identities.
+    Reconciled {
+        /// Completed portability-intent export manifest.
+        export_manifest_hash: ApplicationExportManifestHash,
+        /// Completed portability-intent export receipt.
+        export_receipt_hash: ApplicationExportReceiptHash,
+        /// Compiler-closed portability mapping.
+        portability_manifest_hash: ApplicationPortabilityManifestHash,
+        /// Terminal destination reconciliation receipt.
+        reimport_receipt_hash: ApplicationReimportReceiptHash,
+    },
 }
 
 /// Exact observed credential slot without credential material.
@@ -250,6 +276,8 @@ pub enum InstallationStageEvidence {
     ReactiveModules(Vec<InstallationArtifact>),
     /// Exact reconciled symbolic roles.
     Roles(Vec<InstalledRoleEvidence>),
+    /// Exact reimport terminal evidence, or explicit not-required evidence.
+    Reimport(InstalledReimportEvidence),
     /// Exact installed credential identities without token bytes.
     Credentials(Vec<InstalledCredentialEvidence>),
     /// Exact public drivers that proved the installed identity.
@@ -271,6 +299,7 @@ impl InstallationStageEvidence {
             Self::QueryModules(_) => InstallationStage::QueryModules,
             Self::ReactiveModules(_) => InstallationStage::ReactiveModules,
             Self::Roles(_) => InstallationStage::Roles,
+            Self::Reimport(_) => InstallationStage::Reimport,
             Self::Credentials(_) => InstallationStage::Credentials,
             Self::DriverProof(_) => InstallationStage::DriverProof,
             Self::Seeds(_) => InstallationStage::Seeds,
@@ -302,6 +331,8 @@ pub enum InstallationFailureCode {
     MigrationGateRequired,
     /// Explicit authority widening approval is absent or stale.
     RoleWideningApprovalRequired,
+    /// Reimport is incomplete, cancelled, or failed reconciliation.
+    ReimportPartial,
     /// Credential destination is occupied by an unexpected identity.
     CredentialDestinationOccupied,
     /// One public driver could not prove the exact installed identity.
@@ -329,6 +360,8 @@ pub enum InstallationNextAction {
     DeployReactiveModules,
     /// Reconcile exact application roles after reviewing any widening.
     ReconcileRoles,
+    /// Resume exact compiler-owned reimport and terminal reconciliation.
+    ReimportApplication,
     /// Rotate credentials only from the expected predecessor identities.
     RotateCredentials,
     /// Run exact public-driver identity proofs.
@@ -352,6 +385,7 @@ impl InstallationNextAction {
             InstallationStage::QueryModules => Self::DeployQueryModules,
             InstallationStage::ReactiveModules => Self::DeployReactiveModules,
             InstallationStage::Roles => Self::ReconcileRoles,
+            InstallationStage::Reimport => Self::ReimportApplication,
             InstallationStage::Credentials => Self::RotateCredentials,
             InstallationStage::DriverProof => Self::ProveDrivers,
             InstallationStage::Seeds => Self::RunSeeds,
@@ -708,14 +742,10 @@ impl ApplicationInstallationCampaignState {
         let dto: CampaignStateDto = serde_json::from_slice(bytes).map_err(|_| {
             InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding)
         })?;
-        if dto.schema != APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1 {
-            return Err(InstallationCampaignError::new(
-                InstallationCampaignErrorKind::UnsupportedVersion,
-            ));
-        }
+        let schema = CampaignStateSchema::parse(&dto.schema)?;
         let plan = ApplicationInstallationPlan::decode_canonical(dto.plan.as_bytes())
             .map_err(InstallationCampaignError::from_plan_error)?;
-        let campaign = dto.to_campaign(&plan)?;
+        let campaign = dto.to_campaign(&plan, schema)?;
         validate_campaign_state(&campaign, &plan)?;
         let canonical_bytes = encode_campaign_state_dto(&dto)?;
         if canonical_bytes != bytes {
@@ -1102,6 +1132,23 @@ fn validate_stage_evidence(
                 .collect::<Vec<_>>();
             roles == &expected
         }
+        InstallationStageEvidence::Reimport(evidence) => match (input.reimport, evidence) {
+            (None, InstalledReimportEvidence::NotRequired) => true,
+            (
+                Some(expected),
+                InstalledReimportEvidence::Reconciled {
+                    export_manifest_hash,
+                    export_receipt_hash,
+                    portability_manifest_hash,
+                    ..
+                },
+            ) => {
+                *export_manifest_hash == expected.export_manifest_hash()
+                    && *export_receipt_hash == expected.export_receipt_hash()
+                    && *portability_manifest_hash == expected.portability_manifest_hash()
+            }
+            _ => false,
+        },
         InstallationStageEvidence::Credentials(credentials) => {
             let expected = input
                 .credential_destinations
@@ -1227,13 +1274,31 @@ struct CampaignStateDto {
     failure: Option<CampaignFailureDto>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CampaignStateSchema {
+    V1,
+    V2,
+}
+
+impl CampaignStateSchema {
+    fn parse(value: &str) -> Result<Self, InstallationCampaignError> {
+        match value {
+            APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1 => Ok(Self::V1),
+            APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2 => Ok(Self::V2),
+            _ => Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::UnsupportedVersion,
+            )),
+        }
+    }
+}
+
 impl CampaignStateDto {
     fn from_parts(
         campaign: &ApplicationInstallationCampaign,
         plan: &ApplicationInstallationPlan,
     ) -> Self {
         Self {
-            schema: APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1.to_owned(),
+            schema: APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V2.to_owned(),
             campaign_id: hex16(campaign.campaign_id.as_bytes()),
             plan_hash: hex32(campaign.plan_hash.as_bytes()),
             plan: String::from_utf8(plan.canonical_bytes().to_vec())
@@ -1250,6 +1315,7 @@ impl CampaignStateDto {
     fn to_campaign(
         &self,
         plan: &ApplicationInstallationPlan,
+        schema: CampaignStateSchema,
     ) -> Result<ApplicationInstallationCampaign, InstallationCampaignError> {
         let invalid =
             || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
@@ -1265,11 +1331,22 @@ impl CampaignStateDto {
                 InstallationCampaignErrorKind::PlanIdentityMismatch,
             ));
         }
-        let completed = self
+        let mut completed = self
             .completed
             .iter()
             .map(CampaignEvidenceDto::to_evidence)
             .collect::<Result<Vec<_>, _>>()?;
+        if schema == CampaignStateSchema::V1 {
+            let role_index = completed
+                .iter()
+                .position(|evidence| evidence.stage() == InstallationStage::Roles);
+            if let Some(role_index) = role_index {
+                completed.insert(
+                    role_index + 1,
+                    InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired),
+                );
+            }
+        }
         let failure = self
             .failure
             .as_ref()
@@ -1307,6 +1384,13 @@ enum CampaignEvidenceDto {
     },
     Roles {
         roles: Vec<CampaignRoleDto>,
+    },
+    Reimport {
+        status: String,
+        export_manifest_hash: Option<String>,
+        export_receipt_hash: Option<String>,
+        portability_manifest_hash: Option<String>,
+        reimport_receipt_hash: Option<String>,
     },
     Credentials {
         credentials: Vec<CampaignCredentialDto>,
@@ -1352,6 +1436,27 @@ impl CampaignEvidenceDto {
             },
             InstallationStageEvidence::Roles(roles) => Self::Roles {
                 roles: roles.iter().map(CampaignRoleDto::from).collect(),
+            },
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired) => {
+                Self::Reimport {
+                    status: "not_required".to_owned(),
+                    export_manifest_hash: None,
+                    export_receipt_hash: None,
+                    portability_manifest_hash: None,
+                    reimport_receipt_hash: None,
+                }
+            }
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled {
+                export_manifest_hash,
+                export_receipt_hash,
+                portability_manifest_hash,
+                reimport_receipt_hash,
+            }) => Self::Reimport {
+                status: "reconciled".to_owned(),
+                export_manifest_hash: Some(hex32(export_manifest_hash.as_bytes())),
+                export_receipt_hash: Some(hex32(export_receipt_hash.as_bytes())),
+                portability_manifest_hash: Some(hex32(portability_manifest_hash.as_bytes())),
+                reimport_receipt_hash: Some(hex32(reimport_receipt_hash.as_bytes())),
             },
             InstallationStageEvidence::Credentials(credentials) => Self::Credentials {
                 credentials: credentials
@@ -1421,6 +1526,44 @@ impl CampaignEvidenceDto {
                     .map(CampaignRoleDto::to_role)
                     .collect::<Result<Vec<_>, _>>()?,
             ),
+            Self::Reimport {
+                status,
+                export_manifest_hash,
+                export_receipt_hash,
+                portability_manifest_hash,
+                reimport_receipt_hash,
+            } => match status.as_str() {
+                "not_required"
+                    if export_manifest_hash.is_none()
+                        && export_receipt_hash.is_none()
+                        && portability_manifest_hash.is_none()
+                        && reimport_receipt_hash.is_none() =>
+                {
+                    InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired)
+                }
+                "reconciled"
+                    if export_manifest_hash.is_some()
+                        && export_receipt_hash.is_some()
+                        && portability_manifest_hash.is_some()
+                        && reimport_receipt_hash.is_some() =>
+                {
+                    InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled {
+                        export_manifest_hash: ApplicationExportManifestHash::from_bytes(hex(
+                            export_manifest_hash.as_deref().ok_or_else(invalid)?,
+                        )?),
+                        export_receipt_hash: ApplicationExportReceiptHash::from_bytes(hex(
+                            export_receipt_hash.as_deref().ok_or_else(invalid)?,
+                        )?),
+                        portability_manifest_hash: ApplicationPortabilityManifestHash::from_bytes(
+                            hex(portability_manifest_hash.as_deref().ok_or_else(invalid)?)?,
+                        ),
+                        reimport_receipt_hash: ApplicationReimportReceiptHash::from_bytes(hex(
+                            reimport_receipt_hash.as_deref().ok_or_else(invalid)?,
+                        )?),
+                    })
+                }
+                _ => return Err(invalid()),
+            },
             Self::Credentials { credentials } => InstallationStageEvidence::Credentials(
                 credentials
                     .iter()
@@ -1609,6 +1752,7 @@ const fn installation_failure_code_tag(code: InstallationFailureCode) -> &'stati
         InstallationFailureCode::RemoteIdentityMismatch => "remote_identity_mismatch",
         InstallationFailureCode::MigrationGateRequired => "migration_gate_required",
         InstallationFailureCode::RoleWideningApprovalRequired => "role_widening_approval_required",
+        InstallationFailureCode::ReimportPartial => "reimport_partial",
         InstallationFailureCode::CredentialDestinationOccupied => "credential_destination_occupied",
         InstallationFailureCode::DriverProofFailed => "driver_proof_failed",
         InstallationFailureCode::SeedPartial => "seed_partial",
@@ -1625,6 +1769,7 @@ fn parse_installation_failure_code(value: &str) -> Option<InstallationFailureCod
         "role_widening_approval_required" => {
             Some(InstallationFailureCode::RoleWideningApprovalRequired)
         }
+        "reimport_partial" => Some(InstallationFailureCode::ReimportPartial),
         "credential_destination_occupied" => {
             Some(InstallationFailureCode::CredentialDestinationOccupied)
         }
@@ -1644,6 +1789,7 @@ const fn installation_next_action_tag(action: InstallationNextAction) -> &'stati
         InstallationNextAction::DeployQueryModules => "deploy_query_modules",
         InstallationNextAction::DeployReactiveModules => "deploy_reactive_modules",
         InstallationNextAction::ReconcileRoles => "reconcile_roles",
+        InstallationNextAction::ReimportApplication => "reimport_application",
         InstallationNextAction::RotateCredentials => "rotate_credentials",
         InstallationNextAction::ProveDrivers => "prove_drivers",
         InstallationNextAction::RunSeeds => "run_seeds",
@@ -1660,6 +1806,7 @@ fn parse_installation_next_action(value: &str) -> Option<InstallationNextAction>
         "deploy_query_modules" => Some(InstallationNextAction::DeployQueryModules),
         "deploy_reactive_modules" => Some(InstallationNextAction::DeployReactiveModules),
         "reconcile_roles" => Some(InstallationNextAction::ReconcileRoles),
+        "reimport_application" => Some(InstallationNextAction::ReimportApplication),
         "rotate_credentials" => Some(InstallationNextAction::RotateCredentials),
         "prove_drivers" => Some(InstallationNextAction::ProveDrivers),
         "run_seeds" => Some(InstallationNextAction::RunSeeds),
@@ -2157,9 +2304,10 @@ mod tests {
             APPLICATION_INSTALLATION_PLAN_SCHEMA_V1,
             "riffdb.application-installation-plan/v1"
         );
-        assert_eq!(InstallationStage::ALL.len(), 10);
+        assert_eq!(InstallationStage::ALL.len(), 11);
         assert_eq!(InstallationStage::ALL[0], InstallationStage::Preflight);
-        assert_eq!(InstallationStage::ALL[9], InstallationStage::Receipt);
-        assert_eq!(InstallationStage::ALL[9].as_str(), "receipt");
+        assert_eq!(InstallationStage::ALL[6], InstallationStage::Reimport);
+        assert_eq!(InstallationStage::ALL[10], InstallationStage::Receipt);
+        assert_eq!(InstallationStage::ALL[10].as_str(), "receipt");
     }
 }

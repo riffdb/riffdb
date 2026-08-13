@@ -7,8 +7,8 @@ use riffdb_application::{
     InstallationCampaignErrorKind, InstallationCampaignPhase, InstallationContract,
     InstallationDriver, InstallationFailureCode, InstallationFeature, InstallationNextAction,
     InstallationRole, InstallationSeed, InstallationStage, InstallationStageEvidence,
-    InstallationSymbol, InstallationTarget, InstalledCredentialEvidence, InstalledRoleEvidence,
-    InstalledSeedEvidence, RoleOperation, RoleOperationKind,
+    InstallationSymbol, InstallationTarget, InstalledCredentialEvidence, InstalledReimportEvidence,
+    InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation, RoleOperationKind,
 };
 use riffdb_types::{
     ApplicationInstallationCampaignId, ApplicationLockHash, ApplicationManifestHash,
@@ -87,6 +87,7 @@ fn plan(source_byte: u8) -> ApplicationInstallationPlan {
             )
             .expect("role"),
         ],
+        reimport: None,
         credential_destinations: vec![
             CredentialDestination::new(
                 symbol("app-runtime"),
@@ -139,6 +140,9 @@ fn evidence(stage: InstallationStage) -> InstallationStageEvidence {
                 role_hash(),
             )])
         }
+        InstallationStage::Reimport => {
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired)
+        }
         InstallationStage::Credentials => {
             InstallationStageEvidence::Credentials(vec![InstalledCredentialEvidence::new(
                 symbol("app-runtime"),
@@ -166,7 +170,7 @@ fn every_interruption_resumes_after_revalidating_completed_identities() {
     let plan = plan(1);
     let id = campaign_id(1);
     let mut campaign = ApplicationInstallationCampaign::start(id, plan.identity());
-    for stage in &InstallationStage::ALL[..9] {
+    for stage in &InstallationStage::ALL[..InstallationStage::ALL.len() - 1] {
         let exact = evidence(*stage);
         campaign
             .complete_stage(&plan, exact.clone())
@@ -300,7 +304,7 @@ fn canonical_campaign_state_recovers_every_partial_and_terminal_boundary() {
     let id = campaign_id(1);
     let mut campaign = ApplicationInstallationCampaign::start(id, plan.identity());
 
-    for stage in &InstallationStage::ALL[..9] {
+    for stage in &InstallationStage::ALL[..InstallationStage::ALL.len() - 1] {
         campaign
             .complete_stage(&plan, evidence(*stage))
             .expect("stage completion");

@@ -15,8 +15,8 @@ use riffdb_application::{
     ApplicationInstallationPlan, ApplicationInstallationPlanInput, CredentialDestination,
     InstallationArtifact, InstallationArtifactKind, InstallationContract, InstallationDriver,
     InstallationFeature, InstallationRole, InstallationStageEvidence, InstallationSymbol,
-    InstallationTarget, InstalledCredentialEvidence, InstalledRoleEvidence, RoleOperation,
-    RoleOperationKind, RoleWideningApproval,
+    InstallationTarget, InstalledCredentialEvidence, InstalledReimportEvidence,
+    InstalledRoleEvidence, RoleOperation, RoleOperationKind, RoleWideningApproval,
 };
 use riffdb_query_module::{
     ApplicationLock, ApplicationManifest, GeneratedApplicationArtifactKind, ManifestRole,
@@ -413,6 +413,7 @@ fn installation_plan(
         artifacts,
         migration: None,
         roles,
+        reimport: None,
         credential_destinations: credentials,
         drivers: vec![
             InstallationDriver::Rust,
@@ -627,6 +628,7 @@ fn seal_campaign(
                 .map(|role| InstalledRoleEvidence::new(role.name().clone(), role.role_hash()))
                 .collect(),
         ),
+        InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired),
         InstallationStageEvidence::Credentials(
             input
                 .credential_destinations

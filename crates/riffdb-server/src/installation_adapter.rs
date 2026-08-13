@@ -6,7 +6,7 @@ use riffdb_application::{
     ApplicationInstallationCampaign, ApplicationInstallationCampaignState,
     ApplicationInstallationPlan, InstallationArtifactKind, InstallationCampaignPhase,
     InstallationFailureCode, InstallationStage, InstallationStageEvidence,
-    InstalledCredentialEvidence, InstalledRoleEvidence,
+    InstalledCredentialEvidence, InstalledReimportEvidence, InstalledRoleEvidence,
 };
 use riffdb_service::{
     ApplicationInstallationCoordinatorPort, ApplicationInstallationObservationPermit,
@@ -275,6 +275,10 @@ fn advance_observed_stages(
                     return Ok(());
                 }
             },
+            InstallationStage::Reimport if plan.input().reimport.is_none() => Some(
+                InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired),
+            ),
+            InstallationStage::Reimport => None,
             InstallationStage::Credentials => match verify_credentials(storage, plan)? {
                 StageVerification::Pending => None,
                 StageVerification::Complete => Some(InstallationStageEvidence::Credentials(
@@ -867,6 +871,7 @@ mod tests {
                     .map(|role| InstalledRoleEvidence::new(role.name().clone(), role.role_hash()))
                     .collect(),
             ),
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired),
             InstallationStageEvidence::Credentials(
                 input
                     .credential_destinations

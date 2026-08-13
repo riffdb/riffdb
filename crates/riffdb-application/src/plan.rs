@@ -3,8 +3,9 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_types::{
-    AdapterConformanceManifestHash, ApplicationInstallationPlanHash, ApplicationLockHash,
-    ApplicationManifestHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
+    AdapterConformanceManifestHash, ApplicationExportManifestHash, ApplicationExportReceiptHash,
+    ApplicationInstallationPlanHash, ApplicationLockHash, ApplicationManifestHash,
+    ApplicationPortabilityManifestHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
     ContractBundleHash, ContractLineage, ContractVersion, DatabaseAlias, Environment,
     GeneratedArtifactHash, MigrationBundleHash, hash_application_installation_plan,
 };
@@ -12,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// Canonical schema version for exact application installation plans.
 pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V1: &str = "riffdb.application-installation-plan/v1";
+/// Canonical schema version for plans carrying exact reimport authority.
+pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V2: &str = "riffdb.application-installation-plan/v2";
 /// Maximum canonical bytes in one installation plan.
 pub const MAX_INSTALLATION_PLAN_BYTES: usize = 4 * 1_024 * 1_024;
 /// Maximum exact artifacts in one plan.
@@ -619,6 +622,48 @@ impl InstallationMigration {
     }
 }
 
+/// Exact completed portability export selected for an empty-destination reimport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstallationReimport {
+    export_manifest_hash: ApplicationExportManifestHash,
+    export_receipt_hash: ApplicationExportReceiptHash,
+    portability_manifest_hash: ApplicationPortabilityManifestHash,
+}
+
+impl InstallationReimport {
+    /// Binds the source receipt and compiler-closed portability mapping exactly.
+    #[must_use]
+    pub const fn new(
+        export_manifest_hash: ApplicationExportManifestHash,
+        export_receipt_hash: ApplicationExportReceiptHash,
+        portability_manifest_hash: ApplicationPortabilityManifestHash,
+    ) -> Self {
+        Self {
+            export_manifest_hash,
+            export_receipt_hash,
+            portability_manifest_hash,
+        }
+    }
+
+    /// Exact completed export manifest identity.
+    #[must_use]
+    pub const fn export_manifest_hash(self) -> ApplicationExportManifestHash {
+        self.export_manifest_hash
+    }
+
+    /// Exact completed portability-intent export receipt identity.
+    #[must_use]
+    pub const fn export_receipt_hash(self) -> ApplicationExportReceiptHash {
+        self.export_receipt_hash
+    }
+
+    /// Exact compiler-closed portability manifest identity.
+    #[must_use]
+    pub const fn portability_manifest_hash(self) -> ApplicationPortabilityManifestHash {
+        self.portability_manifest_hash
+    }
+}
+
 /// First-class stable driver targets that must prove the installed identity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum InstallationDriver {
@@ -777,6 +822,8 @@ pub struct ApplicationInstallationPlanInput {
     pub migration: Option<InstallationMigration>,
     /// Exact symbolic desired roles and predecessor authority observations.
     pub roles: Vec<InstallationRole>,
+    /// Optional exact completed portability export reconstituted before credentials exist.
+    pub reimport: Option<InstallationReimport>,
     /// Exact empty-or-predecessor-bound credential destinations.
     pub credential_destinations: Vec<CredentialDestination>,
     /// Public drivers that must prove the installed identity.
@@ -792,9 +839,33 @@ pub struct ApplicationInstallationPlanInput {
 /// One immutable content-addressed installation plan.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationInstallationPlan {
+    schema: ApplicationInstallationPlanSchema,
     input: ApplicationInstallationPlanInput,
     identity: ApplicationInstallationPlanHash,
     canonical_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApplicationInstallationPlanSchema {
+    V1,
+    V2,
+}
+
+impl ApplicationInstallationPlanSchema {
+    const fn for_input(input: &ApplicationInstallationPlanInput) -> Self {
+        if input.reimport.is_some() {
+            Self::V2
+        } else {
+            Self::V1
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::V1 => APPLICATION_INSTALLATION_PLAN_SCHEMA_V1,
+            Self::V2 => APPLICATION_INSTALLATION_PLAN_SCHEMA_V2,
+        }
+    }
 }
 
 impl ApplicationInstallationPlan {
@@ -803,7 +874,8 @@ impl ApplicationInstallationPlan {
         mut input: ApplicationInstallationPlanInput,
     ) -> Result<Self, InstallationPlanError> {
         validate_and_sort(&mut input)?;
-        let dto = PlanDto::from_input(&input);
+        let schema = ApplicationInstallationPlanSchema::for_input(&input);
+        let dto = PlanDto::from_input(&input, schema);
         let mut canonical_bytes = serde_json::to_vec(&dto)
             .map_err(|_| InstallationPlanError::new(InstallationPlanErrorKind::InvalidEncoding))?;
         canonical_bytes.push(b'\n');
@@ -814,6 +886,7 @@ impl ApplicationInstallationPlan {
         }
         let identity = hash_application_installation_plan(&canonical_bytes);
         Ok(Self {
+            schema,
             input,
             identity,
             canonical_bytes,
@@ -829,7 +902,13 @@ impl ApplicationInstallationPlan {
         }
         let dto: PlanDto = serde_json::from_slice(bytes)
             .map_err(|_| InstallationPlanError::new(InstallationPlanErrorKind::InvalidEncoding))?;
-        let plan = Self::compile(dto.into_input()?)?;
+        let schema = dto.schema()?;
+        let plan = Self::compile(dto.into_input(schema)?)?;
+        if plan.schema != schema {
+            return Err(InstallationPlanError::new(
+                InstallationPlanErrorKind::InvalidShape,
+            ));
+        }
         if plan.canonical_bytes != bytes {
             return Err(InstallationPlanError::new(
                 InstallationPlanErrorKind::NonCanonical,
@@ -1107,6 +1186,8 @@ struct PlanDto {
     artifacts: Vec<ArtifactDto>,
     migration: Option<MigrationDto>,
     roles: Vec<RoleDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reimport: Option<ReimportDto>,
     credential_destinations: Vec<CredentialDto>,
     drivers: Vec<String>,
     seeds: Vec<SeedDto>,
@@ -1186,6 +1267,14 @@ struct MigrationDto {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReimportDto {
+    export_manifest_hash: String,
+    export_receipt_hash: String,
+    portability_manifest_hash: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SeedDto {
     name: String,
     content_hash: String,
@@ -1193,9 +1282,12 @@ struct SeedDto {
 }
 
 impl PlanDto {
-    fn from_input(input: &ApplicationInstallationPlanInput) -> Self {
+    fn from_input(
+        input: &ApplicationInstallationPlanInput,
+        schema: ApplicationInstallationPlanSchema,
+    ) -> Self {
         Self {
-            schema: APPLICATION_INSTALLATION_PLAN_SCHEMA_V1.to_owned(),
+            schema: schema.name().to_owned(),
             application: input.application.as_str().to_owned(),
             source_hash: hex32(input.source_hash.as_bytes()),
             lock_hash: hex32(input.lock_hash.as_bytes()),
@@ -1229,6 +1321,11 @@ impl PlanDto {
                 downtime: "offline_exclusive".to_owned(),
             }),
             roles: input.roles.iter().map(RoleDto::from_role).collect(),
+            reimport: input.reimport.map(|reimport| ReimportDto {
+                export_manifest_hash: hex32(reimport.export_manifest_hash.as_bytes()),
+                export_receipt_hash: hex32(reimport.export_receipt_hash.as_bytes()),
+                portability_manifest_hash: hex32(reimport.portability_manifest_hash.as_bytes()),
+            }),
             credential_destinations: input
                 .credential_destinations
                 .iter()
@@ -1266,10 +1363,23 @@ impl PlanDto {
         }
     }
 
-    fn into_input(self) -> Result<ApplicationInstallationPlanInput, InstallationPlanError> {
-        if self.schema != APPLICATION_INSTALLATION_PLAN_SCHEMA_V1 {
-            return Err(InstallationPlanError::new(
+    fn schema(&self) -> Result<ApplicationInstallationPlanSchema, InstallationPlanError> {
+        match self.schema.as_str() {
+            APPLICATION_INSTALLATION_PLAN_SCHEMA_V1 => Ok(ApplicationInstallationPlanSchema::V1),
+            APPLICATION_INSTALLATION_PLAN_SCHEMA_V2 => Ok(ApplicationInstallationPlanSchema::V2),
+            _ => Err(InstallationPlanError::new(
                 InstallationPlanErrorKind::UnsupportedVersion,
+            )),
+        }
+    }
+
+    fn into_input(
+        self,
+        schema: ApplicationInstallationPlanSchema,
+    ) -> Result<ApplicationInstallationPlanInput, InstallationPlanError> {
+        if (schema == ApplicationInstallationPlanSchema::V1) != self.reimport.is_none() {
+            return Err(InstallationPlanError::new(
+                InstallationPlanErrorKind::InvalidShape,
             ));
         }
         Ok(ApplicationInstallationPlanInput {
@@ -1308,6 +1418,7 @@ impl PlanDto {
                 .into_iter()
                 .map(RoleDto::into_role)
                 .collect::<Result<Vec<_>, _>>()?,
+            reimport: self.reimport.map(ReimportDto::into_reimport).transpose()?,
             credential_destinations: self
                 .credential_destinations
                 .into_iter()
@@ -1352,6 +1463,18 @@ impl ArtifactDto {
             })?,
             InstallationSymbol::new(self.name)?,
             GeneratedArtifactHash::from_bytes(parse_hex32(&self.content_hash)?),
+        ))
+    }
+}
+
+impl ReimportDto {
+    fn into_reimport(self) -> Result<InstallationReimport, InstallationPlanError> {
+        Ok(InstallationReimport::new(
+            ApplicationExportManifestHash::from_bytes(parse_hex32(&self.export_manifest_hash)?),
+            ApplicationExportReceiptHash::from_bytes(parse_hex32(&self.export_receipt_hash)?),
+            ApplicationPortabilityManifestHash::from_bytes(parse_hex32(
+                &self.portability_manifest_hash,
+            )?),
         ))
     }
 }
