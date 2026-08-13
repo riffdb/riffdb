@@ -128,7 +128,7 @@ change.
 
 ### Amendment 1: sticky classification with declared reveals (2026-08-13)
 
-- **Status:** Proposed (direction approved by the maintainer 2026-08-11)
+- **Status:** Accepted — 2026-08-13, maintainer acceptance as written
 
 A secret-classified value flowing into a non-secret destination — an event
 payload field, a projection field, or any other contract-declared data path —
