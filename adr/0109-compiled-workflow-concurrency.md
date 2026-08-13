@@ -171,3 +171,45 @@ and authorizes current capability facts.
 
 Exact acceptance is required before workflow grammar/IR, lease state,
 service-owned values, scheduler operations, or generated signatures change.
+
+### Amendment 1: compiler-owned initial state and revision-checked self-transitions (2026-08-13)
+
+- **Status:** Proposed (direction approved by the maintainer 2026-08-13)
+
+A workflow may declare exactly one explicit initial state:
+
+```riff
+workflow SessionLifecycle {
+  entity Session
+  state state
+  initial Active
+  transition Refresh from (Active) to Active
+  transition Revoke from (Active) to Revoked
+}
+```
+
+When an ordinary or compiler-bounded collection command creates the workflow
+entity, the compiler injects that exact enum value into the complete create
+construction. Contract source cannot assign, parameterize, or override the
+workflow state field. A workflow without an initial declaration remains
+ineligible for ordinary command creation; reimport continues to use the
+separate authority and exact-record rules of ADR-0119. This is initialization,
+not a transition, and it emits no transition event unless the command also
+declares an ordinary domain event.
+
+An explicitly declared transition may name its destination among its source
+states. Such a self-transition still requires one direct exact observed entity
+revision input, verifies the declared source state, participates in normal
+transaction-current validation, and advances the entity revision only as part
+of the command's committed mutation graph. It is not an unconditional update,
+does not substitute a newer revision, and cannot omit the declared stale and
+illegal outcomes. This permits revision-checked operations such as session
+token rotation without inventing a fake state solely to force a state change.
+
+The initial-state declaration and self-transition validation require additive
+grammar and executable/bundle IR successors, plan- and bundle-hash rotation,
+old/current compatibility fixtures, generated binding updates, and source-span
+diagnostics. Existing workflow IR and contracts retain their exact meaning.
+WP-598 owns the smallest implementation and the generic identity/session
+acceptance fixture; no external-framework name or dependency enters a
+first-party crate.

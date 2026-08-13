@@ -11882,9 +11882,11 @@ work_packages:
     ESCALATED-as-own-package with evidence.
   requirements: []
   required_adrs: [ADR-0107, ADR-0109, ADR-0117]
-  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-contract-compiler/**,
-    crates/riffdb-runtime/**, crates/riffdb-invariant/**, crates/riffdb-testkit/**,
-    tests/**]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/0109-compiled-workflow-concurrency.md,
+    adr/README.md, docs/**, fixtures/**, scripts/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-runtime/**, crates/riffdb-invariant/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-testkit/**, tests/**]
   deliverables:
   - Unique-constraint enforcement verified transactional and conflict-integrated under
     concurrent admission (named tests; the gate workload's unique-identity fixture)
