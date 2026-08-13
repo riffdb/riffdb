@@ -1549,6 +1549,7 @@ pub(crate) fn grant_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1
         && field_visibility_subset(child, parent)
         && row_policy_subset(child, parent)
         && export_subset(child, parent)
+        && reimport_subset(child, parent)
         && child.max_scan_rows() <= parent.max_scan_rows()
         && inherited_approvals_preserved(child, parent)
 }
@@ -1594,6 +1595,16 @@ fn export_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1) -> bool 
         (Some(_), None) => false,
         (Some(child_export), Some(parent_export)) => {
             child_export.is_narrowing_of(parent_export, child.internal_row_policy().is_some())
+        }
+    }
+}
+
+fn reimport_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1) -> bool {
+    match (child.internal_reimport(), parent.internal_reimport()) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(child_reimport), Some(parent_reimport)) => {
+            child_reimport.is_narrowing_of(parent_reimport, child.internal_row_policy().is_some())
         }
     }
 }
@@ -1739,8 +1750,10 @@ mod tests {
     use std::num::NonZeroU16;
 
     use riffdb_types::{
-        AggregateTypeId, ApplicationRoleHash, CapabilityApplicationExportGrantV1,
-        CapabilityApplicationExportScopeV1, CapabilityExportGrantV1, CapabilityPermissionsV1,
+        AggregateTypeId, ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash,
+        ApplicationRoleHash, CapabilityApplicationExportGrantV1,
+        CapabilityApplicationExportScopeV1, CapabilityApplicationReimportGrantV1,
+        CapabilityApplicationReimportScopeV1, CapabilityExportGrantV1, CapabilityPermissionsV1,
         CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1,
         CapabilityRowPolicyOperationV1, CommandId, ContractLineage, EntityFieldVisibilityV1,
         EntityTypeId, FieldId, PartitionKeyBuilder, PartitionScopeV1, RowPolicyName,
@@ -1888,6 +1901,62 @@ mod tests {
             true,
         );
         assert!(!grant_subset(&event_child, &entities_only_parent));
+    }
+
+    #[test]
+    fn reimport_delegation_cannot_change_campaign_manifest_or_broaden_scope() {
+        let role = ApplicationRoleHash::from_bytes([0x91; 32]);
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let mut campaign_bytes = [0x92; 16];
+        campaign_bytes[6] = 0x72;
+        campaign_bytes[8] = 0x82;
+        let campaign =
+            ApplicationInstallationCampaignId::from_bytes(campaign_bytes).expect("campaign ID");
+        let build = |scope, manifest| {
+            grant(
+                TenantScope::Global,
+                vec![CapabilityPermissionV1::ApplicationRoleIdentity(role)],
+                1,
+                Vec::new(),
+            )
+            .with_row_policy(
+                CapabilityRowPolicyGrantV1::new(
+                    role,
+                    CapabilityPrincipalFactsV1::empty(),
+                    vec![
+                        CapabilityRowPolicyBindingV1::new(
+                            lineage.clone(),
+                            RowPolicyName::new("TicketCreate").expect("policy"),
+                            EntityTypeId::first(),
+                            vec![CapabilityRowPolicyOperationV1::Create],
+                        )
+                        .expect("binding"),
+                    ],
+                )
+                .expect("row policy"),
+            )
+            .expect("protected grant")
+            .with_reimport(CapabilityApplicationReimportGrantV1::new(
+                lineage.clone(),
+                campaign,
+                ApplicationPortabilityManifestHash::from_bytes([manifest; 32]),
+                scope,
+            ))
+            .expect("reimport grant")
+        };
+        let parent = build(CapabilityApplicationReimportScopeV1::WholeApplication, 0x93);
+        let child = build(
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+            0x93,
+        );
+        let substituted = build(
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+            0x94,
+        );
+
+        assert!(grant_subset(&child, &parent));
+        assert!(!grant_subset(&parent, &child));
+        assert!(!grant_subset(&substituted, &parent));
     }
 
     fn current(

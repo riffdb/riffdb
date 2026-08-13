@@ -4,8 +4,10 @@ use prost::Message;
 use riffdb_proto::durable::readable_record_registry;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
-    ActorId, AdministrationSequence, ApplicationRoleHash, ApprovalId, Audience,
+    ActorId, AdministrationSequence, ApplicationInstallationCampaignId,
+    ApplicationPortabilityManifestHash, ApplicationRoleHash, ApprovalId, Audience,
     CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+    CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1,
     CapabilityExportGrantV1, CapabilityGrantError, CapabilityId, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
     CapabilityTokenDigest, CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId,
@@ -34,6 +36,7 @@ const RECORD_V3: &str = "riffdb.storage.v1.CapabilityRecordV3";
 const RECORD_V4: &str = "riffdb.storage.v1.CapabilityRecordV4";
 const RECORD_V5: &str = "riffdb.storage.v1.CapabilityRecordV5";
 const RECORD_V6: &str = "riffdb.storage.v1.CapabilityRecordV6";
+const RECORD_V7: &str = "riffdb.storage.v1.CapabilityRecordV7";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
@@ -501,14 +504,23 @@ fn apply_secret_extension(
         }
         visibility[position] = checked;
     }
-    grant_result(CapabilityGrantV1::new(
+    let row_policy = grant.internal_row_policy().cloned();
+    let export = grant.internal_export().cloned();
+    let mut rebuilt = grant_result(CapabilityGrantV1::new(
         grant.tenant_scope().clone(),
         grant.partition_scope().clone(),
         grant.permissions().clone(),
         visibility,
         grant.max_scan_rows(),
         grant.approval_required().to_vec(),
-    ))
+    ))?;
+    if let Some(row_policy) = row_policy {
+        rebuilt = grant_result(rebuilt.with_row_policy(row_policy))?;
+    }
+    if let Some(export) = export {
+        rebuilt = grant_result(rebuilt.with_export(export))?;
+    }
+    Ok(rebuilt)
 }
 
 fn grant_to_proto_with_extensions(
@@ -920,6 +932,28 @@ pub fn encode_capability_record_v1(
         grant: Some(grant),
         lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
     };
+    if let Some(reimport) = value.grant().internal_reimport() {
+        return encode_message(
+            RECORD_V7,
+            &wire::CapabilityRecordV7 {
+                base: Some(base),
+                migration,
+                installation,
+                row_policy,
+                export,
+                secret: secret_extension_from_grant(value.grant()),
+                reimport: Some(wire::CapabilityApplicationReimportGrantV1 {
+                    contract_lineage: reimport.lineage().as_str().to_owned(),
+                    campaign_id: reimport.campaign_id().as_bytes().to_vec(),
+                    portability_manifest_hash: reimport
+                        .portability_manifest_hash()
+                        .as_bytes()
+                        .to_vec(),
+                    scope: i32::from(reimport.scope().tag()),
+                }),
+            },
+        );
+    }
     // ADR-0118: any explicit secret-field naming rides the dedicated V6
     // extension; the base grant message never carries it.
     if let Some(secret) = secret_extension_from_grant(value.grant()) {
@@ -1053,6 +1087,53 @@ pub fn decode_capability_record_v1(
                 value.export,
             )?;
             let grant = apply_secret_extension(record.grant().clone(), secret)?;
+            StoredCapabilityRecordV1::from_stored_parts(
+                record.capability_id(),
+                record.revision(),
+                record.token_digest(),
+                record.database_id(),
+                record.environment().clone(),
+                record.principal_id().clone(),
+                record.actor_kind(),
+                record.audiences().to_vec(),
+                record.issued_at(),
+                record.expires_at(),
+                record.creation_sequence(),
+                record.creation_request_id(),
+                grant,
+                record.lifecycle().clone(),
+            )
+            .map_err(|_| DurableCodecError::corrupt())?
+        }
+        RECORD_V7 => {
+            let value = wire::CapabilityRecordV7::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            let secret = value.secret;
+            let reimport = require(value.reimport)?;
+            let record = record_from_proto(
+                require(value.base)?,
+                value.migration,
+                value.installation,
+                value.row_policy,
+                value.export,
+            )?;
+            let grant = apply_secret_extension(record.grant().clone(), secret)?;
+            let scope = u8::try_from(reimport.scope)
+                .ok()
+                .and_then(CapabilityApplicationReimportScopeV1::from_tag)
+                .ok_or_else(DurableCodecError::corrupt)?;
+            let grant = grant_result(
+                grant.with_reimport(CapabilityApplicationReimportGrantV1::new(
+                    ContractLineage::new(reimport.contract_lineage)
+                        .map_err(|_| DurableCodecError::corrupt())?,
+                    ApplicationInstallationCampaignId::from_bytes(fixed(reimport.campaign_id)?)
+                        .map_err(|_| DurableCodecError::corrupt())?,
+                    ApplicationPortabilityManifestHash::from_bytes(fixed(
+                        reimport.portability_manifest_hash,
+                    )?),
+                    scope,
+                )),
+            )?;
             StoredCapabilityRecordV1::from_stored_parts(
                 record.capability_id(),
                 record.revision(),

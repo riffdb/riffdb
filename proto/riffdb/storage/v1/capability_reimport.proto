@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/capability.proto";
+import "riffdb/storage/v1/capability_export.proto";
+import "riffdb/storage/v1/capability_installation.proto";
+import "riffdb/storage/v1/capability_migration.proto";
+import "riffdb/storage/v1/capability_row_policy.proto";
+import "riffdb/storage/v1/capability_secret.proto";
+
+enum CapabilityApplicationReimportScopeV1 {
+  CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED = 0;
+  CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED = 1;
+  CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION = 2;
+}
+
+// Exact operator authority for one not-ready installation/reimport campaign.
+message CapabilityApplicationReimportGrantV1 {
+  string contract_lineage = 1;
+  bytes campaign_id = 2;
+  bytes portability_manifest_hash = 3;
+  CapabilityApplicationReimportScopeV1 scope = 4;
+}
+
+// Additive reimport-authority successor; V1 through V6 remain byte-frozen.
+message CapabilityRecordV7 {
+  CapabilityRecordV1 base = 1;
+  CapabilityMigrationGrantExtensionV1 migration = 2;
+  CapabilityInstallationGrantExtensionV1 installation = 3;
+  CapabilityRowPolicyGrantExtensionV1 row_policy = 4;
+  CapabilityExportGrantExtensionV1 export = 5;
+  CapabilitySecretGrantExtensionV1 secret = 6;
+  CapabilityApplicationReimportGrantV1 reimport = 7;
+}
