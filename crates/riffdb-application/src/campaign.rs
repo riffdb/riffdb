@@ -25,9 +25,12 @@ pub const APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V1: &str =
 /// Canonical schema version for complete terminal installation receipts.
 pub const APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V2: &str =
     "riffdb.application-installation-receipt/v2";
-/// Canonical schema version emitted for new terminal installation receipts.
+/// Canonical terminal receipt carrying explicit reimport reconciliation identities.
+pub const APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V3: &str =
+    "riffdb.application-installation-receipt/v3";
+/// Latest supported terminal installation-receipt schema.
 pub const APPLICATION_INSTALLATION_RECEIPT_SCHEMA_CURRENT: &str =
-    APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V2;
+    APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V3;
 /// Canonical schema version for durable resumable campaign state.
 pub const APPLICATION_INSTALLATION_CAMPAIGN_STATE_SCHEMA_V1: &str =
     "riffdb.application-installation-campaign-state/v1";
@@ -955,6 +958,13 @@ impl ApplicationInstallationReceipt {
                 validate_receipt_v2_dto(&dto)?;
                 Self::from_v2_dto(dto)?
             }
+            APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V3 => {
+                let dto: ReceiptDtoV2 = serde_json::from_slice(bytes).map_err(|_| {
+                    InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding)
+                })?;
+                validate_receipt_v3_dto(&dto)?;
+                Self::from_v2_dto(dto)?
+            }
             _ => {
                 return Err(InstallationCampaignError::new(
                     InstallationCampaignErrorKind::UnsupportedVersion,
@@ -1874,6 +1884,8 @@ struct ReceiptDtoV2 {
     migration_receipt: Option<ReceiptMigrationReferenceDto>,
     backup_receipt: Option<ReceiptBackupReferenceDto>,
     adapter_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reimport: Option<ReceiptReimportReferenceDto>,
     terminal_state: String,
     safe_remediation: Vec<String>,
 }
@@ -1924,6 +1936,15 @@ struct ReceiptBackupReferenceDto {
     policy: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptReimportReferenceDto {
+    export_manifest_hash: String,
+    export_receipt_hash: String,
+    portability_manifest_hash: String,
+    reimport_receipt_hash: String,
+}
+
 impl ReceiptDtoV2 {
     fn from_campaign(
         campaign: &ApplicationInstallationCampaign,
@@ -1964,8 +1985,44 @@ impl ReceiptDtoV2 {
         let operation_id = input
             .migration
             .map(|_| hex16(campaign.campaign_id.as_bytes()));
+        let reimport = campaign
+            .completed
+            .iter()
+            .find_map(|evidence| match evidence {
+                InstallationStageEvidence::Reimport(evidence) => Some(evidence),
+                _ => None,
+            })
+            .ok_or_else(evidence_mismatch)?;
+        let reimport = match (input.reimport, reimport) {
+            (None, InstalledReimportEvidence::NotRequired) => None,
+            (
+                Some(expected),
+                InstalledReimportEvidence::Reconciled {
+                    export_manifest_hash,
+                    export_receipt_hash,
+                    portability_manifest_hash,
+                    reimport_receipt_hash,
+                },
+            ) if *export_manifest_hash == expected.export_manifest_hash()
+                && *export_receipt_hash == expected.export_receipt_hash()
+                && *portability_manifest_hash == expected.portability_manifest_hash() =>
+            {
+                Some(ReceiptReimportReferenceDto {
+                    export_manifest_hash: hex32(export_manifest_hash.as_bytes()),
+                    export_receipt_hash: hex32(export_receipt_hash.as_bytes()),
+                    portability_manifest_hash: hex32(portability_manifest_hash.as_bytes()),
+                    reimport_receipt_hash: hex32(reimport_receipt_hash.as_bytes()),
+                })
+            }
+            _ => return Err(evidence_mismatch()),
+        };
+        let schema = if reimport.is_some() {
+            APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V3
+        } else {
+            APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V2
+        };
         Ok(Self {
-            schema: APPLICATION_INSTALLATION_RECEIPT_SCHEMA_CURRENT.to_owned(),
+            schema: schema.to_owned(),
             campaign_id: hex16(campaign.campaign_id.as_bytes()),
             plan_hash: hex32(plan.identity().as_bytes()),
             application: input.application.as_str().to_owned(),
@@ -2022,6 +2079,7 @@ impl ReceiptDtoV2 {
             adapter_manifest_hash: input
                 .adapter_manifest_hash
                 .map(|hash| hex32(hash.as_bytes())),
+            reimport,
             terminal_state: "installed".to_owned(),
             safe_remediation: Vec::new(),
         })
@@ -2029,8 +2087,21 @@ impl ReceiptDtoV2 {
 }
 
 fn validate_receipt_v2_dto(dto: &ReceiptDtoV2) -> Result<(), InstallationCampaignError> {
+    validate_receipt_dto(dto, APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V2, false)
+}
+
+fn validate_receipt_v3_dto(dto: &ReceiptDtoV2) -> Result<(), InstallationCampaignError> {
+    validate_receipt_dto(dto, APPLICATION_INSTALLATION_RECEIPT_SCHEMA_V3, true)
+}
+
+fn validate_receipt_dto(
+    dto: &ReceiptDtoV2,
+    expected_schema: &str,
+    expects_reimport: bool,
+) -> Result<(), InstallationCampaignError> {
     let invalid = || InstallationCampaignError::new(InstallationCampaignErrorKind::InvalidEncoding);
-    if dto.schema != APPLICATION_INSTALLATION_RECEIPT_SCHEMA_CURRENT
+    if dto.schema != expected_schema
+        || dto.reimport.is_some() != expects_reimport
         || dto.terminal_state != "installed"
         || !dto.safe_remediation.is_empty()
         || dto.artifacts.is_empty()
@@ -2059,6 +2130,16 @@ fn validate_receipt_v2_dto(dto: &ReceiptDtoV2) -> Result<(), InstallationCampaig
         &dto.manifest_hash,
     ] {
         parse_hex32(hash).map_err(InstallationCampaignError::from_plan_error)?;
+    }
+    if let Some(reimport) = &dto.reimport {
+        for hash in [
+            &reimport.export_manifest_hash,
+            &reimport.export_receipt_hash,
+            &reimport.portability_manifest_hash,
+            &reimport.reimport_receipt_hash,
+        ] {
+            parse_hex32(hash).map_err(InstallationCampaignError::from_plan_error)?;
+        }
     }
     validate_receipt_artifacts(&dto.artifacts)?;
     validate_receipt_roles(&dto.roles)?;
