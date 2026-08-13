@@ -10,6 +10,10 @@ publish.workspace = true
 name = "riffdb-driverd"
 path = "src/main.rs"
 
+[[bin]]
+name = "riffdb-operator-driverd"
+path = "src/operator_main.rs"
+
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
