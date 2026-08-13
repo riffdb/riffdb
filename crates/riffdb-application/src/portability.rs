@@ -7,9 +7,11 @@ use std::fmt;
 use riffdb_contract_ir::{ContractBundle, RecordSchema};
 use riffdb_types::{
     AdapterConformanceManifestHash, ApplicationExportManifestHash,
-    ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash, ContractBundleHash,
-    ContractLineage, ContractVersion, DatabaseId, EntityTypeId, GeneratedArtifactHash,
-    MigrationBundleHash, hash_application_portability_manifest, hash_application_reimport_receipt,
+    ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash, CanonicalValue,
+    ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, EntityTypeId,
+    GeneratedArtifactHash, MigrationBundleHash, QueryModuleHash, decode_canonical_value,
+    encode_canonical_value, hash_application_portability_manifest,
+    hash_application_reimport_receipt,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +23,9 @@ pub const APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1: &str =
 /// Canonical adapter-owned reimport mapping schema with compiler-owned commands.
 pub const APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2: &str =
     "riffdb.application-portability-manifest/v2";
+/// Canonical mapping manifest with compiler-owned commands and typed observations.
+pub const APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V3: &str =
+    "riffdb.application-portability-manifest/v3";
 /// Canonical terminal reconciliation receipt schema.
 pub const APPLICATION_REIMPORT_RECEIPT_SCHEMA_V1: &str = "riffdb.application-reimport-receipt/v1";
 /// Canonical terminal reconciliation receipt for a compiler-owned v2 mapping.
@@ -35,6 +40,8 @@ pub const MAX_APPLICATION_PORTABLE_FIELD_BINDINGS: usize = 256;
 pub const MAX_APPLICATION_PORTABLE_OMISSIONS: usize = 512;
 /// Maximum reconciliation observations.
 pub const MAX_APPLICATION_REIMPORT_OBSERVATIONS: usize = 256;
+/// Maximum exact parameters carried by one reconciliation observation.
+pub const MAX_APPLICATION_REIMPORT_OBSERVATION_PARAMETERS: usize = 256;
 
 /// Public-safe portability-manifest failure class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,9 +385,58 @@ impl PortableOmission {
 
 /// One named query observation used to reconcile the empty-database reimport.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ReimportObservationParameter {
+    name: InstallationSymbol,
+    canonical_value: Vec<u8>,
+}
+
+impl ReimportObservationParameter {
+    /// Creates one exact scalar parameter. Nested, vector, and ID-addressed enum values are absent.
+    pub fn new(
+        name: InstallationSymbol,
+        value: CanonicalValue,
+    ) -> Result<Self, ApplicationPortabilityError> {
+        if matches!(
+            value,
+            CanonicalValue::Enum { .. }
+                | CanonicalValue::List(_)
+                | CanonicalValue::Record(_)
+                | CanonicalValue::Vector(_)
+        ) {
+            return Err(ApplicationPortabilityError::new(
+                ApplicationPortabilityErrorKind::InvalidShape,
+            ));
+        }
+        let canonical_value = encode_canonical_value(&value).map_err(|_| {
+            ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidEncoding)
+        })?;
+        Ok(Self {
+            name,
+            canonical_value,
+        })
+    }
+
+    /// Symbolic query parameter name.
+    #[must_use]
+    pub const fn name(&self) -> &InstallationSymbol {
+        &self.name
+    }
+
+    /// Decodes the exact typed value retained by the manifest.
+    pub fn value(&self) -> Result<CanonicalValue, ApplicationPortabilityError> {
+        decode_canonical_value(&self.canonical_value).map_err(|_| {
+            ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidEncoding)
+        })
+    }
+}
+
+/// One named query observation used to reconcile the empty-database reimport.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ReimportObservation {
     name: InstallationSymbol,
     query: InstallationSymbol,
+    module_hash: Option<QueryModuleHash>,
+    parameters: Vec<ReimportObservationParameter>,
     expected_hash: GeneratedArtifactHash,
     maximum_items: u32,
 }
@@ -393,14 +449,60 @@ impl ReimportObservation {
         expected_hash: GeneratedArtifactHash,
         maximum_items: u32,
     ) -> Result<Self, ApplicationPortabilityError> {
+        Self::new_checked(name, query, None, Vec::new(), expected_hash, maximum_items)
+    }
+
+    /// Creates one bounded symbolic observation with exact typed scalar parameters.
+    pub fn new_with_parameters(
+        name: InstallationSymbol,
+        query: InstallationSymbol,
+        module_hash: QueryModuleHash,
+        parameters: Vec<ReimportObservationParameter>,
+        expected_hash: GeneratedArtifactHash,
+        maximum_items: u32,
+    ) -> Result<Self, ApplicationPortabilityError> {
+        Self::new_checked(
+            name,
+            query,
+            Some(module_hash),
+            parameters,
+            expected_hash,
+            maximum_items,
+        )
+    }
+
+    fn new_checked(
+        name: InstallationSymbol,
+        query: InstallationSymbol,
+        module_hash: Option<QueryModuleHash>,
+        mut parameters: Vec<ReimportObservationParameter>,
+        expected_hash: GeneratedArtifactHash,
+        maximum_items: u32,
+    ) -> Result<Self, ApplicationPortabilityError> {
         if maximum_items == 0 || maximum_items > crate::MAX_ADAPTER_PROBE_ITEMS {
             return Err(ApplicationPortabilityError::new(
                 ApplicationPortabilityErrorKind::LimitExceeded,
             ));
         }
+        if parameters.len() > MAX_APPLICATION_REIMPORT_OBSERVATION_PARAMETERS {
+            return Err(ApplicationPortabilityError::new(
+                ApplicationPortabilityErrorKind::LimitExceeded,
+            ));
+        }
+        parameters.sort();
+        if parameters
+            .windows(2)
+            .any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(ApplicationPortabilityError::new(
+                ApplicationPortabilityErrorKind::Duplicate,
+            ));
+        }
         Ok(Self {
             name,
             query,
+            module_hash,
+            parameters,
             expected_hash,
             maximum_items,
         })
@@ -418,10 +520,28 @@ impl ReimportObservation {
         &self.query
     }
 
+    /// Exact query module identity for V3 observations.
+    #[must_use]
+    pub const fn module_hash(&self) -> Option<QueryModuleHash> {
+        self.module_hash
+    }
+
+    /// Exact typed parameters in canonical name order.
+    #[must_use]
+    pub fn parameters(&self) -> &[ReimportObservationParameter] {
+        &self.parameters
+    }
+
     /// Expected application-level observation digest.
     #[must_use]
     pub const fn expected_hash(&self) -> GeneratedArtifactHash {
         self.expected_hash
+    }
+
+    /// Maximum total result records accepted from this bounded observation.
+    #[must_use]
+    pub const fn maximum_items(&self) -> u32 {
+        self.maximum_items
     }
 }
 
@@ -457,6 +577,7 @@ pub struct ApplicationPortabilityManifest {
 enum ApplicationPortabilityManifestSchema {
     V1,
     V2,
+    V3,
 }
 
 impl ApplicationPortabilityManifestSchema {
@@ -464,6 +585,7 @@ impl ApplicationPortabilityManifestSchema {
         match self {
             Self::V1 => APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1,
             Self::V2 => APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2,
+            Self::V3 => APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V3,
         }
     }
 }
@@ -473,7 +595,7 @@ impl ApplicationPortabilityManifest {
     pub fn compile(
         input: ApplicationPortabilityManifestInput,
     ) -> Result<Self, ApplicationPortabilityError> {
-        Self::compile_version(input, ApplicationPortabilityManifestSchema::V2)
+        Self::compile_version(input, ApplicationPortabilityManifestSchema::V3)
     }
 
     fn compile_version(
@@ -501,6 +623,7 @@ impl ApplicationPortabilityManifest {
         let schema = match dto.schema.as_str() {
             APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1 => ApplicationPortabilityManifestSchema::V1,
             APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2 => ApplicationPortabilityManifestSchema::V2,
+            APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V3 => ApplicationPortabilityManifestSchema::V3,
             _ => {
                 return Err(ApplicationPortabilityError::new(
                     ApplicationPortabilityErrorKind::UnsupportedVersion,
@@ -990,7 +1113,9 @@ impl ApplicationReimportReceiptSchema {
     const fn for_manifest(manifest: &ApplicationPortabilityManifest) -> Self {
         match manifest.schema {
             ApplicationPortabilityManifestSchema::V1 => Self::V1,
-            ApplicationPortabilityManifestSchema::V2 => Self::V2,
+            ApplicationPortabilityManifestSchema::V2 | ApplicationPortabilityManifestSchema::V3 => {
+                Self::V2
+            }
         }
     }
 
@@ -1158,15 +1283,27 @@ fn validate_manifest(
         ));
     }
     let wrong_strategy_version = input.mappings.iter().any(|mapping| match mapping.strategy {
-        PortableReimportStrategy::ReimportCommand { .. } => {
-            schema != ApplicationPortabilityManifestSchema::V2
-        }
+        PortableReimportStrategy::ReimportCommand { .. } => !matches!(
+            schema,
+            ApplicationPortabilityManifestSchema::V2 | ApplicationPortabilityManifestSchema::V3
+        ),
         PortableReimportStrategy::LegacyApplicationCommand { .. } => {
             schema != ApplicationPortabilityManifestSchema::V1
         }
         PortableReimportStrategy::Migration { .. } => false,
     });
     if wrong_strategy_version {
+        return Err(ApplicationPortabilityError::new(
+            ApplicationPortabilityErrorKind::InvalidShape,
+        ));
+    }
+    let wrong_observation_version = input.observations.iter().any(|observation| match schema {
+        ApplicationPortabilityManifestSchema::V1 | ApplicationPortabilityManifestSchema::V2 => {
+            observation.module_hash.is_some() || !observation.parameters.is_empty()
+        }
+        ApplicationPortabilityManifestSchema::V3 => observation.module_hash.is_none(),
+    });
+    if wrong_observation_version {
         return Err(ApplicationPortabilityError::new(
             ApplicationPortabilityErrorKind::InvalidShape,
         ));
@@ -1252,8 +1389,19 @@ struct OmissionDto {
 struct ObservationDto {
     name: String,
     query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    module_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    parameters: Vec<ObservationParameterDto>,
     expected_hash: String,
     maximum_items: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationParameterDto {
+    name: String,
+    canonical_value_hex: String,
 }
 
 impl PortabilityManifestDto {
@@ -1290,6 +1438,15 @@ impl PortabilityManifestDto {
                 .map(|observation| ObservationDto {
                     name: observation.name.as_str().to_owned(),
                     query: observation.query.as_str().to_owned(),
+                    module_hash: observation.module_hash.map(|hash| hex(hash.as_bytes())),
+                    parameters: observation
+                        .parameters
+                        .iter()
+                        .map(|parameter| ObservationParameterDto {
+                            name: parameter.name.as_str().to_owned(),
+                            canonical_value_hex: hex(&parameter.canonical_value),
+                        })
+                        .collect(),
                     expected_hash: hex(observation.expected_hash.as_bytes()),
                     maximum_items: observation.maximum_items,
                 })
@@ -1334,9 +1491,27 @@ impl PortabilityManifestDto {
                 .observations
                 .into_iter()
                 .map(|observation| {
-                    ReimportObservation::new(
+                    ReimportObservation::new_checked(
                         InstallationSymbol::new(observation.name).map_err(|_| invalid())?,
                         InstallationSymbol::new(observation.query).map_err(|_| invalid())?,
+                        observation
+                            .module_hash
+                            .map(|hash| parse_hash(&hash).map(QueryModuleHash::from_bytes))
+                            .transpose()?,
+                        observation
+                            .parameters
+                            .into_iter()
+                            .map(|parameter| {
+                                let bytes = parse_hex_vec(&parameter.canonical_value_hex)?;
+                                let value =
+                                    decode_canonical_value(&bytes).map_err(|_| invalid())?;
+                                ReimportObservationParameter::new(
+                                    InstallationSymbol::new(parameter.name)
+                                        .map_err(|_| invalid())?,
+                                    value,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
                         GeneratedArtifactHash::from_bytes(parse_hash(&observation.expected_hash)?),
                         observation.maximum_items,
                     )
@@ -1410,8 +1585,11 @@ impl MappingDto {
         } = self.strategy;
         let strategy = match kind.as_str() {
             "reimport_command"
-                if schema == ApplicationPortabilityManifestSchema::V2
-                    && migration_hash.is_none()
+                if matches!(
+                    schema,
+                    ApplicationPortabilityManifestSchema::V2
+                        | ApplicationPortabilityManifestSchema::V3
+                ) && migration_hash.is_none()
                     && command.is_some()
                     && idempotency_input.is_none()
                     && record_input.is_none()
@@ -1598,6 +1776,27 @@ fn parse_uuid(value: &str) -> Result<[u8; 16], ApplicationPortabilityError> {
     parse_hex::<16>(value)
 }
 
+fn parse_hex_vec(value: &str) -> Result<Vec<u8>, ApplicationPortabilityError> {
+    if value.is_empty()
+        || value.len() % 2 != 0
+        || value.len() > riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES * 2
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = nibble(pair[0]).ok_or_else(invalid)?;
+            let low = nibble(pair[1]).ok_or_else(invalid)?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
 fn parse_hex<const N: usize>(value: &str) -> Result<[u8; N], ApplicationPortabilityError> {
     if value.len() != N * 2
         || !value
@@ -1671,9 +1870,11 @@ mod tests {
                 .expect("omission"),
             ],
             observations: vec![
-                ReimportObservation::new(
+                ReimportObservation::new_with_parameters(
                     symbol("ticket_count"),
                     symbol("ListTickets"),
+                    QueryModuleHash::from_bytes([4; 32]),
+                    Vec::new(),
                     GeneratedArtifactHash::from_bytes([3; 32]),
                     500,
                 )
@@ -1707,9 +1908,11 @@ mod tests {
             mappings,
             omissions: Vec::new(),
             observations: vec![
-                ReimportObservation::new(
+                ReimportObservation::new_with_parameters(
                     symbol("family_count"),
                     symbol("ListFamilies"),
+                    QueryModuleHash::from_bytes([9; 32]),
+                    Vec::new(),
                     GeneratedArtifactHash::from_bytes([8; 32]),
                     64,
                 )
@@ -1771,6 +1974,72 @@ contract PortableFamilies version 1 {
         ] {
             assert!(!text.contains(forbidden));
         }
+        let mut v2_input = manifest.input().clone();
+        v2_input.observations = vec![
+            ReimportObservation::new(
+                symbol("ticket_count"),
+                symbol("ListTickets"),
+                GeneratedArtifactHash::from_bytes([3; 32]),
+                500,
+            )
+            .expect("legacy observation"),
+        ];
+        let v2 = ApplicationPortabilityManifest::compile_version(
+            v2_input,
+            ApplicationPortabilityManifestSchema::V2,
+        )
+        .expect("frozen v2");
+        assert!(
+            std::str::from_utf8(v2.canonical_bytes())
+                .expect("UTF-8")
+                .contains(APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2)
+        );
+        assert_eq!(
+            ApplicationPortabilityManifest::decode_canonical(v2.canonical_bytes())
+                .expect("decode v2"),
+            v2
+        );
+    }
+
+    #[test]
+    fn v3_observations_carry_only_bounded_exact_scalar_parameters() {
+        let mut input = manifest().input().clone();
+        input.observations = vec![
+            ReimportObservation::new_with_parameters(
+                symbol("ticket"),
+                symbol("GetTicket"),
+                QueryModuleHash::from_bytes([4; 32]),
+                vec![
+                    ReimportObservationParameter::new(
+                        symbol("ticket_id"),
+                        CanonicalValue::Uuid([7; 16]),
+                    )
+                    .expect("UUID parameter"),
+                    ReimportObservationParameter::new(symbol("after"), CanonicalValue::Null)
+                        .expect("null parameter"),
+                ],
+                GeneratedArtifactHash::from_bytes([3; 32]),
+                1,
+            )
+            .expect("observation"),
+        ];
+        let manifest = ApplicationPortabilityManifest::compile(input).expect("v3 manifest");
+        let decoded = ApplicationPortabilityManifest::decode_canonical(manifest.canonical_bytes())
+            .expect("decode v3");
+        assert_eq!(decoded, manifest);
+        assert_eq!(
+            decoded.input().observations[0].parameters()[1]
+                .value()
+                .expect("value"),
+            CanonicalValue::Uuid([7; 16])
+        );
+        assert!(
+            ReimportObservationParameter::new(
+                symbol("unsafe"),
+                CanonicalValue::record(Vec::new()).expect("record")
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1798,10 +2067,10 @@ contract PortableFamilies version 1 {
     }
 
     #[test]
-    fn v2_command_mapping_has_no_caller_selected_execution_inputs() {
+    fn v3_command_mapping_has_no_caller_selected_execution_inputs() {
         let manifest = manifest();
         let text = std::str::from_utf8(manifest.canonical_bytes()).expect("UTF-8");
-        assert!(text.contains(APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2));
+        assert!(text.contains(APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V3));
         assert!(text.contains("\"kind\":\"reimport_command\""));
         assert!(text.contains("\"idempotency_input\":null"));
         assert!(text.contains("\"record_input\":null"));
@@ -1876,9 +2145,11 @@ contract PortableFamilies version 1 {
                 )],
                 omissions: vec![],
                 observations: vec![
-                    ReimportObservation::new(
+                    ReimportObservation::new_with_parameters(
                         symbol("list_tuples"),
                         symbol("ListFgaTuples"),
+                        QueryModuleHash::from_bytes([4; 32]),
+                        Vec::new(),
                         GeneratedArtifactHash::from_bytes([3; 32]),
                         500,
                     )

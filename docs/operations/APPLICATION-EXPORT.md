@@ -62,7 +62,7 @@ riffdb --database ticketdesk export start \
   --lineage TicketDesk \
   --scope whole \
   --entities \
-  --portability-manifest riffdb/portability-manifest-v2.json \
+  --portability-manifest riffdb/portability-manifest-v3.json \
   --lease-seconds 3600 \
   --output json
 ```
@@ -138,8 +138,11 @@ policies, provenance, declared outcomes, and server-derived command
 idempotency. Commit sequences and physical identities are not portable
 identities.
 
-The adapter-owned `riffdb.application-portability-manifest/v2` binds the exact
-adapter manifest, contract lineage, contract version, and bundle hash. Each
+The adapter-owned `riffdb.application-portability-manifest/v3` binds the exact
+adapter manifest, contract lineage, contract version, bundle hash, and query
+module used by each reconciliation observation. Observation parameters are
+canonical typed scalar values in symbolic-name order; field IDs, nested
+records, vectors, and caller-supplied query source are not representable. Each
 portable entity or event symbol selects only one of these closed strategies:
 
 - a named compiler-owned reimport command whose sole input is a bounded list
@@ -157,9 +160,10 @@ observation digest agrees with the portability manifest. The receipt records
 the new database identity and deliberately does not claim preservation of
 physical commit sequences.
 
-Frozen v1 portability manifests and receipts remain readable for compatibility inspection,
-but a v1 application-command mapping cannot be compiled as v2 reimport
-authority. OpenFGA, MLflow, Payload, and Woodpecker compiler fixtures now prove
+Frozen v1 and v2 portability manifests and receipts remain readable for
+compatibility inspection, but neither older format can be emitted as v3
+authority and a v1 application-command mapping cannot be compiled as a modern
+reimport command. OpenFGA, MLflow, Payload, and Woodpecker compiler fixtures now prove
 the closed mapping boundary, including exact workflow records. Portability-
 intent export and its source-side quiescence proof are available through the
 public start/page/status/cancel export campaign. A distinct operator-only
@@ -184,7 +188,7 @@ riffdb --database restored --credential-file operator-reimport.credential \
   --campaign-id 019f... \
   --lineage TicketDesk \
   --scope whole \
-  --portability-manifest riffdb/portability-manifest-v2.json \
+  --portability-manifest riffdb/portability-manifest-v3.json \
   --export-manifest export/manifest.json \
   --export-receipt export/receipt.json
 ```
@@ -208,7 +212,11 @@ For a terminal page, omit `--next-cursor` and pass both
 page hash, exact expected page position, source manifest, current authority,
 and every canonical row before compiler-owned commands can mutate the empty
 destination. A repeated page is an exact replay; a different page at the same
-position fails closed.
+position fails closed. The final page is also the recovery entry point if its
+commands committed before reconciliation completed: RiffDB replays only
+commands not covered by the durable page checkpoint, resumes the exact
+module-bound observations, and returns the already sealed receipt after an
+uncertain terminal response.
 
 Observe or cancel with the same campaign identity:
 

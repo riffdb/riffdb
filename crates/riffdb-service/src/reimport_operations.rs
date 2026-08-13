@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use riffdb_application::{
-    ApplicationPortabilityManifest, InstallationSymbol, PortableRecordClass,
-    PortableReimportStrategy, ReimportPageMappingOutcomeV1,
+    ApplicationPortabilityManifest, ApplicationReimportCampaignPhaseV1, InstallationSymbol,
+    PortableRecordClass, PortableReimportStrategy, ReimportObservationResult,
+    ReimportPageMappingOutcomeV1,
 };
 use riffdb_contract_ir::{RecordSchema, RecordTypeRef, SchemaIr, ValueType, ValueTypeTag};
 use riffdb_errors::PublicError;
@@ -32,9 +33,10 @@ use crate::{
     ApplicationReimportOperationRequestV1, ApplicationReimportOperationResultV1,
     ApplicationReimportPagePreparationV1, ApplyApplicationReimportPageRequestV1,
     AuthorizedApplicationReimportOperationV1, AuthorizedApplicationReimportPageV1,
-    AuthorizedApplicationReimportStartV1, GetApplicationReimportResultV1, PortAdmissionError,
-    PortDriverStopped, RequestContext, RiffDbService, ServiceFailure, ServiceFuture, ServiceResult,
-    StartApplicationReimportRequestV1, ensure_response_budget,
+    AuthorizedApplicationReimportReconcileV1, AuthorizedApplicationReimportStartV1,
+    GetApplicationReimportResultV1, PortAdmissionError, PortDriverStopped, RequestContext,
+    RiffDbService, ServiceFailure, ServiceFuture, ServiceResult, StartApplicationReimportRequestV1,
+    ensure_response_budget,
 };
 
 impl ApplicationReimportApplication for RiffDbService {
@@ -194,8 +196,8 @@ async fn apply_page(
         begun.initial_authorization(),
     )?;
     let result = async {
-        let preparation =
-            prepare_page(&service, &context, &coordinator, request.campaign_id()).await?;
+        let campaign_id = request.campaign_id();
+        let preparation = prepare_page(&service, &context, &coordinator, campaign_id).await?;
         if preparation.lineage() != binding.lineage()
             || preparation.portability_manifest().identity() != binding.portability_manifest_hash()
             || preparation.expected_page() != request.page().page_number()
@@ -203,9 +205,12 @@ async fn apply_page(
         {
             return Err(integrity(&service));
         }
-        let outcomes =
+        let outcomes = if preparation.phase() == ApplicationReimportCampaignPhaseV1::Applying {
             execute_page_commands(&service, &context, &request, &preparation, &policy_request)
-                .await?;
+                .await?
+        } else {
+            Vec::new()
+        };
         let permit = reserve(
             &service,
             &context,
@@ -213,7 +218,7 @@ async fn apply_page(
         )
         .await?;
         ensure_control_open(&context)?;
-        let authorization = authorize_current(&service, &context, policy_request)?;
+        let authorization = authorize_current(&service, &context, policy_request.clone())?;
         let page_hash = request.page().page_hash();
         let receipt = permit
             .submit(AuthorizedApplicationReimportPageV1::new(
@@ -234,12 +239,75 @@ async fn apply_page(
         {
             return Err(integrity(&service));
         }
+        let result = if result.campaign().phase() == ApplicationReimportCampaignPhaseV1::Reconciling
+        {
+            reconcile_observations(
+                &service,
+                &context,
+                &coordinator,
+                campaign_id,
+                preparation.portability_manifest(),
+                &policy_request,
+            )
+            .await?
+        } else {
+            result
+        };
         ensure_response_budget(&result)?;
         Ok(result)
     }
     .await;
     finish(&service, &context, &begun, &result).await?;
     result
+}
+
+async fn reconcile_observations(
+    service: &Arc<RiffDbServiceInner>,
+    context: &RequestContext,
+    coordinator: &Arc<dyn ApplicationReimportCoordinatorPort>,
+    campaign_id: riffdb_types::ApplicationInstallationCampaignId,
+    manifest: &ApplicationPortabilityManifest,
+    policy_request: &ApplicationReimportAuthorizationRequestV1,
+) -> ServiceResult<ApplicationReimportOperationResultV1> {
+    let mut results =
+        Vec::<ReimportObservationResult>::with_capacity(manifest.input().observations.len());
+    for observation in &manifest.input().observations {
+        ensure_control_open(context)?;
+        let authorization = authorize_current(service, context, policy_request.clone())?;
+        results.push(
+            crate::symbolic_query::execute_reimport_observation(
+                service,
+                context,
+                manifest,
+                observation,
+                authorization,
+            )
+            .await?,
+        );
+    }
+    let permit = reserve(
+        service,
+        context,
+        coordinator.reserve_application_reimport_reconcile(context.control()),
+    )
+    .await?;
+    ensure_control_open(context)?;
+    let authorization = authorize_current(service, context, policy_request.clone())?;
+    let receipt = permit
+        .submit(AuthorizedApplicationReimportReconcileV1::new(
+            campaign_id,
+            authorization,
+            results,
+        ))
+        .map_err(pre_submit_failure)?;
+    let result = wait_mutation(service, context, receipt).await?;
+    if result.campaign_id() != campaign_id
+        || result.campaign().phase() != ApplicationReimportCampaignPhaseV1::Reconciled
+        || result.receipt().is_none()
+    {
+        return Err(integrity(service));
+    }
+    Ok(result)
 }
 
 async fn observe_or_cancel(

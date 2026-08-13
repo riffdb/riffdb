@@ -24,7 +24,7 @@ fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
     for (domain, application_root) in PORTABLE_DOMAINS {
         let export_root = repository_root().join("fixtures/export").join(domain);
         let manifest = ApplicationPortabilityManifest::decode_canonical(
-            &fs::read(export_root.join("portability-manifest-v2.json"))
+            &fs::read(export_root.join("portability-manifest-v3.json"))
                 .expect("portability manifest"),
         )
         .expect("canonical portability manifest");
@@ -58,6 +58,9 @@ fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
             mapping.strategy(),
             PortableReimportStrategy::ReimportCommand { .. }
         )));
+        assert!(manifest.input().observations.iter().all(|observation| {
+            observation.module_hash().is_some() && !observation.parameters().is_empty()
+        }));
         let receipt = ApplicationReimportReceipt::decode_canonical(
             &fs::read(export_root.join("reimport-receipt-v2.json")).expect("reimport receipt"),
             &manifest,
@@ -68,7 +71,7 @@ fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
             manifest.identity()
         );
 
-        let source = fs::read_to_string(export_root.join("portability-manifest-v2.json"))
+        let source = fs::read_to_string(export_root.join("portability-manifest-v3.json"))
             .expect("manifest text");
         for forbidden in [
             "entity_type_id",
