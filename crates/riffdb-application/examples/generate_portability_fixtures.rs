@@ -20,21 +20,16 @@ struct Domain<'a> {
     application_root: &'a str,
     entity: &'a str,
     command: &'a str,
-    record_input: &'a str,
     query: &'a str,
     seed: u8,
 }
 
-// The two workflow adapters are intentionally absent until RiffDB has an
-// accepted compiler-owned way to reconstruct workflow state without admitting
-// an ordinary state-field write. The all-domain acceptance gate remains red.
-const DOMAINS: [Domain<'static>; 2] = [
+const DOMAINS: [Domain<'static>; 4] = [
     Domain {
         name: "openfga",
         application_root: "fixtures/adapters/operational-conformance",
         entity: "FgaTuple",
-        command: "WriteTuples",
-        record_input: "tuples",
+        command: "ReconstituteFgaTuples",
         query: "ListFgaTuples",
         seed: 1,
     },
@@ -42,10 +37,25 @@ const DOMAINS: [Domain<'static>; 2] = [
         name: "payload",
         application_root: "fixtures/adapters/operational-conformance",
         entity: "Document",
-        command: "CreateDocuments",
-        record_input: "documents",
+        command: "ReconstituteDocuments",
         query: "ListDraftDocuments",
         seed: 2,
+    },
+    Domain {
+        name: "mlflow",
+        application_root: "fixtures/adapters/mlflow",
+        entity: "ScheduledRun",
+        command: "ReconstituteScheduledRuns",
+        query: "DueRun",
+        seed: 3,
+    },
+    Domain {
+        name: "woodpecker",
+        application_root: "fixtures/adapters/woodpecker",
+        entity: "ScheduledPipeline",
+        command: "ReconstituteScheduledPipelines",
+        query: "GetPipeline",
+        seed: 4,
     },
 ];
 
@@ -90,11 +100,7 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
         mappings: vec![PortableRecordMapping::new(
             PortableRecordClass::Entity,
             symbol(domain.entity),
-            PortableReimportStrategy::bounded_collection_command(
-                symbol(domain.command),
-                symbol("request_id"),
-                symbol(domain.record_input),
-            ),
+            PortableReimportStrategy::reimport_command(symbol(domain.command)),
         )],
         omissions: vec![
             PortableOmission::new(
@@ -135,7 +141,7 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
     }));
     manifest
         .validate_adapter_conformance(&adapter)
-        .expect("adapter mapping");
+        .unwrap_or_else(|error| panic!("{} adapter mapping: {error:?}", domain.name));
 
     let outcome_hash = hash_generated_artifact(format!("{}-outcomes-v1", domain.name).as_bytes());
     let receipt = ApplicationReimportReceipt::reconcile(
@@ -164,12 +170,12 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
 
     let destination = root.join("fixtures/export").join(domain.name);
     update(
-        destination.join("portability-manifest-v1.json"),
+        destination.join("portability-manifest-v2.json"),
         manifest.canonical_bytes(),
         write,
     );
     update(
-        destination.join("reimport-receipt-v1.json"),
+        destination.join("reimport-receipt-v2.json"),
         receipt.canonical_bytes(),
         write,
     );

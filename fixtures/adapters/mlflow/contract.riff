@@ -80,4 +80,10 @@ contract MlflowScheduler version 1 {
       invalid ReleaseInvalid {}
     return RunReleased { run: run }
   }
+
+  reimport command ReconstituteScheduledRuns {
+    input records: list<ScheduledRun, 1..32>
+    reconstitute ScheduledRun from records else RunAlreadyExists {}
+    return ScheduledRunsReconstituted {}
+  }
 }

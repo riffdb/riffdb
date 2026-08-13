@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83"
+const QueryModuleHash = "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640"
 const ContractLineage = "AdapterOperationalConformance"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0"
+const ContractBundleHash = "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956"
 
 type QueryOptions = riffdb.Options
 type QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }

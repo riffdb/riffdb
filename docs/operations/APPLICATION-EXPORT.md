@@ -105,36 +105,34 @@ older incomplete receipt.
 
 JSONL output is not accepted by a generic insert or transaction API. An
 application's conformance manifest must map portable record classes to
-declared idempotent compiled commands or an accepted migration plan. Reimport
-therefore re-applies current types, invariants, references, row policies,
-provenance, declared outcomes, and command idempotency. Commit sequences and
-physical identities are not portable identities.
+operator-only `reimport command` declarations or an accepted migration plan.
+Reimport therefore re-applies current types, invariants, references, row
+policies, provenance, declared outcomes, and server-derived command
+idempotency. Commit sequences and physical identities are not portable
+identities.
 
-The adapter-owned `riffdb.application-portability-manifest/v1` binds the exact
+The adapter-owned `riffdb.application-portability-manifest/v2` binds the exact
 adapter manifest, contract lineage, contract version, and bundle hash. Each
 portable entity or event symbol selects only one of these closed strategies:
 
-- a named compiled command with exhaustive symbolic field inputs; or
-- a named bounded-list command whose record element is the exact exported
-  entity/event record; or
+- a named compiler-owned reimport command whose sole input is a bounded list
+  of the exact exported entity record; or
 - one exact migration hash already accepted by the adapter's evolution
   manifest.
 
 There is no callback, method path, table name, field ID, transaction handle, or
-generic entity writer. Command idempotency input is compiler-checked and the
-reimport runner derives its value from the exported stable record identity; it
-is not caller-selected data from the export. Reconciliation runs declared,
-bounded named queries and publishes a canonical
-`riffdb.application-reimport-receipt/v1` only when every mapping outcome and
+generic entity writer. The manifest has no idempotency-input or field-mapping
+authority: the server derives identity from the exact export and portability
+manifests plus the stable entity key. Reconciliation runs declared, bounded
+named queries and publishes a canonical
+`riffdb.application-reimport-receipt/v2` only when every mapping outcome and
 observation digest agrees with the portability manifest. The receipt records
 the new database identity and deliberately does not claim preservation of
 physical commit sequences.
 
-Current POC limitation: OpenFGA- and Payload-shaped mappings compile and have
-canonical reconciliation fixtures. The all-adapter release claim remains
-blocked for the MLflow and Woodpecker workflow shapes. An ordinary command
-cannot directly initialize a protected workflow-state field, which is the safe
-failure; RiffDB does not yet have an accepted compiler-owned reconstitution
-operation that can restore workflow state and lease evidence without creating
-a normal state-write bypass. Until that design is accepted and implemented,
-the four-domain `EXP-014` gate is intentionally incomplete.
+Frozen v1 manifests and receipts remain readable for compatibility inspection,
+but a v1 application-command mapping cannot be compiled as v2 reimport
+authority. OpenFGA, MLflow, Payload, and Woodpecker compiler fixtures now prove
+the closed mapping boundary, including exact workflow records. The complete
+public start/page/status/cancel campaign remains under implementation; these
+fixtures do not imply that raw JSONL can be submitted to a ready database.

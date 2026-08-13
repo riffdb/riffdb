@@ -92,4 +92,10 @@ contract WoodpeckerScheduler version 1 {
       invalid ReleaseInvalid {}
     return PipelineReleased { pipeline: pipeline }
   }
+
+  reimport command ReconstituteScheduledPipelines {
+    input records: list<ScheduledPipeline, 1..32>
+    reconstitute ScheduledPipeline from records else PipelineAlreadyExists {}
+    return ScheduledPipelinesReconstituted {}
+  }
 }

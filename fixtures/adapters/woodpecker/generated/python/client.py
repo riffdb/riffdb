@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "WoodpeckerScheduler"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "65b4bff1a811a06aa85545057a17a0bcd674b1e24f9c87d4b99e083be712b366"
-QUERY_MODULE_HASH: Final[str] = "7dcfb20e0524a17097c7c5ad9a0d0fc7a0bc4a9a3a247dc7e116809edeaefc6a"
+CONTRACT_BUNDLE_HASH: Final[str] = "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb"
+QUERY_MODULE_HASH: Final[str] = "d1744fe62d302f90d3ff03feb86b07f975acc8f82b19c3bb61f8b386bc83995a"
 
 class PipelineState(StrEnum):
     QUEUED = "Queued"
@@ -35,7 +35,7 @@ class ScheduledPipeline:
     organization_id: UUID
     lease_expires_at: Timestamp | None
 
-GET_PIPELINE_QUERY_PLAN_HASH: Final[str] = "87898d65135de137e65e50d735751c32d013dc68886d7397dca4b61cf4220518"
+GET_PIPELINE_QUERY_PLAN_HASH: Final[str] = "ae166d652800e991e25057de49d939fbaa17bd049908ec85bc7579dfbe8955ea"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetPipelineParams:
@@ -384,7 +384,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
 
-PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e"
+PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PipelineTransitionsParams:

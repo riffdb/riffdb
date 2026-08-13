@@ -9,10 +9,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "7dcfb20e0524a17097c7c5ad9a0d0fc7a0bc4a9a3a247dc7e116809edeaefc6a"
+const QueryModuleHash = "d1744fe62d302f90d3ff03feb86b07f975acc8f82b19c3bb61f8b386bc83995a"
 const ContractLineage = "WoodpeckerScheduler"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "65b4bff1a811a06aa85545057a17a0bcd674b1e24f9c87d4b99e083be712b366"
+const ContractBundleHash = "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb"
 
 type QueryOptions = riffdb.Options
 type QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }
@@ -330,7 +330,7 @@ func leaseInput(parameters map[string]riffdb.Value, consumer string, deliveryID,
 func requiredString(fields map[string]riffdb.Value, name string) (string, error) { value, err := requiredField(fields, name); if err != nil { return "", err }; return riffdb.StringValue(value) }
 func requiredU64(fields map[string]riffdb.Value, name string) (uint64, error) { value, err := requiredField(fields, name); if err != nil { return 0, err }; return riffdb.U64Value(value) }
 func requiredU32(fields map[string]riffdb.Value, name string) (uint32, error) { value, err := requiredU64(fields, name); if err != nil || value > uint64(^uint32(0)) { return 0, errors.New("invalid RiffDB driver u32") }; return uint32(value), nil }
-const PipelineActivityReactiveModuleHash = "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e"
+const PipelineActivityReactiveModuleHash = "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f"
 
 type PipelineTransitionsParams struct {
 	OrganizationId string

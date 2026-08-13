@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "MlflowScheduler"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "bafe504ea3f5d2969397def1bf3ca76be785ca655d1481ce16ce5d484dad03c1"
-QUERY_MODULE_HASH: Final[str] = "b419b9dfa26731372722f208915a50870b02d4bdb782ca4503b0554ca215e4c1"
+CONTRACT_BUNDLE_HASH: Final[str] = "5ac88d626905880c16ac48674dad8592719409bdca81fb9b4b22968ab06dfdf7"
+QUERY_MODULE_HASH: Final[str] = "74192497df9e7731cada80360b195d497f701aa0d59d8103be533b1fd21e1ba7"
 
 class RunState(StrEnum):
     PENDING = "Pending"
@@ -35,7 +35,7 @@ class ScheduledRun:
     organization_id: UUID
     lease_expires_at: Timestamp | None
 
-DUE_RUN_QUERY_PLAN_HASH: Final[str] = "0bdb32ed762a7bad9b36d0b21fb2a76eab48d02ac9fdaed7ed8786931428cbdc"
+DUE_RUN_QUERY_PLAN_HASH: Final[str] = "05929bc3ab03b5fe7ab392f8b08f85b203ef381bac39652d1eec6ab27ae8b316"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DueRunParams:

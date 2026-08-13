@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0"
-QUERY_MODULE_HASH: Final[str] = "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83"
+CONTRACT_BUNDLE_HASH: Final[str] = "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956"
+QUERY_MODULE_HASH: Final[str] = "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metric:
@@ -50,7 +50,7 @@ class Pipeline:
     pipeline_id: UUID
     organization_id: UUID
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "8275279297e15807ea0e88082604a0e7ce9a65fcd9c2c4f2fb914e584383b32e"
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "7be509688c4c0dfb9456f73b3ef8edc11051b455b674104ff501259e28728d8a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -69,7 +69,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "2602252063146e645f556249706af9593e8b141f81b48df5a8a28cc88e931f67"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "9024bd69144ff4981a341fd36b272e15ef89044e850fe329da386d3ad3d5c552"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -91,7 +91,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "5df7d1d8a2545b720a5fdf7fd6a38601e35d8f38206870b03094aa849b3adee7"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "9a7a71a21b9c6a88404dac0fec77880eb53a0b96404216f2c10a7e5736871885"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:
@@ -112,7 +112,7 @@ class ListPipelinesFound:
 
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "ae045602a38b4a45d3371e37abd501a8b39af39dd28fc8598b5956a49ab45096"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "67d9696f74f906205acb8779e5b8731c6560250d37250b50123d421245f758a2"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -133,7 +133,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "bb58603b061437d3029ce5e8bf541e685b1e3fe6459f3c9cf72ae6f41b0ec46a"
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "0bf38e1ba62d098ffb76a80c650122e4341108223a1b3849be65e1eda531dcf5"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:

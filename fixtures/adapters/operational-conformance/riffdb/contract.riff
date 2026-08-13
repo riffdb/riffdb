@@ -105,4 +105,17 @@ contract AdapterOperationalConformance version 1 {
     }
     return PipelinesCreated {}
   }
+
+  reimport command ReconstituteFgaTuples {
+    input records: list<FgaTuple, 1..32>
+    reconstitute FgaTuple from records else TupleAlreadyExists {}
+    return FgaTuplesReconstituted {}
+  }
+
+  reimport command ReconstituteDocuments {
+    input records: list<Document, 1..32>
+    reconstitute Document from records else DocumentAlreadyExists {}
+    return DocumentsReconstituted {}
+  }
+
 }

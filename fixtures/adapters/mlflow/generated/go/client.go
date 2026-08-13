@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "b419b9dfa26731372722f208915a50870b02d4bdb782ca4503b0554ca215e4c1"
+const QueryModuleHash = "74192497df9e7731cada80360b195d497f701aa0d59d8103be533b1fd21e1ba7"
 const ContractLineage = "MlflowScheduler"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "bafe504ea3f5d2969397def1bf3ca76be785ca655d1481ce16ce5d484dad03c1"
+const ContractBundleHash = "5ac88d626905880c16ac48674dad8592719409bdca81fb9b4b22968ab06dfdf7"
 
 type QueryOptions = riffdb.Options
 type QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }
