@@ -263,7 +263,7 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        52
+        56
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
@@ -279,6 +279,10 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
         "rpc GetApplicationExportPage(",
         "rpc GetApplicationExport(",
         "rpc CancelApplicationExport(",
+        "rpc StartApplicationReimport(",
+        "rpc ApplyApplicationReimportPage(",
+        "rpc GetApplicationReimport(",
+        "rpc CancelApplicationReimport(",
     ] {
         assert_eq!(services.matches(rpc).count(), 1, "missing exact {rpc}");
     }
@@ -291,6 +295,7 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
     assert!(!normalized.contains("installation"));
     assert!(!normalized.contains("campaign"));
     assert!(!normalized.contains("export"));
+    assert!(!normalized.contains("reimport"));
 
     for (surface, source) in [
         (
@@ -351,7 +356,10 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
     let export_registry = server
         .split("pub enum GrpcApplicationExportOperation")
         .nth(1)
-        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .and_then(|tail| {
+            tail.split("pub enum GrpcApplicationReimportOperation")
+                .next()
+        })
         .expect("closed process-local application-export registry");
     for variant in ["Start", "GetPage", "GetOperation", "Cancel"] {
         assert_eq!(
@@ -361,6 +369,22 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
         );
     }
     assert!(!export_registry.contains("ServiceOperationV1::"));
+
+    let reimport_registry = server
+        .split("pub enum GrpcApplicationReimportOperation")
+        .nth(1)
+        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .expect("closed process-local application-reimport registry");
+    for variant in ["Start", "ApplyPage", "GetOperation", "Cancel"] {
+        assert_eq!(
+            reimport_registry
+                .matches(&format!("    {variant},"))
+                .count(),
+            1,
+            "missing exact reimport admission variant {variant}"
+        );
+    }
+    assert!(!reimport_registry.contains("ServiceOperationV1::"));
 }
 
 #[test]

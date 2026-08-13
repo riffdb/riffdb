@@ -11,23 +11,27 @@ use riffdb_api_grpc::generated::{
 };
 use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
-    PublicMessage, validate_apply_contract_migration_exchange,
-    validate_cancel_application_export_exchange, validate_check_contract_migration_exchange,
+    PublicMessage, validate_apply_application_reimport_page_exchange,
+    validate_apply_contract_migration_exchange, validate_cancel_application_export_exchange,
+    validate_cancel_application_reimport_exchange, validate_check_contract_migration_exchange,
     validate_contract_validation_exchange, validate_create_capability_exchange,
     validate_create_offline_backup_exchange, validate_discover_command_tools_exchange,
     validate_discover_resources_exchange, validate_explain_command_exchange,
     validate_get_application_export_exchange, validate_get_application_export_page_exchange,
-    validate_get_application_installation_exchange,
+    validate_get_application_installation_exchange, validate_get_application_reimport_exchange,
     validate_get_contract_migration_operation_exchange, validate_get_contract_version_exchange,
     validate_get_offline_maintenance_operation_exchange, validate_get_outcome_exchange,
     validate_get_projection_status_exchange, validate_list_pending_outbox_deliveries_exchange,
     validate_public_message, validate_query_projection_exchange,
     validate_restore_offline_backup_exchange, validate_scan_commits_exchange,
     validate_scan_index_exchange, validate_start_application_export_exchange,
-    validate_start_application_installation_exchange, validate_trace_provenance_exchange,
+    validate_start_application_installation_exchange, validate_start_application_reimport_exchange,
+    validate_trace_provenance_exchange,
 };
 use riffdb_proto::{app::v1 as app_v1, v1};
-use riffdb_types::{ApplicationExportOperationId, CommitSequence, RequestId};
+use riffdb_types::{
+    ApplicationExportOperationId, ApplicationInstallationCampaignId, CommitSequence, RequestId,
+};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Streaming};
 
@@ -41,7 +45,7 @@ use crate::{
     ApplyContractMigration, AttemptBudget, BootstrapCallMetadata,
     BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, CreateOfflineBackup,
     IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup,
-    StartApplicationExport, StartApplicationInstallation, SystemIdSource,
+    StartApplicationExport, StartApplicationInstallation, StartApplicationReimport, SystemIdSource,
 };
 
 pub(crate) trait RetryRequestIdSource {
@@ -708,6 +712,38 @@ impl RiffDbClient {
         v1::CancelApplicationExportResponse,
         validate_cancel_application_export_exchange
     );
+    unary_exchange!(
+        start_application_reimport,
+        admin,
+        start_application_reimport,
+        v1::StartApplicationReimportRequest,
+        v1::StartApplicationReimportResponse,
+        validate_start_application_reimport_exchange
+    );
+    unary_exchange!(
+        apply_application_reimport_page,
+        admin,
+        apply_application_reimport_page,
+        v1::ApplyApplicationReimportPageRequest,
+        v1::ApplyApplicationReimportPageResponse,
+        validate_apply_application_reimport_page_exchange
+    );
+    unary_exchange!(
+        get_application_reimport,
+        admin,
+        get_application_reimport,
+        v1::GetApplicationReimportRequest,
+        v1::GetApplicationReimportResponse,
+        validate_get_application_reimport_exchange
+    );
+    unary_exchange!(
+        cancel_application_reimport,
+        admin,
+        cancel_application_reimport,
+        v1::CancelApplicationReimportRequest,
+        v1::CancelApplicationReimportResponse,
+        validate_cancel_application_reimport_exchange
+    );
 
     /// Performs normal authenticated capability creation.
     pub async fn create_capability(
@@ -1138,6 +1174,125 @@ impl RiffDbClient {
                 operation_id: operation_id.into_bytes().to_vec(),
             };
             match self.cancel_application_export(request, metadata).await {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or exactly replays one immutable application reimport campaign.
+    pub async fn start_application_reimport_with_retry(
+        &mut self,
+        start: &StartApplicationReimport,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::StartApplicationReimportResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .start_application_reimport(start.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Applies or exactly replays one hash-bearing export page.
+    pub async fn apply_application_reimport_page_with_retry(
+        &mut self,
+        campaign_id: ApplicationInstallationCampaignId,
+        page: &v1::ApplicationExportPage,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::ApplyApplicationReimportPageResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            let request = v1::ApplyApplicationReimportPageRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                campaign_id: campaign_id.into_bytes().to_vec(),
+                page: Some(page.clone()),
+            };
+            match self
+                .apply_application_reimport_page(request, metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Observes one exact durable reimport checkpoint with a fresh request identity.
+    pub async fn get_application_reimport_operation(
+        &mut self,
+        campaign_id: ApplicationInstallationCampaignId,
+        metadata: &CallMetadata,
+    ) -> Result<v1::GetApplicationReimportResponse, ClientError> {
+        let request_id = SystemIdSource::new()
+            .next_request_id()
+            .map_err(ClientError::IdentifierGeneration)?;
+        self.get_application_reimport(
+            v1::GetApplicationReimportRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                campaign_id: campaign_id.into_bytes().to_vec(),
+            },
+            metadata,
+        )
+        .await
+    }
+
+    /// Cancels or exactly observes one terminal reimport campaign.
+    pub async fn cancel_application_reimport_with_retry(
+        &mut self,
+        campaign_id: ApplicationInstallationCampaignId,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::CancelApplicationReimportResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            let request = v1::CancelApplicationReimportRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                campaign_id: campaign_id.into_bytes().to_vec(),
+            };
+            match self.cancel_application_reimport(request, metadata).await {
                 Ok(response) => return Ok(response),
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}

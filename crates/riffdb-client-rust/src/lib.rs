@@ -18,6 +18,7 @@ mod maintenance;
 mod metadata;
 mod projected;
 mod reactive;
+mod reimport;
 mod status;
 mod tls;
 
@@ -57,9 +58,9 @@ pub use credential_file::{BearerCredentialFileError, load_protected_bearer_crede
 pub use export::StartApplicationExport;
 pub use ids::{
     IdentifierGenerationError, SystemIdSource, generate_agent_session_id,
-    generate_application_export_operation_id, generate_capability_id,
-    generate_contract_migration_operation_id, generate_offline_maintenance_operation_id,
-    generate_request_id,
+    generate_application_export_operation_id, generate_application_installation_campaign_id,
+    generate_capability_id, generate_contract_migration_operation_id,
+    generate_offline_maintenance_operation_id, generate_request_id,
 };
 pub use installation::StartApplicationInstallation;
 pub use maintenance::{
@@ -89,6 +90,7 @@ pub use reactive::{
     TypedContextualWorkItem, TypedEventBatch, TypedEventDelivery, TypedLiveQueryReset,
     TypedLiveQuerySnapshot, TypedLiveQueryStream,
 };
+pub use reimport::StartApplicationReimport;
 /// Freshness policy and commit token types used by projected queries.
 pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
 pub use status::{
@@ -103,8 +105,9 @@ pub use riffdb_errors::{
     ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
 };
 pub use riffdb_types::{
-    ApplicationExportOperationId, ApplicationExportSelectionV1, BackupNameV1, BackupNameV1Error,
-    CapabilityApplicationExportScopeV1, ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS,
+    ApplicationExportOperationId, ApplicationExportSelectionV1, ApplicationInstallationCampaignId,
+    BackupNameV1, BackupNameV1Error, CapabilityApplicationExportScopeV1,
+    CapabilityApplicationReimportScopeV1, ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS,
     DatabaseAlias, MigrationBundleHash, OfflineMaintenanceOperationId,
     OfflineMaintenanceReplacementConfirmation, RequestId,
 };

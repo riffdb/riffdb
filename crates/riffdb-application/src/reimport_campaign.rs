@@ -389,6 +389,12 @@ impl ApplicationReimportCampaignV1 {
         self.next_page
     }
 
+    /// Number of source records durably applied through compiler-owned commands.
+    #[must_use]
+    pub const fn rows_applied(&self) -> u64 {
+        self.rows_applied
+    }
+
     /// Safe terminal failure, if any.
     #[must_use]
     pub const fn failure(&self) -> Option<ApplicationReimportFailureV1> {

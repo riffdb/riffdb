@@ -257,7 +257,7 @@ fn start(
         }
     }
     persist(&mut storage, &retained, &campaign, &plan)?;
-    operation_result(lineage, &campaign)
+    operation_result(campaign_id, lineage, &campaign)
 }
 
 fn prepare_page(
@@ -341,7 +341,11 @@ fn apply_page(
         )
         .map_err(|_| ApplicationReimportMutationPortErrorV1::SourceMismatch)?;
     persist(&mut storage, &retained, &campaign, &plan)?;
-    operation_result(retained.contract_lineage().clone(), &campaign)
+    operation_result(
+        request.campaign_id(),
+        retained.contract_lineage().clone(),
+        &campaign,
+    )
 }
 
 fn observe(
@@ -365,9 +369,13 @@ fn observe(
     if progress.authority() != authorization.authority() {
         return Err(ApplicationReimportObservationPortErrorV1::Integrity);
     }
-    operation_result(record.contract_lineage().clone(), &campaign)
-        .map(Some)
-        .map_err(|_| ApplicationReimportObservationPortErrorV1::Integrity)
+    operation_result(
+        request.campaign_id(),
+        record.contract_lineage().clone(),
+        &campaign,
+    )
+    .map(Some)
+    .map_err(|_| ApplicationReimportObservationPortErrorV1::Integrity)
 }
 
 fn cancel(
@@ -398,7 +406,12 @@ fn cancel(
         .cancel()
         .map_err(|_| ApplicationReimportMutationPortErrorV1::InvalidPhase)?;
     persist(&mut storage, &retained, &campaign, &plan)?;
-    operation_result(retained.contract_lineage().clone(), &campaign).map(Some)
+    operation_result(
+        request.campaign_id(),
+        retained.contract_lineage().clone(),
+        &campaign,
+    )
+    .map(Some)
 }
 
 fn persist(
@@ -422,6 +435,7 @@ fn persist(
 }
 
 fn operation_result(
+    campaign_id: ApplicationInstallationCampaignId,
     lineage: ContractLineage,
     campaign: &riffdb_application::ApplicationInstallationCampaign,
 ) -> Result<ApplicationReimportOperationResultV1, ApplicationReimportMutationPortErrorV1> {
@@ -445,7 +459,7 @@ fn operation_result(
     } else {
         None
     };
-    ApplicationReimportOperationResultV1::new(lineage, progress.clone(), receipt)
+    ApplicationReimportOperationResultV1::new(campaign_id, lineage, progress.clone(), receipt)
         .map_err(|_| ApplicationReimportMutationPortErrorV1::Integrity)
 }
 

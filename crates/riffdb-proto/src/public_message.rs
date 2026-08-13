@@ -23,8 +23,8 @@ use riffdb_types::{
     OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
     canonical_application_export_page_preimage, hash_application_export_manifest,
     hash_application_export_page, hash_application_export_receipt,
-    hash_application_installation_plan, hash_application_installation_receipt, hash_schema,
-    offline_maintenance_input_hash,
+    hash_application_installation_plan, hash_application_installation_receipt,
+    hash_application_reimport_receipt, hash_schema, offline_maintenance_input_hash,
 };
 
 use crate::command::validate_provenance_uri;
@@ -43,6 +43,9 @@ pub const MAX_CONTRACT_MIGRATION_REQUEST_BYTES: usize = 32 * 1_024 * 1_024;
 /// The additional bounded allowance carries at most 256 exact seed receipts;
 /// it is not available to the canonical plan itself.
 pub const MAX_APPLICATION_INSTALLATION_REQUEST_BYTES: usize = 4 * 1_024 * 1_024 + 128 * 1_024;
+/// A reimport page carries one already-bounded 4 MiB export page plus its
+/// operation identity and request framing.
+pub const MAX_APPLICATION_REIMPORT_PAGE_REQUEST_BYTES: usize = 4 * 1_024 * 1_024 + 128 * 1_024;
 /// Exact maximum encoded size of one public unary response or stream item.
 pub const MAX_PUBLIC_RESPONSE_BYTES: usize = 4_194_304;
 
@@ -409,6 +412,75 @@ pub fn validate_start_application_export_exchange(
         .ok_or(PublicWireError::MissingRequiredField)?;
     if operation.operation_id != request.operation_id
         || operation.selection.as_ref() != request.selection.as_ref()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates exact reimport campaign identity after start.
+pub fn validate_start_application_reimport_exchange(
+    request: &v1::StartApplicationReimportRequest,
+    response: &v1::StartApplicationReimportResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if operation.campaign_id != request.campaign_id
+        || operation.contract_lineage != request.contract_lineage
+        || operation.scope != request.scope
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates exact reimport campaign and page identity after application.
+pub fn validate_apply_application_reimport_page_exchange(
+    request: &v1::ApplyApplicationReimportPageRequest,
+    response: &v1::ApplyApplicationReimportPageResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if operation.campaign_id != request.campaign_id {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates protected reimport status identity without expanding absence.
+pub fn validate_get_application_reimport_exchange(
+    request: &v1::GetApplicationReimportRequest,
+    response: &v1::GetApplicationReimportResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::get_application_reimport_response::Result::Found(operation)) =
+        response.result.as_ref()
+        && operation.campaign_id != request.campaign_id
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates protected reimport cancellation identity without expanding absence.
+pub fn validate_cancel_application_reimport_exchange(
+    request: &v1::CancelApplicationReimportRequest,
+    response: &v1::CancelApplicationReimportResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::cancel_application_reimport_response::Result::Found(operation)) =
+        response.result.as_ref()
+        && operation.campaign_id != request.campaign_id
     {
         return Err(PublicWireError::InconsistentFields);
     }
@@ -4445,6 +4517,191 @@ fn validate_cancel_application_export_response(
     }
 }
 
+fn validate_start_application_reimport_request(
+    request: &v1::StartApplicationReimportRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_installation_campaign_id(&request.campaign_id)?;
+    ContractLineage::new(request.contract_lineage.clone())
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    if !matches!(
+        v1::CapabilityApplicationReimportScope::try_from(request.scope),
+        Ok(v1::CapabilityApplicationReimportScope::PrincipalFiltered
+            | v1::CapabilityApplicationReimportScope::WholeApplication)
+    ) || !valid_canonical_document_with_newline(&request.canonical_portability_manifest_json)
+        || !valid_application_export_json(
+            &request.canonical_export_manifest_json,
+            MAX_APPLICATION_EXPORT_TERMINAL_DOCUMENT_BYTES,
+        )
+        || !valid_application_export_json(
+            &request.canonical_export_receipt_json,
+            MAX_APPLICATION_EXPORT_TERMINAL_DOCUMENT_BYTES,
+        )
+    {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    Ok(())
+}
+
+fn valid_canonical_document_with_newline(value: &[u8]) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PUBLIC_REQUEST_BYTES
+        && std::str::from_utf8(value).is_ok()
+        && value.first() == Some(&b'{')
+        && value.last() == Some(&b'\n')
+        && !value[..value.len() - 1].contains(&b'\n')
+        && !value.contains(&b'\r')
+        && value.get(value.len().saturating_sub(2)) == Some(&b'}')
+}
+
+fn validate_application_reimport_operation(
+    operation: &v1::ApplicationReimportOperation,
+) -> Result<(), PublicWireError> {
+    application_installation_campaign_id(&operation.campaign_id)?;
+    ContractLineage::new(operation.contract_lineage.clone())
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    if !matches!(
+        v1::CapabilityApplicationReimportScope::try_from(operation.scope),
+        Ok(v1::CapabilityApplicationReimportScope::PrincipalFiltered
+            | v1::CapabilityApplicationReimportScope::WholeApplication)
+    ) {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    hash(&operation.portability_manifest_hash)?;
+    hash(&operation.export_manifest_hash)?;
+    hash(&operation.export_receipt_hash)?;
+    if !valid_uuid(&operation.source_database_id, DatabaseId::from_bytes)
+        || !valid_uuid(&operation.target_database_id, DatabaseId::from_bytes)
+        || operation.source_database_id == operation.target_database_id
+        || operation.source_pages == 0
+        || operation.next_page == 0
+        || operation.next_page > operation.source_pages
+        || operation.rows_applied > operation.source_rows
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let phase = v1::ApplicationReimportPhase::try_from(operation.phase)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let failure = v1::ApplicationReimportFailure::try_from(operation.failure)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let receipt_absent = operation.canonical_reimport_receipt_json.is_empty()
+        && operation.reimport_receipt_hash.is_empty();
+    let receipt_present = !operation.canonical_reimport_receipt_json.is_empty()
+        && !operation.reimport_receipt_hash.is_empty();
+    match phase {
+        v1::ApplicationReimportPhase::Applying | v1::ApplicationReimportPhase::Reconciling
+            if failure == v1::ApplicationReimportFailure::Unspecified && receipt_absent => {}
+        v1::ApplicationReimportPhase::Reconciled
+            if failure == v1::ApplicationReimportFailure::Unspecified && receipt_present =>
+        {
+            if !valid_canonical_document_with_newline(&operation.canonical_reimport_receipt_json) {
+                return Err(PublicWireError::InvalidBytes);
+            }
+            hash(&operation.reimport_receipt_hash)?;
+            if operation.reimport_receipt_hash.as_slice()
+                != hash_application_reimport_receipt(&operation.canonical_reimport_receipt_json)
+                    .as_bytes()
+            {
+                return Err(PublicWireError::InconsistentFields);
+            }
+        }
+        v1::ApplicationReimportPhase::Cancelled
+            if failure == v1::ApplicationReimportFailure::Cancelled && receipt_absent => {}
+        v1::ApplicationReimportPhase::Failed
+            if matches!(
+                failure,
+                v1::ApplicationReimportFailure::AuthorityChanged
+                    | v1::ApplicationReimportFailure::SourceMismatch
+                    | v1::ApplicationReimportFailure::CommandFailed
+                    | v1::ApplicationReimportFailure::ObservationMismatch
+            ) && receipt_absent => {}
+        _ => return Err(PublicWireError::InconsistentFields),
+    }
+    Ok(())
+}
+
+fn validate_start_application_reimport_response(
+    response: &v1::StartApplicationReimportResponse,
+) -> Result<(), PublicWireError> {
+    validate_application_reimport_operation(
+        response
+            .operation
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?,
+    )
+}
+
+fn validate_apply_application_reimport_page_request(
+    request: &v1::ApplyApplicationReimportPageRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_installation_campaign_id(&request.campaign_id)?;
+    validate_application_export_page(request.page.as_ref())?;
+    if request
+        .page
+        .as_ref()
+        .is_none_or(|page| page.record_class != v1::ApplicationExportRecordClass::Entity as i32)
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_apply_application_reimport_page_response(
+    response: &v1::ApplyApplicationReimportPageResponse,
+) -> Result<(), PublicWireError> {
+    validate_application_reimport_operation(
+        response
+            .operation
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?,
+    )
+}
+
+fn validate_get_application_reimport_request(
+    request: &v1::GetApplicationReimportRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_installation_campaign_id(&request.campaign_id)
+}
+
+fn validate_get_application_reimport_response(
+    response: &v1::GetApplicationReimportResponse,
+) -> Result<(), PublicWireError> {
+    match response
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::get_application_reimport_response::Result::NotFound(_) => Ok(()),
+        v1::get_application_reimport_response::Result::Found(operation) => {
+            validate_application_reimport_operation(operation)
+        }
+    }
+}
+
+fn validate_cancel_application_reimport_request(
+    request: &v1::CancelApplicationReimportRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&request.request_id)?;
+    application_installation_campaign_id(&request.campaign_id)
+}
+
+fn validate_cancel_application_reimport_response(
+    response: &v1::CancelApplicationReimportResponse,
+) -> Result<(), PublicWireError> {
+    match response
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::cancel_application_reimport_response::Result::NotFound(_) => Ok(()),
+        v1::cancel_application_reimport_response::Result::Found(operation) => {
+            validate_application_reimport_operation(operation)
+        }
+    }
+}
+
 fn schema_key(key: Option<&v1::SchemaArtifactKey>) -> Result<(u8, u32), PublicWireError> {
     let (kind, owner) = match key
         .and_then(|key| key.artifact.as_ref())
@@ -7769,6 +8026,92 @@ fn preflight_cancel_application_export_response(input: &[u8]) -> Result<(), Publ
     )
 }
 
+fn preflight_application_reimport_operation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 16, &[], &[], &[], &[])
+}
+
+fn preflight_start_application_reimport_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_application_reimport_operation,
+        }],
+        &[],
+    )
+}
+
+fn preflight_apply_application_reimport_page_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 3,
+            preflight: preflight_application_export_page,
+        }],
+        &[],
+    )
+}
+
+fn preflight_apply_application_reimport_page_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_application_reimport_operation,
+        }],
+        &[],
+    )
+}
+
+fn preflight_get_application_reimport_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_reimport_operation,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_cancel_application_reimport_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_reimport_operation,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_generated_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -10100,6 +10443,78 @@ impl_public_message!(
     preflight_cancel_application_export_response,
     validate_cancel_application_export_response
 );
+impl_public_message!(
+    v1::StartApplicationReimportRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    7,
+    &[],
+    &[],
+    preflight_noop,
+    validate_start_application_reimport_request
+);
+impl_public_message!(
+    v1::StartApplicationReimportResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_start_application_reimport_response,
+    validate_start_application_reimport_response
+);
+impl_public_message!(
+    v1::ApplyApplicationReimportPageRequest,
+    MAX_APPLICATION_REIMPORT_PAGE_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_apply_application_reimport_page_request,
+    validate_apply_application_reimport_page_request
+);
+impl_public_message!(
+    v1::ApplyApplicationReimportPageResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_apply_application_reimport_page_response,
+    validate_apply_application_reimport_page_response
+);
+impl_public_message!(
+    v1::GetApplicationReimportRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_application_reimport_request
+);
+impl_public_message!(
+    v1::GetApplicationReimportResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_get_application_reimport_response,
+    validate_get_application_reimport_response
+);
+impl_public_message!(
+    v1::CancelApplicationReimportRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_cancel_application_reimport_request
+);
+impl_public_message!(
+    v1::CancelApplicationReimportResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_cancel_application_reimport_response,
+    validate_cancel_application_reimport_response
+);
 
 impl_public_message!(
     v1::WatchNamedQueryRequest,
@@ -10510,6 +10925,147 @@ mod application_export_tests {
         response.operation.as_mut().expect("operation").operation_id = uuid_bytes(8);
         assert_eq!(
             validate_start_application_export_exchange(&request, &response),
+            Err(PublicWireError::InconsistentFields)
+        );
+    }
+}
+
+#[cfg(test)]
+mod application_reimport_tests {
+    use super::*;
+
+    fn uuid_bytes(fill: u8) -> Vec<u8> {
+        [
+            0x01, 0x8f, 0, 0, 0, fill, 0x70, 1, 0x80, fill, 0, 0, 0, 0, 0, fill,
+        ]
+        .to_vec()
+    }
+
+    fn operation(phase: v1::ApplicationReimportPhase) -> v1::ApplicationReimportOperation {
+        let reconciled = phase == v1::ApplicationReimportPhase::Reconciled;
+        let receipt = if reconciled {
+            b"{\"schema\":\"riffdb.application-reimport-receipt/v1\"}\n".to_vec()
+        } else {
+            Vec::new()
+        };
+        v1::ApplicationReimportOperation {
+            campaign_id: uuid_bytes(2),
+            contract_lineage: "TicketDesk".to_owned(),
+            scope: v1::CapabilityApplicationReimportScope::WholeApplication as i32,
+            portability_manifest_hash: vec![3; 32],
+            export_manifest_hash: vec![4; 32],
+            export_receipt_hash: vec![5; 32],
+            source_database_id: uuid_bytes(6),
+            target_database_id: uuid_bytes(7),
+            source_rows: 8,
+            source_pages: 2,
+            next_page: 1,
+            rows_applied: if reconciled { 8 } else { 0 },
+            phase: phase as i32,
+            failure: v1::ApplicationReimportFailure::Unspecified as i32,
+            reimport_receipt_hash: if reconciled {
+                hash_application_reimport_receipt(&receipt)
+                    .into_bytes()
+                    .to_vec()
+            } else {
+                Vec::new()
+            },
+            canonical_reimport_receipt_json: receipt,
+        }
+    }
+
+    fn page(lines: Vec<Vec<u8>>) -> v1::ApplicationExportPage {
+        let operation_id = ApplicationExportOperationId::from_bytes(
+            uuid_bytes(9).try_into().expect("operation bytes"),
+        )
+        .expect("operation ID");
+        let borrowed = lines.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let preimage = canonical_application_export_page_preimage(
+            operation_id,
+            std::num::NonZeroU64::new(1).expect("page"),
+            ApplicationExportClassV1::Entity,
+            &borrowed,
+            true,
+            true,
+        )
+        .expect("preimage");
+        v1::ApplicationExportPage {
+            operation_id: operation_id.into_bytes().to_vec(),
+            page_number: 1,
+            record_class: v1::ApplicationExportRecordClass::Entity as i32,
+            canonical_json_lines: lines,
+            next_cursor: Vec::new(),
+            class_complete: true,
+            operation_complete: true,
+            page_hash: hash_application_export_page(&preimage)
+                .into_bytes()
+                .to_vec(),
+        }
+    }
+
+    #[test]
+    fn start_exchange_binds_campaign_lineage_and_scope() {
+        let request = v1::StartApplicationReimportRequest {
+            request_id: uuid_bytes(1),
+            campaign_id: uuid_bytes(2),
+            contract_lineage: "TicketDesk".to_owned(),
+            scope: v1::CapabilityApplicationReimportScope::WholeApplication as i32,
+            canonical_portability_manifest_json:
+                b"{\"schema\":\"riffdb.application-portability-manifest/v2\"}\n".to_vec(),
+            canonical_export_manifest_json: b"{\"complete\":true}".to_vec(),
+            canonical_export_receipt_json: b"{\"complete\":true}".to_vec(),
+        };
+        let mut response = v1::StartApplicationReimportResponse {
+            operation: Some(operation(v1::ApplicationReimportPhase::Applying)),
+        };
+        assert_eq!(
+            validate_start_application_reimport_exchange(&request, &response),
+            Ok(())
+        );
+        response.operation.as_mut().expect("operation").campaign_id = uuid_bytes(8);
+        assert_eq!(
+            validate_start_application_reimport_exchange(&request, &response),
+            Err(PublicWireError::InconsistentFields)
+        );
+    }
+
+    #[test]
+    fn terminal_receipt_is_present_and_hash_bound_only_after_reconciliation() {
+        let mut reconciled = operation(v1::ApplicationReimportPhase::Reconciled);
+        assert_eq!(validate_application_reimport_operation(&reconciled), Ok(()));
+        reconciled.reimport_receipt_hash[0] ^= 1;
+        assert_eq!(
+            validate_application_reimport_operation(&reconciled),
+            Err(PublicWireError::InconsistentFields)
+        );
+
+        let mut applying = operation(v1::ApplicationReimportPhase::Applying);
+        applying.canonical_reimport_receipt_json = b"{}\n".to_vec();
+        applying.reimport_receipt_hash = hash_application_reimport_receipt(b"{}\n")
+            .into_bytes()
+            .to_vec();
+        assert_eq!(
+            validate_application_reimport_operation(&applying),
+            Err(PublicWireError::InconsistentFields)
+        );
+    }
+
+    #[test]
+    fn hash_checked_export_pages_larger_than_the_ordinary_request_fit_reimport() {
+        let large_line = format!("{{\"value\":\"{}\"}}", "a".repeat(60_000)).into_bytes();
+        let request = v1::ApplyApplicationReimportPageRequest {
+            request_id: uuid_bytes(1),
+            campaign_id: uuid_bytes(2),
+            page: Some(page(vec![large_line; 20])),
+        };
+        assert!(request.encoded_len() > MAX_PUBLIC_REQUEST_BYTES);
+        assert!(request.encoded_len() < MAX_APPLICATION_REIMPORT_PAGE_REQUEST_BYTES);
+        assert_eq!(validate_public_message(&request), Ok(()));
+
+        let mut invalid = request;
+        invalid.page.as_mut().expect("page").page_hash[0] ^= 1;
+        assert_eq!(
+            validate_public_message(&invalid),
             Err(PublicWireError::InconsistentFields)
         );
     }

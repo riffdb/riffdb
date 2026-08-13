@@ -34,13 +34,14 @@ use riffdb_policy::{
 };
 use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
-    ApplicationExportApplication, ApplicationService, AuthoritativeReadPort, BuildInfo,
-    CapabilityTokenIssuer, CatalogReadPort, ColumnarProjectionPort, ContractMigrationApplication,
-    CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator, EventConsumerClock,
-    EventConsumerPort, EventLeaseTokenSource, OperationalStatusPort, ProjectionQueryPort,
-    QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler, RiffDbServiceActivator,
-    ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
-    ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
+    ApplicationExportApplication, ApplicationReimportApplication, ApplicationService,
+    AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
+    ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
+    CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
+    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
+    RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors,
+    ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata,
+    ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -568,7 +569,8 @@ impl ProductionGraphBuilder {
         let service = Arc::new(activator.activate(identity, process, executors, providers));
         let application_service: Arc<dyn ApplicationService> = service.clone();
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
-        let export_service: Arc<dyn ApplicationExportApplication> = service;
+        let export_service: Arc<dyn ApplicationExportApplication> = service.clone();
+        let reimport_service: Arc<dyn ApplicationReimportApplication> = service;
 
         if let Err(source) = lifecycle.install_activated_with_telemetry(
             application_service,
@@ -601,6 +603,17 @@ impl ProductionGraphBuilder {
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         if let Err(source) = lifecycle.install_application_export(export_service) {
+            lifecycle.stop();
+            let cleanup = cleanup_unpublished_graph(
+                columnar_worker,
+                projection_worker,
+                coordinator,
+                blocking,
+                &notifications,
+            );
+            return Err(ProductionGraphBuildError::Activation { source, cleanup });
+        }
+        if let Err(source) = lifecycle.install_application_reimport(reimport_service) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
                 columnar_worker,

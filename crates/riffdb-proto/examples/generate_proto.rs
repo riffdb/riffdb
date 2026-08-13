@@ -638,6 +638,10 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "GetApplicationExportPage", false),
     ("AdminService", "GetApplicationExport", false),
     ("AdminService", "CancelApplicationExport", false),
+    ("AdminService", "StartApplicationReimport", false),
+    ("AdminService", "ApplyApplicationReimportPage", false),
+    ("AdminService", "GetApplicationReimport", false),
+    ("AdminService", "CancelApplicationReimport", false),
     ("AdminService", "Health", false),
     ("AdminService", "ListPendingOutboxDeliveries", false),
     ("AdminService", "RestoreOfflineBackup", false),
@@ -2325,7 +2329,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, sixty-one-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, sixty-five-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }
