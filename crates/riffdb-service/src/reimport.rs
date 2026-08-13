@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use riffdb_application::{
     ApplicationPortabilityManifest, ApplicationReimportCampaignPhaseV1,
-    ApplicationReimportCampaignV1, ApplicationReimportReceipt, ApplicationReimportSourceV1,
+    ApplicationReimportCampaignV1, ApplicationReimportReceipt,
 };
 use riffdb_policy::AuthorizedApplicationReimportV1;
 use riffdb_types::{
@@ -14,8 +14,8 @@ use riffdb_types::{
 };
 
 use crate::{
-    ApplicationExportPageV1, BoxPortCapacityPermit, PortAdmissionError, PortFuture, RequestControl,
-    ServiceDtoError, ServiceFuture,
+    ApplicationExportPageV1, BoxPortCapacityPermit, CanonicalApplicationExportJsonDocument,
+    PortAdmissionError, PortFuture, RequestControl, ServiceDtoError, ServiceFuture,
 };
 
 /// Exact validated source and destination intent for one campaign start.
@@ -23,9 +23,10 @@ use crate::{
 pub struct StartApplicationReimportRequestV1 {
     campaign_id: ApplicationInstallationCampaignId,
     lineage: ContractLineage,
-    source: ApplicationReimportSourceV1,
     scope: CapabilityApplicationReimportScopeV1,
     portability_manifest: Arc<ApplicationPortabilityManifest>,
+    export_manifest: CanonicalApplicationExportJsonDocument,
+    export_receipt: CanonicalApplicationExportJsonDocument,
 }
 
 impl StartApplicationReimportRequestV1 {
@@ -33,21 +34,21 @@ impl StartApplicationReimportRequestV1 {
     pub fn new(
         campaign_id: ApplicationInstallationCampaignId,
         lineage: ContractLineage,
-        source: ApplicationReimportSourceV1,
         scope: CapabilityApplicationReimportScopeV1,
         portability_manifest: ApplicationPortabilityManifest,
+        export_manifest: CanonicalApplicationExportJsonDocument,
+        export_receipt: CanonicalApplicationExportJsonDocument,
     ) -> Result<Self, ServiceDtoError> {
-        if source.portability_manifest_hash() != portability_manifest.identity()
-            || portability_manifest.input().contract_lineage != lineage
-        {
+        if portability_manifest.input().contract_lineage != lineage {
             return Err(ServiceDtoError::InvalidShape);
         }
         Ok(Self {
             campaign_id,
             lineage,
-            source,
             scope,
             portability_manifest: Arc::new(portability_manifest),
+            export_manifest,
+            export_receipt,
         })
     }
 
@@ -63,12 +64,6 @@ impl StartApplicationReimportRequestV1 {
         &self.lineage
     }
 
-    /// Completed portability-export evidence.
-    #[must_use]
-    pub const fn source(&self) -> &ApplicationReimportSourceV1 {
-        &self.source
-    }
-
     /// Exact V7 grant scope required at every safe point.
     #[must_use]
     pub const fn scope(&self) -> CapabilityApplicationReimportScopeV1 {
@@ -81,6 +76,18 @@ impl StartApplicationReimportRequestV1 {
         self.portability_manifest.as_ref()
     }
 
+    /// Exact completed portability-export manifest document.
+    #[must_use]
+    pub const fn export_manifest(&self) -> &CanonicalApplicationExportJsonDocument {
+        &self.export_manifest
+    }
+
+    /// Exact completed portability-export receipt document.
+    #[must_use]
+    pub const fn export_receipt(&self) -> &CanonicalApplicationExportJsonDocument {
+        &self.export_receipt
+    }
+
     /// Consumes the bounded request without cloning the manifest.
     #[must_use]
     pub fn into_parts(
@@ -88,16 +95,18 @@ impl StartApplicationReimportRequestV1 {
     ) -> (
         ApplicationInstallationCampaignId,
         ContractLineage,
-        ApplicationReimportSourceV1,
         CapabilityApplicationReimportScopeV1,
         Arc<ApplicationPortabilityManifest>,
+        CanonicalApplicationExportJsonDocument,
+        CanonicalApplicationExportJsonDocument,
     ) {
         (
             self.campaign_id,
             self.lineage,
-            self.source,
             self.scope,
             self.portability_manifest,
+            self.export_manifest,
+            self.export_receipt,
         )
     }
 }
@@ -511,7 +520,6 @@ pub trait ApplicationReimportApplication: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riffdb_types::{ApplicationExportManifestHash, ApplicationExportReceiptHash, DatabaseId};
 
     #[test]
     fn start_request_binds_lineage_and_manifest_without_values_in_debug() {
@@ -519,24 +527,16 @@ mod tests {
             "../../../fixtures/export/openfga/portability-manifest-v2.json"
         ))
         .expect("manifest");
-        let source = ApplicationReimportSourceV1::new(
-            ApplicationExportManifestHash::from_bytes([1; 32]),
-            ApplicationExportReceiptHash::from_bytes([2; 32]),
-            manifest.identity(),
-            DatabaseId::from_unix_milliseconds_and_random(1, [3; 10]).expect("source"),
-            DatabaseId::from_unix_milliseconds_and_random(2, [4; 10]).expect("target"),
-            1,
-            vec![riffdb_types::ApplicationExportPageHash::from_bytes([5; 32])],
-            vec![],
-        )
-        .expect("source");
         let request = StartApplicationReimportRequestV1::new(
             ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(3, [6; 10])
                 .expect("campaign"),
             manifest.input().contract_lineage.clone(),
-            source,
             CapabilityApplicationReimportScopeV1::WholeApplication,
             manifest,
+            CanonicalApplicationExportJsonDocument::new(br#"{"manifest":true}"#.to_vec())
+                .expect("export manifest"),
+            CanonicalApplicationExportJsonDocument::new(br#"{"receipt":true}"#.to_vec())
+                .expect("export receipt"),
         )
         .expect("request");
         assert_eq!(

@@ -6,7 +6,7 @@ use riffdb_types::{
     ApplicationExportManifestHash, ApplicationExportPageHash, ApplicationExportReceiptHash,
     ApplicationPortabilityManifestHash, ApplicationReimportAuthorityV1,
     ApplicationReimportReceiptHash, CapabilityApplicationReimportScopeV1, CapabilityId, DatabaseId,
-    GeneratedArtifactHash,
+    GeneratedArtifactHash, hash_application_reimport_receipt,
 };
 use serde::{Deserialize, Serialize};
 
@@ -299,6 +299,7 @@ impl ReimportPageMappingOutcomeV1 {
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationReimportCampaignV1 {
     source: ApplicationReimportSourceV1,
+    portability_manifest_document: Vec<u8>,
     authority: ApplicationReimportAuthorityV1,
     scope: CapabilityApplicationReimportScopeV1,
     phase: ApplicationReimportCampaignPhaseV1,
@@ -307,6 +308,7 @@ pub struct ApplicationReimportCampaignV1 {
     mappings: Vec<ReimportMappingProgressV1>,
     failure: Option<ApplicationReimportFailureV1>,
     receipt_hash: Option<ApplicationReimportReceiptHash>,
+    receipt_document: Option<Vec<u8>>,
 }
 
 impl ApplicationReimportCampaignV1 {
@@ -332,6 +334,7 @@ impl ApplicationReimportCampaignV1 {
             .collect();
         Ok(Self {
             source,
+            portability_manifest_document: manifest.canonical_bytes().to_vec(),
             authority,
             scope,
             phase: ApplicationReimportCampaignPhaseV1::Applying,
@@ -340,6 +343,7 @@ impl ApplicationReimportCampaignV1 {
             mappings,
             failure: None,
             receipt_hash: None,
+            receipt_document: None,
         })
     }
 
@@ -347,6 +351,12 @@ impl ApplicationReimportCampaignV1 {
     #[must_use]
     pub const fn source(&self) -> &ApplicationReimportSourceV1 {
         &self.source
+    }
+
+    /// Canonical adapter manifest retained for restart and reconciliation.
+    #[must_use]
+    pub fn portability_manifest_document(&self) -> &[u8] {
+        &self.portability_manifest_document
     }
 
     /// Current authority identity frozen at start.
@@ -389,6 +399,12 @@ impl ApplicationReimportCampaignV1 {
     #[must_use]
     pub const fn receipt_hash(&self) -> Option<ApplicationReimportReceiptHash> {
         self.receipt_hash
+    }
+
+    /// Canonical terminal receipt bytes retained across restart.
+    #[must_use]
+    pub fn receipt_document(&self) -> Option<&[u8]> {
+        self.receipt_document.as_deref()
     }
 
     /// Fails closed if routine capability administration changed campaign authority.
@@ -495,6 +511,7 @@ impl ApplicationReimportCampaignV1 {
         self.phase = ApplicationReimportCampaignPhaseV1::Reconciled;
         self.failure = None;
         self.receipt_hash = Some(receipt.identity());
+        self.receipt_document = Some(receipt.canonical_bytes().to_vec());
         Ok(receipt)
     }
 
@@ -531,6 +548,7 @@ impl ApplicationReimportCampaignV1 {
         self.phase = ApplicationReimportCampaignPhaseV1::Failed;
         self.failure = Some(failure);
         self.receipt_hash = None;
+        self.receipt_document = None;
     }
 
     /// Encodes exact bounded canonical durable state.
@@ -636,6 +654,7 @@ struct CampaignDto {
     export_manifest_hash: String,
     export_receipt_hash: String,
     portability_manifest_hash: String,
+    portability_manifest_document: String,
     source_database_id: String,
     target_database_id: String,
     rows: String,
@@ -650,6 +669,7 @@ struct CampaignDto {
     mappings: Vec<MappingDto>,
     failure: Option<String>,
     receipt_hash: Option<String>,
+    receipt_document: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -678,6 +698,10 @@ impl CampaignDto {
             export_manifest_hash: hex32(value.source.export_manifest_hash.as_bytes()),
             export_receipt_hash: hex32(value.source.export_receipt_hash.as_bytes()),
             portability_manifest_hash: hex32(value.source.portability_manifest_hash.as_bytes()),
+            portability_manifest_document: String::from_utf8(
+                value.portability_manifest_document.clone(),
+            )
+            .expect("canonical portability manifest is JSON UTF-8"),
             source_database_id: value.source.source_database_id.to_string(),
             target_database_id: value.source.target_database_id.to_string(),
             rows: value.source.rows.to_string(),
@@ -721,6 +745,9 @@ impl CampaignDto {
                 .collect(),
             failure: value.failure.map(failure_name).map(str::to_owned),
             receipt_hash: value.receipt_hash.map(|hash| hex32(hash.as_bytes())),
+            receipt_document: value.receipt_document.as_ref().map(|document| {
+                String::from_utf8(document.clone()).expect("canonical receipt is JSON UTF-8")
+            }),
         }
     }
 
@@ -764,6 +791,7 @@ impl CampaignDto {
             "whole_application" => CapabilityApplicationReimportScopeV1::WholeApplication,
             _ => return Err(invalid()),
         };
+        let portability_manifest_document = self.portability_manifest_document.into_bytes();
         let phase = parse_phase(&self.phase)?;
         let mappings = self
             .mappings
@@ -788,8 +816,10 @@ impl CampaignDto {
             .map(parse_hex32)
             .transpose()?
             .map(ApplicationReimportReceiptHash::from_bytes);
+        let receipt_document = self.receipt_document.map(String::into_bytes);
         Ok(ApplicationReimportCampaignV1 {
             source,
+            portability_manifest_document,
             authority: ApplicationReimportAuthorityV1::new(capability_id, capability_revision),
             scope,
             phase,
@@ -798,12 +828,26 @@ impl CampaignDto {
             mappings,
             failure,
             receipt_hash,
+            receipt_document,
         })
     }
 }
 
 fn validate(value: &ApplicationReimportCampaignV1) -> Result<(), ApplicationReimportCampaignError> {
-    if value.mappings.is_empty()
+    let manifest =
+        ApplicationPortabilityManifest::decode_canonical(&value.portability_manifest_document)
+            .map_err(|_| invalid())?;
+    if manifest.identity() != value.source.portability_manifest_hash
+        || manifest.input().mappings.len() != value.mappings.len()
+        || manifest
+            .input()
+            .mappings
+            .iter()
+            .zip(&value.mappings)
+            .any(|(expected, actual)| {
+                expected.class() != actual.class || expected.symbol() != &actual.symbol
+            })
+        || value.mappings.is_empty()
         || value.mappings.len() > crate::MAX_APPLICATION_PORTABLE_MAPPINGS
         || value
             .mappings
@@ -844,7 +888,17 @@ fn validate(value: &ApplicationReimportCampaignV1) -> Result<(), ApplicationReim
         ApplicationReimportCampaignPhaseV1::Cancelled | ApplicationReimportCampaignPhaseV1::Failed
     );
     let reconciled = value.phase == ApplicationReimportCampaignPhaseV1::Reconciled;
-    if terminal_failure != value.failure.is_some() || reconciled != value.receipt_hash.is_some() {
+    if terminal_failure != value.failure.is_some()
+        || reconciled != value.receipt_hash.is_some()
+        || reconciled != value.receipt_document.is_some()
+        || value
+            .receipt_document
+            .as_ref()
+            .zip(value.receipt_hash)
+            .is_some_and(|(document, expected)| {
+                hash_application_reimport_receipt(document) != expected
+            })
+    {
         return Err(ApplicationReimportCampaignError::new(
             ApplicationReimportCampaignErrorKind::InvalidProgress,
         ));

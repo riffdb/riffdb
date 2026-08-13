@@ -160,6 +160,10 @@ fn page_checkpoint_is_atomic_canonical_and_resumes_at_the_exact_next_page() {
         .reconcile(&manifest, receipt.input().observations.clone())
         .expect("reconcile");
     assert_eq!(reconciled.identity(), receipt.identity());
+    let terminal = recovered.encode_canonical().expect("terminal checkpoint");
+    let terminal = ApplicationReimportCampaignV1::decode_canonical(&terminal)
+        .expect("terminal checkpoint recovery");
+    assert_eq!(terminal.receipt_document(), Some(receipt.canonical_bytes()));
 
     let mut noncanonical = bytes;
     noncanonical.insert(0, b' ');
