@@ -984,3 +984,29 @@ fn secret_naming_uses_additive_capability_v6_only() {
         "riffdb.storage.v1.CapabilityRecordV1"
     );
 }
+
+#[test]
+fn exact_reimport_authority_uses_additive_capability_v7_only() {
+    let capability = sample::capability_record_with_reimport_authority();
+    let encoded = assert_round_trip(
+        capability.clone(),
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("reimport capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV7"
+    );
+    let record = wire::CapabilityRecordV7::decode(envelope.payload()).expect("capability V7");
+    let reimport = record.reimport.expect("reimport extension");
+    assert_eq!(reimport.contract_lineage, "ticketdesk");
+    assert_eq!(reimport.portability_manifest_hash, vec![0x53; 32]);
+    assert_eq!(
+        reimport.scope,
+        i32::from(riffdb_types::CapabilityApplicationReimportScopeV1::WholeApplication.tag())
+    );
+    assert!(record.row_policy.is_some());
+}

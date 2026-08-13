@@ -3,9 +3,10 @@
 use std::{error::Error, fmt, num::NonZeroU16, sync::Arc};
 
 use crate::{
-    ApplicationRoleHash, CapabilityPrincipalFactsV1, CommandId, ContractLineage, EntityTypeId,
-    FieldId, IndexId, PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName,
-    ReactiveModuleHash, ReactiveOperationName, RowPolicyName, TenantScope,
+    ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash, ApplicationRoleHash,
+    CapabilityPrincipalFactsV1, CommandId, ContractLineage, EntityTypeId, FieldId, IndexId,
+    PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
+    ReactiveOperationName, RowPolicyName, TenantScope,
 };
 
 /// Maximum explicit partition entries retained by one grant.
@@ -964,6 +965,114 @@ impl fmt::Debug for CapabilityExportGrantV1 {
     }
 }
 
+/// Closed V1 scope for one exact application-reimport campaign grant.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CapabilityApplicationReimportScopeV1 {
+    /// Apply the exact compiled application-role row policy during reconstitution.
+    PrincipalFiltered,
+    /// Operator authority over the complete application, still under the declared role policy.
+    WholeApplication,
+}
+
+impl CapabilityApplicationReimportScopeV1 {
+    /// Returns the stable V1 semantic tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::PrincipalFiltered => 1,
+            Self::WholeApplication => 2,
+        }
+    }
+
+    /// Decodes a stable V1 semantic tag.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::PrincipalFiltered),
+            2 => Some(Self::WholeApplication),
+            _ => None,
+        }
+    }
+}
+
+/// Distinct authority for one exact not-ready reimport campaign and manifest.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CapabilityApplicationReimportGrantV1 {
+    lineage: ContractLineage,
+    campaign_id: ApplicationInstallationCampaignId,
+    portability_manifest_hash: ApplicationPortabilityManifestHash,
+    scope: CapabilityApplicationReimportScopeV1,
+}
+
+impl CapabilityApplicationReimportGrantV1 {
+    /// Constructs an exact campaign-bound reimport grant.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        campaign_id: ApplicationInstallationCampaignId,
+        portability_manifest_hash: ApplicationPortabilityManifestHash,
+        scope: CapabilityApplicationReimportScopeV1,
+    ) -> Self {
+        Self {
+            lineage,
+            campaign_id,
+            portability_manifest_hash,
+            scope,
+        }
+    }
+
+    /// Exact application lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Exact destination installation/reimport campaign.
+    #[must_use]
+    pub const fn campaign_id(&self) -> ApplicationInstallationCampaignId {
+        self.campaign_id
+    }
+
+    /// Exact adapter-owned portability manifest.
+    #[must_use]
+    pub const fn portability_manifest_hash(&self) -> ApplicationPortabilityManifestHash {
+        self.portability_manifest_hash
+    }
+
+    /// Current-policy or whole-application scope.
+    #[must_use]
+    pub const fn scope(&self) -> CapabilityApplicationReimportScopeV1 {
+        self.scope
+    }
+
+    /// True only for the exact same campaign and manifest with equal or narrower scope.
+    #[must_use]
+    pub fn is_narrowing_of(&self, parent: &Self, child_has_row_policy: bool) -> bool {
+        self.lineage == parent.lineage
+            && self.campaign_id == parent.campaign_id
+            && self.portability_manifest_hash == parent.portability_manifest_hash
+            && match (self.scope, parent.scope) {
+                (
+                    CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+                    CapabilityApplicationReimportScopeV1::WholeApplication,
+                ) => child_has_row_policy,
+                (child, parent) => child == parent,
+            }
+    }
+}
+
+impl fmt::Debug for CapabilityApplicationReimportGrantV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityApplicationReimportGrantV1")
+            .field("lineage", &self.lineage)
+            .field("campaign_id", &self.campaign_id)
+            .field("portability_manifest_hash", &self.portability_manifest_hash)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
 /// Complete bounded v1 grant persisted with a capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityGrantV1 {
@@ -975,6 +1084,7 @@ pub struct CapabilityGrantV1 {
     approval_required: Arc<[CapabilityPermissionKindV1]>,
     row_policy: Option<CapabilityRowPolicyGrantV1>,
     export: Option<CapabilityExportGrantV1>,
+    reimport: Option<CapabilityApplicationReimportGrantV1>,
 }
 
 impl CapabilityGrantV1 {
@@ -1030,6 +1140,7 @@ impl CapabilityGrantV1 {
             approval_required: approval_required.into(),
             row_policy: None,
             export: None,
+            reimport: None,
         };
         validate_capability_payload_bytes(value.semantic_bytes()?)?;
         Ok(value)
@@ -1154,6 +1265,32 @@ impl CapabilityGrantV1 {
         self.export.as_ref()
     }
 
+    /// Adds distinct V7 reimport authority after checking its role and scope prerequisites.
+    pub fn with_reimport(
+        mut self,
+        reimport: CapabilityApplicationReimportGrantV1,
+    ) -> Result<Self, CapabilityGrantError> {
+        if self.reimport.is_some() || self.row_policy.is_none() {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        if reimport.scope() == CapabilityApplicationReimportScopeV1::WholeApplication
+            && (self.tenant_scope != TenantScope::Global
+                || self.partition_scope != PartitionScopeV1::All)
+        {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        self.reimport = Some(reimport);
+        validate_capability_payload_bytes(self.semantic_bytes()?)?;
+        Ok(self)
+    }
+
+    /// Exact trusted reimport extension, absent for V1 through V6 capabilities.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_reimport(&self) -> Option<&CapabilityApplicationReimportGrantV1> {
+        self.reimport.as_ref()
+    }
+
     /// Returns the complete checked v1 semantic grant byte count.
     pub fn semantic_bytes(&self) -> Result<usize, CapabilityGrantError> {
         let base = capability_grant_semantic_bytes_parts(
@@ -1169,13 +1306,30 @@ impl CapabilityGrantV1 {
                 .ok_or(CapabilityGrantError::SizeOverflow)?,
             None => base,
         };
-        match &self.export {
+        let with_export = match &self.export {
             Some(extension) => with_row_policy
                 .checked_add(export_semantic_bytes(extension)?)
+                .ok_or(CapabilityGrantError::SizeOverflow)?,
+            None => with_row_policy,
+        };
+        match &self.reimport {
+            Some(extension) => with_export
+                .checked_add(reimport_semantic_bytes(extension)?)
                 .ok_or(CapabilityGrantError::SizeOverflow),
-            None => Ok(with_row_policy),
+            None => Ok(with_export),
         }
     }
+}
+
+fn reimport_semantic_bytes(
+    extension: &CapabilityApplicationReimportGrantV1,
+) -> Result<usize, CapabilityGrantError> {
+    checked_capability_sum([
+        framed_capability_bytes(extension.lineage.as_bytes().len())?,
+        16,
+        32,
+        1,
+    ])
 }
 
 fn export_semantic_bytes(
@@ -1748,6 +1902,40 @@ mod tests {
         );
         assert_eq!(CapabilityApplicationExportScopeV1::from_tag(0), None);
         assert_eq!(CapabilityApplicationExportScopeV1::from_tag(3), None);
+    }
+
+    #[test]
+    fn reimport_authority_is_exact_campaign_bound_and_narrowing_only() {
+        let mut campaign_bytes = [0x61; 16];
+        campaign_bytes[6] = 0x71;
+        campaign_bytes[8] = 0x81;
+        let campaign =
+            ApplicationInstallationCampaignId::from_bytes(campaign_bytes).expect("UUIDv7 campaign");
+        let parent = CapabilityApplicationReimportGrantV1::new(
+            ContractLineage::new("ticketdesk").expect("lineage"),
+            campaign,
+            ApplicationPortabilityManifestHash::from_bytes([0x62; 32]),
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+        );
+        let principal = CapabilityApplicationReimportGrantV1::new(
+            ContractLineage::new("ticketdesk").expect("lineage"),
+            campaign,
+            ApplicationPortabilityManifestHash::from_bytes([0x62; 32]),
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+        );
+        let substituted = CapabilityApplicationReimportGrantV1::new(
+            ContractLineage::new("ticketdesk").expect("lineage"),
+            campaign,
+            ApplicationPortabilityManifestHash::from_bytes([0x63; 32]),
+            CapabilityApplicationReimportScopeV1::PrincipalFiltered,
+        );
+
+        assert!(principal.is_narrowing_of(&parent, true));
+        assert!(!principal.is_narrowing_of(&parent, false));
+        assert!(!parent.is_narrowing_of(&principal, true));
+        assert!(!substituted.is_narrowing_of(&parent, true));
+        assert_eq!(CapabilityApplicationReimportScopeV1::from_tag(0), None);
+        assert_eq!(CapabilityApplicationReimportScopeV1::from_tag(3), None);
     }
 
     #[test]

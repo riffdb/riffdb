@@ -3,8 +3,10 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
-    ApplicationRoleHash, ApprovalId, Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue,
+    ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash, ApplicationRoleHash,
+    ApprovalId, Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue,
     CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+    CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1,
     CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
     CapabilityTokenDigest, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
@@ -744,6 +746,50 @@ pub(super) fn capability_record_with_secret_naming() -> StoredCapabilityRecordV1
         base.lifecycle().clone(),
     )
     .expect("secret capability")
+}
+
+pub(super) fn capability_record_with_reimport_authority() -> StoredCapabilityRecordV1 {
+    let base = capability_record_with_row_policy_authority();
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        base.grant().permissions().clone(),
+        base.grant().field_visibility().to_vec(),
+        base.grant().max_scan_rows(),
+        base.grant().approval_required().to_vec(),
+    )
+    .expect("reimport base grant")
+    .with_row_policy(
+        base.grant()
+            .internal_row_policy()
+            .expect("row policy")
+            .clone(),
+    )
+    .expect("reimport row policy")
+    .with_reimport(CapabilityApplicationReimportGrantV1::new(
+        ContractLineage::new("ticketdesk").expect("lineage"),
+        ApplicationInstallationCampaignId::from_bytes(uuid_v7(0x52)).expect("campaign"),
+        ApplicationPortabilityManifestHash::from_bytes([0x53; 32]),
+        CapabilityApplicationReimportScopeV1::WholeApplication,
+    ))
+    .expect("reimport grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("reimport capability")
 }
 
 pub(super) fn capability_record_with_complete_export_authority() -> StoredCapabilityRecordV1 {

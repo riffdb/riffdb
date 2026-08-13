@@ -19,6 +19,13 @@ files
     import riffdb/storage/v1/capability_migration.proto
   riffdb/storage/v1/capability_migration.proto
     import riffdb/storage/v1/capability.proto
+  riffdb/storage/v1/capability_reimport.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_export.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability_row_policy.proto
+    import riffdb/storage/v1/capability_secret.proto
   riffdb/storage/v1/capability_row_policy.proto
     import riffdb/storage/v1/capability.proto
     import riffdb/storage/v1/capability_installation.proto
@@ -456,6 +463,11 @@ messages
     4 events optional bool
     5 provenance optional bool
     6 public_audit optional bool
+  riffdb.storage.v1.CapabilityApplicationReimportGrantV1 fields=4
+    1 contract_lineage optional string
+    2 campaign_id optional bytes
+    3 portability_manifest_hash optional bytes
+    4 scope optional .riffdb.storage.v1.CapabilityApplicationReimportScopeV1
   riffdb.storage.v1.CapabilityBootstrapMarkerV1 fields=3
     1 database_id optional bytes
     2 capability_id optional bytes
@@ -529,6 +541,14 @@ messages
     4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
     5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
     6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV7 fields=7
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+    5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+    6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
+    7 reimport optional .riffdb.storage.v1.CapabilityApplicationReimportGrantV1
   riffdb.storage.v1.CapabilityRowPolicyBindingV1 fields=4
     1 contract_lineage optional string
     2 policy_name optional string
@@ -2668,6 +2688,10 @@ enums
     0 CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED
     1 CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED
     2 CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION
+  riffdb.storage.v1.CapabilityApplicationReimportScopeV1 values=3
+    0 CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED
+    1 CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED
+    2 CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION
   riffdb.storage.v1.CapabilityPermissionKindV1 values=30
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
