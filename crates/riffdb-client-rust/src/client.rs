@@ -2489,7 +2489,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_retry_uses_fresh_request_ids_and_retains_identical_input() {
+    fn adapter_minted_idempotency_survives_driver_retries_with_fresh_transport_ids() {
         let first_id = RequestId::from_unix_milliseconds_and_random(1, [1; 10]).expect("first ID");
         let second_id =
             RequestId::from_unix_milliseconds_and_random(2, [2; 10]).expect("second ID");

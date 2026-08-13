@@ -124,9 +124,10 @@ WorkflowDeclaration: WorkflowDeclaration = {
     "workflow" <name:Identifier> "{"
         "entity" <entity:Identifier>
         "state" <state_field:Identifier>
+        <initial_state:("initial" <Identifier>)?>
         <transitions:WorkflowTransitionDeclaration+>
         <lease:WorkflowLeaseDeclaration?>
-    "}" => WorkflowDeclaration { name, entity, state_field, transitions, lease },
+    "}" => WorkflowDeclaration { name, entity, state_field, initial_state, transitions, lease },
 };
 
 WorkflowTransitionDeclaration: Spanned<WorkflowTransitionDeclaration> = {
@@ -771,6 +772,7 @@ Identifier: Spanned<String> = {
         => parser::spanned("idempotency_key".to_owned(), lo, hi),
     <lo:@L> "workflow" <hi:@R> => parser::spanned("workflow".to_owned(), lo, hi),
     <lo:@L> "state" <hi:@R> => parser::spanned("state".to_owned(), lo, hi),
+    <lo:@L> "initial" <hi:@R> => parser::spanned("initial".to_owned(), lo, hi),
     <lo:@L> "transition" <hi:@R> => parser::spanned("transition".to_owned(), lo, hi),
     <lo:@L> "from" <hi:@R> => parser::spanned("from".to_owned(), lo, hi),
     <lo:@L> "to" <hi:@R> => parser::spanned("to".to_owned(), lo, hi),
@@ -862,6 +864,7 @@ extern {
         "for" => Token::For,
         "workflow" => Token::Workflow,
         "state" => Token::State,
+        "initial" => Token::Initial,
         "transition" => Token::Transition,
         "from" => Token::From,
         "to" => Token::To,

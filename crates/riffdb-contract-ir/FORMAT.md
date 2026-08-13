@@ -723,8 +723,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `entity` | EntityTypeId |
 | 3 | `state_field` | FieldId |
 | 4 | `state_enum` | EnumTypeId |
-| 5 | `transitions` | u32 count + WorkflowTransitionSchema[] |
-| 6 | `lease` | optional WorkflowLeaseSchema |
+| 5 | `initial_state` | IR v9+: optional EnumVariantId; omitted in v2-v8 |
+| 6 | `transitions` | u32 count + WorkflowTransitionSchema[] |
+| 7 | `lease` | optional WorkflowLeaseSchema |
 
 ### WorkflowTransitionSchema
 

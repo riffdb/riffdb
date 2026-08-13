@@ -165,6 +165,7 @@ pub struct WorkflowSchema {
     entity: EntityTypeId,
     state_field: FieldId,
     state_enum: EnumTypeId,
+    initial_state: Option<EnumVariantId>,
     transitions: Vec<WorkflowTransitionSchema>,
     lease: Option<WorkflowLeaseSchema>,
 }
@@ -176,6 +177,7 @@ impl WorkflowSchema {
         entity: EntityTypeId,
         state_field: FieldId,
         state_enum: EnumTypeId,
+        initial_state: Option<EnumVariantId>,
         mut transitions: Vec<WorkflowTransitionSchema>,
         lease: Option<WorkflowLeaseSchema>,
     ) -> Result<Self, IrValidationError> {
@@ -212,6 +214,7 @@ impl WorkflowSchema {
             entity,
             state_field,
             state_enum,
+            initial_state,
             transitions,
             lease,
         })
@@ -236,6 +239,22 @@ impl WorkflowSchema {
     #[must_use]
     pub const fn state_enum(&self) -> EnumTypeId {
         self.state_enum
+    }
+    /// Compiler-owned initial state for ordinary creates.
+    #[must_use]
+    pub const fn initial_state(&self) -> Option<EnumVariantId> {
+        self.initial_state
+    }
+    /// True when this workflow needs the ADR-0109 Amendment 1 IR successor.
+    #[must_use]
+    pub fn requires_ir_v9(&self) -> bool {
+        self.initial_state.is_some()
+            || self.transitions.iter().any(|transition| {
+                transition
+                    .source_states()
+                    .binary_search(&transition.destination())
+                    .is_ok()
+            })
     }
     /// Legal transitions in source-symbol order.
     #[must_use]
@@ -343,6 +362,14 @@ fn validate_workflow(
         .iter()
         .map(crate::EnumVariantSchema::id)
         .collect::<BTreeSet<_>>();
+    if workflow
+        .initial_state
+        .is_some_and(|initial| !variants.contains(&initial))
+    {
+        return Err(IrValidationError::InvalidReference {
+            kind: "workflow initial state",
+        });
+    }
     if workflow.transitions.iter().any(|transition| {
         !variants.contains(&transition.destination)
             || transition

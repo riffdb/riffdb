@@ -61,6 +61,8 @@ pub const BUNDLE_FORMAT_VERSION_V6: u32 = 6;
 pub const BUNDLE_FORMAT_VERSION_V7: u32 = 7;
 /// Bundle framing containing secret-field classifications (ADR-0118).
 pub const BUNDLE_FORMAT_VERSION_V8: u32 = 8;
+/// Bundle framing containing compiler-owned workflow initialization.
+pub const BUNDLE_FORMAT_VERSION_V9: u32 = 9;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -77,6 +79,8 @@ pub const GRAMMAR_VERSION_V6: u32 = 6;
 pub const GRAMMAR_VERSION_V7: u32 = 7;
 /// Contract grammar containing the contextual `secret` field classification.
 pub const GRAMMAR_VERSION_V8: u32 = 8;
+/// Contract grammar containing workflow initial states and self-transitions.
+pub const GRAMMAR_VERSION_V9: u32 = 9;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -93,6 +97,8 @@ pub const EXECUTABLE_IR_VERSION_V6: u32 = 6;
 pub const EXECUTABLE_IR_VERSION_V7: u32 = 7;
 /// Executable IR whose schema carries secret-field classifications.
 pub const EXECUTABLE_IR_VERSION_V8: u32 = 8;
+/// Executable IR containing workflow initial states and self-transitions.
+pub const EXECUTABLE_IR_VERSION_V9: u32 = 9;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1017,7 +1023,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v8() {
+        let version = if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
+            BUNDLE_FORMAT_VERSION_V9
+        } else if schema.requires_ir_v8() {
             BUNDLE_FORMAT_VERSION_V8
         } else if schema.requires_ir_v7() {
             BUNDLE_FORMAT_VERSION_V7
@@ -1109,6 +1117,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V8,
                 GRAMMAR_VERSION_V8,
                 EXECUTABLE_IR_VERSION_V8
+            ) | (
+                BUNDLE_FORMAT_VERSION_V9,
+                GRAMMAR_VERSION_V9,
+                EXECUTABLE_IR_VERSION_V9
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1121,6 +1133,8 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v6))
             || (ir_version < EXECUTABLE_IR_VERSION_V7 && schema.requires_ir_v7())
             || (ir_version < EXECUTABLE_IR_VERSION_V8 && schema.requires_ir_v8())
+            || (ir_version < EXECUTABLE_IR_VERSION_V9
+                && workflows.iter().any(WorkflowSchema::requires_ir_v9))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2180,7 +2194,7 @@ fn compute_plan_root_hash_versioned(
     writer.u32(ir_version)?;
     writer.raw(structural_hash.as_bytes())?;
     if ir_version >= EXECUTABLE_IR_VERSION_V2 {
-        encode_workflows(&mut writer, workflows)?;
+        encode_workflows(&mut writer, workflows, ir_version)?;
     }
     if ir_version >= EXECUTABLE_IR_VERSION_V4 {
         writer.bytes(&row_policies.canonical_bytes()?)?;
@@ -2344,7 +2358,7 @@ fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> 
     encode_ledger(&mut writer, &bundle.ledger)?;
     encode_schema(&mut writer, &bundle.schema)?;
     if bundle.ir_version >= EXECUTABLE_IR_VERSION_V2 {
-        encode_workflows(&mut writer, &bundle.workflows)?;
+        encode_workflows(&mut writer, &bundle.workflows, bundle.ir_version)?;
     }
     if bundle.ir_version >= EXECUTABLE_IR_VERSION_V4 {
         encode_row_policy_catalog(&mut writer, &bundle.row_policies)?;
@@ -2428,6 +2442,7 @@ fn encode_structural_schema(schema: &SchemaIr) -> Result<Vec<u8>, IrValidationEr
 fn encode_workflows(
     writer: &mut Writer,
     catalog: &WorkflowCatalog,
+    ir_version: u32,
 ) -> Result<(), IrValidationError> {
     writer.u32(catalog.workflows().len() as u32)?;
     for workflow in catalog.workflows() {
@@ -2435,6 +2450,12 @@ fn encode_workflows(
         writer.u32(workflow.entity().get())?;
         writer.u32(workflow.state_field().get())?;
         writer.u32(workflow.state_enum().get())?;
+        if ir_version >= EXECUTABLE_IR_VERSION_V9 {
+            writer.bool(workflow.initial_state().is_some())?;
+            if let Some(initial_state) = workflow.initial_state() {
+                writer.u32(initial_state.get())?;
+            }
+        }
         writer.u32(workflow.transitions().len() as u32)?;
         for transition in workflow.transitions() {
             writer.string(transition.name())?;
@@ -3513,6 +3534,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V8,
             GRAMMAR_VERSION_V8,
             EXECUTABLE_IR_VERSION_V8
+        ) | (
+            BUNDLE_FORMAT_VERSION_V9,
+            GRAMMAR_VERSION_V9,
+            EXECUTABLE_IR_VERSION_V9
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -3546,7 +3571,7 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
     let ledger = decode_ledger(&mut reader)?;
     let schema = decode_schema(&mut reader)?;
     let workflows = if ir_version >= EXECUTABLE_IR_VERSION_V2 {
-        decode_workflows(&mut reader, &schema)?
+        decode_workflows(&mut reader, &schema, ir_version)?
     } else {
         WorkflowCatalog::new(Vec::new(), &schema)?
     };
@@ -3597,6 +3622,7 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
 fn decode_workflows(
     reader: &mut Reader<'_>,
     schema: &SchemaIr,
+    ir_version: u32,
 ) -> Result<WorkflowCatalog, IrValidationError> {
     let count = decode_len_with_minimum(reader, "workflows", crate::MAX_DECLARATIONS_PER_KIND, 21)?;
     let mut workflows = Vec::with_capacity(count);
@@ -3605,6 +3631,11 @@ fn decode_workflows(
         let entity = decode_entity_id(reader)?;
         let state_field = decode_field_id(reader)?;
         let state_enum = decode_enum_id(reader)?;
+        let initial_state = if ir_version >= EXECUTABLE_IR_VERSION_V9 && reader.bool()? {
+            Some(decode_enum_variant_id(reader)?)
+        } else {
+            None
+        };
         let transition_count = decode_len_with_minimum(
             reader,
             "workflow transitions",
@@ -3657,6 +3688,7 @@ fn decode_workflows(
             entity,
             state_field,
             state_enum,
+            initial_state,
             transitions,
             lease,
         )?);

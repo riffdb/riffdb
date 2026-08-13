@@ -25,6 +25,7 @@ entity WorkItem {
 workflow WorkLifecycle {
   entity WorkItem
   state state
+  initial Queued
   transition Start from (Queued) to Running
   transition Finish from (Running) to Complete
   lease execution {
@@ -37,14 +38,28 @@ workflow WorkLifecycle {
 }
 ```
 
+`initial` is the only ordinary-create path for a workflow state. The compiler
+injects the named enum value into every ordinary or bounded-collection create;
+the command has no input or `set` operation that can choose a different state.
+Without `initial`, an ordinary create cannot construct the required workflow
+state field. Portable restoration is a separate, operator-authorized operation
+and does not widen normal application commands.
+
+A declared transition may return to the same state. This is useful for
+revision-checked operations such as rotating a session token while the session
+remains `Active`. A self-transition still requires the exact observed revision,
+checks the declared source state, returns the declared stale/illegal outcomes,
+and advances the entity revision only with the atomic mutation.
+
 The owner and expiry fields must be `optional<uuid>` and
 `optional<timestamp>`. The fence is `u64`; the optional attempt field is also
 `u64`. Lease fields must be distinct non-key fields. Duration bounds are
 inclusive, nonzero seconds and cannot exceed 86,400 seconds.
 
-New rows initialize the optional owner and expiry to null and must explicitly
-initialize the fence and attempt counters. The first successful claim advances
-the fence from zero to one.
+New rows receive their workflow state from `initial`. They initialize the
+optional owner and expiry to null and must explicitly initialize the fence and
+attempt counters. The first successful claim advances the fence from zero to
+one.
 
 ## Claim work
 

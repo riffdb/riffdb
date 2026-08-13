@@ -181,6 +181,39 @@ contract AuthShape version 1 {
 }
 "#;
 
+/// Workflow-initialization fixture (ADR-0109 Amendment 1 / WP-598): pins the
+/// v9 bundle encoding, including the compiler-owned initial assignment and an
+/// explicit revision-checked self-transition.
+const WORKFLOW_INITIAL_SOURCE: &str = r#"
+contract WorkflowInitialShape version 1 {
+  enum SessionState { Active, Revoked }
+  entity Session {
+    key (tenant_id: uuid, session_id: uuid)
+    field state: SessionState
+  }
+  aggregate Sessions {
+    root Session
+    partition_by tenant_id
+    conflict_key (tenant_id, session_id)
+  }
+  workflow SessionLifecycle {
+    entity Session
+    state state
+    initial Active
+    transition Refresh from (Active) to Active
+    transition Revoke from (Active) to Revoked
+  }
+  command CreateSession {
+    input request_key: string<128>
+    input tenant_id: uuid
+    input session_id: uuid
+    idempotency_key request_key
+    create Session(tenant_id, session_id) as session else SessionExists {}
+    return Created { session: session }
+  }
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
     let fixture_root = output_root.join("fixtures/compiler");
@@ -197,6 +230,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         secret_root.join("bundle-hash.txt"),
         format!("{}\n", hex(secret_bundle.bundle_hash().as_bytes())),
+    )?;
+
+    let workflow_initial_bundle = compile_contract_source(WORKFLOW_INITIAL_SOURCE)?;
+    let workflow_initial_root = fixture_root.join("workflow-initial");
+    fs::create_dir_all(&workflow_initial_root)?;
+    fs::write(
+        workflow_initial_root.join("bundle.bin"),
+        workflow_initial_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        workflow_initial_root.join("bundle-hash.txt"),
+        format!(
+            "{}\n",
+            hex(workflow_initial_bundle.bundle_hash().as_bytes())
+        ),
     )?;
 
     let bundle = compile_contract_source(BUDGET_SOURCE)?;

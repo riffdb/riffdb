@@ -105,6 +105,8 @@ pub(crate) enum Token {
     Workflow,
     #[token("state")]
     State,
+    #[token("initial")]
+    Initial,
     #[token("transition")]
     Transition,
     #[token("from")]

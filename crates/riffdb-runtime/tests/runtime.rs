@@ -43,6 +43,233 @@ contract BulkDeleteRuntime version 1 {
   }
 }
 "#;
+const FRAMEWORK_PROFILE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/adapters/framework-profile/riffdb/contract.riff"
+));
+
+#[test]
+fn framework_profile_signup_is_one_complete_atomic_graph_with_compiler_initial_state() {
+    let bundle = compile_contract_source(FRAMEWORK_PROFILE_SOURCE).expect("profile compiles");
+    let plan = command(&bundle, "CreateUserAccountSessions");
+    let signup = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "SignupGraphInput")
+        .expect("signup record");
+    let signup_value = CanonicalValue::Record(input_record(
+        signup.record(),
+        [
+            ("organization_id", CanonicalValue::Uuid([0x11; 16])),
+            ("user_id", CanonicalValue::Uuid([0x12; 16])),
+            ("account_id", CanonicalValue::Uuid([0x13; 16])),
+            ("session_id", CanonicalValue::Uuid([0x14; 16])),
+            (
+                "email",
+                CanonicalValue::string("agent@example.test").expect("email"),
+            ),
+            (
+                "provider",
+                CanonicalValue::string("oidc").expect("provider"),
+            ),
+            (
+                "provider_account_id",
+                CanonicalValue::string("provider-account-1").expect("provider account"),
+            ),
+            (
+                "token_digest",
+                CanonicalValue::string("session-digest-1").expect("token digest"),
+            ),
+            (
+                "expires_at",
+                CanonicalValue::Timestamp(Timestamp::new(1_000, 0).expect("expiry")),
+            ),
+        ],
+    ));
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x15; 16])),
+            (
+                "signups",
+                CanonicalValue::List(CanonicalList::new(vec![signup_value]).expect("signups")),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("signup facts");
+    let targets = facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .map(|(index, key)| {
+            EntityTarget::new(plan.bindings()[*index as usize].entity_type(), key.clone())
+                .expect("signup target")
+        })
+        .collect::<Vec<_>>();
+    let request = SnapshotRequest::new(plan_ref(&bundle, plan), targets.clone(), vec![], vec![])
+        .expect("signup snapshot request");
+    let snapshot = ReadSnapshot::new(
+        &request,
+        None,
+        targets
+            .iter()
+            .cloned()
+            .map(EntityObservation::Absent)
+            .collect(),
+        vec![],
+        vec![],
+    )
+    .expect("signup snapshot");
+    let execution_context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x16; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("framework-profile-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(100, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &snapshot,
+        &execution_context,
+        EvaluationBudget::v1(),
+    )
+    .expect("signup evaluates") else {
+        panic!("signup graph requires one atomic commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 3);
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "UserAccountSessionsCreated")
+    );
+    let session = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Session")
+        .expect("session entity");
+    let state_field = session
+        .record()
+        .fields()
+        .iter()
+        .find(|field| field.name() == "state")
+        .expect("state field")
+        .id();
+    let session_mutation = evaluated
+        .mutations()
+        .iter()
+        .find(|mutation| mutation.target().entity_type_id() == session.id())
+        .expect("session mutation");
+    let stored_state = session_mutation
+        .post_image()
+        .fields()
+        .fields()
+        .iter()
+        .find(|(field, _)| *field == state_field)
+        .map(|(_, value)| value);
+    assert_eq!(
+        stored_state,
+        Some(&enum_value(&bundle, "SessionState", "Active"))
+    );
+}
+
+#[test]
+fn framework_profile_token_refuses_fresh_reuse_and_expired_consumption() {
+    let bundle = compile_contract_source(FRAMEWORK_PROFILE_SOURCE).expect("profile compiles");
+    let plan = command(&bundle, "ConsumeVerificationToken");
+    let input = framework_token_input(plan, [0x21; 16]);
+    let target = derive_binding_target(plan, &input, 0);
+    let available = framework_token_record(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::first(),
+        false,
+        200,
+    );
+    let first = evaluate_profile_command(&bundle, plan, &input, available, 100);
+    assert_eq!(
+        first.outcome().outcome_id(),
+        outcome_id(plan, "VerificationTokenConsumed")
+    );
+    assert_eq!(first.mutations().len(), 1);
+
+    let committed = stored_record_with_version(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::first().checked_next().expect("version two"),
+        first.mutations()[0].post_image().fields().clone(),
+    );
+    let fresh_retry = framework_token_input(plan, [0x22; 16]);
+    let refused = evaluate_profile_command(&bundle, plan, &fresh_retry, committed, 101);
+    assert_eq!(
+        refused.outcome().outcome_id(),
+        outcome_id(plan, "VerificationTokenAlreadyConsumed")
+    );
+    assert!(refused.mutations().is_empty());
+
+    let expired = framework_token_record(&bundle, plan, target, EntityVersion::first(), false, 99);
+    let expired_input = framework_token_input(plan, [0x23; 16]);
+    let refused = evaluate_profile_command(&bundle, plan, &expired_input, expired, 100);
+    assert_eq!(
+        refused.outcome().outcome_id(),
+        outcome_id(plan, "VerificationTokenExpired")
+    );
+    assert!(refused.mutations().is_empty());
+}
+
+#[test]
+fn framework_profile_refresh_and_revocation_cannot_both_survive_one_revision() {
+    let bundle = compile_contract_source(FRAMEWORK_PROFILE_SOURCE).expect("profile compiles");
+    let refresh = command(&bundle, "RefreshSession");
+    let revoke = command(&bundle, "RevokeSession");
+    let refresh_input = framework_refresh_input(refresh, [0x31; 16]);
+    let revoke_input = framework_revoke_input(revoke, [0x32; 16]);
+    let target = derive_binding_target(refresh, &refresh_input, 0);
+    assert_eq!(target, derive_binding_target(revoke, &revoke_input, 0));
+    let initial =
+        framework_session_record(&bundle, refresh, target.clone(), EntityVersion::first());
+
+    let refreshed =
+        evaluate_profile_command(&bundle, refresh, &refresh_input, initial.clone(), 100);
+    let revoked = evaluate_profile_command(
+        &bundle,
+        revoke,
+        &revoke_input,
+        rebind_profile_record(&bundle, revoke, initial),
+        100,
+    );
+    assert_eq!(
+        refreshed.outcome().outcome_id(),
+        outcome_id(refresh, "SessionRefreshed")
+    );
+    assert_eq!(
+        revoked.outcome().outcome_id(),
+        outcome_id(revoke, "SessionRevoked")
+    );
+
+    let refresh_winner = stored_record_with_version(
+        &bundle,
+        revoke,
+        target,
+        EntityVersion::first().checked_next().expect("version two"),
+        refreshed.mutations()[0].post_image().fields().clone(),
+    );
+    let stale_revoke =
+        evaluate_profile_command(&bundle, revoke, &revoke_input, refresh_winner, 101);
+    assert_eq!(
+        stale_revoke.outcome().outcome_id(),
+        outcome_id(revoke, "RevokeSessionStale")
+    );
+    assert!(stale_revoke.mutations().is_empty());
+}
 
 #[test]
 fn bounded_collection_delete_retains_exact_predecessors_without_post_delete_rows() {
@@ -2443,6 +2670,180 @@ fn input_record<const N: usize>(
             .collect(),
     )
     .expect("canonical record")
+}
+
+fn framework_token_input(plan: &CommandPlan, request_id: [u8; 16]) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid(request_id)),
+            ("organization_id", CanonicalValue::Uuid([0x41; 16])),
+            ("user_id", CanonicalValue::Uuid([0x42; 16])),
+            ("verification_token_id", CanonicalValue::Uuid([0x43; 16])),
+        ],
+    )
+}
+
+fn framework_refresh_input(plan: &CommandPlan, request_id: [u8; 16]) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid(request_id)),
+            ("organization_id", CanonicalValue::Uuid([0x51; 16])),
+            ("user_id", CanonicalValue::Uuid([0x52; 16])),
+            ("session_id", CanonicalValue::Uuid([0x53; 16])),
+            ("expected_revision", CanonicalValue::U64(1)),
+            (
+                "successor_token_digest",
+                CanonicalValue::string("session-digest-2").expect("successor digest"),
+            ),
+        ],
+    )
+}
+
+fn framework_revoke_input(plan: &CommandPlan, request_id: [u8; 16]) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid(request_id)),
+            ("organization_id", CanonicalValue::Uuid([0x51; 16])),
+            ("user_id", CanonicalValue::Uuid([0x52; 16])),
+            ("session_id", CanonicalValue::Uuid([0x53; 16])),
+            ("expected_revision", CanonicalValue::U64(1)),
+        ],
+    )
+}
+
+fn framework_token_record(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+    consumed: bool,
+    expires_at: i64,
+) -> StoredEntityRecordV1 {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "VerificationToken")
+        .expect("verification token entity");
+    let keys = entity
+        .primary_key()
+        .decode_entity(target.key())
+        .expect("token key");
+    stored_record_with_version(
+        bundle,
+        plan,
+        target,
+        version,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", keys[0].clone()),
+                ("user_id", keys[1].clone()),
+                ("verification_token_id", keys[2].clone()),
+                (
+                    "token_digest",
+                    CanonicalValue::string("verification-digest-1").expect("digest"),
+                ),
+                (
+                    "expires_at",
+                    CanonicalValue::Timestamp(Timestamp::new(expires_at, 0).expect("token expiry")),
+                ),
+                ("consumed", CanonicalValue::Bool(consumed)),
+                (
+                    "issued_at",
+                    CanonicalValue::Timestamp(Timestamp::new(1, 0).expect("issued time")),
+                ),
+            ],
+        ),
+    )
+}
+
+fn framework_session_record(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+) -> StoredEntityRecordV1 {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Session")
+        .expect("session entity");
+    let keys = entity
+        .primary_key()
+        .decode_entity(target.key())
+        .expect("session key");
+    stored_record_with_version(
+        bundle,
+        plan,
+        target,
+        version,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", keys[0].clone()),
+                ("user_id", keys[1].clone()),
+                ("session_id", keys[2].clone()),
+                ("state", enum_value(bundle, "SessionState", "Active")),
+                (
+                    "token_digest",
+                    CanonicalValue::string("session-digest-1").expect("session digest"),
+                ),
+                (
+                    "expires_at",
+                    CanonicalValue::Timestamp(Timestamp::new(1_000, 0).expect("session expiry")),
+                ),
+            ],
+        ),
+    )
+}
+
+fn rebind_profile_record(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    record: StoredEntityRecordV1,
+) -> StoredEntityRecordV1 {
+    stored_record_with_version(
+        bundle,
+        plan,
+        record.target().clone(),
+        record.entity_version(),
+        record.fields().clone(),
+    )
+}
+
+fn evaluate_profile_command(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    record: StoredEntityRecordV1,
+    time: i64,
+) -> riffdb_storage_api::EvaluatedCommand {
+    let snapshot = snapshot(
+        plan_ref(bundle, plan),
+        vec![EntityObservation::Present(record)],
+    );
+    let execution_context = context(
+        bundle,
+        plan,
+        input,
+        LogicalTime::new(Timestamp::new(time, 0).expect("profile time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        bundle,
+        input,
+        &snapshot,
+        &execution_context,
+        EvaluationBudget::v1(),
+    )
+    .expect("profile command evaluates") else {
+        panic!("profile mutation or declared refusal requires a commit result");
+    };
+    evaluated
 }
 
 fn stored_budget(

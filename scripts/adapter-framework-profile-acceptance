@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 0 ]]; then
+    echo "usage: ./scripts/adapter-framework-profile-acceptance" >&2
+    exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+contract="fixtures/adapters/framework-profile/riffdb/contract.riff"
+for forbidden in 'Better Auth' BetterAuth better_auth payload Payload; do
+    if rg -q --fixed-strings "$forbidden" "$contract"; then
+        echo "framework profile fixture contains framework-specific symbol: $forbidden" >&2
+        exit 1
+    fi
+done
+
+cargo +1.97.0 test -p riffdb-contract-compiler --test framework_profile --quiet
+cargo +1.97.0 test -p riffdb-runtime --test runtime framework_profile --quiet
+cargo +1.97.0 test -p riffdb-client-rust \
+    adapter_minted_idempotency_survives_driver_retries_with_fresh_transport_ids \
+    --quiet
+cargo +1.97.0 test --test command_concurrency \
+    equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence \
+    --quiet -- --exact
+
+echo "Framework-profile compilation, atomicity, token, workflow, uniqueness, and retry identity: passed"

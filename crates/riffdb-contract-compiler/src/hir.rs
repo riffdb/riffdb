@@ -285,6 +285,7 @@ pub(crate) struct HirWorkflow {
     pub(crate) entity_id: EntityTypeId,
     pub(crate) state_field: FieldId,
     pub(crate) state_enum: EnumTypeId,
+    pub(crate) initial_state: Option<EnumVariantId>,
     pub(crate) transitions: Vec<HirWorkflowTransition>,
     pub(crate) lease: Option<HirWorkflowLease>,
 }
@@ -1412,6 +1413,19 @@ fn lower_workflows(
             ));
         }
 
+        let initial_state = source.initial_state.as_ref().and_then(|initial| {
+            symbols
+                .enum_variants
+                .get(&(state_enum, initial.value.clone()))
+                .copied()
+                .or_else(|| {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidWorkflowTransition,
+                        initial.span,
+                    ));
+                    None
+                })
+        });
         let mut transition_names = BTreeMap::<String, Span>::new();
         let mut transition_edges = BTreeMap::<(EnumVariantId, EnumVariantId), Span>::new();
         let mut transitions = Vec::new();
@@ -1495,6 +1509,7 @@ fn lower_workflows(
             entity_id,
             state_field: state_field.id,
             state_enum,
+            initial_state,
             transitions,
             lease,
         });
@@ -2005,12 +2020,13 @@ fn lower_commands(
             .bulk_iteration
             .as_ref()
             .map_or(&[][..], |iteration| iteration.value.effects.as_slice());
-        let repeated_effect_count = collection_effects.len();
+        let mut lowered_collection_effect_count = 0usize;
         for (effect, collection_local) in collection_effects
             .iter()
             .map(|effect| (effect, true))
             .chain(source.effects.iter().map(|effect| (effect, false)))
         {
+            let effects_before = effects.len();
             resolver.set_collection_context(collection_local);
             match &effect.value {
                 Effect::Set(set) => {
@@ -2346,7 +2362,59 @@ fn lower_commands(
                     });
                 }
             }
+            if collection_local {
+                lowered_collection_effect_count += effects.len() - effects_before;
+            }
         }
+        let mut collection_initializers = Vec::new();
+        let mut top_level_initializers = Vec::new();
+        for binding in bindings
+            .iter()
+            .filter(|binding| binding.mode == BindingMode::Create)
+        {
+            let Some(workflow) = workflows
+                .iter()
+                .find(|workflow| workflow.entity_id == binding.entity_id)
+            else {
+                continue;
+            };
+            let Some(initial_state) = workflow.initial_state else {
+                continue;
+            };
+            let value_type = ValueType::enumeration(workflow.state_enum);
+            let value = CanonicalValue::Enum {
+                type_id: workflow.state_enum,
+                variant_id: initial_state,
+            };
+            let value_id = match resolver.push_constant(value, value_type.clone(), binding.span) {
+                Ok(value_id) => value_id,
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    continue;
+                }
+            };
+            let initializer = HirEffect::Set {
+                target_span: binding.span,
+                binding: binding.id,
+                field: workflow.state_field,
+                value: HirExpressionRoot {
+                    id: value_id,
+                    value_type,
+                    span: binding.span,
+                },
+            };
+            if binding.collection_local {
+                collection_initializers.push(initializer);
+            } else {
+                top_level_initializers.push(initializer);
+            }
+        }
+        let repeated_effect_count = lowered_collection_effect_count + collection_initializers.len();
+        effects.splice(
+            lowered_collection_effect_count..lowered_collection_effect_count,
+            collection_initializers,
+        );
+        effects.extend(top_level_initializers);
         resolver.set_collection_context(false);
         let Some(success) = lower_outcome(
             command_id,

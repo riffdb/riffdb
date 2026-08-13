@@ -226,6 +226,48 @@ fn parses_compiler_visible_workflow_and_service_values_with_exact_spans() {
 }
 
 #[test]
+fn parses_compiler_owned_initial_state_and_explicit_self_transition_with_exact_spans() {
+    let source = r#"
+contract WorkflowInitialization version 1 {
+  enum SessionState { Active, Revoked }
+  entity Session {
+    key (tenant_id: uuid, session_id: uuid)
+    field state: SessionState
+  }
+  workflow SessionLifecycle {
+    entity Session
+    state state
+    initial Active
+    transition Refresh from (Active) to Active
+    transition Revoke from (Active) to Revoked
+  }
+}
+"#;
+    let document = parse_contract(source).expect("workflow initialization surface parses");
+    let Declaration::Workflow(workflow) = &document.contract.value.declarations[2].value else {
+        panic!("third declaration must be the workflow");
+    };
+    let initial = workflow.initial_state.as_ref().expect("initial state");
+    assert_eq!(initial.value, "Active");
+    assert_eq!(
+        initial.span.start() as usize,
+        source.find("initial Active").expect("initial source") + "initial ".len()
+    );
+    assert_eq!(workflow.transitions[0].value.name.value, "Refresh");
+    assert_eq!(
+        workflow.transitions[0].value.source_states[0].value,
+        "Active"
+    );
+    assert_eq!(workflow.transitions[0].value.destination.value, "Active");
+    assert_eq!(
+        workflow.transitions[0].span.start() as usize,
+        source
+            .find("transition Refresh")
+            .expect("self-transition source")
+    );
+}
+
+#[test]
 fn parses_the_closed_fenced_lease_operation_family() {
     let source = r#"
 contract LeaseEffects version 1 {
