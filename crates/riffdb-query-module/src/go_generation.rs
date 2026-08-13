@@ -179,7 +179,11 @@ fn emit_query_types(output: &mut String, module: &QueryModule, contract: &Contra
 }
 
 fn emit_command_types(output: &mut String, contract: &ContractBundle) {
-    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     for command in commands {
         let name = go_public(command.name());
@@ -313,7 +317,11 @@ fn emit_command_methods(
     contract: &ContractBundle,
     operations: &BTreeMap<String, (String, String)>,
 ) {
-    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     for command in commands {
         let source_name = command.name();

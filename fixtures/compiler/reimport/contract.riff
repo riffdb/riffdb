@@ -1,0 +1,35 @@
+contract PortableSessions version 1 {
+  enum SessionState { Active, Revoked }
+  entity Session {
+    key (tenant_id: uuid, session_id: uuid)
+    field state: SessionState
+    field lease_owner: optional<uuid>
+    field lease_expiry: optional<timestamp>
+    field fencing_token: u64
+    field attempts: u64
+    field label: string<64>
+  }
+  aggregate Sessions {
+    root Session
+    partition_by tenant_id
+    conflict_key (tenant_id, session_id)
+  }
+  workflow SessionLifecycle {
+    entity Session
+    state state
+    initial Active
+    transition Revoke from (Active) to Revoked
+    lease Processing {
+      owner lease_owner
+      expires_at lease_expiry
+      fencing_token fencing_token
+      attempts attempts
+      duration_seconds (1, 300)
+    }
+  }
+  reimport command ReconstituteSessions {
+    input records: list<Session, 1..64>
+    reconstitute Session from records else SessionExists {}
+    return SessionsReconstituted {}
+  }
+}

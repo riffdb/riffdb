@@ -482,7 +482,11 @@ pub fn generate_python_client(
         output.push_str("\n\n");
     }
 
-    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     for command in &commands {
         let wire_name = command.name();

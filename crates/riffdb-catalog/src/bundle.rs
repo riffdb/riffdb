@@ -6,11 +6,15 @@ use std::sync::Arc;
 
 use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V1, BUNDLE_FORMAT_VERSION_V2, BUNDLE_FORMAT_VERSION_V3,
-    BUNDLE_FORMAT_VERSION_V4, BUNDLE_FORMAT_VERSION_V5, BUNDLE_FORMAT_VERSION_V6, CommandPlan,
-    ContractBundle, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
-    EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6,
+    BUNDLE_FORMAT_VERSION_V4, BUNDLE_FORMAT_VERSION_V5, BUNDLE_FORMAT_VERSION_V6,
+    BUNDLE_FORMAT_VERSION_V7, BUNDLE_FORMAT_VERSION_V8, BUNDLE_FORMAT_VERSION_V9,
+    BUNDLE_FORMAT_VERSION_V10, CommandPlan, ContractBundle, EXECUTABLE_IR_VERSION_V1,
+    EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4,
+    EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7,
+    EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10,
     GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, MCP_COMMAND_NAME_REGISTRY_VERSION_V2,
+    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
+    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, MCP_COMMAND_NAME_REGISTRY_VERSION_V2,
     McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
@@ -431,6 +435,22 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
             BUNDLE_FORMAT_VERSION_V6,
             GRAMMAR_VERSION_V6,
             EXECUTABLE_IR_VERSION_V6
+        ) | (
+            BUNDLE_FORMAT_VERSION_V7,
+            GRAMMAR_VERSION_V7,
+            EXECUTABLE_IR_VERSION_V7
+        ) | (
+            BUNDLE_FORMAT_VERSION_V8,
+            GRAMMAR_VERSION_V8,
+            EXECUTABLE_IR_VERSION_V8
+        ) | (
+            BUNDLE_FORMAT_VERSION_V9,
+            GRAMMAR_VERSION_V9,
+            EXECUTABLE_IR_VERSION_V9
+        ) | (
+            BUNDLE_FORMAT_VERSION_V10,
+            GRAMMAR_VERSION_V10,
+            EXECUTABLE_IR_VERSION_V10
         )
     ) {
         return Err(CatalogError::new(
@@ -442,16 +462,21 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
 
 fn validate_command_registry(bundle: &ContractBundle) -> Result<(), CatalogError> {
     let registry = bundle.mcp_command_names();
+    let application_commands = bundle
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     if registry.version() != MCP_COMMAND_NAME_REGISTRY_VERSION_V2
         || registry.lineage() != bundle.lineage()
         || registry.source_contract_name() != bundle.lineage().as_str()
-        || registry.entries().len() != bundle.commands().len()
+        || registry.entries().len() != application_commands.len()
     {
         return Err(CatalogError::new(CatalogErrorKind::InvalidCommandRegistry));
     }
 
     let mut names = BTreeSet::new();
-    for (entry, command) in registry.entries().iter().zip(bundle.commands()) {
+    for (entry, command) in registry.entries().iter().zip(application_commands) {
         if entry.command_id() != command.command_id()
             || entry.source_command_name() != command.name()
             || McpCommandToolNameV2::new_checked(

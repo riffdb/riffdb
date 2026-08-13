@@ -261,7 +261,7 @@ async fn prepare_active_command(
         .bundle()
         .commands()
         .iter()
-        .find(|plan| plan.name() == request.command().as_str())
+        .find(|plan| !plan.is_reimport() && plan.name() == request.command().as_str())
         .cloned()
         .ok_or_else(|| invalid_root(ValidationCode::InvalidValue))?;
     let catalog_request = CatalogExecutablePlanRequest::new(
@@ -999,7 +999,7 @@ async fn resolve_command_outcome(
                 .bundle()
                 .commands()
                 .iter()
-                .find(|plan| plan.name() == source_command.as_str())
+                .find(|plan| !plan.is_reimport() && plan.name() == source_command.as_str())
                 .filter(|plan| plan.execution_class() == ExecutionClass::IdempotentMutation)
                 .ok_or_else(|| invalid_root(ValidationCode::InvalidValue))?;
             (lineage.clone(), command.command_id())

@@ -11923,6 +11923,8 @@ work_packages:
     adr/README.md, adr/0119-compiler-owned-workflow-reconstitution.md, proto/**, fixtures/proto/**,
     fixtures/export/**, fixtures/adapters/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-catalog/**, crates/riffdb-query-module/**,
+    crates/riffdb-idempotency/**, crates/riffdb-commit/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
     crates/riffdb-runtime/**, crates/riffdb-service/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,

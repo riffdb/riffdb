@@ -4,11 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
     BindingId, BindingMode, BindingPlan, CollectionDuplicatePolicyV1, CollectionExpansionPlanV1,
-    CommandInputSchema, CommandPlan, CommitCheckPlan, ConflictDerivationPlan, EventConstruction,
-    EventSchema, ExecutionClass, ExprId, ExpressionKind, FieldExpression, FieldSchema, Instruction,
-    IrValidationError, KeySchema, LocalityPlan, OutcomeConstruction, OutcomeSchema, RecordSchema,
-    RecordTypeRef, RootValidationReadId, RootValidationReadPlan, SchemaIr, ServiceValueKind,
-    ServiceValueSchema, WorkflowLeaseFields, WorkflowLeaseOperation,
+    CommandInputSchema, CommandInvocationClass, CommandPlan, CommitCheckPlan,
+    ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
+    FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
+    OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
+    RootValidationReadPlan, SchemaIr, ServiceValueKind, ServiceValueSchema, WorkflowLeaseFields,
+    WorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -578,26 +579,46 @@ fn lower_command(
             CollectionDuplicatePolicyV1::Reject,
         )
         .map_err(|_| vec![ir_diagnostic(expansion.span)])?;
-        CommandPlan::new_collection(
-            command.id,
-            contract_lineage,
-            command.name.clone(),
-            hir.contract_version,
-            input_schema,
-            service_values,
-            outcome_schemas,
-            command.success.id,
-            idempotency_input,
-            expressions,
-            binding_plans,
-            root_validation_reads,
-            locality,
-            commit_checks,
-            instructions,
-            expansion,
-            execution_class,
-            schema,
-        )
+        if command.invocation_class == CommandInvocationClass::Reimport {
+            CommandPlan::new_reimport_collection(
+                command.id,
+                contract_lineage,
+                command.name.clone(),
+                hir.contract_version,
+                input_schema,
+                outcome_schemas,
+                command.success.id,
+                expressions,
+                binding_plans,
+                root_validation_reads,
+                locality,
+                commit_checks,
+                instructions,
+                expansion,
+                schema,
+            )
+        } else {
+            CommandPlan::new_collection(
+                command.id,
+                contract_lineage,
+                command.name.clone(),
+                hir.contract_version,
+                input_schema,
+                service_values,
+                outcome_schemas,
+                command.success.id,
+                idempotency_input,
+                expressions,
+                binding_plans,
+                root_validation_reads,
+                locality,
+                commit_checks,
+                instructions,
+                expansion,
+                execution_class,
+                schema,
+            )
+        }
     } else {
         CommandPlan::new_with_service_values(
             command.id,

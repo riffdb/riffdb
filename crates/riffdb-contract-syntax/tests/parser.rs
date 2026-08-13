@@ -71,6 +71,45 @@ contract BulkSurface version 1 {
 }
 
 #[test]
+fn parses_closed_reimport_commands_without_application_command_phases() {
+    let source = r#"
+contract PortableSessions version 1 {
+  enum SessionState { Active, Revoked }
+  entity Session {
+    key (tenant_id: uuid, session_id: uuid)
+    field state: SessionState
+    field fencing_token: u64
+  }
+  reimport command ReconstituteSessions {
+    input records: list<Session, 1..64>
+    reconstitute Session from records else SessionExists {}
+    return SessionsReconstituted {}
+  }
+}
+"#;
+    let document = parse_contract(source).expect("closed reimport command parses");
+    let Declaration::Command(command) = &document.contract.value.declarations[2].value else {
+        panic!("third declaration must be reimport command");
+    };
+    assert_eq!(command.kind, CommandKind::Reimport);
+    let reconstitution = command
+        .reconstitution
+        .as_ref()
+        .expect("one compiler-owned reconstitution clause");
+    assert_eq!(reconstitution.value.entity.value, "Session");
+    assert_eq!(reconstitution.value.source.value, "records");
+    assert_eq!(
+        reconstitution.value.failure.value.name.value,
+        "SessionExists"
+    );
+    assert!(command.idempotency.is_none());
+    assert!(command.bindings.is_empty());
+    assert!(command.bulk_iteration.is_none());
+    assert!(command.requirements.is_empty());
+    assert!(command.effects.is_empty());
+}
+
+#[test]
 fn parses_closed_delete_policies_and_rejects_nested_collection_expansion() {
     let source = r#"
 contract DeletePolicies version 1 {

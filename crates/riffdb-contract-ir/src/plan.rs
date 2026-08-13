@@ -1023,6 +1023,16 @@ pub enum ExecutionClass {
     IdempotentMutation = crate::format_registry::execution_class::IDEMPOTENT_MUTATION,
 }
 
+/// Closed authority surface from which a compiled command may be invoked.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum CommandInvocationClass {
+    /// Normal application command service and generated application bindings.
+    Application = crate::format_registry::command_invocation_class::APPLICATION,
+    /// Operator-only exact reimport campaign; absent from application discovery.
+    Reimport = crate::format_registry::command_invocation_class::REIMPORT,
+}
+
 /// Ephemeral proof that one checked command is only a commutative child append.
 ///
 /// This proof is deliberately derived from the complete checked plan and schema
@@ -1199,6 +1209,7 @@ pub struct CommandPlan {
     commit_checks: Vec<CommitCheckPlan>,
     instructions: Vec<Instruction>,
     collection_expansion: Option<CollectionExpansionPlanV1>,
+    invocation_class: CommandInvocationClass,
     execution_class: ExecutionClass,
     retry_policy: RetryPolicy,
     required_capability: CapabilityRequirement,
@@ -1285,6 +1296,7 @@ impl CommandPlan {
             commit_checks,
             instructions,
             None,
+            CommandInvocationClass::Application,
             execution_class,
             contract_schema,
         )
@@ -1329,7 +1341,50 @@ impl CommandPlan {
             commit_checks,
             instructions,
             Some(collection_expansion),
+            CommandInvocationClass::Application,
             execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates and validates one operator-only compiler-bounded reimport plan.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_reimport_collection(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: CollectionExpansionPlanV1,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            Vec::new(),
+            outcomes,
+            success_outcome,
+            None,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            Some(collection_expansion),
+            CommandInvocationClass::Reimport,
+            ExecutionClass::IdempotentMutation,
             contract_schema,
         )
     }
@@ -1352,6 +1407,7 @@ impl CommandPlan {
         mut commit_checks: Vec<CommitCheckPlan>,
         instructions: Vec<Instruction>,
         collection_expansion: Option<CollectionExpansionPlanV1>,
+        invocation_class: CommandInvocationClass,
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
@@ -1552,6 +1608,7 @@ impl CommandPlan {
             &instructions,
         )?;
         validate_idempotency(
+            invocation_class,
             execution_class,
             idempotency_input,
             &input,
@@ -1562,6 +1619,14 @@ impl CommandPlan {
             &commit_checks,
             &instructions,
         )?;
+        if invocation_class == CommandInvocationClass::Reimport {
+            validate_reimport_shape(
+                &service_values,
+                &bindings,
+                &instructions,
+                collection_expansion.as_ref(),
+            )?;
+        }
         if execution_class == ExecutionClass::IdempotentMutation
             && !bindings.iter().any(|binding| {
                 matches!(
@@ -1636,6 +1701,7 @@ impl CommandPlan {
             commit_checks,
             instructions,
             collection_expansion,
+            invocation_class,
             execution_class,
             retry_policy: RetryPolicy::BoundedFullReevaluation,
             required_capability: CapabilityRequirement::InvokeCommand {
@@ -1707,6 +1773,11 @@ impl CommandPlan {
         self.bindings
             .iter()
             .any(|binding| binding.restriction_failure.is_some())
+    }
+    /// Whether this command requires the distinct reimport invocation class in IR v10.
+    #[must_use]
+    pub const fn requires_ir_v10(&self) -> bool {
+        matches!(self.invocation_class, CommandInvocationClass::Reimport)
     }
     pub(crate) fn delete_restriction_failures_are_complete(&self) -> bool {
         self.delete_checks.iter().all(|check| {
@@ -1783,6 +1854,16 @@ impl CommandPlan {
     #[must_use]
     pub const fn collection_expansion(&self) -> Option<&CollectionExpansionPlanV1> {
         self.collection_expansion.as_ref()
+    }
+    /// Authority surface from which this plan may be invoked.
+    #[must_use]
+    pub const fn invocation_class(&self) -> CommandInvocationClass {
+        self.invocation_class
+    }
+    /// True only for operator-owned exact reimport campaign commands.
+    #[must_use]
+    pub const fn is_reimport(&self) -> bool {
+        matches!(self.invocation_class, CommandInvocationClass::Reimport)
     }
     /// Read-only or admitted mutation classification.
     #[must_use]
@@ -4580,6 +4661,7 @@ fn validate_command_expression_reachability(
 
 #[allow(clippy::too_many_arguments)]
 fn validate_idempotency(
+    invocation_class: CommandInvocationClass,
     execution_class: ExecutionClass,
     idempotency_input: Option<FieldId>,
     input: &CommandInputSchema,
@@ -4590,6 +4672,17 @@ fn validate_idempotency(
     checks: &[CommitCheckPlan],
     instructions: &[Instruction],
 ) -> Result<(), IrValidationError> {
+    if invocation_class == CommandInvocationClass::Reimport {
+        return if execution_class == ExecutionClass::IdempotentMutation
+            && idempotency_input.is_none()
+        {
+            Ok(())
+        } else {
+            Err(IrValidationError::InvalidDependency {
+                reason: "reimport command idempotency is server-derived",
+            })
+        };
+    }
     if execution_class == ExecutionClass::ReadOnly {
         return if idempotency_input.is_none() {
             Ok(())
@@ -4703,6 +4796,38 @@ fn validate_idempotency(
     if referenced.contains(&field_id) {
         return Err(IrValidationError::InvalidDependency {
             reason: "secret idempotency input leaks into executable semantics",
+        });
+    }
+    Ok(())
+}
+
+fn validate_reimport_shape(
+    service_values: &[ServiceValueSchema],
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    collection_expansion: Option<&CollectionExpansionPlanV1>,
+) -> Result<(), IrValidationError> {
+    if !service_values.is_empty()
+        || collection_expansion.is_none()
+        || bindings.is_empty()
+        || bindings
+            .iter()
+            .any(|binding| !matches!(binding.mode(), BindingMode::Read | BindingMode::Create))
+        || bindings
+            .iter()
+            .filter(|binding| binding.mode() == BindingMode::Create)
+            .count()
+            != 1
+        || bindings.last().map(BindingPlan::mode) != Some(BindingMode::Create)
+        || instructions.iter().any(|instruction| {
+            !matches!(
+                instruction,
+                Instruction::SetField { .. } | Instruction::Return(_)
+            )
+        })
+    {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "reimport command must be one compiler-owned create-only record expansion",
         });
     }
     Ok(())

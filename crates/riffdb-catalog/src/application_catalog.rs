@@ -490,7 +490,11 @@ impl ApplicationCatalogCandidatesV1 {
             contract_authority,
         );
 
-        for command in contract.commands() {
+        for command in contract
+            .commands()
+            .iter()
+            .filter(|command| !command.is_reimport())
+        {
             let authority = ApplicationCatalogAuthorityV1::Command {
                 lineage: contract.lineage().clone(),
                 command_id: command.command_id(),

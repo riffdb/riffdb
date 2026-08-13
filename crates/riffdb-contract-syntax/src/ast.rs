@@ -483,6 +483,8 @@ pub struct CommandDeclaration {
     pub bindings: Vec<Spanned<Binding>>,
     /// The one compiler-owned collection expansion, present only for bulk commands.
     pub bulk_iteration: Option<Spanned<BulkIteration>>,
+    /// The compiler-owned exact-record construction, present only for reimport commands.
+    pub reconstitution: Option<Spanned<ReconstitutionClause>>,
     /// Business preconditions in source order.
     pub requirements: Vec<Spanned<Requirement>>,
     /// Interleaved state and event effects in source order.
@@ -498,6 +500,19 @@ pub enum CommandKind {
     Ordinary,
     /// One atomic compiler-bounded collection expansion.
     Bulk,
+    /// Operator-only exact-record reconstitution; never an application command surface.
+    Reimport,
+}
+
+/// The sole source-level operation accepted inside a reimport command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconstitutionClause {
+    /// Exact entity record type being reconstructed.
+    pub entity: Spanned<String>,
+    /// Command input containing one record or one bounded list of records.
+    pub source: Spanned<String>,
+    /// Typed outcome selected when any target primary key already exists.
+    pub failure: Spanned<OutcomeExpression>,
 }
 
 /// The sole source-level collection expansion accepted by a bulk command.
