@@ -1,14 +1,14 @@
 # ADR-0119: Compiler-Owned Workflow Reconstitution for Portable Reimport
 
-- **Status:** Proposed
-- **Direction approved:** Not yet
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-13
+- **Exact text accepted:** Yes — 2026-08-13, exact amended text in `e22cfa48`
 - **Decision deadline:** Before WP-599 changes workflow grammar/IR, capability
   formats, installation ordering, or the public reimport protocol
 - **Requires:** ADR-0003, ADR-0005, ADR-0055, ADR-0072, ADR-0080,
   ADR-0106, ADR-0107, ADR-0109, ADR-0110, ADR-0111, ADR-0112,
   ADR-0115, and ADR-0118
-- **Amends if accepted:** ADR-0109's creation boundary and ADR-0112's
+- **Amends:** ADR-0109's creation boundary and ADR-0112's
   compiler-owned reimport mechanism
 - **Defines or blocks:** WP-575, WP-578, WP-579, and WP-599
 
