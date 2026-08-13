@@ -54,6 +54,24 @@ The response contains the operation identity, exact snapshot binding, and an
 opaque base64 cursor. The cursor is bound to the operation, snapshot,
 principal, scope, and export format. Do not decode or edit it.
 
+For a future reimport, start with portability intent and bind the exact
+adapter-owned manifest while the source database is still available:
+
+```bash
+riffdb --database ticketdesk export start \
+  --lineage TicketDesk \
+  --scope whole \
+  --entities \
+  --portability-manifest riffdb/portability-manifest-v2.json \
+  --lease-seconds 3600 \
+  --output json
+```
+
+The manifest is strictly decoded, checked against the pinned contract bundle,
+and retained by hash as part of the operation's immutable retry identity. An
+existing general export cannot be replayed with this option or upgraded into
+portability authority later.
+
 ## Write bounded JSONL pages
 
 Pass the returned cursor to `export page` and select a new local output file:
@@ -101,6 +119,15 @@ continued. RiffDB returns a typed snapshot-unavailable/restart outcome rather
 than silently selecting a newer snapshot. Start a new operation and retain the
 older incomplete receipt.
 
+A portability-intent export additionally inspects every selected workflow
+row at the same snapshot. Lease owner and expiry must both be null. Each
+workflow's checked and quiescent row counts are sealed into the v2 export
+manifest; the v2 receipt binds the exact portability-manifest hash. An active
+lease or a partially cleared owner/expiry pair closes the export as
+`workflow_not_quiescent` before a completed portability receipt exists. Release
+or expire the work at the source and start a new export. A general export does
+not perform or claim this proof.
+
 ## Reimport boundary
 
 JSONL output is not accepted by a generic insert or transaction API. An
@@ -130,9 +157,11 @@ observation digest agrees with the portability manifest. The receipt records
 the new database identity and deliberately does not claim preservation of
 physical commit sequences.
 
-Frozen v1 manifests and receipts remain readable for compatibility inspection,
+Frozen v1 portability manifests and receipts remain readable for compatibility inspection,
 but a v1 application-command mapping cannot be compiled as v2 reimport
 authority. OpenFGA, MLflow, Payload, and Woodpecker compiler fixtures now prove
-the closed mapping boundary, including exact workflow records. The complete
-public start/page/status/cancel campaign remains under implementation; these
-fixtures do not imply that raw JSONL can be submitted to a ready database.
+the closed mapping boundary, including exact workflow records. Portability-
+intent export and its source-side quiescence proof are available through the
+public start/page/status/cancel export campaign. The destination reimport
+campaign remains under implementation; these fixtures do not imply that raw
+JSONL can be submitted to a ready database.

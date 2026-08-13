@@ -3749,9 +3749,21 @@ pub fn start_application_export_request_from_proto(
     let operation_id = application_export_operation_id_from_bytes(&request.operation_id)?;
     let selection =
         application_export_selection_from_proto(request.selection.ok_or_else(invalid_request)?)?;
-    let request =
+    let request = if request.canonical_portability_manifest_json.is_empty() {
         StartApplicationExportRequest::new(operation_id, selection, request.lease_seconds)
-            .map_err(|_| invalid_request())?;
+    } else {
+        let manifest = riffdb_application::ApplicationPortabilityManifest::decode_canonical(
+            &request.canonical_portability_manifest_json,
+        )
+        .map_err(|_| invalid_request())?;
+        StartApplicationExportRequest::new_portability(
+            operation_id,
+            selection,
+            manifest,
+            request.lease_seconds,
+        )
+    }
+    .map_err(|_| invalid_request())?;
     Ok((request_id, request))
 }
 
@@ -4305,6 +4317,9 @@ fn application_export_operation_to_proto(
             v1::ApplicationExportFailure::LimitExceeded
         }
         Some(ApplicationExportFailureV1::Internal) => v1::ApplicationExportFailure::Internal,
+        Some(ApplicationExportFailureV1::WorkflowNotQuiescent) => {
+            v1::ApplicationExportFailure::WorkflowNotQuiescent
+        }
     };
     let lease_expires_at = operation.lease_expires_at();
     v1::ApplicationExportOperation {

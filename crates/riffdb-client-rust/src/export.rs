@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use riffdb_application::ApplicationPortabilityManifest;
 use riffdb_proto::v1;
 use riffdb_types::{
     ApplicationExportOperationId, ApplicationExportSelectionV1, CapabilityApplicationExportScopeV1,
@@ -13,6 +14,7 @@ use riffdb_types::{
 pub struct StartApplicationExport {
     operation_id: ApplicationExportOperationId,
     selection: ApplicationExportSelectionV1,
+    portability_manifest: Option<ApplicationPortabilityManifest>,
     lease_seconds: u32,
 }
 
@@ -27,6 +29,23 @@ impl StartApplicationExport {
         Self {
             operation_id,
             selection,
+            portability_manifest: None,
+            lease_seconds,
+        }
+    }
+
+    /// Retains one exact portability manifest as part of the retry identity.
+    #[must_use]
+    pub fn new_portability(
+        operation_id: ApplicationExportOperationId,
+        selection: ApplicationExportSelectionV1,
+        portability_manifest: ApplicationPortabilityManifest,
+        lease_seconds: u32,
+    ) -> Self {
+        Self {
+            operation_id,
+            selection,
+            portability_manifest: Some(portability_manifest),
             lease_seconds,
         }
     }
@@ -47,6 +66,12 @@ impl StartApplicationExport {
     #[must_use]
     pub const fn lease_seconds(&self) -> u32 {
         self.lease_seconds
+    }
+
+    /// Exact portability manifest, absent for an ordinary export.
+    #[must_use]
+    pub const fn portability_manifest(&self) -> Option<&ApplicationPortabilityManifest> {
+        self.portability_manifest.as_ref()
     }
 
     pub(crate) fn request(&self, request_id: RequestId) -> v1::StartApplicationExportRequest {
@@ -70,6 +95,10 @@ impl StartApplicationExport {
                 public_audit: self.selection.public_audit(),
             }),
             lease_seconds: self.lease_seconds,
+            canonical_portability_manifest_json: self
+                .portability_manifest
+                .as_ref()
+                .map_or_else(Vec::new, |manifest| manifest.canonical_bytes().to_vec()),
         }
     }
 }
@@ -80,6 +109,13 @@ impl fmt::Debug for StartApplicationExport {
             .debug_struct("StartApplicationExport")
             .field("operation_id", &self.operation_id)
             .field("selection", &self.selection)
+            .field(
+                "portability_manifest",
+                &self
+                    .portability_manifest
+                    .as_ref()
+                    .map(|value| value.identity()),
+            )
             .field("lease_seconds", &self.lease_seconds)
             .finish()
     }
@@ -119,5 +155,39 @@ mod tests {
         assert_eq!(first.operation_id, second.operation_id);
         assert_eq!(first.selection, second.selection);
         assert_eq!(first.lease_seconds, second.lease_seconds);
+        assert!(first.canonical_portability_manifest_json.is_empty());
+    }
+
+    #[test]
+    fn portability_manifest_bytes_are_part_of_every_retry_submission() {
+        let manifest = ApplicationPortabilityManifest::decode_canonical(include_bytes!(
+            "../../../fixtures/export/openfga/portability-manifest-v2.json"
+        ))
+        .expect("manifest");
+        let selection = ApplicationExportSelectionV1::new(
+            manifest.input().contract_lineage.clone(),
+            CapabilityApplicationExportScopeV1::WholeApplication,
+            true,
+            false,
+            false,
+            false,
+        )
+        .expect("selection");
+        let start = StartApplicationExport::new_portability(
+            ApplicationExportOperationId::from_bytes(uuid(1)).expect("operation"),
+            selection,
+            manifest.clone(),
+            900,
+        );
+        let first = start.request(RequestId::from_bytes(uuid(2)).expect("request"));
+        let second = start.request(RequestId::from_bytes(uuid(3)).expect("request"));
+        assert_eq!(
+            first.canonical_portability_manifest_json,
+            manifest.canonical_bytes()
+        );
+        assert_eq!(
+            first.canonical_portability_manifest_json,
+            second.canonical_portability_manifest_json
+        );
     }
 }

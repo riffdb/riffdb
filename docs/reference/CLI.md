@@ -1950,6 +1950,9 @@ Options:
       --operation-id <UUID_V7>
 
 
+      --portability-manifest <PORTABILITY_MANIFEST_JSON>
+          Starts a portability-intent export bound to this exact canonical manifest
+
   -h, --help
           Print help (see a summary with '-h')
 ```

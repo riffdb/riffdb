@@ -729,6 +729,7 @@ enum ApplicationExportFailure {
   APPLICATION_EXPORT_FAILURE_CANCELLED = 5;
   APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED = 6;
   APPLICATION_EXPORT_FAILURE_INTERNAL = 7;
+  APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT = 8;
 }
 
 message ApplicationExportOperation {
@@ -759,6 +760,9 @@ message StartApplicationExportRequest {
   bytes operation_id = 2;
   ApplicationExportSelection selection = 3;
   uint32 lease_seconds = 4;
+  // Exact canonical ApplicationPortabilityManifest bytes. Empty means a
+  // general export and can never be upgraded into portability authority.
+  bytes canonical_portability_manifest_json = 5;
 }
 
 message StartApplicationExportResponse {

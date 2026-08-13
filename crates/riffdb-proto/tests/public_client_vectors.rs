@@ -403,6 +403,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "APPLICATION_EXPORT_FAILURE_INTERNAL",
         ),
         (
+            "riffdb.v1.ApplicationExportFailure",
+            8,
+            "APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT",
+        ),
+        (
             "riffdb.v1.ApplicationExportStartDisposition",
             0,
             "APPLICATION_EXPORT_START_DISPOSITION_UNSPECIFIED",
@@ -588,6 +593,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "APPLICATION_INSTALLATION_STAGE_RECEIPT",
         ),
         (
+            "riffdb.v1.ApplicationInstallationStage",
+            11,
+            "APPLICATION_INSTALLATION_STAGE_REIMPORT",
+        ),
+        (
             "riffdb.v1.ApplicationInstallationPhase",
             0,
             "APPLICATION_INSTALLATION_PHASE_UNSPECIFIED",
@@ -658,6 +668,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE",
         ),
         (
+            "riffdb.v1.ApplicationInstallationFailureCode",
+            10,
+            "APPLICATION_INSTALLATION_FAILURE_CODE_REIMPORT_PARTIAL",
+        ),
+        (
             "riffdb.v1.ApplicationInstallationNextAction",
             0,
             "APPLICATION_INSTALLATION_NEXT_ACTION_UNSPECIFIED",
@@ -716,6 +731,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "riffdb.v1.ApplicationInstallationNextAction",
             11,
             "APPLICATION_INSTALLATION_NEXT_ACTION_NONE",
+        ),
+        (
+            "riffdb.v1.ApplicationInstallationNextAction",
+            12,
+            "APPLICATION_INSTALLATION_NEXT_ACTION_REIMPORT_APPLICATION",
         ),
         (
             "riffdb.v1.ContextualQueryCardinality",

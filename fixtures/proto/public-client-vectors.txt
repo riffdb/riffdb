@@ -153,6 +153,7 @@ enum-value riffdb.v1.ApplicationExportFailure 4 APPLICATION_EXPORT_FAILURE_LEASE
 enum-value riffdb.v1.ApplicationExportFailure 5 APPLICATION_EXPORT_FAILURE_CANCELLED
 enum-value riffdb.v1.ApplicationExportFailure 6 APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED
 enum-value riffdb.v1.ApplicationExportFailure 7 APPLICATION_EXPORT_FAILURE_INTERNAL
+enum-value riffdb.v1.ApplicationExportFailure 8 APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT
 enum-value riffdb.v1.ApplicationExportPhase 0 APPLICATION_EXPORT_PHASE_UNSPECIFIED
 enum-value riffdb.v1.ApplicationExportPhase 1 APPLICATION_EXPORT_PHASE_ACCEPTED
 enum-value riffdb.v1.ApplicationExportPhase 2 APPLICATION_EXPORT_PHASE_EXPORTING

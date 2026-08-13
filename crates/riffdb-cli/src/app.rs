@@ -10,9 +10,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_application::{
-    AdapterConformanceManifest, ApplicationInstallationPlan, InstallationArtifact,
-    InstallationArtifactKind, InstallationDriver, InstallationSeed, InstallationSymbol,
-    InstalledSeedEvidence,
+    AdapterConformanceManifest, ApplicationInstallationPlan, ApplicationPortabilityManifest,
+    InstallationArtifact, InstallationArtifactKind, InstallationDriver, InstallationSeed,
+    InstallationSymbol, InstalledSeedEvidence, MAX_APPLICATION_PORTABILITY_DOCUMENT_BYTES,
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationExportOperationId,
@@ -4741,6 +4741,7 @@ async fn export_command(
             public_audit,
             lease_seconds,
             operation_id,
+            portability_manifest,
         } => {
             let operation_id = match operation_id {
                 Some(value) => match parse_application_export_operation_id(&value) {
@@ -4778,7 +4779,28 @@ async fn export_command(
                 Err(_) => return invalid_input(identity),
                 Ok(_) => return invalid_input(identity),
             };
-            let start = StartApplicationExport::new(operation_id, selection, lease_seconds);
+            let start = match portability_manifest {
+                Some(path) => {
+                    let bytes = match read_file(
+                        Path::new(&path),
+                        MAX_APPLICATION_PORTABILITY_DOCUMENT_BYTES,
+                    ) {
+                        Ok(bytes) => bytes,
+                        Err(_) => return invalid_input(identity),
+                    };
+                    let manifest = match ApplicationPortabilityManifest::decode_canonical(&bytes) {
+                        Ok(manifest) => manifest,
+                        Err(_) => return invalid_input(identity),
+                    };
+                    StartApplicationExport::new_portability(
+                        operation_id,
+                        selection,
+                        manifest,
+                        lease_seconds,
+                    )
+                }
+                None => StartApplicationExport::new(operation_id, selection, lease_seconds),
+            };
             match client
                 .start_application_export_with_retry(&start, attempts, &metadata)
                 .await
@@ -5051,6 +5073,7 @@ fn export_failure_name(value: i32) -> Option<&'static str> {
         v1::ApplicationExportFailure::Cancelled => Some("cancelled"),
         v1::ApplicationExportFailure::LimitExceeded => Some("limit_exceeded"),
         v1::ApplicationExportFailure::Internal => Some("internal"),
+        v1::ApplicationExportFailure::WorkflowNotQuiescent => Some("workflow_not_quiescent"),
         v1::ApplicationExportFailure::Unspecified => None,
     }
 }
