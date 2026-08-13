@@ -1887,6 +1887,7 @@ name = "riffdb-driver-host"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "riffdb-application",
  "riffdb-client-rust",
  "riffdb-config",
  "riffdb-errors",
