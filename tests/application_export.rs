@@ -12,17 +12,19 @@ use riffdb_application::{
 use riffdb_contract_compiler::{CompilerDiagnosticCode, validate_contract_source};
 use riffdb_contract_ir::ContractBundle;
 
-const CURRENTLY_PORTABLE_DOMAINS: &[(&str, &str)] = &[
+const PORTABLE_DOMAINS: &[(&str, &str)] = &[
     ("openfga", "fixtures/adapters/operational-conformance"),
+    ("mlflow", "fixtures/adapters/mlflow"),
+    ("woodpecker", "fixtures/adapters/woodpecker"),
     ("payload", "fixtures/adapters/operational-conformance"),
 ];
 
 #[test]
 fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
-    for (domain, application_root) in CURRENTLY_PORTABLE_DOMAINS {
+    for (domain, application_root) in PORTABLE_DOMAINS {
         let export_root = repository_root().join("fixtures/export").join(domain);
         let manifest = ApplicationPortabilityManifest::decode_canonical(
-            &fs::read(export_root.join("portability-manifest-v1.json"))
+            &fs::read(export_root.join("portability-manifest-v2.json"))
                 .expect("portability manifest"),
         )
         .expect("canonical portability manifest");
@@ -52,14 +54,12 @@ fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
         manifest
             .validate_adapter_conformance(&adapter)
             .expect("mapping is present in adapter-owned public role");
-        assert!(
-            manifest.input().mappings.iter().all(|mapping| matches!(
-                mapping.strategy(),
-                PortableReimportStrategy::Command { .. }
-            ))
-        );
+        assert!(manifest.input().mappings.iter().all(|mapping| matches!(
+            mapping.strategy(),
+            PortableReimportStrategy::ReimportCommand { .. }
+        )));
         let receipt = ApplicationReimportReceipt::decode_canonical(
-            &fs::read(export_root.join("reimport-receipt-v1.json")).expect("reimport receipt"),
+            &fs::read(export_root.join("reimport-receipt-v2.json")).expect("reimport receipt"),
             &manifest,
         )
         .expect("terminal receipt reconciles exact observations");
@@ -68,7 +68,7 @@ fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
             manifest.identity()
         );
 
-        let source = fs::read_to_string(export_root.join("portability-manifest-v1.json"))
+        let source = fs::read_to_string(export_root.join("portability-manifest-v2.json"))
             .expect("manifest text");
         for forbidden in [
             "entity_type_id",

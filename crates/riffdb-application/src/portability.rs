@@ -18,8 +18,13 @@ use crate::{AdapterConformanceManifest, InstallationSymbol, RoleOperationKind};
 /// Canonical adapter-owned reimport mapping schema.
 pub const APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1: &str =
     "riffdb.application-portability-manifest/v1";
+/// Canonical adapter-owned reimport mapping schema with compiler-owned commands.
+pub const APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2: &str =
+    "riffdb.application-portability-manifest/v2";
 /// Canonical terminal reconciliation receipt schema.
 pub const APPLICATION_REIMPORT_RECEIPT_SCHEMA_V1: &str = "riffdb.application-reimport-receipt/v1";
+/// Canonical terminal reconciliation receipt for a compiler-owned v2 mapping.
+pub const APPLICATION_REIMPORT_RECEIPT_SCHEMA_V2: &str = "riffdb.application-reimport-receipt/v2";
 /// Maximum canonical bytes for either portability document.
 pub const MAX_APPLICATION_PORTABILITY_DOCUMENT_BYTES: usize = 1_048_576;
 /// Maximum portable record mappings.
@@ -155,15 +160,17 @@ impl PortableFieldBinding {
 /// Closed reimport implementation. There is no callback, method path, or transaction escape.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PortableReimportStrategy {
-    /// Invoke one declared idempotent compiled command for each record.
-    Command {
-        /// Symbolic compiled command name.
+    /// Invoke one operator-only, compiler-owned reimport command.
+    ReimportCommand {
+        /// Symbolic compiled reimport-command name.
         command: InstallationSymbol,
-        /// Declared command input receiving a stable record-derived idempotency identity.
+    },
+    /// Frozen v1 mapping retained only so old manifests remain inspectable.
+    #[doc(hidden)]
+    LegacyApplicationCommand {
+        command: InstallationSymbol,
         idempotency_input: InstallationSymbol,
-        /// Optional bounded list input receiving complete exported records.
         record_input: Option<InstallationSymbol>,
-        /// Exhaustive symbolic field bindings checked by the application compiler.
         fields: Vec<PortableFieldBinding>,
     },
     /// Delegate this class to one exact accepted application migration.
@@ -174,8 +181,13 @@ pub enum PortableReimportStrategy {
 }
 
 impl PortableReimportStrategy {
-    /// Constructs a bounded command mapping.
-    pub fn command(
+    /// Constructs an exact compiler-owned reimport-command mapping.
+    #[must_use]
+    pub const fn reimport_command(command: InstallationSymbol) -> Self {
+        Self::ReimportCommand { command }
+    }
+
+    fn legacy_command(
         command: InstallationSymbol,
         idempotency_input: InstallationSymbol,
         mut fields: Vec<PortableFieldBinding>,
@@ -204,7 +216,7 @@ impl PortableReimportStrategy {
                 ApplicationPortabilityErrorKind::Duplicate,
             ));
         }
-        Ok(Self::Command {
+        Ok(Self::LegacyApplicationCommand {
             command,
             idempotency_input,
             record_input: None,
@@ -212,14 +224,12 @@ impl PortableReimportStrategy {
         })
     }
 
-    /// Constructs a bounded collection-command mapping for complete records.
-    #[must_use]
-    pub const fn bounded_collection_command(
+    const fn legacy_bounded_collection_command(
         command: InstallationSymbol,
         idempotency_input: InstallationSymbol,
         record_input: InstallationSymbol,
     ) -> Self {
-        Self::Command {
+        Self::LegacyApplicationCommand {
             command,
             idempotency_input,
             record_input: Some(record_input),
@@ -437,39 +447,67 @@ pub struct ApplicationPortabilityManifestInput {
 /// Immutable content-addressed adapter portability manifest.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationPortabilityManifest {
+    schema: ApplicationPortabilityManifestSchema,
     input: ApplicationPortabilityManifestInput,
     identity: ApplicationPortabilityManifestHash,
     canonical_bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApplicationPortabilityManifestSchema {
+    V1,
+    V2,
+}
+
+impl ApplicationPortabilityManifestSchema {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::V1 => APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1,
+            Self::V2 => APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2,
+        }
+    }
+}
+
 impl ApplicationPortabilityManifest {
     /// Compiles one bounded mapping manifest without executing application code.
     pub fn compile(
-        mut input: ApplicationPortabilityManifestInput,
+        input: ApplicationPortabilityManifestInput,
     ) -> Result<Self, ApplicationPortabilityError> {
-        validate_manifest(&mut input)?;
-        let dto = PortabilityManifestDto::from_input(&input);
+        Self::compile_version(input, ApplicationPortabilityManifestSchema::V2)
+    }
+
+    fn compile_version(
+        mut input: ApplicationPortabilityManifestInput,
+        schema: ApplicationPortabilityManifestSchema,
+    ) -> Result<Self, ApplicationPortabilityError> {
+        validate_manifest(&mut input, schema)?;
+        let dto = PortabilityManifestDto::from_input(&input, schema);
         let canonical_bytes = canonical_bytes(&dto)?;
         let identity = hash_application_portability_manifest(&canonical_bytes);
         Ok(Self {
+            schema,
             input,
             identity,
             canonical_bytes,
         })
     }
 
-    /// Strictly decodes one canonical v1 manifest.
+    /// Strictly decodes one canonical manifest, retaining frozen v1 readability.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, ApplicationPortabilityError> {
         checked_size(bytes)?;
         let dto: PortabilityManifestDto = serde_json::from_slice(bytes).map_err(|_| {
             ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidEncoding)
         })?;
-        if dto.schema != APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1 {
-            return Err(ApplicationPortabilityError::new(
-                ApplicationPortabilityErrorKind::UnsupportedVersion,
-            ));
-        }
-        let compiled = Self::compile(dto.into_input()?)?;
+        let schema = match dto.schema.as_str() {
+            APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1 => ApplicationPortabilityManifestSchema::V1,
+            APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2 => ApplicationPortabilityManifestSchema::V2,
+            _ => {
+                return Err(ApplicationPortabilityError::new(
+                    ApplicationPortabilityErrorKind::UnsupportedVersion,
+                ));
+            }
+        };
+        let compiled = Self::compile_version(dto.into_input(schema)?, schema)?;
         if compiled.canonical_bytes != bytes {
             return Err(ApplicationPortabilityError::new(
                 ApplicationPortabilityErrorKind::NonCanonical,
@@ -533,7 +571,43 @@ impl ApplicationPortabilityManifest {
                 ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidShape)
             })?;
             match &mapping.strategy {
-                PortableReimportStrategy::Command {
+                PortableReimportStrategy::ReimportCommand { command } => {
+                    if mapping.class != PortableRecordClass::Entity {
+                        return Err(ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        ));
+                    }
+                    let command = bundle
+                        .commands()
+                        .iter()
+                        .find(|plan| plan.name() == command.as_str())
+                        .ok_or_else(|| {
+                            ApplicationPortabilityError::new(
+                                ApplicationPortabilityErrorKind::InvalidShape,
+                            )
+                        })?;
+                    let target = command.input().record();
+                    let [target_field] = target.fields() else {
+                        return Err(ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        ));
+                    };
+                    let Some((element, maximum)) = target_field.value_type().list_parts() else {
+                        return Err(ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        ));
+                    };
+                    if !command.is_reimport()
+                        || command.idempotency_input().is_some()
+                        || maximum == 0
+                        || element.record_ref() != Some(source.owner())
+                    {
+                        return Err(ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        ));
+                    }
+                }
+                PortableReimportStrategy::LegacyApplicationCommand {
                     command,
                     idempotency_input,
                     record_input,
@@ -632,7 +706,19 @@ impl ApplicationPortabilityManifest {
         }
         for mapping in &self.input.mappings {
             match &mapping.strategy {
-                PortableReimportStrategy::Command { command, .. } => {
+                PortableReimportStrategy::ReimportCommand { command } => {
+                    if adapter.input().roles.iter().any(|role| {
+                        role.operations().iter().any(|operation| {
+                            operation.kind() == RoleOperationKind::Command
+                                && operation.name().as_str() == command.as_str()
+                        })
+                    }) {
+                        return Err(ApplicationPortabilityError::new(
+                            ApplicationPortabilityErrorKind::InvalidShape,
+                        ));
+                    }
+                }
+                PortableReimportStrategy::LegacyApplicationCommand { command, .. } => {
                     if !adapter.input().roles.iter().any(|role| {
                         role.operations().iter().any(|operation| {
                             operation.kind() == RoleOperationKind::Command
@@ -754,9 +840,32 @@ pub struct ApplicationReimportReceiptInput {
 /// Canonical success receipt produced only after exact reconciliation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationReimportReceipt {
+    schema: ApplicationReimportReceiptSchema,
     input: ApplicationReimportReceiptInput,
     identity: ApplicationReimportReceiptHash,
     canonical_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApplicationReimportReceiptSchema {
+    V1,
+    V2,
+}
+
+impl ApplicationReimportReceiptSchema {
+    const fn for_manifest(manifest: &ApplicationPortabilityManifest) -> Self {
+        match manifest.schema {
+            ApplicationPortabilityManifestSchema::V1 => Self::V1,
+            ApplicationPortabilityManifestSchema::V2 => Self::V2,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::V1 => APPLICATION_REIMPORT_RECEIPT_SCHEMA_V1,
+            Self::V2 => APPLICATION_REIMPORT_RECEIPT_SCHEMA_V2,
+        }
+    }
 }
 
 impl ApplicationReimportReceipt {
@@ -796,9 +905,11 @@ impl ApplicationReimportReceipt {
             mappings,
             observations,
         };
-        let canonical_bytes = canonical_bytes(&ReimportReceiptDto::from_input(&input))?;
+        let schema = ApplicationReimportReceiptSchema::for_manifest(manifest);
+        let canonical_bytes = canonical_bytes(&ReimportReceiptDto::from_input(&input, schema))?;
         let identity = hash_application_reimport_receipt(&canonical_bytes);
         Ok(Self {
+            schema,
             input,
             identity,
             canonical_bytes,
@@ -814,14 +925,23 @@ impl ApplicationReimportReceipt {
         let dto: ReimportReceiptDto = serde_json::from_slice(bytes).map_err(|_| {
             ApplicationPortabilityError::new(ApplicationPortabilityErrorKind::InvalidEncoding)
         })?;
-        if dto.schema != APPLICATION_REIMPORT_RECEIPT_SCHEMA_V1 {
+        let schema = match dto.schema.as_str() {
+            APPLICATION_REIMPORT_RECEIPT_SCHEMA_V1 => ApplicationReimportReceiptSchema::V1,
+            APPLICATION_REIMPORT_RECEIPT_SCHEMA_V2 => ApplicationReimportReceiptSchema::V2,
+            _ => {
+                return Err(ApplicationPortabilityError::new(
+                    ApplicationPortabilityErrorKind::UnsupportedVersion,
+                ));
+            }
+        };
+        if schema != ApplicationReimportReceiptSchema::for_manifest(manifest) {
             return Err(ApplicationPortabilityError::new(
                 ApplicationPortabilityErrorKind::UnsupportedVersion,
             ));
         }
         let (export, database, mappings, observations) = dto.into_parts(manifest.identity)?;
         let receipt = Self::reconcile(manifest, export, database, mappings, observations)?;
-        if receipt.canonical_bytes != bytes {
+        if receipt.schema != schema || receipt.canonical_bytes != bytes {
             return Err(ApplicationPortabilityError::new(
                 ApplicationPortabilityErrorKind::NonCanonical,
             ));
@@ -863,6 +983,7 @@ impl fmt::Debug for ApplicationReimportReceipt {
 
 fn validate_manifest(
     input: &mut ApplicationPortabilityManifestInput,
+    schema: ApplicationPortabilityManifestSchema,
 ) -> Result<(), ApplicationPortabilityError> {
     if input.mappings.is_empty()
         || input.mappings.len() > MAX_APPLICATION_PORTABLE_MAPPINGS
@@ -898,6 +1019,20 @@ fn validate_manifest(
                 && omission.symbol.as_ref() == Some(&mapping.symbol)
         })
     }) {
+        return Err(ApplicationPortabilityError::new(
+            ApplicationPortabilityErrorKind::InvalidShape,
+        ));
+    }
+    let wrong_strategy_version = input.mappings.iter().any(|mapping| match mapping.strategy {
+        PortableReimportStrategy::ReimportCommand { .. } => {
+            schema != ApplicationPortabilityManifestSchema::V2
+        }
+        PortableReimportStrategy::LegacyApplicationCommand { .. } => {
+            schema != ApplicationPortabilityManifestSchema::V1
+        }
+        PortableReimportStrategy::Migration { .. } => false,
+    });
+    if wrong_strategy_version {
         return Err(ApplicationPortabilityError::new(
             ApplicationPortabilityErrorKind::InvalidShape,
         ));
@@ -988,9 +1123,12 @@ struct ObservationDto {
 }
 
 impl PortabilityManifestDto {
-    fn from_input(input: &ApplicationPortabilityManifestInput) -> Self {
+    fn from_input(
+        input: &ApplicationPortabilityManifestInput,
+        schema: ApplicationPortabilityManifestSchema,
+    ) -> Self {
         Self {
-            schema: APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V1.to_owned(),
+            schema: schema.name().to_owned(),
             adapter_manifest_hash: hex(input.adapter_manifest_hash.as_bytes()),
             contract_lineage: input.contract_lineage.as_str().to_owned(),
             contract_version: input.contract_version.get(),
@@ -1027,6 +1165,7 @@ impl PortabilityManifestDto {
 
     fn into_input(
         self,
+        schema: ApplicationPortabilityManifestSchema,
     ) -> Result<ApplicationPortabilityManifestInput, ApplicationPortabilityError> {
         Ok(ApplicationPortabilityManifestInput {
             adapter_manifest_hash: AdapterConformanceManifestHash::from_bytes(parse_hash(
@@ -1040,7 +1179,7 @@ impl PortabilityManifestDto {
             mappings: self
                 .mappings
                 .into_iter()
-                .map(MappingDto::into_mapping)
+                .map(|mapping| mapping.into_mapping(schema))
                 .collect::<Result<Vec<_>, _>>()?,
             omissions: self
                 .omissions
@@ -1076,7 +1215,15 @@ impl PortabilityManifestDto {
 impl MappingDto {
     fn from_mapping(mapping: &PortableRecordMapping) -> Self {
         let strategy = match &mapping.strategy {
-            PortableReimportStrategy::Command {
+            PortableReimportStrategy::ReimportCommand { command } => StrategyDto {
+                kind: "reimport_command".to_owned(),
+                command: Some(command.as_str().to_owned()),
+                idempotency_input: None,
+                record_input: None,
+                fields: Vec::new(),
+                migration_hash: None,
+            },
+            PortableReimportStrategy::LegacyApplicationCommand {
                 command,
                 idempotency_input,
                 record_input,
@@ -1113,7 +1260,10 @@ impl MappingDto {
         }
     }
 
-    fn into_mapping(self) -> Result<PortableRecordMapping, ApplicationPortabilityError> {
+    fn into_mapping(
+        self,
+        schema: ApplicationPortabilityManifestSchema,
+    ) -> Result<PortableRecordMapping, ApplicationPortabilityError> {
         let class = PortableRecordClass::parse(&self.class).ok_or_else(invalid)?;
         let symbol = InstallationSymbol::new(self.symbol).map_err(|_| invalid())?;
         let StrategyDto {
@@ -1125,8 +1275,23 @@ impl MappingDto {
             migration_hash,
         } = self.strategy;
         let strategy = match kind.as_str() {
+            "reimport_command"
+                if schema == ApplicationPortabilityManifestSchema::V2
+                    && migration_hash.is_none()
+                    && command.is_some()
+                    && idempotency_input.is_none()
+                    && record_input.is_none()
+                    && fields.is_empty() =>
+            {
+                PortableReimportStrategy::reimport_command(
+                    InstallationSymbol::new(command.ok_or_else(invalid)?).map_err(|_| invalid())?,
+                )
+            }
             "command"
-                if migration_hash.is_none() && command.is_some() && idempotency_input.is_some() =>
+                if schema == ApplicationPortabilityManifestSchema::V1
+                    && migration_hash.is_none()
+                    && command.is_some()
+                    && idempotency_input.is_some() =>
             {
                 let command =
                     InstallationSymbol::new(command.ok_or_else(invalid)?).map_err(|_| invalid())?;
@@ -1135,13 +1300,13 @@ impl MappingDto {
                         .map_err(|_| invalid())?;
                 match record_input {
                     Some(record_input) if fields.is_empty() => {
-                        PortableReimportStrategy::bounded_collection_command(
+                        PortableReimportStrategy::legacy_bounded_collection_command(
                             command,
                             idempotency_input,
                             InstallationSymbol::new(record_input).map_err(|_| invalid())?,
                         )
                     }
-                    None => PortableReimportStrategy::command(
+                    None => PortableReimportStrategy::legacy_command(
                         command,
                         idempotency_input,
                         fields
@@ -1207,9 +1372,12 @@ struct ObservationResultDto {
 }
 
 impl ReimportReceiptDto {
-    fn from_input(input: &ApplicationReimportReceiptInput) -> Self {
+    fn from_input(
+        input: &ApplicationReimportReceiptInput,
+        schema: ApplicationReimportReceiptSchema,
+    ) -> Self {
         Self {
-            schema: APPLICATION_REIMPORT_RECEIPT_SCHEMA_V1.to_owned(),
+            schema: schema.name().to_owned(),
             portability_manifest_hash: hex(input.portability_manifest_hash.as_bytes()),
             export_manifest_hash: hex(input.export_manifest_hash.as_bytes()),
             target_database_id: hex(input.target_database_id.as_bytes()),
@@ -1348,15 +1516,7 @@ mod tests {
     }
 
     fn manifest() -> ApplicationPortabilityManifest {
-        let command = PortableReimportStrategy::command(
-            symbol("ImportTicket"),
-            symbol("import_id"),
-            vec![
-                PortableFieldBinding::new(symbol("ticket_id"), symbol("ticket_id")),
-                PortableFieldBinding::new(symbol("title"), symbol("title")),
-            ],
-        )
-        .expect("command mapping");
+        let command = PortableReimportStrategy::reimport_command(symbol("ReconstituteTickets"));
         ApplicationPortabilityManifest::compile(ApplicationPortabilityManifestInput {
             adapter_manifest_hash: AdapterConformanceManifestHash::from_bytes([1; 32]),
             contract_lineage: ContractLineage::new("TicketDesk").expect("lineage"),
@@ -1409,34 +1569,14 @@ mod tests {
     }
 
     #[test]
-    fn command_mapping_reserves_idempotency_for_the_reimport_runner() {
-        assert_eq!(
-            PortableReimportStrategy::command(
-                symbol("ImportTicket"),
-                symbol("request_id"),
-                vec![PortableFieldBinding::new(
-                    symbol("ticket_id"),
-                    symbol("request_id"),
-                )],
-            )
-            .expect_err("exported data cannot select the retry identity")
-            .kind(),
-            ApplicationPortabilityErrorKind::Duplicate
-        );
-        assert_eq!(
-            PortableReimportStrategy::command(
-                symbol("ImportTicket"),
-                symbol("request_id"),
-                vec![
-                    PortableFieldBinding::new(symbol("a"), symbol("one")),
-                    PortableFieldBinding::new(symbol("b"), symbol("two")),
-                    PortableFieldBinding::new(symbol("c"), symbol("one")),
-                ],
-            )
-            .expect_err("nonadjacent duplicate target inputs must be rejected")
-            .kind(),
-            ApplicationPortabilityErrorKind::Duplicate
-        );
+    fn v2_command_mapping_has_no_caller_selected_execution_inputs() {
+        let manifest = manifest();
+        let text = std::str::from_utf8(manifest.canonical_bytes()).expect("UTF-8");
+        assert!(text.contains(APPLICATION_PORTABILITY_MANIFEST_SCHEMA_V2));
+        assert!(text.contains("\"kind\":\"reimport_command\""));
+        assert!(text.contains("\"idempotency_input\":null"));
+        assert!(text.contains("\"record_input\":null"));
+        assert!(text.contains("\"fields\":[]"));
     }
 
     #[test]
@@ -1489,29 +1629,21 @@ mod tests {
     }
 
     #[test]
-    fn bounded_collection_mapping_resolves_against_exact_compiler_bundle() {
+    fn reimport_mapping_resolves_only_against_exact_compiler_owned_command() {
         let bundle = ContractBundle::decode(include_bytes!(
-            "../../../fixtures/adapters/operational-conformance/generated/riffdb.contract.bundle"
+            "../../../fixtures/compiler/reimport/bundle.bin"
         ))
         .expect("contract bundle");
-        let adapter = AdapterConformanceManifest::decode_canonical(include_bytes!(
-            "../../../fixtures/adapters/conformance/openfga/adapter.conformance.json"
-        ))
-        .expect("adapter manifest");
         let manifest =
             ApplicationPortabilityManifest::compile(ApplicationPortabilityManifestInput {
-                adapter_manifest_hash: adapter.identity(),
+                adapter_manifest_hash: AdapterConformanceManifestHash::from_bytes([1; 32]),
                 contract_lineage: bundle.lineage().clone(),
                 contract_version: bundle.contract_version(),
                 contract_bundle_hash: bundle.bundle_hash(),
                 mappings: vec![PortableRecordMapping::new(
                     PortableRecordClass::Entity,
-                    symbol("FgaTuple"),
-                    PortableReimportStrategy::bounded_collection_command(
-                        symbol("WriteTuples"),
-                        symbol("request_id"),
-                        symbol("tuples"),
-                    ),
+                    symbol("Session"),
+                    PortableReimportStrategy::reimport_command(symbol("ReconstituteSessions")),
                 )],
                 omissions: vec![],
                 observations: vec![
@@ -1528,23 +1660,35 @@ mod tests {
         manifest
             .validate_compiled_contract(&bundle)
             .expect("compiled mapping");
-        manifest
-            .validate_adapter_conformance(&adapter)
-            .expect("adapter-owned mapping");
 
         let mut wrong = manifest.input().clone();
         wrong.mappings[0] = PortableRecordMapping::new(
             PortableRecordClass::Entity,
-            symbol("FgaTuple"),
-            PortableReimportStrategy::bounded_collection_command(
-                symbol("WriteTuples"),
-                symbol("request_id"),
-                symbol("metrics"),
-            ),
+            symbol("Session"),
+            PortableReimportStrategy::reimport_command(symbol("MissingCommand")),
         );
         ApplicationPortabilityManifest::compile(wrong)
             .expect("symbolically valid")
             .validate_compiled_contract(&bundle)
             .expect_err("wrong compiled collection input");
+    }
+
+    #[test]
+    fn frozen_v1_manifest_remains_readable_but_cannot_be_compiled_as_v2() {
+        let legacy = ApplicationPortabilityManifest::decode_canonical(include_bytes!(
+            "../../../fixtures/export/openfga/portability-manifest-v1.json"
+        ))
+        .expect("frozen v1 manifest");
+        assert_eq!(legacy.schema, ApplicationPortabilityManifestSchema::V1);
+        assert!(matches!(
+            legacy.input().mappings[0].strategy(),
+            PortableReimportStrategy::LegacyApplicationCommand { .. }
+        ));
+        assert_eq!(
+            ApplicationPortabilityManifest::compile(legacy.input().clone())
+                .expect_err("legacy application command must not enter v2")
+                .kind(),
+            ApplicationPortabilityErrorKind::InvalidShape
+        );
     }
 }

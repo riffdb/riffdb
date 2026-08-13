@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "9dfeb1ae9dad1e30a498de205ce1c82e79544d4ad1efa9ca6c49307919e0c7b2",
+  "application_manifest_hash": "b3920a3c7c970f8e2c615b37e25f20b49098ff1114f0b7ab607fb23970d77028",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
       "description": "Execute the exact CreateDocuments compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -103,7 +103,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
       "description": "Execute the exact CreatePipelines compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -191,7 +191,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -283,7 +283,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "158bd66b550fadcb80c127ffc61ae5f825d99d51d0fbf2795df98b47a6125ab0",
+      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -393,7 +393,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
       "name": "adapter_operational_conformance_list_draft_documents",
       "operation_name": "ListDraftDocuments",
       "result_schema": {
@@ -489,7 +489,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
@@ -582,7 +582,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
@@ -651,7 +651,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
       "name": "adapter_operational_conformance_metric_dashboard",
       "operation_name": "MetricDashboard",
       "result_schema": {
@@ -756,7 +756,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "1be9e3a768d88bfbe785c11e79d5a8f1c2ca3872bb0ee62c4a02d5d7be713e83",
+      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {

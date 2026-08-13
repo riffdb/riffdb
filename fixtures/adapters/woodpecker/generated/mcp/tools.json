@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "86d969dcd94ac941cd9c8d12d95258b01228439532156c1eb581946e1dfde95f",
+  "application_manifest_hash": "6974c1f95db92df818c55281a99a2dfcdc13a7f2d537ff3f9c7aa2e551e231ae",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "65b4bff1a811a06aa85545057a17a0bcd674b1e24f9c87d4b99e083be712b366",
+      "contract_bundle_hash": "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb",
       "description": "Execute the exact ClaimPipeline compiled command from contract WoodpeckerScheduler.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -193,7 +193,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "65b4bff1a811a06aa85545057a17a0bcd674b1e24f9c87d4b99e083be712b366",
+      "contract_bundle_hash": "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb",
       "description": "Execute the exact ReleasePipeline compiled command from contract WoodpeckerScheduler.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -352,7 +352,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "65b4bff1a811a06aa85545057a17a0bcd674b1e24f9c87d4b99e083be712b366",
+      "contract_bundle_hash": "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb",
       "description": "Execute the exact StartPipeline compiled command from contract WoodpeckerScheduler.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -614,7 +614,7 @@
       "reaction_command_id": null,
       "reaction_command_name": null,
       "reaction_name": null,
-      "reactive_module_hash": "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e",
+      "reactive_module_hash": "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": true,
@@ -696,7 +696,7 @@
       "reaction_command_id": null,
       "reaction_command_name": null,
       "reaction_name": null,
-      "reactive_module_hash": "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e",
+      "reactive_module_hash": "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": true,
@@ -778,7 +778,7 @@
       "reaction_command_id": null,
       "reaction_command_name": null,
       "reaction_name": null,
-      "reactive_module_hash": "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e",
+      "reactive_module_hash": "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": true,
@@ -846,7 +846,7 @@
       "reaction_command_id": null,
       "reaction_command_name": null,
       "reaction_name": null,
-      "reactive_module_hash": "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e",
+      "reactive_module_hash": "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": true,
@@ -910,7 +910,7 @@
       "reaction_command_id": null,
       "reaction_command_name": null,
       "reaction_name": null,
-      "reactive_module_hash": "627dcf861ce92d4cf79b6699ebe04a53b84764a23946894e89ee2517e4945b6e",
+      "reactive_module_hash": "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": true,
@@ -946,7 +946,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "7dcfb20e0524a17097c7c5ad9a0d0fc7a0bc4a9a3a247dc7e116809edeaefc6a",
+      "module_hash": "d1744fe62d302f90d3ff03feb86b07f975acc8f82b19c3bb61f8b386bc83995a",
       "name": "woodpecker_scheduler_get_pipeline",
       "operation_name": "GetPipeline",
       "result_schema": {
