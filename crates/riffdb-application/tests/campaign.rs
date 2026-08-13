@@ -3,17 +3,19 @@
 use riffdb_application::{
     ApplicationInstallationCampaign, ApplicationInstallationCampaignState,
     ApplicationInstallationPlan, ApplicationInstallationPlanInput, ApplicationInstallationReceipt,
-    ApplicationPortabilityManifest, ApplicationReimportReceipt, CredentialDestination,
-    InstallationArtifact, InstallationArtifactKind, InstallationCampaignErrorKind,
-    InstallationCampaignPhase, InstallationContract, InstallationDriver, InstallationFailureCode,
-    InstallationFeature, InstallationNextAction, InstallationReimport, InstallationRole,
-    InstallationSeed, InstallationStage, InstallationStageEvidence, InstallationSymbol,
-    InstallationTarget, InstalledCredentialEvidence, InstalledReimportEvidence,
-    InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation, RoleOperationKind,
+    ApplicationPortabilityManifest, ApplicationReimportReceipt, ApplicationReimportSourceV1,
+    CredentialDestination, InstallationArtifact, InstallationArtifactKind,
+    InstallationCampaignErrorKind, InstallationCampaignPhase, InstallationContract,
+    InstallationDriver, InstallationFailureCode, InstallationFeature, InstallationNextAction,
+    InstallationReimport, InstallationRole, InstallationSeed, InstallationStage,
+    InstallationStageEvidence, InstallationSymbol, InstallationTarget, InstalledCredentialEvidence,
+    InstalledReimportEvidence, InstalledRoleEvidence, InstalledSeedEvidence,
+    ReimportPageMappingOutcomeV1, RoleOperation, RoleOperationKind,
 };
 use riffdb_types::{
-    ApplicationExportReceiptHash, ApplicationInstallationCampaignId, ApplicationLockHash,
-    ApplicationManifestHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
+    ApplicationExportPageHash, ApplicationExportReceiptHash, ApplicationInstallationCampaignId,
+    ApplicationLockHash, ApplicationManifestHash, ApplicationReimportAuthorityV1,
+    ApplicationRoleHash, ApplicationSourceHash, CapabilityApplicationReimportScopeV1, CapabilityId,
     ContractBundleHash, ContractLineage, ContractVersion, DatabaseAlias, DatabaseId, Environment,
     GeneratedArtifactHash,
 };
@@ -255,12 +257,69 @@ fn reimport_installation_receipt_names_every_portability_identity() {
     let mut campaign = ApplicationInstallationCampaign::start(campaign_id(7), plan.identity());
     for stage in &InstallationStage::ALL[..InstallationStage::ALL.len() - 1] {
         if *stage == InstallationStage::Reimport {
+            let page_hash = ApplicationExportPageHash::from_bytes(hash32(91));
+            campaign
+                .start_reimport(
+                    &plan,
+                    ApplicationReimportSourceV1::new(
+                        reimport_receipt.input().export_manifest_hash,
+                        ApplicationExportReceiptHash::from_bytes(hash32(11)),
+                        portability.identity(),
+                        DatabaseId::from_unix_milliseconds_and_random(43, [0x43; 10])
+                            .expect("source database"),
+                        reimport_receipt.input().target_database_id,
+                        2,
+                        vec![page_hash],
+                        vec![],
+                    )
+                    .expect("exact source"),
+                    ApplicationReimportAuthorityV1::new(capability(9), std::num::NonZeroU64::MIN),
+                    CapabilityApplicationReimportScopeV1::WholeApplication,
+                    &portability,
+                )
+                .expect("start reimport");
+            campaign
+                .reimport_mut()
+                .expect("reimport progress")
+                .complete_page(
+                    std::num::NonZeroU64::MIN,
+                    page_hash,
+                    vec![{
+                        let expected = &reimport_receipt.input().mappings[0];
+                        ReimportPageMappingOutcomeV1::new(
+                            expected.class(),
+                            expected.symbol().clone(),
+                            expected.records(),
+                            false,
+                            expected.outcome_hash(),
+                        )
+                        .expect("mapping outcome")
+                    }],
+                )
+                .expect("complete page");
+            let durable = ApplicationInstallationCampaignState::capture(&campaign, &plan)
+                .expect("durable reimport checkpoint");
+            assert!(
+                std::str::from_utf8(durable.canonical_bytes())
+                    .expect("canonical JSON")
+                    .contains("riffdb.application-installation-campaign-state/v3")
+            );
+            let (_, recovered) =
+                ApplicationInstallationCampaignState::decode_canonical(durable.canonical_bytes())
+                    .expect("recover reimport checkpoint")
+                    .into_parts();
+            campaign = recovered;
+            let reconciled = campaign
+                .reimport_mut()
+                .expect("reimport progress")
+                .reconcile(&portability, reimport_receipt.input().observations.clone())
+                .expect("reconcile");
             assert_eq!(
                 campaign
                     .complete_reimport(
                         &plan,
                         &portability,
-                        &reimport_receipt,
+                        &reconciled,
                         DatabaseId::from_unix_milliseconds_and_random(44, [0x44; 10])
                             .expect("other database"),
                     )
@@ -276,7 +335,7 @@ fn reimport_installation_receipt_names_every_portability_identity() {
                 .complete_reimport(
                     &plan,
                     &portability,
-                    &reimport_receipt,
+                    &reconciled,
                     reimport_receipt.input().target_database_id,
                 )
                 .expect("verified reimport stage");

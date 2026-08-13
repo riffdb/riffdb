@@ -805,6 +805,30 @@ impl ReimportMappingResult {
             outcome_hash,
         })
     }
+
+    /// Portable record class reconciled by this result.
+    #[must_use]
+    pub const fn class(&self) -> PortableRecordClass {
+        self.class
+    }
+
+    /// Contract symbol reconciled by this result.
+    #[must_use]
+    pub const fn symbol(&self) -> &InstallationSymbol {
+        &self.symbol
+    }
+
+    /// Total source records accounted for.
+    #[must_use]
+    pub const fn records(&self) -> u64 {
+        self.records
+    }
+
+    /// Stable digest of the persisted command outcomes.
+    #[must_use]
+    pub const fn outcome_hash(&self) -> GeneratedArtifactHash {
+        self.outcome_hash
+    }
 }
 
 /// One observed named-query digest after reimport.
