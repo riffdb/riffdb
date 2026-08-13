@@ -27,15 +27,15 @@ use riffdb_errors::{
 };
 use riffdb_invariant::{EvaluationError, derive_input_command_facts};
 use riffdb_policy::{
-    AgentSessionAdmissionPolicy, AuthorizedCommandExecution, AuthorizedOperation,
-    CommandExecutionClass, Decision, OperationRequest, OperationTenantScope, OutputClassification,
-    PartitionConstraint, UntrustedInvocationClaims,
+    AgentSessionAdmissionPolicy, AuthorizedApplicationReimportV1, AuthorizedCommandExecution,
+    AuthorizedOperation, CommandExecutionClass, Decision, OperationRequest, OperationTenantScope,
+    OutputClassification, PartitionConstraint, UntrustedInvocationClaims,
 };
 use riffdb_types::{
     CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, CommandId, Decimal,
-    DecimalSpec, FieldId, IdempotencyKey, MAX_DECIMAL_PRECISION, Money, OutcomeId,
-    ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
-    ServiceOperationV1, TenantScope, encode_canonical_record,
+    DecimalSpec, FieldId, GeneratedArtifactHash, IdempotencyKey, MAX_DECIMAL_PRECISION, Money,
+    OutcomeId, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+    ServiceOperationV1, TenantScope, encode_canonical_record, hash_generated_artifact,
 };
 
 use crate::orchestration::{AuditScope, BegunInvocation};
@@ -68,6 +68,138 @@ use crate::{
 const COMMAND_ADMISSION_MAX_WAIT: Duration = Duration::from_millis(150);
 /// Below this remaining client deadline, reject immediately rather than wait.
 const COMMAND_ADMISSION_MIN_REMAINING: Duration = Duration::from_millis(25);
+
+/// Executes one exact compiler-owned reimport record through ordinary commit semantics.
+///
+/// The surrounding page operation owns service audit. This helper owns only
+/// idempotency inspection, deterministic evaluation, transaction-current row
+/// policy, and the authoritative command commit.
+pub(crate) async fn execute_reimport_record(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    resolved: ResolvedExecutablePlan,
+    normalized: CanonicalRecord,
+    authorization: Box<AuthorizedApplicationReimportV1>,
+    server_key: IdempotencyKey,
+) -> ServiceResult<(bool, GeneratedArtifactHash)> {
+    if !resolved.plan().is_reimport() || resolved.plan().idempotency_input().is_some() {
+        return Err(service.internal_failure(
+            ServiceOperationV1::ApplyApplicationReimportPage,
+            InternalDefect::ProofMismatch,
+        ));
+    }
+    let facts = derive_input_command_facts(resolved.plan(), normalized.clone()).map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ApplyApplicationReimportPage,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let inspection_request = CommandIdempotencyInspectionRequest::new(
+        service.identity.database_id(),
+        service.identity.environment().clone(),
+        authorization.obligations().effective_tenant_scope().clone(),
+        authorization.principal_id().clone(),
+        resolved.reference().contract_lineage().clone(),
+        resolved.reference().command_id(),
+        server_key,
+    );
+    let inspection = wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service.executors.idempotency.inspect(inspection_request),
+    )
+    .await
+    .map_err(map_controlled_wait)?
+    .map_err(|error| map_idempotency_inspection(service, error.kind()))?;
+    if matches!(
+        inspection.plan_selection(),
+        CommandIdempotencyPlanSelection::Historical(reference)
+            if reference != resolved.reference()
+    ) {
+        return Err(PublicError::idempotency_key_reuse().into());
+    }
+    let prepared_idempotency = inspection
+        .confirm_server_derived_selected_plan(&normalized, resolved.reference().clone())
+        .map_err(|error| match error {
+            CommandIdempotencyConfirmationError::IdempotencyKeyMismatch
+            | CommandIdempotencyConfirmationError::SelectedPlanMismatch => {
+                ServiceFailure::from(PublicError::idempotency_key_reuse())
+            }
+            _ => service.internal_failure(
+                ServiceOperationV1::ApplyApplicationReimportPage,
+                InternalDefect::ProofMismatch,
+            ),
+        })?;
+    let permit = admit_command_capacity(service, context, &normalized).await?;
+    let control = context.control().command_control().map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ApplyApplicationReimportPage,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let command_authorization = authorization
+        .into_command_execution(
+            resolved.reference().contract_version(),
+            resolved.reference().command_id(),
+            facts.partition_key().clone(),
+        )
+        .map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ApplyApplicationReimportPage,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+    let preparation = CommandExecutionPreparation::new_reimport(
+        service.identity.database_id(),
+        service.identity.environment(),
+        resolved.clone(),
+        normalized,
+        prepared_idempotency,
+        facts,
+        command_authorization,
+        context.request_id(),
+        context.ingress(),
+        control,
+    )
+    .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ApplyApplicationReimportPage,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let receipt = permit
+        .submit(preparation)
+        .map_err(|error| map_command_admission(service, error))?;
+    let result = receipt.completion().await.map_err(|error| {
+        map_command_execution(service, ExecutionClass::IdempotentMutation, error.kind()).0
+    })?;
+    let CoordinatorCommandResult::Committed(outcome) = result else {
+        return Err(
+            PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+                ValidationCode::InvalidValue,
+                ValidationPath::root(),
+            )))
+            .into(),
+        );
+    };
+    let declared_outcome = outcome.stored_outcome().declared_outcome();
+    if declared_outcome.outcome_id() != resolved.plan().success_outcome() {
+        return Err(
+            PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+                ValidationCode::InvalidValue,
+                ValidationPath::root(),
+            )))
+            .into(),
+        );
+    }
+    let mut outcome_preimage = Vec::with_capacity(4 + declared_outcome.value_encoded_len());
+    outcome_preimage.extend_from_slice(&declared_outcome.outcome_id().get().to_be_bytes());
+    outcome_preimage.extend_from_slice(declared_outcome.value_encoded());
+    Ok((
+        outcome.disposition() == CommittedOutcomeDisposition::Replay,
+        hash_generated_artifact(&outcome_preimage),
+    ))
+}
 
 /// Returns whether `failure` is the typed capacity rejection (queue or bytes).
 fn is_capacity_overload(failure: &ServiceFailure) -> bool {

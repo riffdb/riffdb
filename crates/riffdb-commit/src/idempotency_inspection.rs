@@ -172,6 +172,25 @@ impl InspectedCommandIdempotency {
             .bind_selected_plan(selected_plan)
             .map_err(CommandIdempotencyConfirmationError::from_plan_binding)
     }
+
+    /// Consumes this observation using the complete server-derived input hash.
+    ///
+    /// This counterpart is reachable only from compiler-owned operator
+    /// campaigns. No command input field is interpreted as caller-supplied
+    /// idempotency material.
+    pub fn confirm_server_derived_selected_plan(
+        self,
+        normalized_input: &CanonicalRecord,
+        selected_plan: ExecutablePlanRef,
+    ) -> Result<PreparedIdempotencyRecheckV1, CommandIdempotencyConfirmationError> {
+        let confirmed = self
+            .inspected
+            .confirm_server_derived_input(normalized_input)
+            .map_err(CommandIdempotencyConfirmationError::from_preparation)?;
+        confirmed
+            .bind_selected_plan(selected_plan)
+            .map_err(CommandIdempotencyConfirmationError::from_plan_binding)
+    }
 }
 
 impl fmt::Debug for InspectedCommandIdempotency {

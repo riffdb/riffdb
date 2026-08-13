@@ -1,16 +1,18 @@
 //! Operator-only application reimport service contracts.
 
 use std::fmt;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use riffdb_application::{
     ApplicationPortabilityManifest, ApplicationReimportCampaignPhaseV1,
-    ApplicationReimportCampaignV1, ApplicationReimportReceipt,
+    ApplicationReimportCampaignV1, ApplicationReimportReceipt, ReimportPageMappingOutcomeV1,
 };
 use riffdb_policy::AuthorizedApplicationReimportV1;
 use riffdb_types::{
-    ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash,
-    CapabilityApplicationReimportScopeV1, ContractLineage, RequestId, ServiceIngressKindV1,
+    ApplicationExportPageHash, ApplicationInstallationCampaignId,
+    ApplicationPortabilityManifestHash, CapabilityApplicationReimportScopeV1, ContractLineage,
+    RequestId, ServiceIngressKindV1,
 };
 
 use crate::{
@@ -257,6 +259,62 @@ pub struct ApplicationReimportPolicyBindingV1 {
     scope: CapabilityApplicationReimportScopeV1,
 }
 
+/// Exact durable page state prepared before any compiler-owned command runs.
+#[derive(Clone)]
+pub struct ApplicationReimportPagePreparationV1 {
+    lineage: ContractLineage,
+    portability_manifest: Arc<ApplicationPortabilityManifest>,
+    expected_page: NonZeroU64,
+    expected_hash: ApplicationExportPageHash,
+}
+
+impl ApplicationReimportPagePreparationV1 {
+    /// Constructs one source-bound preparation from retained campaign state.
+    pub fn new(
+        lineage: ContractLineage,
+        portability_manifest: ApplicationPortabilityManifest,
+        expected_page: NonZeroU64,
+        expected_hash: ApplicationExportPageHash,
+    ) -> Self {
+        Self {
+            lineage,
+            portability_manifest: Arc::new(portability_manifest),
+            expected_page,
+            expected_hash,
+        }
+    }
+
+    /// Exact active lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Exact compiler-owned portability manifest retained by the campaign.
+    #[must_use]
+    pub fn portability_manifest(&self) -> &ApplicationPortabilityManifest {
+        self.portability_manifest.as_ref()
+    }
+
+    /// Exact next page number.
+    #[must_use]
+    pub const fn expected_page(&self) -> NonZeroU64 {
+        self.expected_page
+    }
+
+    /// Exact next source page identity.
+    #[must_use]
+    pub const fn expected_hash(&self) -> ApplicationExportPageHash {
+        self.expected_hash
+    }
+}
+
+impl fmt::Debug for ApplicationReimportPagePreparationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplicationReimportPagePreparationV1([EXACT_SOURCE])")
+    }
+}
+
 impl ApplicationReimportPolicyBindingV1 {
     /// Retains the exact policy tuple from durable campaign state.
     #[must_use]
@@ -337,16 +395,19 @@ impl AuthorizedApplicationReimportStartV1 {
 pub struct AuthorizedApplicationReimportPageV1 {
     request: ApplyApplicationReimportPageRequestV1,
     authorization: Box<AuthorizedApplicationReimportV1>,
+    outcomes: Vec<ReimportPageMappingOutcomeV1>,
 }
 
 impl AuthorizedApplicationReimportPageV1 {
     pub(crate) const fn new(
         request: ApplyApplicationReimportPageRequestV1,
         authorization: Box<AuthorizedApplicationReimportV1>,
+        outcomes: Vec<ReimportPageMappingOutcomeV1>,
     ) -> Self {
         Self {
             request,
             authorization,
+            outcomes,
         }
     }
 
@@ -357,8 +418,9 @@ impl AuthorizedApplicationReimportPageV1 {
     ) -> (
         ApplyApplicationReimportPageRequestV1,
         Box<AuthorizedApplicationReimportV1>,
+        Vec<ReimportPageMappingOutcomeV1>,
     ) {
-        (self.request, self.authorization)
+        (self.request, self.authorization, self.outcomes)
     }
 }
 
@@ -454,6 +516,17 @@ pub trait ApplicationReimportCoordinatorPort: Send + Sync {
     ) -> PortFuture<
         '_,
         Option<ApplicationReimportPolicyBindingV1>,
+        ApplicationReimportObservationPortErrorV1,
+    >;
+
+    /// Loads the exact retained manifest and next-page identity after begin authorization.
+    fn prepare_application_reimport_page(
+        &self,
+        campaign_id: ApplicationInstallationCampaignId,
+        control: &RequestControl,
+    ) -> PortFuture<
+        '_,
+        Option<ApplicationReimportPagePreparationV1>,
         ApplicationReimportObservationPortErrorV1,
     >;
 

@@ -49,6 +49,7 @@ use riffdb_storage_api::{
 use riffdb_types::{Audience, Environment, Timestamp};
 
 use crate::application_export_adapter::ServerApplicationExportCoordinator;
+use crate::application_reimport_adapter::ServerApplicationReimportCoordinator;
 use crate::auth_adapters::{
     ServerCapabilityTokenIssuer, ServerCredentialAuthenticator, ServerCurrentPolicyPort,
     ServerIdempotencyDigestProvider,
@@ -517,6 +518,10 @@ impl ProductionGraphBuilder {
             &blocking,
             clocks.application_export(),
         ));
+        let application_reimport = Arc::new(ServerApplicationReimportCoordinator::new(
+            storage.clone(),
+            &blocking,
+        ));
         // Retained for the graceful-shutdown validated-prefix write (ADR-0019 A1).
         let shutdown_storage = storage.clone();
         let providers = ServiceProviders::new(
@@ -551,7 +556,9 @@ impl ProductionGraphBuilder {
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration)
         .with_application_installation(installation);
-        let providers = providers.with_application_export(application_export);
+        let providers = providers
+            .with_application_export(application_export)
+            .with_application_reimport(application_reimport);
         let identity = ServiceIdentity::new(
             database_id,
             environment,

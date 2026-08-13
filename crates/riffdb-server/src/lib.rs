@@ -3,6 +3,7 @@
 //! Production composition and process providers for `riffdbd`.
 
 mod application_export_adapter;
+mod application_reimport_adapter;
 mod auth_adapters;
 mod clocks;
 mod columnar_adapter;

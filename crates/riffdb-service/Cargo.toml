@@ -28,6 +28,8 @@ riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-feat
 riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
 riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
