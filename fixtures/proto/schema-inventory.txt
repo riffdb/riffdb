@@ -2511,7 +2511,7 @@ messages
   riffdb.v1.ValidationPathSegment fields=2
     1 field_id optional uint32 oneof=segment
     2 list_index optional uint32 oneof=segment
-  riffdb.v1.Value fields=14
+  riffdb.v1.Value fields=15
     1 null_value optional .riffdb.v1.NullValue oneof=kind
     2 bool_value optional bool oneof=kind
     3 i64_value optional sint64 oneof=kind
@@ -2526,6 +2526,7 @@ messages
     12 enum_value optional .riffdb.v1.EnumValue oneof=kind
     13 list_value optional .riffdb.v1.ValueList oneof=kind
     14 record_value optional .riffdb.v1.ValueRecord oneof=kind
+    15 vector_value optional .riffdb.v1.VectorValue oneof=kind
   riffdb.v1.ValueField fields=3
     1 field_id optional uint32 proto3-optional oneof=_field_id
     2 name optional string
@@ -2534,6 +2535,8 @@ messages
     1 values repeated .riffdb.v1.Value
   riffdb.v1.ValueRecord fields=1
     1 fields repeated .riffdb.v1.ValueField
+  riffdb.v1.VectorValue fields=1
+    1 components repeated float
   riffdb.v1.WatchNamedQueryRequest fields=5
     1 request_id optional bytes
     2 reactive_module_hash optional bytes
@@ -3119,13 +3122,14 @@ enums
     28 FIXED_TOOL_KIND_CONTEXTUAL_NACK
     29 FIXED_TOOL_KIND_CONTEXTUAL_STATUS
     30 FIXED_TOOL_KIND_CONTEXTUAL_REACT
-  riffdb.v1.HealthComponentKind values=6
+  riffdb.v1.HealthComponentKind values=7
     0 HEALTH_COMPONENT_KIND_UNSPECIFIED
     1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
     2 HEALTH_COMPONENT_KIND_CATALOG
     3 HEALTH_COMPONENT_KIND_COMMIT_COORDINATOR
     4 HEALTH_COMPONENT_KIND_PROJECTION
     5 HEALTH_COMPONENT_KIND_OUTBOX
+    6 HEALTH_COMPONENT_KIND_VECTOR_STALENESS
   riffdb.v1.HealthComponentStatus values=4
     0 HEALTH_COMPONENT_STATUS_UNSPECIFIED
     1 HEALTH_COMPONENT_STATUS_HEALTHY

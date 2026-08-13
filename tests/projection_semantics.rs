@@ -21,8 +21,10 @@ use riffdb_types::{
 };
 
 use riffdb_columnar::{
-    ColumnPredicate, ColumnarProjectionDefinition, ColumnarSnapshot, LiveRow, NearestQueryRequest,
-    OrgKey, PrimaryKeyBytes, QueryBudget, QueryError, RegisteredDefinition, nearest_query_snapshot,
+    ColumnPredicate, ColumnarProjectionDefinition, ColumnarSnapshot, LiveRow, NearestCandidate,
+    NearestCandidateAdmission, NearestQueryRequest, OrgKey, PrimaryKeyBytes, QueryBudget,
+    QueryError, RegisteredDefinition, nearest_query_snapshot,
+    nearest_query_snapshot_with_admission,
 };
 
 #[test]
@@ -387,6 +389,161 @@ fn nearest_query_filters_denied_rows_before_ranking() {
     }
     // And the denied row's absence did not zero the top distance.
     assert!(filtered.rows[0].distance > 0.01);
+}
+
+struct PublicTitleAdmission {
+    title_field: FieldId,
+    calls: usize,
+}
+
+impl NearestCandidateAdmission for PublicTitleAdmission {
+    type Error = std::convert::Infallible;
+
+    fn admit(&mut self, candidate: NearestCandidate<'_>) -> Result<bool, Self::Error> {
+        self.calls += 1;
+        Ok(candidate.field_value(self.title_field)
+            == Some(&CanonicalValue::string("public").expect("value")))
+    }
+}
+
+struct FailingAdmission {
+    calls: usize,
+}
+
+impl NearestCandidateAdmission for FailingAdmission {
+    type Error = &'static str;
+
+    fn admit(&mut self, _candidate: NearestCandidate<'_>) -> Result<bool, Self::Error> {
+        self.calls += 1;
+        if self.calls == 2 {
+            Err("sensitive policy backend detail")
+        } else {
+            Ok(true)
+        }
+    }
+}
+
+/// Principal admission is a distinct pre-rank gate, not a caller convention
+/// encoded as a scalar predicate. Denied malformed rows must never reach vector
+/// validation or scoring, and K must be filled from the admitted rows exactly
+/// as if denied rows did not exist.
+#[test]
+fn principal_admission_runs_before_candidate_validation_and_ranking() {
+    let bundle = vector_bundle();
+    let (definition, entity_type) = document_vector_projection(&bundle);
+    let vector_field = field_id(&bundle, "Document", "embedding");
+    let title_field = field_id(&bundle, "Document", "title");
+    let org = [1u8; 16];
+    let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org");
+
+    let mut delta = BTreeMap::new();
+    delta.insert(
+        build_pk(entity_type, org, 0),
+        LiveRow {
+            entity_version: EntityVersion::new(1).expect("v"),
+            cells: Vec::new(),
+        },
+    );
+    delta.insert(
+        build_pk(entity_type, org, 1),
+        document_row("secret", &[1.0, 0.0]),
+    );
+    delta.insert(
+        build_pk(entity_type, org, 2),
+        document_row("public", &[0.7, 0.7, 0.0]),
+    );
+    delta.insert(
+        build_pk(entity_type, org, 3),
+        document_row("public", &[0.0, 1.0, 0.0]),
+    );
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.delta.insert(org_key.clone(), delta);
+
+    let mut control_delta = BTreeMap::new();
+    control_delta.insert(
+        build_pk(entity_type, org, 2),
+        document_row("public", &[0.7, 0.7, 0.0]),
+    );
+    control_delta.insert(
+        build_pk(entity_type, org, 3),
+        document_row("public", &[0.0, 1.0, 0.0]),
+    );
+    let mut control = ColumnarSnapshot::empty();
+    control.delta.insert(org_key, control_delta);
+
+    let query = request(org, vector_field, &[1.0, 0.0, 0.0], 2, Vec::new());
+    let mut admission = PublicTitleAdmission {
+        title_field,
+        calls: 0,
+    };
+    let admitted =
+        nearest_query_snapshot_with_admission(&definition, &snapshot, &query, &mut admission)
+            .expect("denied malformed rows never reach validation");
+    assert_eq!(
+        admission.calls, 4,
+        "every predicate-matching row is admitted"
+    );
+    assert_eq!(
+        admitted.scanned_rows, 4,
+        "policy-denied rows still consume scan work"
+    );
+    assert_eq!(admitted.rows.len(), 2, "K is filled from admitted rows");
+    assert!(
+        admitted
+            .rows
+            .iter()
+            .all(|row| { row.cells[0] == CanonicalValue::string("public").expect("value") })
+    );
+
+    let expected = nearest_query_snapshot(&definition, &control, &query).expect("control");
+    assert_eq!(admitted.rows.len(), expected.rows.len());
+    for (actual, expected) in admitted.rows.iter().zip(expected.rows.iter()) {
+        assert_eq!(actual.primary_key, expected.primary_key);
+        assert_eq!(actual.distance.to_bits(), expected.distance.to_bits());
+    }
+
+    let mut bounded_query = query.clone();
+    bounded_query.budget.max_scanned_rows = 3;
+    let mut bounded_admission = PublicTitleAdmission {
+        title_field,
+        calls: 0,
+    };
+    let budget_error = nearest_query_snapshot_with_admission(
+        &definition,
+        &snapshot,
+        &bounded_query,
+        &mut bounded_admission,
+    )
+    .expect_err("denied rows must not escape the scan bound");
+    assert!(matches!(
+        budget_error,
+        riffdb_columnar::NearestQueryAdmissionError::Query(QueryError::ScanBudgetExceeded {
+            max: 3
+        })
+    ));
+    assert_eq!(
+        bounded_admission.calls, 3,
+        "the over-budget row fails before policy evaluation"
+    );
+
+    let mut failing_admission = FailingAdmission { calls: 0 };
+    let admission_error = nearest_query_snapshot_with_admission(
+        &definition,
+        &control,
+        &query,
+        &mut failing_admission,
+    )
+    .expect_err("admission failure must abort the whole query");
+    assert!(matches!(
+        admission_error,
+        riffdb_columnar::NearestQueryAdmissionError::Admission("sensitive policy backend detail")
+    ));
+    assert_eq!(failing_admission.calls, 2);
+    assert_eq!(
+        admission_error.to_string(),
+        "nearest candidate admission failed",
+        "public display must redact caller-owned policy detail"
+    );
 }
 
 /// The engine rejects a query vector that does not match the declared

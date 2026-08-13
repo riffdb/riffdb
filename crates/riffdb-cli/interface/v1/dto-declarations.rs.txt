@@ -93,6 +93,7 @@ type UuidText = String;       // canonical lowercase hyphenated UUID text
 type UuidV7Text = String;     // UuidText additionally requiring UUIDv7/variant
 type Hash256Hex = String;     // exactly 64 lowercase hexadecimal bytes
 type PaddedBase64 = String;   // RFC 4648 standard alphabet with required padding
+type FiniteF32 = f32;         // finite binary32 JSON number; negative zero canonicalizes positive
 
 // Input and output are intentionally distinct recursive families. Submitted
 // records may use ID, source name, or both; service-produced record output may
@@ -123,6 +124,7 @@ enum CliInputValue {
         variant_id: NonZeroU32,
         name: Option<String>,
     },
+    Vector { type: Const<"vector">, components: Vec<FiniteF32> },
     List { type: Const<"list">, values: Vec<CliInputValue> },
     Record { type: Const<"record">, fields: Vec<CliInputField> },
 }
@@ -153,6 +155,7 @@ enum CliOutputValue {
         variant_id: NonZeroU32,
         name: Option<String>,
     },
+    Vector { type: Const<"vector">, components: Vec<FiniteF32> },
     List { type: Const<"list">, values: Vec<CliOutputValue> },
     Record { type: Const<"record">, fields: Vec<CliOutputField> },
 }

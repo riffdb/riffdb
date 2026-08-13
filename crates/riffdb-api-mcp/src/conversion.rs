@@ -16,6 +16,7 @@ use crate::{
 
 const DEFAULT_PAGE_LIMIT: u16 = 50;
 const MAX_SCHEMA_DECODE_DEPTH: usize = 32;
+const JSON_VECTOR_DIMENSION: &str = "x-riffdb-vectorDimension";
 const UUID_PATTERN: &str = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 /// A contract selection decoded from an accepted MCP input schema.
@@ -131,6 +132,8 @@ pub enum McpSubmittedValue {
     /// The application transport must resolve this name against the selected
     /// command schema; it must not infer stable IDs from array positions.
     EnumName(String),
+    /// Fixed-dimension canonical vector.
+    Vector(riffdb_types::CanonicalVector),
     /// Ordered list.
     List(Vec<Self>),
     /// Ordered record.
@@ -273,6 +276,26 @@ pub struct McpPresentedField {
     pub value: McpPresentedValue,
 }
 
+/// One finite canonical binary32 component serialized as a JSON number.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct McpPresentedF32(u32);
+
+impl McpPresentedF32 {
+    /// Retains a component that passed canonical vector construction.
+    #[must_use]
+    pub fn new(value: f32) -> Self {
+        debug_assert!(value.is_finite());
+        let value = if value == 0.0 { 0.0 } else { value };
+        Self(value.to_bits())
+    }
+}
+
+impl Serialize for McpPresentedF32 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f32(f32::from_bits(self.0))
+    }
+}
+
 /// Canonical tagged structural value emitted by fixed tools and resources.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -348,6 +371,11 @@ pub enum McpPresentedValue {
         /// Stable enum variant ID.
         variant_id: u32,
     },
+    /// Canonical embedding vector.
+    Vector {
+        /// Finite components in declaration order.
+        components: Vec<McpPresentedF32>,
+    },
     /// Ordered list.
     List {
         /// Ordered values.
@@ -372,6 +400,22 @@ pub enum McpPresentedValue {
         /// The stable redaction marker, `[redacted:field_name]`-shaped.
         marker: String,
     },
+}
+
+impl McpPresentedValue {
+    /// Validates and constructs the canonical fixed-tool vector presentation.
+    pub fn vector(components: Vec<f32>) -> Result<Self, McpConversionError> {
+        let vector =
+            riffdb_types::CanonicalVector::new(components).map_err(|_| McpConversionError)?;
+        Ok(Self::Vector {
+            components: vector
+                .components()
+                .iter()
+                .copied()
+                .map(McpPresentedF32::new)
+                .collect(),
+        })
+    }
 }
 
 /// Fixed provenance selector.
@@ -1054,6 +1098,9 @@ fn decode_schema_value(
         Some("integer") => decode_schema_integer(object, value),
         Some("string") => decode_schema_string(object, value),
         Some("array") => {
+            if object.contains_key(JSON_VECTOR_DIMENSION) {
+                return decode_schema_vector(object, value);
+            }
             let item_schema = object.get("items").ok_or(McpConversionError)?;
             let values = value
                 .as_array()
@@ -1097,6 +1144,42 @@ fn decode_schema_value(
         }
         _ => Err(McpConversionError),
     }
+}
+
+fn decode_schema_vector(
+    schema: &Map<String, Value>,
+    value: &Value,
+) -> Result<McpSubmittedValue, McpConversionError> {
+    let dimension = schema
+        .get(JSON_VECTOR_DIMENSION)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .and_then(riffdb_types::VectorDimension::new)
+        .ok_or(McpConversionError)?;
+    let declared = u64::from(dimension.get());
+    if schema.get("minItems").and_then(Value::as_u64) != Some(declared)
+        || schema.get("maxItems").and_then(Value::as_u64) != Some(declared)
+        || schema
+            .get("items")
+            .and_then(Value::as_object)
+            .and_then(|items| items.get("type"))
+            .and_then(Value::as_str)
+            != Some("number")
+    {
+        return Err(McpConversionError);
+    }
+    let components = value.as_array().ok_or(McpConversionError)?;
+    if components.len() != dimension.get() as usize {
+        return Err(McpConversionError);
+    }
+    let components = components
+        .iter()
+        .map(|component| component.as_f64().map(|value| value as f32))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(McpConversionError)?;
+    riffdb_types::CanonicalVector::new(components)
+        .map(McpSubmittedValue::Vector)
+        .map_err(|_| McpConversionError)
 }
 
 fn decode_schema_integer(
@@ -1850,6 +1933,9 @@ enum RawTaggedValue {
         type_id: u32,
         variant_id: u32,
     },
+    Vector {
+        components: Vec<f32>,
+    },
     List {
         values: Vec<Self>,
     },
@@ -1911,6 +1997,9 @@ impl TryFrom<RawTaggedValue> for McpSubmittedValue {
                 type_id,
                 variant_id,
             }),
+            RawTaggedValue::Vector { components } => riffdb_types::CanonicalVector::new(components)
+                .map(Self::Vector)
+                .map_err(|_| McpConversionError),
             RawTaggedValue::List { values } => values
                 .into_iter()
                 .map(TryInto::try_into)
@@ -2072,6 +2161,40 @@ mod tests {
 
     fn arguments(value: Value) -> McpToolArguments {
         McpToolArguments::from_validated(value)
+    }
+
+    #[test]
+    fn vector_values_decode_and_present_with_canonical_boundaries() {
+        let raw: RawTaggedValue = serde_json::from_value(json!({
+            "kind": "vector",
+            "components": [-0.0, 1.5, -2.25]
+        }))
+        .expect("vector JSON");
+        let submitted = McpSubmittedValue::try_from(raw).expect("finite bounded vector");
+        let McpSubmittedValue::Vector(vector) = submitted else {
+            panic!("typed vector");
+        };
+        assert_eq!(vector.components()[0].to_bits(), 0.0_f32.to_bits());
+
+        for component_count in [0, 4_097] {
+            let raw = RawTaggedValue::Vector {
+                components: vec![0.0; component_count],
+            };
+            assert!(McpSubmittedValue::try_from(raw).is_err());
+        }
+
+        let presented = McpPresentedValue::Vector {
+            components: vector
+                .components()
+                .iter()
+                .copied()
+                .map(McpPresentedF32::new)
+                .collect(),
+        };
+        assert_eq!(
+            serde_json::to_value(presented).expect("presentation"),
+            json!({"kind":"vector","components":[0.0,1.5,-2.25]})
+        );
     }
 
     #[test]
@@ -2255,6 +2378,43 @@ mod tests {
             }
         ));
         assert!(matches!(decoded[1].value, McpSubmittedValue::Uuid(_)));
+    }
+
+    #[test]
+    fn dynamic_vector_schema_validates_and_decodes_a_typed_canonical_vector() {
+        let source = r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"embedding":{"description":"finite f32 vector components in declaration order; length must equal the declared dimension","items":{"type":"number"},"maxItems":3,"minItems":3,"type":"array","x-riffdb-vectorDimension":3}},"required":["embedding"],"type":"object"}"#;
+        let schema = SchemaDocument::from_public_parts(
+            "riffdb.command-input/vector/v1",
+            riffdb_types::hash_schema(source.as_bytes()).as_bytes(),
+            source,
+        )
+        .expect("checked vector schema");
+        let valid = json!({"embedding": [-0.0, 1.5, -2.25]});
+        RiffDbSchemaValidator
+            .validate(&schema, &valid)
+            .expect("exact-length finite vector is schema-approved");
+        let decoded = decode_dynamic_command_input(&arguments(valid), &schema)
+            .expect("schema-approved vector decodes");
+        let McpSubmittedValue::Vector(vector) = &decoded[0].value else {
+            panic!("dynamic vector must not decode as a generic list or bytes");
+        };
+        assert_eq!(vector.components()[0].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(vector.components()[1..], [1.5, -2.25]);
+
+        for invalid in [
+            json!({"embedding": [1.0, 2.0]}),
+            json!({"embedding": [1.0, 2.0, 3.5e38]}),
+            json!({"embedding": [1.0, "2.0", 3.0]}),
+        ] {
+            assert!(
+                RiffDbSchemaValidator.validate(&schema, &invalid).is_err(),
+                "invalid dimension, non-binary32-finite value, or non-number must fail schema validation"
+            );
+            assert!(
+                decode_dynamic_command_input(&arguments(invalid), &schema).is_err(),
+                "decoder remains fail-closed even if validation is bypassed"
+            );
+        }
     }
 
     #[test]

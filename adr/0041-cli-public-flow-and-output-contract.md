@@ -1077,3 +1077,18 @@ CLI surface because the dependency, credential, and machine-output choices are
 the interfaces under decision. WP-155 requires its own later human review; that
 review must add its complete registry entry and the WP-200 dependency before
 WP-200 begins final POC acceptance.
+
+
+## Amendment: canonical vector Value JSON (Accepted 2026-08-11)
+
+Status: Accepted by the maintainer on 2026-08-11.
+
+WP-596 adds the following exact closed `Value` form to `riffdb.cli.output/v1`:
+
+```json
+{"type":"vector","components":[0.0,1.5,-2.25]}
+```
+
+The key order is exactly `type`, `components`. `components` is a JSON array of 1 through 4,096 JSON numbers, each of which MUST decode exactly to a finite IEEE 754 binary32 value. JSON strings, integers outside binary32 range, NaN, positive or negative infinity, an empty array, and an array longer than 4,096 are rejected before an RPC. Negative zero is accepted as a numeric spelling only on input and is canonicalized to positive `0.0`; output always uses the shortest round-tripping finite binary32 JSON number emitted by the reviewed Rust serializer and always emits positive zero. Object keys remain closed and extra keys are rejected.
+
+This is an explicitly reviewed additive exception to the earlier statement that every later Value tag requires a new schema string. It loses no distinction in any previously accepted v1 form, changes no existing bytes, and mirrors public Protobuf `Value.vector_value = 15`. Any later vector field, alternate component spelling, non-finite representation, dimension omission, or component encoding requires another compatibility review and a new schema string unless an accepted amendment says otherwise.

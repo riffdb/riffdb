@@ -75,7 +75,7 @@ use crate::output::{
     take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
-use crate::value::format_uuid;
+use crate::value::{CanonicalVectorComponents, format_uuid};
 
 /// Bound on decoded bytes accepted for an opaque commit token supplied as hex.
 /// A v1 commit token is 18 bytes; the headroom absorbs encoding revisions.
@@ -3972,6 +3972,7 @@ fn wire_value_to_application(value: v1::Value) -> Result<ApplicationValue, ()> {
             }
             Ok(ApplicationValue::Record(fields))
         }
+        Kind::VectorValue(_) => Err(()),
     }
 }
 
@@ -4327,22 +4328,10 @@ fn canonical_value_json(value: &CanonicalValue) -> serde_json::Value {
                 "value": canonical_value_json(value),
             })).collect::<Vec<_>>(),
         }),
-        // Complete value, never truncated: components ride as padded
-        // standard base64 over big-endian f32 bytes (the CLI's byte
-        // spelling). ADR-0041's closed type list predates vectors; the
-        // needed amendment is flagged in the vectors fix-round report.
-        CanonicalValue::Vector(vector) => {
-            use base64::Engine as _;
-            let mut bytes = Vec::with_capacity(vector.byte_size());
-            for component in vector.components() {
-                bytes.extend_from_slice(&component.to_be_bytes());
-            }
-            serde_json::json!({
-                "type": "vector",
-                "dimension": vector.dimension(),
-                "components": base64::engine::general_purpose::STANDARD.encode(bytes),
-            })
-        }
+        CanonicalValue::Vector(vector) => serde_json::json!({
+            "type": "vector",
+            "components": CanonicalVectorComponents(vector.components()),
+        }),
     }
 }
 
@@ -12772,6 +12761,21 @@ query GetDocument(
             result.pointer("/groups/0/values/2/value/value"),
             Some(&serde_json::Value::String("a".to_owned()))
         );
+    }
+
+    #[test]
+    fn projected_vector_uses_the_accepted_numeric_component_shape() {
+        let vector =
+            riffdb_types::CanonicalVector::new(vec![-0.0, 1.5, -2.25]).expect("canonical vector");
+        let rendered = canonical_value_json(&CanonicalValue::Vector(vector));
+        assert_eq!(
+            rendered,
+            serde_json::json!({
+                "type": "vector",
+                "components": [0.0, 1.5, -2.25],
+            })
+        );
+        assert!(rendered.get("dimension").is_none());
     }
 
     #[test]

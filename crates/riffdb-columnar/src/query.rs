@@ -6,7 +6,9 @@ use std::fmt;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
-use riffdb_types::{CanonicalValue, EntityKey, FieldId, encode_canonical_value};
+use riffdb_types::{
+    CanonicalValue, EntityKey, EntityTypeId, EntityVersion, FieldId, encode_canonical_value,
+};
 
 use crate::definition::RegisteredDefinition;
 use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes};
@@ -375,6 +377,122 @@ pub struct NearestQueryRequest {
     pub budget: QueryBudget,
 }
 
+/// One exact nearest candidate presented to principal-policy admission before
+/// vector validation, distance computation, or ranking.
+///
+/// Fields borrow one captured columnar snapshot. The admission implementation
+/// may inspect values but cannot mutate the candidate or projection state.
+#[derive(Clone, Copy, Debug)]
+pub struct NearestCandidate<'a> {
+    entity_type_id: EntityTypeId,
+    entity_version: EntityVersion,
+    primary_key_fields: &'a [FieldId],
+    primary_key: &'a [CanonicalValue],
+    projected_fields: &'a [FieldId],
+    cells: &'a [CanonicalValue],
+}
+
+impl<'a> NearestCandidate<'a> {
+    /// Projected entity type.
+    #[must_use]
+    pub const fn entity_type_id(&self) -> EntityTypeId {
+        self.entity_type_id
+    }
+
+    /// Entity version captured in the projection row.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+
+    /// Primary-key field order.
+    #[must_use]
+    pub const fn primary_key_fields(&self) -> &'a [FieldId] {
+        self.primary_key_fields
+    }
+
+    /// Primary-key values aligned with [`Self::primary_key_fields`].
+    #[must_use]
+    pub const fn primary_key(&self) -> &'a [CanonicalValue] {
+        self.primary_key
+    }
+
+    /// Projected field order.
+    #[must_use]
+    pub const fn projected_fields(&self) -> &'a [FieldId] {
+        self.projected_fields
+    }
+
+    /// Projected values aligned with [`Self::projected_fields`].
+    #[must_use]
+    pub const fn cells(&self) -> &'a [CanonicalValue] {
+        self.cells
+    }
+
+    /// Resolves one field from the entity key or projected cells.
+    ///
+    /// Malformed row shapes fail closed as `None`; they never panic through
+    /// unchecked indexing while policy admission is in progress.
+    #[must_use]
+    pub fn field_value(&self, field: FieldId) -> Option<&'a CanonicalValue> {
+        self.primary_key_fields
+            .iter()
+            .position(|candidate| *candidate == field)
+            .and_then(|position| self.primary_key.get(position))
+            .or_else(|| {
+                self.projected_fields
+                    .iter()
+                    .position(|candidate| *candidate == field)
+                    .and_then(|position| self.cells.get(position))
+            })
+    }
+}
+
+/// Narrow infrastructure admission port for exact nearest candidates.
+///
+/// This is not an application policy language, request predicate, or bypass.
+/// Production composition must adapt the compiler-owned closed row-policy
+/// evaluator and current principal facts to this port; application callbacks
+/// and request-supplied authorization predicates remain prohibited by
+/// ADR-0111. The columnar engine invokes the port after ordinary predicates
+/// but before reading or validating the vector cell and before scoring.
+/// `Ok(false)` excludes the row completely; an error aborts the complete query
+/// without partial output.
+pub trait NearestCandidateAdmission {
+    /// Caller-owned policy/backend failure retained for internal handling.
+    type Error;
+
+    /// Decides whether one candidate may enter distance scoring.
+    fn admit(&mut self, candidate: NearestCandidate<'_>) -> Result<bool, Self::Error>;
+}
+
+/// Exact-nearest failure preserving columnar validation and caller-owned
+/// admission failures as distinct closed branches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NearestQueryAdmissionError<E> {
+    /// Columnar request, bound, or snapshot-integrity failure.
+    Query(QueryError),
+    /// Principal-policy admission failed.
+    Admission(E),
+}
+
+impl<E> From<QueryError> for NearestQueryAdmissionError<E> {
+    fn from(error: QueryError) -> Self {
+        Self::Query(error)
+    }
+}
+
+impl<E> fmt::Display for NearestQueryAdmissionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Query(error) => error.fmt(formatter),
+            Self::Admission(_) => formatter.write_str("nearest candidate admission failed"),
+        }
+    }
+}
+
+impl<E: fmt::Debug + 'static> std::error::Error for NearestQueryAdmissionError<E> {}
+
 /// One nearest-neighbor result row: primary key values and distance score.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NearestResultRow {
@@ -405,25 +523,53 @@ pub struct NearestQueryResult {
     pub scanned_rows: u64,
 }
 
-/// Executes a nearest-neighbor query against a published snapshot.
+/// Executes a nearest-neighbor query against a published snapshot using only
+/// the request's scalar predicates.
 ///
-/// Filtering runs BEFORE distance ranking (VEC-006/VEC-007): the org scope
-/// bounds the scan to one partition, `request.predicates` exclude rows
-/// before they enter the candidate set, and only the surviving candidates
-/// are scored and ranked. A denied row therefore influences nothing —
-/// neither presence, distances, ranking, nor result count.
-///
+/// This compatibility entry point does not perform principal-policy
+/// admission. Production composition must use
+/// [`nearest_query_snapshot_with_admission`] when a principal policy applies.
 /// Returns up to `k` rows ordered by distance ascending (closest first).
 pub fn nearest_query_snapshot(
     definition: &RegisteredDefinition,
     snapshot: &ColumnarSnapshot,
     request: &NearestQueryRequest,
 ) -> Result<NearestQueryResult, QueryError> {
+    struct AdmitAll;
+
+    impl NearestCandidateAdmission for AdmitAll {
+        type Error = std::convert::Infallible;
+
+        fn admit(&mut self, _candidate: NearestCandidate<'_>) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    match nearest_query_snapshot_with_admission(definition, snapshot, request, &mut AdmitAll) {
+        Ok(result) => Ok(result),
+        Err(NearestQueryAdmissionError::Query(error)) => Err(error),
+        Err(NearestQueryAdmissionError::Admission(never)) => match never {},
+    }
+}
+
+/// Executes exact nearest search with mandatory principal-policy admission.
+///
+/// Ordinary predicates and `admission` both run before vector validation,
+/// distance computation, and ranking. A denied row therefore influences no
+/// score, ordering, or result count. Every merged row still consumes scan
+/// budget whether predicates or policy exclude it.
+pub fn nearest_query_snapshot_with_admission<A: NearestCandidateAdmission>(
+    definition: &RegisteredDefinition,
+    snapshot: &ColumnarSnapshot,
+    request: &NearestQueryRequest,
+    admission: &mut A,
+) -> Result<NearestQueryResult, NearestQueryAdmissionError<A::Error>> {
     // Validate org scope type.
     if !org_value_matches_type(&request.org_scope, definition.org_scope_type()) {
         return Err(QueryError::OrgScopeTypeMismatch {
             expected: definition.org_scope_type().tag(),
-        });
+        }
+        .into());
     }
     let org = OrgKey::from_value(&request.org_scope).map_err(|_| QueryError::InvalidOrgScope)?;
 
@@ -440,14 +586,17 @@ pub fn nearest_query_snapshot(
         return Err(QueryError::VectorDimensionMismatch {
             expected: declared_dimension,
             actual: request.query_vector.dimension(),
-        });
+        }
+        .into());
     }
 
     let merged = snapshot.merged_org(&org);
     let mut scanned = 0usize;
 
-    // Collect candidates that pass every predicate. Filtering happens HERE,
-    // before distance computation, so an excluded row is never scored.
+    // Collect only candidates admitted by both scalar predicates and the
+    // domain-specific principal-policy gate. Admission happens before the
+    // vector cell is read or validated, so a denied row cannot affect exact
+    // scoring even when its stored vector is malformed.
     let mut candidate_rows: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
     let mut candidate_vectors: Vec<riffdb_types::CanonicalVector> = Vec::new();
 
@@ -456,27 +605,44 @@ pub fn nearest_query_snapshot(
         if scanned > request.budget.max_scanned_rows {
             return Err(QueryError::ScanBudgetExceeded {
                 max: request.budget.max_scanned_rows,
-            });
+            }
+            .into());
         }
         if !predicates_match(definition, &row, &request.predicates)? {
             continue;
         }
-        // Extract the vector value from the projected cell.
+
+        let pk_values = decode_primary_key(definition, &key)?;
+        let candidate = NearestCandidate {
+            entity_type_id: definition.entity_type_id(),
+            entity_version: row.entity_version,
+            primary_key_fields: definition.primary_key_fields(),
+            primary_key: &pk_values,
+            projected_fields: definition.projected_fields(),
+            cells: &row.cells,
+        };
+        if !admission
+            .admit(candidate)
+            .map_err(NearestQueryAdmissionError::Admission)?
+        {
+            continue;
+        }
+
+        // Only admitted candidates reach vector extraction and integrity
+        // validation. Null and non-vector values retain compatibility by not
+        // entering the exact candidate set.
         let cell = &row.cells[vector_field_index];
         if let CanonicalValue::Vector(vec_val) = cell {
             if vec_val.dimension() != declared_dimension {
-                // Dimension skew in stored data is a typed integrity error,
-                // never a panic (previously exact_knn asserted).
                 return Err(QueryError::VectorDimensionMismatch {
                     expected: declared_dimension,
                     actual: vec_val.dimension(),
-                });
+                }
+                .into());
             }
-            let pk_values = decode_primary_key(definition, &key)?;
             candidate_vectors.push(vec_val.clone());
             candidate_rows.push((key, pk_values, row));
         }
-        // Rows without a vector value (Null or non-Vector) are silently skipped.
     }
 
     // Run exact KNN. Every candidate and the query vector were validated

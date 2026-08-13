@@ -128,7 +128,7 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                     vector_field.field_id,
                     vector_field.metric,
                     vector_field.source_fields.clone(),
-                    vector_field.staleness_slo_secs,
+                    vector_field.stale_entity_count_threshold,
                 )
                 .map(|spec| (spec, vector_field.span))
                 .map_err(|_| {

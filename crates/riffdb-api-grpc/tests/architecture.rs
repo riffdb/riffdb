@@ -106,6 +106,26 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
 }
 
 #[test]
+fn generated_services_use_strict_preallocation_decode() {
+    let build = include_str!("../build.rs");
+    assert!(build.contains(".codec_path(\"crate::codec::StrictProstCodec\")"));
+
+    let codec = include_str!("../src/codec.rs");
+    let decoder = codec
+        .split("impl<MessageType> Decoder for StrictProstDecoder<MessageType>")
+        .nth(1)
+        .expect("strict decoder implementation");
+    let preflight = decoder
+        .find("decode_public_message(bytes.as_ref())")
+        .expect("allocation-free public preflight");
+    let prost_decode = decoder.find("Message::decode");
+    assert!(
+        prost_decode.is_none_or(|decode| preflight < decode),
+        "generated server decode must preflight raw bytes before Prost allocation"
+    );
+}
+
+#[test]
 fn staged_route_does_not_require_a_full_service_at_construction() {
     let source = include_str!("../src/server.rs");
     let application = source

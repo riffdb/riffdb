@@ -1873,7 +1873,7 @@ pub(crate) fn raise_value(value: v1::Value) -> Result<ApplicationValue, Applicat
                 nanos: value.nanos,
             })
         }
-        Kind::TimestampValue(_) | Kind::EnumValue(_) => {
+        Kind::TimestampValue(_) | Kind::EnumValue(_) | Kind::VectorValue(_) => {
             Err(ApplicationClientError::InvalidResponse)
         }
     }

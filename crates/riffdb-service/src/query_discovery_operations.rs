@@ -3669,9 +3669,9 @@ mod tests {
         RecordTypeRef, SchemaArtifactKey, SchemaIr, ValueType,
     };
     use riffdb_types::{
-        AggregateTypeId, CommitSequence, EntityKeyBuilder, EntityTypeId, FrontierPosition,
-        IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
-        ProjectionPlanHash,
+        AggregateTypeId, CanonicalVector, CommitSequence, EntityKeyBuilder, EntityTypeId,
+        FrontierPosition, IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, VectorDimension,
     };
 
     use super::*;
@@ -4206,6 +4206,66 @@ mod tests {
         // The withheld entry renders only the marker in every form.
         assert_eq!(format!("{}", redacted[0]), "[redacted:token_hash]");
         assert_eq!(format!("{:?}", redacted[0]), "[redacted:token_hash]");
+    }
+
+    #[test]
+    fn release_point_withholds_secret_vectors_while_releasing_vector_controls() {
+        let visible_field = FieldId::first();
+        let secret_field = visible_field.checked_next().expect("second field");
+        let dimension = VectorDimension::new(3).expect("bounded vector dimension");
+        let schema = RecordSchema::new(
+            RecordTypeRef::Entity(EntityTypeId::first()),
+            vec![
+                FieldSchema::new(
+                    visible_field,
+                    "public_embedding",
+                    ValueType::vector(dimension),
+                )
+                .expect("visible vector field"),
+                FieldSchema::new(
+                    secret_field,
+                    "secret_embedding",
+                    ValueType::vector(dimension),
+                )
+                .expect("secret vector field"),
+            ],
+        )
+        .expect("record schema");
+        let visible_vector = CanonicalValue::Vector(
+            CanonicalVector::new(vec![1.5, -2.25, 0.5]).expect("visible vector"),
+        );
+        let secret_vector = CanonicalValue::Vector(
+            CanonicalVector::new(vec![12_345.5, -9_876.25, 0.125]).expect("secret vector"),
+        );
+        let record = CanonicalRecord::new(vec![
+            (visible_field, visible_vector.clone()),
+            (secret_field, secret_vector),
+        ])
+        .expect("canonical record");
+
+        let (fields, redacted) = filter_record(
+            &schema,
+            &record,
+            &[visible_field, secret_field],
+            &[],
+            &[secret_field],
+            &[],
+        )
+        .expect("vector release succeeds");
+        assert_eq!(fields.fields(), &[(visible_field, visible_vector)]);
+        assert_eq!(redacted.len(), 1);
+        assert_eq!(redacted[0].field(), secret_field);
+        assert_eq!(
+            redacted[0].redaction_marker(),
+            "[redacted:secret_embedding]"
+        );
+        let rendered = format!("{:?}", redacted);
+        for canary in ["12345.5", "-9876.25", "0.125"] {
+            assert!(
+                !rendered.contains(canary),
+                "secret vector component escaped through the redaction marker: {canary}"
+            );
+        }
     }
 
     /// Markers are selection-consistent: an explicit field selection that

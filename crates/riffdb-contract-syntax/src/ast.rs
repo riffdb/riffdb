@@ -324,7 +324,7 @@ pub struct ReferenceDeclaration {
 /// A declared vector field for nearest-neighbor search (ADR-0091).
 ///
 /// Declares: name, dimension, distance metric, source fields (for staleness
-/// tracking), and staleness SLO.
+/// tracking), and stale-entity count threshold.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VectorFieldDeclaration {
     /// The vector field identifier.
@@ -335,7 +335,7 @@ pub struct VectorFieldDeclaration {
     pub metric: Spanned<VectorMetricKeyword>,
     /// Source-field names whose mutation makes the embedding stale.
     pub source_fields: Vec<Spanned<String>>,
-    /// Staleness SLO in seconds (positive integer lexeme).
+    /// Positive stale-entity count threshold lexeme.
     pub staleness_slo: Spanned<String>,
 }
 

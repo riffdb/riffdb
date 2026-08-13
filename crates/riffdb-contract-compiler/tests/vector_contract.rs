@@ -132,7 +132,7 @@ fn vector_search_configuration_reaches_the_bundle_and_round_trips() {
     assert_eq!(specs.len(), 1, "one vector field spec must be carried");
     let spec = &specs[0];
     assert_eq!(spec.metric(), riffdb_types::DistanceMetric::Cosine);
-    assert_eq!(spec.staleness_slo_secs(), 60);
+    assert_eq!(spec.stale_entity_count_threshold(), 60);
     let entity = &bundle.schema().entities()[0];
     let source_names: Vec<&str> = spec
         .source_fields()
@@ -207,7 +207,7 @@ fn distance_metric_and_slo_are_part_of_the_bundle_identity() {
         spec.field(),
         riffdb_types::DistanceMetric::Euclidean,
         spec.source_fields().to_vec(),
-        spec.staleness_slo_secs(),
+        spec.stale_entity_count_threshold(),
     )
     .expect("metric-changed spec");
     let metric_changed = rebundle_with_schema(
@@ -240,7 +240,7 @@ fn distance_metric_and_slo_are_part_of_the_bundle_identity() {
         spec.field(),
         spec.metric(),
         spec.source_fields().to_vec(),
-        spec.staleness_slo_secs() + 60,
+        spec.stale_entity_count_threshold() + 60,
     )
     .expect("slo-changed spec");
     let slo_changed = rebundle_with_schema(

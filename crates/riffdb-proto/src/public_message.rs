@@ -52,6 +52,7 @@ const MAX_COMMIT_COLLECTION_ITEMS: usize = 4_096;
 const MAX_DIAGNOSTICS: usize = 32;
 const MAX_EXPECTED_TOKENS: usize = 16;
 const MAX_BUILD_FEATURES: usize = 64;
+const MAX_AUTHENTICATED_HEALTH_COMPONENTS: usize = 6;
 const MAX_BUILD_STRING_BYTES: usize = 128;
 const MAX_COMMAND_EXPLAIN_ITEMS: usize = 4_096;
 const MAX_COMMAND_BATCH_ITEMS: usize = 16;
@@ -81,7 +82,7 @@ const GET_OUTCOME_RESULT_SCHEMA_ID: &str = "riffdb.command-get-outcome-result/v1
 const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
     "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2";
 const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
-    "0c1f33fbc613b9e87c4a54ccc2f7c1d426625cc0cb98237e2bded4bec073ddde";
+    "1010f0f3a052aa18636739e2fb79fbaa8bf1911ec0338a3015814b8e3d5a6bc8";
 
 type DiagnosticRegistryEntry = (&'static str, Option<&'static str>);
 type DiagnosticRegistry = fn(&str) -> Option<DiagnosticRegistryEntry>;
@@ -2563,7 +2564,7 @@ fn validate_health_response(message: &v1::HealthResponse) -> Result<(), PublicWi
                     | v1::HealthStatus::Degraded)
             ) || health.active_contract_version == Some(0)
                 || health.last_commit_sequence == Some(0)
-                || health.components.len() > 5
+                || health.components.len() > MAX_AUTHENTICATED_HEALTH_COMPONENTS
             {
                 return Err(PublicWireError::InvalidEnum);
             }
@@ -6736,7 +6737,7 @@ fn preflight_authenticated_health(input: &[u8]) -> Result<(), PublicWireError> {
         ],
         &[RepeatedRule {
             field: 4,
-            maximum: 5,
+            maximum: MAX_AUTHENTICATED_HEALTH_COMPONENTS,
             wire: RepeatedWire::LengthDelimited,
         }],
     )

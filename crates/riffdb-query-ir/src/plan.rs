@@ -7,6 +7,7 @@ use riffdb_types::{
 
 use crate::{
     ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, QUERY_IR_VERSION_V1, ResolvedQueryV1,
+    max_query_page_take,
 };
 
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
@@ -222,7 +223,8 @@ pub enum QueryAccessKind {
         vector_field: String,
         /// The query vector parameter name.
         vector_parameter: String,
-        /// Maximum results (K). Mandatory and positive.
+        /// Compiler-proven maximum K. For a literal this is exact; for a
+        /// `Limit` parameter this is the shared page-take ceiling.
         k: u32,
     },
 }
@@ -407,6 +409,17 @@ impl QueryAccessStep {
         entity_key_schema: KeySchema,
         index_key_schema: Option<KeySchema>,
     ) -> Option<Self> {
+        let row_limit_is_valid = match &row_limit {
+            QueryRowLimit::Literal(value) => {
+                *value > 0 && *value <= maximum_rows && *value <= max_query_page_take()
+            }
+            QueryRowLimit::Parameter { name, default } => {
+                !name.is_empty()
+                    && default.as_ref().is_none_or(|value| {
+                        *value > 0 && *value <= maximum_rows && *value <= max_query_page_take()
+                    })
+            }
+        };
         let access_is_valid = match &access {
             QueryAccessKind::Point { key_fields } => {
                 !key_fields.is_empty()
@@ -460,12 +473,19 @@ impl QueryAccessStep {
                 !vector_field.is_empty()
                     && !vector_parameter.is_empty()
                     && *k > 0
+                    && u64::from(*k) <= max_query_page_take()
+                    && maximum_rows == u64::from(*k)
+                    && match &row_limit {
+                        QueryRowLimit::Literal(value) => *value == u64::from(*k),
+                        QueryRowLimit::Parameter { .. } => true,
+                    }
                     && cardinality == Cardinality::Many
             }
         };
         if binding.is_empty()
             || entity.is_empty()
             || maximum_rows == 0
+            || !row_limit_is_valid
             || !access_is_valid
             || predicate_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || selected_fields.windows(2).any(|pair| pair[0] >= pair[1])

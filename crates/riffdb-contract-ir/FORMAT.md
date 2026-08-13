@@ -592,7 +592,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `field` | FieldId |
 | 3 | `metric` | distance metric tag (0x01 cosine, 0x02 euclidean, 0x03 dot_product) |
 | 4 | `source_fields` | u32 count + FieldId[] |
-| 5 | `staleness_slo_secs` | u64 declared staleness SLO in seconds |
+| 5 | `stale_entity_count_threshold` | u64 declared stale-entity count threshold |
 
 ### SecretFieldSpecV1
 

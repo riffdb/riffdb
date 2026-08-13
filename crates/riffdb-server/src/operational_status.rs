@@ -372,7 +372,45 @@ mod tests {
                 status(&snapshot, HealthComponentKind::Projection),
                 HealthComponentStatus::Healthy
             );
+            assert!(
+                snapshot
+                    .components()
+                    .iter()
+                    .all(|component| component.component() != HealthComponentKind::VectorStaleness),
+                "vector staleness stays absent until an authoritative observer is wired"
+            );
         }
+    }
+
+    #[test]
+    fn vector_free_application_reports_ready_without_a_staleness_observer() {
+        use riffdb_service::{BuildInfo, HealthReport, HealthStatus};
+        use riffdb_types::{CommitSequence, ContractVersion, Timestamp};
+
+        let snapshot = required_health_snapshot(
+            ValidatedAllocatorCapacity::Available,
+            None,
+            OutboxDerivedReadiness::Ready,
+            ProjectionWorkerReadiness::Ready,
+            ColumnarWorkerReadiness::Ready,
+        )
+        .expect("vector-free health snapshot");
+        assert!(
+            snapshot
+                .components()
+                .iter()
+                .all(|component| component.component() != HealthComponentKind::VectorStaleness)
+        );
+
+        let report = HealthReport::new(
+            Some(ContractVersion::new(1).expect("active application")),
+            Some(CommitSequence::first()),
+            snapshot,
+            Timestamp::new(1, 0).expect("process start"),
+            BuildInfo::new("0.1.0", "test", "1.97.0", vec![], 1, 1, "2025-11-25")
+                .expect("build metadata"),
+        );
+        assert_eq!(report.status(), HealthStatus::Ready);
     }
 
     /// Falsifiability: drop the `worst_component_status` fold (report only the

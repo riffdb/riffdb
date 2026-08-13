@@ -234,26 +234,26 @@
     },
     {
       "artifact_hashes": [
-        "e3ac10e86a759f9e948d2ddc362cc12ab2838938928d60a7fa3c413215b26e75",
-        "fed741c96d0ec2f50c1554c300d508048c5f2ac24131d19a410fd9577ace0ef9",
-        "a72d08100fb0dcaef60649b9ec81b6c684c3c576e1ee7dce585627cfd7417045",
-        "5a626675981c285294584492c45e567fb8edbca4816744161a362ac207c2e312",
-        "976bc8d284d740ba91eabfa1cd3435d512ed4a8da2efdf3ba4c201eba8fdb51c",
+        "8ea857cb5c51663cc65c35aac1e2f4694bcc352575aae02703c06008471b0d87",
+        "0d91255f3a579b7dd27e387ba74150cd5409491399604677354af0d17d38ab3e",
+        "bb93c0ccf3fff78492970fc73576841b8744f9ed04e2fcffb54695dc5fd44511",
+        "2c5bacf92f8b1c2eaffa9d7ad76792c17f041ba114c8ebf60e7f9caa89d683a7",
+        "74d8d7d9c60288106226b603e78ca68be0cd1ea00cf10f353e136e3dacd201ce",
         "cc65f0f8074bab4f8088c9ad3c701744d95e0a8d3eadc7daf1edaac1bd9d1b34",
-        "1f7c244cedd1f58c5e8700af2d9c006662431d27948ad4d2783028b03ed5011c",
-        "50bcc4b268c2fa053166dab3372aa89034e1a47fea50a6e5bc4f6ae734755f75"
+        "a237f5c4ac4601f19d5c00b00a4411714e541d13f2b0fbb7d44454546c0bf32a",
+        "34a0783f94423919eddd7510e58baee64dc2695a52622570fdc5245d1c1ae116"
       ],
       "contract_bundle_hash": "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de",
-      "lock_hash": "0a4ec10d3c91096bbcbb14570b1448f20c2ebce3bc5fdc466eb7556f3c330a21",
-      "manifest_hash": "53f75ee7aaa5695912588f28d6119cd0ac9f86b9cc1628fac17d4bdf508f1d34",
+      "lock_hash": "5e5600d61bcd86b8f5d1130b9215d64cbcb2cbfefa238fdd79184db27ce0e869",
+      "manifest_hash": "93ee4a3e8ebb3acf2a02e3630c51a1bf8cc497410ab9872383e1c1782b5f2e55",
       "module_hashes": [
-        "4b7d345da5723cf41bf543b0526d25d454fc85cc4c05a934d28715527fdeeb2f"
+        "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
       ],
       "path": "examples/ticketdesk/riffdb.application.lock.json",
       "query_module_format": 1,
       "role_hashes": [
-        "86f1ba321a26ef532bbc083d949bac8f032a53a99fd71130f70dfde1cf91c98a",
-        "d6e3c93e5088bd9b89c3ead048a94b339670a755b8f1fc0081321904e2cda5d2",
+        "99605059595462ffcdf6226d45a3f33c1e2f5163be7a4af28ef81d1c2cc12046",
+        "9dadbd7955735f415946aadd45f92b167d8720129da4abb6dd5c1f2d82f5daf3",
         "88e2f96b8a7b1fdaadaa696a7ab52ded554e3aa35745b23ae46c6c4dd293663d"
       ],
       "rotation": "unchanged_ordinary_v1",

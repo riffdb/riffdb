@@ -179,7 +179,7 @@ pub(crate) struct HirVectorField {
     pub(crate) field_id: FieldId,
     pub(crate) metric: riffdb_types::DistanceMetric,
     pub(crate) source_fields: Vec<FieldId>,
-    pub(crate) staleness_slo_secs: u64,
+    pub(crate) stale_entity_count_threshold: u64,
     pub(crate) span: Span,
 }
 
@@ -912,18 +912,25 @@ fn lower_entities(
                         ));
                     }
                 }
-                // Staleness SLO must be a parseable positive integer (seconds).
-                let staleness_slo_secs = match vector_field.staleness_slo.value.parse::<u64>() {
-                    Ok(secs) if riffdb_types::StalenessSlo::from_secs(secs).is_some() => secs,
-                    _ => {
-                        valid = false;
-                        diagnostics.push(CompilerDiagnostic::new(
-                            CompilerDiagnosticCode::BoundExceeded,
-                            vector_field.staleness_slo.span,
-                        ));
-                        0
-                    }
-                };
+                // The v1 staleness SLO is a positive stale-entity count
+                // threshold. Duration semantics are reserved for a future
+                // amendment and require no clock machinery here.
+                let stale_entity_count_threshold =
+                    match vector_field.staleness_slo.value.parse::<u32>() {
+                        Ok(count)
+                            if riffdb_types::StaleEntityCountThreshold::new(count).is_some() =>
+                        {
+                            u64::from(count)
+                        }
+                        _ => {
+                            valid = false;
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::BoundExceeded,
+                                vector_field.staleness_slo.span,
+                            ));
+                            0
+                        }
+                    };
                 // Source fields must be non-empty and each must resolve to an entity field.
                 if vector_field.source_fields.is_empty() {
                     valid = false;
@@ -991,7 +998,7 @@ fn lower_entities(
                             }
                         },
                         source_fields,
-                        staleness_slo_secs,
+                        stale_entity_count_threshold,
                         span: item.span,
                     });
                 }

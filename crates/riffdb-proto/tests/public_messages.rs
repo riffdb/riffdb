@@ -1506,6 +1506,75 @@ fn health_and_subscription_closed_bounds_are_checked() {
         Err(PublicWireError::InconsistentFields)
     );
 
+    let authenticated = v1::HealthResponse {
+        result: Some(v1::health_response::Result::Authenticated(
+            v1::AuthenticatedHealth {
+                status: v1::HealthStatus::Degraded as i32,
+                active_contract_version: Some(1),
+                last_commit_sequence: Some(1),
+                components: [
+                    v1::HealthComponentKind::AuthoritativeStorage,
+                    v1::HealthComponentKind::Catalog,
+                    v1::HealthComponentKind::CommitCoordinator,
+                    v1::HealthComponentKind::Projection,
+                    v1::HealthComponentKind::Outbox,
+                    v1::HealthComponentKind::VectorStaleness,
+                ]
+                .into_iter()
+                .map(|kind| v1::HealthComponent {
+                    component: kind as i32,
+                    status: if kind == v1::HealthComponentKind::VectorStaleness {
+                        v1::HealthComponentStatus::Unavailable as i32
+                    } else {
+                        v1::HealthComponentStatus::Healthy as i32
+                    },
+                })
+                .collect(),
+                started_at: Some(v1::Timestamp {
+                    seconds: 1,
+                    nanos: 0,
+                }),
+                build: Some(v1::BuildInfo {
+                    semantic_version: "0.1.0".to_owned(),
+                    git_revision: "0123456".to_owned(),
+                    rust_version: "1.97.0".to_owned(),
+                    enabled_features: vec!["default".to_owned()],
+                    storage_format_version: 1,
+                    contract_ir_version: 1,
+                    mcp_protocol_baseline: "2025-06-18".to_owned(),
+                }),
+                history_incarnation: 1,
+            },
+        )),
+        database_alias: "default".to_owned(),
+        authentication_audience: "riffdb-grpc-loopback".to_owned(),
+    };
+    validate_public_message(&authenticated).expect("six canonical health components");
+    let encoded = authenticated.encode_to_vec();
+    assert_eq!(
+        decode_public_message::<v1::HealthResponse>(&encoded),
+        Ok(authenticated.clone())
+    );
+
+    let mut too_many = authenticated;
+    let v1::health_response::Result::Authenticated(report) =
+        too_many.result.as_mut().expect("authenticated result")
+    else {
+        unreachable!();
+    };
+    report.components.push(v1::HealthComponent {
+        component: v1::HealthComponentKind::VectorStaleness as i32,
+        status: v1::HealthComponentStatus::Unavailable as i32,
+    });
+    assert_eq!(
+        validate_public_message(&too_many),
+        Err(PublicWireError::InvalidEnum)
+    );
+    assert_eq!(
+        decode_public_message::<v1::HealthResponse>(&too_many.encode_to_vec()),
+        Err(PublicWireError::PreflightLimitExceeded)
+    );
+
     let mut subscribe = v1::SubscribeCommitsRequest {
         request_id: uuid_v7(),
         after_sequence: None,
