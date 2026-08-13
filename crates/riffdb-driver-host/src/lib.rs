@@ -5,6 +5,7 @@
 mod catalog;
 mod config;
 mod host;
+mod operator_host;
 mod operator_protocol;
 mod protocol;
 mod socket;
@@ -17,6 +18,7 @@ pub use host::{
     DRIVER_ERROR_REGISTRY_HASH, DRIVER_IDENTITY, DRIVER_VALUE_REGISTRY_HASH, DriverHost,
     DriverHostError, DriverPool,
 };
+pub use operator_host::OperatorDriverHost;
 pub use operator_protocol::{
     MAX_OPERATOR_DRIVER_FRAME_BYTES, OPERATOR_DRIVER_PROTOCOL_VERSION, OperatorDriverRequest,
     OperatorDriverResponse, OperatorFrameCodec, OperatorProtocolError, OperatorReimportOperation,
