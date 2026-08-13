@@ -791,3 +791,220 @@ fn the_revision_checked_reauthorization_shortcut_is_reachable_only_from_the_read
         "the shared entry point must always fully re-evaluate"
     );
 }
+
+// ─── ADR-0118 secret reveal enumeration (WP-597) ───
+
+const MCP_BACKEND_SOURCE: &str = include_str!("../../riffdb-api-mcp/src/service_backend.rs");
+const AUDIT_SOURCE: &str = include_str!("../../riffdb-service/src/audit.rs");
+
+/// Recursively collects every Rust source under `root`, skipping build
+/// output and this test file itself (whose expectation tables spell the
+/// enumerated identifiers).
+fn rust_sources(root: &std::path::Path, out: &mut Vec<(String, String)>) {
+    let entries = std::fs::read_dir(root).expect("workspace directory is readable");
+    for entry in entries {
+        let entry = entry.expect("directory entry");
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if name == "target" || name == ".git" {
+                continue;
+            }
+            rust_sources(&path, out);
+        } else if name.ends_with(".rs") && name != "architecture.rs" {
+            let contents = std::fs::read_to_string(&path).expect("source file is readable");
+            let relative = path
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            out.push((relative, contents));
+        }
+    }
+}
+
+/// Strips full-line comments (`//`, `///`, `//!`) so documentation
+/// references do not count as call sites. Inline string literals are
+/// deliberately NOT stripped: over-counting fails safe (red on drift),
+/// under-counting would hide a leak.
+fn without_comment_lines(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every occurrence of the reveal method, the sealed mint, and the
+/// test-fixture mint across the ENTIRE workspace (crates/ and tests/,
+/// derived by walking the tree — not a hardcoded file list) is enumerated
+/// here by exact per-file identifier count, comment lines excluded but test
+/// modules INCLUDED. Adding a call anywhere — any crate, any new file, any
+/// call form (`.method(...)`, UFCS, through a type alias: the method
+/// identifier must be spelled at the call site in every form) — reds this
+/// test until the new site is consciously reviewed into the table.
+///
+/// Known limit: identifier assembly through macros would evade a textual
+/// count; the workspace forbids such macro construction of these names by
+/// convention, and the sealed constructor makes an evasive call site unable
+/// to obtain an authority anyway.
+#[test]
+fn secret_reveal_call_sites_are_exactly_enumerated_across_the_workspace() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("repository root");
+    let mut sources = Vec::new();
+    rust_sources(&repo.join("crates"), &mut sources);
+    rust_sources(&repo.join("tests"), &mut sources);
+    assert!(
+        sources.len() > 300,
+        "the walk must sweep the whole workspace, found only {} files",
+        sources.len()
+    );
+
+    // (identifier, &[(path suffix, exact expected count)])
+    let enumerated: &[(&str, &[(&str, usize)])] = &[
+        (
+            // The ONLY value escape from SecretValue.
+            "reveal_for_authorized_display",
+            &[
+                // Definition plus its two boundary unit tests.
+                ("crates/riffdb-policy/src/secret.rs", 3),
+                // The single production release point (filter_record).
+                ("crates/riffdb-service/src/query_discovery_operations.rs", 1),
+            ],
+        ),
+        (
+            // The ONLY authority mint (on the sealed FieldMask).
+            "secret_reveal_authorities",
+            &[
+                // Definition on FieldMask.
+                ("crates/riffdb-policy/src/decision.rs", 1),
+                // The service helper: its definition, the mask-mint call
+                // inside it, and the get_entity and scan_index call sites.
+                ("crates/riffdb-service/src/query_discovery_operations.rs", 4),
+            ],
+        ),
+        (
+            // The crate-internal sealed constructor.
+            "SecretRevealAuthority::sealed(",
+            &[
+                ("crates/riffdb-policy/src/decision.rs", 1),
+                // The two boundary unit tests.
+                ("crates/riffdb-policy/src/secret.rs", 2),
+            ],
+        ),
+        (
+            // The feature-gated test-fixture mint, unreachable in
+            // production builds.
+            "SecretRevealAuthority::test_fixture(",
+            &[("crates/riffdb-service/src/query_discovery_operations.rs", 2)],
+        ),
+    ];
+
+    for (identifier, expected) in enumerated {
+        for (path, source) in &sources {
+            let stripped = without_comment_lines(source);
+            let count = stripped.matches(identifier).count();
+            let allowed = expected
+                .iter()
+                .find(|(suffix, _)| path.ends_with(suffix))
+                .map_or(0, |(_, count)| *count);
+            assert_eq!(
+                count, allowed,
+                "`{identifier}` occurrence drift in {path}: found {count}, enumerated {allowed} — a new call site is a reviewed event"
+            );
+        }
+    }
+}
+
+/// Fail-open guard (ADR-0118): the classification inputs are optional
+/// arguments whose omission means "no secrets," so the exact production
+/// call sites that supply them are pinned. A read path added without
+/// declaring the schema's secret set reds the enumeration test above once
+/// it calls the release machinery; this test pins the two operation
+/// constructors and the schema-set derivations that feed them.
+#[test]
+fn secret_classification_inputs_are_supplied_at_every_read_entry() {
+    let production = QUERY_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(QUERY_SOURCE, |(production, _)| production);
+    assert_eq!(
+        production
+            .matches("with_secret_classified_fields(secret_fields.clone())")
+            .count(),
+        2,
+        "get_entity and scan_index must both declare the schema's secret set"
+    );
+    assert_eq!(
+        production.matches("secret_fields_for_entity(").count(),
+        3,
+        "get_entity, scan_index, and discovery must derive the secret set from the compiled schema"
+    );
+    assert_eq!(
+        SYMBOLIC_QUERY_SOURCE
+            .matches("secret_fields_for_entity(")
+            .count(),
+        1,
+        "named-query access construction must derive the secret set"
+    );
+    assert_eq!(
+        PROJECTED_QUERY_SOURCE
+            .matches("secret_fields_for_entity(")
+            .count(),
+        1,
+        "projected-query access construction must derive the secret set"
+    );
+}
+
+/// Scanning an index that embeds a secret-classified field releases the
+/// field's canonical bytes inside every IndexEntryKey, so the scan policy
+/// request must join the embedded secrets to the requested set (ADR-0118) —
+/// removing that union reds here before the authorizer ever sees the scan.
+#[test]
+fn index_scans_treat_embedded_secret_fields_as_projections() {
+    let scan = QUERY_SOURCE
+        .split_once("OperationRequest::scan_index(")
+        .expect("scan_index policy request exists")
+        .0;
+    assert!(
+        scan.contains("for field in index.fields()"),
+        "the scan policy request must derive from the index's embedded fields"
+    );
+    assert!(
+        scan.contains("secret_fields.binary_search(field).is_ok()"),
+        "embedded secret fields must join the requested set"
+    );
+}
+
+/// Audit targets and provenance summaries are value-free by construction
+/// (ADR-0118): the audit module must never grow field-value carriage —
+/// identities and closed enums only.
+#[test]
+fn audit_and_provenance_summaries_carry_no_field_values() {
+    assert!(
+        !AUDIT_SOURCE.contains("CanonicalValue"),
+        "audit targets must stay value-free: IDs and closed enums only"
+    );
+    assert!(
+        !AUDIT_SOURCE.contains("CanonicalRecord"),
+        "audit targets must not carry records"
+    );
+}
+
+/// The MCP entity and index renderings must consume the withheld-field list;
+/// reverting to the redaction-blind record renderer reds here before any
+/// sweep runs.
+#[test]
+fn mcp_record_renderings_consume_withheld_secret_fields() {
+    assert!(
+        MCP_BACKEND_SOURCE.contains("entity.redacted_fields()"),
+        "entity rendering must pass the withheld-field list"
+    );
+    assert!(
+        MCP_BACKEND_SOURCE.contains("row.redacted_fields()"),
+        "index-row rendering must pass the withheld-field list"
+    );
+}

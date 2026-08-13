@@ -1676,6 +1676,21 @@ fn projection_pending_then_ready_reauthorizes_without_restarting_wait_or_audit()
     });
 }
 
+/// Regression for the harness lost-wakeup race (closure round S-B): the
+/// waiter counter the tests' barriers observe must imply Notify enrolment,
+/// so a deadline elapsed entirely between future creation and first poll
+/// still wakes. Deterministic: the notification fires before the first
+/// poll; no timing involved.
+#[test]
+fn controlled_deadline_wakeups_survive_the_create_to_first_poll_window() {
+    run_async(async move {
+        let harness = ServiceHarness::new(ReadCommitMode::ImmediateNotFound, false);
+        harness
+            .probe_projection_deadline_wakeup_before_first_poll()
+            .await;
+    });
+}
+
 #[test]
 fn stalled_projection_receipt_uses_the_original_wait_deadline_without_fabricating_a_frontier() {
     run_async(async move {

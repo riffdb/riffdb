@@ -179,6 +179,16 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 ],
             ),
             (
+                "riffdb/storage/v1/capability_secret.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/capability.proto",
+                    "riffdb/storage/v1/capability_export.proto",
+                    "riffdb/storage/v1/capability_installation.proto",
+                    "riffdb/storage/v1/capability_migration.proto",
+                    "riffdb/storage/v1/capability_row_policy.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/capability_installation.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/capability.proto",
@@ -362,8 +372,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        161,
-        "160 semantic messages plus the unchanged StoredEnvelope"
+        164,
+        "163 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -392,9 +402,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 63);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 86);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 63);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 64);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 87);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 64);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -469,6 +479,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV5".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV4".to_owned());
+    readable_names.push("riffdb.storage.v1.CapabilityRecordV6".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -523,6 +534,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV5".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV4".to_owned());
+    writable_names.push("riffdb.storage.v1.CapabilityRecordV6".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -651,8 +663,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 86);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 63);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 87);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 64);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(

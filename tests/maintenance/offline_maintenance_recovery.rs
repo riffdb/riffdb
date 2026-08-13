@@ -953,6 +953,7 @@ fn bootstrap_request(
                 contract_lineage: CONTRACT_LINEAGE.to_owned(),
                 entity_type_id: 1,
                 field_ids: vec![1, 3, 5],
+                secret_field_ids: Vec::new(),
             }],
             max_scan_rows: 100,
             approval_required: Vec::new(),

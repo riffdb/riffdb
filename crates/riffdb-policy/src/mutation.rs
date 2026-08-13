@@ -1669,6 +1669,12 @@ fn field_visibility_subset(child: &CapabilityGrantV1, parent: &CapabilityGrantV1
                     .fields()
                     .iter()
                     .all(|field| parent_entry.fields().binary_search(field).is_ok())
+                    // Secret reveal authority attenuates like any other
+                    // visibility: a child may only name secrets its parent
+                    // explicitly names (ADR-0118).
+                    && child_entry.secret_fields().iter().all(|field| {
+                        parent_entry.secret_fields().binary_search(field).is_ok()
+                    })
             })
     })
 }
@@ -3681,6 +3687,45 @@ mod tests {
         )
         .expect("valid grant");
         assert!(!grant_subset(&invisible_field, &parent));
+    }
+
+    /// Secret reveal authority attenuates (ADR-0118): a child may name a
+    /// secret field only when its parent's dedicated secret list names it —
+    /// the parent's ordinary field list, however complete, is not enough.
+    #[test]
+    fn delegation_cannot_mint_secret_reveal_authority() {
+        let lineage = ContractLineage::new("example.contract").expect("valid lineage");
+        let read = CapabilityPermissionV1::ReadEntity(lineage.clone(), EntityTypeId::first());
+        let secret = FieldId::new(7).expect("nonzero field");
+        let entry = |secret_fields: Vec<FieldId>| {
+            EntityFieldVisibilityV1::with_secret_fields(
+                lineage.clone(),
+                EntityTypeId::first(),
+                vec![FieldId::first(), secret],
+                secret_fields,
+            )
+            .expect("valid entry")
+        };
+        let make = |secret_fields: Vec<FieldId>| {
+            CapabilityGrantV1::new(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                CapabilityPermissionsV1::new(vec![read.clone()]).expect("valid permissions"),
+                vec![entry(secret_fields)],
+                NonZeroU16::new(50).expect("nonzero rows"),
+                Vec::new(),
+            )
+            .expect("valid grant")
+        };
+        let parent_without_naming = make(Vec::new());
+        let child_naming_secret = make(vec![secret]);
+        assert!(
+            !grant_subset(&child_naming_secret, &parent_without_naming),
+            "a delegation must not mint reveal authority its parent lacks"
+        );
+        let parent_with_naming = make(vec![secret]);
+        assert!(grant_subset(&child_naming_secret, &parent_with_naming));
+        assert!(grant_subset(&parent_without_naming, &parent_with_naming));
     }
 
     #[test]

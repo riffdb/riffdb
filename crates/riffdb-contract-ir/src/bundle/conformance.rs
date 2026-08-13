@@ -261,6 +261,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "unique_keys",
                 "delete_policies",
                 "vector_field_specs",
+                "secret_field_specs",
             ],
         ),
         (
@@ -291,6 +292,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "staleness_slo_secs",
             ],
         ),
+        ("SecretFieldSpecV1", vec!["entity", "field"]),
         (
             "EntitySchema",
             vec![
@@ -597,6 +599,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("UniqueKeySchema", "uniqueness compiler fixture"),
         ("DeletePolicySchemaV1", "delete-policy schema fixture"),
         ("VectorFieldSpecV1", "vector contract front-door fixture"),
+        ("SecretFieldSpecV1", "secret contract front-door fixture"),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
         ("EventPartitionSchema", "partitioned event fixture"),
@@ -1684,4 +1687,58 @@ fn ledger_schema_registry_and_compatibility_families_round_trip() {
         report
     );
     assert_reader_finished(reader);
+}
+
+/// The optional schema extensions share one descending u32 marker namespace
+/// consumed one value at a time by concurrent work. The witness registry
+/// catches a FORGOTTEN registration; this catches the COLLIDING one — two
+/// branches each grabbing the same next-free marker merge cleanly
+/// everywhere else and would misparse each other's bundles.
+#[test]
+fn schema_extension_markers_are_unique_and_strictly_descending() {
+    let markers = [
+        super::RELATIONSHIP_SCHEMA_EXTENSION,
+        super::UNIQUE_KEY_SCHEMA_EXTENSION,
+        super::DELETE_POLICY_SCHEMA_EXTENSION,
+        super::VECTOR_FIELD_SPEC_SCHEMA_EXTENSION,
+        super::INDEX_FIELD_ENCODING_EXTENSION,
+        super::SECRET_FIELD_SPEC_SCHEMA_EXTENSION,
+    ];
+    for pair in markers.windows(2) {
+        assert!(
+            pair[0] > pair[1],
+            "extension markers must stay unique and strictly descending: {:#010x} !> {:#010x}",
+            pair[0],
+            pair[1]
+        );
+    }
+    // The eight-byte magics read at per-event positions, never at the
+    // schema tail, so full-value distinctness is the hard invariant. Their
+    // HIGH words additionally consume slots from the shared descending
+    // namespace (the legacy partition magic took 0xffff_fffc's word by
+    // design; the V7 event-anchor magic took 0xffff_fff9's, which is why
+    // the secret extension moved to 0xffff_fff8): every future u32 marker
+    // must skip any high word already claimed by a u64 magic.
+    let magic_high_words = [
+        (super::EVENT_PARTITION_SCHEMA_EXTENSION >> 32) as u32,
+        (super::EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION >> 32) as u32,
+    ];
+    for magic in [
+        super::EVENT_PARTITION_SCHEMA_EXTENSION,
+        super::EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION,
+    ] {
+        for marker in markers {
+            assert_ne!(u64::from(marker), magic);
+        }
+    }
+    // The legacy fffc reuse predates the rule and is positionally safe;
+    // everything after the vector marker must respect it.
+    for marker in markers {
+        if marker < super::VECTOR_FIELD_SPEC_SCHEMA_EXTENSION {
+            assert!(
+                !magic_high_words.contains(&marker),
+                "u32 marker {marker:#010x} collides with a u64 magic high word"
+            );
+        }
+    }
 }

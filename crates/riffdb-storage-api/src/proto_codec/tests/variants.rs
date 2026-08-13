@@ -926,3 +926,61 @@ fn every_projection_failure_code_round_trips() {
         );
     }
 }
+
+/// ADR-0118 boundary: explicit secret naming rides the additive V6 record —
+/// round-trips value-exact AND byte-exact, keeps the ordinary field list
+/// free of secret ids on the wire, and one grant short (no naming) never
+/// leaves the legacy record shape.
+#[test]
+fn secret_naming_uses_additive_capability_v6_only() {
+    let capability = sample::capability_record_with_secret_naming();
+    let encoded = assert_round_trip(
+        capability.clone(),
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("secret capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV6"
+    );
+    let record = wire::CapabilityRecordV6::decode(envelope.payload()).expect("capability V6");
+    assert!(record.migration.is_none());
+    assert!(record.installation.is_none());
+    assert!(record.row_policy.is_none());
+    assert!(record.export.is_none());
+    let base = record.base.expect("V6 base");
+    let base_grant = base.grant.expect("base grant");
+    assert_eq!(
+        base_grant.field_visibility[0].field_ids,
+        vec![1, 2],
+        "the ordinary wire list must never carry secret ids"
+    );
+    let secret = record.secret.expect("V6 secret extension");
+    assert_eq!(secret.entries.len(), 1);
+    assert_eq!(secret.entries[0].entity_type_id, 1);
+    assert_eq!(secret.entries[0].secret_field_ids, vec![7]);
+
+    // Decoded-then-re-encoded is byte-exact.
+    let decoded = decode_capability_record_v1(encoded.as_bytes()).expect("decodes");
+    let reencoded = encode_capability_record_v1(decoded.value()).expect("re-encodes");
+    assert_eq!(
+        encoded.as_bytes(),
+        reencoded.as_bytes(),
+        "a decoded grant must re-encode byte-exactly, secret naming included"
+    );
+
+    // One grant short: the identical record without the naming stays on the
+    // legacy record shape — adopting V6 is strictly additive.
+    let (plain, _, _, _) = sample::capability_records();
+    let plain_encoded = encode_capability_record_v1(&plain).expect("plain encodes");
+    let plain_envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(plain_encoded.as_bytes())
+        .expect("plain envelope");
+    assert_eq!(
+        plain_envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV1"
+    );
+}

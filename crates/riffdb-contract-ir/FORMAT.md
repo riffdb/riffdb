@@ -548,6 +548,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 6 | `unique_keys` | optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty |
 | 7 | `delete_policies` | IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty |
 | 8 | `vector_field_specs` | IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty |
+| 9 | `secret_field_specs` | IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty |
 
 ### RelationshipSchema
 
@@ -585,6 +586,13 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 3 | `metric` | distance metric tag (0x01 cosine, 0x02 euclidean, 0x03 dot_product) |
 | 4 | `source_fields` | u32 count + FieldId[] |
 | 5 | `staleness_slo_secs` | u64 declared staleness SLO in seconds |
+
+### SecretFieldSpecV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `entity` | EntityTypeId |
+| 2 | `field` | FieldId |
 
 ### EntitySchema
 

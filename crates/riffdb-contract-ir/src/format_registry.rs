@@ -1019,6 +1019,7 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "unique_keys" => "optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty",
     "delete_policies" => "IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty",
     "vector_field_specs" => "IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty",
+    "secret_field_specs" => "IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",
@@ -1044,6 +1045,10 @@ layout!(VECTOR_FIELD_SPEC_LAYOUT, "VectorFieldSpecV1", {
     "metric" => "distance metric tag (0x01 cosine, 0x02 euclidean, 0x03 dot_product)",
     "source_fields" => "u32 count + FieldId[]",
     "staleness_slo_secs" => "u64 declared staleness SLO in seconds",
+});
+layout!(SECRET_FIELD_SPEC_LAYOUT, "SecretFieldSpecV1", {
+    "entity" => "EntityTypeId",
+    "field" => "FieldId",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -1365,6 +1370,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     UNIQUE_KEY_LAYOUT,
     DELETE_POLICY_LAYOUT,
     VECTOR_FIELD_SPEC_LAYOUT,
+    SECRET_FIELD_SPEC_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     EVENT_PARTITION_LAYOUT,
@@ -2263,7 +2269,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 59);
+        assert_eq!(FORMAT_LAYOUTS.len(), 60);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

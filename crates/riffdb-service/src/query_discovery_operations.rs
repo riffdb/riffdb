@@ -331,6 +331,10 @@ async fn get_entity(
         .cloned()
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     validate_field_selection(&entity, request.fields().as_slice())?;
+    // ADR-0118: the classification rides the compiled schema; the release
+    // point in `filter_record` withholds these fields regardless of the
+    // ordinary visibility mask.
+    let secret_fields = contract.schema().secret_fields_for_entity(entity.id());
     let partition = derive_entity_partition(contract.schema(), &entity, request.key())
         .map_err(|error| preparation_failure(&service, OPERATION, error))?;
     let policy_request = OperationRequest::get_entity(
@@ -341,6 +345,7 @@ async fn get_entity(
         partition.clone(),
         request.fields().as_slice().to_vec(),
     )
+    .and_then(|request| request.with_secret_classified_fields(secret_fields.clone()))
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     let targets = ServiceAuditTargetMap::get_entity(lineage.clone(), version, entity.id())
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -446,6 +451,11 @@ async fn get_entity(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
+    // Explicit secret reveal authority (ADR-0118) is derived only from the
+    // grant's dedicated secret-visibility naming, never from the ordinary
+    // mask; without it every secret field releases as its redaction marker.
+    let secret_reveal =
+        secret_reveal_authorities(&return_authorization, &lineage, &entity, &secret_fields);
     let result = match snapshot {
         None => GetEntityResult::NotFound,
         Some(snapshot) => {
@@ -455,6 +465,9 @@ async fn get_entity(
                 &entity,
                 request.key(),
                 &visible_fields,
+                request.fields().as_slice(),
+                &secret_fields,
+                &secret_reveal,
                 snapshot,
             ) {
                 Ok(view) => view,
@@ -486,6 +499,10 @@ async fn scan_index(
     let (entity, index) = find_index(contract.schema(), request.index_id())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     validate_field_selection(&entity, request.fields().as_slice())?;
+    // ADR-0118: the classification rides the compiled schema; the release
+    // point in `filter_record` withholds these fields regardless of the
+    // ordinary visibility mask.
+    let secret_fields = contract.schema().secret_fields_for_entity(entity.id());
     let leading_components = materialize_query_components(
         &service,
         OPERATION,
@@ -512,15 +529,28 @@ async fn scan_index(
         page_request.limit(),
     )
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    // An index whose fields include a secret-classified field embeds that
+    // field's canonical bytes in every released IndexEntryKey, so scanning
+    // it IS a projection of the value (ADR-0118): the embedded secrets join
+    // the requested set and the authorizer denies the scan without the
+    // grant's dedicated secret naming. Uniqueness enforcement and exact
+    // probes run in the commit path and never consult visibility.
+    let mut policy_fields = request.fields().as_slice().to_vec();
+    for field in index.fields() {
+        if secret_fields.binary_search(field).is_ok() && !policy_fields.contains(field) {
+            policy_fields.push(*field);
+        }
+    }
     let policy_request = OperationRequest::scan_index(
         lineage.clone(),
         version,
         index.id(),
         entity.id(),
         OperationTenantScope::global_only(),
-        request.fields().as_slice().to_vec(),
+        policy_fields,
         page_request.limit().get(),
     )
+    .and_then(|request| request.with_secret_classified_fields(secret_fields.clone()))
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     let targets = ServiceAuditTargetMap::scan_index(lineage.clone(), version, index.id())
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -722,11 +752,16 @@ async fn scan_index(
         return Err(begun.finish_authorization_denial(&service, &context).await);
     };
     let return_limit = return_policy.effective_limit();
+    let secret_reveal =
+        secret_reveal_authorities(&return_authorization, &lineage, &entity, &secret_fields);
     let mut rows = match index_views(
         &entity,
         &lineage,
         return_policy.partition_constraint(),
         return_policy.visible_fields().as_slice(),
+        request.fields().as_slice(),
+        &secret_fields,
+        &secret_reveal,
         &lower_page,
         &derived_partitions,
     ) {
@@ -2328,15 +2363,23 @@ fn append_contract_resources(
         ResourceDescriptor::contract_version(lineage.clone(), contract.contract_version()),
     );
     for entity in contract.schema().entities() {
+        // ADR-0118: secret-classified fields stay out of the ordinary
+        // candidate list; discovery classifies them against the grant's
+        // dedicated secret naming.
+        let entity_secret_fields = contract.schema().secret_fields_for_entity(entity.id());
         let non_key_fields = entity
             .record()
             .fields()
             .iter()
             .map(|field| field.id())
             .filter(|field| !entity.primary_key_fields().contains(field))
+            .filter(|field| entity_secret_fields.binary_search(field).is_err())
             .collect::<Vec<_>>();
         let Ok(policy_candidate) =
             EntitySchemaCandidate::new(lineage.clone(), entity.id(), non_key_fields.clone())
+                .and_then(|candidate| {
+                    candidate.with_secret_classified_fields(entity_secret_fields)
+                })
         else {
             // A legal entity can exceed the discovery-policy field candidate
             // bound. Omitting that one schema is safer than treating the
@@ -2923,6 +2966,33 @@ fn current_scan_policy(
     ))
 }
 
+/// Resolves the sealed per-field reveal authorities (ADR-0118) minted by
+/// the policy evaluation's mask.
+///
+/// The authorities themselves are unforgeable — minted only by
+/// [`riffdb_policy::FieldMask::secret_reveal_authorities`], and a mask
+/// exists only through the authorizer's evaluation of a real grant. This
+/// helper adds the service-side scope checks: a mask for the wrong lineage
+/// or entity, an absent mask, or a granted secret the schema no longer
+/// classifies all yield no authority.
+fn secret_reveal_authorities(
+    authorization: &AuthorizedOperation,
+    lineage: &ContractLineage,
+    entity: &EntitySchema,
+    secret_fields: &[FieldId],
+) -> Vec<riffdb_policy::SecretRevealAuthority> {
+    let Some(mask) = authorization.obligations().field_mask() else {
+        return Vec::new();
+    };
+    if mask.lineage() != lineage || mask.entity_type_id() != entity.id() {
+        return Vec::new();
+    }
+    mask.secret_reveal_authorities()
+        .into_iter()
+        .filter(|authority| secret_fields.binary_search(&authority.field()).is_ok())
+        .collect()
+}
+
 fn constrain_index_scan_policy(
     current: IndexScanCursorPolicy,
     prior: Option<&IndexScanCursorPolicy>,
@@ -3087,32 +3157,48 @@ fn valid_discovery_authorization(
         && obligations.output_classification() == OutputClassification::PublicMetadata
 }
 
+#[allow(clippy::too_many_arguments)]
 fn entity_view(
     service: &RiffDbServiceInner,
     operation: ServiceOperationV1,
     entity: &EntitySchema,
     requested_key: &EntityKey,
     visible_fields: &[FieldId],
+    requested_fields: &[FieldId],
+    secret_fields: &[FieldId],
+    reveal: &[riffdb_policy::SecretRevealAuthority],
     snapshot: AuthoritativeEntitySnapshot,
 ) -> ServiceResult<EntityView> {
     if snapshot.key() != requested_key {
         return Err(lower_integrity_failure(service, operation));
     }
-    let fields = filter_record(entity.record(), snapshot.fields(), visible_fields)
-        .map_err(|()| lower_integrity_failure(service, operation))?;
+    let (fields, redacted) = filter_record(
+        entity.record(),
+        snapshot.fields(),
+        visible_fields,
+        requested_fields,
+        secret_fields,
+        reveal,
+    )
+    .map_err(|()| lower_integrity_failure(service, operation))?;
     Ok(EntityView::new(
         snapshot.key().clone(),
         snapshot.entity_version(),
         snapshot.written_by_contract(),
         fields,
-    ))
+    )
+    .with_redacted_fields(redacted))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn index_views(
     entity: &EntitySchema,
     lineage: &ContractLineage,
     constraint: &PartitionConstraint,
     visible_fields: &[FieldId],
+    requested_fields: &[FieldId],
+    secret_fields: &[FieldId],
+    reveal: &[riffdb_policy::SecretRevealAuthority],
     page: &AuthoritativeIndexPage,
     derived_partitions: &[PartitionKey],
 ) -> Result<Vec<IndexRowView>, ()> {
@@ -3124,8 +3210,15 @@ fn index_views(
         if !partition_allowed(constraint, lineage, partition) {
             continue;
         }
-        let values = filter_record(entity.record(), row.values(), visible_fields)?;
-        views.push(IndexRowView::new(row.key().clone(), values));
+        let (values, redacted) = filter_record(
+            entity.record(),
+            row.values(),
+            visible_fields,
+            requested_fields,
+            secret_fields,
+            reveal,
+        )?;
+        views.push(IndexRowView::new(row.key().clone(), values).with_redacted_fields(redacted));
     }
     Ok(views)
 }
@@ -3166,12 +3259,26 @@ fn partition_allowed(
     }
 }
 
+/// The single release point where record values become displayable (ADR-0118).
+///
+/// Non-secret fields release exactly as before: present when the visibility
+/// mask names them, absent otherwise. Secret-classified fields NEVER release
+/// through the mask alone — even a mask that lists one (for example via a
+/// role default that enumerated every field) yields only its redaction
+/// marker. The sole path to a released secret value is a
+/// [`riffdb_policy::SecretRevealAuthority`] for that exact field, consumed by
+/// [`riffdb_policy::SecretValue::reveal_for_authorized_display`]; the
+/// display-surface architecture test enumerates that method's call sites.
 fn filter_record(
     schema: &RecordSchema,
     record: &CanonicalRecord,
     visible_fields: &[FieldId],
-) -> Result<CanonicalRecord, ()> {
+    requested_fields: &[FieldId],
+    secret_fields: &[FieldId],
+    reveal: &[riffdb_policy::SecretRevealAuthority],
+) -> Result<(CanonicalRecord, Vec<riffdb_types::RedactedSecretField>), ()> {
     let mut filtered = Vec::new();
+    let mut redacted = Vec::new();
     for (field_id, value) in record.fields() {
         let Some(field) = schema.field(*field_id) else {
             // Compatible later-version fields remain invisible under an older
@@ -3179,11 +3286,36 @@ fn filter_record(
             continue;
         };
         field.value_type().validate_value(value).map_err(|_| ())?;
+        if secret_fields.binary_search(field_id).is_ok() {
+            // Selection-consistent markers: an explicit field selection that
+            // does not name this secret omits it entirely, exactly like any
+            // other unselected field. (Explicitly SELECTING a secret either
+            // denies upstream or arrives here with reveal authority, so the
+            // marker appears only under the default whole-record selection.)
+            if !requested_fields.is_empty() && requested_fields.binary_search(field_id).is_err() {
+                continue;
+            }
+            let secret =
+                riffdb_policy::SecretValue::classify(*field_id, field.name(), value.clone());
+            let authority = reveal
+                .iter()
+                .find(|authority| authority.field() == *field_id);
+            match authority {
+                Some(authority) => match secret.reveal_for_authorized_display(authority) {
+                    Ok(revealed) => filtered.push((*field_id, revealed)),
+                    Err(withheld) => redacted.push(withheld.into_redacted()),
+                },
+                None => redacted.push(secret.into_redacted()),
+            }
+            continue;
+        }
         if visible_fields.binary_search(field_id).is_ok() {
             filtered.push((*field_id, value.clone()));
         }
     }
-    CanonicalRecord::new(filtered).map_err(|_| ())
+    CanonicalRecord::new(filtered)
+        .map(|record| (record, redacted))
+        .map_err(|_| ())
 }
 
 fn validate_projection_ready(
@@ -4008,6 +4140,140 @@ mod tests {
         assert!(artifact.canonical_json().contains("visible_value"));
         assert!(!artifact.canonical_json().contains("hidden_value"));
         assert!(filtered_entity_schema_artifact(&entity, &schema, &[key_field]).is_err());
+    }
+
+    // ─── ADR-0118 release point (WP-597) ───
+
+    const SECRET_CANARY: &str = "wp597-release-canary-7c41";
+
+    fn secret_release_fixture() -> (RecordSchema, CanonicalRecord, FieldId, FieldId) {
+        let plain_field = FieldId::first();
+        let secret_field = plain_field.checked_next().expect("second field");
+        let schema = RecordSchema::new(
+            RecordTypeRef::Entity(EntityTypeId::first()),
+            vec![
+                FieldSchema::new(plain_field, "plain_value", ValueType::bool())
+                    .expect("plain field"),
+                FieldSchema::new(
+                    secret_field,
+                    "token_hash",
+                    ValueType::string(256).expect("string type"),
+                )
+                .expect("secret field"),
+            ],
+        )
+        .expect("record schema");
+        let record = CanonicalRecord::new(vec![
+            (plain_field, CanonicalValue::Bool(true)),
+            (
+                secret_field,
+                CanonicalValue::String(
+                    riffdb_types::CanonicalString::new(SECRET_CANARY.to_owned())
+                        .expect("canary string"),
+                ),
+            ),
+        ])
+        .expect("canonical record");
+        (schema, record, plain_field, secret_field)
+    }
+
+    /// The release point withholds a secret field even when the ORDINARY
+    /// visibility mask lists it (the enumerate-all sweep a role default
+    /// produces), releasing only its redaction marker.
+    ///
+    /// Non-empty triggering set: the record provably carries the canary and
+    /// the mask provably names the field — the control assertion shows the
+    /// same call releases the plain field through the same mask.
+    #[test]
+    fn release_point_withholds_secret_fields_from_an_enumerate_all_mask() {
+        let (schema, record, plain_field, secret_field) = secret_release_fixture();
+        let visible = [plain_field, secret_field];
+        let secrets = [secret_field];
+        let (fields, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &[])
+            .expect("release succeeds");
+        // Control: the ordinary field released through the same mask.
+        assert_eq!(
+            fields
+                .fields()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![plain_field]
+        );
+        assert_eq!(redacted.len(), 1);
+        assert_eq!(redacted[0].field(), secret_field);
+        assert_eq!(redacted[0].redaction_marker(), "[redacted:token_hash]");
+        // The withheld entry renders only the marker in every form.
+        assert_eq!(format!("{}", redacted[0]), "[redacted:token_hash]");
+        assert_eq!(format!("{:?}", redacted[0]), "[redacted:token_hash]");
+    }
+
+    /// Markers are selection-consistent: an explicit field selection that
+    /// does not name the secret omits it entirely — exactly like any other
+    /// unselected field — while the default whole-record selection shows
+    /// the marker.
+    #[test]
+    fn release_point_markers_follow_the_field_selection() {
+        let (schema, record, plain_field, secret_field) = secret_release_fixture();
+        let visible = [plain_field];
+        let secrets = [secret_field];
+        // Explicit narrow selection: no marker, no value.
+        let requested = [plain_field];
+        let (fields, redacted) =
+            filter_record(&schema, &record, &visible, &requested, &secrets, &[])
+                .expect("release succeeds");
+        assert_eq!(fields.fields().len(), 1);
+        assert!(
+            redacted.is_empty(),
+            "an unselected secret field must be omitted, not marked"
+        );
+        // Default whole-record selection: the marker appears.
+        let (_, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &[])
+            .expect("release succeeds");
+        assert_eq!(redacted.len(), 1);
+        assert_eq!(redacted[0].field(), secret_field);
+    }
+
+    /// Explicit reveal authority for the exact field releases the value;
+    /// authority for a different field stays withheld (fail closed).
+    #[test]
+    fn release_point_reveals_only_under_exact_field_authority() {
+        let (schema, record, plain_field, secret_field) = secret_release_fixture();
+        let visible = [plain_field];
+        let secrets = [secret_field];
+
+        let exact = [riffdb_policy::SecretRevealAuthority::test_fixture(
+            secret_field,
+        )];
+        let (fields, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &exact)
+            .expect("release succeeds");
+        assert!(redacted.is_empty());
+        let revealed = fields
+            .fields()
+            .iter()
+            .find(|(id, _)| *id == secret_field)
+            .map(|(_, value)| value)
+            .expect("revealed value present");
+        assert_eq!(
+            revealed,
+            &CanonicalValue::String(
+                riffdb_types::CanonicalString::new(SECRET_CANARY.to_owned())
+                    .expect("canary string"),
+            ),
+            "the released value must be the exact stored bytes"
+        );
+
+        let wrong = [riffdb_policy::SecretRevealAuthority::test_fixture(
+            plain_field,
+        )];
+        let (fields, redacted) = filter_record(&schema, &record, &visible, &[], &secrets, &wrong)
+            .expect("release succeeds");
+        assert!(
+            fields.fields().iter().all(|(id, _)| *id != secret_field),
+            "wrong-field authority must not release the value"
+        );
+        assert_eq!(redacted.len(), 1);
+        assert_eq!(redacted[0].field(), secret_field);
     }
 
     fn resource_candidate_with_fields(entity: u32, field_count: u32) -> ResourceCandidate {

@@ -1102,4 +1102,53 @@ mod tests {
         });
         assert_eq!(collector.snapshot().len(), 1);
     }
+
+    /// ADR-0118 telemetry sweep: an event attempting to carry a
+    /// secret-classified field's value — as a string field, or riding an
+    /// otherwise-valid numeric record — never reaches the captured
+    /// telemetry, and the raw rendering of everything that WAS captured
+    /// contains no trace of it. The accepted numeric record proves the
+    /// channel is live (non-empty triggering set).
+    #[test]
+    fn secret_field_values_cannot_enter_captured_telemetry() {
+        const SECRET_CANARY: &str = "wp597-telemetry-canary-b6e3";
+        let layer = SafeTraceLayer::new(8).expect("bounded layer");
+        let collector = layer.collector();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            emit(TraceRecord::service_cursor_unavailable());
+            tracing::event!(
+                target: SAFE_TRACE_TARGET,
+                tracing::Level::INFO,
+                token_hash = SECRET_CANARY
+            );
+            tracing::event!(
+                target: SAFE_TRACE_TARGET,
+                tracing::Level::INFO,
+                kind_tag = 3_u64,
+                operation_tag = 0_u64,
+                detail_tag = 0_u64,
+                value = 1_u64,
+                incident_present = false,
+                incident_id_high = 0_u64,
+                incident_id_low = 0_u64,
+                token_hash = SECRET_CANARY
+            );
+        });
+        let captured = collector.snapshot();
+        assert_eq!(
+            captured.len(),
+            1,
+            "only the closed numeric record may be captured"
+        );
+        let rendered = format!("{captured:?}");
+        assert!(
+            !rendered.is_empty(),
+            "the captured channel must be observable"
+        );
+        assert!(
+            !rendered.contains(SECRET_CANARY),
+            "no captured telemetry rendering may carry the secret value"
+        );
+    }
 }

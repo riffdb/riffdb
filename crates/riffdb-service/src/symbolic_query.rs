@@ -3207,6 +3207,35 @@ pub(crate) fn application_query_target(
             | QueryAccessKind::DependentPointBatch { .. }
             | QueryAccessKind::Nearest { .. } => None,
         };
+        // ADR-0118: secret-classified fields are gated on PROJECTION only.
+        // The step's selected fields — the ones its released rows carry —
+        // resolve against the schema's secret set and require the grant's
+        // dedicated secret naming. Predicate-only secret use compares the
+        // value without returning it (the executor's projection step drops
+        // non-selected fields), so secrets leave the ordinary non-key list
+        // and its all-fields-visible rule entirely.
+        let schema_secret_fields = bundle
+            .schema()
+            .secret_fields_for_entity(step.internal_entity_id());
+        let (projected_secret_fields, non_key_fields) = if schema_secret_fields.is_empty() {
+            (Vec::new(), non_key_fields)
+        } else {
+            let field_ids: std::collections::BTreeMap<&str, riffdb_types::FieldId> =
+                entity.internal_fields().collect();
+            let mut projected: Vec<riffdb_types::FieldId> = step
+                .selected_fields()
+                .iter()
+                .filter_map(|name| field_ids.get(name.as_str()).copied())
+                .filter(|field| schema_secret_fields.binary_search(field).is_ok())
+                .collect();
+            projected.sort_unstable();
+            projected.dedup();
+            let ordinary = non_key_fields
+                .into_iter()
+                .filter(|field| schema_secret_fields.binary_search(field).is_err())
+                .collect();
+            (projected, ordinary)
+        };
         accesses.push(
             ApplicationQueryAccessRequirement::new(
                 step.internal_entity_id(),
@@ -3214,6 +3243,7 @@ pub(crate) fn application_query_target(
                 non_key_fields,
                 rows,
             )
+            .and_then(|access| access.with_projected_secret_fields(projected_secret_fields))
             .ok()?,
         );
     }

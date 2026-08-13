@@ -1,4 +1,4 @@
-spec_version: '0.92'
+spec_version: '0.93'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -11846,13 +11846,19 @@ work_packages:
     unrepresentable; capability field visibility excludes secret fields from wildcard and
     default grants; durable storage, backups, exports, and changelog frames remain
     full-fidelity under existing authority rules. Register the SEC-F requirement family.
-  requirements: []
+  requirements: [SECF-001, SECF-002, SECF-003, SECF-004, SECF-005]
   required_adrs: [ADR-0111, ADR-0117, ADR-0118]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/0118-secret-field-classification.md,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
     crates/riffdb-contract-compiler/**, crates/riffdb-types/**, crates/riffdb-policy/**,
     crates/riffdb-errors/**, crates/riffdb-service/**, crates/riffdb-cli/**,
-    crates/riffdb-api-mcp/**, crates/riffdb-observability/**, docs/**, fixtures/**]
+    crates/riffdb-api-mcp/**, crates/riffdb-observability/**, docs/**, fixtures/**,
+    # Fix-round expansion, coordinator-authorized (2026-08-11): persisting the
+    # grant's dedicated secret-field naming and giving it a production minting
+    # surface requires the durable capability record V6 and the public wire
+    # field, which live in the proto/codec/ingress crates below.
+    proto/**, crates/riffdb-proto/**, crates/riffdb-storage-api/**,
+    crates/riffdb-api-grpc/**, tests/**, release/durable-format-manifest-v1.json]
   deliverables:
   - secret keyword through grammar, AST, versioned IR with compatibility fixtures, bundle
     hash, generated catalogs and bindings, with source-span diagnostics

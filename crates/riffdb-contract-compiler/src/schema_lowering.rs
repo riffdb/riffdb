@@ -169,6 +169,22 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
         )
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?
     };
+    // Secret-field classifications (ADR-0118). Duplicate names and unknown
+    // fields are already rejected by symbol resolution, and the grammar keeps
+    // the modifier off key fields, so schema attachment cannot fail for a
+    // source-derived spec; the contract-span fallback covers programmatic
+    // invariance only.
+    let secret_field_specs = hir
+        .entities
+        .iter()
+        .flat_map(|entity| {
+            entity
+                .fields
+                .iter()
+                .filter(|field| field.secret_span.is_some())
+                .map(|field| riffdb_contract_ir::SecretFieldSpecV1::new(entity.id, field.id))
+        })
+        .collect::<Vec<_>>();
     // Cross-spec failures (duplicate specs for one field) have no single
     // offending declaration; only those fall back to the contract span.
     schema
@@ -178,6 +194,7 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                 .map(|(spec, _)| spec)
                 .collect(),
         )
+        .and_then(|schema| schema.with_secret_field_specs(secret_field_specs))
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
 }
 

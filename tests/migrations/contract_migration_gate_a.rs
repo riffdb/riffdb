@@ -497,6 +497,7 @@ fn bootstrap_request(
                         .iter()
                         .map(|field| field.id().get())
                         .collect(),
+                    secret_field_ids: Vec::new(),
                 })
                 .collect(),
             max_scan_rows: 100,

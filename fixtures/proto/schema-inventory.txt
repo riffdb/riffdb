@@ -23,6 +23,12 @@ files
     import riffdb/storage/v1/capability.proto
     import riffdb/storage/v1/capability_installation.proto
     import riffdb/storage/v1/capability_migration.proto
+  riffdb/storage/v1/capability_secret.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_export.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability_row_policy.proto
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/command_capsule_v1.proto
@@ -516,6 +522,13 @@ messages
     3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
     4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
     5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV6 fields=6
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+    5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+    6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
   riffdb.storage.v1.CapabilityRowPolicyBindingV1 fields=4
     1 contract_lineage optional string
     2 policy_name optional string
@@ -525,6 +538,12 @@ messages
     1 application_role_hash optional bytes
     2 canonical_principal_facts optional bytes
     3 policies repeated .riffdb.storage.v1.CapabilityRowPolicyBindingV1
+  riffdb.storage.v1.CapabilitySecretGrantExtensionV1 fields=1
+    1 entries repeated .riffdb.storage.v1.CapabilitySecretVisibilityV1
+  riffdb.storage.v1.CapabilitySecretVisibilityV1 fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 secret_field_ids repeated uint32
   riffdb.storage.v1.CapabilityTokenDigestV1 fields=3
     1 digest_scheme optional uint32
     2 digest_key_id optional uint32
@@ -1790,10 +1809,11 @@ messages
     2 entity_version optional uint64
     3 written_by_contract_version optional uint64
     4 fields optional .riffdb.v1.ValueRecord
-  riffdb.v1.EntityFieldVisibility fields=3
+  riffdb.v1.EntityFieldVisibility fields=4
     1 contract_lineage optional string
     2 entity_type_id optional uint32
     3 field_ids repeated uint32
+    4 secret_field_ids repeated uint32
   riffdb.v1.EntitySchemaResource fields=3
     1 contract_lineage optional string
     2 entity_type_id optional uint32

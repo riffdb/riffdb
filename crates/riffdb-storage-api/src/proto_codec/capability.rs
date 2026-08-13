@@ -33,6 +33,7 @@ const RECORD_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
 const RECORD_V3: &str = "riffdb.storage.v1.CapabilityRecordV3";
 const RECORD_V4: &str = "riffdb.storage.v1.CapabilityRecordV4";
 const RECORD_V5: &str = "riffdb.storage.v1.CapabilityRecordV5";
+const RECORD_V6: &str = "riffdb.storage.v1.CapabilityRecordV6";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
@@ -426,6 +427,88 @@ fn grant_to_proto(value: &CapabilityGrantV1) -> wire::CapabilityGrantV1 {
             .map(|value| i32::from(value.tag()))
             .collect(),
     }
+}
+
+/// Derives the dedicated secret-field naming extension (ADR-0118): entries
+/// exist only for visibility rows whose grants explicitly name secret
+/// fields. The base grant message never carries the naming — the ordinary
+/// `field_ids` list stays inert for secrets on every reader.
+fn secret_extension_from_grant(
+    value: &CapabilityGrantV1,
+) -> Option<wire::CapabilitySecretGrantExtensionV1> {
+    let entries = value
+        .field_visibility()
+        .iter()
+        .filter(|visibility| !visibility.secret_fields().is_empty())
+        .map(|visibility| wire::CapabilitySecretVisibilityV1 {
+            contract_lineage: visibility.lineage().as_str().to_owned(),
+            entity_type_id: visibility.entity_type().get(),
+            secret_field_ids: visibility
+                .secret_fields()
+                .iter()
+                .map(|value| value.get())
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    (!entries.is_empty()).then_some(wire::CapabilitySecretGrantExtensionV1 { entries })
+}
+
+/// Reapplies the secret-field naming extension onto a decoded grant,
+/// rebuilding the named visibility rows through the dedicated constructor.
+/// Extension rows that match no visibility entry, duplicate one, or fail
+/// the exact sorted-identity re-check are corrupt (fail closed).
+fn apply_secret_extension(
+    grant: CapabilityGrantV1,
+    extension: Option<wire::CapabilitySecretGrantExtensionV1>,
+) -> Result<CapabilityGrantV1, DurableCodecError> {
+    let Some(extension) = extension else {
+        return Ok(grant);
+    };
+    if extension.entries.is_empty() {
+        return Err(DurableCodecError::corrupt());
+    }
+    let mut visibility = grant.field_visibility().to_vec();
+    for entry in extension.entries {
+        let lineage = ContractLineage::new(entry.contract_lineage)
+            .map_err(|_| DurableCodecError::corrupt())?;
+        let entity_type =
+            EntityTypeId::new(entry.entity_type_id).ok_or_else(DurableCodecError::corrupt)?;
+        let raw_secret = entry
+            .secret_field_ids
+            .into_iter()
+            .map(field_id)
+            .collect::<Result<Vec<FieldId>, _>>()?;
+        if raw_secret.is_empty() {
+            return Err(DurableCodecError::corrupt());
+        }
+        let position = visibility
+            .iter()
+            .position(|candidate| {
+                candidate.lineage() == &lineage && candidate.entity_type() == entity_type
+            })
+            .ok_or_else(DurableCodecError::corrupt)?;
+        if !visibility[position].secret_fields().is_empty() {
+            return Err(DurableCodecError::corrupt());
+        }
+        let checked = grant_result(EntityFieldVisibilityV1::with_secret_fields(
+            lineage,
+            entity_type,
+            visibility[position].fields().to_vec(),
+            raw_secret.clone(),
+        ))?;
+        if checked.secret_fields() != raw_secret {
+            return Err(DurableCodecError::corrupt());
+        }
+        visibility[position] = checked;
+    }
+    grant_result(CapabilityGrantV1::new(
+        grant.tenant_scope().clone(),
+        grant.partition_scope().clone(),
+        grant.permissions().clone(),
+        visibility,
+        grant.max_scan_rows(),
+        grant.approval_required().to_vec(),
+    ))
 }
 
 fn grant_to_proto_with_extensions(
@@ -837,6 +920,21 @@ pub fn encode_capability_record_v1(
         grant: Some(grant),
         lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
     };
+    // ADR-0118: any explicit secret-field naming rides the dedicated V6
+    // extension; the base grant message never carries it.
+    if let Some(secret) = secret_extension_from_grant(value.grant()) {
+        return encode_message(
+            RECORD_V6,
+            &wire::CapabilityRecordV6 {
+                base: Some(base),
+                migration,
+                installation,
+                row_policy,
+                export,
+                secret: Some(secret),
+            },
+        );
+    }
     match (migration, installation, row_policy, export) {
         (migration, installation, row_policy, Some(export)) => encode_message(
             RECORD_V5,
@@ -942,6 +1040,36 @@ pub fn decode_capability_record_v1(
                 value.row_policy,
                 Some(require(value.export)?),
             )?
+        }
+        RECORD_V6 => {
+            let value = wire::CapabilityRecordV6::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            let secret = Some(require(value.secret)?);
+            let record = record_from_proto(
+                require(value.base)?,
+                value.migration,
+                value.installation,
+                value.row_policy,
+                value.export,
+            )?;
+            let grant = apply_secret_extension(record.grant().clone(), secret)?;
+            StoredCapabilityRecordV1::from_stored_parts(
+                record.capability_id(),
+                record.revision(),
+                record.token_digest(),
+                record.database_id(),
+                record.environment().clone(),
+                record.principal_id().clone(),
+                record.actor_kind(),
+                record.audiences().to_vec(),
+                record.issued_at(),
+                record.expires_at(),
+                record.creation_sequence(),
+                record.creation_request_id(),
+                grant,
+                record.lifecycle().clone(),
+            )
+            .map_err(|_| DurableCodecError::corrupt())?
         }
         _ => {
             return Err(DurableCodecError::new(

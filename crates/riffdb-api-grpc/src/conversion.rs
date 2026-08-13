@@ -4633,7 +4633,12 @@ pub fn capability_grant_from_proto(
                 .into_iter()
                 .map(|field| FieldId::new(field).ok_or_else(invalid_request))
                 .collect::<Result<Vec<_>, _>>()?;
-            EntityFieldVisibilityV1::new(lineage, entity_type, fields)
+            let secret_fields = visibility
+                .secret_field_ids
+                .into_iter()
+                .map(|field| FieldId::new(field).ok_or_else(invalid_request))
+                .collect::<Result<Vec<_>, _>>()?;
+            EntityFieldVisibilityV1::with_secret_fields(lineage, entity_type, fields, secret_fields)
                 .map_err(|_| invalid_request())
         })
         .collect::<Result<Vec<_>, _>>()?;

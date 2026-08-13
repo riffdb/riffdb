@@ -3502,7 +3502,10 @@ fn render_entity_result(
                 written_by_contract_version: McpPresentedU64::new(
                     entity.written_by_contract().get(),
                 ),
-                fields: presented_record(entity.fields())?,
+                fields: presented_record_with_redactions(
+                    entity.fields(),
+                    entity.redacted_fields(),
+                )?,
             };
             compose(
                 6,
@@ -3530,7 +3533,7 @@ fn render_index_result(
             .map(|row| {
                 Ok(IndexRowPayload {
                     index_entry_key: McpPresentedBytes::new(row.key().as_bytes().to_vec()),
-                    values: presented_record(row.values())?,
+                    values: presented_record_with_redactions(row.values(), row.redacted_fields())?,
                 })
             })
             .collect::<Result<Vec<_>, McpBackendError>>()?,
@@ -4940,7 +4943,18 @@ fn authenticated_health_payload(
 }
 
 fn presented_record(record: &CanonicalRecord) -> Result<McpPresentedValue, McpBackendError> {
-    let fields = record
+    presented_record_with_redactions(record, &[])
+}
+
+/// Renders one released record plus its withheld secret-classified fields
+/// (ADR-0118): every withheld field appears as a `Redacted` entry carrying
+/// only the stable marker, so the tool output names what was withheld
+/// without ever holding the value.
+fn presented_record_with_redactions(
+    record: &CanonicalRecord,
+    redacted: &[riffdb_types::RedactedSecretField],
+) -> Result<McpPresentedValue, McpBackendError> {
+    let mut fields = record
         .fields()
         .iter()
         .map(|(field_id, value)| {
@@ -4950,6 +4964,13 @@ fn presented_record(record: &CanonicalRecord) -> Result<McpPresentedValue, McpBa
             })
         })
         .collect::<Result<Vec<_>, McpBackendError>>()?;
+    fields.extend(redacted.iter().map(|field| McpPresentedField {
+        field_id: field.field().get(),
+        value: McpPresentedValue::Redacted {
+            marker: field.redaction_marker(),
+        },
+    }));
+    fields.sort_by_key(|field| field.field_id);
     Ok(McpPresentedValue::Record { fields })
 }
 
@@ -6202,5 +6223,111 @@ mod tests {
         ] {
             assert!(canonical_natural_parameter(invalid).is_err());
         }
+    }
+
+    // ─── ADR-0118 MCP redaction sweep (WP-597) ───
+
+    /// The MCP entity rendering emits the redaction marker for every
+    /// withheld secret field, into the RAW serialized bytes the tool text is
+    /// built from, while released values still flow.
+    ///
+    /// The visible canary proves the display channel is live (non-empty
+    /// triggering set); the secret value's ABSENCE at this surface is
+    /// enforced upstream by the service release point
+    /// (`release_point_withholds_secret_fields_from_an_enumerate_all_mask`
+    /// in riffdb-service), which strips it before any `EntityView` exists —
+    /// this test proves the marker survives to the output bytes and that no
+    /// rendering arm can resurrect a value it never received.
+    #[test]
+    fn entity_rendering_emits_redaction_markers_into_raw_output_bytes() {
+        const VISIBLE_CANARY: &str = "wp597-visible-canary-91d2";
+        let plain_field = riffdb_types::FieldId::first();
+        let secret_field = plain_field.checked_next().expect("second field");
+        let mut key = riffdb_types::EntityKeyBuilder::new(riffdb_types::EntityTypeId::first());
+        key.push_u64(7).expect("key component");
+        let key = key.finish().expect("entity key");
+        let record = CanonicalRecord::new(vec![(
+            plain_field,
+            CanonicalValue::String(
+                riffdb_types::CanonicalString::new(VISIBLE_CANARY.to_owned())
+                    .expect("canary string"),
+            ),
+        )])
+        .expect("record");
+        let redacted = vec![riffdb_types::RedactedSecretField::new(
+            secret_field,
+            "token_hash",
+        )];
+        let payload = EntityPayload {
+            entity_key: McpPresentedBytes::new(key.as_bytes().to_vec()),
+            entity_version: McpPresentedU64::new(1),
+            written_by_contract_version: McpPresentedU64::new(1),
+            fields: presented_record_with_redactions(&record, &redacted).expect("record renders"),
+        };
+        let raw = serde_json::to_string(&payload).expect("raw JSON bytes");
+        assert!(
+            raw.contains(VISIBLE_CANARY),
+            "the display channel must be live: released values reach the raw bytes"
+        );
+        assert!(
+            raw.contains("[redacted:token_hash]"),
+            "the withheld field's marker must reach the raw bytes"
+        );
+        assert!(
+            raw.contains("\"kind\":\"redacted\""),
+            "the structural Redacted arm must render, not a string lookalike"
+        );
+    }
+
+    /// End-to-end through the REAL composition path: `render_entity_result`
+    /// and `render_index_result` run `compose_fixed_tool_result`, which
+    /// validates the composed value against the registry's pinned result
+    /// schema — exactly where a missing `redacted` schema branch failed the
+    /// whole tool call at runtime. A redacted view must now compose AND
+    /// validate.
+    #[test]
+    fn redacted_views_compose_and_validate_against_the_fixed_tool_schemas() {
+        let plain_field = riffdb_types::FieldId::first();
+        let secret_field = plain_field.checked_next().expect("second field");
+        let mut key = riffdb_types::EntityKeyBuilder::new(riffdb_types::EntityTypeId::first());
+        key.push_u64(7).expect("key component");
+        let key = key.finish().expect("entity key");
+        let record = CanonicalRecord::new(vec![(
+            plain_field,
+            CanonicalValue::String(
+                riffdb_types::CanonicalString::new("visible-value".to_owned())
+                    .expect("plain string"),
+            ),
+        )])
+        .expect("record");
+        let redacted = vec![riffdb_types::RedactedSecretField::new(
+            secret_field,
+            "token_hash",
+        )];
+
+        let view = riffdb_service::EntityView::new(
+            key.clone(),
+            riffdb_types::EntityVersion::first(),
+            riffdb_types::ContractVersion::new(1).expect("nonzero version"),
+            record.clone(),
+        )
+        .with_redacted_fields(redacted.clone());
+        render_entity_result(riffdb_service::GetEntityResult::Found(view))
+            .expect("a redacted entity view must compose and pass the result-schema validation");
+
+        let mut index_key = riffdb_types::IndexEntryKeyBuilder::new(riffdb_types::IndexId::first());
+        index_key.push_u64(7).expect("index component");
+        let index_key = index_key.finish(key).expect("index entry key");
+        let row =
+            riffdb_service::IndexRowView::new(index_key, record).with_redacted_fields(redacted);
+        let page = riffdb_service::Page::new(
+            riffdb_service::PageLimit::new(1).expect("page limit"),
+            vec![row],
+            None,
+            riffdb_service::IndexScanFence::new(riffdb_types::IndexEpochPosition::BeforeFirst),
+        )
+        .expect("bounded page");
+        render_index_result(riffdb_service::ScanIndexResult::new(page))
+            .expect("a redacted index page must compose and pass the result-schema validation");
     }
 }

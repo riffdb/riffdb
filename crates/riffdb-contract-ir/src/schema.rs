@@ -1193,6 +1193,7 @@ pub struct SchemaIr {
     unique_keys: Vec<UniqueKeySchema>,
     delete_policies: Vec<DeletePolicySchemaV1>,
     vector_field_specs: Vec<VectorFieldSpecV1>,
+    secret_field_specs: Vec<SecretFieldSpecV1>,
 }
 
 /// Maximum source fields on one vector field spec. Shared with the bundle
@@ -1297,6 +1298,42 @@ impl VectorFieldSpecV1 {
     #[must_use]
     pub const fn staleness_slo_secs(&self) -> u64 {
         self.staleness_slo_secs
+    }
+}
+
+/// One contract-declared secret field classification (ADR-0118 / WP-597).
+///
+/// The classification marks a stored entity field whose value must never be
+/// rendered by a display surface without explicit field-visibility
+/// authority. It is display-and-visibility metadata only: durable records,
+/// backups, exports, and changelog frames carry the field at full fidelity,
+/// and no cryptographic property is implied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretFieldSpecV1 {
+    entity: EntityTypeId,
+    field: FieldId,
+}
+
+impl SecretFieldSpecV1 {
+    /// Constructs one secret-field classification.
+    ///
+    /// Existence and key-field exclusion are validated when the spec is
+    /// attached to a schema via [`SchemaIr::with_secret_field_specs`].
+    #[must_use]
+    pub const fn new(entity: EntityTypeId, field: FieldId) -> Self {
+        Self { entity, field }
+    }
+
+    /// Owning entity type.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+
+    /// The secret-classified stored field.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
     }
 }
 
@@ -1519,6 +1556,7 @@ impl SchemaIr {
             unique_keys,
             delete_policies,
             vector_field_specs: Vec::new(),
+            secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
         result.validate_schema_enum_registries_and_constants()?;
@@ -1599,6 +1637,82 @@ impl SchemaIr {
             .map(|index| &self.vector_field_specs[index])
     }
 
+    /// Attaches checked secret-field classifications (ADR-0118), validating
+    /// that every spec references an existing stored field and never a
+    /// primary-key field.
+    ///
+    /// Primary-key fields are rejected because key values are the identity
+    /// that provenance, audit targets, and diagnostics legitimately name; a
+    /// secret key would make redaction and identity display contradictory.
+    /// The grammar already prevents the declaration; this check keeps the
+    /// invariant for programmatically constructed schemas.
+    pub fn with_secret_field_specs(
+        mut self,
+        mut specs: Vec<SecretFieldSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("secret field specs", specs.len(), MAX_DECLARATIONS_PER_KIND)?;
+        specs.sort_unstable_by(|left, right| {
+            left.entity
+                .cmp(&right.entity)
+                .then_with(|| left.field.cmp(&right.field))
+        });
+        if specs
+            .windows(2)
+            .any(|pair| pair[0].entity == pair[1].entity && pair[0].field == pair[1].field)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate secret field spec",
+            });
+        }
+        for spec in &specs {
+            let entity = self
+                .entity(spec.entity)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "secret spec entity",
+                })?;
+            if entity.record().field(spec.field).is_none() {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "secret spec field",
+                });
+            }
+            if entity.primary_key_fields().contains(&spec.field) {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "secret spec names a primary-key field",
+                });
+            }
+        }
+        self.secret_field_specs = specs;
+        Ok(self)
+    }
+
+    /// Secret-field classifications in (entity, field) order.
+    #[must_use]
+    pub fn secret_field_specs(&self) -> &[SecretFieldSpecV1] {
+        &self.secret_field_specs
+    }
+
+    /// Whether one entity field is secret-classified (ADR-0118).
+    #[must_use]
+    pub fn is_secret_field(&self, entity: EntityTypeId, field: FieldId) -> bool {
+        self.secret_field_specs
+            .binary_search_by(|spec| {
+                spec.entity
+                    .cmp(&entity)
+                    .then_with(|| spec.field.cmp(&field))
+            })
+            .is_ok()
+    }
+
+    /// Secret-classified field IDs for one entity, in field-ID order.
+    #[must_use]
+    pub fn secret_fields_for_entity(&self, entity: EntityTypeId) -> Vec<FieldId> {
+        self.secret_field_specs
+            .iter()
+            .filter(|spec| spec.entity == entity)
+            .map(|spec| spec.field)
+            .collect()
+    }
+
     /// Entity schemas in stable-ID order.
     #[must_use]
     pub fn entities(&self) -> &[EntitySchema] {
@@ -1658,6 +1772,12 @@ impl SchemaIr {
         self.events
             .iter()
             .any(|event| event.policy_anchor.is_some())
+    }
+    /// Whether this structural schema requires IR v8 (secret-field
+    /// classifications, ADR-0118).
+    #[must_use]
+    pub fn requires_ir_v8(&self) -> bool {
+        !self.secret_field_specs.is_empty()
     }
     /// Resolves an entity.
     #[must_use]

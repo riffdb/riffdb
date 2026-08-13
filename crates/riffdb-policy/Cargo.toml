@@ -16,6 +16,9 @@ riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", defaul
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]
+# serde exists here ONLY so the compile-fail doctest can prove SecretValue
+# is unserializable; it is not a production dependency of the policy crate.
+serde = { version = "=1.0.229", default-features = false, features = ["std"] }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
 
 [[test]]

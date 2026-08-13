@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.92
+**Version:** 0.93
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.93 | 2026-08-11 | Registered the SECF-* requirement family (SECF-001 through SECF-005) for ADR-0118 secret field classification: a contextual `secret` field modifier carried through versioned IR and bundle identity without rotating unclassified contracts; structural display-surface redaction through a wrapper whose only value escape is an architecture-enumerated reveal method; capability field-visibility default-deny with a dedicated explicit secret-naming surface and observed typed denial; predicates/uniqueness/index participation without read visibility; and full-fidelity durable storage, backup, export, and changelog carriage with an explicit no-cryptography non-promise. |
 | 0.92 | 2026-08-11 | Applied the maintainer-approved ADR-0107 correction: an indexed-restrict delete declares a distinct business outcome in grammar/executable/bundle IR v6; a stable inbound reference persists that zero-mutation outcome, while a racing reference causes bounded whole-command reevaluation rather than an infrastructure-error retry loop. Existing v5 no-inbound delete plans remain decodable. |
 | 0.91 | 2026-08-10 | Registered the VEC-* requirement family (VEC-001 through VEC-012) for native vector search projections under ADR-0091 as amended: client-supplied embeddings through typed commands, typed staleness tracking, exact-first KNN with a declared recall contract for approximate tiers, policy-before-ranking, per-organization statistics isolation, and mandatory K with organization scope. ADR-0091 Amendment 1 recorded: the application owns embedding computation; the database never calls external model endpoints. |
 | 0.90 | 2026-08-09 | Strengthened the deterministic-simulation family after independent review: SIM-001 gained the digest-sensitivity obligation (identical operations under differently resolved fault schedules must diverge), SIM-003 now names AuthoritativeCommandModel with the model-extension and startup-validation/structural-inspection obligations and states the one-phase-commit precondition on the commit-to-sync correspondence, and SIM-005 (media-adapter conformance suites), SIM-006 (crash-matrix corpus subsumption, deferred), and SIM-007 (metadata-driven production-graph absence of riffdb-sim) were registered. |
@@ -7642,6 +7643,41 @@ does not create a kernel or storage escape hatch.
   only concurrency sweeps on an idle inventoried host; short, unstable,
   interfered, drifted, or incorrect runs are non-evidentiary.
 
+### 24.5.11 Secret field classification and display-surface redaction
+
+The `SECF-*` prefix registers ADR-0118's secret-field family (the ADR names
+it "SEC-F"; the registered spelling is `SECF` so requirement IDs stay
+machine-checkable). Requirements trace to ADR-0118 §Proposed Decision items
+2–4.
+
+- `SECF-001`: A stored entity field MAY be declared `secret` through a
+  contextual grammar modifier; the classification MUST ride the AST,
+  versioned IR with compatibility fixtures, bundle hash, and generated
+  catalogs, adopting it MUST be a compatible contract evolution, and a
+  contract without the keyword MUST keep its exact prior encoding and bundle
+  hash.
+- `SECF-002`: A secret-classified field's value MUST NOT appear in
+  tracing/log output, typed public errors and diagnostics, MCP tool output
+  text, CLI rendering, provenance and audit summaries, or health/telemetry
+  output. Redaction MUST be structural: display surfaces consume a redacting
+  wrapper whose display and diagnostic-serialization forms emit the one
+  stable `[redacted:field_name]` marker, and the only value escape is a
+  named reveal method whose call sites an architecture test enumerates.
+- `SECF-003`: Capability field visibility MUST default-deny secret fields:
+  the ordinary visibility list — including a wildcard-shaped or role-default
+  enumeration of every field — never reveals one; only a dedicated explicit
+  secret-field naming reveals; requesting or projecting an unrevealed secret
+  MUST fail as an observed typed denial; and delegation MUST NOT mint secret
+  naming a parent grant lacks.
+- `SECF-004`: Predicates on a secret field, uniqueness enforcement, and
+  index participation MUST function without read visibility — the value is
+  used, never returned. A read whose released bytes embed a secret field's
+  encoding (an index scan over it) requires the same explicit naming.
+- `SECF-005`: Durable records, backups, exports, and changelog frames MUST
+  carry secret fields at full fidelity under their existing authority rules;
+  receipts and diagnostics never echo the values; the classification is not
+  a cryptographic promise and the handbook page MUST say so.
+
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570 and WP-572 through WP-579 pass in dependency order, every accepted
 format/interface fixture and release artifact is current, and WP-579's
@@ -7843,5 +7879,6 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `END-*` | Exercised disaster recovery, sustained lifecycle load, and bounded-growth evidence |
 | `SIM-*` | Deterministic simulation of the durable engine under seeded fault schedules |
 | `VEC-*` | Native vector search projections, embedding writes, staleness, and recall contracts |
+| `SECF-*` | Secret-field classification and structural display-surface redaction (ADR-0118's SEC-F family) |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.
