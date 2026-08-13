@@ -2409,11 +2409,12 @@ messages
   riffdb.v1.SourceSpan fields=2
     1 start optional uint32
     2 end optional uint32
-  riffdb.v1.StartApplicationExportRequest fields=4
+  riffdb.v1.StartApplicationExportRequest fields=5
     1 request_id optional bytes
     2 operation_id optional bytes
     3 selection optional .riffdb.v1.ApplicationExportSelection
     4 lease_seconds optional uint32
+    5 canonical_portability_manifest_json optional bytes
   riffdb.v1.StartApplicationExportResponse fields=3
     1 disposition optional .riffdb.v1.ApplicationExportStartDisposition
     2 operation optional .riffdb.v1.ApplicationExportOperation
@@ -2850,7 +2851,7 @@ enums
     1 ACTOR_KIND_HUMAN
     2 ACTOR_KIND_AGENT
     3 ACTOR_KIND_SERVICE
-  riffdb.v1.ApplicationExportFailure values=8
+  riffdb.v1.ApplicationExportFailure values=9
     0 APPLICATION_EXPORT_FAILURE_UNSPECIFIED
     1 APPLICATION_EXPORT_FAILURE_AUTHORITY_CHANGED
     2 APPLICATION_EXPORT_FAILURE_SNAPSHOT_UNAVAILABLE
@@ -2859,6 +2860,7 @@ enums
     5 APPLICATION_EXPORT_FAILURE_CANCELLED
     6 APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED
     7 APPLICATION_EXPORT_FAILURE_INTERNAL
+    8 APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT
   riffdb.v1.ApplicationExportPhase values=7
     0 APPLICATION_EXPORT_PHASE_UNSPECIFIED
     1 APPLICATION_EXPORT_PHASE_ACCEPTED

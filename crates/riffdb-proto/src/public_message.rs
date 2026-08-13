@@ -4183,6 +4183,15 @@ fn validate_start_application_export_request(
     {
         return Err(PublicWireError::InvalidValue);
     }
+    let manifest = &request.canonical_portability_manifest_json;
+    if !manifest.is_empty()
+        && (manifest.len() > MAX_PUBLIC_REQUEST_BYTES
+            || std::str::from_utf8(manifest).is_err()
+            || manifest.first() != Some(&b'{')
+            || manifest.last() != Some(&b'\n'))
+    {
+        return Err(PublicWireError::InvalidBytes);
+    }
     Ok(())
 }
 
@@ -7589,7 +7598,7 @@ fn preflight_application_export_operation(input: &[u8]) -> Result<(), PublicWire
 fn preflight_start_application_export_request(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        4,
+        5,
         &[],
         &[],
         &[NestedRule {
@@ -10404,6 +10413,7 @@ mod application_export_tests {
             operation_id: uuid_bytes(2),
             selection: Some(selection()),
             lease_seconds: MIN_APPLICATION_EXPORT_LEASE_SECONDS,
+            canonical_portability_manifest_json: Vec::new(),
         };
         let mut response = v1::StartApplicationExportResponse {
             disposition: v1::ApplicationExportStartDisposition::Accepted as i32,
@@ -10413,6 +10423,12 @@ mod application_export_tests {
         assert_eq!(
             validate_start_application_export_exchange(&request, &response),
             Ok(())
+        );
+        let mut malformed_portability = request.clone();
+        malformed_portability.canonical_portability_manifest_json = b"{}".to_vec();
+        assert_eq!(
+            validate_public_message(&malformed_portability),
+            Err(PublicWireError::InvalidBytes)
         );
         response.operation.as_mut().expect("operation").operation_id = uuid_bytes(8);
         assert_eq!(

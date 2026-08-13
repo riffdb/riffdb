@@ -5,6 +5,7 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
+use riffdb_application::{ApplicationPortabilityManifest, PortableRecordClass};
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_ir::{RecordSchema, RecordTypeRef, ValueType};
 use riffdb_policy::{
@@ -32,10 +33,11 @@ use riffdb_storage_api::{
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, ApplicationExportAuthorityV1,
     ApplicationExportClassV1, ApplicationExportOperationId, ApplicationExportPageHash,
-    ApplicationExportSelectionV1, ApplicationExportSnapshotBindingV1, ApplicationRoleHash,
-    CanonicalValue, CapabilityApplicationExportScopeV1, CapabilityId, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, HashDomain, QueryModuleHash,
-    ReactiveModuleHash, Timestamp, hash,
+    ApplicationExportSelectionV1, ApplicationExportSnapshotBindingV1,
+    ApplicationPortabilityManifestHash, ApplicationRoleHash, CanonicalValue,
+    CapabilityApplicationExportScopeV1, CapabilityId, CommitSequence, ContractBundleHash,
+    ContractLineage, ContractVersion, DatabaseId, HashDomain, QueryModuleHash, ReactiveModuleHash,
+    Timestamp, hash,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -45,8 +47,11 @@ use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
 use crate::storage::SharedRedbOperationalPorts;
 
 const STATE_SCHEMA: &str = "riffdb.application-export-operation/v1";
+const PORTABILITY_STATE_SCHEMA: &str = "riffdb.application-export-operation/v2";
 const MANIFEST_SCHEMA: &str = "riffdb.application-export-manifest/v1";
 const RECEIPT_SCHEMA: &str = "riffdb.application-export-receipt/v1";
+const PORTABILITY_MANIFEST_SCHEMA: &str = "riffdb.application-export-manifest/v2";
+const PORTABILITY_RECEIPT_SCHEMA: &str = "riffdb.application-export-receipt/v2";
 const CURSOR_VERSION: u8 = 1;
 const MAX_RETAINED_PAGE_HASHES: usize = 4_096;
 const MAX_EXPORT_LINES_PER_STORAGE_CHUNK: u16 = 64;
@@ -259,6 +264,22 @@ struct ExportStateWireV1 {
     page_hashes: Vec<[u8; 32]>,
     manifest: Option<Vec<u8>>,
     receipt: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    portability_manifest_hash: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_quiescence: Vec<WorkflowQuiescenceWireV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowQuiescenceWireV1 {
+    workflow: String,
+    entity_type_id: u32,
+    owner_field_id: u32,
+    expiry_field_id: u32,
+    checked_rows: u64,
+    quiescent_rows: u64,
+    non_quiescent_rows: u64,
 }
 
 #[derive(Clone)]
@@ -285,6 +306,8 @@ struct ExportState {
     page_hashes: Vec<ApplicationExportPageHash>,
     manifest: Option<Vec<u8>>,
     receipt: Option<Vec<u8>>,
+    portability_manifest_hash: Option<ApplicationPortabilityManifestHash>,
+    workflow_quiescence: Vec<WorkflowQuiescenceWireV1>,
 }
 
 fn resolve_selection(
@@ -314,7 +337,13 @@ fn start_or_replay(
     {
         let mut state =
             decode_state(&record).map_err(|()| ApplicationExportMutationPortErrorV1::Integrity)?;
-        if state.selection != *request.selection() {
+        let requested_portability_hash = request
+            .intent()
+            .portability_manifest()
+            .map(ApplicationPortabilityManifest::identity);
+        if state.selection != *request.selection()
+            || state.portability_manifest_hash != requested_portability_hash
+        {
             return Err(ApplicationExportMutationPortErrorV1::InputMismatch);
         }
         if !same_authority(&state, &authorization) {
@@ -338,6 +367,21 @@ fn start_or_replay(
     let snapshot = storage
         .capture_application_export_snapshot(request.selection().lineage())
         .map_err(map_mutation_storage)?;
+    let bundle = ValidatedContractBundle::decode(snapshot.contract_bundle_bytes())
+        .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?;
+    let (portability_manifest_hash, workflow_quiescence) =
+        match request.intent().portability_manifest() {
+            Some(manifest) => {
+                manifest
+                    .validate_compiled_contract(bundle.bundle())
+                    .map_err(|_| ApplicationExportMutationPortErrorV1::InputMismatch)?;
+                (
+                    Some(manifest.identity()),
+                    portability_workflows(manifest, &bundle)?,
+                )
+            }
+            None => (None, Vec::new()),
+        };
     let now = clock
         .now()
         .map_err(|_| ApplicationExportMutationPortErrorV1::Unavailable)?;
@@ -381,6 +425,8 @@ fn start_or_replay(
         page_hashes: Vec::new(),
         manifest: None,
         receipt: None,
+        portability_manifest_hash,
+        workflow_quiescence,
     };
     let replacement = stored_state(&state)?;
     insert_snapshot_candidate(snapshots, state.operation_id, Arc::clone(&snapshot))?;
@@ -518,6 +564,17 @@ fn release_page(
             .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
         for record in source.records() {
             if record_visible(record, row_policy.as_ref(), snapshot.as_ref())? {
+                if !record_workflow_quiescence(record, &mut state.workflow_quiescence)? {
+                    terminalize(
+                        &mut storage,
+                        Some(&retained),
+                        &mut state,
+                        ApplicationExportFailureV1::WorkflowNotQuiescent,
+                    )?;
+                    remove_snapshot(snapshots, state.operation_id)?;
+                    remove_replay(replays, state.operation_id)?;
+                    return Err(ApplicationExportMutationPortErrorV1::WorkflowNotQuiescent);
+                }
                 lines.push(serialize_record(record, &bundle, field_visibility)?);
             }
         }
@@ -763,6 +820,100 @@ fn next_selected_class(
     .find(|class| selection.includes(*class))
 }
 
+fn portability_workflows(
+    manifest: &ApplicationPortabilityManifest,
+    bundle: &ValidatedContractBundle,
+) -> Result<Vec<WorkflowQuiescenceWireV1>, ApplicationExportMutationPortErrorV1> {
+    let mut workflows = BTreeMap::new();
+    for mapping in &manifest.input().mappings {
+        if mapping.class() != PortableRecordClass::Entity {
+            continue;
+        }
+        let entity = bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == mapping.symbol().as_str())
+            .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+        let Some(workflow) = bundle.bundle().workflows().for_entity(entity.id()) else {
+            continue;
+        };
+        let Some(lease) = workflow.lease() else {
+            continue;
+        };
+        let evidence = WorkflowQuiescenceWireV1 {
+            workflow: workflow.name().to_owned(),
+            entity_type_id: entity.id().get(),
+            owner_field_id: lease.owner_field().get(),
+            expiry_field_id: lease.expiry_field().get(),
+            checked_rows: 0,
+            quiescent_rows: 0,
+            non_quiescent_rows: 0,
+        };
+        if workflows
+            .insert(evidence.workflow.clone(), evidence)
+            .is_some()
+        {
+            return Err(ApplicationExportMutationPortErrorV1::Integrity);
+        }
+    }
+    Ok(workflows.into_values().collect())
+}
+
+fn record_workflow_quiescence(
+    record: &ApplicationExportSourceRecordV1,
+    evidence: &mut [WorkflowQuiescenceWireV1],
+) -> Result<bool, ApplicationExportMutationPortErrorV1> {
+    let ApplicationExportSourceRecordV1::Entity(record) = record else {
+        return Ok(true);
+    };
+    let Some(evidence) = evidence
+        .iter_mut()
+        .find(|entry| entry.entity_type_id == record.target().entity_type_id().get())
+    else {
+        return Ok(true);
+    };
+    let owner_field = riffdb_types::FieldId::new(evidence.owner_field_id)
+        .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+    let expiry_field = riffdb_types::FieldId::new(evidence.expiry_field_id)
+        .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+    let field = |field_id| {
+        record
+            .fields()
+            .fields()
+            .binary_search_by_key(&field_id, |(id, _)| *id)
+            .ok()
+            .map(|index| &record.fields().fields()[index].1)
+            .ok_or(ApplicationExportMutationPortErrorV1::Integrity)
+    };
+    record_workflow_lease_values(field(owner_field)?, field(expiry_field)?, evidence)
+}
+
+fn record_workflow_lease_values(
+    owner: &CanonicalValue,
+    expiry: &CanonicalValue,
+    evidence: &mut WorkflowQuiescenceWireV1,
+) -> Result<bool, ApplicationExportMutationPortErrorV1> {
+    let quiescent = matches!(owner, CanonicalValue::Null) && matches!(expiry, CanonicalValue::Null);
+    evidence.checked_rows = evidence
+        .checked_rows
+        .checked_add(1)
+        .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
+    if quiescent {
+        evidence.quiescent_rows = evidence
+            .quiescent_rows
+            .checked_add(1)
+            .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
+    } else {
+        evidence.non_quiescent_rows = evidence
+            .non_quiescent_rows
+            .checked_add(1)
+            .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
+    }
+    Ok(quiescent)
+}
+
 fn start_result(
     state: ExportState,
     disposition: ApplicationExportStartDispositionV1,
@@ -936,7 +1087,29 @@ fn install_terminal_documents(
         } else {
             Vec::new()
         };
-    let manifest = json!({
+    let manifest_schema = if state.portability_manifest_hash.is_some() {
+        PORTABILITY_MANIFEST_SCHEMA
+    } else {
+        MANIFEST_SCHEMA
+    };
+    let receipt_schema = if state.portability_manifest_hash.is_some() {
+        PORTABILITY_RECEIPT_SCHEMA
+    } else {
+        RECEIPT_SCHEMA
+    };
+    let workflow_quiescence = state
+        .workflow_quiescence
+        .iter()
+        .map(|evidence| {
+            json!({
+                "checked_rows": evidence.checked_rows.to_string(),
+                "non_quiescent_rows": evidence.non_quiescent_rows.to_string(),
+                "quiescent_rows": evidence.quiescent_rows.to_string(),
+                "workflow": evidence.workflow,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut manifest = json!({
         "administration_frontier": state.snapshot.administration_frontier().map(|value| value.get().to_string()),
         "application_frontier": state.snapshot.application_frontier().map(|value| value.get().to_string()),
         "bytes": state.bytes_released.to_string(),
@@ -955,17 +1128,30 @@ fn install_terminal_documents(
         "reactive_module_hashes": reactive_modules,
         "row_policy": row_policy,
         "rows": state.rows_released.to_string(),
-        "schema": MANIFEST_SCHEMA,
+        "schema": manifest_schema,
         "scope": export_scope_name(state.selection.scope()),
         "selected_classes": selected_classes,
     });
+    if let Some(portability_manifest_hash) = state.portability_manifest_hash {
+        let object = manifest
+            .as_object_mut()
+            .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+        object.insert(
+            "portability_manifest_hash".to_owned(),
+            Value::String(lower_hex(portability_manifest_hash.as_bytes())),
+        );
+        object.insert(
+            "workflow_lease_quiescence".to_owned(),
+            Value::Array(workflow_quiescence),
+        );
+    }
     let manifest_bytes = serde_json::to_vec(&manifest)
         .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?;
     let manifest_document = CanonicalApplicationExportJsonDocument::new(manifest_bytes.clone())
         .map_err(|_| ApplicationExportMutationPortErrorV1::LimitExceeded)?;
     let manifest_hash =
         riffdb_types::hash_application_export_manifest(manifest_document.as_bytes());
-    let receipt = json!({
+    let mut receipt = json!({
         "capability_id": state.authority.capability_id().to_string(),
         "capability_revision": state.authority.capability_revision().get().to_string(),
         "complete": state.phase == ApplicationExportPhaseV1::Completed,
@@ -975,8 +1161,18 @@ fn install_terminal_documents(
         "phase": phase_name(state.phase),
         "principal_actor_kind": actor_kind_name(state.actor_kind),
         "principal_id": state.principal_id.as_str(),
-        "schema": RECEIPT_SCHEMA,
+        "schema": receipt_schema,
     });
+    if let Some(portability_manifest_hash) = state.portability_manifest_hash {
+        let object = receipt
+            .as_object_mut()
+            .ok_or(ApplicationExportMutationPortErrorV1::Integrity)?;
+        object.insert("portability_intent".to_owned(), Value::Bool(true));
+        object.insert(
+            "portability_manifest_hash".to_owned(),
+            Value::String(lower_hex(portability_manifest_hash.as_bytes())),
+        );
+    }
     let receipt_bytes = serde_json::to_vec(&receipt)
         .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?;
     CanonicalApplicationExportJsonDocument::new(receipt_bytes.clone())
@@ -1066,7 +1262,11 @@ fn decode_state(record: &StoredApplicationExportOperationV1) -> Result<ExportSta
 
 fn state_to_wire(state: &ExportState) -> ExportStateWireV1 {
     ExportStateWireV1 {
-        schema: STATE_SCHEMA.to_owned(),
+        schema: if state.portability_manifest_hash.is_some() {
+            PORTABILITY_STATE_SCHEMA.to_owned()
+        } else {
+            STATE_SCHEMA.to_owned()
+        },
         operation_id: state.operation_id.into_bytes(),
         lineage: state.selection.lineage().as_str().to_owned(),
         scope: state.selection.scope().tag(),
@@ -1125,11 +1325,36 @@ fn state_to_wire(state: &ExportState) -> ExportStateWireV1 {
             .collect(),
         manifest: state.manifest.clone(),
         receipt: state.receipt.clone(),
+        portability_manifest_hash: state
+            .portability_manifest_hash
+            .map(ApplicationPortabilityManifestHash::into_bytes),
+        workflow_quiescence: state.workflow_quiescence.clone(),
     }
 }
 
 fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
-    if wire.schema != STATE_SCHEMA || wire.page_hashes.len() > MAX_RETAINED_PAGE_HASHES {
+    let portability = match wire.schema.as_str() {
+        STATE_SCHEMA => false,
+        PORTABILITY_STATE_SCHEMA => true,
+        _ => return Err(()),
+    };
+    if wire.page_hashes.len() > MAX_RETAINED_PAGE_HASHES
+        || portability != wire.portability_manifest_hash.is_some()
+        || (!portability && !wire.workflow_quiescence.is_empty())
+        || wire
+            .workflow_quiescence
+            .windows(2)
+            .any(|pair| pair[0].workflow >= pair[1].workflow)
+        || wire.workflow_quiescence.iter().any(|evidence| {
+            let Some(classified_rows) = evidence
+                .quiescent_rows
+                .checked_add(evidence.non_quiescent_rows)
+            else {
+                return true;
+            };
+            evidence.checked_rows != classified_rows || evidence.non_quiescent_rows > 1
+        })
+    {
         return Err(());
     }
     let total_pages = wire
@@ -1234,6 +1459,10 @@ fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
             .collect(),
         manifest: wire.manifest,
         receipt: wire.receipt,
+        portability_manifest_hash: wire
+            .portability_manifest_hash
+            .map(ApplicationPortabilityManifestHash::from_bytes),
+        workflow_quiescence: wire.workflow_quiescence,
     };
     operation(&state).map_err(|_| ())?;
     Ok(state)
@@ -1269,6 +1498,7 @@ fn failure_tag(value: ApplicationExportFailureV1) -> u8 {
         ApplicationExportFailureV1::Cancelled => 5,
         ApplicationExportFailureV1::LimitExceeded => 6,
         ApplicationExportFailureV1::Internal => 7,
+        ApplicationExportFailureV1::WorkflowNotQuiescent => 8,
     }
 }
 fn failure_from_tag(value: u8) -> Result<Option<ApplicationExportFailureV1>, ()> {
@@ -1280,6 +1510,7 @@ fn failure_from_tag(value: u8) -> Result<Option<ApplicationExportFailureV1>, ()>
         5 => ApplicationExportFailureV1::Cancelled,
         6 => ApplicationExportFailureV1::LimitExceeded,
         7 => ApplicationExportFailureV1::Internal,
+        8 => ApplicationExportFailureV1::WorkflowNotQuiescent,
         _ => return Err(()),
     }))
 }
@@ -1292,6 +1523,7 @@ fn failure_name(value: ApplicationExportFailureV1) -> &'static str {
         ApplicationExportFailureV1::Cancelled => "cancelled",
         ApplicationExportFailureV1::LimitExceeded => "limit_exceeded",
         ApplicationExportFailureV1::Internal => "internal",
+        ApplicationExportFailureV1::WorkflowNotQuiescent => "workflow_not_quiescent",
     }
 }
 
@@ -1943,6 +2175,8 @@ mod tests {
             page_hashes: Vec::new(),
             manifest: None,
             receipt: None,
+            portability_manifest_hash: None,
+            workflow_quiescence: Vec::new(),
         }
     }
 
@@ -1977,6 +2211,72 @@ mod tests {
         )
         .expect("bounded state");
         assert!(decode_state(&wrong_lineage).is_err());
+        assert!(
+            !stored
+                .canonical_state()
+                .windows("portability_manifest_hash".len())
+                .any(|window| window == b"portability_manifest_hash")
+        );
+    }
+
+    #[test]
+    fn portability_state_binds_manifest_and_canonical_workflow_evidence() {
+        let mut portable = state();
+        portable.portability_manifest_hash =
+            Some(ApplicationPortabilityManifestHash::from_bytes([0x55; 32]));
+        portable.workflow_quiescence = vec![WorkflowQuiescenceWireV1 {
+            workflow: "WorkLifecycle".to_owned(),
+            entity_type_id: 7,
+            owner_field_id: 11,
+            expiry_field_id: 12,
+            checked_rows: 2,
+            quiescent_rows: 2,
+            non_quiescent_rows: 0,
+        }];
+        let stored = stored_state(&portable).expect("portable state");
+        let decoded = decode_state(&stored).expect("portable state decodes");
+        assert_eq!(
+            decoded.portability_manifest_hash,
+            portable.portability_manifest_hash
+        );
+        assert_eq!(decoded.workflow_quiescence, portable.workflow_quiescence);
+        assert!(
+            std::str::from_utf8(stored.canonical_state())
+                .expect("json")
+                .contains(PORTABILITY_STATE_SCHEMA)
+        );
+    }
+
+    #[test]
+    fn workflow_quiescence_requires_both_owner_and_expiry_to_be_null() {
+        let mut evidence = WorkflowQuiescenceWireV1 {
+            workflow: "WorkLifecycle".to_owned(),
+            entity_type_id: 7,
+            owner_field_id: 11,
+            expiry_field_id: 12,
+            checked_rows: 0,
+            quiescent_rows: 0,
+            non_quiescent_rows: 0,
+        };
+        assert!(
+            record_workflow_lease_values(
+                &CanonicalValue::Null,
+                &CanonicalValue::Null,
+                &mut evidence,
+            )
+            .expect("quiescent")
+        );
+        assert!(
+            !record_workflow_lease_values(
+                &CanonicalValue::Uuid([1; 16]),
+                &CanonicalValue::Null,
+                &mut evidence,
+            )
+            .expect("partial lease")
+        );
+        assert_eq!(evidence.checked_rows, 2);
+        assert_eq!(evidence.quiescent_rows, 1);
+        assert_eq!(evidence.non_quiescent_rows, 1);
     }
 
     #[test]
@@ -2041,6 +2341,32 @@ mod tests {
         );
         assert!(cancelled.manifest.is_some());
         assert!(cancelled.receipt.is_some());
+
+        let mut portability = state();
+        portability.portability_manifest_hash =
+            Some(ApplicationPortabilityManifestHash::from_bytes([0x77; 32]));
+        portability.workflow_quiescence = vec![WorkflowQuiescenceWireV1 {
+            workflow: "WorkLifecycle".to_owned(),
+            entity_type_id: 7,
+            owner_field_id: 11,
+            expiry_field_id: 12,
+            checked_rows: 3,
+            quiescent_rows: 3,
+            non_quiescent_rows: 0,
+        }];
+        complete_state(&mut portability).expect("portable completion");
+        let portable_manifest: Value =
+            serde_json::from_slice(portability.manifest.as_deref().expect("portable manifest"))
+                .expect("portable manifest json");
+        let portable_receipt: Value =
+            serde_json::from_slice(portability.receipt.as_deref().expect("portable receipt"))
+                .expect("portable receipt json");
+        assert_eq!(portable_manifest["schema"], PORTABILITY_MANIFEST_SCHEMA);
+        assert_eq!(
+            portable_manifest["workflow_lease_quiescence"][0]["workflow"],
+            "WorkLifecycle"
+        );
+        assert_eq!(portable_receipt["portability_intent"], true);
     }
 
     #[test]

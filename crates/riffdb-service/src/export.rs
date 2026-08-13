@@ -3,6 +3,7 @@
 use std::fmt;
 use std::num::NonZeroU64;
 
+use riffdb_application::{ApplicationPortabilityManifest, PortableRecordClass};
 use riffdb_policy::AuthorizedApplicationExportV1;
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportManifestHash, ApplicationExportOperationId,
@@ -31,6 +32,58 @@ pub const MAX_APPLICATION_EXPORT_CURSOR_BYTES: usize = 512;
 pub const MIN_APPLICATION_EXPORT_LEASE_SECONDS: u32 = 60;
 /// Maximum caller-selected export lease.
 pub const MAX_APPLICATION_EXPORT_LEASE_SECONDS: u32 = 24 * 60 * 60;
+
+/// Closed purpose of one immutable export operation.
+#[derive(Clone, Eq, PartialEq)]
+pub enum ApplicationExportIntentV1 {
+    /// Ordinary inspection, archive, or transfer without reimport authority.
+    General,
+    /// Reimport-authorizing export bound to one exact adapter portability manifest.
+    Portability(Box<ApplicationPortabilityManifest>),
+}
+
+impl ApplicationExportIntentV1 {
+    /// Constructs a portability intent only when every mapped class is selected.
+    pub fn portability(
+        selection: &ApplicationExportSelectionV1,
+        manifest: ApplicationPortabilityManifest,
+    ) -> Result<Self, ServiceDtoError> {
+        if manifest.input().contract_lineage != *selection.lineage()
+            || manifest
+                .input()
+                .mappings
+                .iter()
+                .any(|mapping| match mapping.class() {
+                    PortableRecordClass::Entity => !selection.entities(),
+                    PortableRecordClass::Event => !selection.events(),
+                })
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self::Portability(Box::new(manifest)))
+    }
+
+    /// Exact portability manifest, absent for a general export.
+    #[must_use]
+    pub fn portability_manifest(&self) -> Option<&ApplicationPortabilityManifest> {
+        match self {
+            Self::General => None,
+            Self::Portability(manifest) => Some(manifest.as_ref()),
+        }
+    }
+}
+
+impl fmt::Debug for ApplicationExportIntentV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::General => formatter.write_str("ApplicationExportIntentV1::General"),
+            Self::Portability(manifest) => formatter
+                .debug_tuple("ApplicationExportIntentV1::Portability")
+                .field(&manifest.identity())
+                .finish(),
+        }
+    }
+}
 
 /// One server-produced canonical JSON object without its JSONL newline.
 #[derive(Clone, Eq, PartialEq)]
@@ -140,6 +193,7 @@ impl fmt::Debug for ApplicationExportCursor {
 pub struct StartApplicationExportRequest {
     operation_id: ApplicationExportOperationId,
     selection: ApplicationExportSelectionV1,
+    intent: ApplicationExportIntentV1,
     lease_seconds: u32,
 }
 
@@ -158,6 +212,28 @@ impl StartApplicationExportRequest {
         Ok(Self {
             operation_id,
             selection,
+            intent: ApplicationExportIntentV1::General,
+            lease_seconds,
+        })
+    }
+
+    /// Constructs one caller-stable portability export bound to an exact manifest.
+    pub fn new_portability(
+        operation_id: ApplicationExportOperationId,
+        selection: ApplicationExportSelectionV1,
+        manifest: ApplicationPortabilityManifest,
+        lease_seconds: u32,
+    ) -> Result<Self, ServiceDtoError> {
+        if !(MIN_APPLICATION_EXPORT_LEASE_SECONDS..=MAX_APPLICATION_EXPORT_LEASE_SECONDS)
+            .contains(&lease_seconds)
+        {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        let intent = ApplicationExportIntentV1::portability(&selection, manifest)?;
+        Ok(Self {
+            operation_id,
+            selection,
+            intent,
             lease_seconds,
         })
     }
@@ -172,6 +248,12 @@ impl StartApplicationExportRequest {
     #[must_use]
     pub const fn selection(&self) -> &ApplicationExportSelectionV1 {
         &self.selection
+    }
+
+    /// Immutable general or exact-manifest portability purpose.
+    #[must_use]
+    pub const fn intent(&self) -> &ApplicationExportIntentV1 {
+        &self.intent
     }
 
     /// Requested bounded operation lease.
@@ -308,6 +390,8 @@ pub enum ApplicationExportFailureV1 {
     LimitExceeded,
     /// A public-safe internal incident closed the operation.
     Internal,
+    /// A portability snapshot contains an active or partially cleared workflow lease.
+    WorkflowNotQuiescent,
 }
 
 /// One bounded canonical JSONL page and its next opaque checkpoint.
@@ -802,6 +886,8 @@ pub enum ApplicationExportMutationPortErrorV1 {
     Integrity,
     /// One explicit operation bound was reached.
     LimitExceeded,
+    /// Portability proof found an active or partially cleared workflow lease.
+    WorkflowNotQuiescent,
 }
 
 /// Closed failure while resolving or observing an export operation.
@@ -910,11 +996,67 @@ pub trait ApplicationExportApplication: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_application::ApplicationPortabilityManifest;
     use riffdb_types::ApplicationExportOperationId;
 
     fn operation_id() -> ApplicationExportOperationId {
         ApplicationExportOperationId::from_unix_milliseconds_and_random(1, [0x42; 10])
             .expect("operation")
+    }
+
+    fn portability_manifest() -> ApplicationPortabilityManifest {
+        ApplicationPortabilityManifest::decode_canonical(include_bytes!(
+            "../../../fixtures/export/openfga/portability-manifest-v2.json"
+        ))
+        .expect("portability manifest")
+    }
+
+    #[test]
+    fn portability_intent_is_an_exact_request_identity_and_requires_mapped_classes() {
+        let manifest = portability_manifest();
+        let lineage = manifest.input().contract_lineage.clone();
+        let selected = ApplicationExportSelectionV1::new(
+            lineage.clone(),
+            riffdb_types::CapabilityApplicationExportScopeV1::WholeApplication,
+            true,
+            false,
+            false,
+            false,
+        )
+        .expect("selection");
+        let request = StartApplicationExportRequest::new_portability(
+            operation_id(),
+            selected,
+            manifest.clone(),
+            MIN_APPLICATION_EXPORT_LEASE_SECONDS,
+        )
+        .expect("portable request");
+        assert_eq!(
+            request
+                .intent()
+                .portability_manifest()
+                .map(|value| value.identity()),
+            Some(manifest.identity())
+        );
+
+        let missing_entities = ApplicationExportSelectionV1::new(
+            lineage,
+            riffdb_types::CapabilityApplicationExportScopeV1::WholeApplication,
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("event-only selection");
+        assert_eq!(
+            StartApplicationExportRequest::new_portability(
+                operation_id(),
+                missing_entities,
+                manifest,
+                MIN_APPLICATION_EXPORT_LEASE_SECONDS,
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
     }
 
     #[test]

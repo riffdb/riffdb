@@ -529,6 +529,13 @@ fn mutation_failure(
             PublicError::outcome_unknown().into()
         }
         ApplicationExportMutationPortErrorV1::Integrity => integrity(service),
+        ApplicationExportMutationPortErrorV1::WorkflowNotQuiescent => PublicError::validation(
+            riffdb_errors::ValidationIssues::one(riffdb_errors::ValidationIssue::new(
+                riffdb_errors::ValidationCode::InvalidValue,
+                riffdb_errors::ValidationPath::root(),
+            )),
+        )
+        .into(),
     }
 }
 

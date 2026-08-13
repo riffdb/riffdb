@@ -791,6 +791,8 @@ pub struct StartApplicationExportRequest {
     pub selection: ::core::option::Option<ApplicationExportSelection>,
     #[prost(uint32, tag = "4")]
     pub lease_seconds: u32,
+    #[prost(bytes = "vec", tag = "5")]
+    pub canonical_portability_manifest_json: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartApplicationExportResponse {
@@ -2229,6 +2231,7 @@ pub enum ApplicationExportFailure {
     Cancelled = 5,
     LimitExceeded = 6,
     Internal = 7,
+    WorkflowNotQuiescent = 8,
 }
 impl ApplicationExportFailure {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2247,6 +2250,9 @@ impl ApplicationExportFailure {
             Self::Cancelled => "APPLICATION_EXPORT_FAILURE_CANCELLED",
             Self::LimitExceeded => "APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED",
             Self::Internal => "APPLICATION_EXPORT_FAILURE_INTERNAL",
+            Self::WorkflowNotQuiescent => {
+                "APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2264,6 +2270,9 @@ impl ApplicationExportFailure {
             "APPLICATION_EXPORT_FAILURE_CANCELLED" => Some(Self::Cancelled),
             "APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED" => Some(Self::LimitExceeded),
             "APPLICATION_EXPORT_FAILURE_INTERNAL" => Some(Self::Internal),
+            "APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT" => {
+                Some(Self::WorkflowNotQuiescent)
+            }
             _ => None,
         }
     }

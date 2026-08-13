@@ -165,6 +165,9 @@ pub(crate) enum ExportCommand {
         lease_seconds: String,
         #[arg(long, value_name = "UUID_V7")]
         operation_id: Option<String>,
+        /// Starts a portability-intent export bound to this exact canonical manifest.
+        #[arg(long, value_name = "PORTABILITY_MANIFEST_JSON")]
+        portability_manifest: Option<OsString>,
     },
     /// Writes one exact bounded page to a newly created canonical JSONL file.
     Page {
