@@ -6,8 +6,8 @@ use riffdb_types::{
     ApplicationInstallationPlanHash, ApplicationInstallationReceiptHash, ApplicationLockHash,
     ApplicationManifestHash, ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash,
     ApplicationRoleHash, ApplicationSourceHash, CapabilityId, ContractBundleHash,
-    ContractMigrationOperationId, ContractVersion, GeneratedArtifactHash, MigrationBundleHash,
-    hash_application_installation_receipt,
+    ContractMigrationOperationId, ContractVersion, DatabaseId, GeneratedArtifactHash,
+    MigrationBundleHash, hash_application_installation_receipt,
 };
 use serde::{Deserialize, Serialize};
 
@@ -156,16 +156,20 @@ pub enum InstalledReimportEvidence {
     /// This ordinary installation has no portable source state.
     NotRequired,
     /// Exact source, mapping, and terminal reconciliation identities.
-    Reconciled {
-        /// Completed portability-intent export manifest.
-        export_manifest_hash: ApplicationExportManifestHash,
-        /// Completed portability-intent export receipt.
-        export_receipt_hash: ApplicationExportReceiptHash,
-        /// Compiler-closed portability mapping.
-        portability_manifest_hash: ApplicationPortabilityManifestHash,
-        /// Terminal destination reconciliation receipt.
-        reimport_receipt_hash: ApplicationReimportReceiptHash,
-    },
+    Reconciled(InstalledReimportReceiptEvidence),
+}
+
+/// Verified terminal identities for a completed reimport stage.
+///
+/// Fields are deliberately private: only semantic reconciliation against the
+/// exact plan, portability manifest, receipt, and target database can create
+/// this value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstalledReimportReceiptEvidence {
+    export_manifest_hash: ApplicationExportManifestHash,
+    export_receipt_hash: ApplicationExportReceiptHash,
+    portability_manifest_hash: ApplicationPortabilityManifestHash,
+    reimport_receipt_hash: ApplicationReimportReceiptHash,
 }
 
 /// Exact observed credential slot without credential material.
@@ -573,6 +577,46 @@ impl ApplicationInstallationCampaign {
         self.completed.push(evidence);
         self.failure = None;
         Ok(self.observe())
+    }
+
+    /// Verifies and records terminal reimport reconciliation for this exact plan.
+    pub fn complete_reimport(
+        &mut self,
+        plan: &ApplicationInstallationPlan,
+        portability_manifest: &crate::ApplicationPortabilityManifest,
+        reimport_receipt: &crate::ApplicationReimportReceipt,
+        target_database_id: DatabaseId,
+    ) -> Result<ApplicationInstallationObservation, InstallationCampaignError> {
+        self.verify_plan(plan)?;
+        if self.next_stage() != Some(InstallationStage::Reimport) {
+            return Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::StageOutOfOrder,
+            ));
+        }
+        let expected = plan.input().reimport.ok_or_else(evidence_mismatch)?;
+        let receipt = reimport_receipt.input();
+        if portability_manifest.identity() != expected.portability_manifest_hash()
+            || portability_manifest.input().contract_lineage != *plan.input().target.lineage()
+            || portability_manifest.input().contract_version != plan.input().contract.version()
+            || portability_manifest.input().contract_bundle_hash
+                != plan.input().contract.bundle_hash()
+            || receipt.portability_manifest_hash != expected.portability_manifest_hash()
+            || receipt.export_manifest_hash != expected.export_manifest_hash()
+            || receipt.target_database_id != target_database_id
+        {
+            return Err(evidence_mismatch());
+        }
+        self.complete_stage(
+            plan,
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled(
+                InstalledReimportReceiptEvidence {
+                    export_manifest_hash: expected.export_manifest_hash(),
+                    export_receipt_hash: expected.export_receipt_hash(),
+                    portability_manifest_hash: expected.portability_manifest_hash(),
+                    reimport_receipt_hash: reimport_receipt.identity(),
+                },
+            )),
+        )
     }
 
     /// Stops the current stage with a typed partial result and exact next action.
@@ -1146,12 +1190,12 @@ fn validate_stage_evidence(
             (None, InstalledReimportEvidence::NotRequired) => true,
             (
                 Some(expected),
-                InstalledReimportEvidence::Reconciled {
+                InstalledReimportEvidence::Reconciled(InstalledReimportReceiptEvidence {
                     export_manifest_hash,
                     export_receipt_hash,
                     portability_manifest_hash,
                     ..
-                },
+                }),
             ) => {
                 *export_manifest_hash == expected.export_manifest_hash()
                     && *export_receipt_hash == expected.export_receipt_hash()
@@ -1456,12 +1500,14 @@ impl CampaignEvidenceDto {
                     reimport_receipt_hash: None,
                 }
             }
-            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled {
-                export_manifest_hash,
-                export_receipt_hash,
-                portability_manifest_hash,
-                reimport_receipt_hash,
-            }) => Self::Reimport {
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled(
+                InstalledReimportReceiptEvidence {
+                    export_manifest_hash,
+                    export_receipt_hash,
+                    portability_manifest_hash,
+                    reimport_receipt_hash,
+                },
+            )) => Self::Reimport {
                 status: "reconciled".to_owned(),
                 export_manifest_hash: Some(hex32(export_manifest_hash.as_bytes())),
                 export_receipt_hash: Some(hex32(export_receipt_hash.as_bytes())),
@@ -1557,20 +1603,23 @@ impl CampaignEvidenceDto {
                         && portability_manifest_hash.is_some()
                         && reimport_receipt_hash.is_some() =>
                 {
-                    InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled {
-                        export_manifest_hash: ApplicationExportManifestHash::from_bytes(hex(
-                            export_manifest_hash.as_deref().ok_or_else(invalid)?,
-                        )?),
-                        export_receipt_hash: ApplicationExportReceiptHash::from_bytes(hex(
-                            export_receipt_hash.as_deref().ok_or_else(invalid)?,
-                        )?),
-                        portability_manifest_hash: ApplicationPortabilityManifestHash::from_bytes(
-                            hex(portability_manifest_hash.as_deref().ok_or_else(invalid)?)?,
-                        ),
-                        reimport_receipt_hash: ApplicationReimportReceiptHash::from_bytes(hex(
-                            reimport_receipt_hash.as_deref().ok_or_else(invalid)?,
-                        )?),
-                    })
+                    InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled(
+                        InstalledReimportReceiptEvidence {
+                            export_manifest_hash: ApplicationExportManifestHash::from_bytes(hex(
+                                export_manifest_hash.as_deref().ok_or_else(invalid)?,
+                            )?),
+                            export_receipt_hash: ApplicationExportReceiptHash::from_bytes(hex(
+                                export_receipt_hash.as_deref().ok_or_else(invalid)?,
+                            )?),
+                            portability_manifest_hash:
+                                ApplicationPortabilityManifestHash::from_bytes(hex(
+                                    portability_manifest_hash.as_deref().ok_or_else(invalid)?,
+                                )?),
+                            reimport_receipt_hash: ApplicationReimportReceiptHash::from_bytes(hex(
+                                reimport_receipt_hash.as_deref().ok_or_else(invalid)?,
+                            )?),
+                        },
+                    ))
                 }
                 _ => return Err(invalid()),
             },
@@ -1997,12 +2046,12 @@ impl ReceiptDtoV2 {
             (None, InstalledReimportEvidence::NotRequired) => None,
             (
                 Some(expected),
-                InstalledReimportEvidence::Reconciled {
+                InstalledReimportEvidence::Reconciled(InstalledReimportReceiptEvidence {
                     export_manifest_hash,
                     export_receipt_hash,
                     portability_manifest_hash,
                     reimport_receipt_hash,
-                },
+                }),
             ) if *export_manifest_hash == expected.export_manifest_hash()
                 && *export_receipt_hash == expected.export_receipt_hash()
                 && *portability_manifest_hash == expected.portability_manifest_hash() =>

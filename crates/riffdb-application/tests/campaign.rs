@@ -3,19 +3,18 @@
 use riffdb_application::{
     ApplicationInstallationCampaign, ApplicationInstallationCampaignState,
     ApplicationInstallationPlan, ApplicationInstallationPlanInput, ApplicationInstallationReceipt,
-    CredentialDestination, InstallationArtifact, InstallationArtifactKind,
-    InstallationCampaignErrorKind, InstallationCampaignPhase, InstallationContract,
-    InstallationDriver, InstallationFailureCode, InstallationFeature, InstallationNextAction,
-    InstallationReimport, InstallationRole, InstallationSeed, InstallationStage,
-    InstallationStageEvidence, InstallationSymbol, InstallationTarget, InstalledCredentialEvidence,
-    InstalledReimportEvidence, InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation,
-    RoleOperationKind,
+    ApplicationPortabilityManifest, ApplicationReimportReceipt, CredentialDestination,
+    InstallationArtifact, InstallationArtifactKind, InstallationCampaignErrorKind,
+    InstallationCampaignPhase, InstallationContract, InstallationDriver, InstallationFailureCode,
+    InstallationFeature, InstallationNextAction, InstallationReimport, InstallationRole,
+    InstallationSeed, InstallationStage, InstallationStageEvidence, InstallationSymbol,
+    InstallationTarget, InstalledCredentialEvidence, InstalledReimportEvidence,
+    InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation, RoleOperationKind,
 };
 use riffdb_types::{
-    ApplicationExportManifestHash, ApplicationExportReceiptHash, ApplicationInstallationCampaignId,
-    ApplicationLockHash, ApplicationManifestHash, ApplicationPortabilityManifestHash,
-    ApplicationReimportReceiptHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
-    ContractBundleHash, ContractLineage, ContractVersion, DatabaseAlias, Environment,
+    ApplicationExportReceiptHash, ApplicationInstallationCampaignId, ApplicationLockHash,
+    ApplicationManifestHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
+    ContractBundleHash, ContractLineage, ContractVersion, DatabaseAlias, DatabaseId, Environment,
     GeneratedArtifactHash,
 };
 
@@ -228,26 +227,67 @@ fn every_interruption_resumes_after_revalidating_completed_identities() {
 
 #[test]
 fn reimport_installation_receipt_names_every_portability_identity() {
+    let portability = ApplicationPortabilityManifest::decode_canonical(include_bytes!(
+        "../../../fixtures/export/openfga/portability-manifest-v2.json"
+    ))
+    .expect("portability manifest");
+    let reimport_receipt = ApplicationReimportReceipt::decode_canonical(
+        include_bytes!("../../../fixtures/export/openfga/reimport-receipt-v2.json"),
+        &portability,
+    )
+    .expect("reimport receipt");
     let mut input = plan(1).input().clone();
+    input.target = InstallationTarget::new(
+        DatabaseAlias::new("app").expect("database"),
+        Environment::new("dev").expect("environment"),
+        portability.input().contract_lineage.clone(),
+    );
+    input.contract = InstallationContract::new(
+        portability.input().contract_version,
+        portability.input().contract_bundle_hash,
+    );
     input.reimport = Some(InstallationReimport::new(
-        ApplicationExportManifestHash::from_bytes(hash32(10)),
+        reimport_receipt.input().export_manifest_hash,
         ApplicationExportReceiptHash::from_bytes(hash32(11)),
-        ApplicationPortabilityManifestHash::from_bytes(hash32(12)),
+        portability.identity(),
     ));
     let plan = ApplicationInstallationPlan::compile(input).expect("reimport plan");
     let mut campaign = ApplicationInstallationCampaign::start(campaign_id(7), plan.identity());
     for stage in &InstallationStage::ALL[..InstallationStage::ALL.len() - 1] {
-        let stage_evidence = if *stage == InstallationStage::Reimport {
-            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled {
-                export_manifest_hash: ApplicationExportManifestHash::from_bytes(hash32(10)),
-                export_receipt_hash: ApplicationExportReceiptHash::from_bytes(hash32(11)),
-                portability_manifest_hash: ApplicationPortabilityManifestHash::from_bytes(hash32(
-                    12,
-                )),
-                reimport_receipt_hash: ApplicationReimportReceiptHash::from_bytes(hash32(13)),
-            })
-        } else {
-            evidence(*stage)
+        if *stage == InstallationStage::Reimport {
+            assert_eq!(
+                campaign
+                    .complete_reimport(
+                        &plan,
+                        &portability,
+                        &reimport_receipt,
+                        DatabaseId::from_unix_milliseconds_and_random(44, [0x44; 10])
+                            .expect("other database"),
+                    )
+                    .expect_err("receipt cannot reconcile another destination")
+                    .kind(),
+                InstallationCampaignErrorKind::EvidenceMismatch
+            );
+            assert_eq!(
+                campaign.observe().next_stage(),
+                Some(InstallationStage::Reimport)
+            );
+            campaign
+                .complete_reimport(
+                    &plan,
+                    &portability,
+                    &reimport_receipt,
+                    reimport_receipt.input().target_database_id,
+                )
+                .expect("verified reimport stage");
+            continue;
+        }
+        let stage_evidence = match stage {
+            InstallationStage::Contract => InstallationStageEvidence::Contract {
+                version: plan.input().contract.version(),
+                bundle_hash: plan.input().contract.bundle_hash(),
+            },
+            _ => evidence(*stage),
         };
         campaign
             .complete_stage(&plan, stage_evidence)
@@ -267,16 +307,32 @@ fn reimport_installation_receipt_names_every_portability_identity() {
     );
     assert_eq!(
         document["reimport"]["export_manifest_hash"],
-        "0a".repeat(32)
+        reimport_receipt
+            .input()
+            .export_manifest_hash
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(document["reimport"]["export_receipt_hash"], "0b".repeat(32));
     assert_eq!(
         document["reimport"]["portability_manifest_hash"],
-        "0c".repeat(32)
+        portability
+            .identity()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(
         document["reimport"]["reimport_receipt_hash"],
-        "0d".repeat(32)
+        reimport_receipt
+            .identity()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(
         ApplicationInstallationReceipt::decode_canonical(receipt.canonical_bytes())
