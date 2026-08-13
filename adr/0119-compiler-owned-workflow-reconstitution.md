@@ -69,19 +69,36 @@ existing row.
 Before a workflow record is accepted, the reimport coordinator proves that
 every declared lease is quiescent in the exported snapshot: owner and expiry
 are both null. A snapshot containing an owned or partially cleared lease is
-valid export data but is not reimportable through this plan; the operation
-returns a typed `WorkflowNotQuiescent` result naming the workflow symbol and
-safe action to release/expire work and create a new export. It never silently
-clears or rewrites the source record.
+valid application data but is not reimportable through this plan. The proof is
+first made while the source database is still available: an export started
+with portability intent binds the exact portability manifest, evaluates every
+selected workflow record at the export snapshot, and records canonical
+per-workflow lease-quiescence evidence in its receipt. If any selected record
+has an owner, an expiry without an owner, or any other partially cleared lease,
+the export terminates with typed `WorkflowNotQuiescent`, names only the
+workflow symbol and bounded counts, publishes no completed portability receipt,
+and directs the operator to release/expire work and start a new export. It
+never silently clears or rewrites source state.
+
+A general export may still carry non-quiescent workflow data for inspection or
+an independently authorized archive, but it cannot later be relabeled as a
+portability-intent export and its receipt is not accepted by reimport. Reimport
+requires the exact completed portability-intent receipt and revalidates each
+record against its quiescence evidence before mutation. This second check
+detects corruption or substitution; it is not the first point at which an
+operator discovers that the source must be changed.
 
 The destination preserves the exported workflow state, fencing token, and
-attempt count exactly and preserves the null owner/expiry pair. Preserving the
-fence prevents token reuse. Entity revision restarts at the destination's
-first revision and the receipt declares that boundary. Runtime credentials
-from the source database are never installed in the destination, and new
-application credentials are not published until reimport reconciliation is
-complete, so a stale source worker cannot present old revision/fence evidence
-to the destination.
+attempt count exactly and preserves the null owner/expiry pair. Every first and
+subsequent successful destination claim must mint, by checked arithmetic, a
+fencing token strictly greater than the preserved current token; exhaustion
+selects the declared exhausted outcome with no mutation. Preserving the fence
+together with this monotonicity rule prevents token reuse. Entity revision
+restarts at the destination's first revision and the receipt declares that
+boundary. Runtime credentials from the source database are never installed in
+the destination, and new application credentials are not published until
+reimport reconciliation is complete, so a stale source worker cannot present
+old revision/fence evidence to the destination.
 
 ### One bounded, resumable reimport campaign owns publication
 
@@ -92,7 +109,8 @@ campaign evidence. It requires:
 
 - one empty, not-ready destination database with a new database identity;
 - the exact installed contract/query/row-policy artifacts;
-- a canonical completed export manifest and receipt;
+- a canonical completed portability-intent export manifest and receipt whose
+  per-workflow evidence proves lease quiescence at the bound snapshot;
 - the exact adapter-owned portability manifest; and
 - a caller-stable UUIDv7 campaign identity.
 
@@ -124,12 +142,16 @@ publishes readiness and creates/rotates destination application credentials.
 
 ### Authority and language surfaces remain separated
 
-A Capability V6 application-reimport grant is distinct from application command,
+A Capability V7 application-reimport grant is distinct from application command,
 deployment, migration, installation, export, backup, and capability-
 administration authority. It binds one database, environment, application
 lineage, exact portability manifest, and principal/whole-application scope.
 The capability successor is additive, canonical, bounded, narrowing-only on
 delegation, fail-closed on old binaries, and covered by migration fixtures.
+WP-599 must verify at its merge base that V7 remains the next unused capability
+successor after WP-597's `CapabilityRecordV6`; if another accepted package has
+occupied that slot, implementation stops and this ADR is amended before any
+format is emitted.
 
 The contract must declare one exact reimport role whose compiled row policy
 permits precisely the records the portability manifest names. Whole-application
@@ -175,7 +197,8 @@ forge an original actor, time, causation chain, or commit sequence.
 - MLflow and Woodpecker can cross an incompatible alpha format without
   weakening normal workflow commands.
 - Operators must quiesce leased work and produce a new snapshot before
-  reimport; this is deliberate downtime in a breaking-format ceremony.
+  reimport; portability-intent export proves this while the source remains
+  available. This is deliberate downtime in a breaking-format ceremony.
 - Relationship cycles and historical-event fidelity remain explicit
   unsupported cases unless a later accepted plan handles them.
 - Installation state, command IR, capabilities, public protocol, driver-host
@@ -225,8 +248,13 @@ values, secrets, credentials, filesystem paths, or hidden-schema facts.
   writes, mutable reconstitution, partial records, caller idempotency, active
   leases, hidden operation discovery, and dependency cycles.
 - Deterministic command tests proving exact state/fence/attempt preservation,
-  first destination revision, invariants, references, uniqueness, row-policy,
-  provenance, and replayed outcomes.
+  a first post-reimport claim strictly greater than a nonzero preserved fence,
+  exhaustion without mutation, first destination revision, invariants,
+  references, uniqueness, row-policy, provenance, and replayed outcomes.
+- Portability-intent export tests proving canonical per-workflow quiescence
+  evidence, refusal before a completed receipt for active and partially cleared
+  leases, source-side recovery guidance, general-export non-upgradability, and
+  reimport rejection of missing, mismatched, or forged quiescence evidence.
 - Process crash schedules before/after each page command, checkpoint,
   reconciliation observation, receipt seal, readiness publication, and
   credential publication.

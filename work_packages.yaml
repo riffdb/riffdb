@@ -11933,9 +11933,16 @@ work_packages:
   - Versioned reimport-command grammar/IR/lock identity and compiler diagnostics for exact complete
     create-only records, compiler-derived dependencies, and inaccessible ordinary command surfaces
   - Workflow reconstitution preserves state/fence/attempts only from a quiescent null-owner/expiry
-    snapshot, resets destination revision explicitly, and rejects active/partial leases before mutation
-  - Distinct bounded capability successor and start/page/status/cancel service, TLS gRPC, Rust operator,
-    CLI, driver-host, and generated Go/TypeScript/Python operator bindings with no app-role discovery
+    snapshot, resets destination revision explicitly, requires the first destination claim to mint a
+    fence strictly greater than the preserved nonzero fence, and rejects active/partial leases before
+    mutation
+  - Portability-intent export binds the exact portability manifest, records canonical per-workflow
+    lease-quiescence evidence while the source remains available, publishes no completed portability
+    receipt for active or partially cleared leases, and prevents a general export from being upgraded
+    into reimport authority
+  - Distinct bounded Capability V7 successor (verified as the next unused slot at the merge base) and
+    start/page/status/cancel service, TLS gRPC, Rust operator, CLI, driver-host, and generated
+    Go/TypeScript/Python operator bindings with no app-role discovery
   - Durable not-ready campaign checkpoints, deterministic record-derived idempotency, exact page hashes,
     crash resumption, typed partial failure/cancel, final validation/reconciliation, and credentials only
     after readiness publication
