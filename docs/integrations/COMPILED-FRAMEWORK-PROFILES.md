@@ -50,7 +50,12 @@ derive the key from a plaintext token or other secret.
 The Rust driver test
 `adapter_minted_idempotency_survives_driver_retries_with_fresh_transport_ids`
 proves that bounded retries preserve the byte-identical command input while
-using fresh transport request IDs.
+using fresh transport request IDs. On the admission side,
+`equal_key_commands_commit_once_and_replay_exactly` proves the property the
+minted identity rides: equal-identity submissions commit exactly once, the
+replay returns the byte-equal stored outcome under one commit sequence and
+one provenance record, and different input under the same identity is
+refused as an input mismatch.
 
 ## Acceptance evidence
 
