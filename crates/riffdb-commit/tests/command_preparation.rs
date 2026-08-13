@@ -17,9 +17,10 @@ use riffdb_idempotency::{
 };
 use riffdb_invariant::derive_input_command_facts;
 use riffdb_policy::{
-    AgentSessionAdmissionPolicy, AuthorizationClock, AuthorizationClockError,
-    AuthorizedCommandExecution, CommandExecutionClass, CurrentAuthorizer, Decision,
-    NoopAuthorizationTelemetry, OperationRequest, UntrustedInvocationClaims,
+    AgentSessionAdmissionPolicy, ApplicationReimportAuthorizationRequestV1,
+    ApplicationReimportDecisionV1, ApplicationReimportPolicyOperationV1, AuthorizationClock,
+    AuthorizationClockError, AuthorizedCommandExecution, CommandExecutionClass, CurrentAuthorizer,
+    Decision, NoopAuthorizationTelemetry, OperationRequest, UntrustedInvocationClaims,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
@@ -30,10 +31,14 @@ use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityGrantV1,
-    CapabilityPermissionV1, CapabilityPermissionsV1, CommandId, ContractLineage, ContractVersion,
-    DatabaseId, Decimal, DecimalSpec, DigestKeyId, Environment, IdempotencyKey, PartitionKey,
-    PartitionScopeV1, PlanHash, RequestId, TenantId, TenantScope, Timestamp,
+    ActorId, ActorKind, ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash,
+    ApplicationRoleHash, Audience, CanonicalList, CanonicalRecord, CanonicalValue,
+    CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1, CapabilityGrantV1,
+    CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityPrincipalFactsV1,
+    CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
+    CommandId, ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec, DigestKeyId,
+    EntityTypeId, Environment, IdempotencyKey, PartitionKey, PartitionScopeV1, PlanHash, RequestId,
+    RowPolicyName, TenantId, TenantScope, Timestamp,
 };
 
 const CALLER_KEY: &str = "preparation-secret-canary";
@@ -53,6 +58,27 @@ contract PreparationReadOnly version 1 {
     input row_id: uuid
     read Row(row_id) as row else Missing {}
     return Found { row: row }
+  }
+}
+"#;
+const REIMPORT_SOURCE: &str = r#"
+contract PreparationReimport version 1 {
+  entity Row {
+    key (organization_id: uuid, row_id: uuid)
+    field label: string<64>
+  }
+  aggregate Rows {
+    root Row
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }
+  row policy RowReimport on Row {
+    allow create when true
+  }
+  reimport command ReconstituteRows {
+    input records: list<Row, 1..64>
+    reconstitute Row from records else RowExists {}
+    return RowsReconstituted {}
   }
 }
 "#;
@@ -275,6 +301,159 @@ fn read_only_fixture() -> CommandFixture {
     }
 }
 
+fn reimport_fixture() -> CommandFixture {
+    let compiled = compile_contract_source(REIMPORT_SOURCE).expect("checked reimport source");
+    let bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+        .expect("catalog-valid reimport bundle");
+    let plan = bundle
+        .bundle()
+        .commands()
+        .iter()
+        .find(|plan| plan.name() == "ReconstituteRows")
+        .expect("reimport plan");
+    let entity = bundle
+        .bundle()
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Row")
+        .expect("row entity");
+    let row = input_record(
+        entity.record(),
+        [
+            ("organization_id", CanonicalValue::Uuid([0x71; 16])),
+            ("row_id", CanonicalValue::Uuid([0x72; 16])),
+            (
+                "label",
+                CanonicalValue::string("portable").expect("bounded label"),
+            ),
+        ],
+    );
+    let normalized_input = input_record(
+        plan.input().record(),
+        [(
+            "records",
+            CanonicalValue::List(
+                CanonicalList::new(vec![CanonicalValue::Record(row)]).expect("record list"),
+            ),
+        )],
+    );
+    let facts =
+        derive_input_command_facts(plan, normalized_input.clone()).expect("reimport input facts");
+    let partition = facts.partition_key().clone();
+    let reference = ExecutablePlanRef::new(
+        bundle.lineage().clone(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+        plan.command_id(),
+        plan.plan_hash(),
+    );
+    let resolved = resolve_genesis_plan(&bundle, &reference);
+    CommandFixture {
+        resolved,
+        reference,
+        normalized_input,
+        partition,
+    }
+}
+
+fn prepared_server_idempotency(command: &CommandFixture) -> PreparedIdempotencyRecheckV1 {
+    let server_key =
+        IdempotencyKey::new("reimport/server-derived/row-72").expect("bounded server identity");
+    let lookup =
+        prepare_idempotency_lookup(&exact_scope(command), &server_key, &FixedDigestProvider)
+            .expect("server-derived lookup");
+    IdempotencyInspectionExecutor::new(&AbsentAdmissionRepository)
+        .inspect(lookup)
+        .expect("absent inspection")
+        .confirm_server_derived_input(&command.normalized_input)
+        .expect("complete input confirmation")
+        .bind_selected_plan(command.reference.clone())
+        .expect("absence may select reimport plan")
+}
+
+fn reimport_authorization(command: &CommandFixture) -> AuthorizedCommandExecution {
+    let campaign_id =
+        ApplicationInstallationCampaignId::from_unix_milliseconds_and_random(2, [0x61; 10])
+            .expect("campaign");
+    let manifest_hash = ApplicationPortabilityManifestHash::from_bytes([0x62; 32]);
+    let role = ApplicationRoleHash::from_bytes([0x63; 32]);
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        CapabilityPermissionsV1::new(vec![CapabilityPermissionV1::ApplicationRoleIdentity(role)])
+            .expect("canonical permissions"),
+        Vec::new(),
+        NonZeroU16::new(64).expect("row bound"),
+        Vec::new(),
+    )
+    .expect("base grant")
+    .with_row_policy(
+        CapabilityRowPolicyGrantV1::new(
+            role,
+            CapabilityPrincipalFactsV1::empty(),
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    command.reference.contract_lineage().clone(),
+                    RowPolicyName::new("RowReimport").expect("policy"),
+                    EntityTypeId::first(),
+                    vec![CapabilityRowPolicyOperationV1::Create],
+                )
+                .expect("binding"),
+            ],
+        )
+        .expect("row policy grant"),
+    )
+    .expect("V4 grant")
+    .with_reimport(CapabilityApplicationReimportGrantV1::new(
+        command.reference.contract_lineage().clone(),
+        campaign_id,
+        manifest_hash,
+        CapabilityApplicationReimportScopeV1::WholeApplication,
+    ))
+    .expect("V7 grant");
+    let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+        database(1),
+        environment("development"),
+        ActorId::new(PRINCIPAL).expect("principal"),
+        ActorKind::Agent,
+        Audience::new("riffdb-command-preparation").expect("audience"),
+        AuthorizationFixtureTimes::new(timestamp(100), timestamp(300), timestamp(150)),
+        grant,
+    ))
+    .expect("authorization fixture");
+    let resolver = fixture.current_capability_resolver();
+    let clock = FixedAuthorizationClock(timestamp(200));
+    let decision = CurrentAuthorizer::new(
+        &resolver,
+        &clock,
+        &NoopAuthorizationTelemetry,
+        database(1),
+        environment("development"),
+    )
+    .authorize_application_reimport(
+        fixture.authenticated_principal(),
+        ApplicationReimportAuthorizationRequestV1::new(
+            campaign_id,
+            command.reference.contract_lineage().clone(),
+            manifest_hash,
+            CapabilityApplicationReimportScopeV1::WholeApplication,
+            ApplicationReimportPolicyOperationV1::Page,
+        ),
+    )
+    .expect("policy decision");
+    let ApplicationReimportDecisionV1::Allow(proof) = decision else {
+        panic!("reimport page must be allowed");
+    };
+    proof
+        .into_command_execution(
+            command.reference.contract_version(),
+            command.reference.command_id(),
+            command.partition.clone(),
+        )
+        .expect("reimport command authority")
+}
+
 fn exact_scope(command: &CommandFixture) -> CommandIdempotencyScopeV1 {
     scope(
         database(1),
@@ -484,6 +663,107 @@ fn exact_proofs_accept_past_cancelled_control_and_distinct_request_ids() {
             "CommandCancellationHandle([REDACTED])"
         );
     }
+}
+
+#[test]
+fn reimport_preparation_requires_the_closed_plan_identity_and_server_derived_input() {
+    let command = reimport_fixture();
+    assert!(command.resolved.plan().is_reimport());
+    assert!(command.resolved.plan().idempotency_input().is_none());
+    let facts =
+        derive_input_command_facts(command.resolved.plan(), command.normalized_input.clone())
+            .expect("reimport facts");
+    let (control, _handle) = CommandRequestControl::new(
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("deadline"),
+    );
+    let prepared = CommandExecutionPreparation::new_reimport(
+        database(1),
+        &environment("development"),
+        command.resolved.clone(),
+        command.normalized_input.clone(),
+        prepared_server_idempotency(&command),
+        facts,
+        reimport_authorization(&command),
+        request(7),
+        riffdb_types::ServiceIngressKindV1::Grpc,
+        control,
+    )
+    .expect("exact reimport proof join");
+    assert_eq!(
+        format!("{prepared:?}"),
+        "CommandExecutionPreparation([REDACTED])"
+    );
+}
+
+#[test]
+fn ordinary_command_authority_cannot_invoke_a_hidden_reimport_plan() {
+    let command = reimport_fixture();
+    let facts =
+        derive_input_command_facts(command.resolved.plan(), command.normalized_input.clone())
+            .expect("reimport facts");
+    let (control, _handle) = CommandRequestControl::new(
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("deadline"),
+    );
+    let error = CommandExecutionPreparation::new_reimport(
+        database(1),
+        &environment("development"),
+        command.resolved.clone(),
+        command.normalized_input.clone(),
+        prepared_server_idempotency(&command),
+        facts,
+        authorized(
+            database(1),
+            environment("development"),
+            PRINCIPAL,
+            command.reference.contract_lineage().clone(),
+            command.reference.contract_version(),
+            command.reference.command_id(),
+            CommandExecutionClass::Mutation,
+            command.partition.clone(),
+        ),
+        request(8),
+        riffdb_types::ServiceIngressKindV1::Grpc,
+        control,
+    )
+    .expect_err("ordinary invoke-command authority is not reimport authority");
+    assert_eq!(
+        error.to_string(),
+        "command execution proofs are inconsistent"
+    );
+}
+
+#[test]
+fn reimport_authority_and_server_identity_cannot_enter_the_ordinary_constructor() {
+    let command = reimport_fixture();
+    let facts =
+        derive_input_command_facts(command.resolved.plan(), command.normalized_input.clone())
+            .expect("reimport facts");
+    let (control, _handle) = CommandRequestControl::new(
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("deadline"),
+    );
+    let error = CommandExecutionPreparation::new(
+        database(1),
+        &environment("development"),
+        command.resolved.clone(),
+        command.normalized_input.clone(),
+        prepared_server_idempotency(&command),
+        facts,
+        reimport_authorization(&command),
+        request(9),
+        riffdb_types::ServiceIngressKindV1::Grpc,
+        control,
+    )
+    .expect_err("ordinary preparation requires caller-declared idempotency");
+    assert_eq!(
+        error.to_string(),
+        "command execution proofs are inconsistent"
+    );
 }
 
 #[test]

@@ -4,14 +4,14 @@ use std::{error::Error, fmt};
 
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, CommandId, ContractLineage, ContractVersion,
-    DatabaseId, Environment, ScopedPartitionV1, TenantScope,
+    DatabaseId, Environment, PartitionKey, PartitionScopeV1, ScopedPartitionV1, TenantScope,
 };
 
 use crate::provenance::admit_for_actor_kind;
 use crate::{
-    AgentSessionAdmissionPolicy, AuditClass, AuthorizedProvenanceClaims,
-    AuthorizedRowPolicyAuthority, CommandExecutionClass, Obligations, OperationRequest,
-    OutputClassification, PartitionConstraint, UntrustedInvocationClaims,
+    AgentSessionAdmissionPolicy, AuditClass, AuthorizedApplicationReimportV1,
+    AuthorizedProvenanceClaims, AuthorizedRowPolicyAuthority, CommandExecutionClass, Obligations,
+    OperationRequest, OutputClassification, PartitionConstraint, UntrustedInvocationClaims,
 };
 
 /// Safe failure to consume an allow proof as command-execution authority.
@@ -70,6 +70,13 @@ pub struct AuthorizedCommandExecution {
     actor: AdmittedActorContext,
     provenance: AuthorizedProvenanceClaims,
     row_policy_authority: Option<AuthorizedRowPolicyAuthority>,
+    source: CommandAuthorizationSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandAuthorizationSource {
+    Application,
+    Reimport,
 }
 
 impl AuthorizedCommandExecution {
@@ -128,6 +135,57 @@ impl AuthorizedCommandExecution {
             ),
             provenance,
             row_policy_authority,
+            source: CommandAuthorizationSource::Application,
+        })
+    }
+
+    pub(crate) fn bind_reimport(
+        authorization: AuthorizedApplicationReimportV1,
+        version: ContractVersion,
+        command_id: CommandId,
+        partition_key: PartitionKey,
+    ) -> Result<Self, CommandAuthorizationBindingError> {
+        let lineage = authorization.request().lineage().clone();
+        let partition = ScopedPartitionV1::new(lineage.clone(), partition_key);
+        let obligations = authorization.obligations();
+        let partition_allowed = match obligations.partition_constraint() {
+            None => true,
+            Some(PartitionConstraint::Filter(PartitionScopeV1::All)) => true,
+            Some(PartitionConstraint::Filter(PartitionScopeV1::Explicit(entries))) => entries
+                .binary_search_by_key(&partition.canonical_key(), ScopedPartitionV1::canonical_key)
+                .is_ok(),
+            Some(PartitionConstraint::Exact(_)) => false,
+        };
+        if authorization.request().operation() != crate::ApplicationReimportPolicyOperationV1::Page
+            || !partition_allowed
+            || obligations.field_mask().is_some()
+            || obligations.row_limit().is_none()
+            || obligations.validated_approval().is_some()
+            || obligations.audit_class().is_some()
+            || obligations.output_classification()
+                != OutputClassification::PolicyFilteredApplicationData
+        {
+            return Err(CommandAuthorizationBindingError::ObligationMismatch);
+        }
+        let actor = AdmittedActorContext::new(
+            authorization.principal_id().clone(),
+            authorization.actor_kind(),
+            obligations.effective_tenant_scope().clone(),
+            None,
+        );
+        let row_policy_authority = authorization.internal_row_policy_authority().clone();
+        Ok(Self {
+            database_id: authorization.database_id(),
+            environment: authorization.environment().clone(),
+            lineage,
+            version,
+            command_id,
+            class: CommandExecutionClass::Mutation,
+            partition,
+            actor,
+            provenance: AuthorizedProvenanceClaims::from_approved_parts(None, None, None, None),
+            row_policy_authority: Some(row_policy_authority),
+            source: CommandAuthorizationSource::Reimport,
         })
     }
 
@@ -194,6 +252,13 @@ impl AuthorizedCommandExecution {
     #[must_use]
     pub const fn internal_row_policy_authority(&self) -> Option<&AuthorizedRowPolicyAuthority> {
         self.row_policy_authority.as_ref()
+    }
+
+    /// Whether this proof came from the dedicated V7 reimport safe point.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_is_reimport(&self) -> bool {
+        matches!(self.source, CommandAuthorizationSource::Reimport)
     }
 }
 
