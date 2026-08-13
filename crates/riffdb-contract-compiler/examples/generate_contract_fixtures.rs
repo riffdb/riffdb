@@ -26,6 +26,7 @@ use riffdb_types::{
 };
 
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
+const REIMPORT_SOURCE: &str = include_str!("../../../fixtures/compiler/reimport/contract.riff");
 const MIGRATION_FIXTURE_README: &str = include_str!("../../../fixtures/migrations/README.md");
 const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
     (
@@ -245,6 +246,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             "{}\n",
             hex(workflow_initial_bundle.bundle_hash().as_bytes())
         ),
+    )?;
+
+    let reimport_bundle = compile_contract_source(REIMPORT_SOURCE)?;
+    let reimport_root = fixture_root.join("reimport");
+    fs::create_dir_all(&reimport_root)?;
+    fs::write(reimport_root.join("contract.riff"), REIMPORT_SOURCE)?;
+    fs::write(
+        reimport_root.join("bundle.bin"),
+        reimport_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        reimport_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(reimport_bundle.bundle_hash().as_bytes())),
     )?;
 
     let bundle = compile_contract_source(BUDGET_SOURCE)?;

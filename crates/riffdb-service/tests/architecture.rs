@@ -285,6 +285,19 @@ fn a_sub_floor_admission_budget_is_shed_as_overload_at_both_admission_stages() {
     }
 }
 
+/// ADR-0119 keeps compiler-owned reimport plans out of every ordinary
+/// application-command lookup, including the historical outcome resolver.
+/// Both filters are pinned because either omission would turn an unlisted
+/// operator-only plan into an application-reachable mutation surface.
+#[test]
+fn ordinary_command_resolution_excludes_reimport_plans_at_both_lookups() {
+    assert_eq!(
+        COMMAND_SOURCE.matches("!plan.is_reimport()").count(),
+        2,
+        "both active resolution and historical outcome resolution must reject reimport plans"
+    );
+}
+
 #[test]
 fn query_components_materialize_after_schema_selection_and_before_policy_or_lower_access() {
     for (start, end) in [

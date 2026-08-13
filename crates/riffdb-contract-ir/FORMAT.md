@@ -173,6 +173,13 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x01` | read-only |
 | `0x02` | idempotent mutation |
 
+### Command invocation class
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | application |
+| `0x02` | operator-only reimport |
+
 ### Retry policy
 
 | Tag | Variant |
@@ -788,12 +795,13 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 14 | `locality` | LocalityPlan |
 | 15 | `commit_checks` | u32 count + CommitCheckPlan[] |
 | 16 | `instructions` | u32 count + Instruction[] |
-| 17 | `execution_class` | Execution class tag |
-| 18 | `retry_policy` | Retry policy tag |
-| 19 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 20 | `entity_closure` | u32 count + EntitySchema[] |
-| 21 | `aggregate_closure` | AggregateSchema |
-| 22 | `event_closure` | u32 count + EventSchema[] |
+| 17 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
+| 18 | `execution_class` | Execution class tag |
+| 19 | `retry_policy` | Retry policy tag |
+| 20 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 21 | `entity_closure` | u32 count + EntitySchema[] |
+| 22 | `aggregate_closure` | AggregateSchema |
+| 23 | `event_closure` | u32 count + EventSchema[] |
 
 ### CollectionExpansionPlanV1
 

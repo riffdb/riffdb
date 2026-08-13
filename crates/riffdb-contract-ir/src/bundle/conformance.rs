@@ -413,6 +413,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "locality",
                 "commit_checks",
                 "instructions",
+                "invocation_class",
                 "execution_class",
                 "retry_policy",
                 "required_capability",

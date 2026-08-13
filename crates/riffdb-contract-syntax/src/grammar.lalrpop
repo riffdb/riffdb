@@ -364,7 +364,7 @@ ListBound: (Option<Spanned<String>>, Spanned<String>) = {
 };
 
 CommandDeclaration: CommandDeclaration = {
-    <kind:CommandKind> <name:Identifier> "{"
+    <kind:ApplicationCommandKind> <name:Identifier> "{"
         <inputs:InputDeclaration*>
         <service_values:ServiceValueDeclaration*>
         <idempotency:IdempotencyClause?>
@@ -381,15 +381,39 @@ CommandDeclaration: CommandDeclaration = {
         idempotency,
         bindings,
         bulk_iteration,
+        reconstitution: None,
         requirements,
         effects,
         return_clause,
     },
+    "reimport" "command" <name:Identifier> "{"
+        <inputs:InputDeclaration+>
+        <reconstitution:ReconstitutionClause>
+        <return_clause:ReturnClause>
+    "}" => CommandDeclaration {
+        kind: CommandKind::Reimport,
+        name,
+        inputs,
+        service_values: Vec::new(),
+        idempotency: None,
+        bindings: Vec::new(),
+        bulk_iteration: None,
+        reconstitution: Some(reconstitution),
+        requirements: Vec::new(),
+        effects: Vec::new(),
+        return_clause,
+    },
 };
 
-CommandKind: CommandKind = {
+ApplicationCommandKind: CommandKind = {
     "command" => CommandKind::Ordinary,
     "bulk" "command" => CommandKind::Bulk,
+};
+
+ReconstitutionClause: Spanned<ReconstitutionClause> = {
+    <lo:@L> "reconstitute" <entity:Identifier> "from" <source:Identifier>
+        "else" <failure:OutcomeExpression> <hi:@R>
+        => parser::spanned(ReconstitutionClause { entity, source, failure }, lo, hi),
 };
 
 BulkIteration: Spanned<BulkIteration> = {
@@ -861,6 +885,8 @@ extern {
         "transactionally_ordered" => Token::TransactionallyOrdered,
         "command" => Token::Command,
         "bulk" => Token::Bulk,
+        "reimport" => Token::Reimport,
+        "reconstitute" => Token::Reconstitute,
         "for" => Token::For,
         "workflow" => Token::Workflow,
         "state" => Token::State,

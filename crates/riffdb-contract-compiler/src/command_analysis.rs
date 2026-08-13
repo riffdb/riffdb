@@ -567,6 +567,15 @@ fn validate_idempotency(
             BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
         )
     }) || !command.effects.is_empty();
+    if command.invocation_class == riffdb_contract_ir::CommandInvocationClass::Reimport {
+        if command.idempotency.is_some() {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidIdempotency,
+                command.span,
+            ));
+        }
+        return None;
+    }
     let Some(idempotency) = &command.idempotency else {
         if mutating {
             diagnostics.push(CompilerDiagnostic::new(

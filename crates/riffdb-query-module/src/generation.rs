@@ -633,7 +633,11 @@ pub fn generate_mcp_commands(
     module: &QueryModule,
     contract: &ContractBundle,
 ) -> Result<Vec<GeneratedMcpCommand>, McpToolGenerationError> {
-    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     commands
         .into_iter()
@@ -915,7 +919,11 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
         );
     }
 
-    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     emit_rust_entity_types(&mut output, contract);
     for command in &commands {
@@ -2366,7 +2374,11 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         .expect("string");
     }
 
-    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     for command in &commands {
         let name = command.name();

@@ -157,6 +157,10 @@ tag_registry!(execution_class, "Execution class", {
     READ_ONLY = 0x01 => "read-only",
     IDEMPOTENT_MUTATION = 0x02 => "idempotent mutation",
 });
+tag_registry!(command_invocation_class, "Command invocation class", {
+    APPLICATION = 0x01 => "application",
+    REIMPORT = 0x02 => "operator-only reimport",
+});
 tag_registry!(retry_policy, "Retry policy", {
     BOUNDED_FULL_REEVALUATION = 0x01 => "bounded full reevaluation",
 });
@@ -250,6 +254,7 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     instruction::REGISTRY,
     service_value_kind::REGISTRY,
     execution_class::REGISTRY,
+    command_invocation_class::REGISTRY,
     retry_policy::REGISTRY,
     capability_requirement::REGISTRY,
     projection_aggregation::REGISTRY,
@@ -1184,6 +1189,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "locality" => "LocalityPlan",
     "commit_checks" => "u32 count + CommitCheckPlan[]",
     "instructions" => "u32 count + Instruction[]",
+    "invocation_class" => "IR v10+: Command invocation class tag; application in v1-v9",
     "execution_class" => "Execution class tag",
     "retry_policy" => "Retry policy tag",
     "required_capability" => "CapabilityRequirement tag plus exact selected payload",

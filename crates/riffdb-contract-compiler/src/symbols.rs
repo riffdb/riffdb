@@ -554,6 +554,13 @@ fn allocate_command_symbols(
     }
     let mut rejection_names = BTreeMap::<String, Span>::new();
     let mut outcome_occurrences = Vec::new();
+    if let Some(reconstitution) = &command.reconstitution {
+        let failure = &reconstitution.value.failure;
+        rejection_names
+            .entry(failure.value.name.value.clone())
+            .or_insert(failure.value.name.span);
+        outcome_occurrences.push(&failure.value);
+    }
     for binding in command.bindings.iter().chain(collection_bindings) {
         let entity_binding = match &binding.value {
             riffdb_contract_syntax::ast::Binding::Read(binding)

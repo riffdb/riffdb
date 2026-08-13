@@ -99,6 +99,10 @@ pub(crate) enum Token {
     Command,
     #[token("bulk")]
     Bulk,
+    #[token("reimport")]
+    Reimport,
+    #[token("reconstitute")]
+    Reconstitute,
     #[token("for")]
     For,
     #[token("workflow")]

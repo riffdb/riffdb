@@ -521,7 +521,7 @@ fn compile_application_role_inner(
         let command = contract
             .commands()
             .iter()
-            .find(|command| command.name() == command_name)
+            .find(|command| !command.is_reimport() && command.name() == command_name)
             .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
         let mut requires_row_policy = false;
         for binding in command.bindings() {

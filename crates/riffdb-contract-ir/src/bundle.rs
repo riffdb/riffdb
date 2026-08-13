@@ -63,6 +63,8 @@ pub const BUNDLE_FORMAT_VERSION_V7: u32 = 7;
 pub const BUNDLE_FORMAT_VERSION_V8: u32 = 8;
 /// Bundle framing containing compiler-owned workflow initialization.
 pub const BUNDLE_FORMAT_VERSION_V9: u32 = 9;
+/// Bundle framing containing the operator-only reimport command class.
+pub const BUNDLE_FORMAT_VERSION_V10: u32 = 10;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -81,6 +83,8 @@ pub const GRAMMAR_VERSION_V7: u32 = 7;
 pub const GRAMMAR_VERSION_V8: u32 = 8;
 /// Contract grammar containing workflow initial states and self-transitions.
 pub const GRAMMAR_VERSION_V9: u32 = 9;
+/// Contract grammar containing closed compiler-owned reimport commands.
+pub const GRAMMAR_VERSION_V10: u32 = 10;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -99,6 +103,8 @@ pub const EXECUTABLE_IR_VERSION_V7: u32 = 7;
 pub const EXECUTABLE_IR_VERSION_V8: u32 = 8;
 /// Executable IR containing workflow initial states and self-transitions.
 pub const EXECUTABLE_IR_VERSION_V9: u32 = 9;
+/// Executable IR containing a distinct command invocation class.
+pub const EXECUTABLE_IR_VERSION_V10: u32 = 10;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1023,7 +1029,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v10) {
+            BUNDLE_FORMAT_VERSION_V10
+        } else if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
             BUNDLE_FORMAT_VERSION_V9
         } else if schema.requires_ir_v8() {
             BUNDLE_FORMAT_VERSION_V8
@@ -1121,6 +1129,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V9,
                 GRAMMAR_VERSION_V9,
                 EXECUTABLE_IR_VERSION_V9
+            ) | (
+                BUNDLE_FORMAT_VERSION_V10,
+                GRAMMAR_VERSION_V10,
+                EXECUTABLE_IR_VERSION_V10
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1135,6 +1147,8 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V8 && schema.requires_ir_v8())
             || (ir_version < EXECUTABLE_IR_VERSION_V9
                 && workflows.iter().any(WorkflowSchema::requires_ir_v9))
+            || (ir_version < EXECUTABLE_IR_VERSION_V10
+                && commands.iter().any(CommandPlan::requires_ir_v10))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1824,7 +1838,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v6() {
+    let ir_version = if plan.requires_ir_v10() {
+        EXECUTABLE_IR_VERSION_V10
+    } else if plan.requires_ir_v6() {
         EXECUTABLE_IR_VERSION_V6
     } else if plan.requires_ir_v5() {
         EXECUTABLE_IR_VERSION_V5
@@ -2217,12 +2233,16 @@ pub(crate) fn validate_mcp_registry(
     commands: &[CommandPlan],
     registry: &McpCommandNameRegistryV2,
 ) -> Result<(), IrValidationError> {
-    if registry.lineage() != lineage || registry.entries().len() != commands.len() {
+    let application_commands = commands
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
+    if registry.lineage() != lineage || registry.entries().len() != application_commands.len() {
         return Err(IrValidationError::InvalidMcpName {
             reason: "MCP registry lineage or completeness mismatch",
         });
     }
-    for (entry, command) in registry.entries().iter().zip(commands) {
+    for (entry, command) in registry.entries().iter().zip(application_commands) {
         if entry.command_id() != command.command_id()
             || entry.source_command_name() != command.name()
         {
@@ -2894,7 +2914,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v6() {
+    let ir_version = if command.requires_ir_v10() {
+        EXECUTABLE_IR_VERSION_V10
+    } else if command.requires_ir_v6() {
         EXECUTABLE_IR_VERSION_V6
     } else if command.requires_ir_v5() {
         EXECUTABLE_IR_VERSION_V5
@@ -2928,7 +2950,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v6() {
+    let ir_version = if command.requires_ir_v10() {
+        EXECUTABLE_IR_VERSION_V10
+    } else if command.requires_ir_v6() {
         EXECUTABLE_IR_VERSION_V6
     } else if command.requires_ir_v5() {
         EXECUTABLE_IR_VERSION_V5
@@ -3056,6 +3080,9 @@ fn encode_command_semantics_versioned(
     writer.u32(command.instructions().len() as u32)?;
     for instruction in command.instructions() {
         encode_instruction(writer, instruction)?;
+    }
+    if ir_version >= EXECUTABLE_IR_VERSION_V10 {
+        writer.u8(command.invocation_class() as u8)?;
     }
     writer.u8(command.execution_class() as u8)?;
     writer.u8(command.retry_policy() as u8)?;
@@ -3538,6 +3565,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V9,
             GRAMMAR_VERSION_V9,
             EXECUTABLE_IR_VERSION_V9
+        ) | (
+            BUNDLE_FORMAT_VERSION_V10,
+            GRAMMAR_VERSION_V10,
+            EXECUTABLE_IR_VERSION_V10
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5015,6 +5046,11 @@ fn decode_command_versioned(
             ir_version,
         )?);
     }
+    let invocation_class = if ir_version >= EXECUTABLE_IR_VERSION_V10 {
+        decode_command_invocation_class(reader.u8()?)?
+    } else {
+        crate::CommandInvocationClass::Application
+    };
     let execution_class = decode_execution_class(reader.u8()?)?;
     let _retry_policy = decode_retry_policy(reader.u8()?)?;
     if decode_capability_requirement(reader)?
@@ -5036,28 +5072,54 @@ fn decode_command_versioned(
         locality.aggregate_id(),
         &instructions,
     )?;
-    let plan = match collection_expansion {
-        Some(expansion) => CommandPlan::new_collection(
-            command_id,
-            lineage.clone(),
-            name,
-            contract_version,
-            input,
-            service_values,
-            outcomes,
-            success_outcome,
-            idempotency_input,
-            expressions,
-            bindings,
-            root_validation_reads,
-            locality,
-            commit_checks,
-            instructions,
-            expansion,
-            execution_class,
-            schema,
-        )?,
-        None => CommandPlan::new_with_service_values(
+    let plan = match (invocation_class, collection_expansion) {
+        (crate::CommandInvocationClass::Reimport, Some(expansion)) => {
+            CommandPlan::new_reimport_collection(
+                command_id,
+                lineage.clone(),
+                name,
+                contract_version,
+                input,
+                outcomes,
+                success_outcome,
+                expressions,
+                bindings,
+                root_validation_reads,
+                locality,
+                commit_checks,
+                instructions,
+                expansion,
+                schema,
+            )?
+        }
+        (crate::CommandInvocationClass::Reimport, None) => {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "reimport command requires one bounded collection expansion",
+            });
+        }
+        (crate::CommandInvocationClass::Application, Some(expansion)) => {
+            CommandPlan::new_collection(
+                command_id,
+                lineage.clone(),
+                name,
+                contract_version,
+                input,
+                service_values,
+                outcomes,
+                success_outcome,
+                idempotency_input,
+                expressions,
+                bindings,
+                root_validation_reads,
+                locality,
+                commit_checks,
+                instructions,
+                expansion,
+                execution_class,
+                schema,
+            )?
+        }
+        (crate::CommandInvocationClass::Application, None) => CommandPlan::new_with_service_values(
             command_id,
             lineage.clone(),
             name,
@@ -5111,6 +5173,23 @@ fn decode_command_versioned(
         });
     }
     Ok(plan)
+}
+
+fn decode_command_invocation_class(
+    tag: u8,
+) -> Result<crate::CommandInvocationClass, IrValidationError> {
+    match tag {
+        crate::format_registry::command_invocation_class::APPLICATION => {
+            Ok(crate::CommandInvocationClass::Application)
+        }
+        crate::format_registry::command_invocation_class::REIMPORT => {
+            Ok(crate::CommandInvocationClass::Reimport)
+        }
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "command invocation class",
+            tag,
+        }),
+    }
 }
 
 fn decode_execution_class(tag: u8) -> Result<ExecutionClass, IrValidationError> {

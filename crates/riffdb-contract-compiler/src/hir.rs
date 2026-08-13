@@ -3,13 +3,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
-    BindingId, BindingMode, ExprId, ExpressionArena, ExpressionKind, ValueType, ValueTypeTag,
+    BindingId, BindingMode, CommandInvocationClass, ExprId, ExpressionArena, ExpressionKind,
+    ValueType, ValueTypeTag,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
-    AggregateItem, Aggregation, Binding, CommandKind, Declaration, DeletePolicyDeclaration, Effect,
-    EntityItem, EventPolicyAnchorDeclaration, Expression, ObjectLiteral, OutcomeExpression, Path,
-    RowPolicyOperation, ServiceValueKind, TypeExpression,
+    AggregateItem, Aggregation, Binding, BulkIteration, CommandDeclaration, CommandKind,
+    Declaration, DeletePolicyDeclaration, Effect, EntityBinding, EntityItem,
+    EventPolicyAnchorDeclaration, Expression, ObjectLiteral, OutcomeExpression, Path,
+    RowPolicyOperation, ServiceValueKind, SetEffect, TypeExpression,
     WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::{ContractDocument, Spanned};
@@ -421,6 +423,7 @@ pub(crate) struct HirCommand {
     pub(crate) success: HirOutcome,
     pub(crate) expressions: HirExpressionArena,
     pub(crate) collection_expansion: Option<HirCollectionExpansion>,
+    pub(crate) invocation_class: CommandInvocationClass,
 }
 
 #[derive(Clone, Debug)]
@@ -503,6 +506,7 @@ impl TypedContractHir {
     ) -> Vec<(CommandId, riffdb_contract_syntax::Spanned<String>)> {
         self.commands
             .iter()
+            .filter(|command| command.invocation_class == CommandInvocationClass::Application)
             .map(|command| {
                 (
                     command.id,
@@ -1625,9 +1629,25 @@ fn lower_commands(
 ) -> Vec<HirCommand> {
     let mut result = Vec::new();
     for declaration in &document.contract.value.declarations {
-        let Declaration::Command(source) = &declaration.value else {
+        let Declaration::Command(source_command) = &declaration.value else {
             continue;
         };
+        let invocation_class = if source_command.kind == CommandKind::Reimport {
+            CommandInvocationClass::Reimport
+        } else {
+            CommandInvocationClass::Application
+        };
+        let normalized_source = if invocation_class == CommandInvocationClass::Reimport {
+            let Some(normalized) =
+                normalize_reimport_command(source_command, symbols, entities, diagnostics)
+            else {
+                continue;
+            };
+            Some(normalized)
+        } else {
+            None
+        };
+        let source = normalized_source.as_ref().unwrap_or(source_command);
         let Some(command_id) = symbols.commands.get(&source.name.value).copied() else {
             continue;
         };
@@ -1796,6 +1816,7 @@ fn lower_commands(
                     )),
                 }
             }
+            (CommandKind::Reimport, _) => unreachable!("reimport syntax is normalized above"),
         }
         let mut binding_descriptors = Vec::new();
         let top_level_binding_count = source.bindings.len();
@@ -2065,9 +2086,12 @@ fn lower_commands(
                         ));
                         continue;
                     };
-                    if workflows.iter().any(|workflow| {
-                        workflow.entity_id == binding.entity_id && workflow.state_field == field.id
-                    }) {
+                    if invocation_class != CommandInvocationClass::Reimport
+                        && workflows.iter().any(|workflow| {
+                            workflow.entity_id == binding.entity_id
+                                && workflow.state_field == field.id
+                        })
+                    {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowTransition,
                             set.target.span,
@@ -2372,6 +2396,9 @@ fn lower_commands(
             .iter()
             .filter(|binding| binding.mode == BindingMode::Create)
         {
+            if invocation_class == CommandInvocationClass::Reimport {
+                continue;
+            }
             let Some(workflow) = workflows
                 .iter()
                 .find(|workflow| workflow.entity_id == binding.entity_id)
@@ -2544,9 +2571,182 @@ fn lower_commands(
             success,
             expressions,
             collection_expansion,
+            invocation_class,
         });
     }
     result
+}
+
+fn normalize_reimport_command(
+    source: &CommandDeclaration,
+    symbols: &GenesisSymbols,
+    entities: &[HirEntity],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Option<CommandDeclaration> {
+    let clause = source.reconstitution.as_ref()?;
+    if source.inputs.len() != 1 {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidType,
+            source.name.span,
+        ));
+        return None;
+    }
+    let input = &source.inputs[0];
+    if input.value.field.name.value != clause.value.source.value {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::UnknownName,
+            clause.value.source.span,
+        ));
+        return None;
+    }
+    let TypeExpression::List { element, .. } = &input.value.field.ty.value else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidType,
+            input.value.field.ty.span,
+        ));
+        return None;
+    };
+    let TypeExpression::Named(record_name) = &element.value else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidType,
+            element.span,
+        ));
+        return None;
+    };
+    if record_name.value != clause.value.entity.value {
+        diagnostics.push(
+            CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidType,
+                clause.value.entity.span,
+            )
+            .with_related_span(record_name.span),
+        );
+        return None;
+    }
+    let Some(entity_id) = symbols.entities.get(&clause.value.entity.value).copied() else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::UnknownName,
+            clause.value.entity.span,
+        ));
+        return None;
+    };
+    let Some(entity) = entities.iter().find(|entity| entity.id == entity_id) else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIr,
+            clause.value.entity.span,
+        ));
+        return None;
+    };
+
+    let record_name = "__riffdb_reimport_record".to_owned();
+    let binding_name = "__riffdb_reimport_target".to_owned();
+    let record_span = clause.value.source.span;
+    let binding_span = clause.value.entity.span;
+    let path_expression = |head: &str, head_span: Span, field: &HirField| {
+        let path = Path {
+            segments: vec![
+                Spanned::new(head.to_owned(), head_span),
+                Spanned::new(field.name.clone(), field.name_span),
+            ],
+        };
+        let span = head_span.cover(field.name_span);
+        Spanned::new(Expression::Path(Spanned::new(path, span)), span)
+    };
+
+    let arguments = entity
+        .key_fields
+        .iter()
+        .filter_map(|field_id| entity.fields.iter().find(|field| field.id == *field_id))
+        .map(|field| path_expression(&record_name, record_span, field))
+        .collect();
+    let create_binding = Spanned::new(
+        Binding::Create(EntityBinding {
+            entity: clause.value.entity.clone(),
+            arguments,
+            binding: Spanned::new(binding_name.clone(), binding_span),
+            failure: clause.value.failure.clone(),
+            restriction_failure: None,
+        }),
+        clause.span,
+    );
+    let mut bindings = Vec::with_capacity(entity.relationships.len() + 1);
+    for (index, relationship) in entity.relationships.iter().enumerate() {
+        let Some(target) = entities
+            .iter()
+            .find(|candidate| candidate.id == relationship.target_entity)
+        else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidRelationship,
+                relationship.target_entity_span,
+            ));
+            return None;
+        };
+        let arguments = relationship
+            .source_fields
+            .iter()
+            .filter_map(|(field_id, _)| entity.fields.iter().find(|field| field.id == *field_id))
+            .map(|field| path_expression(&record_name, record_span, field))
+            .collect();
+        bindings.push(Spanned::new(
+            Binding::Read(EntityBinding {
+                entity: Spanned::new(target.name.clone(), relationship.target_entity_span),
+                arguments,
+                binding: Spanned::new(
+                    format!("__riffdb_reimport_dependency_{index}"),
+                    relationship.name_span,
+                ),
+                failure: clause.value.failure.clone(),
+                restriction_failure: None,
+            }),
+            relationship.name_span,
+        ));
+    }
+    bindings.push(create_binding);
+    let key_fields = entity.key_field_set();
+    let effects = entity
+        .fields
+        .iter()
+        .filter(|field| !key_fields.contains(&field.id))
+        .map(|field| {
+            let target = Path {
+                segments: vec![
+                    Spanned::new(binding_name.clone(), binding_span),
+                    Spanned::new(field.name.clone(), field.name_span),
+                ],
+            };
+            let target_span = binding_span.cover(field.name_span);
+            Spanned::new(
+                Effect::Set(SetEffect {
+                    target: Spanned::new(target, target_span),
+                    value: path_expression(&record_name, record_span, field),
+                }),
+                clause.span,
+            )
+        })
+        .collect();
+
+    Some(CommandDeclaration {
+        kind: CommandKind::Bulk,
+        name: source.name.clone(),
+        inputs: source.inputs.clone(),
+        service_values: Vec::new(),
+        idempotency: None,
+        bindings: Vec::new(),
+        bulk_iteration: Some(Spanned::new(
+            BulkIteration {
+                element: Spanned::new(record_name, record_span),
+                collection: clause.value.source.clone(),
+                bindings,
+                requirements: Vec::new(),
+                effects,
+            },
+            clause.span,
+        )),
+        reconstitution: source.reconstitution.clone(),
+        requirements: Vec::new(),
+        effects: Vec::new(),
+        return_clause: source.return_clause.clone(),
+    })
 }
 
 fn lower_projections(
