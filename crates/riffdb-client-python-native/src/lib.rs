@@ -14,8 +14,9 @@ use pyo3::types::{PyAny, PyModule, PyType};
 use riffdb_client_rust::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContextualBatch,
     ApplicationContextualReaction, ApplicationContract, ApplicationEventBatch,
-    ApplicationEventCheckpoint, ApplicationEventId, ApplicationEventLeaseEvidence,
-    ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
+    ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus, ApplicationEventId,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
+    ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
     ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
     ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
     NamedQuery, QueryOptions, StableApplicationClient, TraceParent,
@@ -518,10 +519,19 @@ impl NativeAsyncClient {
         let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = client
-                .seek_event_consumer(&request.consumer, request.checkpoint, &metadata)
-                .await
-                .map_err(application_client_error)?;
+            let result = match request.target {
+                ParsedReactiveSeekTarget::Exact(checkpoint) => {
+                    client
+                        .seek_event_consumer(&request.consumer, checkpoint, &metadata)
+                        .await
+                }
+                ParsedReactiveSeekTarget::Protected(cursor) => {
+                    client
+                        .seek_protected_event_consumer(&request.consumer, cursor, &metadata)
+                        .await
+                }
+            }
+            .map_err(application_client_error)?;
             render_event_mutation(result)
         })
     }
@@ -708,12 +718,18 @@ struct ReactiveSeekRequest {
     operation_name: String,
     parameters: BTreeMap<String, Value>,
     consumer_name: String,
-    checkpoint: String,
+    checkpoint: Option<String>,
+    progress_cursor: Option<String>,
 }
 
 struct ParsedReactiveSeek {
     consumer: riffdb_client_rust::ApplicationEventConsumer,
-    checkpoint: ApplicationEventCheckpoint,
+    target: ParsedReactiveSeekTarget,
+}
+
+enum ParsedReactiveSeekTarget {
+    Exact(ApplicationEventCheckpoint),
+    Protected(ApplicationEventProgressCursor),
 }
 
 #[derive(Deserialize)]
@@ -868,10 +884,18 @@ fn parse_reactive_mutation(source: &str) -> PyResult<ParsedReactiveMutation> {
 
 fn parse_reactive_seek(source: &str) -> PyResult<ParsedReactiveSeek> {
     let request: ReactiveSeekRequest = parse_json(source)?;
-    let checkpoint = if request.checkpoint == "before-first" {
-        ApplicationEventCheckpoint::BeforeFirst
-    } else {
-        ApplicationEventCheckpoint::After(parse_event_id(&request.checkpoint)?)
+    let target = match (request.checkpoint, request.progress_cursor) {
+        (Some(checkpoint), None) if checkpoint == "before-first" => {
+            ParsedReactiveSeekTarget::Exact(ApplicationEventCheckpoint::BeforeFirst)
+        }
+        (Some(checkpoint), None) => ParsedReactiveSeekTarget::Exact(
+            ApplicationEventCheckpoint::After(parse_event_id(&checkpoint)?),
+        ),
+        (None, Some(cursor)) => ParsedReactiveSeekTarget::Protected(
+            ApplicationEventProgressCursor::new(parse_hex(&cursor)?)
+                .map_err(application_client_error)?,
+        ),
+        _ => return Err(native_error("invalid_input", None)),
     };
     Ok(ParsedReactiveSeek {
         consumer: reactive_consumer(
@@ -880,7 +904,7 @@ fn parse_reactive_seek(source: &str) -> PyResult<ParsedReactiveSeek> {
             request.parameters,
             request.consumer_name,
         )?,
-        checkpoint,
+        target,
     })
 }
 
@@ -1214,6 +1238,7 @@ fn render_event_batch(batch: ApplicationEventBatch) -> PyResult<String> {
         "events": events,
         "status": event_status_json(batch.status),
         "wait_timed_out": batch.wait_timed_out,
+        "disposition": event_disposition_name(batch.disposition),
     }))
 }
 
@@ -1285,6 +1310,7 @@ fn render_contextual_batch(batch: ApplicationContextualBatch) -> PyResult<String
         "items": items,
         "status": event_status_json(batch.status),
         "wait_timed_out": batch.wait_timed_out,
+        "disposition": event_disposition_name(batch.disposition),
     }))
 }
 
@@ -1300,7 +1326,18 @@ fn render_event_mutation(result: ApplicationEventMutationResult) -> PyResult<Str
     serialize(&json!({"result": result}))
 }
 
-fn event_status_json(
+fn event_status_json(status: ApplicationEventConsumerPublicStatus) -> serde_json::Value {
+    match status {
+        ApplicationEventConsumerPublicStatus::Protected(status) => json!({
+            "kind": "protected",
+            "history_incarnation": status.history_incarnation,
+            "progress_cursor": hex(status.progress_cursor.as_bytes()),
+        }),
+        ApplicationEventConsumerPublicStatus::Exact(status) => exact_event_status_json(status),
+    }
+}
+
+fn exact_event_status_json(
     status: riffdb_client_rust::ApplicationEventConsumerStatus,
 ) -> serde_json::Value {
     let checkpoint = match status.checkpoint {
@@ -1317,6 +1354,14 @@ fn event_status_json(
         "retries": status.retries,
         "dead_letters": status.dead_letters,
     })
+}
+
+fn event_disposition_name(disposition: ApplicationEventPullDisposition) -> &'static str {
+    match disposition {
+        ApplicationEventPullDisposition::Ready => "ready",
+        ApplicationEventPullDisposition::WaitTimedOut => "wait_timed_out",
+        ApplicationEventPullDisposition::BoundedProgress => "bounded_progress",
+    }
 }
 
 fn render_live_update(update: ApplicationLiveQueryUpdate) -> PyResult<String> {

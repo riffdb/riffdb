@@ -1,0 +1,33 @@
+query RunPage(
+    $organization_id: Run.organization_id,
+    $experiment_id: Run.experiment_id,
+    $run_id: Run.run_id,
+) {
+    one run from Run
+        where organization_id == $organization_id
+          && experiment_id == $experiment_id
+          && run_id == $run_id
+        else NotFound
+
+    many metrics from Metric
+        where organization_id == $organization_id
+          && experiment_id == $experiment_id
+          && run_id == $run_id
+        order by metric_id asc
+        take 25
+
+    many artifacts from Artifact
+        where organization_id == $organization_id
+          && experiment_id == $experiment_id
+          && run_id == $run_id
+        order by artifact_id asc
+        take 25
+
+    return Found {
+        run: run { run_id owner_id group_id visibility state }
+        metrics: metrics { metric_id name value_micros }
+        artifacts: artifacts { artifact_id path }
+    }
+
+    outcomes Found | NotFound
+}

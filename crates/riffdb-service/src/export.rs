@@ -3,15 +3,19 @@
 use std::fmt;
 use std::num::NonZeroU64;
 
+use riffdb_policy::AuthorizedApplicationExportV1;
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportManifestHash, ApplicationExportOperationId,
     ApplicationExportPageHash, ApplicationExportReceiptHash, ApplicationExportSelectionV1,
-    ApplicationExportSnapshotBindingV1, RequestId, Timestamp,
+    ApplicationExportSnapshotBindingV1, RequestId, ServiceIngressKindV1, Timestamp,
     canonical_application_export_page_preimage, hash_application_export_manifest,
     hash_application_export_page, hash_application_export_receipt,
 };
 
-use crate::{RequestContext, ServiceDtoError, ServiceFuture};
+use crate::{
+    BoxPortCapacityPermit, PortAdmissionError, PortFuture, RequestContext, RequestControl,
+    ServiceDtoError, ServiceFuture,
+};
 
 /// Maximum canonical JSON bytes in one exported record line.
 pub const MAX_APPLICATION_EXPORT_JSON_LINE_BYTES: usize = 64 * 1024;
@@ -665,6 +669,207 @@ pub enum GetApplicationExportResultV1 {
     NotFound,
     /// Current protected operation observation.
     Found(Box<ApplicationExportOperationV1>),
+}
+
+/// Move-only start submission carrying one fresh exact V5 safe-point proof.
+pub struct AuthorizedApplicationExportStartV1 {
+    request_id: RequestId,
+    ingress: ServiceIngressKindV1,
+    request: StartApplicationExportRequest,
+    authorization: Box<AuthorizedApplicationExportV1>,
+}
+
+impl AuthorizedApplicationExportStartV1 {
+    pub(crate) const fn new(
+        request_id: RequestId,
+        ingress: ServiceIngressKindV1,
+        request: StartApplicationExportRequest,
+        authorization: Box<AuthorizedApplicationExportV1>,
+    ) -> Self {
+        Self {
+            request_id,
+            ingress,
+            request,
+            authorization,
+        }
+    }
+
+    /// Separates exact immutable input from its move-only current proof.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        RequestId,
+        ServiceIngressKindV1,
+        StartApplicationExportRequest,
+        Box<AuthorizedApplicationExportV1>,
+    ) {
+        (
+            self.request_id,
+            self.ingress,
+            self.request,
+            self.authorization,
+        )
+    }
+}
+
+impl fmt::Debug for AuthorizedApplicationExportStartV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedApplicationExportStartV1([REDACTED])")
+    }
+}
+
+/// Move-only bounded-page submission carrying one fresh release proof.
+pub struct AuthorizedApplicationExportPageV1 {
+    request: GetApplicationExportPageRequest,
+    authorization: Box<AuthorizedApplicationExportV1>,
+}
+
+impl AuthorizedApplicationExportPageV1 {
+    pub(crate) const fn new(
+        request: GetApplicationExportPageRequest,
+        authorization: Box<AuthorizedApplicationExportV1>,
+    ) -> Self {
+        Self {
+            request,
+            authorization,
+        }
+    }
+
+    /// Separates the exact cursor request from its current proof.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        GetApplicationExportPageRequest,
+        Box<AuthorizedApplicationExportV1>,
+    ) {
+        (self.request, self.authorization)
+    }
+}
+
+impl fmt::Debug for AuthorizedApplicationExportPageV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedApplicationExportPageV1([REDACTED])")
+    }
+}
+
+/// Move-only status/cancel submission carrying one fresh current proof.
+pub struct AuthorizedApplicationExportOperationV1 {
+    request: ApplicationExportOperationRequest,
+    authorization: Box<AuthorizedApplicationExportV1>,
+}
+
+impl AuthorizedApplicationExportOperationV1 {
+    pub(crate) const fn new(
+        request: ApplicationExportOperationRequest,
+        authorization: Box<AuthorizedApplicationExportV1>,
+    ) -> Self {
+        Self {
+            request,
+            authorization,
+        }
+    }
+
+    /// Separates the exact operation selector from its current proof.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        ApplicationExportOperationRequest,
+        Box<AuthorizedApplicationExportV1>,
+    ) {
+        (self.request, self.authorization)
+    }
+}
+
+impl fmt::Debug for AuthorizedApplicationExportOperationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedApplicationExportOperationV1([REDACTED])")
+    }
+}
+
+/// Closed failure after a start/page operation was submitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationExportMutationPortErrorV1 {
+    /// Caller-stable identity or cursor binds different immutable input.
+    InputMismatch,
+    /// Pinned snapshot or durable operation state is temporarily unavailable.
+    Unavailable,
+    /// A durable transition may have committed without a known response.
+    OutcomeUnknown,
+    /// Source or retained operation state violated an exact invariant.
+    Integrity,
+    /// One explicit operation bound was reached.
+    LimitExceeded,
+}
+
+/// Closed failure while resolving or observing an export operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationExportObservationPortErrorV1 {
+    /// Durable operation state is temporarily unavailable.
+    Unavailable,
+    /// Source or retained operation state violated an exact invariant.
+    Integrity,
+}
+
+/// Capacity reserved for one authorized start/replay.
+pub type ApplicationExportStartPermitV1 = BoxPortCapacityPermit<
+    AuthorizedApplicationExportStartV1,
+    ApplicationExportStartResultV1,
+    ApplicationExportMutationPortErrorV1,
+>;
+/// Capacity reserved for one authorized page release.
+pub type ApplicationExportPagePermitV1 = BoxPortCapacityPermit<
+    AuthorizedApplicationExportPageV1,
+    ApplicationExportPageV1,
+    ApplicationExportMutationPortErrorV1,
+>;
+/// Capacity reserved for one authorized observation.
+pub type ApplicationExportObservationPermitV1 = BoxPortCapacityPermit<
+    AuthorizedApplicationExportOperationV1,
+    Option<ApplicationExportOperationV1>,
+    ApplicationExportObservationPortErrorV1,
+>;
+/// Capacity reserved for one authorized cancellation transition.
+pub type ApplicationExportCancelPermitV1 = BoxPortCapacityPermit<
+    AuthorizedApplicationExportOperationV1,
+    Option<ApplicationExportOperationV1>,
+    ApplicationExportMutationPortErrorV1,
+>;
+
+/// Server-private owner of snapshots, checkpoints, pages, and receipts.
+pub trait ApplicationExportCoordinatorPort: Send + Sync {
+    /// Resolves only the immutable selection required for a fresh safe point.
+    fn resolve_application_export_selection(
+        &self,
+        operation_id: ApplicationExportOperationId,
+        control: &RequestControl,
+    ) -> PortFuture<'_, Option<ApplicationExportSelectionV1>, ApplicationExportObservationPortErrorV1>;
+
+    /// Reserves bounded capacity before the final start authorization check.
+    fn reserve_application_export_start(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ApplicationExportStartPermitV1, PortAdmissionError>;
+
+    /// Reserves bounded capacity before the final page authorization check.
+    fn reserve_application_export_page(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ApplicationExportPagePermitV1, PortAdmissionError>;
+
+    /// Reserves bounded capacity before a protected observation.
+    fn reserve_application_export_observation(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ApplicationExportObservationPermitV1, PortAdmissionError>;
+
+    /// Reserves bounded capacity before an authorized cancellation transition.
+    fn reserve_application_export_cancel(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ApplicationExportCancelPermitV1, PortAdmissionError>;
 }
 
 /// Operator-only application-export surface.

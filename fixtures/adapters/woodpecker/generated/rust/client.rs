@@ -564,7 +564,7 @@ fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCo
 fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 
 use riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
-use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus, ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
+use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus, ApplicationEventMutationResult, ApplicationEventProgressCursor, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
 
 pub const PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH: [u8; 32] = [98, 125, 207, 134, 28, 233, 45, 76, 247, 155, 102, 153, 235, 224, 74, 83, 184, 71, 100, 162, 57, 70, 137, 78, 137, 238, 37, 23, 228, 148, 91, 110];
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -626,7 +626,11 @@ impl WoodpeckerSchedulerClient {
         let identity = consumer.clone().event_consumer()?;
         self.client.seek_event_consumer(&identity, checkpoint, &self.metadata).await
     }
-    pub async fn pipeline_transitions_status(&mut self, consumer: &PipelineTransitionsConsumer) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    pub async fn seek_protected_pipeline_transitions(&mut self, consumer: &PipelineTransitionsConsumer, cursor: ApplicationEventProgressCursor) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.seek_protected_event_consumer(&identity, cursor, &self.metadata).await
+    }
+    pub async fn pipeline_transitions_status(&mut self, consumer: &PipelineTransitionsConsumer) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let identity = consumer.clone().event_consumer()?;
         self.client.event_consumer_status(&identity, &self.metadata).await
     }

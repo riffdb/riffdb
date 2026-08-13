@@ -363,13 +363,65 @@ pub struct ApplicationEventConsumerStatus {
     pub dead_letters: u32,
 }
 
+/// Opaque protected-consumer continuation. No event identity or checkpoint is
+/// recoverable from these bytes.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ApplicationEventProgressCursor([u8; 16]);
+
+impl ApplicationEventProgressCursor {
+    /// Checks one exact cursor returned by RiffDB.
+    pub fn new(bytes: Vec<u8>) -> Result<Self, ApplicationClientError> {
+        bytes
+            .try_into()
+            .map(Self)
+            .map_err(|_| ApplicationClientError::InvalidInput)
+    }
+
+    /// Borrows the opaque bytes for persistence or a subsequent pull.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+/// Metadata-safe status for a row-policy-protected consumer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApplicationProtectedEventConsumerStatus {
+    /// Restore-incarnation fence.
+    pub history_incarnation: u64,
+    /// Opaque authority- and progress-bound continuation.
+    pub progress_cursor: ApplicationEventProgressCursor,
+}
+
+/// Public consumer status selected by the stream's authorization model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplicationEventConsumerPublicStatus {
+    /// Exact queue metadata for an unprotected stream.
+    Exact(ApplicationEventConsumerStatus),
+    /// Metadata-safe continuation for a protected stream.
+    Protected(ApplicationProtectedEventConsumerStatus),
+}
+
+/// Closed completion class for one bounded pull.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationEventPullDisposition {
+    /// Bounded inspection completed normally.
+    Ready,
+    /// Long polling elapsed without visible work.
+    WaitTimedOut,
+    /// Candidate work was exhausted before a visible item was found.
+    BoundedProgress,
+}
+
 /// One bounded consumer response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationEventBatch {
     /// Leased events in service order.
     pub events: Vec<ApplicationEventDelivery>,
     /// Status after the transition.
-    pub status: ApplicationEventConsumerStatus,
+    pub status: ApplicationEventConsumerPublicStatus,
+    /// Closed completion class.
+    pub disposition: ApplicationEventPullDisposition,
     /// Whether a nonzero long poll expired without work.
     pub wait_timed_out: bool,
 }
@@ -451,7 +503,9 @@ pub struct ApplicationContextualBatch {
     /// Zero or one leased contextual work item.
     pub items: Vec<ApplicationContextualWorkItem>,
     /// Durable consumer status after leasing.
-    pub status: ApplicationEventConsumerStatus,
+    pub status: ApplicationEventConsumerPublicStatus,
+    /// Closed completion class.
+    pub disposition: ApplicationEventPullDisposition,
     /// Whether the bounded wait elapsed without work.
     pub wait_timed_out: bool,
 }
@@ -478,7 +532,9 @@ pub struct TypedContextualBatch<E> {
     /// Zero or one typed contextual work item.
     pub items: Vec<TypedContextualWorkItem<E>>,
     /// Durable consumer status after leasing.
-    pub status: ApplicationEventConsumerStatus,
+    pub status: ApplicationEventConsumerPublicStatus,
+    /// Closed completion class.
+    pub disposition: ApplicationEventPullDisposition,
     /// Whether the bounded wait elapsed without work.
     pub wait_timed_out: bool,
 }
@@ -505,7 +561,9 @@ pub struct TypedEventBatch<E> {
     /// Typed leased events.
     pub events: Vec<TypedEventDelivery<E>>,
     /// Durable status after leasing.
-    pub status: ApplicationEventConsumerStatus,
+    pub status: ApplicationEventConsumerPublicStatus,
+    /// Closed completion class.
+    pub disposition: ApplicationEventPullDisposition,
     /// Whether the bounded wait elapsed without work.
     pub wait_timed_out: bool,
 }
@@ -735,6 +793,7 @@ impl StableApplicationClient {
         Ok(TypedEventBatch {
             events,
             status: batch.status,
+            disposition: batch.disposition,
             wait_timed_out: batch.wait_timed_out,
         })
     }
@@ -763,6 +822,7 @@ impl StableApplicationClient {
         Ok(TypedContextualBatch {
             items,
             status: batch.status,
+            disposition: batch.disposition,
             wait_timed_out: batch.wait_timed_out,
         })
     }
@@ -833,9 +893,24 @@ impl StableApplicationClient {
         options: EventConsumerOptions,
         metadata: &CallMetadata,
     ) -> Result<ApplicationEventBatch, ApplicationClientError> {
+        self.consume_event_stream_after(consumer, options, None, metadata)
+            .await
+    }
+
+    /// Continues one protected consumer from an opaque RiffDB cursor.
+    pub async fn consume_event_stream_after(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        options: EventConsumerOptions,
+        progress_cursor: Option<ApplicationEventProgressCursor>,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventBatch, ApplicationClientError> {
         let response = self
             .inner
-            .consume_event_stream(consumer_request(consumer, options)?, metadata)
+            .consume_event_stream(
+                consumer_request(consumer, options, progress_cursor)?,
+                metadata,
+            )
             .await?;
         raise_event_batch(response)
     }
@@ -845,6 +920,18 @@ impl StableApplicationClient {
         &mut self,
         consumer: &ApplicationEventConsumer,
         maximum_wait_nanos: u64,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationContextualBatch, ApplicationClientError> {
+        self.consume_contextual_subscription_after(consumer, maximum_wait_nanos, None, metadata)
+            .await
+    }
+
+    /// Continues one protected contextual subscription from an opaque cursor.
+    pub async fn consume_contextual_subscription_after(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        maximum_wait_nanos: u64,
+        progress_cursor: Option<ApplicationEventProgressCursor>,
         metadata: &CallMetadata,
     ) -> Result<ApplicationContextualBatch, ApplicationClientError> {
         if maximum_wait_nanos > 30_000_000_000 {
@@ -857,6 +944,9 @@ impl StableApplicationClient {
                     request_id: request_id()?,
                     selection: Some(consumer.selection()?),
                     maximum_wait_nanos,
+                    progress_cursor: progress_cursor
+                        .map(|cursor| cursor.as_bytes().to_vec())
+                        .unwrap_or_default(),
                 },
                 metadata,
             )
@@ -948,7 +1038,7 @@ impl StableApplicationClient {
         &mut self,
         consumer: &ApplicationEventConsumer,
         metadata: &CallMetadata,
-    ) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    ) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let response = self
             .inner
             .get_contextual_subscription_status(
@@ -962,7 +1052,12 @@ impl StableApplicationClient {
         match response.result {
             Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => Ok(None),
             Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
-                raise_consumer_status(status).map(Some)
+                raise_consumer_status(status)
+                    .map(ApplicationEventConsumerPublicStatus::Exact)
+                    .map(Some)
+            }
+            Some(v1::get_event_stream_consumer_status_response::Result::Protected(status)) => {
+                raise_protected_consumer_status(status).map(Some)
             }
             None => Err(ApplicationClientError::InvalidResponse),
         }
@@ -1007,7 +1102,7 @@ impl StableApplicationClient {
     ) -> Result<ApplicationEventResponseStream, ApplicationClientError> {
         let inner = self
             .inner
-            .stream_event_consumer(consumer_request(consumer, options)?, metadata)
+            .stream_event_consumer(consumer_request(consumer, options, None)?, metadata)
             .await?;
         Ok(ApplicationEventResponseStream { inner })
     }
@@ -1118,6 +1213,30 @@ impl StableApplicationClient {
                     checkpoint: Some(v1::EventConsumerCheckpoint {
                         position: Some(position),
                     }),
+                    progress_cursor: Vec::new(),
+                },
+                metadata,
+            )
+            .await?;
+        raise_mutation_result(response.result)
+    }
+
+    /// Moves one protected consumer to an opaque position previously issued
+    /// under the same current principal, role, capability, and stream identity.
+    pub async fn seek_protected_event_consumer(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        cursor: ApplicationEventProgressCursor,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let response = self
+            .inner
+            .seek_event_stream_consumer(
+                v1::SeekEventStreamConsumerRequest {
+                    request_id: request_id()?,
+                    selection: Some(consumer.selection()?),
+                    checkpoint: None,
+                    progress_cursor: cursor.as_bytes().to_vec(),
                 },
                 metadata,
             )
@@ -1130,7 +1249,7 @@ impl StableApplicationClient {
         &mut self,
         consumer: &ApplicationEventConsumer,
         metadata: &CallMetadata,
-    ) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+    ) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         let response = self
             .inner
             .get_event_stream_consumer_status(
@@ -1144,7 +1263,12 @@ impl StableApplicationClient {
         match response.result {
             Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => Ok(None),
             Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
-                raise_consumer_status(status).map(Some)
+                raise_consumer_status(status)
+                    .map(ApplicationEventConsumerPublicStatus::Exact)
+                    .map(Some)
+            }
+            Some(v1::get_event_stream_consumer_status_response::Result::Protected(status)) => {
+                raise_protected_consumer_status(status).map(Some)
             }
             None => Err(ApplicationClientError::InvalidResponse),
         }
@@ -1180,6 +1304,7 @@ impl StableApplicationClient {
 fn consumer_request(
     consumer: &ApplicationEventConsumer,
     options: EventConsumerOptions,
+    progress_cursor: Option<ApplicationEventProgressCursor>,
 ) -> Result<v1::ConsumeEventStreamRequest, ApplicationClientError> {
     let options = options.validate()?;
     Ok(v1::ConsumeEventStreamRequest {
@@ -1189,6 +1314,9 @@ fn consumer_request(
         in_flight_limit: options.in_flight_limit,
         lease_seconds: options.lease_seconds,
         maximum_wait_nanos: options.maximum_wait_nanos,
+        progress_cursor: progress_cursor
+            .map(|cursor| cursor.as_bytes().to_vec())
+            .unwrap_or_default(),
     })
 }
 
@@ -1226,14 +1354,15 @@ fn raise_event_batch(
         .into_iter()
         .map(raise_event_delivery)
         .collect::<Result<Vec<_>, _>>()?;
-    let status = raise_consumer_status(
-        response
-            .status
-            .ok_or(ApplicationClientError::InvalidResponse)?,
-    )?;
+    let status = raise_consumer_public_status(response.status, response.protected_status)?;
+    let disposition = raise_consumer_disposition(response.disposition, response.wait_timed_out)?;
+    if disposition != ApplicationEventPullDisposition::Ready && !events.is_empty() {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
     Ok(ApplicationEventBatch {
         events,
         status,
+        disposition,
         wait_timed_out: response.wait_timed_out,
     })
 }
@@ -1246,14 +1375,15 @@ fn raise_contextual_batch(
         .into_iter()
         .map(raise_contextual_work_item)
         .collect::<Result<Vec<_>, _>>()?;
-    let status = raise_consumer_status(
-        response
-            .status
-            .ok_or(ApplicationClientError::InvalidResponse)?,
-    )?;
+    let status = raise_consumer_public_status(response.status, response.protected_status)?;
+    let disposition = raise_consumer_disposition(response.disposition, response.wait_timed_out)?;
+    if disposition != ApplicationEventPullDisposition::Ready && !items.is_empty() {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
     Ok(ApplicationContextualBatch {
         items,
         status,
+        disposition,
         wait_timed_out: response.wait_timed_out,
     })
 }
@@ -1444,6 +1574,54 @@ fn raise_consumer_status(
         retries: status.retries,
         dead_letters: status.dead_letters,
     })
+}
+
+fn raise_consumer_public_status(
+    exact: Option<v1::EventConsumerStatus>,
+    protected: Option<v1::ProtectedEventConsumerStatus>,
+) -> Result<ApplicationEventConsumerPublicStatus, ApplicationClientError> {
+    match (exact, protected) {
+        (Some(status), None) => {
+            raise_consumer_status(status).map(ApplicationEventConsumerPublicStatus::Exact)
+        }
+        (None, Some(status)) => raise_protected_consumer_status(status),
+        _ => Err(ApplicationClientError::InvalidResponse),
+    }
+}
+
+fn raise_protected_consumer_status(
+    status: v1::ProtectedEventConsumerStatus,
+) -> Result<ApplicationEventConsumerPublicStatus, ApplicationClientError> {
+    if status.history_incarnation == 0 {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(ApplicationEventConsumerPublicStatus::Protected(
+        ApplicationProtectedEventConsumerStatus {
+            history_incarnation: status.history_incarnation,
+            progress_cursor: ApplicationEventProgressCursor::new(status.progress_cursor)
+                .map_err(|_| ApplicationClientError::InvalidResponse)?,
+        },
+    ))
+}
+
+fn raise_consumer_disposition(
+    disposition: i32,
+    wait_timed_out: bool,
+) -> Result<ApplicationEventPullDisposition, ApplicationClientError> {
+    let disposition = match v1::EventConsumerPullDisposition::try_from(disposition).ok() {
+        Some(v1::EventConsumerPullDisposition::Ready) => ApplicationEventPullDisposition::Ready,
+        Some(v1::EventConsumerPullDisposition::WaitTimedOut) => {
+            ApplicationEventPullDisposition::WaitTimedOut
+        }
+        Some(v1::EventConsumerPullDisposition::BoundedProgress) => {
+            ApplicationEventPullDisposition::BoundedProgress
+        }
+        _ => return Err(ApplicationClientError::InvalidResponse),
+    };
+    if wait_timed_out != (disposition == ApplicationEventPullDisposition::WaitTimedOut) {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(disposition)
 }
 
 fn raise_mutation_result(

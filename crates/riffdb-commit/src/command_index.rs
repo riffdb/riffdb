@@ -7,9 +7,10 @@ use std::collections::BTreeSet;
 
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
-    BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V5,
-    EXECUTABLE_IR_VERSION_V6, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V5,
-    GRAMMAR_VERSION_V6, IndexSchema,
+    BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2,
+    EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
+    EXECUTABLE_IR_VERSION_V6, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -819,6 +820,9 @@ fn derive_grammar_v1_indexes(
     if !matches!(
         (bundle.grammar_version(), bundle.ir_version()),
         (GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
+            | (GRAMMAR_VERSION_V2, EXECUTABLE_IR_VERSION_V2)
+            | (GRAMMAR_VERSION_V3, EXECUTABLE_IR_VERSION_V3)
+            | (GRAMMAR_VERSION_V4, EXECUTABLE_IR_VERSION_V4)
             | (GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
             | (GRAMMAR_VERSION_V6, EXECUTABLE_IR_VERSION_V6)
     ) || plan.execution_class() != ExecutionClass::IdempotentMutation
@@ -1134,6 +1138,39 @@ contract IndexedRows version 1 {
 }
 "#;
 
+    const ROW_POLICY_INDEXED_SOURCE: &str = r#"
+contract PolicyIndexedRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  row policy RowAccess on Row {
+    allow read when tenant == principal.id
+    allow create when tenant == principal.id
+    allow update when tenant == principal.id
+    allow delete when tenant == principal.id
+  }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Created { row: row }
+  }
+}
+"#;
+
     const SCALAR_SOURCE: &str = r#"
 contract ScalarPrefixes version 1 {
   enum State { Ready, Stopped }
@@ -1217,7 +1254,17 @@ contract DeleteRestrict version 1 {
         next: ([u8; 16], &str, i64),
         old: Option<([u8; 16], &str, i64)>,
     ) -> Fixture {
-        let compiled = compile_contract_source(INDEXED_SOURCE).expect("indexed source compiles");
+        fixture_from_source(INDEXED_SOURCE, command_name, request_key, next, old)
+    }
+
+    fn fixture_from_source(
+        source: &str,
+        command_name: &str,
+        request_key: &str,
+        next: ([u8; 16], &str, i64),
+        old: Option<([u8; 16], &str, i64)>,
+    ) -> Fixture {
+        let compiled = compile_contract_source(source).expect("indexed source compiles");
         let bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
             .expect("indexed bundle validates");
         let plan = bundle
@@ -1692,6 +1739,35 @@ contract DeleteRestrict version 1 {
                 .iter()
                 .all(|target| target.partition_key() == &fixture.partition)
         );
+    }
+
+    #[test]
+    fn row_policy_ir_v4_preserves_ordinary_index_derivation() {
+        let fixture = fixture_from_source(
+            ROW_POLICY_INDEXED_SOURCE,
+            "CreateRow",
+            "policy-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V4
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V4
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("row-policy contracts retain ordinary index semantics");
+        assert_eq!(derived.entry_mutations.len(), 2);
     }
 
     #[test]

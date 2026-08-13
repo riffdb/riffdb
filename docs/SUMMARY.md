@@ -72,6 +72,7 @@
 - [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md)
 - [Multiple Databases](operations/MULTIPLE-DATABASES.md)
 - [Backup and Restore](backup-restore.md)
+- [Symbolic Application Export](operations/APPLICATION-EXPORT.md)
 - [Contract Migration Acceptance](operations/CONTRACT-MIGRATION-ACCEPTANCE.md)
 - [Application Installation Campaigns](operations/APPLICATION-INSTALLATION-CAMPAIGNS.md)
 - [TicketDesk Reactive Acceptance](operations/TICKETDESK-REACTIVE-ACCEPTANCE.md)

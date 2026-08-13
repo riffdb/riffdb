@@ -2,10 +2,10 @@
 
 use riffdb_contract_ir::{
     AggregateKeyPlan, AggregateSchema, DeletePolicySchemaV1, EntitySchema, EnumSchema,
-    EnumVariantSchema, EventPartitionSchema, EventSchema, FieldSchema, IndexSchema, InvariantPlan,
-    KeyComponentSchema, KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema,
-    SchemaIr, UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema,
-    WorkflowTransitionSchema,
+    EnumVariantSchema, EventPartitionSchema, EventPolicyAnchorFieldV1, EventPolicyAnchorV1,
+    EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema, KeyPurpose,
+    KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr, UniqueKeySchema,
+    ValueType, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
@@ -84,7 +84,7 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     let enums = lower_enums(hir, &mut diagnostics);
     let entities = lower_entities(hir, &mut diagnostics);
     let aggregates = lower_aggregates(hir, &mut diagnostics);
-    let events = lower_events(hir, &aggregates, &mut diagnostics);
+    let events = lower_events(hir, &entities, &aggregates, &mut diagnostics);
     let relationships = lower_relationships(hir, &mut diagnostics);
     let unique_keys = lower_unique_keys(hir, &mut diagnostics);
     let delete_policies = lower_delete_policies(hir);
@@ -653,6 +653,7 @@ fn lower_entities(
 
 fn lower_events(
     hir: &TypedContractHir,
+    entities: &[EntitySchema],
     aggregates: &[AggregateSchema],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Vec<EventSchema> {
@@ -742,13 +743,46 @@ fn lower_events(
             aggregate.keys().partition_schema().clone(),
             &record,
         );
-        match partition.and_then(|partition| {
-            EventSchema::partitioned(event.id, event.name.clone(), record, partition)
-        }) {
+        match partition
+            .and_then(|partition| {
+                EventSchema::partitioned(event.id, event.name.clone(), record, partition)
+            })
+            .and_then(|schema| {
+                let Some(anchor) = &event.policy_anchor else {
+                    return Ok(schema);
+                };
+                let entity = entities
+                    .iter()
+                    .find(|entity| entity.id() == anchor.source_entity)
+                    .ok_or(riffdb_contract_ir::IrValidationError::InvalidReference {
+                        kind: "event policy anchor entity",
+                    })?;
+                let partition = schema.partition().ok_or(
+                    riffdb_contract_ir::IrValidationError::InvalidReference {
+                        kind: "event policy anchor partition",
+                    },
+                )?;
+                let checked = EventPolicyAnchorV1::new(
+                    anchor.source_entity,
+                    anchor
+                        .key_fields
+                        .iter()
+                        .map(|(source, payload)| EventPolicyAnchorFieldV1::new(*source, *payload))
+                        .collect(),
+                    anchor.read_policy.clone(),
+                    entity,
+                    schema.payload(),
+                    partition,
+                )?;
+                schema.with_policy_anchor(checked, entity)
+            }) {
             Ok(schema) => result.push(schema),
             Err(_) => diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::InvalidEvent,
-                partition_span,
+                event
+                    .policy_anchor
+                    .as_ref()
+                    .map_or(partition_span, |anchor| anchor.span),
             )),
         }
     }

@@ -1712,9 +1712,33 @@ fn schema_extension_markers_are_unique_and_strictly_descending() {
             pair[1]
         );
     }
-    // The eight-byte event-partition magic reuses a u32 word by design; its
-    // full value must still be distinct from every u32 marker's widened form.
+    // The eight-byte magics read at per-event positions, never at the
+    // schema tail, so full-value distinctness is the hard invariant. Their
+    // HIGH words additionally consume slots from the shared descending
+    // namespace (the legacy partition magic took 0xffff_fffc's word by
+    // design; the V7 event-anchor magic took 0xffff_fff9's, which is why
+    // the secret extension moved to 0xffff_fff8): every future u32 marker
+    // must skip any high word already claimed by a u64 magic.
+    let magic_high_words = [
+        (super::EVENT_PARTITION_SCHEMA_EXTENSION >> 32) as u32,
+        (super::EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION >> 32) as u32,
+    ];
+    for magic in [
+        super::EVENT_PARTITION_SCHEMA_EXTENSION,
+        super::EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION,
+    ] {
+        for marker in markers {
+            assert_ne!(u64::from(marker), magic);
+        }
+    }
+    // The legacy fffc reuse predates the rule and is positionally safe;
+    // everything after the vector marker must respect it.
     for marker in markers {
-        assert_ne!(u64::from(marker), super::EVENT_PARTITION_SCHEMA_EXTENSION);
+        if marker < super::VECTOR_FIELD_SPEC_SCHEMA_EXTENSION {
+            assert!(
+                !magic_high_words.contains(&marker),
+                "u32 marker {marker:#010x} collides with a u64 magic high word"
+            );
+        }
     }
 }

@@ -11,6 +11,7 @@ use riffdb_storage_api::{
     StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
     StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1,
     StoredOutcomeV1, StoredProvenanceRecordV1, StoredReadDependenciesV1, derive_event_hash_v1,
+    derive_event_hash_v2,
 };
 use riffdb_types::{EntityVersion, EventId};
 
@@ -938,15 +939,35 @@ fn build_atomic_command_record_set(
             let ordinal =
                 u32::try_from(ordinal).map_err(|_| CommandRecordGraphError::internal_defect())?;
             let event_id = EventId::new(sequence, ordinal);
-            let event_hash =
-                derive_event_hash_v1(event_id, event.event_type_id(), event.payload())?;
-            StoredDurableEventV1::new(
-                event_id,
-                event.event_type_id(),
-                event.payload().clone(),
-                event_hash,
-            )
-            .map_err(CommandRecordGraphError::from)
+            match event.policy_anchor() {
+                Some(anchor) => {
+                    let event_hash = derive_event_hash_v2(
+                        event_id,
+                        event.event_type_id(),
+                        event.payload(),
+                        anchor,
+                    )?;
+                    StoredDurableEventV1::new_anchored(
+                        event_id,
+                        event.event_type_id(),
+                        event.payload().clone(),
+                        event_hash,
+                        anchor.clone(),
+                    )
+                    .map_err(CommandRecordGraphError::from)
+                }
+                None => {
+                    let event_hash =
+                        derive_event_hash_v1(event_id, event.event_type_id(), event.payload())?;
+                    StoredDurableEventV1::new(
+                        event_id,
+                        event.event_type_id(),
+                        event.payload().clone(),
+                        event_hash,
+                    )
+                    .map_err(CommandRecordGraphError::from)
+                }
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     let event_ids = events

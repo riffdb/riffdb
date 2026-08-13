@@ -10,7 +10,7 @@ use riffdb_contract_ir::{
 };
 use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
-    ActorId, ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1,
+    ActorId, ApplicationManifestHash, ApplicationRoleHash, CanonicalValue, CapabilityGrantV1,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
     CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1,
     CapabilityRowPolicyOperationV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -81,6 +81,7 @@ impl ApplicationRolePolicy {
 pub struct ApplicationRoleFactSchema {
     name: String,
     value_type: String,
+    enum_variants: BTreeMap<String, CanonicalValue>,
 }
 
 impl ApplicationRoleFactSchema {
@@ -94,6 +95,16 @@ impl ApplicationRoleFactSchema {
     #[must_use]
     pub fn value_type(&self) -> &str {
         &self.value_type
+    }
+
+    /// Resolves one symbolic enum variant for trusted provisioning adapters.
+    ///
+    /// Stable enum IDs remain compiler-private; CLI and other operator surfaces
+    /// accept only the contract symbol and cannot manufacture an enum identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_resolve_enum_variant(&self, name: &str) -> Option<CanonicalValue> {
+        self.enum_variants.get(name).cloned()
     }
 }
 
@@ -211,6 +222,20 @@ impl CompiledApplicationRole {
     #[must_use]
     pub fn principal_fact_schemas(&self) -> &[ApplicationRoleFactSchema] {
         &self.principal_fact_schemas
+    }
+
+    /// Resolves a symbolic enum fact value against this exact compiled role.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_resolve_principal_fact_enum(
+        &self,
+        fact_name: &str,
+        variant_name: &str,
+    ) -> Option<CanonicalValue> {
+        self.principal_fact_schemas
+            .iter()
+            .find(|schema| schema.name() == fact_name)?
+            .internal_resolve_enum_variant(variant_name)
     }
 
     /// Domain-separated role identity covering all public and private requirements.
@@ -771,6 +796,7 @@ fn compile_role_policies<'a>(
                 ApplicationRoleFactSchema {
                     name,
                     value_type: render_fact_type(fact, contract)?,
+                    enum_variants: compile_fact_enum_variants(fact, contract)?,
                 },
                 (*fact).clone(),
             ))
@@ -908,6 +934,36 @@ fn render_fact_type(
 ) -> Result<String, ApplicationRoleError> {
     fact.public_type_name(contract.schema())
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch))
+}
+
+fn compile_fact_enum_variants(
+    fact: &PrincipalFactSchemaV1,
+    contract: &ContractBundle,
+) -> Result<BTreeMap<String, CanonicalValue>, ApplicationRoleError> {
+    let scalar = fact
+        .value_type()
+        .list_parts()
+        .map_or(fact.value_type(), |(element, _)| element);
+    let Some(type_id) = scalar.enum_type_id() else {
+        return Ok(BTreeMap::new());
+    };
+    let enumeration = contract
+        .schema()
+        .enumeration(type_id)
+        .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch))?;
+    Ok(enumeration
+        .variants()
+        .iter()
+        .map(|variant| {
+            (
+                variant.name().to_owned(),
+                CanonicalValue::Enum {
+                    type_id: enumeration.id(),
+                    variant_id: variant.id(),
+                },
+            )
+        })
+        .collect())
 }
 
 fn validate_reactive_modules<'a>(

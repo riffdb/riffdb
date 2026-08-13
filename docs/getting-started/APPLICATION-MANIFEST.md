@@ -152,12 +152,14 @@ client.
 }
 ```
 
-WP-570 exposes this schema for compiler review and exact-lock generation. The
-current build deliberately withholds executable query, command, and reactive
-permissions from operations touching protected entities until WP-572 installs
-the shared transaction-current evaluator. An authorization refusal is expected
-for such a role in this intermediate build; application middleware is not an
-accepted substitute. See [Compiled Row Policies](../security/ROW-POLICIES.md).
+WP-570 exposes this schema for compiler review and exact-lock generation.
+Protected queries, commands, projections, live views, event delivery, and
+contextual reactions now use the shared transaction-current evaluator. A
+database-wide reactive wakeup remains unavailable to protected roles because
+it has no compiler-owned stream and partition identity; use the protected
+consumer's bounded `next`/long-poll operation instead. Application middleware
+is not an accepted substitute. See
+[Compiled Row Policies](../security/ROW-POLICIES.md).
 
 The source document is closed JSON with exactly these top-level members:
 
@@ -266,6 +268,13 @@ riffdb role bind riffdb.application.json \
   --credential-output .riffdb/ticketdesk.credential
 riffdb role revoke <capability-uuidv7> --reason replaced
 ```
+
+If the role selects a row policy with declared principal facts, add one
+operator-owned `--principal-facts <JSON_OBJECT_PATH>` document. Its object keys
+must exactly match the symbolic `principal_fact_schemas` reported by
+`riffdb role describe`; values use the natural JSON forms documented in
+[Row policies](../security/ROW-POLICIES.md). Generated application clients
+never receive the document, policy bytecode, or a policy-bypass parameter.
 
 `tenant_scope` is exact author intent. A role declaring `"tenant"` requires
 `--tenant <tenant-id>` on check, describe, bind, development binding, and

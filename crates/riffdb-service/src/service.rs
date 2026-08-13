@@ -24,17 +24,18 @@ use crate::orchestration::{
     ContainedAuditFailure, OperationAuditLifecycle, with_operation_audit_lifecycle,
 };
 use crate::{
-    ApplicationInstallationCoordinatorPort, AuthoritativeReadPort, BuildInfo,
-    CapabilityTokenIssuer, CatalogReadPort, ColumnarProjectionPort,
-    ContractMigrationCoordinatorPort, CurrentPolicyPort, CursorMonotonicClock,
-    CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
-    HealthRequest, HealthResult, LiveQueryClock, OfflineMaintenanceCoordinatorPort,
-    OperationalStatusPort, OutboxStatusPort, PortDriverStopped, PortReceipt,
-    PreBootstrapHealthContext, PreBootstrapHealthContextIssuer, PreBootstrapHealthReport,
-    ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler,
-    ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
-    ServiceJob, ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
-    ServiceTelemetryEvent, ensure_response_budget, port_completion_channel,
+    ApplicationExportCoordinatorPort, ApplicationInstallationCoordinatorPort,
+    AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
+    ColumnarProjectionPort, ContractMigrationCoordinatorPort, CurrentPolicyPort,
+    CursorMonotonicClock, CursorTokenGenerator, EventConsumerClock, EventConsumerPort,
+    EventLeaseTokenSource, HealthRequest, HealthResult, LiveQueryClock,
+    OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
+    PortReceipt, PreBootstrapHealthContext, PreBootstrapHealthContextIssuer,
+    PreBootstrapHealthReport, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
+    RequestDeadlineScheduler, ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure,
+    ServiceFuture, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceResponseCharge,
+    ServiceResult, ServiceTelemetry, ServiceTelemetryEvent, ensure_response_budget,
+    port_completion_channel,
 };
 
 /// Trusted immutable process facts displayed by authenticated health.
@@ -159,6 +160,7 @@ pub struct ServiceProviders {
     pub(crate) maintenance: Option<Arc<dyn OfflineMaintenanceCoordinatorPort>>,
     pub(crate) migration: Option<Arc<dyn ContractMigrationCoordinatorPort>>,
     pub(crate) installation: Option<Arc<dyn ApplicationInstallationCoordinatorPort>>,
+    pub(crate) application_export: Option<Arc<dyn ApplicationExportCoordinatorPort>>,
     pub(crate) operational: Arc<dyn OperationalStatusPort>,
     pub(crate) token_issuer: Arc<dyn CapabilityTokenIssuer>,
     pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
@@ -210,6 +212,7 @@ impl ServiceProviders {
             maintenance: None,
             migration: None,
             installation: None,
+            application_export: None,
             operational,
             token_issuer,
             incident_ids,
@@ -318,6 +321,16 @@ impl ServiceProviders {
         installation: Arc<dyn ApplicationInstallationCoordinatorPort>,
     ) -> Self {
         self.installation = Some(installation);
+        self
+    }
+
+    /// Installs the server-private symbolic export lifecycle coordinator.
+    #[must_use]
+    pub fn with_application_export(
+        mut self,
+        application_export: Arc<dyn ApplicationExportCoordinatorPort>,
+    ) -> Self {
+        self.application_export = Some(application_export);
         self
     }
 }

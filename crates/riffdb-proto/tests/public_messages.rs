@@ -1255,9 +1255,22 @@ fn index_and_event_route_pages_allow_empty_bounded_progress() {
                 event_ordinal: 0,
             }),
             history_incarnation: 1,
+            disposition: v1::EventPageDisposition::BoundedProgress.into(),
         }),
     };
     assert!(validate_public_message(&events).is_ok());
+
+    let mut missing_cursor = events.clone();
+    missing_cursor
+        .page
+        .as_mut()
+        .expect("page")
+        .next_cursor
+        .clear();
+    assert_eq!(
+        validate_public_message(&missing_cursor),
+        Err(PublicWireError::InconsistentFields)
+    );
 
     let projection = v1::QueryProjectionResponse {
         result: Some(v1::query_projection_response::Result::Ready(
@@ -1334,6 +1347,7 @@ fn event_descriptors_and_pages_reject_cross_field_and_fence_substitution() {
                 event_ordinal: 0,
             }),
             history_incarnation: 1,
+            disposition: v1::EventPageDisposition::Page.into(),
         }),
         wait_timed_out: true,
     };

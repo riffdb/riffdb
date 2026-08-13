@@ -50,6 +50,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/event_policy_anchor.proto",
+    "riffdb/storage/v1/event_policy_command_authority_v5.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -89,6 +90,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/event_policy_anchor.proto",
+    "riffdb/storage/v1/event_policy_command_authority_v5.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -574,6 +576,16 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         PayloadBound::EnvelopeMaximum,
     ),
     durable(
+        "event_policy_command_authority_v5.proto",
+        "StoredCommandCapsuleV5",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "event_policy_command_authority_v5.proto",
+        "StoredCommandSegmentV4",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
         "capability_secret.proto",
         "CapabilityRecordV6",
         PayloadBound::Document,
@@ -615,6 +627,10 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "GetContractMigrationOperation", false),
     ("AdminService", "GetOfflineMaintenanceOperation", false),
     ("AdminService", "GetApplicationInstallation", false),
+    ("AdminService", "StartApplicationExport", false),
+    ("AdminService", "GetApplicationExportPage", false),
+    ("AdminService", "GetApplicationExport", false),
+    ("AdminService", "CancelApplicationExport", false),
     ("AdminService", "Health", false),
     ("AdminService", "ListPendingOutboxDeliveries", false),
     ("AdminService", "RestoreOfflineBackup", false),
@@ -997,8 +1013,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let export_v1_record = durable_registry
         .get(current_v1_record_count + 49)
         .ok_or_else(|| io::Error::other("durable export-v1 registry is incomplete"))?;
+    let event_policy_command_authority_records = durable_registry
+        .get(current_v1_record_count + 50..current_v1_record_count + 52)
+        .ok_or_else(|| {
+            io::Error::other("durable event-policy command-authority registry is incomplete")
+        })?;
     let capability_v6_record = durable_registry
-        .get(current_v1_record_count + 50)
+        .get(current_v1_record_count + 52)
         .ok_or_else(|| io::Error::other("durable capability-v6 registry is incomplete"))?;
     write_artifact(
         &output_root,
@@ -1307,6 +1328,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin",
+        &durable_schema_hashes(event_policy_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-event-policy-command-authority-v5-record-bounds.bin",
+        &durable_record_bounds(event_policy_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
         &durable_schema_hashes(entity_transitions_v4_records),
     )?;
@@ -1582,9 +1613,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 80 {
+    if DURABLE_RECORDS.len() != 82 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 80 records").into(),
+            io::Error::other("readable durable registry must contain exactly 82 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1608,9 +1639,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 160 || enum_count != 21 {
+    if message_count != 164 || enum_count != 21 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 160 messages and 21 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 164 messages and 21 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1902,8 +1933,13 @@ fn durable_writable_registry_fixture(
     let export_v1 = records.get(current_v1_record_count + 49).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredApplicationExportOperationV1")
     })?;
+    let event_policy_command_authority = records
+        .get(current_v1_record_count + 50..current_v1_record_count + 52)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing event-policy command authority")
+        })?;
     let capability_v6 = records
-        .get(current_v1_record_count + 50)
+        .get(current_v1_record_count + 52)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV6"))?;
     let writable = legacy[..8]
         .iter()
@@ -1937,11 +1973,12 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(capability_v4))
         .chain(std::iter::once(capability_v5))
         .chain(std::iter::once(export_v1))
+        .chain(event_policy_command_authority.iter())
         .chain(std::iter::once(capability_v6))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 33);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 35);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -2264,7 +2301,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, fifty-seven-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, sixty-one-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

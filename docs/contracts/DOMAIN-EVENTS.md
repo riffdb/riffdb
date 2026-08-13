@@ -18,12 +18,32 @@ payload fields that derive its application partition:
 ```riff
 event TicketCreated {
   partition_by (organization_id)
+  policy_anchor current Ticket(
+    organization_id: organization_id,
+    ticket_id: ticket_id,
+  )
 
   organization_id: uuid
   ticket_id: uuid
   created_at: timestamp
 }
 ```
+
+`policy_anchor current` is required before an event may be released to a
+row-policy-protected role. It is compiler-owned: the declaration names exactly
+one source entity and maps every partition/key component to a required,
+exactly-typed payload field. Partial, optional, cross-partition, unindexed, or
+multiple anchors fail compilation. RiffDB persists the resolved entity key and
+policy identity with the event; clients never provide either one.
+
+At every protected replay, tail, stream lease, acknowledgement, contextual
+delivery, and contextual reaction safe point, RiffDB reloads the current
+capability, current source row, and bounded relationship evidence together.
+Missing/deleted rows, old events without an anchor, revoked facts, and denied
+current policy are indistinguishable absence. Event payload field names are
+never interpreted as authority. Consequently, a retained event can become
+invisible after an ACL change and visible again when explicitly replayed from
+an earlier retained cursor after authority is restored.
 
 Every command that emits `TicketCreated` must supply the exact command partition
 expression under the same aggregate-namespaced canonical key schema. The
@@ -104,6 +124,14 @@ minutes. It may be present on an empty page because the route scan advanced
 past other event types in the same partition. Resume such a page with
 `--cursor`; do not infer completion from an empty `items` array alone.
 
+Every page also carries `disposition`. `page` is an ordinary visible page or
+exact end. `bounded_progress` means the protected scan reached its fixed
+1,024-candidate work ceiling and returns an opaque cursor without revealing how
+many candidates were hidden. Resume it exactly like any other cursor. For a
+protected cursor, capability revision and application-role policy identity are
+part of the server-side binding; rotation or narrowing invalidates it rather
+than splicing old and new authority.
+
 Tail performs a race-free catch-up before waiting for a commit wakeup and then
 replays authoritative routes again. It waits for at most 30 seconds and reports
 `wait_timed_out: true` only when that interval expires without a selected event:
@@ -120,3 +148,9 @@ Both replay and tail return the current `history_incarnation`. Supplying it on
 a later call detects restore and fails closed instead of interpreting a stale
 position against replacement history. A tail request does not accept a replay
 cursor; use the last returned event ID as its next `--after` position.
+
+The singleton global reactive-wakeup resource has no stream, consumer, or
+partition identity, so it cannot distinguish visible from hidden commits.
+RiffDB therefore denies that resource to row-policy-protected roles. Such
+workers use the protected consumer pull/long-poll operation; a wakeup is never
+authority to disclose or act on an event.

@@ -243,7 +243,7 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        48
+        52
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
@@ -255,6 +255,10 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
         "rpc GetContractMigrationOperation(",
         "rpc StartApplicationInstallation(",
         "rpc GetApplicationInstallation(",
+        "rpc StartApplicationExport(",
+        "rpc GetApplicationExportPage(",
+        "rpc GetApplicationExport(",
+        "rpc CancelApplicationExport(",
     ] {
         assert_eq!(services.matches(rpc).count(), 1, "missing exact {rpc}");
     }
@@ -266,6 +270,7 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
     assert!(!normalized.contains("migration"));
     assert!(!normalized.contains("installation"));
     assert!(!normalized.contains("campaign"));
+    assert!(!normalized.contains("export"));
 
     for (surface, source) in [
         (
@@ -316,12 +321,26 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
     let migration_registry = server
         .split("pub enum GrpcContractMigrationOperation")
         .nth(1)
-        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .and_then(|tail| tail.split("pub enum GrpcApplicationExportOperation").next())
         .expect("closed process-local migration registry");
     assert_eq!(migration_registry.matches("Check").count(), 1);
     assert_eq!(migration_registry.matches("Apply").count(), 1);
     assert_eq!(migration_registry.matches("GetOperation").count(), 1);
     assert!(!migration_registry.contains("ServiceOperationV1::"));
+
+    let export_registry = server
+        .split("pub enum GrpcApplicationExportOperation")
+        .nth(1)
+        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .expect("closed process-local application-export registry");
+    for variant in ["Start", "GetPage", "GetOperation", "Cancel"] {
+        assert_eq!(
+            export_registry.matches(&format!("    {variant},")).count(),
+            1,
+            "missing exact export admission variant {variant}"
+        );
+    }
+    assert!(!export_registry.contains("ServiceOperationV1::"));
 }
 
 #[test]

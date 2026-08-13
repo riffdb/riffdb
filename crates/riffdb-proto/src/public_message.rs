@@ -8377,6 +8377,13 @@ fn validate_event_page(page: Option<&v1::EventPage>) -> Result<(), PublicWireErr
     if !page.next_cursor.is_empty() && page.next_cursor.len() != 16 {
         return Err(PublicWireError::InvalidBytes);
     }
+    let disposition = v1::EventPageDisposition::try_from(page.disposition)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if disposition == v1::EventPageDisposition::Unspecified
+        || (disposition == v1::EventPageDisposition::BoundedProgress && page.next_cursor.is_empty())
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
     // A partition route page may contain no selected event type while still
     // advancing its opaque physical continuation.
     let observed_upper = page
@@ -8451,10 +8458,11 @@ fn validate_tail_events_request(message: &v1::TailEventsRequest) -> Result<(), P
 fn validate_tail_events_response(message: &v1::TailEventsResponse) -> Result<(), PublicWireError> {
     validate_event_page(message.page.as_ref())?;
     if message.wait_timed_out
-        && message
-            .page
-            .as_ref()
-            .is_some_and(|page| !page.items.is_empty() || !page.next_cursor.is_empty())
+        && message.page.as_ref().is_some_and(|page| {
+            !page.items.is_empty()
+                || !page.next_cursor.is_empty()
+                || page.disposition != i32::from(v1::EventPageDisposition::Page)
+        })
     {
         return Err(PublicWireError::InconsistentFields);
     }
@@ -8518,6 +8526,46 @@ fn validate_event_consumer_status(
     validate_event_consumer_checkpoint(status.checkpoint.as_ref())
 }
 
+fn validate_protected_event_consumer_status(
+    status: Option<&v1::ProtectedEventConsumerStatus>,
+) -> Result<(), PublicWireError> {
+    let status = status.ok_or(PublicWireError::MissingRequiredField)?;
+    if status.history_incarnation == 0 || status.progress_cursor.len() != 16 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_consumer_pull_shape(
+    exact: Option<&v1::EventConsumerStatus>,
+    protected: Option<&v1::ProtectedEventConsumerStatus>,
+    disposition: i32,
+    wait_timed_out: bool,
+    item_count: usize,
+) -> Result<u64, PublicWireError> {
+    let disposition = v1::EventConsumerPullDisposition::try_from(disposition)
+        .map_err(|_| PublicWireError::InvalidValue)?;
+    if disposition == v1::EventConsumerPullDisposition::Unspecified
+        || wait_timed_out != (disposition == v1::EventConsumerPullDisposition::WaitTimedOut)
+        || (disposition != v1::EventConsumerPullDisposition::Ready && item_count != 0)
+        || (disposition == v1::EventConsumerPullDisposition::BoundedProgress && protected.is_none())
+        || exact.is_some() == protected.is_some()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    match (exact, protected) {
+        (Some(status), None) => {
+            validate_event_consumer_status(Some(status))?;
+            Ok(status.history_incarnation)
+        }
+        (None, Some(status)) => {
+            validate_protected_event_consumer_status(Some(status))?;
+            Ok(status.history_incarnation)
+        }
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
 fn validate_consume_event_stream_request(
     message: &v1::ConsumeEventStreamRequest,
 ) -> Result<(), PublicWireError> {
@@ -8527,6 +8575,7 @@ fn validate_consume_event_stream_request(
         || !(1..=64).contains(&message.in_flight_limit)
         || !(5..=900).contains(&message.lease_seconds)
         || message.maximum_wait_nanos > MAX_PROJECTION_WAIT_NANOS
+        || (!message.progress_cursor.is_empty() && message.progress_cursor.len() != 16)
     {
         return Err(PublicWireError::InvalidValue);
     }
@@ -8539,12 +8588,13 @@ fn validate_consume_event_stream_response(
     if message.events.len() > 64 || (message.wait_timed_out && !message.events.is_empty()) {
         return Err(PublicWireError::TooManyItems);
     }
-    validate_event_consumer_status(message.status.as_ref())?;
-    let history_incarnation = message
-        .status
-        .as_ref()
-        .ok_or(PublicWireError::MissingRequiredField)?
-        .history_incarnation;
+    let history_incarnation = validate_consumer_pull_shape(
+        message.status.as_ref(),
+        message.protected_status.as_ref(),
+        message.disposition,
+        message.wait_timed_out,
+        message.events.len(),
+    )?;
     let mut prior = None;
     for item in &message.events {
         let event = item
@@ -8615,7 +8665,11 @@ fn validate_seek_event_stream_consumer_request(
 ) -> Result<(), PublicWireError> {
     request_id(&message.request_id)?;
     validate_event_consumer_selection(message.selection.as_ref())?;
-    validate_event_consumer_checkpoint(message.checkpoint.as_ref())
+    match (message.checkpoint.as_ref(), message.progress_cursor.len()) {
+        (Some(checkpoint), 0) => validate_event_consumer_checkpoint(Some(checkpoint)),
+        (None, 16) => Ok(()),
+        _ => Err(PublicWireError::InvalidValue),
+    }
 }
 
 fn validate_retire_event_stream_consumer_request(
@@ -8654,6 +8708,7 @@ fn validate_get_event_stream_consumer_status_response(
     {
         Result::NotFound(_) => Ok(()),
         Result::Found(status) => validate_event_consumer_status(Some(status)),
+        Result::Protected(status) => validate_protected_event_consumer_status(Some(status)),
     }
 }
 
@@ -8662,7 +8717,9 @@ fn validate_consume_contextual_subscription_request(
 ) -> Result<(), PublicWireError> {
     request_id(&message.request_id)?;
     validate_event_consumer_selection(message.selection.as_ref())?;
-    if message.maximum_wait_nanos > 30_000_000_000 {
+    if message.maximum_wait_nanos > 30_000_000_000
+        || (!message.progress_cursor.is_empty() && message.progress_cursor.len() != 16)
+    {
         return Err(PublicWireError::InvalidValue);
     }
     Ok(())
@@ -8730,12 +8787,13 @@ fn validate_consume_contextual_subscription_response(
     if message.items.len() > 1 || (message.wait_timed_out && !message.items.is_empty()) {
         return Err(PublicWireError::TooManyItems);
     }
-    validate_event_consumer_status(message.status.as_ref())?;
-    let history_incarnation = message
-        .status
-        .as_ref()
-        .ok_or(PublicWireError::MissingRequiredField)?
-        .history_incarnation;
+    let history_incarnation = validate_consumer_pull_shape(
+        message.status.as_ref(),
+        message.protected_status.as_ref(),
+        message.disposition,
+        message.wait_timed_out,
+        message.items.len(),
+    )?;
     for item in &message.items {
         if item.context_head == 0
             || item.hydrations.len() > 16
@@ -9121,7 +9179,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeEventStreamRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    6,
+    7,
     &[],
     &[],
     preflight_noop,
@@ -9130,7 +9188,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeEventStreamResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    3,
+    5,
     &[1],
     &[],
     preflight_noop,
@@ -9157,7 +9215,7 @@ impl_public_message!(
 impl_public_message!(
     v1::SeekEventStreamConsumerRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    3,
+    4,
     &[],
     &[],
     preflight_noop,
@@ -9184,7 +9242,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeContextualSubscriptionRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    3,
+    4,
     &[],
     &[],
     preflight_noop,
@@ -9193,7 +9251,7 @@ impl_public_message!(
 impl_public_message!(
     v1::ConsumeContextualSubscriptionResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    3,
+    5,
     &[1],
     &[],
     preflight_noop,
@@ -9247,12 +9305,103 @@ impl_public_message!(
 impl_public_message!(
     v1::GetEventStreamConsumerStatusResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    2,
+    3,
     &[],
-    &[&[1, 2]],
+    &[&[1, 2, 3]],
     preflight_noop,
     validate_get_event_stream_consumer_status_response
 );
+
+#[cfg(test)]
+mod protected_event_consumer_tests {
+    use super::*;
+
+    fn seek_request() -> v1::SeekEventStreamConsumerRequest {
+        v1::SeekEventStreamConsumerRequest {
+            request_id: RequestId::from_unix_milliseconds_and_random(1, [2; 10])
+                .expect("valid uuidv7")
+                .into_bytes()
+                .to_vec(),
+            selection: Some(v1::EventConsumerSelection {
+                reactive_module_hash: vec![3; 32],
+                operation_name: "TicketActivity".to_owned(),
+                parameters: Vec::new(),
+                consumer_name: "triage-agent".to_owned(),
+            }),
+            checkpoint: Some(v1::EventConsumerCheckpoint {
+                position: Some(v1::event_consumer_checkpoint::Position::BeforeFirst(
+                    v1::Unit {},
+                )),
+            }),
+            progress_cursor: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn protected_status_exposes_only_incarnation_and_fixed_opaque_cursor() {
+        use v1::get_event_stream_consumer_status_response::Result;
+
+        let response = v1::GetEventStreamConsumerStatusResponse {
+            result: Some(Result::Protected(v1::ProtectedEventConsumerStatus {
+                history_incarnation: 7,
+                progress_cursor: vec![0xa5; 16],
+            })),
+        };
+        assert_eq!(validate_public_message(&response), Ok(()));
+
+        let mut missing_incarnation = response.clone();
+        let Some(Result::Protected(status)) = missing_incarnation.result.as_mut() else {
+            panic!("protected status")
+        };
+        status.history_incarnation = 0;
+        assert_eq!(
+            validate_public_message(&missing_incarnation),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let mut raw_progress_shape = response;
+        let Some(Result::Protected(status)) = raw_progress_shape.result.as_mut() else {
+            panic!("protected status")
+        };
+        status.progress_cursor = vec![0; 15];
+        assert_eq!(
+            validate_public_message(&raw_progress_shape),
+            Err(PublicWireError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn seek_accepts_exact_or_opaque_target_but_never_both_or_neither() {
+        let exact = seek_request();
+        assert_eq!(validate_public_message(&exact), Ok(()));
+
+        let mut protected = exact.clone();
+        protected.checkpoint = None;
+        protected.progress_cursor = vec![0x5a; 16];
+        assert_eq!(validate_public_message(&protected), Ok(()));
+
+        let mut both = exact.clone();
+        both.progress_cursor = vec![0x5a; 16];
+        assert_eq!(
+            validate_public_message(&both),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let mut neither = exact;
+        neither.checkpoint = None;
+        assert_eq!(
+            validate_public_message(&neither),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let mut wrong_width = protected;
+        wrong_width.progress_cursor.pop();
+        assert_eq!(
+            validate_public_message(&wrong_width),
+            Err(PublicWireError::InvalidValue)
+        );
+    }
+}
 impl_public_message!(
     v1::ValidateContractResponse,
     MAX_PUBLIC_RESPONSE_BYTES,

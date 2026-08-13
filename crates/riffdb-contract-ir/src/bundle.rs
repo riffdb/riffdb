@@ -32,16 +32,17 @@ use crate::{
     CapabilityRequirement, CollectionDuplicatePolicyV1, CollectionExpansionPlanV1,
     CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode, CompatibilityEntry,
     CompatibilityReport, ConflictDerivationPlan, EntitySchema, EnumSchema, EnumVariantSchema,
-    EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionArena, ExpressionKind,
-    FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexFieldEncodingV1, IndexSchema,
-    Instruction, InvariantPlan, IrValidationError, KeyComponentCodecV1, KeyComponentSchema,
-    KeyPurpose, KeySchema, LocalityPlan, McpCommandNameEntryV2, McpCommandNameRegistryV2,
-    ObjectConstruction, OutcomeConstruction, OutcomeSchema, ProjectionFrontierPolicy,
-    ProjectionGroupComponentSchema, ProjectionGroupSchema, ProjectionMeasurePlan, ProjectionPlan,
-    RecordSchema, RecordTypeRef, RetryPolicy, RowPolicyCatalogV1, SchemaIr, TextKeyProfileV1,
-    UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog, WorkflowLeaseFields,
-    WorkflowLeaseOperation, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
-    checked_len, validate_source_name,
+    EventConstruction, EventPolicyAnchorFieldV1, EventPolicyAnchorV1, EventSchema, ExecutionClass,
+    ExprId, ExpressionArena, ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact,
+    IndexFieldEncodingV1, IndexSchema, Instruction, InvariantPlan, IrValidationError,
+    KeyComponentCodecV1, KeyComponentSchema, KeyPurpose, KeySchema, LocalityPlan,
+    McpCommandNameEntryV2, McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction,
+    OutcomeSchema, ProjectionFrontierPolicy, ProjectionGroupComponentSchema, ProjectionGroupSchema,
+    ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy,
+    RowPolicyCatalogV1, RowPolicyOperationV1, SchemaIr, TextKeyProfileV1, UnaryOperator, ValueType,
+    ValueTypeTag, WorkflowCatalog, WorkflowLeaseFields, WorkflowLeaseOperation,
+    WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema, checked_len,
+    validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
@@ -56,8 +57,10 @@ pub const BUNDLE_FORMAT_VERSION_V4: u32 = 4;
 pub const BUNDLE_FORMAT_VERSION_V5: u32 = 5;
 /// Bundle framing containing distinct checked-delete restrict outcomes.
 pub const BUNDLE_FORMAT_VERSION_V6: u32 = 6;
-/// Bundle framing containing secret-field classifications (ADR-0118).
+/// Bundle framing containing compiler-owned current-row event policy anchors.
 pub const BUNDLE_FORMAT_VERSION_V7: u32 = 7;
+/// Bundle framing containing secret-field classifications (ADR-0118).
+pub const BUNDLE_FORMAT_VERSION_V8: u32 = 8;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -70,8 +73,10 @@ pub const GRAMMAR_VERSION_V4: u32 = 4;
 pub const GRAMMAR_VERSION_V5: u32 = 5;
 /// Contract grammar containing a declared indexed-restrict delete outcome.
 pub const GRAMMAR_VERSION_V6: u32 = 6;
-/// Contract grammar containing the contextual `secret` field classification.
+/// Contract grammar containing current-row event policy anchors.
 pub const GRAMMAR_VERSION_V7: u32 = 7;
+/// Contract grammar containing the contextual `secret` field classification.
+pub const GRAMMAR_VERSION_V8: u32 = 8;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -84,19 +89,26 @@ pub const EXECUTABLE_IR_VERSION_V4: u32 = 4;
 pub const EXECUTABLE_IR_VERSION_V5: u32 = 5;
 /// Executable IR containing the distinct indexed-restrict delete outcome.
 pub const EXECUTABLE_IR_VERSION_V6: u32 = 6;
-/// Executable IR whose schema carries secret-field classifications.
+/// Executable IR containing current-row event policy anchors.
 pub const EXECUTABLE_IR_VERSION_V7: u32 = 7;
+/// Executable IR whose schema carries secret-field classifications.
+pub const EXECUTABLE_IR_VERSION_V8: u32 = 8;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
 const DELETE_POLICY_SCHEMA_EXTENSION: u32 = 0xffff_fffc;
 const VECTOR_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fffb;
 const INDEX_FIELD_ENCODING_EXTENSION: u32 = 0xffff_fffa;
-const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff9;
+// 0xffff_fff9 is the high word of the event-policy-anchor magic below;
+// the secret extension takes the next clean value.
+const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff8;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
 const EVENT_PARTITION_SCHEMA_EXTENSION: u64 = 0xffff_fffc_ffff_ffff;
+// Like the partition extension, the second word cannot be a valid following
+// source-name length. This keeps an optional per-event anchor self-delimiting.
+const EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION: u64 = 0xffff_fff9_ffff_fffe;
 /// Immutable stable-ID lineage-ledger format version.
 pub const LINEAGE_LEDGER_VERSION_V1: u32 = 1;
 /// Stable-ID lineage-ledger format with permanent rename aliases.
@@ -1005,7 +1017,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v7() {
+        let version = if schema.requires_ir_v8() {
+            BUNDLE_FORMAT_VERSION_V8
+        } else if schema.requires_ir_v7() {
             BUNDLE_FORMAT_VERSION_V7
         } else if schema.requires_ir_v6() || commands.iter().any(CommandPlan::requires_ir_v6) {
             BUNDLE_FORMAT_VERSION_V6
@@ -1091,6 +1105,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V7,
                 GRAMMAR_VERSION_V7,
                 EXECUTABLE_IR_VERSION_V7
+            ) | (
+                BUNDLE_FORMAT_VERSION_V8,
+                GRAMMAR_VERSION_V8,
+                EXECUTABLE_IR_VERSION_V8
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1102,6 +1120,7 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V6
                 && commands.iter().any(CommandPlan::requires_ir_v6))
             || (ir_version < EXECUTABLE_IR_VERSION_V7 && schema.requires_ir_v7())
+            || (ir_version < EXECUTABLE_IR_VERSION_V8 && schema.requires_ir_v8())
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1123,6 +1142,7 @@ impl ContractBundle {
         }
         validate_source_name(lineage.as_str(), "contract lineage")?;
         let workflows = WorkflowCatalog::new(workflows, &schema)?;
+        validate_event_policy_anchors(&schema, &row_policies)?;
         if let Some(parent) = parent {
             if contract_version <= parent.contract_version {
                 return Err(IrValidationError::InvalidReference {
@@ -1349,6 +1369,35 @@ impl ContractBundle {
                 .bind_checked(self.lineage.clone(), projection.plan_hash())
         })
     }
+}
+
+fn validate_event_policy_anchors(
+    schema: &SchemaIr,
+    policies: &RowPolicyCatalogV1,
+) -> Result<(), IrValidationError> {
+    for event in schema.events() {
+        let Some(anchor) = event.policy_anchor() else {
+            continue;
+        };
+        let policy = policies
+            .policies()
+            .iter()
+            .find(|policy| policy.name() == anchor.read_policy())
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "event policy anchor read policy",
+            })?;
+        if policy.entity() != anchor.source_entity()
+            || !policy
+                .rules()
+                .iter()
+                .any(|rule| rule.operation() == RowPolicyOperationV1::Read)
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "event policy anchor read policy",
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Computes every allocation state required by one complete executable bundle.
@@ -2500,8 +2549,8 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
         }
     }
     // Conditional extension (ADR-0118): contracts without secret-classified
-    // fields encode byte-identically to the v6 schema, so their bundle hash
-    // does not rotate.
+    // fields encode byte-identically to the prior schema, so their bundle
+    // hash does not rotate.
     if !schema.secret_field_specs().is_empty() {
         writer.u32(SECRET_FIELD_SPEC_SCHEMA_EXTENSION)?;
         writer.u32(schema.secret_field_specs().len() as u32)?;
@@ -2556,6 +2605,16 @@ fn encode_event_schema(
             writer.u32(field.get())?;
         }
         encode_key_schema(writer, partition.key_schema())?;
+    }
+    if let Some(anchor) = event.policy_anchor() {
+        writer.u64(EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION)?;
+        writer.u32(anchor.source_entity().get())?;
+        writer.string(anchor.read_policy())?;
+        writer.u32(anchor.key_fields().len() as u32)?;
+        for mapping in anchor.key_fields() {
+            writer.u32(mapping.source_field().get())?;
+            writer.u32(mapping.payload_field().get())?;
+        }
     }
     Ok(())
 }
@@ -3450,6 +3509,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V7,
             GRAMMAR_VERSION_V7,
             EXECUTABLE_IR_VERSION_V7
+        ) | (
+            BUNDLE_FORMAT_VERSION_V8,
+            GRAMMAR_VERSION_V8,
+            EXECUTABLE_IR_VERSION_V8
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -3854,7 +3917,7 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     let event_count = decode_len(reader, "events", crate::MAX_DECLARATIONS_PER_KIND)?;
     let mut events = Vec::with_capacity(event_count);
     for _ in 0..event_count {
-        events.push(decode_event_schema(reader)?);
+        events.push(decode_event_schema(reader, &entities)?);
     }
     let enum_count = decode_len(reader, "enums", crate::MAX_DECLARATIONS_PER_KIND)?;
     let mut enums = Vec::with_capacity(enum_count);
@@ -4046,23 +4109,61 @@ fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValid
     )
 }
 
-fn decode_event_schema(reader: &mut Reader<'_>) -> Result<EventSchema, IrValidationError> {
+fn decode_event_schema(
+    reader: &mut Reader<'_>,
+    entities: &[EntitySchema],
+) -> Result<EventSchema, IrValidationError> {
     let id = decode_event_id(reader)?;
     let name = reader.string(256)?;
     let payload = decode_record_schema(reader)?;
-    if reader.remaining() >= 8 && reader.peek_u64()? == EVENT_PARTITION_SCHEMA_EXTENSION {
+    let mut event =
+        if reader.remaining() >= 8 && reader.peek_u64()? == EVENT_PARTITION_SCHEMA_EXTENSION {
+            let _marker = reader.u64()?;
+            let field_count = decode_len(reader, "event partition fields", 1_024)?;
+            let mut fields = Vec::with_capacity(field_count);
+            for _ in 0..field_count {
+                fields.push(decode_field_id(reader)?);
+            }
+            let key_schema = decode_key_schema(reader, 0)?;
+            let partition = crate::EventPartitionSchema::new(fields, key_schema, &payload)?;
+            EventSchema::partitioned(id, name, payload, partition)?
+        } else {
+            EventSchema::new(id, name, payload)?
+        };
+    if reader.remaining() >= 8 && reader.peek_u64()? == EVENT_POLICY_ANCHOR_SCHEMA_EXTENSION {
         let _marker = reader.u64()?;
-        let field_count = decode_len(reader, "event partition fields", 1_024)?;
-        let mut fields = Vec::with_capacity(field_count);
+        let source_entity = decode_entity_id(reader)?;
+        let read_policy = reader.string(256)?;
+        let field_count = decode_len(reader, "event policy anchor fields", 1_024)?;
+        let mut key_fields = Vec::with_capacity(field_count);
         for _ in 0..field_count {
-            fields.push(decode_field_id(reader)?);
+            key_fields.push(EventPolicyAnchorFieldV1::new(
+                decode_field_id(reader)?,
+                decode_field_id(reader)?,
+            ));
         }
-        let key_schema = decode_key_schema(reader, 0)?;
-        let partition = crate::EventPartitionSchema::new(fields, key_schema, &payload)?;
-        EventSchema::partitioned(id, name, payload, partition)
-    } else {
-        EventSchema::new(id, name, payload)
+        let entity = entities
+            .iter()
+            .find(|entity| entity.id() == source_entity)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "event policy anchor entity",
+            })?;
+        let partition = event
+            .partition()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "event policy anchor partition",
+            })?;
+        let anchor = EventPolicyAnchorV1::new(
+            source_entity,
+            key_fields,
+            read_policy,
+            entity,
+            event.payload(),
+            partition,
+        )?;
+        event = event.with_policy_anchor(anchor, entity)?;
     }
+    Ok(event)
 }
 
 fn decode_enum_schema(reader: &mut Reader<'_>) -> Result<EnumSchema, IrValidationError> {
@@ -5370,7 +5471,7 @@ fn decode_command_schema_closure(
         });
     }
     for expected in expected_events {
-        let decoded = decode_event_schema(reader)?;
+        let decoded = decode_event_schema(reader, schema.entities())?;
         if schema.event(expected) != Some(&decoded) {
             return Err(IrValidationError::InvalidReference {
                 kind: "command event closure",
@@ -5798,11 +5899,11 @@ mod tests {
         let mut reader = Reader::new(&bytes);
 
         assert_eq!(
-            decode_event_schema(&mut reader).expect("unpartitioned first event"),
+            decode_event_schema(&mut reader, &[]).expect("unpartitioned first event"),
             next
         );
         assert_eq!(
-            decode_event_schema(&mut reader).expect("following event"),
+            decode_event_schema(&mut reader, &[]).expect("following event"),
             marker_shaped
         );
         assert_eq!(reader.remaining(), 0);

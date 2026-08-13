@@ -15,16 +15,18 @@ use riffdb_application::{
     InstalledSeedEvidence,
 };
 use riffdb_client_rust::{
-    ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
-    ApplicationUuid, ApplicationValue, ApplyContractMigration, AttemptBudget, BackupNameV1,
-    BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, ClientError,
+    ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationExportOperationId,
+    ApplicationExportSelectionV1, ApplicationOperation, ApplicationUuid, ApplicationValue,
+    ApplyContractMigration, AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate,
+    CallMetadata, CapabilityApplicationExportScopeV1, CheckContractMigration, ClientError,
     CommitToken, ContractMigrationOperationId, CreateOfflineBackup, FreshnessPolicy,
     IdempotentCommand, MigrationBundleHash, NormalCapabilityCreateTemplate,
     OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedAggregate,
     ProjectedAggregateValue, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
     ProjectedQueryOutcome, ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup,
-    RiffDbClient, StartApplicationInstallation, app_v1, generate_capability_id,
-    generate_offline_maintenance_operation_id, generate_request_id, v1,
+    RiffDbClient, StartApplicationExport, StartApplicationInstallation, app_v1,
+    canonical_value_from_proto, canonical_value_to_proto, generate_application_export_operation_id,
+    generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -35,9 +37,10 @@ use riffdb_query_module::{
     compile_application_role_v2, compile_reactive_source,
 };
 use riffdb_types::{
-    ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, GeneratedArtifactHash, PartitionScopeV1,
-    TenantId, TenantScope, hash_generated_artifact,
+    ActorId, ApplicationInstallationCampaignId, CanonicalValue, CapabilityGrantV1, CapabilityId,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPrincipalFactV1,
+    CapabilityPrincipalFactsV1, CapabilityRowPolicyOperationV1, ContractLineage,
+    GeneratedArtifactHash, PartitionScopeV1, TenantId, TenantScope, hash_generated_artifact,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -50,9 +53,9 @@ use crate::batch::{
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
-    EntityCommand, EventCommand, EventConsumerArgs, MigrationCommand, OutputMode,
-    ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand, RevocationReason,
-    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
+    EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope, MigrationCommand,
+    OutputMode, ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand,
+    RevocationReason, RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -242,6 +245,7 @@ struct ApplicationRoleIdentityError<'a> {
 
 struct PreparedRoleBinding {
     role: CompiledApplicationRole,
+    bound_grant: Option<CapabilityGrantV1>,
     principal: String,
     actor_kind: RoleActorKind,
     lifetime_seconds: String,
@@ -775,6 +779,7 @@ async fn dispatch(
         }
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
+        TopLevel::Export { command } => export_command(command, config, environment).await,
         TopLevel::Storage { command } => storage_command(command),
         TopLevel::Retention { command } => retention_command(command),
         TopLevel::Demo { command } => demo_command(command, config, environment),
@@ -1938,6 +1943,7 @@ async fn application_command(
             let disposition = match create_compiled_role_binding(
                 PreparedRoleBinding {
                     role: compiled_role.clone(),
+                    bound_grant: None,
                     principal: format!("app:{}", locked.manifest().application_name()),
                     actor_kind: RoleActorKind::Service,
                     lifetime_seconds: lifetime_seconds.to_string(),
@@ -4704,6 +4710,378 @@ async fn backup_command(
     }
 }
 
+async fn export_command(
+    command: ExportCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = match command {
+        ExportCommand::Start { .. } => CommandIdentity::ExportStart,
+        ExportCommand::Page { .. } => CommandIdentity::ExportPage,
+        ExportCommand::Status { .. } => CommandIdentity::ExportStatus,
+        ExportCommand::Cancel { .. } => CommandIdentity::ExportCancel,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    match command {
+        ExportCommand::Start {
+            lineage,
+            scope,
+            entities,
+            events,
+            provenance,
+            public_audit,
+            lease_seconds,
+            operation_id,
+        } => {
+            let operation_id = match operation_id {
+                Some(value) => match parse_application_export_operation_id(&value) {
+                    Ok(value) => value,
+                    Err(()) => return invalid_input(identity),
+                },
+                None => match generate_application_export_operation_id() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return client_error(identity, &ClientError::IdentifierGeneration(error));
+                    }
+                },
+            };
+            let lineage = match ContractLineage::new(lineage) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let scope = match scope {
+                ExportScope::Principal => CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                ExportScope::Whole => CapabilityApplicationExportScopeV1::WholeApplication,
+            };
+            let selection = match ApplicationExportSelectionV1::new(
+                lineage,
+                scope,
+                entities,
+                events,
+                provenance,
+                public_audit,
+            ) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let lease_seconds = match lease_seconds.parse::<u32>() {
+                Ok(value) if (60..=86_400).contains(&value) => value,
+                Err(_) => return invalid_input(identity),
+                Ok(_) => return invalid_input(identity),
+            };
+            let start = StartApplicationExport::new(operation_id, selection, lease_seconds);
+            match client
+                .start_application_export_with_retry(&start, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_export_start(&response),
+                Err(ClientError::OutcomeUnknown(_)) => export_uncertain(identity, operation_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ExportCommand::Page {
+            operation_id,
+            cursor,
+            max_rows,
+            jsonl,
+        } => {
+            let operation_id = match parse_application_export_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let cursor = match STANDARD.decode(cursor.as_bytes()) {
+                Ok(value) if !value.is_empty() && value.len() <= 512 => value,
+                _ => return invalid_input(identity),
+            };
+            let max_rows = match max_rows.parse::<u16>() {
+                Ok(value) if (1..=500).contains(&value) => value,
+                _ => return invalid_input(identity),
+            };
+            match client
+                .get_application_export_page_with_retry(
+                    operation_id,
+                    &cursor,
+                    max_rows,
+                    attempts,
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => {
+                    let Some(page) = response.page.as_ref() else {
+                        return local_error(
+                            identity,
+                            "export_response_invalid",
+                            "the export page response is invalid",
+                        );
+                    };
+                    if write_export_page(Path::new(&jsonl), page).is_err() {
+                        return local_error(
+                            identity,
+                            "export_output_write_failed",
+                            "the new export JSONL page could not be written",
+                        );
+                    }
+                    render_export_page(page, Path::new(&jsonl))
+                }
+                Err(ClientError::OutcomeUnknown(_)) => export_uncertain(identity, operation_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ExportCommand::Status { operation_id } => {
+            let operation_id = match parse_application_export_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .get_application_export_operation(operation_id, &metadata)
+                .await
+            {
+                Ok(response) => render_export_observation(identity, response.result.as_ref()),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ExportCommand::Cancel { operation_id } => {
+            let operation_id = match parse_application_export_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .cancel_application_export_with_retry(operation_id, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_export_cancel(identity, response.result.as_ref()),
+                Err(ClientError::OutcomeUnknown(_)) => export_uncertain(identity, operation_id),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+    }
+}
+
+fn write_export_page(path: &Path, page: &v1::ApplicationExportPage) -> Result<(), ()> {
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|_| ())?;
+    for line in &page.canonical_json_lines {
+        output.write_all(line).map_err(|_| ())?;
+        output.write_all(b"\n").map_err(|_| ())?;
+    }
+    output.flush().map_err(|_| ())?;
+    output.sync_all().map_err(|_| ())
+}
+
+fn render_export_start(response: &v1::StartApplicationExportResponse) -> Terminal {
+    let identity = CommandIdentity::ExportStart;
+    let disposition = match v1::ApplicationExportStartDisposition::try_from(response.disposition) {
+        Ok(v1::ApplicationExportStartDisposition::Accepted) => "accepted",
+        Ok(v1::ApplicationExportStartDisposition::AlreadyAccepted) => "already_accepted",
+        Ok(v1::ApplicationExportStartDisposition::Terminal) => "terminal",
+        _ => return invalid_input(identity),
+    };
+    let Some(operation) = response.operation.as_ref() else {
+        return invalid_input(identity);
+    };
+    let Ok(operation) = export_operation_json(operation) else {
+        return invalid_input(identity);
+    };
+    success(
+        identity,
+        disposition,
+        &serde_json::json!({
+            "disposition": disposition,
+            "operation": operation,
+            "cursor": (!response.cursor.is_empty()).then(|| STANDARD.encode(&response.cursor)),
+        }),
+    )
+}
+
+fn render_export_page(page: &v1::ApplicationExportPage, output: &Path) -> Terminal {
+    let class = export_record_class_name(page.record_class).unwrap_or("invalid");
+    success(
+        CommandIdentity::ExportPage,
+        if page.operation_complete {
+            "completed"
+        } else {
+            "page_written"
+        },
+        &serde_json::json!({
+            "operation_id": format_uuid(&page.operation_id),
+            "page_number": page.page_number.to_string(),
+            "record_class": class,
+            "rows": page.canonical_json_lines.len().to_string(),
+            "output": output.to_string_lossy(),
+            "page_hash": hex(&page.page_hash),
+            "class_complete": page.class_complete,
+            "operation_complete": page.operation_complete,
+            "next_cursor": (!page.next_cursor.is_empty()).then(|| STANDARD.encode(&page.next_cursor)),
+        }),
+    )
+}
+
+fn render_export_observation(
+    identity: CommandIdentity,
+    result: Option<&v1::get_application_export_response::Result>,
+) -> Terminal {
+    match result {
+        Some(v1::get_application_export_response::Result::NotFound(_)) => {
+            success(identity, "not_found", &serde_json::json!({"found": false}))
+        }
+        Some(v1::get_application_export_response::Result::Found(operation)) => {
+            match export_operation_json(operation) {
+                Ok(operation) => success(identity, "found", &operation),
+                Err(()) => invalid_input(identity),
+            }
+        }
+        None => invalid_input(identity),
+    }
+}
+
+fn render_export_cancel(
+    identity: CommandIdentity,
+    result: Option<&v1::cancel_application_export_response::Result>,
+) -> Terminal {
+    match result {
+        Some(v1::cancel_application_export_response::Result::NotFound(_)) => {
+            success(identity, "not_found", &serde_json::json!({"found": false}))
+        }
+        Some(v1::cancel_application_export_response::Result::Found(operation)) => {
+            match export_operation_json(operation) {
+                Ok(operation) => success(identity, "cancelled", &operation),
+                Err(()) => invalid_input(identity),
+            }
+        }
+        None => invalid_input(identity),
+    }
+}
+
+fn export_operation_json(
+    operation: &v1::ApplicationExportOperation,
+) -> Result<serde_json::Value, ()> {
+    let selection = operation.selection.as_ref().ok_or(())?;
+    let snapshot = operation.snapshot.as_ref().ok_or(())?;
+    let phase = export_phase_name(operation.phase).ok_or(())?;
+    let failure = if operation.failure == v1::ApplicationExportFailure::Unspecified as i32 {
+        None
+    } else {
+        Some(export_failure_name(operation.failure).ok_or(())?)
+    };
+    let manifest = parse_export_document(&operation.canonical_manifest_json)?;
+    let receipt = parse_export_document(&operation.canonical_receipt_json)?;
+    Ok(serde_json::json!({
+        "operation_id": format_uuid(&operation.operation_id),
+        "selection": {
+            "contract_lineage": selection.contract_lineage,
+            "scope": export_scope_name(selection.scope).ok_or(())?,
+            "entities": selection.entities,
+            "events": selection.events,
+            "provenance": selection.provenance,
+            "public_audit": selection.public_audit,
+        },
+        "snapshot": {
+            "database_id": format_uuid(&snapshot.database_id),
+            "history_incarnation": snapshot.history_incarnation.to_string(),
+            "application_frontier": snapshot.application_frontier.to_string(),
+            "administration_frontier": snapshot.administration_frontier.to_string(),
+            "contract_version": snapshot.contract_version.to_string(),
+            "contract_bundle_hash": hex(&snapshot.contract_bundle_hash),
+            "query_module_hashes": snapshot.query_module_hashes.iter().map(|value| hex(value)).collect::<Vec<_>>(),
+            "reactive_module_hashes": snapshot.reactive_module_hashes.iter().map(|value| hex(value)).collect::<Vec<_>>(),
+        },
+        "phase": phase,
+        "failure": failure,
+        "lease_expires_at": operation.lease_expires_at.as_ref().map(|value| serde_json::json!({
+            "seconds": value.seconds.to_string(),
+            "nanoseconds": value.nanos,
+        })),
+        "pages_released": operation.pages_released.to_string(),
+        "rows_released": operation.rows_released.to_string(),
+        "bytes_released": operation.bytes_released.to_string(),
+        "manifest": manifest,
+        "receipt": receipt,
+        "manifest_hash": (!operation.manifest_hash.is_empty()).then(|| hex(&operation.manifest_hash)),
+        "receipt_hash": (!operation.receipt_hash.is_empty()).then(|| hex(&operation.receipt_hash)),
+    }))
+}
+
+fn parse_export_document(bytes: &[u8]) -> Result<Option<serde_json::Value>, ()> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_slice(bytes).map(Some).map_err(|_| ())
+}
+
+fn export_scope_name(value: i32) -> Option<&'static str> {
+    match v1::CapabilityApplicationExportScope::try_from(value).ok()? {
+        v1::CapabilityApplicationExportScope::PrincipalFiltered => Some("principal_filtered"),
+        v1::CapabilityApplicationExportScope::WholeApplication => Some("whole_application"),
+        v1::CapabilityApplicationExportScope::Unspecified => None,
+    }
+}
+
+fn export_phase_name(value: i32) -> Option<&'static str> {
+    match v1::ApplicationExportPhase::try_from(value).ok()? {
+        v1::ApplicationExportPhase::Accepted => Some("accepted"),
+        v1::ApplicationExportPhase::Exporting => Some("exporting"),
+        v1::ApplicationExportPhase::Completed => Some("completed"),
+        v1::ApplicationExportPhase::Cancelled => Some("cancelled"),
+        v1::ApplicationExportPhase::Expired => Some("expired"),
+        v1::ApplicationExportPhase::FailedClosed => Some("failed_closed"),
+        v1::ApplicationExportPhase::Unspecified => None,
+    }
+}
+
+fn export_failure_name(value: i32) -> Option<&'static str> {
+    match v1::ApplicationExportFailure::try_from(value).ok()? {
+        v1::ApplicationExportFailure::AuthorityChanged => Some("authority_changed"),
+        v1::ApplicationExportFailure::SnapshotUnavailable => Some("snapshot_unavailable"),
+        v1::ApplicationExportFailure::SourceInvalid => Some("source_invalid"),
+        v1::ApplicationExportFailure::LeaseExpired => Some("lease_expired"),
+        v1::ApplicationExportFailure::Cancelled => Some("cancelled"),
+        v1::ApplicationExportFailure::LimitExceeded => Some("limit_exceeded"),
+        v1::ApplicationExportFailure::Internal => Some("internal"),
+        v1::ApplicationExportFailure::Unspecified => None,
+    }
+}
+
+fn export_record_class_name(value: i32) -> Option<&'static str> {
+    match v1::ApplicationExportRecordClass::try_from(value).ok()? {
+        v1::ApplicationExportRecordClass::Entity => Some("entity"),
+        v1::ApplicationExportRecordClass::Event => Some("event"),
+        v1::ApplicationExportRecordClass::Provenance => Some("provenance"),
+        v1::ApplicationExportRecordClass::PublicAudit => Some("public_audit"),
+        v1::ApplicationExportRecordClass::Unspecified => None,
+    }
+}
+
+fn export_uncertain(
+    identity: CommandIdentity,
+    operation_id: ApplicationExportOperationId,
+) -> Terminal {
+    local_error_with(
+        identity,
+        &serde_json::json!({
+            "code": "outcome_unknown",
+            "message": "the application export outcome remains unknown",
+            "recovery_action": "retry_with_the_same_operation_and_cursor",
+            "operation_id": operation_id.to_string(),
+        }),
+        "outcome_unknown",
+        "the application export outcome remains unknown",
+        3,
+    )
+}
+
 async fn contract_command(
     command: ContractCommand,
     config: &EffectiveConfig,
@@ -5307,6 +5685,7 @@ async fn event_command(
             in_flight_limit,
             lease_seconds,
             wait_nanos,
+            progress_cursor,
         } => {
             let selection = match event_consumer_selection(consumer) {
                 Ok(selection) => selection,
@@ -5323,6 +5702,14 @@ async fn event_command(
             else {
                 return invalid_input(identity);
             };
+            let progress_cursor = match progress_cursor
+                .map(|value| STANDARD.decode(value.as_bytes()))
+                .transpose()
+            {
+                Ok(Some(bytes)) if bytes.len() == 16 => bytes,
+                Ok(None) => Vec::new(),
+                _ => return invalid_input(identity),
+            };
             match client
                 .consume_event_stream(
                     v1::ConsumeEventStreamRequest {
@@ -5332,6 +5719,7 @@ async fn event_command(
                         in_flight_limit,
                         lease_seconds,
                         maximum_wait_nanos,
+                        progress_cursor,
                     },
                     &metadata,
                 )
@@ -5405,21 +5793,30 @@ async fn event_command(
         EventCommand::Seek {
             consumer,
             checkpoint,
+            progress_cursor,
         } => {
             let selection = match event_consumer_selection(consumer) {
                 Ok(selection) => selection,
                 Err(()) => return invalid_input(identity),
             };
-            let checkpoint = match parse_consumer_checkpoint(&checkpoint) {
-                Ok(checkpoint) => checkpoint,
-                Err(()) => return invalid_input(identity),
+            let (checkpoint, progress_cursor) = match (checkpoint, progress_cursor) {
+                (Some(checkpoint), None) => match parse_consumer_checkpoint(&checkpoint) {
+                    Ok(checkpoint) => (Some(checkpoint), Vec::new()),
+                    Err(()) => return invalid_input(identity),
+                },
+                (None, Some(cursor)) => match STANDARD.decode(cursor.as_bytes()) {
+                    Ok(bytes) if bytes.len() == 16 => (None, bytes),
+                    _ => return invalid_input(identity),
+                },
+                _ => return invalid_input(identity),
             };
             match client
                 .seek_event_stream_consumer(
                     v1::SeekEventStreamConsumerRequest {
                         request_id,
                         selection: Some(selection),
-                        checkpoint: Some(checkpoint),
+                        checkpoint,
+                        progress_cursor,
                     },
                     &metadata,
                 )
@@ -5499,6 +5896,7 @@ async fn contextual_command(
         ContextualCommand::Next {
             consumer,
             wait_nanos,
+            progress_cursor,
         } => {
             let selection = match event_consumer_selection(consumer) {
                 Ok(selection) => selection,
@@ -5508,12 +5906,21 @@ async fn contextual_command(
                 Ok(value) if value <= 30_000_000_000 => value,
                 _ => return invalid_input(identity),
             };
+            let progress_cursor = match progress_cursor
+                .map(|value| STANDARD.decode(value.as_bytes()))
+                .transpose()
+            {
+                Ok(Some(bytes)) if bytes.len() == 16 => bytes,
+                Ok(None) => Vec::new(),
+                _ => return invalid_input(identity),
+            };
             match client
                 .consume_contextual_subscription(
                     v1::ConsumeContextualSubscriptionRequest {
                         request_id,
                         selection: Some(selection),
                         maximum_wait_nanos,
+                        progress_cursor,
                     },
                     &metadata,
                 )
@@ -5982,12 +6389,23 @@ fn render_event_page(
         "observed_upper": page.observed_upper.as_ref().map(|id| format!("{}:{}", id.commit_sequence, id.event_ordinal)),
         "history_incarnation": page.history_incarnation.to_string(),
         "wait_timed_out": wait_timed_out,
+        "disposition": event_page_disposition_name(page.disposition),
     });
     success(identity, "read", &result)
 }
 
+fn event_page_disposition_name(value: i32) -> &'static str {
+    match v1::EventPageDisposition::try_from(value).ok() {
+        Some(v1::EventPageDisposition::Page) => "page",
+        Some(v1::EventPageDisposition::BoundedProgress) => "bounded_progress",
+        Some(v1::EventPageDisposition::Unspecified) | None => "unspecified",
+    }
+}
+
 fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Terminal {
-    let Some(status) = response.status.as_ref() else {
+    let Some(status) =
+        consumer_public_status_json(response.status.as_ref(), response.protected_status.as_ref())
+    else {
         return local_error(
             CommandIdentity::EventConsume,
             "invalid_response",
@@ -6022,14 +6440,17 @@ fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Termina
         .collect::<Vec<_>>();
     let result = serde_json::json!({
         "events": events,
-        "status": consumer_status_json(status),
+        "status": status,
         "wait_timed_out": response.wait_timed_out,
+        "disposition": consumer_disposition_name(response.disposition),
     });
     success(CommandIdentity::EventConsume, "leased", &result)
 }
 
 fn render_contextual_response(response: &v1::ConsumeContextualSubscriptionResponse) -> Terminal {
-    let Some(status) = response.status.as_ref() else {
+    let Some(status) =
+        consumer_public_status_json(response.status.as_ref(), response.protected_status.as_ref())
+    else {
         return local_error(
             CommandIdentity::ContextualNext,
             "invalid_response",
@@ -6053,8 +6474,9 @@ fn render_contextual_response(response: &v1::ConsumeContextualSubscriptionRespon
         "leased",
         &serde_json::json!({
             "items": items,
-            "status": consumer_status_json(status),
+            "status": status,
             "wait_timed_out": response.wait_timed_out,
+            "disposition": consumer_disposition_name(response.disposition),
         }),
     )
 }
@@ -6178,6 +6600,16 @@ fn render_consumer_status(
         Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
             serde_json::json!({"found": true, "status": consumer_status_json(status)})
         }
+        Some(v1::get_event_stream_consumer_status_response::Result::Protected(status)) => {
+            serde_json::json!({
+                "found": true,
+                "status": {
+                    "kind": "protected",
+                    "history_incarnation": status.history_incarnation.to_string(),
+                    "progress_cursor": STANDARD.encode(&status.progress_cursor),
+                }
+            })
+        }
         None => {
             return local_error(
                 CommandIdentity::EventStatus,
@@ -6211,6 +6643,30 @@ fn consumer_status_json(status: &v1::EventConsumerStatus) -> serde_json::Value {
         "retries": status.retries,
         "dead_letters": status.dead_letters,
     })
+}
+
+fn consumer_public_status_json(
+    exact: Option<&v1::EventConsumerStatus>,
+    protected: Option<&v1::ProtectedEventConsumerStatus>,
+) -> Option<serde_json::Value> {
+    match (exact, protected) {
+        (Some(status), None) => Some(consumer_status_json(status)),
+        (None, Some(status)) if status.history_incarnation != 0 => Some(serde_json::json!({
+            "kind": "protected",
+            "history_incarnation": status.history_incarnation.to_string(),
+            "progress_cursor": STANDARD.encode(&status.progress_cursor),
+        })),
+        _ => None,
+    }
+}
+
+fn consumer_disposition_name(value: i32) -> &'static str {
+    match v1::EventConsumerPullDisposition::try_from(value).ok() {
+        Some(v1::EventConsumerPullDisposition::Ready) => "ready",
+        Some(v1::EventConsumerPullDisposition::WaitTimedOut) => "wait_timed_out",
+        Some(v1::EventConsumerPullDisposition::BoundedProgress) => "bounded_progress",
+        _ => "invalid",
+    }
 }
 
 async fn prove_application_successor(
@@ -6432,6 +6888,7 @@ async fn rotate_application_credential(
         let disposition = create_compiled_role_binding(
             PreparedRoleBinding {
                 role: role.clone(),
+                bound_grant: None,
                 principal: format!("app:{}", role.application_name()),
                 actor_kind: RoleActorKind::Service,
                 lifetime_seconds: lifetime_seconds.to_string(),
@@ -6656,6 +7113,7 @@ async fn create_compiled_role_binding(
 ) -> Result<NormalCreateDisposition, Terminal> {
     let PreparedRoleBinding {
         role,
+        bound_grant,
         principal,
         actor_kind,
         lifetime_seconds,
@@ -6689,6 +7147,14 @@ async fn create_compiled_role_binding(
     {
         return Err(invalid_input(identity));
     }
+    let grant = match application_role_grant_to_proto(
+        bound_grant
+            .as_ref()
+            .unwrap_or_else(|| role.internal_grant()),
+    ) {
+        Ok(grant) => grant,
+        Err(()) => return Err(role_invalid(identity)),
+    };
     let request = v1::CreateCapabilityRequest {
         request_id: Vec::new(),
         mode: v1::CapabilityCreateMode::Normal as i32,
@@ -6701,7 +7167,7 @@ async fn create_compiled_role_binding(
         },
         requested_lifetime_seconds: lifetime_seconds,
         audiences,
-        grant: Some(application_role_grant_to_proto(role.internal_grant())),
+        grant: Some(grant),
     };
     let template = match NormalCapabilityCreateTemplate::new(request) {
         Ok(template) => template,
@@ -6807,6 +7273,7 @@ async fn role_command(
             actor_kind,
             lifetime_seconds,
             audiences,
+            principal_facts,
             capability_id,
             credential_output,
         } => {
@@ -6814,9 +7281,15 @@ async fn role_command(
                 Ok(role) => role,
                 Err(error) => return error.terminal(CommandIdentity::RoleBind),
             };
+            let bound_grant =
+                match bind_role_principal_facts(&role, &principal, principal_facts.as_deref()) {
+                    Ok(grant) => grant,
+                    Err(()) => return role_principal_facts_invalid(&role),
+                };
             bind_compiled_role(
                 PreparedRoleBinding {
                     role,
+                    bound_grant: Some(bound_grant),
                     principal,
                     actor_kind,
                     lifetime_seconds,
@@ -6970,6 +7443,7 @@ fn compile_role_from_workspace(
                 | "riffdb.application-source/v3"
                 | "riffdb.application-source/v4"
                 | "riffdb.application-source/v5"
+                | "riffdb.application-source/v6"
         )
     );
     let source_locked = requested_is_source
@@ -7152,6 +7626,10 @@ fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
         "query_module_hashes": role.module_hashes().iter()
             .map(|hash| hex(hash.as_bytes()))
             .collect::<Vec<_>>(),
+        "principal_fact_schemas": role.principal_fact_schemas().iter().map(|fact| serde_json::json!({
+            "name": fact.name(),
+            "type": fact.value_type(),
+        })).collect::<Vec<_>>(),
         "operations": role.operations().iter().map(|operation| serde_json::json!({
             "kind": match operation.kind() {
                 riffdb_query_module::ApplicationRoleOperationKind::Query => "query",
@@ -7165,7 +7643,82 @@ fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
     })
 }
 
-fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityGrant {
+fn bind_role_principal_facts(
+    role: &CompiledApplicationRole,
+    principal: &str,
+    path: Option<&OsStr>,
+) -> Result<CapabilityGrantV1, ()> {
+    let facts = match path {
+        None if role.principal_fact_schemas().is_empty() => CapabilityPrincipalFactsV1::empty(),
+        None => return Err(()),
+        Some(path) => {
+            validate_path(path).map_err(|_| ())?;
+            let bytes = read_file(Path::new(path), MAX_INPUT_BYTES).map_err(|_| ())?;
+            let values =
+                serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes)
+                    .map_err(|_| ())?;
+            let facts = values
+                .into_iter()
+                .map(|(name, value)| {
+                    let value = natural_principal_fact_value(role, &name, value)?;
+                    CapabilityPrincipalFactV1::new(name, value).map_err(|_| ())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            CapabilityPrincipalFactsV1::new(facts).map_err(|_| ())?
+        }
+    };
+    let principal = ActorId::new(principal.to_owned()).map_err(|_| ())?;
+    role.bind_principal_facts_for(&principal, facts)
+        .map_err(|_| ())
+}
+
+fn natural_principal_fact_value(
+    role: &CompiledApplicationRole,
+    fact_name: &str,
+    value: serde_json::Value,
+) -> Result<CanonicalValue, ()> {
+    match value {
+        serde_json::Value::Array(values) => CanonicalValue::list(
+            values
+                .into_iter()
+                .map(|value| natural_principal_fact_value(role, fact_name, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map_err(|_| ()),
+        serde_json::Value::Object(mut tagged) if tagged.len() == 1 => {
+            if let Some(serde_json::Value::String(variant)) = tagged.remove("$enum") {
+                role.internal_resolve_principal_fact_enum(fact_name, &variant)
+                    .ok_or(())
+            } else {
+                let wire = natural_query_value(serde_json::Value::Object(tagged))?;
+                canonical_value_from_proto(wire).map_err(|_| ())
+            }
+        }
+        value => {
+            let wire = natural_query_value(value)?;
+            canonical_value_from_proto(wire).map_err(|_| ())
+        }
+    }
+}
+
+fn role_principal_facts_invalid(role: &CompiledApplicationRole) -> Terminal {
+    const CODE: &str = "application_role_principal_facts_invalid";
+    const MESSAGE: &str = "the protected application role requires one exact operator-owned principal-facts JSON object matching the compiled schemas";
+    let detail = serde_json::json!({
+        "code": CODE,
+        "message": MESSAGE,
+        "role": role.role_name(),
+        "required_facts": role.principal_fact_schemas().iter().map(|fact| serde_json::json!({
+            "name": fact.name(),
+            "type": fact.value_type(),
+        })).collect::<Vec<_>>(),
+        "required_argument": "--principal-facts <JSON_OBJECT_PATH>",
+        "recovery_action": "supply_exact_principal_facts",
+    });
+    local_error_with(CommandIdentity::RoleBind, &detail, CODE, MESSAGE, 2)
+}
+
+fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> Result<v1::CapabilityGrant, ()> {
     let tenant_scope = match grant.tenant_scope() {
         TenantScope::Global => v1::TenantScope {
             scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
@@ -7182,7 +7735,60 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
         },
         PartitionScopeV1::Explicit(_) => unreachable!("application roles never expose partitions"),
     };
-    v1::CapabilityGrant {
+    let row_policy = grant
+        .internal_row_policy()
+        .map(|row_policy| {
+            let principal_facts = row_policy
+                .internal_principal_facts()
+                .names()
+                .map(|name| {
+                    let fact = row_policy
+                        .internal_principal_facts()
+                        .internal_fact(name)
+                        .ok_or(())?;
+                    Ok(v1::CapabilityPrincipalFact {
+                        name: name.to_owned(),
+                        value: Some(
+                            canonical_value_to_proto(fact.internal_value()).map_err(|_| ())?,
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>, ()>>()?;
+            let policies = row_policy
+                .bindings()
+                .iter()
+                .map(|binding| v1::CapabilityRowPolicyBinding {
+                    contract_lineage: binding.lineage().as_str().to_owned(),
+                    policy_name: binding.policy_name().as_str().to_owned(),
+                    entity_type_id: binding.entity_type().get(),
+                    operations: binding
+                        .operations()
+                        .iter()
+                        .map(|operation| match operation {
+                            CapabilityRowPolicyOperationV1::Read => {
+                                v1::CapabilityRowPolicyOperation::Read as i32
+                            }
+                            CapabilityRowPolicyOperationV1::Create => {
+                                v1::CapabilityRowPolicyOperation::Create as i32
+                            }
+                            CapabilityRowPolicyOperationV1::Update => {
+                                v1::CapabilityRowPolicyOperation::Update as i32
+                            }
+                            CapabilityRowPolicyOperationV1::Delete => {
+                                v1::CapabilityRowPolicyOperation::Delete as i32
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+            Ok(v1::CapabilityRowPolicyGrant {
+                application_role_hash: row_policy.application_role_hash().as_bytes().to_vec(),
+                principal_facts,
+                policies,
+            })
+        })
+        .transpose()?;
+    Ok(v1::CapabilityGrant {
         tenant_scope: Some(tenant_scope),
         partition_scope: Some(partition_scope),
         permissions: grant
@@ -7211,9 +7817,9 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityG
             .collect(),
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
         approval_required: Vec::new(),
-        row_policy: None,
+        row_policy,
         export: None,
-    }
+    })
 }
 
 fn application_role_permission_to_proto(
@@ -9043,6 +9649,10 @@ fn parse_contract_migration_operation_id(value: &str) -> Result<ContractMigratio
     ContractMigrationOperationId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
 }
 
+fn parse_application_export_operation_id(value: &str) -> Result<ApplicationExportOperationId, ()> {
+    ApplicationExportOperationId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
+}
+
 fn parse_application_installation_campaign_id(
     value: &str,
 ) -> Result<ApplicationInstallationCampaignId, ()> {
@@ -9224,6 +9834,18 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Backup {
             command: BackupCommand::Operation { .. },
         } => CommandIdentity::BackupOperation,
+        TopLevel::Export {
+            command: ExportCommand::Start { .. },
+        } => CommandIdentity::ExportStart,
+        TopLevel::Export {
+            command: ExportCommand::Page { .. },
+        } => CommandIdentity::ExportPage,
+        TopLevel::Export {
+            command: ExportCommand::Status { .. },
+        } => CommandIdentity::ExportStatus,
+        TopLevel::Export {
+            command: ExportCommand::Cancel { .. },
+        } => CommandIdentity::ExportCancel,
         TopLevel::Storage {
             command: StorageCommand::Preflight { .. },
         } => CommandIdentity::StoragePreflight,
@@ -9780,6 +10402,39 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn export_page_writer_is_private_create_only_canonical_jsonl() {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-export-").expect("scratch directory");
+        let path = scratch.path().join("entities-0001.jsonl");
+        let page = v1::ApplicationExportPage {
+            operation_id: parse_uuid_v7("018f2f85-3c20-7a31-8f11-112233445566")
+                .expect("uuid")
+                .to_vec(),
+            page_number: 1,
+            record_class: v1::ApplicationExportRecordClass::Entity as i32,
+            canonical_json_lines: vec![
+                br#"{"class":"entity","symbol":"Ticket"}"#.to_vec(),
+                br#"{"class":"entity","symbol":"User"}"#.to_vec(),
+            ],
+            next_cursor: vec![1, 2, 3],
+            class_complete: false,
+            operation_complete: false,
+            page_hash: vec![7; 32],
+        };
+        write_export_page(&path, &page).expect("write page");
+        assert_eq!(
+            fs::read(&path).expect("read page"),
+            b"{\"class\":\"entity\",\"symbol\":\"Ticket\"}\n{\"class\":\"entity\",\"symbol\":\"User\"}\n"
+        );
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(
+            write_export_page(&path, &page).is_err(),
+            "an existing export page must never be overwritten"
+        );
+    }
 
     #[test]
     fn installation_seed_receipt_document_is_canonical_plan_bound_and_value_free() {
@@ -11170,7 +11825,7 @@ mod tests {
             None,
         )
         .expect("role");
-        let grant = application_role_grant_to_proto(role.internal_grant());
+        let grant = application_role_grant_to_proto(role.internal_grant()).expect("role grant");
         assert!(grant.permissions.iter().all(|permission| {
             matches!(
                 permission.permission,
@@ -11199,6 +11854,101 @@ mod tests {
                     if hash.as_slice() == role.identity().as_bytes()
             )
         }));
+    }
+
+    #[test]
+    fn protected_role_binding_lowers_exact_operator_facts_into_v4_authority() {
+        use riffdb_query_module::ApplicationSourceManifest;
+
+        let contract = compile_contract_source(include_str!(
+            "../../../fixtures/compiler/row-policy/valid/document-access.riff"
+        ))
+        .expect("policy contract");
+        let query = r#"
+query GetDocument(
+    $organization_id: Document.organization_id,
+    $document_id: Document.document_id,
+) {
+    one document from Document
+        where organization_id == $organization_id
+          && document_id == $document_id
+        else NotFound
+    return Found { document: document { document_id owner_id team_id visibility } }
+    outcomes Found | NotFound
+}
+"#;
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("policy_surface").expect("module"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("GetDocument", query).expect("query")],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+        let source = r#"{
+          "application":"policy-surface",
+          "contract":{"lineage":"PolicySurface","source":"contract.riff","version":1},
+          "generation":{"go":"generated/go/client.go","mcp":"generated/mcp/tools.json","python":"generated/python/client.py","rust":"generated/rust/client.rs","typescript":"generated/typescript/client.ts"},
+          "migrations":[],
+          "query_modules":[{"name":"policy_surface","queries":[{"name":"GetDocument","source":"queries/get_document.riffq"}],"version":1}],
+          "reactive_modules":[],
+          "roles":[{"agent_subscriptions":[],"commands":[],"environment":"development","event_streams":[],"name":"DocumentReader","queries":["GetDocument"],"row_policies":["DocumentAccess"],"tenant_scope":"global","watch_queries":[]}],
+          "schema":"riffdb.application-source/v6",
+          "seed_inputs":[]
+        }"#;
+        let exact = ApplicationSourceManifest::parse(source)
+            .expect("source")
+            .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+            .expect("exact");
+        let role = compile_application_role(
+            &exact,
+            "DocumentReader",
+            None,
+            &contract,
+            std::slice::from_ref(&module),
+        )
+        .expect("role");
+        let directory =
+            tempfile::TempDir::with_prefix("riffdb-role-facts-").expect("facts directory");
+        let facts_path = directory.path().join("facts.json");
+        fs::write(
+            &facts_path,
+            r#"{"team_ids":[{"$uuid":"00000000-0000-0000-0000-000000000008"}]}"#,
+        )
+        .expect("facts");
+
+        let grant = bind_role_principal_facts(
+            &role,
+            "00000000-0000-0000-0000-000000000007",
+            Some(facts_path.as_os_str()),
+        )
+        .expect("bound role");
+        let wire = application_role_grant_to_proto(&grant).expect("wire grant");
+        let policy = wire.row_policy.expect("V4 row-policy authority");
+        assert_eq!(policy.application_role_hash, role.identity().as_bytes());
+        assert_eq!(policy.principal_facts.len(), 1);
+        assert_eq!(policy.principal_facts[0].name, "team_ids");
+        assert_eq!(policy.policies.len(), 1);
+        assert_eq!(policy.policies[0].policy_name, "DocumentAccess");
+        assert_eq!(policy.policies[0].operations.len(), 4);
+        assert!(
+            bind_role_principal_facts(&role, "not-a-uuid", Some(facts_path.as_os_str())).is_err()
+        );
+        assert!(
+            bind_role_principal_facts(&role, "00000000-0000-0000-0000-000000000007", None).is_err()
+        );
+
+        fs::write(&facts_path, r#"{"unknown":true}"#).expect("invalid facts");
+        assert!(
+            bind_role_principal_facts(
+                &role,
+                "00000000-0000-0000-0000-000000000007",
+                Some(facts_path.as_os_str()),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -11269,6 +12019,8 @@ mod tests {
             }],
             status: Some(status),
             wait_timed_out: false,
+            protected_status: None,
+            disposition: v1::EventConsumerPullDisposition::Ready as i32,
         };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -11294,6 +12046,8 @@ mod tests {
             items: vec![v1::ContextualWorkItem::default()],
             status: Some(status),
             wait_timed_out: false,
+            protected_status: None,
+            disposition: v1::EventConsumerPullDisposition::Ready as i32,
         };
         assert_ne!(
             render_contextual_response(&incomplete).emit(

@@ -14,6 +14,10 @@ use riffdb_storage_api::{
     coordinate_consumer_lease_validation, coordinate_consumer_negative_acknowledgement,
     coordinate_consumer_retire, coordinate_consumer_seek, coordinate_consumer_status,
 };
+use riffdb_storage_redb::{
+    ProtectedEventConsumerLeaseV1, ProtectedEventConsumerLeaseValidationResultV1,
+    ProtectedEventConsumerLeaseValidationV1, ProtectedEventConsumerResolutionV1,
+};
 use riffdb_types::DatabaseId;
 
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
@@ -93,19 +97,39 @@ fn coordinate_request(
             history_incarnation,
             observed_at,
         )
-        .map(|result| {
-            EventConsumerPortResponse::LeaseValidation(match result {
-                CoordinatedConsumerLeaseValidationV1::Live => EventConsumerLeaseValidation::Live,
-                CoordinatedConsumerLeaseValidationV1::NotFound => {
-                    EventConsumerLeaseValidation::NotFound
-                }
-                CoordinatedConsumerLeaseValidationV1::Stale => EventConsumerLeaseValidation::Stale,
-                CoordinatedConsumerLeaseValidationV1::Expired => {
-                    EventConsumerLeaseValidation::Expired
-                }
-            })
-        })
+        .map(|result| EventConsumerPortResponse::LeaseValidation(service_lease_validation(result)))
         .map_err(map_storage),
+        EventConsumerPortRequest::ProtectedValidateLease {
+            identity,
+            partition_hash,
+            event_id,
+            attempt,
+            token,
+            history_incarnation,
+            observed_at,
+            policy,
+        } => storage
+            .validate_protected_event_consumer_lease(ProtectedEventConsumerLeaseValidationV1 {
+                identity: storage_identity(database_id, identity),
+                partition_hash,
+                event_id,
+                attempt,
+                token,
+                history_incarnation,
+                observed_at,
+                policy,
+            })
+            .map(|result| {
+                EventConsumerPortResponse::LeaseValidation(match result {
+                    ProtectedEventConsumerLeaseValidationResultV1::Validation(validation) => {
+                        service_lease_validation(validation)
+                    }
+                    ProtectedEventConsumerLeaseValidationResultV1::Denied => {
+                        EventConsumerLeaseValidation::Denied
+                    }
+                })
+            })
+            .map_err(map_storage),
         EventConsumerPortRequest::Lease {
             identity,
             partition_hash,
@@ -147,6 +171,93 @@ fn coordinate_request(
                 status: result.status.map(service_status),
             })
         }
+        EventConsumerPortRequest::ProtectedLease {
+            identity,
+            partition_hash,
+            history_incarnation,
+            observed_at,
+            expires_at,
+            selected_events,
+            tokens,
+            batch_limit,
+            in_flight_limit,
+            policy,
+        } => {
+            let result = storage
+                .coordinate_protected_event_consumer_lease(ProtectedEventConsumerLeaseV1 {
+                    identity: storage_identity(database_id, identity),
+                    partition_hash,
+                    history_incarnation,
+                    observed_at,
+                    expires_at,
+                    selected_events,
+                    tokens,
+                    batch_limit,
+                    in_flight_limit,
+                    policy,
+                })
+                .map_err(map_storage)?;
+            Ok(EventConsumerPortResponse::Leased {
+                result: mutation_result(result.transition),
+                leases: result
+                    .leases
+                    .into_iter()
+                    .map(|lease| EventConsumerPortLease {
+                        event_id: lease.event_id,
+                        attempt: lease.attempt,
+                        token: lease.token,
+                        expires_at: lease.expires_at,
+                    })
+                    .collect(),
+                status: result.status.map(service_status),
+            })
+        }
+        EventConsumerPortRequest::ProtectedAcknowledge {
+            identity,
+            event_id,
+            token,
+            history_incarnation,
+            observed_at,
+            selected_prefix,
+            policy,
+        } => storage
+            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
+                acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                    identity: storage_identity(database_id, identity),
+                    event_id,
+                    token,
+                    history_incarnation,
+                    observed_at,
+                    selected_prefix,
+                },
+                retry_at: None,
+                policy,
+            })
+            .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
+            .map_err(map_storage),
+        EventConsumerPortRequest::ProtectedNegativeAcknowledge {
+            identity,
+            event_id,
+            token,
+            observed_at,
+            eligible_at,
+            selected_prefix,
+            policy,
+        } => storage
+            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
+                acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                    identity: storage_identity(database_id, identity),
+                    event_id,
+                    token,
+                    history_incarnation: 0,
+                    observed_at,
+                    selected_prefix,
+                },
+                retry_at: Some(eligible_at),
+                policy,
+            })
+            .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
+            .map_err(map_storage),
         EventConsumerPortRequest::Acknowledge {
             identity,
             event_id,
@@ -237,6 +348,17 @@ fn service_status(status: CoordinatedConsumerStatusV1) -> EventConsumerStatus {
         status.retries,
         status.dead_letters,
     )
+}
+
+const fn service_lease_validation(
+    result: CoordinatedConsumerLeaseValidationV1,
+) -> EventConsumerLeaseValidation {
+    match result {
+        CoordinatedConsumerLeaseValidationV1::Live => EventConsumerLeaseValidation::Live,
+        CoordinatedConsumerLeaseValidationV1::NotFound => EventConsumerLeaseValidation::NotFound,
+        CoordinatedConsumerLeaseValidationV1::Stale => EventConsumerLeaseValidation::Stale,
+        CoordinatedConsumerLeaseValidationV1::Expired => EventConsumerLeaseValidation::Expired,
+    }
 }
 
 const fn mutation_result(result: EventConsumerTransitionResultV1) -> EventConsumerMutationResult {
