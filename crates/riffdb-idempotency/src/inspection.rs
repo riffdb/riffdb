@@ -11,6 +11,7 @@ use riffdb_types::{CanonicalRecord, FieldId, IdempotencyKey};
 use crate::{
     IdempotencyPreparationError, IdempotencyRecheckIntegrityV1, PreparedCommandIdempotencyV1,
     PreparedIdempotencyLookupV1, PreparedIdempotencyRecheckV1, confirm_command_idempotency,
+    confirm_server_derived_command_idempotency,
 };
 
 /// The only durable-state information exposed for command-plan selection.
@@ -84,6 +85,24 @@ impl InspectedIdempotencyV1 {
             idempotency_field,
             caller_key,
         )?;
+        Ok(ConfirmedIdempotencyInspectionV1 {
+            prepared_command,
+            normalized_input: normalized_input.clone(),
+            observation: self.observation,
+        })
+    }
+
+    /// Confirms the complete normalized input for a server-derived identity.
+    ///
+    /// No input field is treated as caller idempotency material. This path is
+    /// reserved for higher-level operator campaigns that already derived the
+    /// inspected identity from trusted artifacts.
+    pub fn confirm_server_derived_input(
+        self,
+        normalized_input: &CanonicalRecord,
+    ) -> Result<ConfirmedIdempotencyInspectionV1, IdempotencyPreparationError> {
+        let prepared_command =
+            confirm_server_derived_command_idempotency(self.prepared_lookup, normalized_input)?;
         Ok(ConfirmedIdempotencyInspectionV1 {
             prepared_command,
             normalized_input: normalized_input.clone(),

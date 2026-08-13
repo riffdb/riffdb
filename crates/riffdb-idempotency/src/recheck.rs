@@ -68,6 +68,19 @@ impl PreparedIdempotencyRecheckV1 {
                 .matches_idempotency_field(idempotency_field)
     }
 
+    /// Returns whether this preparation is bound to a server-derived identity
+    /// and the exact selected plan and complete normalized input.
+    #[must_use]
+    pub fn matches_server_derived_preparation(
+        &self,
+        selected_plan: &ExecutablePlanRef,
+        normalized_input: &CanonicalRecord,
+    ) -> bool {
+        &self.selected_plan == selected_plan
+            && &self.normalized_input == normalized_input
+            && self.prepared_command.is_server_derived()
+    }
+
     /// Returns whether every retained digest candidate has the expected scope.
     ///
     /// Expected values are supplied separately so callers must derive database

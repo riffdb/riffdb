@@ -6,7 +6,7 @@ use riffdb_idempotency::{
     CommandIdempotencyScopeV1, IdempotencyDigestCandidatesV1, IdempotencyDigestError,
     IdempotencyDigestProvider, IdempotencyLookupClassificationV1, IdempotencyPreparationError,
     classify_idempotency_lookup, confirm_command_idempotency, prepare_command_idempotency,
-    prepare_idempotency_lookup,
+    prepare_idempotency_lookup, prepare_server_derived_command_idempotency,
 };
 use riffdb_storage_api::{
     AdmissionLookupResultV1, DeclaredOutcome, DurabilityMode, ExecutablePlanRef,
@@ -275,6 +275,39 @@ fn key_only_changes_identity_while_other_input_changes_hash() {
         changed_input.canonical_input_hash()
     );
     assert_eq!(first.current_identity(), changed_input.current_identity());
+}
+
+#[test]
+fn server_derived_identity_hashes_the_complete_exact_record() {
+    let provider = FixedProvider::new(&[3, 2]);
+    let server_key = IdempotencyKey::new("manifest-record-7").expect("derived key");
+    let first_input = input("exported-field-value", 42);
+    let changed_input = input("exported-field-value", 43);
+    let first =
+        prepare_server_derived_command_idempotency(&scope(), &first_input, &server_key, &provider)
+            .expect("server-derived preparation");
+    let same =
+        prepare_server_derived_command_idempotency(&scope(), &first_input, &server_key, &provider)
+            .expect("stable server-derived preparation");
+    let substituted = prepare_server_derived_command_idempotency(
+        &scope(),
+        &changed_input,
+        &server_key,
+        &provider,
+    )
+    .expect("substituted preparation remains classifiable");
+    let expected = hash_command_input(
+        &encode_canonical_record(&first_input).expect("canonical encoding succeeds"),
+    );
+
+    assert_eq!(first.current_identity(), same.current_identity());
+    assert_eq!(first.canonical_input_hash(), expected);
+    assert_eq!(first.canonical_input_hash(), same.canonical_input_hash());
+    assert_ne!(
+        first.canonical_input_hash(),
+        substituted.canonical_input_hash()
+    );
+    assert_eq!(first.current_identity(), substituted.current_identity());
 }
 
 #[test]

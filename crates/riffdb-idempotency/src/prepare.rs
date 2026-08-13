@@ -104,14 +104,24 @@ impl fmt::Debug for PreparedIdempotencyLookupV1 {
 /// a new admission and the complete ordered candidate set for rotation-aware
 /// lookup. It must not be constructed for grammar-v1 read-only commands.
 pub struct PreparedCommandIdempotencyV1 {
-    idempotency_field: FieldId,
+    input_binding: IdempotencyInputBindingV1,
     canonical_input_hash: CanonicalInputHash,
     lookup_candidates: IdempotencyLookupCandidatesV1,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdempotencyInputBindingV1 {
+    DeclaredField(FieldId),
+    ServerDerived,
+}
+
 impl PreparedCommandIdempotencyV1 {
     pub(crate) fn matches_idempotency_field(&self, expected: FieldId) -> bool {
-        self.idempotency_field == expected
+        self.input_binding == IdempotencyInputBindingV1::DeclaredField(expected)
+    }
+
+    pub(crate) fn is_server_derived(&self) -> bool {
+        self.input_binding == IdempotencyInputBindingV1::ServerDerived
     }
 
     /// Returns the v1 hash of canonical input with the declared caller-key field omitted.
@@ -272,7 +282,44 @@ pub fn confirm_command_idempotency(
     let canonical_input_hash = hash_command_input(&encoded);
 
     Ok(PreparedCommandIdempotencyV1 {
-        idempotency_field,
+        input_binding: IdempotencyInputBindingV1::DeclaredField(idempotency_field),
+        canonical_input_hash,
+        lookup_candidates: lookup.lookup_candidates,
+    })
+}
+
+/// Prepares exact full-input evidence under an operator-derived retry identity.
+///
+/// Unlike application-command preparation, no field is omitted from the input
+/// hash and the retry identity is not expected to appear in the command input.
+/// The caller must derive `server_key` from trusted campaign artifacts and the
+/// canonical stable entity key; this function performs no derivation and grants
+/// no command-execution authority.
+pub fn prepare_server_derived_command_idempotency(
+    scope: &CommandIdempotencyScopeV1,
+    normalized_input: &CanonicalRecord,
+    server_key: &IdempotencyKey,
+    digest_provider: &dyn IdempotencyDigestProvider,
+) -> Result<PreparedCommandIdempotencyV1, IdempotencyPreparationError> {
+    let lookup = prepare_idempotency_lookup(scope, server_key, digest_provider)?;
+    confirm_server_derived_command_idempotency(lookup, normalized_input)
+}
+
+/// Confirms a normalized full input against identities inspected before plan selection.
+///
+/// This is the server-derived counterpart to [`confirm_command_idempotency`].
+/// Every canonical field participates in the input hash, so a substituted
+/// exported record under the same derived identity fails as an input mismatch.
+pub fn confirm_server_derived_command_idempotency(
+    lookup: PreparedIdempotencyLookupV1,
+    normalized_input: &CanonicalRecord,
+) -> Result<PreparedCommandIdempotencyV1, IdempotencyPreparationError> {
+    let encoded = encode_canonical_record(normalized_input)
+        .map_err(|_| IdempotencyPreparationError::InvalidCanonicalInput)?;
+    let canonical_input_hash = hash_command_input(&encoded);
+
+    Ok(PreparedCommandIdempotencyV1 {
+        input_binding: IdempotencyInputBindingV1::ServerDerived,
         canonical_input_hash,
         lookup_candidates: lookup.lookup_candidates,
     })
