@@ -6,14 +6,17 @@ use riffdb_application::{
     CredentialDestination, InstallationArtifact, InstallationArtifactKind,
     InstallationCampaignErrorKind, InstallationCampaignPhase, InstallationContract,
     InstallationDriver, InstallationFailureCode, InstallationFeature, InstallationNextAction,
-    InstallationRole, InstallationSeed, InstallationStage, InstallationStageEvidence,
-    InstallationSymbol, InstallationTarget, InstalledCredentialEvidence, InstalledReimportEvidence,
-    InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation, RoleOperationKind,
+    InstallationReimport, InstallationRole, InstallationSeed, InstallationStage,
+    InstallationStageEvidence, InstallationSymbol, InstallationTarget, InstalledCredentialEvidence,
+    InstalledReimportEvidence, InstalledRoleEvidence, InstalledSeedEvidence, RoleOperation,
+    RoleOperationKind,
 };
 use riffdb_types::{
-    ApplicationInstallationCampaignId, ApplicationLockHash, ApplicationManifestHash,
-    ApplicationRoleHash, ApplicationSourceHash, CapabilityId, ContractBundleHash, ContractLineage,
-    ContractVersion, DatabaseAlias, Environment, GeneratedArtifactHash,
+    ApplicationExportManifestHash, ApplicationExportReceiptHash, ApplicationInstallationCampaignId,
+    ApplicationLockHash, ApplicationManifestHash, ApplicationPortabilityManifestHash,
+    ApplicationReimportReceiptHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
+    ContractBundleHash, ContractLineage, ContractVersion, DatabaseAlias, Environment,
+    GeneratedArtifactHash,
 };
 
 fn hash32(byte: u8) -> [u8; 32] {
@@ -221,6 +224,65 @@ fn every_interruption_resumes_after_revalidating_completed_identities() {
     assert!(receipt_text.contains("\"safe_remediation\":[]"));
     assert!(!receipt_text.contains("token"));
     assert!(!receipt_text.contains("/home/"));
+}
+
+#[test]
+fn reimport_installation_receipt_names_every_portability_identity() {
+    let mut input = plan(1).input().clone();
+    input.reimport = Some(InstallationReimport::new(
+        ApplicationExportManifestHash::from_bytes(hash32(10)),
+        ApplicationExportReceiptHash::from_bytes(hash32(11)),
+        ApplicationPortabilityManifestHash::from_bytes(hash32(12)),
+    ));
+    let plan = ApplicationInstallationPlan::compile(input).expect("reimport plan");
+    let mut campaign = ApplicationInstallationCampaign::start(campaign_id(7), plan.identity());
+    for stage in &InstallationStage::ALL[..InstallationStage::ALL.len() - 1] {
+        let stage_evidence = if *stage == InstallationStage::Reimport {
+            InstallationStageEvidence::Reimport(InstalledReimportEvidence::Reconciled {
+                export_manifest_hash: ApplicationExportManifestHash::from_bytes(hash32(10)),
+                export_receipt_hash: ApplicationExportReceiptHash::from_bytes(hash32(11)),
+                portability_manifest_hash: ApplicationPortabilityManifestHash::from_bytes(hash32(
+                    12,
+                )),
+                reimport_receipt_hash: ApplicationReimportReceiptHash::from_bytes(hash32(13)),
+            })
+        } else {
+            evidence(*stage)
+        };
+        campaign
+            .complete_stage(&plan, stage_evidence)
+            .expect("exact stage");
+    }
+
+    let receipt = campaign.seal_receipt(&plan).expect("reimport receipt");
+    assert_eq!(
+        receipt.canonical_bytes(),
+        include_bytes!("../../../fixtures/installation/application-installation-receipt-v3.json")
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(receipt.canonical_bytes()).expect("receipt json");
+    assert_eq!(
+        document["schema"],
+        "riffdb.application-installation-receipt/v3"
+    );
+    assert_eq!(
+        document["reimport"]["export_manifest_hash"],
+        "0a".repeat(32)
+    );
+    assert_eq!(document["reimport"]["export_receipt_hash"], "0b".repeat(32));
+    assert_eq!(
+        document["reimport"]["portability_manifest_hash"],
+        "0c".repeat(32)
+    );
+    assert_eq!(
+        document["reimport"]["reimport_receipt_hash"],
+        "0d".repeat(32)
+    );
+    assert_eq!(
+        ApplicationInstallationReceipt::decode_canonical(receipt.canonical_bytes())
+            .expect("strict v3 receipt"),
+        receipt
+    );
 }
 
 #[test]

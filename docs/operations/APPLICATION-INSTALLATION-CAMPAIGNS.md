@@ -152,18 +152,20 @@ paths never enter the plan.
 - Partial or failed stages never carry a terminal receipt. `installed` requires
   every closed stage plus the receipt stage in dependency order.
 
-Newly sealed terminal receipts use
+Newly sealed ordinary-install terminal receipts use
 `riffdb.application-installation-receipt/v2`. The canonical, content-addressed
 document includes the exact nonsecret capability ID for every credential
 destination, value-free per-seed succeeded/replayed checkpoints, the adapter
 manifest digest, the installed terminal state, and exact migration and backup
-receipt references when a migration was required. It never includes bearer
-credentials, seed values, host paths, or hidden schema. Accepted v1 receipts
-and campaign states remain readable; resuming one preserves its original
-receipt identity instead of silently rotating it. New campaign checkpoints use
-v2 so the reimport stage is represented explicitly; decoding a retained v1
-campaign inserts only the closed `reimport_not_required` evidence appropriate
-to its v1 plan.
+receipt references when a migration was required. A reimport installation uses
+v3 and additionally names the exact export manifest, completed export receipt,
+portability manifest, and destination reimport-reconciliation receipt. It never
+includes bearer credentials, seed values, host paths, or hidden schema.
+Accepted v1 and v2 receipts and v1 campaign states remain readable; resuming
+one preserves its original receipt identity instead of silently rotating it.
+New campaign checkpoints use v2 so the reimport stage is represented
+explicitly; decoding a retained v1 campaign inserts only the closed
+`reimport_not_required` evidence appropriate to its v1 plan.
 
 ## Adapter conformance manifests
 
