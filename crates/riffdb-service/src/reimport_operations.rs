@@ -96,7 +96,7 @@ async fn start_reimport(
     let policy_request = ApplicationReimportAuthorizationRequestV1::new(
         request.campaign_id(),
         request.lineage().clone(),
-        request.source().portability_manifest_hash(),
+        request.portability_manifest().identity(),
         request.scope(),
         ApplicationReimportPolicyOperationV1::Start,
     );
@@ -125,7 +125,7 @@ async fn start_reimport(
         ensure_control_open(&context)?;
         let authorization = authorize_current(&service, &context, policy_request)?;
         let expected_lineage = request.lineage().clone();
-        let expected_manifest = request.source().portability_manifest_hash();
+        let expected_manifest = request.portability_manifest().identity();
         let receipt = permit
             .submit(AuthorizedApplicationReimportStartV1::new(
                 context.request_id(),
