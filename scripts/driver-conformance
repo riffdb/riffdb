@@ -290,6 +290,7 @@ server_pid=
 # value/error registries as the shared remote cells above.
 cargo +1.97.0 test --quiet -p riffdb-driver-host --all-features
 GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off go -C clients/go/runtime test ./...
+GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off go -C clients/go/operator test ./...
 npm --prefix clients/typescript/runtime test >/dev/null
 "$work_root/python-venv/bin/python" -m unittest discover \
     -s clients/python/runtime/tests -q
