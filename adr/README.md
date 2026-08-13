@@ -137,7 +137,7 @@ direction, merged draft, or implementation choice.
 | [0116](0116-current-row-event-policy-anchors.md) | Current-Row Policy Anchors for Durable Events | Accepted |
 | [0117](0117-compiled-external-framework-profiles.md) | Compiled External-Framework Profiles | Accepted |
 | [0118](0118-secret-field-classification.md) | Secret Field Classification and Display-Surface Redaction | Accepted |
-| [0119](0119-compiler-owned-workflow-reconstitution.md) | Compiler-Owned Workflow Reconstitution for Portable Reimport | Proposed |
+| [0119](0119-compiler-owned-workflow-reconstitution.md) | Compiler-Owned Workflow Reconstitution for Portable Reimport | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

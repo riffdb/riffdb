@@ -11918,7 +11918,7 @@ work_packages:
     ADR-0107, ADR-0109, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0118,
     ADR-0119]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml,
-    adr/0119-compiler-owned-workflow-reconstitution.md, proto/**, fixtures/proto/**,
+    adr/README.md, adr/0119-compiler-owned-workflow-reconstitution.md, proto/**, fixtures/proto/**,
     fixtures/export/**, fixtures/adapters/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-types/**, crates/riffdb-auth/**, crates/riffdb-policy/**,
