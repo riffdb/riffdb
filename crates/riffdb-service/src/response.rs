@@ -411,7 +411,8 @@ impl ServiceResponseCharge for LiveQueryUpdate {
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
-        charge.fields(3)?;
+        charge.fields(4)?;
+        charge.bytes(16)?;
         match self {
             LiveQueryUpdate::Snapshot(snapshot) => {
                 charge.nested(snapshot.result())?;

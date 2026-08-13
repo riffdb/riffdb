@@ -9,14 +9,16 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use riffdb_api_grpc::{
     CheckedGrpcRestoreRetrySecurityContext, CheckedGrpcSecurityContext,
-    GrpcApplicationExportOperation, GrpcBootstrapCompletion, GrpcContractMigrationOperation,
-    GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcOfflineMaintenanceOperation,
+    GrpcApplicationExportOperation, GrpcApplicationReimportOperation, GrpcBootstrapCompletion,
+    GrpcContractMigrationOperation, GrpcDeploymentCompletion, GrpcLifecycleRoute,
+    GrpcOfflineMaintenanceOperation,
 };
 use riffdb_service::{
-    ApplicationExportApplication, ApplicationService, ContractMigrationApplication, HealthContext,
-    HealthRequest, HealthResult, InitializingRiffDbService, PreBootstrapHealthContextIssuer,
-    PreBootstrapLifecycle, RecoveryOfflineMaintenanceApplication,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceTelemetry,
+    ApplicationExportApplication, ApplicationReimportApplication, ApplicationService,
+    ContractMigrationApplication, HealthContext, HealthRequest, HealthResult,
+    InitializingRiffDbService, PreBootstrapHealthContextIssuer, PreBootstrapLifecycle,
+    RecoveryOfflineMaintenanceApplication, RestoreRetryOfflineMaintenanceApplication,
+    ServiceFuture, ServiceTelemetry,
 };
 use riffdb_types::{OfflineMaintenanceOperationId, ServiceOperationV1};
 
@@ -31,6 +33,7 @@ pub(crate) struct ProductionLifecycleRoute {
     activated: OnceLock<Arc<dyn ApplicationService>>,
     migration: OnceLock<Arc<dyn ContractMigrationApplication>>,
     application_export: OnceLock<Arc<dyn ApplicationExportApplication>>,
+    application_reimport: OnceLock<Arc<dyn ApplicationReimportApplication>>,
     security: OnceLock<CheckedGrpcSecurityContext>,
     server_generation: OnceLock<ServerGenerationV1>,
     history_incarnation: OnceLock<u64>,
@@ -70,6 +73,7 @@ impl ProductionLifecycleRoute {
             activated: OnceLock::new(),
             migration: OnceLock::new(),
             application_export: OnceLock::new(),
+            application_reimport: OnceLock::new(),
             security: OnceLock::new(),
             server_generation: OnceLock::new(),
             history_incarnation: OnceLock::new(),
@@ -102,6 +106,16 @@ impl ProductionLifecycleRoute {
         service: Arc<dyn ApplicationExportApplication>,
     ) -> Result<(), LifecycleInstallError> {
         self.application_export
+            .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
+    }
+
+    /// Installs the disjoint compiler-owned reimport surface.
+    pub(crate) fn install_application_reimport(
+        &self,
+        service: Arc<dyn ApplicationReimportApplication>,
+    ) -> Result<(), LifecycleInstallError> {
+        self.application_reimport
             .set(service)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)
     }
@@ -332,6 +346,34 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             .model
             .allows_authenticated(operation, runtime_ready)
             .then(|| self.application_export.get().cloned())
+            .flatten()
+    }
+
+    fn admit_application_reimport(
+        &self,
+        operation: GrpcApplicationReimportOperation,
+    ) -> Option<Arc<dyn ApplicationReimportApplication>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        let operation = match operation {
+            GrpcApplicationReimportOperation::Start => ServiceOperationV1::StartApplicationReimport,
+            GrpcApplicationReimportOperation::ApplyPage => {
+                ServiceOperationV1::ApplyApplicationReimportPage
+            }
+            GrpcApplicationReimportOperation::GetOperation => {
+                ServiceOperationV1::GetApplicationReimport
+            }
+            GrpcApplicationReimportOperation::Cancel => {
+                ServiceOperationV1::CancelApplicationReimport
+            }
+        };
+        let runtime_ready = self.runtime.is_routing_allowed();
+        let state = self.lock_state();
+        state
+            .model
+            .allows_authenticated(operation, runtime_ready)
+            .then(|| self.application_reimport.get().cloned())
             .flatten()
     }
 

@@ -1,15 +1,15 @@
 //! Total mechanical conversion between public wire messages and service DTOs.
 
-use std::num::{NonZeroU16, NonZeroU32};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_application::{
-    ApplicationInstallationPlan, InstallationCampaignPhase, InstallationDriver,
-    InstallationFailureCode, InstallationNextAction, InstallationStage, InstallationStageEvidence,
-    InstallationSymbol, InstalledSeedEvidence,
+    ApplicationInstallationPlan, ApplicationReimportCampaignPhaseV1, ApplicationReimportFailureV1,
+    InstallationCampaignPhase, InstallationDriver, InstallationFailureCode, InstallationNextAction,
+    InstallationStage, InstallationStageEvidence, InstallationSymbol, InstalledSeedEvidence,
 };
 use riffdb_auth::AuthenticationContext;
 use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_value_to_proto, v1};
@@ -19,10 +19,13 @@ use riffdb_service::{
     ApplicationExportCursor, ApplicationExportFailureV1, ApplicationExportOperationRequest,
     ApplicationExportOperationV1, ApplicationExportPageV1, ApplicationExportPhaseV1,
     ApplicationExportStartDispositionV1, ApplicationExportStartResultV1,
-    ApplyContractMigrationRequest, BootstrapCapabilityRequest, BootstrapCapabilityResult,
-    CapabilityIdentityView, CapabilityTransitionView, CheckContractMigrationRequest,
-    CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
-    CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
+    ApplicationReimportOperationRequestV1, ApplicationReimportOperationResultV1,
+    ApplyApplicationReimportPageRequestV1, ApplyContractMigrationRequest,
+    BootstrapCapabilityRequest, BootstrapCapabilityResult, CanonicalApplicationExportJsonDocument,
+    CanonicalApplicationExportJsonLine, CapabilityIdentityView, CapabilityTransitionView,
+    CheckContractMigrationRequest, CheckSymbolicQueryResult, CommandDurability,
+    CommandToolDescriptor, CommandToolDiscoveryItem, CommitSubscriptionEndReason,
+    CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
     CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor, CompactResourceDescriptor,
     CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
     ConsumeContextualSubscriptionRequest, ConsumeContextualSubscriptionResult,
@@ -46,8 +49,9 @@ use riffdb_service::{
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
     FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult,
     GetApplicationExportPageRequest, GetApplicationExportResultV1,
-    GetApplicationInstallationRequest, GetApplicationInstallationResult, GetCommitRequest,
-    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
+    GetApplicationInstallationRequest, GetApplicationInstallationResult,
+    GetApplicationReimportResultV1, GetCommitRequest, GetCommitResult,
+    GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
     GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
     GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
@@ -72,13 +76,13 @@ use riffdb_service::{
     RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
     ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
     SeekEventStreamConsumerRequest, SourceName, StartApplicationExportRequest,
-    StartApplicationInstallationRequest, StatisticsRequest, StatisticsResult, SubmittedDecimal,
-    SubmittedEnum, SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord,
-    SubmittedValue, SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic,
-    SymbolicEvent, SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema,
-    SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord, TailEventsRequest,
-    TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
-    WatchLiveNamedQueryRequest,
+    StartApplicationInstallationRequest, StartApplicationReimportRequestV1, StatisticsRequest,
+    StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
+    SubmittedMoney, SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest,
+    SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent, SymbolicQueryIdentity,
+    SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField,
+    SymbolicResultRecord, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
+    TraceProvenanceResult, ValidateContractRequest, WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationExportClassV1,
@@ -3836,6 +3840,131 @@ fn application_export_selection_from_proto(
     .map_err(|_| invalid_request())
 }
 
+/// Converts one exact application-reimport start request.
+pub fn start_application_reimport_request_from_proto(
+    request: v1::StartApplicationReimportRequest,
+) -> Result<(RequestId, StartApplicationReimportRequestV1), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let campaign_id = application_installation_campaign_id_from_bytes(&request.campaign_id)?;
+    let lineage = ContractLineage::new(request.contract_lineage).map_err(|_| invalid_request())?;
+    let scope = application_reimport_scope_from_proto(request.scope)?;
+    let portability_manifest =
+        riffdb_application::ApplicationPortabilityManifest::decode_canonical(
+            &request.canonical_portability_manifest_json,
+        )
+        .map_err(|_| invalid_request())?;
+    let export_manifest =
+        CanonicalApplicationExportJsonDocument::new(request.canonical_export_manifest_json)
+            .map_err(|_| invalid_request())?;
+    let export_receipt =
+        CanonicalApplicationExportJsonDocument::new(request.canonical_export_receipt_json)
+            .map_err(|_| invalid_request())?;
+    let request = StartApplicationReimportRequestV1::new(
+        campaign_id,
+        lineage,
+        scope,
+        portability_manifest,
+        export_manifest,
+        export_receipt,
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts one exact hash-bearing export page for reimport.
+pub fn apply_application_reimport_page_request_from_proto(
+    request: v1::ApplyApplicationReimportPageRequest,
+) -> Result<(RequestId, ApplyApplicationReimportPageRequestV1), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let campaign_id = application_installation_campaign_id_from_bytes(&request.campaign_id)?;
+    let page = application_export_page_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    Ok((
+        request_id,
+        ApplyApplicationReimportPageRequestV1::new(campaign_id, page),
+    ))
+}
+
+/// Converts one protected reimport status selector.
+pub fn get_application_reimport_request_from_proto(
+    request: v1::GetApplicationReimportRequest,
+) -> Result<(RequestId, ApplicationReimportOperationRequestV1), Status> {
+    application_reimport_operation_request_from_parts(&request.request_id, &request.campaign_id)
+}
+
+/// Converts one protected reimport cancellation selector.
+pub fn cancel_application_reimport_request_from_proto(
+    request: v1::CancelApplicationReimportRequest,
+) -> Result<(RequestId, ApplicationReimportOperationRequestV1), Status> {
+    application_reimport_operation_request_from_parts(&request.request_id, &request.campaign_id)
+}
+
+fn application_reimport_operation_request_from_parts(
+    request_id: &[u8],
+    campaign_id: &[u8],
+) -> Result<(RequestId, ApplicationReimportOperationRequestV1), Status> {
+    Ok((
+        request_id_from_bytes(request_id)?,
+        ApplicationReimportOperationRequestV1::new(
+            application_installation_campaign_id_from_bytes(campaign_id)?,
+        ),
+    ))
+}
+
+fn application_reimport_scope_from_proto(
+    value: i32,
+) -> Result<CapabilityApplicationReimportScopeV1, Status> {
+    match v1::CapabilityApplicationReimportScope::try_from(value).map_err(|_| invalid_request())? {
+        v1::CapabilityApplicationReimportScope::PrincipalFiltered => {
+            Ok(CapabilityApplicationReimportScopeV1::PrincipalFiltered)
+        }
+        v1::CapabilityApplicationReimportScope::WholeApplication => {
+            Ok(CapabilityApplicationReimportScopeV1::WholeApplication)
+        }
+        v1::CapabilityApplicationReimportScope::Unspecified => Err(invalid_request()),
+    }
+}
+
+fn application_export_page_from_proto(
+    page: v1::ApplicationExportPage,
+) -> Result<ApplicationExportPageV1, Status> {
+    let operation_id = application_export_operation_id_from_bytes(&page.operation_id)?;
+    let page_number = NonZeroU64::new(page.page_number).ok_or_else(invalid_request)?;
+    let class = match v1::ApplicationExportRecordClass::try_from(page.record_class)
+        .map_err(|_| invalid_request())?
+    {
+        v1::ApplicationExportRecordClass::Entity => ApplicationExportClassV1::Entity,
+        v1::ApplicationExportRecordClass::Event => ApplicationExportClassV1::Event,
+        v1::ApplicationExportRecordClass::Provenance => ApplicationExportClassV1::Provenance,
+        v1::ApplicationExportRecordClass::PublicAudit => ApplicationExportClassV1::PublicAudit,
+        v1::ApplicationExportRecordClass::Unspecified => return Err(invalid_request()),
+    };
+    let lines = page
+        .canonical_json_lines
+        .into_iter()
+        .map(CanonicalApplicationExportJsonLine::new)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid_request())?;
+    let cursor = (!page.next_cursor.is_empty())
+        .then(|| ApplicationExportCursor::new(page.next_cursor))
+        .transpose()
+        .map_err(|_| invalid_request())?;
+    let expected_hash: [u8; 32] = page.page_hash.try_into().map_err(|_| invalid_request())?;
+    let page = ApplicationExportPageV1::new(
+        operation_id,
+        page_number,
+        class,
+        lines,
+        cursor,
+        page.class_complete,
+        page.operation_complete,
+    )
+    .map_err(|_| invalid_request())?;
+    if page.page_hash().as_bytes() != &expected_hash {
+        return Err(invalid_request());
+    }
+    Ok(page)
+}
+
 /// Converts one protected exact campaign selector.
 pub fn get_application_installation_request_from_proto(
     request: v1::GetApplicationInstallationRequest,
@@ -4375,6 +4504,124 @@ fn application_export_operation_to_proto(
         receipt_hash: operation
             .receipt_hash()
             .map_or_else(Vec::new, |hash| hash.into_bytes().to_vec()),
+    }
+}
+
+/// Converts one protected reimport checkpoint after a start transition.
+pub fn start_application_reimport_result_to_proto(
+    result: &ApplicationReimportOperationResultV1,
+) -> v1::StartApplicationReimportResponse {
+    v1::StartApplicationReimportResponse {
+        operation: Some(application_reimport_operation_to_proto(result)),
+    }
+}
+
+/// Converts one protected reimport checkpoint after a page transition.
+pub fn apply_application_reimport_page_result_to_proto(
+    result: &ApplicationReimportOperationResultV1,
+) -> v1::ApplyApplicationReimportPageResponse {
+    v1::ApplyApplicationReimportPageResponse {
+        operation: Some(application_reimport_operation_to_proto(result)),
+    }
+}
+
+/// Converts one protected reimport status result.
+pub fn get_application_reimport_result_to_proto(
+    result: &GetApplicationReimportResultV1,
+) -> v1::GetApplicationReimportResponse {
+    let result = match result {
+        GetApplicationReimportResultV1::NotFound => {
+            v1::get_application_reimport_response::Result::NotFound(v1::Unit {})
+        }
+        GetApplicationReimportResultV1::Found(operation) => {
+            v1::get_application_reimport_response::Result::Found(
+                application_reimport_operation_to_proto(operation),
+            )
+        }
+    };
+    v1::GetApplicationReimportResponse {
+        result: Some(result),
+    }
+}
+
+/// Converts one protected reimport cancellation result.
+pub fn cancel_application_reimport_result_to_proto(
+    result: &GetApplicationReimportResultV1,
+) -> v1::CancelApplicationReimportResponse {
+    let result = match result {
+        GetApplicationReimportResultV1::NotFound => {
+            v1::cancel_application_reimport_response::Result::NotFound(v1::Unit {})
+        }
+        GetApplicationReimportResultV1::Found(operation) => {
+            v1::cancel_application_reimport_response::Result::Found(
+                application_reimport_operation_to_proto(operation),
+            )
+        }
+    };
+    v1::CancelApplicationReimportResponse {
+        result: Some(result),
+    }
+}
+
+fn application_reimport_operation_to_proto(
+    operation: &ApplicationReimportOperationResultV1,
+) -> v1::ApplicationReimportOperation {
+    let campaign = operation.campaign();
+    let source = campaign.source();
+    let scope = match campaign.scope() {
+        CapabilityApplicationReimportScopeV1::PrincipalFiltered => {
+            v1::CapabilityApplicationReimportScope::PrincipalFiltered
+        }
+        CapabilityApplicationReimportScopeV1::WholeApplication => {
+            v1::CapabilityApplicationReimportScope::WholeApplication
+        }
+    };
+    let phase = match campaign.phase() {
+        ApplicationReimportCampaignPhaseV1::Applying => v1::ApplicationReimportPhase::Applying,
+        ApplicationReimportCampaignPhaseV1::Reconciling => {
+            v1::ApplicationReimportPhase::Reconciling
+        }
+        ApplicationReimportCampaignPhaseV1::Reconciled => v1::ApplicationReimportPhase::Reconciled,
+        ApplicationReimportCampaignPhaseV1::Cancelled => v1::ApplicationReimportPhase::Cancelled,
+        ApplicationReimportCampaignPhaseV1::Failed => v1::ApplicationReimportPhase::Failed,
+    };
+    let failure = match campaign.failure() {
+        None => v1::ApplicationReimportFailure::Unspecified,
+        Some(ApplicationReimportFailureV1::AuthorityChanged) => {
+            v1::ApplicationReimportFailure::AuthorityChanged
+        }
+        Some(ApplicationReimportFailureV1::SourceMismatch) => {
+            v1::ApplicationReimportFailure::SourceMismatch
+        }
+        Some(ApplicationReimportFailureV1::CommandFailed) => {
+            v1::ApplicationReimportFailure::CommandFailed
+        }
+        Some(ApplicationReimportFailureV1::ObservationMismatch) => {
+            v1::ApplicationReimportFailure::ObservationMismatch
+        }
+        Some(ApplicationReimportFailureV1::Cancelled) => v1::ApplicationReimportFailure::Cancelled,
+    };
+    v1::ApplicationReimportOperation {
+        campaign_id: operation.campaign_id().as_bytes().to_vec(),
+        contract_lineage: operation.lineage().as_str().to_owned(),
+        scope: scope as i32,
+        portability_manifest_hash: source.portability_manifest_hash().as_bytes().to_vec(),
+        export_manifest_hash: source.export_manifest_hash().as_bytes().to_vec(),
+        export_receipt_hash: source.export_receipt_hash().as_bytes().to_vec(),
+        source_database_id: source.source_database_id().as_bytes().to_vec(),
+        target_database_id: source.target_database_id().as_bytes().to_vec(),
+        source_rows: source.rows(),
+        source_pages: u64::try_from(source.page_hashes().len()).unwrap_or(u64::MAX),
+        next_page: campaign.next_page().get(),
+        rows_applied: campaign.rows_applied(),
+        phase: phase as i32,
+        failure: failure as i32,
+        canonical_reimport_receipt_json: operation
+            .receipt()
+            .map_or_else(Vec::new, |receipt| receipt.canonical_bytes().to_vec()),
+        reimport_receipt_hash: operation
+            .receipt()
+            .map_or_else(Vec::new, |receipt| receipt.identity().as_bytes().to_vec()),
     }
 }
 

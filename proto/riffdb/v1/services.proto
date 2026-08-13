@@ -79,4 +79,8 @@ service AdminService {
   rpc GetApplicationExportPage(GetApplicationExportPageRequest) returns (GetApplicationExportPageResponse);
   rpc GetApplicationExport(GetApplicationExportRequest) returns (GetApplicationExportResponse);
   rpc CancelApplicationExport(CancelApplicationExportRequest) returns (CancelApplicationExportResponse);
+  rpc StartApplicationReimport(StartApplicationReimportRequest) returns (StartApplicationReimportResponse);
+  rpc ApplyApplicationReimportPage(ApplyApplicationReimportPageRequest) returns (ApplyApplicationReimportPageResponse);
+  rpc GetApplicationReimport(GetApplicationReimportRequest) returns (GetApplicationReimportResponse);
+  rpc CancelApplicationReimport(CancelApplicationReimportRequest) returns (CancelApplicationReimportResponse);
 }

@@ -21,8 +21,8 @@ use riffdb_proto::{
     PublicWireError, app::v1 as app_v1, application_error_to_proto, v1, validate_public_message,
 };
 use riffdb_service::{
-    ApplicationErrorContextBuilder, ApplicationExportApplication, ApplicationService,
-    BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
+    ApplicationErrorContextBuilder, ApplicationExportApplication, ApplicationReimportApplication,
+    ApplicationService, BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
     CommitSubscriptionEvent, ContractMigrationApplication, CreateCapabilityInvocation,
     CreateCapabilityResult, DeployContractResult, HealthContext, HealthRequest, HealthResult,
     LiveQuerySubscription, LiveQueryUpdate, MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage,
@@ -101,6 +101,14 @@ pub trait GrpcLifecycleRoute: Send + Sync {
         &self,
         _operation: GrpcApplicationExportOperation,
     ) -> Option<Arc<dyn ApplicationExportApplication>> {
+        None
+    }
+
+    /// Atomically admits one current-database compiler-owned reimport action.
+    fn admit_application_reimport(
+        &self,
+        _operation: GrpcApplicationReimportOperation,
+    ) -> Option<Arc<dyn ApplicationReimportApplication>> {
         None
     }
 
@@ -309,6 +317,19 @@ pub enum GrpcApplicationExportOperation {
     /// Observe one protected durable checkpoint or receipt.
     GetOperation,
     /// Close one nonterminal operation with an incomplete receipt.
+    Cancel,
+}
+
+/// Closed transport-local application-reimport admission registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GrpcApplicationReimportOperation {
+    /// Start or exactly resume one immutable source-bound campaign.
+    Start,
+    /// Apply one hash-bound canonical source page.
+    ApplyPage,
+    /// Observe one protected durable checkpoint or receipt.
+    GetOperation,
+    /// Close one nonterminal unpublished campaign.
     Cancel,
 }
 
@@ -746,6 +767,24 @@ impl GrpcApplication {
     > {
         let service = lifecycle
             .admit_application_export(operation)
+            .ok_or_else(service_not_ready)?;
+        let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+        Ok((service, security))
+    }
+
+    fn ready_application_reimport_admission(
+        &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
+        operation: GrpcApplicationReimportOperation,
+    ) -> Result<
+        (
+            Arc<dyn ApplicationReimportApplication>,
+            CheckedGrpcSecurityContext,
+        ),
+        Status,
+    > {
+        let service = lifecycle
+            .admit_application_reimport(operation)
             .ok_or_else(service_not_ready)?;
         let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
         Ok((service, security))
@@ -2618,6 +2657,94 @@ impl AdminService for GrpcApplication {
                 .await,
         )?;
         Ok(Response::new(cancel_application_export_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn start_application_reimport(
+        &self,
+        request: Request<v1::StartApplicationReimportRequest>,
+    ) -> Result<Response<v1::StartApplicationReimportResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_reimport_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationReimportOperation::Start,
+        )?;
+        let (request_id, request) = start_application_reimport_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .start_application_reimport(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(start_application_reimport_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn apply_application_reimport_page(
+        &self,
+        request: Request<v1::ApplyApplicationReimportPageRequest>,
+    ) -> Result<Response<v1::ApplyApplicationReimportPageResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_reimport_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationReimportOperation::ApplyPage,
+        )?;
+        let (request_id, request) = apply_application_reimport_page_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .apply_application_reimport_page(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(
+            apply_application_reimport_page_result_to_proto(&result),
+        ))
+    }
+
+    async fn get_application_reimport(
+        &self,
+        request: Request<v1::GetApplicationReimportRequest>,
+    ) -> Result<Response<v1::GetApplicationReimportResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_reimport_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationReimportOperation::GetOperation,
+        )?;
+        let (request_id, request) = get_application_reimport_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .get_application_reimport(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(get_application_reimport_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn cancel_application_reimport(
+        &self,
+        request: Request<v1::CancelApplicationReimportRequest>,
+    ) -> Result<Response<v1::CancelApplicationReimportResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_application_reimport_admission(
+            lifecycle.as_ref(),
+            GrpcApplicationReimportOperation::Cancel,
+        )?;
+        let (request_id, request) = cancel_application_reimport_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .cancel_application_reimport(context, request_id, request)
+                .await,
+        )?;
+        Ok(Response::new(cancel_application_reimport_result_to_proto(
             &result,
         )))
     }

@@ -190,6 +190,7 @@ impl fmt::Debug for ApplicationReimportOperationRequestV1 {
 /// Protected campaign observation and optional terminal reconciliation receipt.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationReimportOperationResultV1 {
+    campaign_id: ApplicationInstallationCampaignId,
     lineage: ContractLineage,
     campaign: ApplicationReimportCampaignV1,
     receipt: Option<ApplicationReimportReceipt>,
@@ -198,6 +199,7 @@ pub struct ApplicationReimportOperationResultV1 {
 impl ApplicationReimportOperationResultV1 {
     /// Checks that a receipt exists if and only if reconciliation succeeded.
     pub fn new(
+        campaign_id: ApplicationInstallationCampaignId,
         lineage: ContractLineage,
         campaign: ApplicationReimportCampaignV1,
         receipt: Option<ApplicationReimportReceipt>,
@@ -211,10 +213,17 @@ impl ApplicationReimportOperationResultV1 {
             return Err(ServiceDtoError::InvalidShape);
         }
         Ok(Self {
+            campaign_id,
             lineage,
             campaign,
             receipt,
         })
+    }
+
+    /// Caller-stable installation and reimport identity.
+    #[must_use]
+    pub const fn campaign_id(&self) -> ApplicationInstallationCampaignId {
+        self.campaign_id
     }
 
     /// Protected exact application lineage.

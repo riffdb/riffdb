@@ -832,3 +832,88 @@ message CancelApplicationExportResponse {
     ApplicationExportOperation found = 2;
   }
 }
+
+enum ApplicationReimportPhase {
+  APPLICATION_REIMPORT_PHASE_UNSPECIFIED = 0;
+  APPLICATION_REIMPORT_PHASE_APPLYING = 1;
+  APPLICATION_REIMPORT_PHASE_RECONCILING = 2;
+  APPLICATION_REIMPORT_PHASE_RECONCILED = 3;
+  APPLICATION_REIMPORT_PHASE_CANCELLED = 4;
+  APPLICATION_REIMPORT_PHASE_FAILED = 5;
+}
+
+enum ApplicationReimportFailure {
+  APPLICATION_REIMPORT_FAILURE_UNSPECIFIED = 0;
+  APPLICATION_REIMPORT_FAILURE_AUTHORITY_CHANGED = 1;
+  APPLICATION_REIMPORT_FAILURE_SOURCE_MISMATCH = 2;
+  APPLICATION_REIMPORT_FAILURE_COMMAND_FAILED = 3;
+  APPLICATION_REIMPORT_FAILURE_OBSERVATION_MISMATCH = 4;
+  APPLICATION_REIMPORT_FAILURE_CANCELLED = 5;
+}
+
+message ApplicationReimportOperation {
+  bytes campaign_id = 1;
+  string contract_lineage = 2;
+  CapabilityApplicationReimportScope scope = 3;
+  bytes portability_manifest_hash = 4;
+  bytes export_manifest_hash = 5;
+  bytes export_receipt_hash = 6;
+  bytes source_database_id = 7;
+  bytes target_database_id = 8;
+  uint64 source_rows = 9;
+  uint64 source_pages = 10;
+  uint64 next_page = 11;
+  uint64 rows_applied = 12;
+  ApplicationReimportPhase phase = 13;
+  ApplicationReimportFailure failure = 14;
+  bytes canonical_reimport_receipt_json = 15;
+  bytes reimport_receipt_hash = 16;
+}
+
+message StartApplicationReimportRequest {
+  bytes request_id = 1;
+  bytes campaign_id = 2;
+  string contract_lineage = 3;
+  CapabilityApplicationReimportScope scope = 4;
+  bytes canonical_portability_manifest_json = 5;
+  bytes canonical_export_manifest_json = 6;
+  bytes canonical_export_receipt_json = 7;
+}
+
+message StartApplicationReimportResponse {
+  ApplicationReimportOperation operation = 1;
+}
+
+message ApplyApplicationReimportPageRequest {
+  bytes request_id = 1;
+  bytes campaign_id = 2;
+  ApplicationExportPage page = 3;
+}
+
+message ApplyApplicationReimportPageResponse {
+  ApplicationReimportOperation operation = 1;
+}
+
+message GetApplicationReimportRequest {
+  bytes request_id = 1;
+  bytes campaign_id = 2;
+}
+
+message GetApplicationReimportResponse {
+  oneof result {
+    Unit not_found = 1;
+    ApplicationReimportOperation found = 2;
+  }
+}
+
+message CancelApplicationReimportRequest {
+  bytes request_id = 1;
+  bytes campaign_id = 2;
+}
+
+message CancelApplicationReimportResponse {
+  oneof result {
+    Unit not_found = 1;
+    ApplicationReimportOperation found = 2;
+  }
+}

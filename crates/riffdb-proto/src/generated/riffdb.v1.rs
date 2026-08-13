@@ -895,6 +895,121 @@ pub mod cancel_application_export_response {
         Found(super::ApplicationExportOperation),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationReimportOperation {
+    #[prost(bytes = "vec", tag = "1")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(enumeration = "CapabilityApplicationReimportScope", tag = "3")]
+    pub scope: i32,
+    #[prost(bytes = "vec", tag = "4")]
+    pub portability_manifest_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub export_manifest_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub export_receipt_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub source_database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub target_database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "9")]
+    pub source_rows: u64,
+    #[prost(uint64, tag = "10")]
+    pub source_pages: u64,
+    #[prost(uint64, tag = "11")]
+    pub next_page: u64,
+    #[prost(uint64, tag = "12")]
+    pub rows_applied: u64,
+    #[prost(enumeration = "ApplicationReimportPhase", tag = "13")]
+    pub phase: i32,
+    #[prost(enumeration = "ApplicationReimportFailure", tag = "14")]
+    pub failure: i32,
+    #[prost(bytes = "vec", tag = "15")]
+    pub canonical_reimport_receipt_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "16")]
+    pub reimport_receipt_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartApplicationReimportRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(enumeration = "CapabilityApplicationReimportScope", tag = "4")]
+    pub scope: i32,
+    #[prost(bytes = "vec", tag = "5")]
+    pub canonical_portability_manifest_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub canonical_export_manifest_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub canonical_export_receipt_json: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartApplicationReimportResponse {
+    #[prost(message, optional, tag = "1")]
+    pub operation: ::core::option::Option<ApplicationReimportOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplyApplicationReimportPageRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub page: ::core::option::Option<ApplicationExportPage>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplyApplicationReimportPageResponse {
+    #[prost(message, optional, tag = "1")]
+    pub operation: ::core::option::Option<ApplicationReimportOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationReimportRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetApplicationReimportResponse {
+    #[prost(oneof = "get_application_reimport_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<get_application_reimport_response::Result>,
+}
+/// Nested message and enum types in `GetApplicationReimportResponse`.
+pub mod get_application_reimport_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::ApplicationReimportOperation),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelApplicationReimportRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub campaign_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelApplicationReimportResponse {
+    #[prost(oneof = "cancel_application_reimport_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<cancel_application_reimport_response::Result>,
+}
+/// Nested message and enum types in `CancelApplicationReimportResponse`.
+pub mod cancel_application_reimport_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::ApplicationReimportOperation),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PreBootstrapLifecycle {
@@ -2364,6 +2479,88 @@ impl ApplicationExportStartDisposition {
                 Some(Self::AlreadyAccepted)
             }
             "APPLICATION_EXPORT_START_DISPOSITION_TERMINAL" => Some(Self::Terminal),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationReimportPhase {
+    Unspecified = 0,
+    Applying = 1,
+    Reconciling = 2,
+    Reconciled = 3,
+    Cancelled = 4,
+    Failed = 5,
+}
+impl ApplicationReimportPhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_REIMPORT_PHASE_UNSPECIFIED",
+            Self::Applying => "APPLICATION_REIMPORT_PHASE_APPLYING",
+            Self::Reconciling => "APPLICATION_REIMPORT_PHASE_RECONCILING",
+            Self::Reconciled => "APPLICATION_REIMPORT_PHASE_RECONCILED",
+            Self::Cancelled => "APPLICATION_REIMPORT_PHASE_CANCELLED",
+            Self::Failed => "APPLICATION_REIMPORT_PHASE_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_REIMPORT_PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_REIMPORT_PHASE_APPLYING" => Some(Self::Applying),
+            "APPLICATION_REIMPORT_PHASE_RECONCILING" => Some(Self::Reconciling),
+            "APPLICATION_REIMPORT_PHASE_RECONCILED" => Some(Self::Reconciled),
+            "APPLICATION_REIMPORT_PHASE_CANCELLED" => Some(Self::Cancelled),
+            "APPLICATION_REIMPORT_PHASE_FAILED" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationReimportFailure {
+    Unspecified = 0,
+    AuthorityChanged = 1,
+    SourceMismatch = 2,
+    CommandFailed = 3,
+    ObservationMismatch = 4,
+    Cancelled = 5,
+}
+impl ApplicationReimportFailure {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_REIMPORT_FAILURE_UNSPECIFIED",
+            Self::AuthorityChanged => "APPLICATION_REIMPORT_FAILURE_AUTHORITY_CHANGED",
+            Self::SourceMismatch => "APPLICATION_REIMPORT_FAILURE_SOURCE_MISMATCH",
+            Self::CommandFailed => "APPLICATION_REIMPORT_FAILURE_COMMAND_FAILED",
+            Self::ObservationMismatch => {
+                "APPLICATION_REIMPORT_FAILURE_OBSERVATION_MISMATCH"
+            }
+            Self::Cancelled => "APPLICATION_REIMPORT_FAILURE_CANCELLED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_REIMPORT_FAILURE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_REIMPORT_FAILURE_AUTHORITY_CHANGED" => {
+                Some(Self::AuthorityChanged)
+            }
+            "APPLICATION_REIMPORT_FAILURE_SOURCE_MISMATCH" => Some(Self::SourceMismatch),
+            "APPLICATION_REIMPORT_FAILURE_COMMAND_FAILED" => Some(Self::CommandFailed),
+            "APPLICATION_REIMPORT_FAILURE_OBSERVATION_MISMATCH" => {
+                Some(Self::ObservationMismatch)
+            }
+            "APPLICATION_REIMPORT_FAILURE_CANCELLED" => Some(Self::Cancelled),
             _ => None,
         }
     }

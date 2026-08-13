@@ -458,7 +458,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 61);
+    assert_eq!(methods.len(), 65);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -564,6 +564,10 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "GetApplicationExportPage",
             "GetApplicationExport",
             "CancelApplicationExport",
+            "StartApplicationReimport",
+            "ApplyApplicationReimportPage",
+            "GetApplicationReimport",
+            "CancelApplicationReimport",
         ]
     );
     assert_eq!(
@@ -669,6 +673,15 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "GetApplicationExportResponse",
         "CancelApplicationExportRequest",
         "CancelApplicationExportResponse",
+        "ApplicationReimportOperation",
+        "StartApplicationReimportRequest",
+        "StartApplicationReimportResponse",
+        "ApplyApplicationReimportPageRequest",
+        "ApplyApplicationReimportPageResponse",
+        "GetApplicationReimportRequest",
+        "GetApplicationReimportResponse",
+        "CancelApplicationReimportRequest",
+        "CancelApplicationReimportResponse",
         "ValidateContractRequest",
         "ValidateContractResponse",
         "EventFieldDescriptor",

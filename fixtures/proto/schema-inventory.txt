@@ -1417,6 +1417,29 @@ messages
     4 replayed optional uint64
   riffdb.v1.ApplicationInstallationSeedReceipts fields=1
     1 seeds repeated .riffdb.v1.ApplicationInstallationSeedReceipt
+  riffdb.v1.ApplicationReimportOperation fields=16
+    1 campaign_id optional bytes
+    2 contract_lineage optional string
+    3 scope optional .riffdb.v1.CapabilityApplicationReimportScope
+    4 portability_manifest_hash optional bytes
+    5 export_manifest_hash optional bytes
+    6 export_receipt_hash optional bytes
+    7 source_database_id optional bytes
+    8 target_database_id optional bytes
+    9 source_rows optional uint64
+    10 source_pages optional uint64
+    11 next_page optional uint64
+    12 rows_applied optional uint64
+    13 phase optional .riffdb.v1.ApplicationReimportPhase
+    14 failure optional .riffdb.v1.ApplicationReimportFailure
+    15 canonical_reimport_receipt_json optional bytes
+    16 reimport_receipt_hash optional bytes
+  riffdb.v1.ApplyApplicationReimportPageRequest fields=3
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+    3 page optional .riffdb.v1.ApplicationExportPage
+  riffdb.v1.ApplyApplicationReimportPageResponse fields=1
+    1 operation optional .riffdb.v1.ApplicationReimportOperation
   riffdb.v1.ApplyContractMigrationRequest fields=6
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -1461,6 +1484,12 @@ messages
   riffdb.v1.CancelApplicationExportResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.ApplicationExportOperation oneof=result
+  riffdb.v1.CancelApplicationReimportRequest fields=2
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+  riffdb.v1.CancelApplicationReimportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationReimportOperation oneof=result
   riffdb.v1.CapabilityApplicationExportGrant fields=6
     1 contract_lineage optional string
     2 scope optional .riffdb.v1.CapabilityApplicationExportScope
@@ -1988,6 +2017,12 @@ messages
   riffdb.v1.GetApplicationInstallationResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.StartApplicationInstallationResponse oneof=result
+  riffdb.v1.GetApplicationReimportRequest fields=2
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+  riffdb.v1.GetApplicationReimportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationReimportOperation oneof=result
   riffdb.v1.GetCommitRequest fields=3
     1 request_id optional bytes
     2 commit_sequence optional uint64
@@ -2433,6 +2468,16 @@ messages
   riffdb.v1.StartApplicationInstallationResponse fields=2
     1 observation optional .riffdb.v1.ApplicationInstallationObservation
     2 canonical_receipt optional bytes
+  riffdb.v1.StartApplicationReimportRequest fields=7
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+    3 contract_lineage optional string
+    4 scope optional .riffdb.v1.CapabilityApplicationReimportScope
+    5 canonical_portability_manifest_json optional bytes
+    6 canonical_export_manifest_json optional bytes
+    7 canonical_export_receipt_json optional bytes
+  riffdb.v1.StartApplicationReimportResponse fields=1
+    1 operation optional .riffdb.v1.ApplicationReimportOperation
   riffdb.v1.StatsRequest fields=1
     1 request_id optional bytes
   riffdb.v1.StatsResponse fields=6
@@ -2939,6 +2984,20 @@ enums
     9 APPLICATION_INSTALLATION_STAGE_SEEDS
     10 APPLICATION_INSTALLATION_STAGE_RECEIPT
     11 APPLICATION_INSTALLATION_STAGE_REIMPORT
+  riffdb.v1.ApplicationReimportFailure values=6
+    0 APPLICATION_REIMPORT_FAILURE_UNSPECIFIED
+    1 APPLICATION_REIMPORT_FAILURE_AUTHORITY_CHANGED
+    2 APPLICATION_REIMPORT_FAILURE_SOURCE_MISMATCH
+    3 APPLICATION_REIMPORT_FAILURE_COMMAND_FAILED
+    4 APPLICATION_REIMPORT_FAILURE_OBSERVATION_MISMATCH
+    5 APPLICATION_REIMPORT_FAILURE_CANCELLED
+  riffdb.v1.ApplicationReimportPhase values=6
+    0 APPLICATION_REIMPORT_PHASE_UNSPECIFIED
+    1 APPLICATION_REIMPORT_PHASE_APPLYING
+    2 APPLICATION_REIMPORT_PHASE_RECONCILING
+    3 APPLICATION_REIMPORT_PHASE_RECONCILED
+    4 APPLICATION_REIMPORT_PHASE_CANCELLED
+    5 APPLICATION_REIMPORT_PHASE_FAILED
   riffdb.v1.CapabilityApplicationExportScope values=3
     0 CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED
     1 CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED
@@ -3296,6 +3355,10 @@ services
     GetApplicationExportPage .riffdb.v1.GetApplicationExportPageRequest -> .riffdb.v1.GetApplicationExportPageResponse (unary)
     GetApplicationExport .riffdb.v1.GetApplicationExportRequest -> .riffdb.v1.GetApplicationExportResponse (unary)
     CancelApplicationExport .riffdb.v1.CancelApplicationExportRequest -> .riffdb.v1.CancelApplicationExportResponse (unary)
+    StartApplicationReimport .riffdb.v1.StartApplicationReimportRequest -> .riffdb.v1.StartApplicationReimportResponse (unary)
+    ApplyApplicationReimportPage .riffdb.v1.ApplyApplicationReimportPageRequest -> .riffdb.v1.ApplyApplicationReimportPageResponse (unary)
+    GetApplicationReimport .riffdb.v1.GetApplicationReimportRequest -> .riffdb.v1.GetApplicationReimportResponse (unary)
+    CancelApplicationReimport .riffdb.v1.CancelApplicationReimportRequest -> .riffdb.v1.CancelApplicationReimportResponse (unary)
   riffdb.v1.CommandService
     Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
     ExecuteBatch .riffdb.v1.ExecuteCommandBatchRequest -> .riffdb.v1.ExecuteCommandBatchResponse (unary)
