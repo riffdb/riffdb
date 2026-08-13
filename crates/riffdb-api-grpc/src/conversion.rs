@@ -4412,6 +4412,7 @@ const fn application_installation_stage_to_proto(
         InstallationStage::QueryModules => v1::ApplicationInstallationStage::QueryModules,
         InstallationStage::ReactiveModules => v1::ApplicationInstallationStage::ReactiveModules,
         InstallationStage::Roles => v1::ApplicationInstallationStage::Roles,
+        InstallationStage::Reimport => v1::ApplicationInstallationStage::Reimport,
         InstallationStage::Credentials => v1::ApplicationInstallationStage::Credentials,
         InstallationStage::DriverProof => v1::ApplicationInstallationStage::DriverProof,
         InstallationStage::Seeds => v1::ApplicationInstallationStage::Seeds,
@@ -4434,6 +4435,9 @@ const fn application_installation_failure_to_proto(
         }
         InstallationFailureCode::RoleWideningApprovalRequired => {
             v1::ApplicationInstallationFailureCode::RoleWideningApprovalRequired
+        }
+        InstallationFailureCode::ReimportPartial => {
+            v1::ApplicationInstallationFailureCode::ReimportPartial
         }
         InstallationFailureCode::CredentialDestinationOccupied => {
             v1::ApplicationInstallationFailureCode::CredentialDestinationOccupied
@@ -4472,6 +4476,9 @@ const fn application_installation_next_action_to_proto(
         }
         InstallationNextAction::ReconcileRoles => {
             v1::ApplicationInstallationNextAction::ReconcileRoles
+        }
+        InstallationNextAction::ReimportApplication => {
+            v1::ApplicationInstallationNextAction::ReimportApplication
         }
         InstallationNextAction::RotateCredentials => {
             v1::ApplicationInstallationNextAction::RotateCredentials

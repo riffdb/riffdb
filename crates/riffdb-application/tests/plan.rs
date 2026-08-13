@@ -3,14 +3,15 @@
 use riffdb_application::{
     ApplicationInstallationPlan, ApplicationInstallationPlanInput, CredentialDestination,
     InstallationArtifact, InstallationArtifactKind, InstallationContract, InstallationDriver,
-    InstallationFeature, InstallationMigration, InstallationPlanErrorKind, InstallationRole,
-    InstallationSeed, InstallationSymbol, InstallationTarget, RoleOperation, RoleOperationKind,
-    RoleWideningApproval,
+    InstallationFeature, InstallationMigration, InstallationPlanErrorKind, InstallationReimport,
+    InstallationRole, InstallationSeed, InstallationSymbol, InstallationTarget, RoleOperation,
+    RoleOperationKind, RoleWideningApproval,
 };
 use riffdb_types::{
-    ApplicationLockHash, ApplicationManifestHash, ApplicationRoleHash, ApplicationSourceHash,
-    CapabilityId, ContractBundleHash, ContractLineage, ContractVersion, DatabaseAlias, Environment,
-    GeneratedArtifactHash, MigrationBundleHash,
+    ApplicationExportManifestHash, ApplicationExportReceiptHash, ApplicationLockHash,
+    ApplicationManifestHash, ApplicationPortabilityManifestHash, ApplicationRoleHash,
+    ApplicationSourceHash, CapabilityId, ContractBundleHash, ContractLineage, ContractVersion,
+    DatabaseAlias, Environment, GeneratedArtifactHash, MigrationBundleHash,
 };
 
 fn hash32(byte: u8) -> [u8; 32] {
@@ -76,6 +77,7 @@ fn base_input() -> ApplicationInstallationPlanInput {
         ],
         migration: None,
         roles: vec![role],
+        reimport: None,
         credential_destinations: vec![
             CredentialDestination::new(
                 symbol("app-runtime"),
@@ -126,6 +128,40 @@ fn plan_is_order_independent_content_addressed_and_strictly_decodable() {
             .expect_err("noncanonical bytes")
             .kind(),
         InstallationPlanErrorKind::NonCanonical
+    );
+}
+
+#[test]
+fn reimport_plan_rotates_to_v2_and_binds_all_source_authority() {
+    let mut input = base_input();
+    input.reimport = Some(InstallationReimport::new(
+        ApplicationExportManifestHash::from_bytes(hash32(40)),
+        ApplicationExportReceiptHash::from_bytes(hash32(41)),
+        ApplicationPortabilityManifestHash::from_bytes(hash32(42)),
+    ));
+    let plan = ApplicationInstallationPlan::compile(input).expect("reimport plan");
+    let json = std::str::from_utf8(plan.canonical_bytes()).expect("UTF-8");
+    assert!(json.contains("riffdb.application-installation-plan/v2"));
+    assert!(json.contains(&"28".repeat(32)));
+    assert!(json.contains(&"29".repeat(32)));
+    assert!(json.contains(&"2a".repeat(32)));
+    assert_eq!(
+        ApplicationInstallationPlan::decode_canonical(plan.canonical_bytes())
+            .expect("canonical v2 plan"),
+        plan
+    );
+
+    let mut value =
+        serde_json::from_slice::<serde_json::Value>(plan.canonical_bytes()).expect("plan JSON");
+    value["schema"] =
+        serde_json::Value::String("riffdb.application-installation-plan/v1".to_owned());
+    assert_eq!(
+        ApplicationInstallationPlan::decode_canonical(
+            &serde_json::to_vec(&value).expect("tampered plan")
+        )
+        .expect_err("v1 cannot carry reimport authority")
+        .kind(),
+        InstallationPlanErrorKind::InvalidShape
     );
 }
 

@@ -1843,6 +1843,7 @@ pub enum ApplicationInstallationStage {
     DriverProof = 8,
     Seeds = 9,
     Receipt = 10,
+    Reimport = 11,
 }
 impl ApplicationInstallationStage {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1862,6 +1863,7 @@ impl ApplicationInstallationStage {
             Self::DriverProof => "APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF",
             Self::Seeds => "APPLICATION_INSTALLATION_STAGE_SEEDS",
             Self::Receipt => "APPLICATION_INSTALLATION_STAGE_RECEIPT",
+            Self::Reimport => "APPLICATION_INSTALLATION_STAGE_REIMPORT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1880,6 +1882,7 @@ impl ApplicationInstallationStage {
             "APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF" => Some(Self::DriverProof),
             "APPLICATION_INSTALLATION_STAGE_SEEDS" => Some(Self::Seeds),
             "APPLICATION_INSTALLATION_STAGE_RECEIPT" => Some(Self::Receipt),
+            "APPLICATION_INSTALLATION_STAGE_REIMPORT" => Some(Self::Reimport),
             _ => None,
         }
     }
@@ -1929,6 +1932,7 @@ pub enum ApplicationInstallationFailureCode {
     SeedPartial = 7,
     AuthorizationDenied = 8,
     ServiceUnavailable = 9,
+    ReimportPartial = 10,
 }
 impl ApplicationInstallationFailureCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1962,6 +1966,9 @@ impl ApplicationInstallationFailureCode {
             }
             Self::ServiceUnavailable => {
                 "APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE"
+            }
+            Self::ReimportPartial => {
+                "APPLICATION_INSTALLATION_FAILURE_CODE_REIMPORT_PARTIAL"
             }
         }
     }
@@ -1998,6 +2005,9 @@ impl ApplicationInstallationFailureCode {
             "APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE" => {
                 Some(Self::ServiceUnavailable)
             }
+            "APPLICATION_INSTALLATION_FAILURE_CODE_REIMPORT_PARTIAL" => {
+                Some(Self::ReimportPartial)
+            }
             _ => None,
         }
     }
@@ -2017,6 +2027,7 @@ pub enum ApplicationInstallationNextAction {
     RunSeeds = 9,
     SealReceipt = 10,
     None = 11,
+    ReimportApplication = 12,
 }
 impl ApplicationInstallationNextAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2051,6 +2062,9 @@ impl ApplicationInstallationNextAction {
             Self::RunSeeds => "APPLICATION_INSTALLATION_NEXT_ACTION_RUN_SEEDS",
             Self::SealReceipt => "APPLICATION_INSTALLATION_NEXT_ACTION_SEAL_RECEIPT",
             Self::None => "APPLICATION_INSTALLATION_NEXT_ACTION_NONE",
+            Self::ReimportApplication => {
+                "APPLICATION_INSTALLATION_NEXT_ACTION_REIMPORT_APPLICATION"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2086,6 +2100,9 @@ impl ApplicationInstallationNextAction {
                 Some(Self::SealReceipt)
             }
             "APPLICATION_INSTALLATION_NEXT_ACTION_NONE" => Some(Self::None),
+            "APPLICATION_INSTALLATION_NEXT_ACTION_REIMPORT_APPLICATION" => {
+                Some(Self::ReimportApplication)
+            }
             _ => None,
         }
     }

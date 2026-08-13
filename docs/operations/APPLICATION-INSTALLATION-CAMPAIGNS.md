@@ -12,8 +12,11 @@ next safe action; only a sealed receipt is installation success.
 
 ## Start or resume
 
-The plan must be canonical `riffdb.application-installation-plan/v1` bytes and
-the campaign ID must be a caller-retained UUIDv7:
+The plan must be canonical installation-plan bytes and the campaign ID must be
+a caller-retained UUIDv7. Ordinary installations continue to use
+`riffdb.application-installation-plan/v1`. A portability reimport uses v2,
+which additionally binds the exact export manifest, completed export receipt,
+and portability manifest hashes:
 
 ```bash
 riffdb --config operator.toml application install \
@@ -98,6 +101,14 @@ plan. Any mismatch fails locally and makes no remote application mutation. The
 campaign is resumed immediately before deployment so conflicting remote state
 also stops the invocation before the existing deploy executor runs.
 
+Campaign stage order is preflight, contract, migration, query modules,
+reactive modules, roles, reimport, credentials, driver proof, seeds, and the
+terminal receipt. A v1 plan records `reimport_not_required` at the reimport
+stage. A v2 reimport plan stops there until the server's reimport coordinator
+has verified the exact plan-bound source documents and published a completed
+reimport receipt. Caller-supplied stage evidence cannot skip that boundary, and
+credentials are not published while reimport is incomplete.
+
 The reviewed successor capability ID comes from the plan's credential
 destination. The deployer never substitutes a freshly generated capability ID
 for a plan-bound install or rotation. Existing local deployment state must be
@@ -149,7 +160,10 @@ manifest digest, the installed terminal state, and exact migration and backup
 receipt references when a migration was required. It never includes bearer
 credentials, seed values, host paths, or hidden schema. Accepted v1 receipts
 and campaign states remain readable; resuming one preserves its original
-receipt identity instead of silently rotating it.
+receipt identity instead of silently rotating it. New campaign checkpoints use
+v2 so the reimport stage is represented explicitly; decoding a retained v1
+campaign inserts only the closed `reimport_not_required` evidence appropriate
+to its v1 plan.
 
 ## Adapter conformance manifests
 
@@ -214,6 +228,13 @@ records. Exact already-completed remote work advances durably; absent work
 remains a symbolic next action, and conflicting identity becomes a typed
 partial campaign. This makes resuming existing deployment operations safe
 without accepting caller-asserted remote identities.
+
+The current implementation recognizes and retains a plan-bound reimport stage,
+but the public reimport coordinator is not yet available. Consequently a v2
+reimport campaign remains safely stopped at `reimport` and reports the
+`reimport_application` next action; it cannot advance to credential
+publication. This is an intentional intermediate WP-599 boundary, not a manual
+attestation surface.
 
 The CLI and Rust operator SDK can resume the exact current `driver_proof` stage with
 `StartApplicationInstallation::with_driver_proof` and the exact current

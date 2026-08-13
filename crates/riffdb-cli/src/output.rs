@@ -2484,6 +2484,7 @@ fn installation_stage(value: i32) -> Option<&'static str> {
         v1::ApplicationInstallationStage::QueryModules => Some("query_modules"),
         v1::ApplicationInstallationStage::ReactiveModules => Some("reactive_modules"),
         v1::ApplicationInstallationStage::Roles => Some("roles"),
+        v1::ApplicationInstallationStage::Reimport => Some("reimport"),
         v1::ApplicationInstallationStage::Credentials => Some("credentials"),
         v1::ApplicationInstallationStage::DriverProof => Some("driver_proof"),
         v1::ApplicationInstallationStage::Seeds => Some("seeds"),
@@ -2515,6 +2516,7 @@ fn installation_failure_code(value: i32) -> Option<&'static str> {
         v1::ApplicationInstallationFailureCode::RoleWideningApprovalRequired => {
             Some("role_widening_approval_required")
         }
+        v1::ApplicationInstallationFailureCode::ReimportPartial => Some("reimport_partial"),
         v1::ApplicationInstallationFailureCode::CredentialDestinationOccupied => {
             Some("credential_destination_occupied")
         }
@@ -2538,6 +2540,7 @@ fn installation_next_action(value: i32) -> Option<&'static str> {
             Some("deploy_reactive_modules")
         }
         v1::ApplicationInstallationNextAction::ReconcileRoles => Some("reconcile_roles"),
+        v1::ApplicationInstallationNextAction::ReimportApplication => Some("reimport_application"),
         v1::ApplicationInstallationNextAction::RotateCredentials => Some("rotate_credentials"),
         v1::ApplicationInstallationNextAction::ProveDrivers => Some("prove_drivers"),
         v1::ApplicationInstallationNextAction::RunSeeds => Some("run_seeds"),

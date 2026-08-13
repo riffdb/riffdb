@@ -7,7 +7,8 @@ use riffdb_application::{
     ApplicationInstallationPlan, ApplicationInstallationReceipt, InstallationArtifactKind,
     InstallationCampaignErrorKind, InstallationCampaignPhase, InstallationDriver,
     InstallationFailureCode, InstallationNextAction, InstallationStage, InstallationStageEvidence,
-    InstalledCredentialEvidence, InstalledRoleEvidence, InstalledSeedEvidence,
+    InstalledCredentialEvidence, InstalledReimportEvidence, InstalledRoleEvidence,
+    InstalledSeedEvidence,
 };
 use riffdb_types::{ApplicationInstallationCampaignId, RequestId};
 
@@ -140,6 +141,7 @@ fn every_controller_stage_survives_a_durable_resume_before_the_next_action() {
                 .map(|role| InstalledRoleEvidence::new(role.name().clone(), role.role_hash()))
                 .collect(),
         ),
+        InstallationStageEvidence::Reimport(InstalledReimportEvidence::NotRequired),
         InstallationStageEvidence::Credentials(
             input
                 .credential_destinations
@@ -177,6 +179,7 @@ fn every_controller_stage_survives_a_durable_resume_before_the_next_action() {
         Some(InstallationStage::QueryModules),
         Some(InstallationStage::ReactiveModules),
         Some(InstallationStage::Roles),
+        Some(InstallationStage::Reimport),
         Some(InstallationStage::Credentials),
         Some(InstallationStage::DriverProof),
         Some(InstallationStage::Seeds),
