@@ -246,11 +246,12 @@ async function runIteration(
     operationStarted = performance.now();
     const item = batch.items[0];
     if (item !== undefined) {
+      const reactionIdentity = item.delivery.eventId;
       await agent.reactive.reactComment(eventParameters, triageConsumer, item, {
         body: "typescript contextual endurance reaction", author_id: item.delivery.event.reporter_id,
         ticket_id: item.delivery.event.ticket_id,
-        comment_id: id(namespace, 20_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
-        idempotency_key: `endurance-typescript-reaction-${index}-${counter}`, organization_id: organizationId,
+        comment_id: item.delivery.event.ticket_id,
+        idempotency_key: `endurance-typescript-reaction-${reactionIdentity}`, organization_id: organizationId,
       });
       await metrics.record("workflows", tenant, 512, operationStarted);
       operationStarted = performance.now();

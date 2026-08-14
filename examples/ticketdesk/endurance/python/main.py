@@ -335,6 +335,7 @@ async def run_iteration(
         await metrics.record("workflows", tenant, 0, operation_started)
         operation_started = time.perf_counter_ns()
         if item is not None:
+            reaction_identity = item.event_id
             await clients.agent.react_comment(
                 triage_parameters,
                 triage_consumer,
@@ -343,10 +344,8 @@ async def run_iteration(
                     body="python contextual endurance reaction",
                     author_id=item.event.reporter_id,
                     ticket_id=item.event.ticket_id,
-                    comment_id=riff_id(
-                        namespace, 20_000 + client_index * 1_000_000 + counter
-                    ),
-                    idempotency_key=f"endurance-python-reaction-{client_index}-{counter}",
+                    comment_id=item.event.ticket_id,
+                    idempotency_key=f"endurance-python-reaction-{reaction_identity}",
                     organization_id=organization_id,
                 ),
             )
