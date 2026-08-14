@@ -42,3 +42,26 @@ fn local_request_inventory_stays_closed() {
         );
     }
 }
+
+#[test]
+fn established_local_sessions_are_long_lived_and_bounded_by_admission_not_idle_time() {
+    let source = fs::read_to_string(format!("{}/src/socket.rs", env!("CARGO_MANIFEST_DIR")))
+        .expect("socket source");
+    assert_eq!(
+        source
+            .matches("tokio::time::timeout(HANDSHAKE_TIMEOUT")
+            .count(),
+        1,
+        "only an unauthenticated pre-handshake peer may be timed out"
+    );
+    assert!(
+        source.contains(
+            "request=FrameCodec::read_request(&mut reader)=>match request{Ok(request)=>request,Err(_)=>break}"
+        ),
+        "an authenticated generated client must remain attached across arbitrarily quiet role intervals"
+    );
+    assert!(
+        !source.contains("IDLE_CONNECTION_TIMEOUT"),
+        "the bounded connection inventory replaces an established-session idle timeout"
+    );
+}

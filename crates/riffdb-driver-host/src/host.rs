@@ -75,7 +75,7 @@ impl DriverPool {
     }
 
     #[cfg(test)]
-    fn from_clients(
+    pub(crate) fn from_clients(
         clients: Vec<StableApplicationClient>,
         capacity: usize,
     ) -> Result<Self, DriverHostError> {

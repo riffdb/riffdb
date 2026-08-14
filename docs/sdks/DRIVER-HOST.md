@@ -88,10 +88,14 @@ checkpoint. Each item remains an ordinary command with its own durable outcome
 and error. The batch is not one atomic transaction and cannot submit arbitrary
 writes.
 
-Pool connections, HTTP/2 stream admission, per-connection local operations,
-response queues, frame sizes, and idle time are bounded. Saturation returns the
-typed `RDB-CAPACITY-0101` result rather than creating an unbounded queue. An
-idle local connection is closed after five minutes and can re-handshake.
+Pool connections, HTTP/2 stream admission, local connection count,
+per-connection operations, response queues, and frame sizes are bounded.
+Saturation returns the typed `RDB-CAPACITY-0101` result rather than creating an
+unbounded queue. A peer has five minutes to complete its initial handshake.
+After an exact handshake succeeds, the session remains attached until the
+caller closes it or the host drains. This matters for generated applications
+whose least-authority role sessions may legitimately remain quiet for more than
+five minutes; the 256-connection host ceiling bounds that retained resource.
 
 ## Cancellation and uncertainty
 
