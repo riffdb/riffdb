@@ -34,7 +34,7 @@ use riffdb_storage_api::{
         encode_validated_prefix_checkpoint_v2,
     },
 };
-use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, EntityVersion, EventId};
+use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, EventId};
 
 use crate::codec;
 use crate::command_authority::command_authority_head;
@@ -44,6 +44,7 @@ use crate::keys;
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
     IDEMPOTENCY, META, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
+    VALIDATED_PREFIX_ENTITY_HEADS,
 };
 use crate::store::SharedRedb;
 
@@ -62,9 +63,10 @@ pub(crate) struct ActiveCheckpoint {
     /// administration history from sequence one.
     pub retained: ValidatedPrefixRetainedSnapshot,
     pub counts: ValidatedPrefixSequenceCounts,
-    /// Fingerprint-verified `(target, version)` map at S; consumed once to seed
-    /// suffix entity-chain advancement (`None` after consumption).
-    pub entities_at_s: Option<std::collections::BTreeMap<EntityTarget, EntityVersion>>,
+    /// Fingerprint-verified exact entity-chain heads at S; consumed once to
+    /// seed suffix entity-chain advancement (`None` after consumption).
+    pub entity_heads_at_s:
+        Option<std::collections::BTreeMap<EntityTarget, riffdb_storage_api::EntityChainHeadV1>>,
     pub checkpoint_hash: [u8; 32],
 }
 
@@ -185,6 +187,7 @@ pub(crate) fn write_validated_prefix_checkpoint(
     write
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    replace_checkpoint_entity_heads(&write, &checkpoint)?;
     {
         let mut meta = write.open_table(META).map_err(table_error)?;
         meta.insert(META_VALIDATED_PREFIX_CHECKPOINT, encoded.as_bytes())
@@ -195,15 +198,84 @@ pub(crate) fn write_validated_prefix_checkpoint(
     shared.after_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
 }
 
+/// Replaces the exact at-S entity-head snapshot in the same transaction that
+/// publishes the checkpoint binding it. The copied rows are decoded and
+/// re-proved against the checkpoint before the meta row can become visible.
+fn replace_checkpoint_entity_heads(
+    transaction: &redb::WriteTransaction,
+    checkpoint: &StoredValidatedPrefixCheckpointV2,
+) -> Result<(), StorageError> {
+    let source = transaction
+        .open_table(ENTITY_CHAIN_HEADS)
+        .map_err(table_error)?;
+    let mut snapshot = transaction
+        .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+        .map_err(table_error)?;
+
+    snapshot
+        .retain(|_, _| false)
+        .map_err(precommit_storage_error)?;
+
+    let mut heads = Vec::new();
+    let mut live_entity_count = 0_u64;
+    let mut deleted_entity_count = 0_u64;
+    let mut entity_transition_count = 0_u64;
+    for row in source.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        let decoded = riffdb_storage_api::decode_entity_chain_head_v1(value.value())
+            .map_err(crate::error::codec_error)?;
+        let head = decoded.value();
+        if head.target().key().as_bytes() != key.value() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        entity_transition_count = entity_transition_count
+            .checked_add(head.chain_revision())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        match head.state() {
+            riffdb_storage_api::EntityChainStateV1::Live { .. } => {
+                live_entity_count = live_entity_count
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            riffdb_storage_api::EntityChainStateV1::Deleted => {
+                deleted_entity_count = deleted_entity_count
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            riffdb_storage_api::EntityChainStateV1::NeverExisted => {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+        }
+        heads.push(decoded.into_parts().0);
+        snapshot
+            .insert(key.value(), value.value())
+            .map_err(precommit_storage_error)?;
+    }
+    let counts = ValidatedPrefixEntityTransitionCounts {
+        live_entity_count,
+        deleted_entity_count,
+        entity_transition_count,
+    };
+    heads.sort_by(|left, right| left.target().cmp(right.target()));
+    let fingerprint = EntityTransitionFingerprint::from_sorted_heads(heads.iter())
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    if counts != checkpoint.entity_counts()
+        || fingerprint != checkpoint.entity_transition_fingerprint()
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    Ok(())
+}
+
 /// Builds one checkpoint from an immutable snapshot.
 ///
 /// `rows_walked` accumulates every history row the COUNT classes iterate, so a
 /// test can pin that the production path touches none of them
 /// (`the_shutdown_checkpoint_write_iterates_no_history_rows`). The ENTITIES pass
 /// behind the entity-chain fingerprint is deliberately not tallied there: it is
-/// current-state, not history, it is bounded by the live entity set rather than
-/// by history length, and it is the same pass every open already performs to
-/// verify a checkpoint's fingerprint.
+/// current-state, not history, and is bounded by the live entity set rather than
+/// by history length. The checkpoint write also snapshots exact chain heads in
+/// the same transaction that publishes this proof.
 pub(crate) fn build_checkpoint_from_snapshot(
     transaction: &ReadTransaction,
     retained: &riffdb_storage_api::RetainedMetadataV1,
@@ -329,6 +401,7 @@ fn entity_transition_proof(
     if entities.len().map_err(precommit_storage_error)? != live_entity_count {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
+    heads.sort_by(|left, right| left.target().cmp(right.target()));
     let fingerprint = EntityTransitionFingerprint::from_sorted_heads(heads.iter())
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     Ok((
@@ -565,36 +638,92 @@ pub(crate) fn load_active_checkpoint(
     {
         return Err(CheckpointIgnoreReason::CountImpossible);
     }
-    let (entity_counts, entity_transition_fingerprint) = entity_transition_proof(transaction)
-        .map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?;
-    if entity_counts != checkpoint_v2.entity_counts()
-        || entity_transition_fingerprint != checkpoint_v2.entity_transition_fingerprint()
-    {
-        return Err(CheckpointIgnoreReason::EntityChainMismatch);
-    }
-    // Entity-chain fingerprint must match the reconstructed-at-S map from current
-    // ENTITIES adjusted by suffix. Mismatch → full validation. Contract-migration
-    // version jumps between write and open also land here (reconstruction cannot
-    // see migration bumps): the fallback is counted so migrated databases lose
-    // the fast path visibly, never silently.
-    let entities_at_s =
-        match reconstruct_entities_at_s(transaction, checkpoint.checkpoint_commit_sequence()) {
-            Ok(map) => map,
-            Err(_) => return Err(CheckpointIgnoreReason::EntityChainMismatch),
-        };
-    let fingerprint =
-        EntityChainFingerprint::from_sorted_pairs(entities_at_s.iter().map(|(t, v)| (t, *v)));
-    if fingerprint != checkpoint.entity_chain_fingerprint() {
-        return Err(CheckpointIgnoreReason::EntityChainMismatch);
-    }
+    // The V2 proof is anchored at S, not at the current head. Comparing the
+    // checkpoint fingerprint directly to current ENTITY_CHAIN_HEADS would
+    // invalidate every legitimate post-checkpoint write. Load the atomically
+    // published at-S snapshot instead; the startup entity-chain pass advances
+    // these exact heads through (S, head] and then compares them to current
+    // authoritative heads and entity presence.
+    let entity_heads_at_s = load_checkpoint_entity_heads(transaction, &checkpoint_v2)?;
     Ok(ActiveCheckpoint {
         checkpoint_commit_sequence: checkpoint.checkpoint_commit_sequence(),
         audit_sequence_bound: checkpoint.audit_sequence_bound(),
         retained: checkpoint.retained(),
         counts,
-        entities_at_s: Some(entities_at_s),
+        entity_heads_at_s: Some(entity_heads_at_s),
         checkpoint_hash: *checkpoint.checkpoint_hash().as_bytes(),
     })
+}
+
+fn load_checkpoint_entity_heads(
+    transaction: &ReadTransaction,
+    checkpoint: &StoredValidatedPrefixCheckpointV2,
+) -> Result<
+    std::collections::BTreeMap<EntityTarget, riffdb_storage_api::EntityChainHeadV1>,
+    CheckpointIgnoreReason,
+> {
+    let table = transaction
+        .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+        .map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?;
+    let mut heads = std::collections::BTreeMap::new();
+    let mut live_pairs = Vec::new();
+    let mut live_entity_count = 0_u64;
+    let mut deleted_entity_count = 0_u64;
+    let mut entity_transition_count = 0_u64;
+    for row in table
+        .iter()
+        .map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?
+    {
+        let (key, value) = row.map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?;
+        let decoded = riffdb_storage_api::decode_entity_chain_head_v1(value.value())
+            .map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?;
+        let head = decoded.into_parts().0;
+        if head.target().key().as_bytes() != key.value() {
+            return Err(CheckpointIgnoreReason::EntityChainMismatch);
+        }
+        entity_transition_count = entity_transition_count
+            .checked_add(head.chain_revision())
+            .ok_or(CheckpointIgnoreReason::EntityChainMismatch)?;
+        match head.state() {
+            riffdb_storage_api::EntityChainStateV1::Live { version, .. } => {
+                live_entity_count = live_entity_count
+                    .checked_add(1)
+                    .ok_or(CheckpointIgnoreReason::EntityChainMismatch)?;
+                live_pairs.push((head.target().clone(), version));
+            }
+            riffdb_storage_api::EntityChainStateV1::Deleted => {
+                deleted_entity_count = deleted_entity_count
+                    .checked_add(1)
+                    .ok_or(CheckpointIgnoreReason::EntityChainMismatch)?;
+            }
+            riffdb_storage_api::EntityChainStateV1::NeverExisted => {
+                return Err(CheckpointIgnoreReason::EntityChainMismatch);
+            }
+        }
+        if heads.insert(head.target().clone(), head).is_some() {
+            return Err(CheckpointIgnoreReason::EntityChainMismatch);
+        }
+    }
+    let counts = ValidatedPrefixEntityTransitionCounts {
+        live_entity_count,
+        deleted_entity_count,
+        entity_transition_count,
+    };
+    let transition_fingerprint = EntityTransitionFingerprint::from_sorted_heads(heads.values())
+        .map_err(|_| CheckpointIgnoreReason::EntityChainMismatch)?;
+    live_pairs.sort_by(|left, right| left.0.cmp(&right.0));
+    let live_fingerprint = EntityChainFingerprint::from_sorted_pairs(
+        live_pairs
+            .iter()
+            .map(|(target, version)| (target, *version)),
+    );
+    if counts != checkpoint.entity_counts()
+        || transition_fingerprint != checkpoint.entity_transition_fingerprint()
+        || live_fingerprint != checkpoint.base().entity_chain_fingerprint()
+    {
+        return Err(CheckpointIgnoreReason::EntityChainMismatch);
+    }
+    Ok(heads)
 }
 
 /// Derives W=8 window start sequences in [1, S] from the checkpoint self-hash.
@@ -816,72 +945,6 @@ fn entity_chain_fingerprint_from_entities(
     Ok(EntityChainFingerprint::from_sorted_pairs(
         pairs.iter().map(|(t, v)| (t, *v)),
     ))
-}
-
-/// Reconstructs the `(target, version)` map at S from current ENTITIES adjusted
-/// by suffix commits. The caller fingerprints the map and, when the fingerprint
-/// binds, seeds suffix entity-chain advancement from it.
-fn reconstruct_entities_at_s(
-    transaction: &ReadTransaction,
-    s: u64,
-) -> Result<std::collections::BTreeMap<EntityTarget, EntityVersion>, StorageError> {
-    use std::collections::BTreeMap;
-    use std::ops::Bound::{Included, Unbounded};
-
-    let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-    let mut map: BTreeMap<EntityTarget, EntityVersion> = BTreeMap::new();
-    for entry in entities.iter().map_err(precommit_storage_error)? {
-        let (_, value) = entry.map_err(precommit_storage_error)?;
-        let record = codec::decode_entity_record_v1(value.value())?
-            .into_parts()
-            .0;
-        map.insert(record.target().clone(), record.entity_version());
-    }
-    // Walk suffix commits forward; track first-touch version per target.
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let mut first_suffix: BTreeMap<EntityTarget, EntityVersion> = BTreeMap::new();
-    if s == u64::MAX {
-        return Ok(map);
-    }
-    // Collect suffix commit payloads first to avoid heterogeneous range types.
-    let mut suffix_values = Vec::new();
-    if s == 0 {
-        for entry in commits.iter().map_err(precommit_storage_error)? {
-            let (_, value) = entry.map_err(precommit_storage_error)?;
-            suffix_values.push(value.value().to_vec());
-        }
-    } else if let Some(next) = CommitSequence::new(s.saturating_add(1)) {
-        let key = keys::encode_application_sequence_key(next);
-        for entry in commits
-            .range::<&[u8]>((Included(key.as_slice()), Unbounded))
-            .map_err(precommit_storage_error)?
-        {
-            let (_, value) = entry.map_err(precommit_storage_error)?;
-            suffix_values.push(value.value().to_vec());
-        }
-    }
-    for value in suffix_values {
-        let Ok(item) = codec::decode_commit_entity_references(&value) else {
-            continue;
-        };
-        let references = item.into_parts().0;
-        for reference in references {
-            first_suffix
-                .entry(reference.target().clone())
-                .or_insert_with(|| reference.entity_version());
-        }
-    }
-    // Adjust: first suffix touch version 1 ⇒ absent at S; else version_at_S = first - 1.
-    for (target, first_ver) in first_suffix {
-        if first_ver == EntityVersion::first() {
-            map.remove(&target);
-        } else {
-            let at_s = EntityVersion::new(first_ver.get() - 1)
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            map.insert(target, at_s);
-        }
-    }
-    Ok(map)
 }
 
 /// Lower-bound event key for rows with commit sequence > S.

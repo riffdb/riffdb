@@ -62,7 +62,8 @@ use crate::layout::{
     META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_DATABASE_ID,
     META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS,
     META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES, create_all_tables,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES,
+    VALIDATED_PREFIX_ENTITY_HEADS, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -1548,6 +1549,14 @@ impl RedbStore {
             )?;
         }
 
+        // This additive proof table reuses the already-frozen entity-chain-head
+        // encoding, so installing it does not rotate the record registry.
+        // Predecessor databases start with an empty snapshot and perform one
+        // full validation before a subsequent checkpoint populates it.
+        if format == StorageFormatVersion::V2 {
+            install_validated_prefix_entity_heads_table(&self.shared)?;
+        }
+
         let require_compact = format == StorageFormatVersion::V2;
         migrate_string_table(&self.shared, META, require_compact)?;
         for table in BYTE_TABLES {
@@ -2881,6 +2890,28 @@ fn install_application_export_operation_table(shared: &SharedRedb) -> Result<(),
     drop(
         transaction
             .open_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)
+}
+
+fn install_validated_prefix_entity_heads_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let read = shared.database.begin_read().map_err(transaction_error)?;
+    let installed = read
+        .list_tables()
+        .map_err(precommit_storage_error)?
+        .any(|table| table.name() == VALIDATED_PREFIX_ENTITY_HEADS.name());
+    drop(read);
+    if installed {
+        return Ok(());
+    }
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
             .map_err(table_error)?,
     );
     shared.commit_durable(transaction)
@@ -6418,9 +6449,25 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
+    // The immediate predecessor lacks only the additive checkpoint-head proof
+    // table. It is installed before startup validation without a registry
+    // rotation because its values reuse the frozen EntityChainHeadV1 codec.
+    let mut pre_checkpoint_entity_heads = expected.clone();
+    pre_checkpoint_entity_heads.remove("validated_prefix_entity_heads");
+    if tables == pre_checkpoint_entity_heads {
+        return Ok(LayoutState::Initialized);
+    }
     // The WP-575 predecessor lacks only durable application-export operation
     // checkpoints. The table is installed before the registry advances.
-    let mut pre_application_export = expected.clone();
+    // Accept the same registry predecessor with the additive proof table
+    // already installed as well: table installation and registry publication
+    // are separate crash boundaries.
+    let mut pre_application_export_with_checkpoint_heads = expected.clone();
+    pre_application_export_with_checkpoint_heads.remove("application_export_operations");
+    if tables == pre_application_export_with_checkpoint_heads {
+        return Ok(LayoutState::Initialized);
+    }
+    let mut pre_application_export = pre_checkpoint_entity_heads;
     pre_application_export.remove("application_export_operations");
     if tables == pre_application_export {
         return Ok(LayoutState::Initialized);

@@ -14,6 +14,13 @@ pub(crate) const QUERY_MODULE_ACTIVE: TableDefinition<&[u8], &[u8]> =
 pub(crate) const ENTITIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entities");
 pub(crate) const ENTITY_CHAIN_HEADS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("entity_chain_heads");
+/// Exact entity-chain heads anchored by the active validated-prefix checkpoint.
+///
+/// Values reuse the frozen `StoredEntityChainHeadV1` encoding. The table is
+/// replaced atomically with `META_VALIDATED_PREFIX_CHECKPOINT`; it is proof
+/// material, never application-visible authoritative current state.
+pub(crate) const VALIDATED_PREFIX_ENTITY_HEADS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("validated_prefix_entity_heads");
 pub(crate) const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("secondary_indexes");
 pub(crate) const INDEX_EPOCHS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("index_epochs");
@@ -60,7 +67,7 @@ pub(crate) const APPLICATION_INSTALLATION_CAMPAIGNS: TableDefinition<&[u8], &[u8
 pub(crate) const APPLICATION_EXPORT_OPERATIONS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("application_export_operations");
 
-pub(crate) const TABLE_NAMES: [&str; 34] = [
+pub(crate) const TABLE_NAMES: [&str; 35] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -95,6 +102,7 @@ pub(crate) const TABLE_NAMES: [&str; 34] = [
     "event_consumer_deliveries",
     "application_installation_campaigns",
     "application_export_operations",
+    "validated_prefix_entity_heads",
 ];
 
 pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 33] = [
@@ -180,6 +188,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(QUERY_MODULE_ACTIVE)?);
     drop(tx.open_table(ENTITIES)?);
     drop(tx.open_table(ENTITY_CHAIN_HEADS)?);
+    drop(tx.open_table(VALIDATED_PREFIX_ENTITY_HEADS)?);
     drop(tx.open_table(SECONDARY_INDEXES)?);
     drop(tx.open_table(INDEX_EPOCHS)?);
     drop(tx.open_table(IDEMPOTENCY)?);
@@ -255,10 +264,11 @@ mod tests {
             EVENT_CONSUMER_DELIVERIES.name(),
             APPLICATION_INSTALLATION_CAMPAIGNS.name(),
             APPLICATION_EXPORT_OPERATIONS.name(),
+            VALIDATED_PREFIX_ENTITY_HEADS.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 34);
+        assert_eq!(TABLE_NAMES.len(), 35);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()
