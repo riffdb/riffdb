@@ -63,6 +63,9 @@ fn native_errors_and_credentials_are_closed() {
     assert!(source.contains("bearer credentials cannot be serialized"));
     assert!(source.contains("load_protected_bearer_credential"));
     assert!(source.contains("NativeError"));
+    assert!(source.contains("public_application_error_json"));
+    assert!(source.contains("ClientError::Public(_) | ClientError::Application(_) =>"));
+    assert!(source.contains("handled by semantic/public guards"));
     assert!(!source.contains("format!(\"{error}"));
     assert!(!source.contains("error.to_string()"));
 }

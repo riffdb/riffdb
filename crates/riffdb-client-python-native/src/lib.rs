@@ -19,7 +19,7 @@ use riffdb_client_rust::{
     ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
     ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
     ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
-    NamedQuery, QueryOptions, StableApplicationClient, TraceParent,
+    NamedQuery, PublicError, QueryOptions, StableApplicationClient, TraceParent,
     load_protected_bearer_credential,
 };
 use riffdb_config::{
@@ -1603,6 +1603,9 @@ fn client_error(error: ClientError) -> PyErr {
     if let Some(error) = error.application_error() {
         return native_error("application", Some(application_error_json(error)));
     }
+    if let Some(error) = error.public_error() {
+        return native_error("application", Some(public_application_error_json(error)));
+    }
     native_error(non_application_client_error_kind(&error), None)
 }
 
@@ -1614,10 +1617,32 @@ fn non_application_client_error_kind(error: &ClientError) -> &'static str {
         | ClientError::Tls(_) => "connection_failure",
         ClientError::OutcomeUnknown(_) => "outcome_unknown",
         ClientError::Protocol(_) => "protocol_error",
-        ClientError::Public(_) | ClientError::Application(_) | ClientError::DetailsFree(_) => {
-            "protocol_error"
+        ClientError::Public(_) | ClientError::Application(_) => {
+            unreachable!("handled by semantic/public guards")
         }
+        ClientError::DetailsFree(_) => "protocol_error",
     }
+}
+
+fn public_application_error_json(error: &PublicError) -> Value {
+    let code = error.application_code_hint().unwrap_or_else(|| {
+        riffdb_client_rust::ApplicationErrorCode::from_public_kind(error.kind())
+    });
+    json!({
+        "code": code.as_str(),
+        "message": code.safe_message(),
+        "category": code.category().as_str(),
+        "recovery_action": code.recovery_action().as_str(),
+        "operation": "ApplicationRequest",
+        "contract_lineage": Value::Null,
+        "contract_version": Value::Null,
+        "operation_symbol": Value::Null,
+        "symbol_path": [],
+        "source_span": Value::Null,
+        "fixes": code.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
+        "trace_id": Value::Null,
+        "incident_id": error.incident_id().map(ToString::to_string),
+    })
 }
 
 fn application_error_json(error: &riffdb_client_rust::ApplicationError) -> Value {
