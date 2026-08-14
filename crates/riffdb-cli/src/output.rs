@@ -79,6 +79,7 @@ pub(crate) enum CommandIdentity {
     ServerHealth,
     BackupCreate,
     BackupRestore,
+    BackupRetire,
     BackupOperation,
     ExportStart,
     ExportPage,
@@ -155,6 +156,7 @@ impl CommandIdentity {
             Self::ServerHealth => "server.health",
             Self::BackupCreate => "backup.create",
             Self::BackupRestore => "backup.restore",
+            Self::BackupRetire => "backup.retire",
             Self::BackupOperation => "backup.operation",
             Self::ExportStart => "export.start",
             Self::ExportPage => "export.page",
@@ -834,6 +836,16 @@ pub(crate) fn render_restore_maintenance_start(
 ) -> Terminal {
     render_maintenance_start(
         CommandIdentity::BackupRestore,
+        response.disposition,
+        response.operation.as_ref(),
+    )
+}
+
+pub(crate) fn render_retire_maintenance_start(
+    response: &v1::RetireOfflineBackupResponse,
+) -> Terminal {
+    render_maintenance_start(
+        CommandIdentity::BackupRetire,
         response.disposition,
         response.operation.as_ref(),
     )
@@ -2563,6 +2575,7 @@ impl<'a> MaintenanceOperationDto<'a> {
         let kind = match v1::OfflineMaintenanceOperationKind::try_from(operation.kind).ok()? {
             v1::OfflineMaintenanceOperationKind::CreateBackup => "create_backup",
             v1::OfflineMaintenanceOperationKind::RestoreBackup => "restore_backup",
+            v1::OfflineMaintenanceOperationKind::RetireBackup => "retire_backup",
             v1::OfflineMaintenanceOperationKind::Unspecified => return None,
         };
         let phase = match v1::OfflineMaintenancePhase::try_from(operation.phase).ok()? {
@@ -3040,6 +3053,7 @@ mod tests {
         "server.health.degraded.jsonl",
         "backup.create.accepted.jsonl",
         "backup.restore.terminal.jsonl",
+        "backup.retire.accepted.jsonl",
         "backup.operation.not_found.jsonl",
         "backup.operation.found.jsonl",
         "demo.budget.sequential.jsonl",
@@ -3107,7 +3121,7 @@ mod tests {
             );
             covered.insert(name);
         }
-        assert_eq!(covered.len(), 101);
+        assert_eq!(covered.len(), 102);
     }
 
     #[test]
@@ -3403,6 +3417,12 @@ mod tests {
                 operation: Some(maintenance_operation(result)),
             });
         }
+        if name.starts_with("backup.retire.") {
+            return render_retire_maintenance_start(&v1::RetireOfflineBackupResponse {
+                disposition: maintenance_disposition(status),
+                operation: Some(maintenance_operation(result)),
+            });
+        }
         if name.starts_with("backup.operation.") {
             let result = match status {
                 "not_found" => {
@@ -3530,6 +3550,7 @@ mod tests {
             "server.health" => CommandIdentity::ServerHealth,
             "backup.create" => CommandIdentity::BackupCreate,
             "backup.restore" => CommandIdentity::BackupRestore,
+            "backup.retire" => CommandIdentity::BackupRetire,
             "backup.operation" => CommandIdentity::BackupOperation,
             "storage.preflight" => CommandIdentity::StoragePreflight,
             "storage.upgrade" => CommandIdentity::StorageUpgrade,
@@ -3619,6 +3640,7 @@ mod tests {
         let kind = match value["kind"].as_str().expect("maintenance kind") {
             "create_backup" => v1::OfflineMaintenanceOperationKind::CreateBackup,
             "restore_backup" => v1::OfflineMaintenanceOperationKind::RestoreBackup,
+            "retire_backup" => v1::OfflineMaintenanceOperationKind::RetireBackup,
             other => panic!("unknown maintenance kind {other}"),
         };
         let phase = match value["phase"].as_str().expect("maintenance phase") {

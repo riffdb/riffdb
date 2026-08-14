@@ -263,12 +263,13 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        56
+        57
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
         "rpc CreateOfflineBackup(",
         "rpc RestoreOfflineBackup(",
+        "rpc RetireOfflineBackup(",
         "rpc GetOfflineMaintenanceOperation(",
         "rpc CheckContractMigration(",
         "rpc ApplyContractMigration(",

@@ -73,16 +73,17 @@ use riffdb_service::{
     ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
     ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
-    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
-    ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    SeekEventStreamConsumerRequest, SourceName, StartApplicationExportRequest,
-    StartApplicationInstallationRequest, StartApplicationReimportRequestV1, StatisticsRequest,
-    StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
-    SubmittedMoney, SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest,
-    SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent, SymbolicQueryIdentity,
-    SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField,
-    SymbolicResultRecord, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
-    TraceProvenanceResult, ValidateContractRequest, WatchLiveNamedQueryRequest,
+    RetireOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
+    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SeekEventStreamConsumerRequest, SourceName,
+    StartApplicationExportRequest, StartApplicationInstallationRequest,
+    StartApplicationReimportRequestV1, StatisticsRequest, StatisticsResult, SubmittedDecimal,
+    SubmittedEnum, SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord,
+    SubmittedValue, SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic,
+    SymbolicEvent, SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema,
+    SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord, TailEventsRequest,
+    TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationExportClassV1,
@@ -3584,6 +3585,18 @@ pub fn restore_offline_backup_request_from_proto(
     Ok((request_id, request))
 }
 
+/// Converts one checked immutable-backup retirement request.
+pub fn retire_offline_backup_request_from_proto(
+    request: v1::RetireOfflineBackupRequest,
+) -> Result<(RequestId, RetireOfflineBackupRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = offline_maintenance_operation_id_from_bytes(&request.operation_id)?;
+    let backup_name = BackupNameV1::new(request.backup_name).map_err(|_| invalid_request())?;
+    let request = RetireOfflineBackupRequest::new(operation_id, backup_name)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
 /// Converts one protected receipt-observation request.
 pub fn get_offline_maintenance_operation_request_from_proto(
     request: v1::GetOfflineMaintenanceOperationRequest,
@@ -4180,6 +4193,9 @@ fn offline_maintenance_operation_to_proto(
         }
         OfflineMaintenanceOperationKind::RestoreBackup => {
             v1::OfflineMaintenanceOperationKind::RestoreBackup
+        }
+        OfflineMaintenanceOperationKind::RetireBackup => {
+            v1::OfflineMaintenanceOperationKind::RetireBackup
         }
     };
     let phase = match operation.phase() {

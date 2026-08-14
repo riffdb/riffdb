@@ -12,6 +12,7 @@ fn maintenance_policy_does_not_create_a_durable_or_transport_operation() {
         "Start(OfflineMaintenanceOperationKind)",
         "CreateBackup",
         "RestoreBackup",
+        "RetireBackup",
         "GetOperation",
         "OfflineMaintenanceOperationId",
         "OfflineMaintenanceInputHash",

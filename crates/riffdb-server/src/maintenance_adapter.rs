@@ -29,16 +29,18 @@ use riffdb_service::{
     RecoveryOfflineMaintenancePortError, RecoveryOfflineMaintenanceRestore,
     RecoveryOfflineMaintenanceRestorePermit, RequestControl, RestoreOfflineBackupRequest,
     RestoreRetryOfflineMaintenanceCoordinatorPort, RestoreRetryOfflineMaintenancePermit,
+    RetireOfflineBackupRequest,
 };
 use riffdb_storage_api::{
     AuditPrincipalV1, CatalogRepository, ContractMigrationAdmissionV1,
     ContractMigrationArtifactsV1, ContractMigrationOperationKindV1,
     ContractMigrationReceiptFailureV1, ContractMigrationReceiptPhaseV1,
     ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
-    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
+    OfflineBackupRetirementEvidenceV2, OfflineMaintenanceAdmissionV1,
+    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptCreateResultV2,
     OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind,
+    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, StorageError, StorageErrorKind,
 };
 use riffdb_storage_redb::RedbMaintenanceStorage;
 use riffdb_types::{
@@ -198,6 +200,10 @@ pub(crate) enum MaintenanceTrigger {
         credential: riffdb_auth::RetainedOpaqueCredential,
         start_ready: oneshot::Receiver<()>,
     },
+    RetireBackup {
+        request: RetireOfflineBackupRequest,
+        start_ready: oneshot::Receiver<()>,
+    },
     RecoveryRestore {
         restore: RecoveryOfflineMaintenanceRestore,
         completion: RecoveryMaintenanceCompletion,
@@ -214,6 +220,7 @@ impl MaintenanceTrigger {
         match self {
             Self::CreateBackup { request, .. } => Some(request.operation_id()),
             Self::RestoreBackup { request, .. } => Some(request.operation_id()),
+            Self::RetireBackup { request, .. } => Some(request.operation_id()),
             Self::RecoveryRestore { restore, .. } => Some(restore.request().operation_id()),
             Self::ContractMigrationApply { .. } => None,
         }
@@ -233,9 +240,9 @@ impl MaintenanceTrigger {
     /// returned the start result to the service job.
     pub(crate) async fn wait_for_start_ready(&mut self) -> Result<(), ()> {
         match self {
-            Self::CreateBackup { start_ready, .. } | Self::RestoreBackup { start_ready, .. } => {
-                start_ready.await.map_err(|_| ())
-            }
+            Self::CreateBackup { start_ready, .. }
+            | Self::RestoreBackup { start_ready, .. }
+            | Self::RetireBackup { start_ready, .. } => start_ready.await.map_err(|_| ()),
             Self::ContractMigrationApply { start_ready, .. } => start_ready.await.map_err(|_| ()),
             Self::RecoveryRestore { .. } => Ok(()),
         }
@@ -247,6 +254,7 @@ impl fmt::Debug for MaintenanceTrigger {
         formatter.write_str(match self {
             Self::CreateBackup { .. } => "MaintenanceTrigger::CreateBackup([REDACTED])",
             Self::RestoreBackup { .. } => "MaintenanceTrigger::RestoreBackup([REDACTED])",
+            Self::RetireBackup { .. } => "MaintenanceTrigger::RetireBackup([REDACTED])",
             Self::RecoveryRestore { .. } => "MaintenanceTrigger::RecoveryRestore([REDACTED])",
             Self::ContractMigrationApply { .. } => {
                 "MaintenanceTrigger::ContractMigrationApply([REDACTED])"
@@ -1214,6 +1222,12 @@ fn admit_start(
     controller: &MaintenanceController,
     request: AuthorizedOfflineMaintenanceStart,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
+    let request = match request {
+        retire @ AuthorizedOfflineMaintenanceStart::RetireBackup { .. } => {
+            return admit_retire_start(controller, retire);
+        }
+        other => other,
+    };
     let mut prepared = prepare_start(request)?;
     let operation_id = prepared.receipt.operation_id();
     let mut storage = lock_start_storage(controller, operation_id)?;
@@ -1247,6 +1261,121 @@ fn admit_start(
             }
         }
     };
+    drop(storage);
+    let _ = start_ready.send(());
+    result
+}
+
+fn admit_retire_start(
+    controller: &MaintenanceController,
+    request: AuthorizedOfflineMaintenanceStart,
+) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
+    let AuthorizedOfflineMaintenanceStart::RetireBackup {
+        request,
+        authorization,
+    } = request
+    else {
+        return Err(OfflineMaintenanceStartPortError::Integrity);
+    };
+    let policy_request = OfflineMaintenanceAuthorizationRequest::retire_backup(
+        request.operation_id(),
+        request.input_hash(),
+    );
+    ensure_exact_proof(&authorization, &policy_request)?;
+    let operation_id = request.operation_id();
+    let mut storage = lock_start_storage(controller, operation_id)?;
+    if storage
+        .read_receipt(operation_id)
+        .map_err(|error| map_start_read_error(controller, operation_id, error))?
+        .is_some()
+    {
+        return Err(OfflineMaintenanceStartPortError::InputMismatch);
+    }
+    let (start_ready, ready) = oneshot::channel();
+    let existing = storage
+        .read_retire_receipt(operation_id)
+        .map_err(|error| map_start_read_error(controller, operation_id, error))?;
+    let was_existing = existing.is_some();
+    let mut receipt = if let Some(existing) = existing {
+        if existing.backup_name() != request.backup_name()
+            || existing.input_hash() != request.input_hash()
+        {
+            return Err(OfflineMaintenanceStartPortError::InputMismatch);
+        }
+        existing
+    } else {
+        if !controller.lifecycle.ordinary_admission_available() {
+            return Err(OfflineMaintenanceStartPortError::Unavailable);
+        }
+        let (create_operation, manifest) = storage
+            .prepare_backup_retirement(request.backup_name())
+            .map_err(|error| map_receipt_create_error(controller, operation_id, error))?;
+        let candidate = OfflineMaintenanceReceiptV2::accepted_retirement(
+            operation_id,
+            request.backup_name().clone(),
+            request.input_hash(),
+            admission_from_proof(&authorization),
+            OfflineBackupRetirementEvidenceV2::new(create_operation, manifest),
+        )
+        .map_err(|_| OfflineMaintenanceStartPortError::Integrity)?;
+        match storage
+            .create_or_read_retire_receipt(&candidate)
+            .map_err(|error| map_receipt_create_error(controller, operation_id, error))?
+        {
+            OfflineMaintenanceReceiptCreateResultV2::Created => candidate,
+            OfflineMaintenanceReceiptCreateResultV2::Existing(existing) => {
+                if existing.backup_name() != candidate.backup_name()
+                    || existing.input_hash() != candidate.input_hash()
+                    || existing.retirement() != candidate.retirement()
+                {
+                    return Err(OfflineMaintenanceStartPortError::InputMismatch);
+                }
+                *existing
+            }
+        }
+    };
+
+    if receipt.current_phase().is_terminal() {
+        return retire_start_result(OfflineMaintenanceStartDisposition::Terminal, &receipt);
+    }
+    let disposition = match controller.lifecycle.claim_nonterminal_receipt(operation_id) {
+        Ok(MaintenanceReceiptClaim::AlreadyActive) => {
+            return retire_start_result(
+                OfflineMaintenanceStartDisposition::AlreadyAccepted,
+                &receipt,
+            );
+        }
+        Ok(MaintenanceReceiptClaim::Reacquired) => {
+            if was_existing {
+                OfflineMaintenanceStartDisposition::AlreadyAccepted
+            } else {
+                OfflineMaintenanceStartDisposition::Accepted
+            }
+        }
+        Err(_) => return Err(OfflineMaintenanceStartPortError::Integrity),
+    };
+    if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Accepted {
+        let mut draining = receipt.clone();
+        draining
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            ))
+            .map_err(|_| OfflineMaintenanceStartPortError::Integrity)?;
+        storage
+            .replace_retire_receipt(&draining)
+            .map_err(|_| OfflineMaintenanceStartPortError::OutcomeUnknown)?;
+        receipt = draining;
+    }
+    let trigger = MaintenanceTrigger::RetireBackup {
+        request,
+        start_ready: ready,
+    };
+    controller.triggers.try_send(trigger).map_err(|error| {
+        drop(error.into_inner());
+        controller.lifecycle.fail_closed(operation_id);
+        OfflineMaintenanceStartPortError::OutcomeUnknown
+    })?;
+    let result = retire_start_result(disposition, &receipt);
     drop(storage);
     let _ = start_ready.send(());
     result
@@ -1321,6 +1450,9 @@ fn prepare_start(
                 },
                 start_ready: Some(start_ready),
             })
+        }
+        AuthorizedOfflineMaintenanceStart::RetireBackup { .. } => {
+            Err(OfflineMaintenanceStartPortError::Integrity)
         }
     }
 }
@@ -1542,11 +1674,17 @@ fn observe_receipt(
     if !controller.lifecycle.ordinary_admission_available() {
         return Err(OfflineMaintenanceObservationPortError::Unavailable);
     }
-    storage
+    if let Some(receipt) = storage
         .read_receipt(operation_id)
         .map_err(|error| map_observation_error(controller, operation_id, error))?
+    {
+        return receipt_observation(&receipt).map(Some);
+    }
+    storage
+        .read_retire_receipt(operation_id)
+        .map_err(|error| map_observation_error(controller, operation_id, error))?
         .as_ref()
-        .map(receipt_observation)
+        .map(retire_receipt_observation)
         .transpose()
 }
 
@@ -1556,6 +1694,16 @@ pub(crate) fn start_result(
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     let observation =
         receipt_observation(receipt).map_err(|_| OfflineMaintenanceStartPortError::Integrity)?;
+    OfflineMaintenanceStartResult::new(disposition, observation)
+        .map_err(|_| OfflineMaintenanceStartPortError::Integrity)
+}
+
+fn retire_start_result(
+    disposition: OfflineMaintenanceStartDisposition,
+    receipt: &OfflineMaintenanceReceiptV2,
+) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
+    let observation = retire_receipt_observation(receipt)
+        .map_err(|_| OfflineMaintenanceStartPortError::Integrity)?;
     OfflineMaintenanceStartResult::new(disposition, observation)
         .map_err(|_| OfflineMaintenanceStartPortError::Integrity)
 }
@@ -1571,6 +1719,25 @@ fn receipt_observation(
     OfflineMaintenanceOperationObservation::new(
         receipt.operation_id(),
         receipt.operation_kind(),
+        receipt.backup_name().clone(),
+        receipt.input_hash(),
+        map_phase(transition.receipt_phase()),
+        transition.failure().map(map_failure),
+    )
+    .map_err(|_| OfflineMaintenanceObservationPortError::Integrity)
+}
+
+fn retire_receipt_observation(
+    receipt: &OfflineMaintenanceReceiptV2,
+) -> Result<OfflineMaintenanceOperationObservation, OfflineMaintenanceObservationPortError> {
+    let transition = receipt
+        .transitions()
+        .last()
+        .copied()
+        .ok_or(OfflineMaintenanceObservationPortError::Integrity)?;
+    OfflineMaintenanceOperationObservation::new(
+        receipt.operation_id(),
+        OfflineMaintenanceOperationKind::RetireBackup,
         receipt.backup_name().clone(),
         receipt.input_hash(),
         map_phase(transition.receipt_phase()),

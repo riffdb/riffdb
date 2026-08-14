@@ -387,6 +387,7 @@ fn operation_specific_traits_expose_the_closed_method_inventory() {
         "fn revoke_capability(",
         "fn list_pending_outbox_deliveries(",
         "fn create_offline_backup(",
+        "fn retire_offline_backup(",
         "fn get_offline_maintenance_operation(",
         "fn discover_command_tools(",
         "fn discover_resources(",

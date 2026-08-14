@@ -5717,6 +5717,59 @@ impl fmt::Debug for CreateOfflineBackupRequest {
     }
 }
 
+/// Checked request to retire one previously published immutable backup.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RetireOfflineBackupRequest {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+    input_hash: OfflineMaintenanceInputHash,
+}
+
+impl RetireOfflineBackupRequest {
+    /// Joins checked input and computes its stable semantic identity.
+    pub fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+    ) -> Result<Self, ServiceDtoError> {
+        let input_hash = offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RetireBackup,
+            &backup_name,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        );
+        let request = Self {
+            operation_id,
+            backup_name,
+            input_hash,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the checked server-relative backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+}
+
+impl fmt::Debug for RetireOfflineBackupRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RetireOfflineBackupRequest([REDACTED])")
+    }
+}
+
 /// Checked request to restore one immutable offline backup.
 #[derive(Clone, Eq, PartialEq)]
 pub struct RestoreOfflineBackupRequest {
@@ -9705,6 +9758,16 @@ impl ServiceRequestCharge for RestoreOfflineBackupRequest {
         charge.add(self.operation_id.as_bytes().len())?;
         charge.add_framed_bytes(self.backup_name.as_bytes().len())?;
         charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(self.input_hash.as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for RetireOfflineBackupRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(self.operation_id.as_bytes().len())?;
+        charge.add_framed_bytes(self.backup_name.as_bytes().len())?;
         charge.add(self.input_hash.as_bytes().len())?;
         Ok(charge.finish())
     }

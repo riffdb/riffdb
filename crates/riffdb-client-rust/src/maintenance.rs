@@ -201,6 +201,56 @@ impl fmt::Debug for CreateOfflineBackup {
     }
 }
 
+/// One checked immutable offline-backup retirement.
+pub struct RetireOfflineBackup {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+}
+
+impl RetireOfflineBackup {
+    /// Creates a retirement submission with caller-stable semantic identity.
+    #[must_use]
+    pub const fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+    ) -> Self {
+        Self {
+            operation_id,
+            backup_name,
+        }
+    }
+
+    /// Returns the caller-stable maintenance operation ID.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the checked backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    pub(crate) fn request(&self, request_id: RequestId) -> v1::RetireOfflineBackupRequest {
+        v1::RetireOfflineBackupRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            operation_id: self.operation_id.into_bytes().to_vec(),
+            backup_name: self.backup_name.as_str().to_owned(),
+        }
+    }
+}
+
+impl fmt::Debug for RetireOfflineBackup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetireOfflineBackup")
+            .field("operation_id", &self.operation_id)
+            .field("backup_name", &self.backup_name)
+            .finish()
+    }
+}
+
 /// One checked immutable offline-backup restore.
 pub struct RestoreOfflineBackup {
     operation_id: OfflineMaintenanceOperationId,
@@ -294,6 +344,14 @@ mod tests {
             CreateOfflineBackup::new(operation_id(), BackupNameV1::new("stable").expect("name"));
         let first = create.request(request_id(2));
         let second = create.request(request_id(3));
+        assert_ne!(first.request_id, second.request_id);
+        assert_eq!(first.operation_id, second.operation_id);
+        assert_eq!(first.backup_name, second.backup_name);
+
+        let retire =
+            RetireOfflineBackup::new(operation_id(), BackupNameV1::new("stable").expect("name"));
+        let first = retire.request(request_id(6));
+        let second = retire.request(request_id(7));
         assert_ne!(first.request_id, second.request_id);
         assert_eq!(first.operation_id, second.operation_id);
         assert_eq!(first.backup_name, second.backup_name);

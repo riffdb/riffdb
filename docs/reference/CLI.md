@@ -405,6 +405,7 @@ Usage: riffdb backup [OPTIONS] <COMMAND>
 Commands:
   create
   restore
+  retire     Retires one exact immutable backup through the receipted public surface
   operation
 
 Options:
@@ -1896,6 +1897,26 @@ Arguments:
 Options:
       --config <PATH>
       --confirm-replace-current-database
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb backup retire`
+
+```text
+Retires one exact immutable backup through the receipted public surface
+
+Usage: riffdb backup retire [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+Options:
+      --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]

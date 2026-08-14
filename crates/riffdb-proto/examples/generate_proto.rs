@@ -645,6 +645,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "Health", false),
     ("AdminService", "ListPendingOutboxDeliveries", false),
     ("AdminService", "RestoreOfflineBackup", false),
+    ("AdminService", "RetireOfflineBackup", false),
     ("AdminService", "RevokeCapability", false),
     ("AdminService", "Stats", false),
     ("AdminService", "StartApplicationInstallation", false),
@@ -2329,7 +2330,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, sixty-five-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, sixty-six-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }
@@ -4780,15 +4781,16 @@ fn public_maintenance_operation(
     let backup_name = BackupNameV1::new(backup_name).expect("fixture backup name");
     let wire_kind = match kind {
         OfflineMaintenanceOperationKind::CreateBackup => {
-            v1::OfflineMaintenanceOperationKind::CreateBackup
+            v1::OfflineMaintenanceOperationKind::CreateBackup as i32
         }
         OfflineMaintenanceOperationKind::RestoreBackup => {
-            v1::OfflineMaintenanceOperationKind::RestoreBackup
+            v1::OfflineMaintenanceOperationKind::RestoreBackup as i32
         }
+        OfflineMaintenanceOperationKind::RetireBackup => 3,
     };
     v1::OfflineMaintenanceOperation {
         operation_id: public_request_id(),
-        kind: wire_kind as i32,
+        kind: wire_kind,
         backup_name: backup_name.as_str().to_owned(),
         input_hash: offline_maintenance_input_hash(kind, &backup_name, confirmation)
             .into_bytes()
@@ -6988,6 +6990,9 @@ fn response_charge_offline_maintenance_operation(
         }
         OfflineMaintenanceOperationKind::RestoreBackup => {
             OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        }
+        OfflineMaintenanceOperationKind::RetireBackup => {
+            OfflineMaintenanceReplacementConfirmation::NotProvided
         }
     };
     let backup_name = "b".repeat(response_shape_usize(shape, "backup_name_bytes")?);

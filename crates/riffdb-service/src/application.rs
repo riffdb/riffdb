@@ -20,11 +20,11 @@ use crate::{
     ListPendingOutboxDeliveriesResult, OfflineMaintenanceStartResult, QueryProjectionRequest,
     QueryProjectionResult, RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest,
     ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
-    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceResult,
-    StartApplicationInstallationRequest, StatisticsRequest, StatisticsResult,
-    SubscribeToCommitsRequest, SubscribeToCommitsResult, TailEventsRequest, TailEventsResult,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    RestoreOfflineBackupInvocation, RetireOfflineBackupRequest, RevokeCapabilityRequest,
+    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
+    ScanIndexResult, ServiceResult, StartApplicationInstallationRequest, StatisticsRequest,
+    StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult, TailEventsRequest,
+    TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 
 /// One boxed, sendable operation future used to keep service traits object-safe.
@@ -225,6 +225,13 @@ pub trait OfflineMaintenanceApplication: Send + Sync {
     fn restore_offline_backup(
         &self,
         invocation: RestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+
+    /// Admits or resolves one receipted immutable-backup retirement.
+    fn retire_offline_backup(
+        &self,
+        context: RequestContext,
+        request: RetireOfflineBackupRequest,
     ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
 
     /// Reads one bounded receipt-derived maintenance observation.

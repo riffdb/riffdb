@@ -207,8 +207,11 @@ Backup actions start and poll one identity-stable public remote maintenance
 operation, require the exact four-file immutable backup inventory, and retain
 the checksum and size of every artifact. Only the newest two verified
 `endurance-*` backup directories remain on disk. The action verifies the new
-backup completely before retiring an older one, and its receipt names both the
-retained and retired inventories. Capability-rotation actions issue a new
+backup completely before retiring an older one through the installed
+`riffdb backup retire` public command, polls its stable operation identity to a
+terminal V2 receipt, and records both retained inventories and exact retirement
+receipt evidence. Direct directory or maintenance-receipt deletion is pinned as
+an architecture failure. Capability-rotation actions issue a new
 least-authority health credential and revoke the preceding rotation credential;
 their frontier is the real administration sequence returned by those public
 operations. Neither action substitutes a harness counter for the durable server

@@ -653,6 +653,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
     if name not in published or len(published) != len(existing) + 1:
         fail("endurance backup did not publish exactly one immutable inventory")
     retired_backup_names = published[:-MAX_RETAINED_BACKUPS]
+    retirement_receipts: list[dict[str, Any]] = []
     for retired_name in retired_backup_names:
         retired = backup_root / retired_name
         if (
@@ -662,7 +663,66 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
             or not retired_name.startswith("endurance-")
         ):
             fail("endurance backup retirement target is invalid")
-        shutil.rmtree(retired)
+        retirement = run_json(
+            cli(environment) + ["backup", "retire", retired_name, "--output", "json"]
+        )
+        if retirement is None:
+            fail("endurance backup retirement unexpectedly returned no result")
+        retirement_result = retirement["result"]
+        if (
+            retirement.get("command") != "backup.retire"
+            or retirement_result.get("status") != "accepted"
+            or retirement_result.get("kind") != "retire_backup"
+            or retirement_result.get("backup_name") != retired_name
+        ):
+            fail("endurance backup retirement was not accepted with the exact identity")
+        retirement_operation_id = retirement_result.get("maintenance_operation_id")
+        if not isinstance(retirement_operation_id, str) or len(retirement_operation_id) != 36:
+            fail("endurance backup retirement identity is invalid")
+
+        retirement_deadline = time.monotonic() + 180
+        retirement_terminal: dict[str, Any] | None = None
+        while time.monotonic() < retirement_deadline:
+            polled = run_json(
+                cli(environment)
+                + [
+                    "backup",
+                    "operation",
+                    retirement_operation_id,
+                    "--output",
+                    "json",
+                ],
+                timeout_seconds=30,
+                allow_unavailable=True,
+            )
+            if polled is not None:
+                candidate = polled["result"]
+                if (
+                    polled.get("command") == "backup.operation"
+                    and candidate.get("status") == "found"
+                    and candidate.get("maintenance_operation_id")
+                    == retirement_operation_id
+                    and candidate.get("kind") == "retire_backup"
+                    and candidate.get("backup_name") == retired_name
+                ):
+                    if candidate.get("phase") == "succeeded":
+                        retirement_terminal = candidate
+                        break
+                    if candidate.get("phase") in {"failed", "refused"}:
+                        fail("endurance backup retirement reached a non-success terminal phase")
+            time.sleep(0.1)
+        if retirement_terminal is None:
+            fail("endurance backup retirement did not complete before its bounded deadline")
+        if retired.exists() or retired.is_symlink():
+            fail("endurance retired backup remains published")
+        retirement_receipts.append(
+            {
+                "backup_name": retired_name,
+                "maintenance_operation_id": retirement_operation_id,
+                "input_hash": retirement_terminal.get("input_hash"),
+                "phase": retirement_terminal.get("phase"),
+            }
+        )
     retained_backup_names = sorted(
         path.name
         for path in backup_root.iterdir()
@@ -681,6 +741,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
         "phase": terminal.get("phase"),
         "inventory": inventory,
         "retired_backup_names": retired_backup_names,
+        "retirement_receipts": retirement_receipts,
         "retained_backup_names": retained_backup_names,
     }
 

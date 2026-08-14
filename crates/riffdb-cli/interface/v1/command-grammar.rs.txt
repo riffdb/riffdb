@@ -250,6 +250,12 @@ enum BackupCommand {
         confirm_replace_current_database: bool,
     },
 
+    // Identity: backup.retire
+    Retire {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
     // Identity: backup.operation
     Operation {
         #[arg(value_name = "MAINTENANCE_OPERATION_ID")]

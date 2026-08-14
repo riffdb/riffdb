@@ -21,6 +21,26 @@ pub enum RedbMaintenanceFailpoint {
     AfterReceiptParentSync,
     /// After one immutable named backup is durably published.
     AfterNamedBackupPublication,
+    /// Immediately before a checked backup is renamed into retire staging.
+    BeforeRetirementPublication,
+    /// After retire rename but before either parent directory is synchronized.
+    AfterRetirementPublication,
+    /// After the named-backup parent is synchronized following retire rename.
+    AfterRetirementNamedParentSync,
+    /// After both parents make retire staging durably discoverable.
+    AfterRetirementStageParentSync,
+    /// After the retired database artifact is removed.
+    AfterRetirementDatabaseDelete,
+    /// After the retired format marker is removed.
+    AfterRetirementFormatDelete,
+    /// After the retired journal artifact is removed.
+    AfterRetirementJournalDelete,
+    /// After the retired manifest is removed.
+    AfterRetirementManifestDelete,
+    /// After the empty retire-stage directory is removed, before parent sync.
+    AfterRetirementStageDelete,
+    /// After retirement deletion and its parent entry are synchronized.
+    AfterRetirementDeleteParentSync,
     /// After a private staged restore is complete and checksum-validated.
     AfterStagedMaterialization,
     /// After receipt durable `published_history_incarnation` write, before the

@@ -240,6 +240,13 @@ fn endurance_rate_accounting_and_backup_inventory_are_sustainable_for_seventy_tw
         .expect("lifecycle source is readable");
     assert!(lifecycle.contains("MAX_RETAINED_BACKUPS = 2"));
     assert!(lifecycle.contains("retired_backup_names"));
+    assert!(lifecycle.contains("[\"backup\", \"retire\", retired_name"));
+    assert!(lifecycle.contains("retirement_receipts"));
+    assert!(!lifecycle.contains("shutil.rmtree"));
+    assert!(
+        !lifecycle.contains(".receipt-v2"),
+        "receipt deletion must remain internal"
+    );
 
     for worker in [
         "examples/ticketdesk/src/bin/endurance.rs",

@@ -22,8 +22,9 @@ use riffdb_storage_api::{
     BackupBuildMetadataV1, OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
     OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1,
-    StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
+    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
+    OfflineRestoreResultV1, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageValueError,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
@@ -117,6 +118,9 @@ pub(crate) enum MaintenanceDriverRequest {
         operation_id: OfflineMaintenanceOperationId,
         credential: RetainedOpaqueCredential,
     },
+    RetireBackup {
+        operation_id: OfflineMaintenanceOperationId,
+    },
     ResumePublishedRestore {
         operation_id: OfflineMaintenanceOperationId,
     },
@@ -139,6 +143,11 @@ impl MaintenanceDriverRequest {
         }
     }
 
+    #[must_use]
+    pub(crate) const fn retire_backup(operation_id: OfflineMaintenanceOperationId) -> Self {
+        Self::RetireBackup { operation_id }
+    }
+
     /// Resumes only when exact reconciliation proves publication already occurred.
     #[must_use]
     pub(crate) const fn resume_published_restore(
@@ -151,6 +160,7 @@ impl MaintenanceDriverRequest {
         match self {
             Self::CreateBackup { operation_id }
             | Self::RestoreBackup { operation_id, .. }
+            | Self::RetireBackup { operation_id }
             | Self::ResumePublishedRestore { operation_id } => *operation_id,
         }
     }
@@ -161,6 +171,7 @@ impl MaintenanceDriverRequest {
             Self::RestoreBackup { .. } | Self::ResumePublishedRestore { .. } => {
                 OfflineMaintenanceOperationKind::RestoreBackup
             }
+            Self::RetireBackup { .. } => OfflineMaintenanceOperationKind::RetireBackup,
         }
     }
 }
@@ -170,6 +181,7 @@ impl fmt::Debug for MaintenanceDriverRequest {
         formatter.write_str(match self {
             Self::CreateBackup { .. } => "MaintenanceDriverRequest::CreateBackup([REDACTED])",
             Self::RestoreBackup { .. } => "MaintenanceDriverRequest::RestoreBackup([REDACTED])",
+            Self::RetireBackup { .. } => "MaintenanceDriverRequest::RetireBackup([REDACTED])",
             Self::ResumePublishedRestore { .. } => {
                 "MaintenanceDriverRequest::ResumePublishedRestore([REDACTED])"
             }
@@ -213,15 +225,30 @@ impl fmt::Debug for RecoveryMaintenanceDriverRequest {
 
 /// Checked successful handoff to the daemon's fresh graph builder.
 pub(crate) struct MaintenanceDriverSuccess {
-    receipt: OfflineMaintenanceReceiptV1,
+    receipt: MaintenanceTerminalReceipt,
     startup: CheckedRedbStartup,
 }
 
 impl MaintenanceDriverSuccess {
     /// Separates the durable terminal receipt from the newly activated storage ports.
     #[must_use]
-    pub(crate) fn into_parts(self) -> (OfflineMaintenanceReceiptV1, CheckedRedbStartup) {
+    pub(crate) fn into_parts(self) -> (MaintenanceTerminalReceipt, CheckedRedbStartup) {
         (self.receipt, self.startup)
+    }
+}
+
+/// Exact terminal receipt version produced by one maintenance driver.
+pub(crate) enum MaintenanceTerminalReceipt {
+    V1(OfflineMaintenanceReceiptV1),
+    V2(OfflineMaintenanceReceiptV2),
+}
+
+impl MaintenanceTerminalReceipt {
+    const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        match self {
+            Self::V1(receipt) => receipt.operation_id(),
+            Self::V2(receipt) => receipt.operation_id(),
+        }
     }
 }
 
@@ -294,7 +321,7 @@ pub(crate) fn mark_draining(
     storage: &mut RedbMaintenanceStorage,
     lifecycle: &MaintenanceLifecycle,
     operation_id: OfflineMaintenanceOperationId,
-) -> Result<OfflineMaintenanceReceiptV1, MaintenanceDriverFailure> {
+) -> Result<(), MaintenanceDriverFailure> {
     if !matches!(
         lifecycle.claim_nonterminal_receipt(operation_id),
         Ok(MaintenanceReceiptClaim::Reacquired | MaintenanceReceiptClaim::AlreadyActive)
@@ -306,10 +333,42 @@ pub(crate) fn mark_draining(
             OfflineMaintenanceReceiptFailureV1::InternalFailure,
         ));
     }
-    let mut receipt = read_required_receipt(storage, operation_id).map_err(|fault| {
+    let receipt = storage.read_receipt(operation_id).map_err(|_| {
         lifecycle.fail_closed(operation_id);
-        MaintenanceDriverFailure::without_receipt(operation_id, fault.receipt_failure())
+        MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+        )
     })?;
+    let Some(mut receipt) = receipt else {
+        let retirement = storage
+            .read_retire_receipt(operation_id)
+            .map_err(|_| {
+                MaintenanceDriverFailure::without_receipt(
+                    operation_id,
+                    OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+                )
+            })?
+            .ok_or_else(|| {
+                MaintenanceDriverFailure::without_receipt(
+                    operation_id,
+                    OfflineMaintenanceReceiptFailureV1::InternalFailure,
+                )
+            })?;
+        if !matches!(
+            retirement.current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::Draining
+                | OfflineMaintenanceReceiptPhaseV1::Offline
+                | OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+                | OfflineMaintenanceReceiptPhaseV1::Validating
+        ) {
+            return Err(MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
+            ));
+        }
+        return Ok(());
+    };
     match receipt.current_phase() {
         OfflineMaintenanceReceiptPhaseV1::Accepted => {
             if let Err(fault) = advance_receipt(
@@ -331,7 +390,7 @@ pub(crate) fn mark_draining(
             return Err(failure_from_terminal_or_conflict(receipt));
         }
     }
-    Ok(receipt)
+    Ok(())
 }
 
 /// Durably records that every transport, worker, port, and redb handle is closed.
@@ -343,7 +402,7 @@ pub(crate) fn mark_offline(
     storage: &mut RedbMaintenanceStorage,
     lifecycle: &MaintenanceLifecycle,
     operation_id: OfflineMaintenanceOperationId,
-) -> Result<OfflineMaintenanceReceiptV1, MaintenanceDriverFailure> {
+) -> Result<(), MaintenanceDriverFailure> {
     if lifecycle.claim_nonterminal_receipt(operation_id)
         != Ok(MaintenanceReceiptClaim::AlreadyActive)
         || lifecycle.stage() != MaintenanceLifecycleStage::Draining
@@ -354,10 +413,17 @@ pub(crate) fn mark_offline(
             OfflineMaintenanceReceiptFailureV1::InternalFailure,
         ));
     }
-    let mut receipt = read_required_receipt(storage, operation_id).map_err(|fault| {
+
+    let receipt = storage.read_receipt(operation_id).map_err(|_| {
         lifecycle.fail_closed(operation_id);
-        MaintenanceDriverFailure::without_receipt(operation_id, fault.receipt_failure())
+        MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+        )
     })?;
+    let Some(mut receipt) = receipt else {
+        return mark_retirement_offline(storage, lifecycle, operation_id);
+    };
     if receipt.source_database_id().is_none() {
         lifecycle.fail_closed(operation_id);
         return Err(fail_receipt(
@@ -395,7 +461,62 @@ pub(crate) fn mark_offline(
             OfflineMaintenanceReceiptFailureV1::InternalFailure,
         ));
     }
-    Ok(receipt)
+    Ok(())
+}
+
+fn mark_retirement_offline(
+    storage: &mut RedbMaintenanceStorage,
+    lifecycle: &MaintenanceLifecycle,
+    operation_id: OfflineMaintenanceOperationId,
+) -> Result<(), MaintenanceDriverFailure> {
+    let mut receipt = storage
+        .read_retire_receipt(operation_id)
+        .map_err(|_| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+            )
+        })?
+        .ok_or_else(|| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
+            )
+        })?;
+    if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Draining {
+        let mut offline = receipt.clone();
+        offline
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+            ))
+            .map_err(|_| {
+                MaintenanceDriverFailure::without_receipt(
+                    operation_id,
+                    OfflineMaintenanceReceiptFailureV1::InternalFailure,
+                )
+            })?;
+        storage.replace_retire_receipt(&offline).map_err(|_| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+            )
+        })?;
+        receipt = offline;
+    }
+    if !matches!(
+        receipt.current_phase(),
+        OfflineMaintenanceReceiptPhaseV1::Offline
+            | OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+            | OfflineMaintenanceReceiptPhaseV1::Validating
+    ) || lifecycle.mark_offline(operation_id).is_err()
+    {
+        lifecycle.fail_closed(operation_id);
+        return Err(MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::InternalFailure,
+        ));
+    }
+    Ok(())
 }
 
 /// Executes or resumes one healthy-current operation after complete quiescence.
@@ -415,6 +536,10 @@ pub(crate) fn run_offline_maintenance(
             operation_id,
             OfflineMaintenanceReceiptFailureV1::InternalFailure,
         ));
+    }
+
+    if matches!(request, MaintenanceDriverRequest::RetireBackup { .. }) {
+        return run_retirement(storage, lifecycle, dependencies, operation_id);
     }
 
     let mut receipt = match read_required_receipt(storage, operation_id) {
@@ -452,14 +577,134 @@ pub(crate) fn run_offline_maintenance(
         MaintenanceDriverRequest::ResumePublishedRestore { .. } => {
             run_restore(storage, lifecycle, dependencies, &mut receipt, None, None)
         }
+        MaintenanceDriverRequest::RetireBackup { .. } => Err(DriverFault::ReceiptIntegrity),
     };
     match operation {
-        Ok(startup) => Ok(MaintenanceDriverSuccess { receipt, startup }),
+        Ok(startup) => Ok(MaintenanceDriverSuccess {
+            receipt: MaintenanceTerminalReceipt::V1(receipt),
+            startup,
+        }),
         Err(fault) => {
             lifecycle.fail_closed(operation_id);
             Err(fail_receipt(storage, receipt, fault.receipt_failure()))
         }
     }
+}
+
+fn run_retirement(
+    storage: &mut RedbMaintenanceStorage,
+    lifecycle: &MaintenanceLifecycle,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    operation_id: OfflineMaintenanceOperationId,
+) -> Result<MaintenanceDriverSuccess, MaintenanceDriverFailure> {
+    let mut receipt = storage
+        .read_retire_receipt(operation_id)
+        .map_err(|_| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+            )
+        })?
+        .ok_or_else(|| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
+            )
+        })?;
+    if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Offline {
+        storage
+            .publish_backup_retirement(operation_id)
+            .map_err(|_| {
+                MaintenanceDriverFailure::without_receipt(
+                    operation_id,
+                    OfflineMaintenanceReceiptFailureV1::ArtifactUnavailable,
+                )
+            })?;
+        advance_retire_receipt(
+            storage,
+            &mut receipt,
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+        )?;
+    }
+    if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::ArtifactPublished {
+        advance_retire_receipt(
+            storage,
+            &mut receipt,
+            OfflineMaintenanceReceiptPhaseV1::Validating,
+        )?;
+    }
+    if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Validating {
+        storage
+            .delete_published_backup_retirement(operation_id)
+            .map_err(|_| {
+                MaintenanceDriverFailure::without_receipt(
+                    operation_id,
+                    OfflineMaintenanceReceiptFailureV1::ArtifactUnavailable,
+                )
+            })?;
+        mark_lifecycle_validating(lifecycle, operation_id).map_err(|_| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
+            )
+        })?;
+        let startup = open_redb_startup_with_commit_profile(
+            storage.configured_database_file(),
+            dependencies.startup_inputs.clone(),
+            &dependencies.database_ids,
+            dependencies.application_commit_profile,
+        )
+        .map_err(|_| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::ValidationFailed,
+            )
+        })?;
+        if startup.database_id() != receipt.retirement().manifest_identity().database_id() {
+            return Err(MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::ValidationFailed,
+            ));
+        }
+        advance_retire_receipt(
+            storage,
+            &mut receipt,
+            OfflineMaintenanceReceiptPhaseV1::Succeeded,
+        )?;
+        return Ok(MaintenanceDriverSuccess {
+            receipt: MaintenanceTerminalReceipt::V2(receipt),
+            startup,
+        });
+    }
+    Err(MaintenanceDriverFailure::without_receipt(
+        operation_id,
+        OfflineMaintenanceReceiptFailureV1::InternalFailure,
+    ))
+}
+
+fn advance_retire_receipt(
+    storage: &mut RedbMaintenanceStorage,
+    receipt: &mut OfflineMaintenanceReceiptV2,
+    phase: OfflineMaintenanceReceiptPhaseV1,
+) -> Result<(), MaintenanceDriverFailure> {
+    let operation_id = receipt.operation_id();
+    let mut candidate = receipt.clone();
+    candidate
+        .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+        .map_err(|_| {
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
+            )
+        })?;
+    storage.replace_retire_receipt(&candidate).map_err(|_| {
+        MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+        )
+    })?;
+    *receipt = candidate;
+    Ok(())
 }
 
 /// Executes or resumes the sole staged-only recovery operation.
@@ -658,7 +903,10 @@ pub(crate) fn run_recovery_restore(
         prepared,
     );
     match operation {
-        Ok(startup) => Ok(MaintenanceDriverSuccess { receipt, startup }),
+        Ok(startup) => Ok(MaintenanceDriverSuccess {
+            receipt: MaintenanceTerminalReceipt::V1(receipt),
+            startup,
+        }),
         Err(fault) => {
             lifecycle.fail_closed(operation_id);
             Err(fail_receipt(storage, receipt, fault.receipt_failure()))
@@ -939,6 +1187,7 @@ fn complete_post_publication_validation(
     let expected_database_id = match receipt.operation_kind() {
         OfflineMaintenanceOperationKind::CreateBackup => receipt.source_database_id(),
         OfflineMaintenanceOperationKind::RestoreBackup => receipt.staged_database_id(),
+        OfflineMaintenanceOperationKind::RetireBackup => None,
     }
     .ok_or(DriverFault::ReceiptIntegrity)?;
     if startup.database_id() != expected_database_id
