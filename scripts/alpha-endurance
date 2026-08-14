@@ -53,6 +53,24 @@ REQUIRED_FAULTS = {
     "network_interrupt",
     "process_kill",
 }
+ACTION_INTERVAL_SECONDS = 1200
+ACTION_INITIAL_DELAYS = {
+    "backup": 30,
+    "checkpoint_crash": 105,
+    "capability_rotation": 180,
+    "consumer_after_command_before_ack": 255,
+    "certificate_rotation": 330,
+    "journal_recycle_crash": 405,
+    "checkpoint": 480,
+    "network_interrupt": 555,
+    "deploy_under_load": 630,
+    "process_kill": 705,
+    "journal_recycle": 780,
+    "reactive_consumer": 855,
+    "recovery": 930,
+    "restart": 1005,
+    "retention": 1080,
+}
 REQUIRED_RESOURCES = {
     "rss_bytes",
     "allocator_bytes",
@@ -209,10 +227,11 @@ def validate_actions(actions: dict[str, Any], manifest: dict[str, Any]) -> None:
         require(isinstance(items, list) and len(items) == len(required), "invalid_actions", f"{section} inventory is incomplete")
         require({item.get("name") for item in items if isinstance(item, dict)} == required, "invalid_actions", f"{section} inventory is incomplete")
         for item in items:
+            name = item.get("name")
             argv = item.get("command")
             require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", f"{section} command is not a bounded argv")
-            require(1 <= integer(item.get("interval_seconds"), "invalid_actions", f"{section}.interval_seconds") <= 86400, "invalid_actions", f"{section} interval is invalid")
-            require(0 <= integer(item.get("initial_delay_seconds"), "invalid_actions", f"{section}.initial_delay_seconds") <= 86400, "invalid_actions", f"{section} initial delay is invalid")
+            require(integer(item.get("interval_seconds"), "invalid_actions", f"{section}.interval_seconds") == ACTION_INTERVAL_SECONDS, "invalid_actions", f"{section} interval differs from the closed cadence")
+            require(isinstance(name, str) and integer(item.get("initial_delay_seconds"), "invalid_actions", f"{section}.initial_delay_seconds") == ACTION_INITIAL_DELAYS.get(name), "invalid_actions", f"{section} initial delay differs from the closed stagger")
     for section in ("sampler", "conformance"):
         item = actions.get(section)
         require(isinstance(item, dict), "invalid_actions", f"{section} is absent")
@@ -673,12 +692,12 @@ def base_actions(manifest: dict[str, Any]) -> dict[str, Any]:
         "sampler": {"command": ["scripts/endurance-sample"], "interval_seconds": 30},
         "conformance": {"command": ["scripts/endurance-conformance"], "interval_seconds": 300},
         "lifecycles": [
-            {"name": name, "command": ["scripts/endurance-lifecycle", name], "interval_seconds": 600, "initial_delay_seconds": 30 + ordinal * 15}
-            for ordinal, name in enumerate(sorted(REQUIRED_LIFECYCLES))
+            {"name": name, "command": ["scripts/endurance-lifecycle", name], "interval_seconds": ACTION_INTERVAL_SECONDS, "initial_delay_seconds": ACTION_INITIAL_DELAYS[name]}
+            for name in sorted(REQUIRED_LIFECYCLES)
         ],
         "faults": [
-            {"name": name, "command": ["scripts/endurance-fault", name], "interval_seconds": 900, "initial_delay_seconds": 300 + ordinal * 30}
-            for ordinal, name in enumerate(sorted(REQUIRED_FAULTS))
+            {"name": name, "command": ["scripts/endurance-fault", name], "interval_seconds": ACTION_INTERVAL_SECONDS, "initial_delay_seconds": ACTION_INITIAL_DELAYS[name]}
+            for name in sorted(REQUIRED_FAULTS)
         ],
         "workload_coverage": sorted(REQUIRED_WORKLOADS),
     }
@@ -724,6 +743,16 @@ def self_test() -> None:
         print("action_manifest_drift: rejected")
     else:
         raise AssertionError("drifted action manifest passed")
+    clustered_actions = copy.deepcopy(actions)
+    clustered_actions["faults"][0]["initial_delay_seconds"] = 45
+    try:
+        validate_actions(clustered_actions, manifest)
+    except EvidenceError as error:
+        if error.code != "invalid_actions":
+            raise
+        print("clustered_action_schedule: rejected")
+    else:
+        raise AssertionError("clustered action schedule passed")
     missing_environment = copy.deepcopy(actions)
     del missing_environment["environment"]
     try:
