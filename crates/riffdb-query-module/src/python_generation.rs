@@ -631,7 +631,7 @@ fn emit_python_reactive_module(
                 output.push_str("\n\n");
                 writeln!(
                     output,
-                    "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Delivery:\n    event: {name}Event\n    event_id: str\n    attempt: int\n    lease_token: str\n    expires_at: dict[str, Any]\n    history_incarnation: int\n"
+                    "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Delivery:\n    event: {name}Event\n    event_id: str\n    attempt: int\n    lease_token: str\n    expires_at: dict[str, Any]\n    history_incarnation: int\n\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Batch:\n    events: tuple[{name}Delivery, ...]\n    status: dict[str, Any]\n    disposition: Literal[\"ready\", \"wait_timed_out\", \"bounded_progress\"]\n    wait_timed_out: bool\n"
                 )
                 .expect("String writes cannot fail");
             }
@@ -684,7 +684,7 @@ fn emit_python_reactive_module(
             ReactiveOperationPlanV1::Stream { events, .. } => {
                 emitted = true;
                 let name = pascal(operation.name().as_str());
-                writeln!(output, "    async def {method}(self, parameters: {name}Params, consumer_name: str) -> AsyncIterator[{name}Delivery]:\n        variants = {{", method = python_identifier(&snake(operation.name().as_str()))).expect("String writes cannot fail");
+                writeln!(output, "    async def next_{method}(self, parameters: {name}Params, consumer_name: str, *, batch_limit: int = 1, in_flight_limit: int = 16, lease_seconds: int = 60, maximum_wait_nanos: int = 0) -> {name}Batch:\n        variants = {{", method = python_identifier(&snake(operation.name().as_str()))).expect("String writes cannot fail");
                 for event in events {
                     writeln!(
                         output,
@@ -696,9 +696,10 @@ fn emit_python_reactive_module(
                 }
                 writeln!(
                     output,
-                    "        }}\n        async for item in self._transport._consume_event_stream(reactive_module_hash={}_REACTIVE_MODULE_HASH, operation_name={:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name):\n            raw = dict(item)\n            event_type = raw.pop(\"type\")\n            if not isinstance(event_type, str): raise ValueError(\"invalid RiffDB event type\")\n            delivery_value = raw.pop(\"_delivery\")\n            if not isinstance(delivery_value, dict): raise ValueError(\"invalid RiffDB event delivery\")\n            delivery = cast(dict[str, Any], delivery_value)\n            event_class = variants.get(event_type)\n            if event_class is None: raise ValueError(\"undeclared RiffDB event\")\n            yield {name}Delivery(event=decode_record(event_class, raw), event_id=delivery[\"event_id\"], attempt=delivery[\"attempt\"], lease_token=delivery[\"lease_token\"], expires_at=delivery[\"expires_at\"], history_incarnation=delivery[\"history_incarnation\"])\n",
-                    screaming_snake(reactive.name()),
-                    operation.name().as_str()
+                    "        }}\n        raw_batch = await self._transport._consume_event_batch(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name, batch_limit=batch_limit, in_flight_limit=in_flight_limit, lease_seconds=lease_seconds, maximum_wait_nanos=maximum_wait_nanos)\n        deliveries: list[{name}Delivery] = []\n        for item in cast(list[dict[str, Any]], raw_batch[\"events\"]):\n            raw = dict(item)\n            event_type = raw.pop(\"type\")\n            if not isinstance(event_type, str): raise ValueError(\"invalid RiffDB event type\")\n            delivery_value = raw.pop(\"_delivery\")\n            if not isinstance(delivery_value, dict): raise ValueError(\"invalid RiffDB event delivery\")\n            delivery = cast(dict[str, Any], delivery_value)\n            event_class = variants.get(event_type)\n            if event_class is None: raise ValueError(\"undeclared RiffDB event\")\n            deliveries.append({name}Delivery(event=decode_record(event_class, raw), event_id=delivery[\"event_id\"], attempt=delivery[\"attempt\"], lease_token=delivery[\"lease_token\"], expires_at=delivery[\"expires_at\"], history_incarnation=delivery[\"history_incarnation\"]))\n        return {name}Batch(events=tuple(deliveries), status=cast(dict[str, Any], raw_batch[\"status\"]), disposition=cast(Literal[\"ready\", \"wait_timed_out\", \"bounded_progress\"], raw_batch[\"disposition\"]), wait_timed_out=cast(bool, raw_batch[\"wait_timed_out\"]))\n\n    async def {method}(self, parameters: {name}Params, consumer_name: str) -> AsyncIterator[{name}Delivery]:\n        while True:\n            batch = await self.next_{method}(parameters, consumer_name, maximum_wait_nanos=30_000_000_000)\n            for delivery in batch.events:\n                yield delivery\n",
+                    module = screaming_snake(reactive.name()),
+                    operation = operation.name().as_str(),
+                    method = python_identifier(&snake(operation.name().as_str())),
                 )
                 .expect("String writes cannot fail");
                 writeln!(

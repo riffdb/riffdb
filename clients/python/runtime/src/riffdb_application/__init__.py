@@ -574,38 +574,57 @@ class AsyncApplicationTransport:
         except BaseException as error:
             raise _translate_native(error) from None
 
-    async def _consume_event_stream(self, **request: object) -> AsyncIterator[dict[str, object]]:
+    async def _consume_event_batch(self, **request: object) -> dict[str, object]:
         self._require_open()
         request.setdefault("batch_limit", 1)
         request.setdefault("in_flight_limit", 16)
         request.setdefault("lease_seconds", 60)
-        request.setdefault("maximum_wait_nanos", 30_000_000_000)
-        while not self._closed:
-            try:
-                encoded = json.dumps(request, separators=(",", ":"))
-                batch = json.loads(await self._client.consume_event_stream(encoded))
-                if not isinstance(batch, dict) or not isinstance(batch.get("events"), list):
-                    raise ProtocolError("the native RiffDB event response was invalid")
-                for raw in batch["events"]:
-                    if not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict):
-                        raise ProtocolError("the native RiffDB event delivery was invalid")
-                    yield {
+        request.setdefault("maximum_wait_nanos", 0)
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            batch = json.loads(await self._client.consume_event_stream(encoded))
+            if (
+                not isinstance(batch, dict)
+                or not isinstance(batch.get("events"), list)
+                or not isinstance(batch.get("status"), dict)
+                or batch.get("disposition")
+                not in {"ready", "wait_timed_out", "bounded_progress"}
+                or not isinstance(batch.get("wait_timed_out"), bool)
+            ):
+                raise ProtocolError("the native RiffDB event response was invalid")
+            events: list[dict[str, object]] = []
+            for raw in batch["events"]:
+                if not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict):
+                    raise ProtocolError("the native RiffDB event delivery was invalid")
+                events.append(
+                    {
                         "type": raw.get("type"),
                         **raw["fields"],
                         "_delivery": {
                             key: value for key, value in raw.items() if key != "fields"
                         },
                     }
-            except (
-                ProtocolError,
-                InvalidInput,
-                RiffDbApplicationError,
-                ConnectionFailure,
-                OutcomeUnknown,
-            ):
-                raise
-            except BaseException as error:
-                raise _translate_native(error) from None
+                )
+            return {**batch, "events": events}
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except BaseException as error:
+            raise _translate_native(error) from None
+
+    async def _consume_event_stream(self, **request: object) -> AsyncIterator[dict[str, object]]:
+        request.setdefault("maximum_wait_nanos", 30_000_000_000)
+        while not self._closed:
+            batch = await self._consume_event_batch(**request)
+            events = batch["events"]
+            assert isinstance(events, list)
+            for event in events:
+                yield event
 
     async def _consume_contextual_subscription(
         self, **request: object

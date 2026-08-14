@@ -39,12 +39,15 @@ grants authority by possession. Do not acknowledge before the work it protects
 is durable. Seek is a separately authorized administrative operation and is not
 implicitly granted to a normal consumer role.
 
-The generated Rust client exposes a typed consumer, closed event enum, typed
-delivery batch, `next_<stream>`, acknowledge, negative-acknowledge, seek, and
-status methods. The stable facade also exposes a checked streaming response for
-workers that keep one gRPC stream open. TypeScript and Python expose generated
-async iterators and operation-specific acknowledgement helpers; reconnecting
-the iterator uses the same durable consumer identity.
+The generated Rust and Python clients expose a typed delivery batch,
+`next_<stream>`, acknowledge, negative-acknowledge, seek, and status methods.
+Use the bounded `next_<stream>` pull when an empty batch is meaningful, such as
+scheduled or serverless work. Python's generated method accepts the batch,
+in-flight, lease, and maximum-wait bounds as keyword arguments and defaults to
+a zero-wait pull. The stable Rust facade also exposes a checked streaming
+response for workers that keep one gRPC stream open. TypeScript and Python
+additionally expose generated async iterators; reconnecting an iterator uses
+the same durable consumer identity.
 
 ## Contextual agent subscriptions
 

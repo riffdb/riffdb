@@ -1664,6 +1664,13 @@ class TicketEventsDelivery:
     history_incarnation: int
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TicketEventsBatch:
+    events: tuple[TicketEventsDelivery, ...]
+    status: dict[str, Any]
+    disposition: Literal["ready", "wait_timed_out", "bounded_progress"]
+    wait_timed_out: bool
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageWatchParams:
     organization_id: UUID
     ticket_id: UUID
@@ -1777,11 +1784,13 @@ class TriageTicketItem:
     available_reactions: tuple[TriageTicketReaction, ...]
 
 class AsyncTicketDeskReactiveClient(AsyncTicketDeskClient):
-    async def ticket_events(self, parameters: TicketEventsParams, consumer_name: str) -> AsyncIterator[TicketEventsDelivery]:
+    async def next_ticket_events(self, parameters: TicketEventsParams, consumer_name: str, *, batch_limit: int = 1, in_flight_limit: int = 16, lease_seconds: int = 60, maximum_wait_nanos: int = 0) -> TicketEventsBatch:
         variants = {
             "TicketCreated": TicketEventsTicketCreated,
         }
-        async for item in self._transport._consume_event_stream(reactive_module_hash=TICKET_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="TicketEvents", parameters=encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA), consumer_name=consumer_name):
+        raw_batch = await self._transport._consume_event_batch(reactive_module_hash=TICKET_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="TicketEvents", parameters=encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA), consumer_name=consumer_name, batch_limit=batch_limit, in_flight_limit=in_flight_limit, lease_seconds=lease_seconds, maximum_wait_nanos=maximum_wait_nanos)
+        deliveries: list[TicketEventsDelivery] = []
+        for item in cast(list[dict[str, Any]], raw_batch["events"]):
             raw = dict(item)
             event_type = raw.pop("type")
             if not isinstance(event_type, str): raise ValueError("invalid RiffDB event type")
@@ -1790,7 +1799,14 @@ class AsyncTicketDeskReactiveClient(AsyncTicketDeskClient):
             delivery = cast(dict[str, Any], delivery_value)
             event_class = variants.get(event_type)
             if event_class is None: raise ValueError("undeclared RiffDB event")
-            yield TicketEventsDelivery(event=decode_record(event_class, raw), event_id=delivery["event_id"], attempt=delivery["attempt"], lease_token=delivery["lease_token"], expires_at=delivery["expires_at"], history_incarnation=delivery["history_incarnation"])
+            deliveries.append(TicketEventsDelivery(event=decode_record(event_class, raw), event_id=delivery["event_id"], attempt=delivery["attempt"], lease_token=delivery["lease_token"], expires_at=delivery["expires_at"], history_incarnation=delivery["history_incarnation"]))
+        return TicketEventsBatch(events=tuple(deliveries), status=cast(dict[str, Any], raw_batch["status"]), disposition=cast(Literal["ready", "wait_timed_out", "bounded_progress"], raw_batch["disposition"]), wait_timed_out=cast(bool, raw_batch["wait_timed_out"]))
+
+    async def ticket_events(self, parameters: TicketEventsParams, consumer_name: str) -> AsyncIterator[TicketEventsDelivery]:
+        while True:
+            batch = await self.next_ticket_events(parameters, consumer_name, maximum_wait_nanos=30_000_000_000)
+            for delivery in batch.events:
+                yield delivery
 
     async def ack_ticket_events(self, parameters: TicketEventsParams, consumer_name: str, delivery: TicketEventsDelivery) -> str:
         encoded = encode_reactive_record(parameters, TicketEvents_PARAMETER_SCHEMA)
