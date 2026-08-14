@@ -4635,6 +4635,105 @@ impl LiveQueryClock for FixedLiveQueryClock {
 /// Empty read view that returns absence for every point/scan access.
 pub(crate) struct EmptyQueryExecutor;
 
+/// Read view proving that a bounded top-N result remains complete when its
+/// engine scan reports that later pages exist.
+#[derive(Default)]
+pub(crate) struct ContinuedEmptyQueryExecutor {
+    calls: std::sync::atomic::AtomicU64,
+}
+
+impl riffdb_query_executor::QueryExecutionPort for ContinuedEmptyQueryExecutor {
+    fn execute_query_page(
+        &self,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        parameters: &riffdb_query_executor::QueryParameters,
+        prior: Option<&riffdb_query_executor::QueryContinuation>,
+    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
+    {
+        struct ContinuedEmptyView {
+            application_head: u64,
+        }
+        impl riffdb_query_executor::QueryReadView for ContinuedEmptyView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+                riffdb_query_executor::QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                self.application_head
+            }
+
+            fn point(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
+                Ok(vec![None; predicates.len()])
+            }
+
+            fn scan(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryScanPage::continued(
+                    Vec::new(),
+                    1,
+                    1,
+                    b"more".to_vec(),
+                )
+                .expect("bounded continuation"))
+            }
+
+            fn nearest(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _k: u32,
+                _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<riffdb_query_executor::QueryNearestPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryNearestPage {
+                    rows: Vec::new(),
+                    scanned_rows: 0,
+                })
+            }
+        }
+        let application_head = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        riffdb_query_executor::execute_page_in_snapshot(
+            program,
+            parameters,
+            prior,
+            &mut ContinuedEmptyView { application_head },
+        )
+    }
+
+    fn execute_query_group(
+        &self,
+        _requests: &[riffdb_query_executor::QueryExecutionRequest<'_>],
+    ) -> Result<
+        Vec<riffdb_query_executor::QueryOwnedSnapshot>,
+        riffdb_query_executor::QueryExecutionError,
+    > {
+        Err(riffdb_query_executor::QueryExecutionError::InvalidProgram)
+    }
+}
+
 impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
     fn execute_query_page(
         &self,

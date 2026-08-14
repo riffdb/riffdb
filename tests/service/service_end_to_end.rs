@@ -2221,6 +2221,129 @@ reactive BudgetLive version 1 {
     });
 }
 
+#[test]
+fn live_named_query_accepts_a_bounded_top_n_engine_continuation() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use riffdb_catalog::{ValidatedQueryModule, ValidatedReactiveModule};
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
+    use riffdb_service::{
+        AuthoritativeCommitNotification, LiveNamedQueryApplication, LiveNamedQuerySelection,
+        LiveQueryUpdate, QueryModuleReadPort, QueryParameters, ReactiveModuleReadPort,
+        WatchLiveNamedQueryRequest,
+    };
+    use riffdb_types::{
+        CanonicalValue, CapabilityPermissionV1, CommitSequence, ReactiveOperationName,
+    };
+    use support::{
+        ContinuedEmptyQueryExecutor, FixedLiveQueryClock, FixedQueryModulePort,
+        FixedReactiveModulePort, ServiceHarness,
+    };
+
+    const LIST_BUDGETS: &str = r#"
+query ListBudgets(
+    $organization_id: Budget.organization_id,
+    $fiscal_year: Budget.fiscal_year,
+) {
+    many budgets from Budget
+        where organization_id == $organization_id
+            && fiscal_year == $fiscal_year
+        order by fiscal_year asc
+        take 5
+
+    return Found {
+        budgets: budgets {
+            organization_id
+            fiscal_year
+            approved_amount
+        }
+    }
+
+    outcomes Found
+}
+"#;
+    const REACTIVE: &str = r#"
+reactive ContinuedBudgetLive version 1 {
+  watch ContinuedBudgetWatch($fiscal_year: Budget.fiscal_year, $organization_id: Budget.organization_id) query ListBudgets updates reset;
+}
+"#;
+
+    run_async(async move {
+        let seed = ServiceHarness::operations();
+        let contract = seed.active_validated_bundle();
+        let query_module = ValidatedQueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("continued_budget_live").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("ListBudgets", LIST_BUDGETS).expect("query source")],
+            )
+            .expect("module candidate"),
+            &contract,
+        )
+        .expect("validated query module");
+        let reactive_module = ValidatedReactiveModule::compile(
+            REACTIVE,
+            &contract,
+            std::slice::from_ref(&query_module),
+        )
+        .expect("validated reactive module");
+        let reactive_hash = reactive_module.identity();
+        let operation_name =
+            ReactiveOperationName::new("ContinuedBudgetWatch").expect("operation name");
+        let permission = CapabilityPermissionV1::WatchNamedQuery(
+            contract.lineage().clone(),
+            reactive_hash,
+            operation_name.clone(),
+        );
+        drop(seed);
+
+        let harness = ServiceHarness::live_named_queries(
+            Arc::new(ContinuedEmptyQueryExecutor::default()),
+            Arc::new(FixedQueryModulePort::new(query_module)) as Arc<dyn QueryModuleReadPort>,
+            Arc::new(FixedReactiveModulePort::new(reactive_module))
+                as Arc<dyn ReactiveModuleReadPort>,
+            Arc::new(FixedLiveQueryClock),
+            vec![permission],
+        );
+        let first = CommitSequence::first();
+        harness.set_read_commit_snapshot(harness.commit_snapshot(first));
+        harness.configure_commit_subscription(
+            vec![AuthoritativeCommitNotification::Advanced(first)],
+            false,
+        );
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("fiscal_year".to_owned(), CanonicalValue::I64(2026)),
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([0x31; 16]),
+            ),
+        ]))
+        .expect("canonical parameters");
+        let selection = LiveNamedQuerySelection::new(reactive_hash, operation_name, parameters);
+        let (context, _cancellation) = harness.context(0xb4);
+        let result = harness
+            .service
+            .watch_live_named_query(context, WatchLiveNamedQueryRequest::new(selection))
+            .await
+            .expect("bounded top-N watch establishes");
+        let mut subscription = result.into_subscription();
+        assert!(matches!(
+            subscription.next().await.expect("initial top-N snapshot"),
+            LiveQueryUpdate::Snapshot(_)
+        ));
+        assert!(matches!(
+            subscription
+                .next()
+                .await
+                .expect("continued top-N re-execution"),
+            LiveQueryUpdate::Checkpoint(_)
+        ));
+    });
+}
+
 /// Source and permission fixture shared by the read-path safe-point tests.
 const GET_BUDGET_QUERY: &str = r#"
 query GetBudget(

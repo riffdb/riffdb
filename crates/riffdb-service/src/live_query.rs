@@ -615,9 +615,11 @@ impl ServiceLiveQuerySubscription {
             row_policy.as_ref(),
         )
         .map_err(map_live_execution)?;
-        if snapshot.continuation().is_some() || snapshot.continuation_binding().is_some() {
-            return Err(LiveQueryTerminalReason::IntegrityFailure);
-        }
+        // A static top-N query is one complete watched value even when the
+        // engine proves that later scan pages exist. Reactive compilation
+        // rejects caller-paginated `after` queries, and every invalidation
+        // re-executes this same first bounded page rather than following or
+        // exposing the engine continuation.
         if !self.authorized_now() {
             return Err(LiveQueryTerminalReason::AuthorizationChanged);
         }
@@ -755,9 +757,9 @@ async fn establish_live_query(
         row_policy.as_ref(),
     )
     .map_err(|error| execution_failure(&service, OPERATION, error))?;
-    if snapshot.continuation().is_some() || snapshot.continuation_binding().is_some() {
-        return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
-    }
+    // The engine continuation describes rows beyond this statically bounded
+    // top-N result. It is neither a partial-result signal nor public watch
+    // state; caller-paginated queries are rejected by reactive compilation.
     let initial_result = ExecuteSymbolicQueryResult::from_named_snapshot(
         &prepared.program,
         prepared.query_module.identity(),
