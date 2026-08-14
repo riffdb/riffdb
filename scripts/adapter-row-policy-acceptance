@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ "$#" -ne 3 || "$1" != "--all-languages" || "$2" != "--domains" || "$3" != "payload,mlflow" ]]; then
-    echo "usage: ./scripts/adapter-row-policy-acceptance --all-languages --domains payload,mlflow" >&2
+if [[ "$#" -ne 3 || "$1" != "--all-languages" || "$2" != "--domains" || "$3" != "better-auth,mlflow" ]]; then
+    echo "usage: ./scripts/adapter-row-policy-acceptance --all-languages --domains better-auth,mlflow" >&2
     exit 2
 fi
 
@@ -417,4 +417,4 @@ fi
 printf 'shutdown\n' >&"$server_input_fd"
 wait "$server_pid"
 server_pid=
-echo "Rust, Go, TypeScript, Python, CLI, and MCP passed Payload/MLflow protected commands, revision races, live ACL reset, nested hydration, aggregate inference, isolation, and revocation."
+echo "Rust, Go, TypeScript, Python, CLI, and MCP passed Better Auth/MLflow protected commands, revision races, live policy reset, nested hydration, aggregate inference, isolation, and revocation; the document ACL corpus remains a post-alpha Payload regression fixture."
