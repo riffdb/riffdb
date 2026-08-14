@@ -2079,14 +2079,21 @@ async fn consume_dispatch(
         {
             Ok(Ok(AuthoritativeCommitNotification::Advanced(_))) => {
                 notifications = notifications.saturating_add(1);
-                if notifications > MAX_NOTIFICATIONS {
-                    return Err(finish_failure(
+                if notifications >= MAX_NOTIFICATIONS {
+                    let authorization = begun.reauthorize(&service, &context).await?;
+                    ensure_consumer_authorization(&service, &authorization, operation, &prepared)?;
+                    return finalize_consumer_delivery(
                         &service,
                         &context,
                         &begun,
-                        ServiceFailure::ResponseTooLarge,
+                        &prepared,
+                        Vec::new(),
+                        status,
+                        notification_bound_disposition(protected_delivery),
+                        protected_cursor_lookup.as_ref(),
+                        operation,
                     )
-                    .await);
+                    .await;
                 }
             }
             Err(TailWaitError::MaximumWait) => {
@@ -2138,6 +2145,14 @@ async fn consume_dispatch(
                 .await);
             }
         }
+    }
+}
+
+const fn notification_bound_disposition(protected_delivery: bool) -> EventConsumerPullDisposition {
+    if protected_delivery {
+        EventConsumerPullDisposition::BoundedProgress
+    } else {
+        EventConsumerPullDisposition::Ready
     }
 }
 
@@ -3496,5 +3511,26 @@ impl std::fmt::Debug for AuthoritativeReactiveEventWindow {
             .field("items", &self.events.len())
             .field("payload", &"[REDACTED]")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod notification_bound_tests {
+    use super::{EventConsumerPullDisposition, notification_bound_disposition};
+
+    #[test]
+    fn exact_consumer_closes_notification_bound_as_an_empty_ready_pull() {
+        assert_eq!(
+            notification_bound_disposition(false),
+            EventConsumerPullDisposition::Ready
+        );
+    }
+
+    #[test]
+    fn protected_consumer_closes_notification_bound_without_inference() {
+        assert_eq!(
+            notification_bound_disposition(true),
+            EventConsumerPullDisposition::BoundedProgress
+        );
     }
 }
