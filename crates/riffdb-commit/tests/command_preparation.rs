@@ -766,6 +766,52 @@ fn reimport_authority_and_server_identity_cannot_enter_the_ordinary_constructor(
     );
 }
 
+// WP-606 V10 class-routing pin: even ordinary APPLICATION invoke-command
+// authority cannot route a reimport plan through the ordinary preparation
+// constructor. Reimport plans carry no caller-declared idempotency input by
+// IR validation, so `CommandExecutionPreparation::new` refuses the shape
+// before any authority or proof comparison. Together with the two refusals
+// above this closes the constructor-by-authority matrix for reimport plans.
+#[test]
+fn application_authority_cannot_route_a_reimport_plan_through_ordinary_preparation() {
+    let command = reimport_fixture();
+    assert!(command.resolved.plan().is_reimport());
+    let facts =
+        derive_input_command_facts(command.resolved.plan(), command.normalized_input.clone())
+            .expect("reimport facts");
+    let (control, _handle) = CommandRequestControl::new(
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("deadline"),
+    );
+    let error = CommandExecutionPreparation::new(
+        database(1),
+        &environment("development"),
+        command.resolved.clone(),
+        command.normalized_input.clone(),
+        prepared_server_idempotency(&command),
+        facts,
+        authorized(
+            database(1),
+            environment("development"),
+            PRINCIPAL,
+            command.reference.contract_lineage().clone(),
+            command.reference.contract_version(),
+            command.reference.command_id(),
+            CommandExecutionClass::Mutation,
+            command.partition.clone(),
+        ),
+        request(10),
+        riffdb_types::ServiceIngressKindV1::Grpc,
+        control,
+    )
+    .expect_err("application authority must not reach ordinary derivation with a reimport plan");
+    assert_eq!(
+        error.to_string(),
+        "command execution proofs are inconsistent"
+    );
+}
+
 #[test]
 fn exact_plan_input_and_facts_are_required() {
     let command = command_fixture();
