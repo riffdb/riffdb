@@ -300,8 +300,13 @@ async fn run_client(
                         },
                     )
                     .await?;
-                metrics.lock().await.consumer_acknowledged();
                 record(&metrics, "workflows", tenant, 512, &mut operation_started).await;
+                clients
+                    .agent
+                    .ack_triage_ticket(&triage_consumer, item)
+                    .await?;
+                metrics.lock().await.consumer_acknowledged();
+                record(&metrics, "workflows", tenant, 0, &mut operation_started).await;
             }
         } else if slot < 80 {
             let batch = clients
