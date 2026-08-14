@@ -178,12 +178,10 @@ printf '%s' 'riffdb-idempotency-digest-keys-v1
 1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
 ' >"$environment_root/idempotency.keys"
 chmod 0600 "$environment_root/"*.keys
-mkdir -m 0700 "$environment_root/backups/default"
+mkdir -m 0700 "$environment_root/backups/default" "$environment_root/backups/retention"
 
 cat >"$environment_root/riffdbd.toml" <<EOF
 [server]
-database = "$environment_root/data/ticketdesk.redb"
-environment = "development"
 audience = "riffdb-alpha-endurance"
 capability_keys = "$environment_root/capability.keys"
 idempotency_keys = "$environment_root/idempotency.keys"
@@ -201,8 +199,15 @@ max_streams_per_connection = 256
 handshake_timeout_seconds = 5
 drain_timeout_seconds = 15
 
-[maintenance]
+[databases.default]
+path = "$environment_root/data/ticketdesk.redb"
 backup_root = "$environment_root/backups/default"
+environment = "development"
+
+[databases.retention]
+path = "$environment_root/data/retention.redb"
+backup_root = "$environment_root/backups/retention"
+environment = "development"
 EOF
 chmod 0600 "$environment_root/riffdbd.toml"
 
@@ -262,6 +267,29 @@ cat >>"$environment_root/bootstrap-client.toml" <<EOF
 credential_file = "$environment_root/operator.credential"
 EOF
 
+cat >"$environment_root/retention-bootstrap-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "retention"
+output = "json"
+max_attempts = 3
+tls_trust_root = "$environment_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+chmod 0600 "$environment_root/retention-bootstrap-client.toml"
+if ! "$environment_root/bin/riffdb" --config "$environment_root/retention-bootstrap-client.toml" capability bootstrap \
+    --request "$environment_root/bootstrap.json" \
+    --generate "$environment_root/retention-bootstrap.credential" \
+    --bearer-output "$environment_root/retention-operator.credential" \
+    >"$environment_root/retention-bootstrap-result.json"; then
+    sed -n '1,80p' "$environment_root/retention-bootstrap-result.json" >&2
+    echo "endurance retention operator bootstrap failed" >&2
+    exit 1
+fi
+cat >>"$environment_root/retention-bootstrap-client.toml" <<EOF
+credential_file = "$environment_root/retention-operator.credential"
+EOF
+
 cp examples/ticketdesk/riffdb.application.json "$environment_root/application/"
 cp examples/ticketdesk/riffdb.application.lock.json "$environment_root/application/"
 cp -R examples/ticketdesk/riffdb "$environment_root/application/"
@@ -276,6 +304,13 @@ cp examples/ticketdesk/web/src/generated/client.ts \
         --provision-role TicketDeskApplication --lifetime-seconds 604800 \
         >"$environment_root/application-deploy.json"
 )
+(
+    cd "$environment_root/application"
+    "$environment_root/bin/riffdb" --config "$environment_root/retention-bootstrap-client.toml" \
+        application deploy riffdb.application.json --lock riffdb.application.lock.json \
+        --provision-role TicketDeskApplication --lifetime-seconds 604800 \
+        >"$environment_root/retention-application-deploy.json"
+)
 deployment_root="$environment_root/application/.riffdb/deployments/default"
 application_credential_name="$(jq -r '.role.credential_file | select(length > 0) // "application.credential"' "$deployment_root/deployment-state.json")"
 if [[ "$application_credential_name" == /* ]]; then
@@ -287,16 +322,32 @@ fi
 cp "$application_credential" "$environment_root/application.credential"
 
 bind_role() {
-    local role="$1" principal="$2" output="$3"
-    "$environment_root/bin/riffdb" --config "$environment_root/bootstrap-client.toml" role bind \
+    local config="$1" role="$2" principal="$3" output="$4"
+    "$environment_root/bin/riffdb" --config "$config" role bind \
         "$environment_root/application/riffdb.application.json" \
         --role "$role" --principal "$principal" --actor-kind service \
         --audience riffdb-alpha-endurance --lifetime-seconds 604800 \
         --credential-output "$output" --output json >/dev/null
 }
-bind_role TicketDeskSeeder alpha-endurance-seeder "$environment_root/seeder.credential"
-bind_role TicketDeskAgent alpha-endurance-agent "$environment_root/agent.credential"
+bind_role "$environment_root/bootstrap-client.toml" TicketDeskSeeder \
+    alpha-endurance-seeder "$environment_root/seeder.credential"
+bind_role "$environment_root/bootstrap-client.toml" TicketDeskAgent \
+    alpha-endurance-agent "$environment_root/agent.credential"
+bind_role "$environment_root/retention-bootstrap-client.toml" TicketDeskSeeder \
+    alpha-endurance-retention-seeder "$environment_root/retention-seeder.credential"
 chmod 0600 "$environment_root/"*.credential
+
+cat >"$environment_root/retention-seeder-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "retention"
+output = "json"
+max_attempts = 3
+credential_file = "$environment_root/retention-seeder.credential"
+tls_trust_root = "$environment_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+chmod 0600 "$environment_root/retention-seeder-client.toml"
 
 manifest_hash="$(jq -r '.exact_manifest_hash' "$environment_root/application/riffdb.application.lock.json")"
 catalog_hash="$(jq -r '.artifacts[] | select(.kind == "mcp") | .content_hash' "$environment_root/application/riffdb.application.lock.json")"

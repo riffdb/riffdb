@@ -56,6 +56,7 @@ LATENCY_BOUNDS_US: Final = (
     9_007_199_254_740_991,
 )
 MAX_TRANSIENT_RETRIES: Final = 90
+MODELED_DURABLE_OPERATION_BYTES: Final = 32 * 1024
 
 
 class Metrics:
@@ -189,6 +190,13 @@ def require_environment() -> tuple[Path, int, int, int]:
         raise ValueError("Python endurance workload coverage is incomplete")
     clients = bounded_integer("RIFFDB_ENDURANCE_CLIENTS", 4, 4)
     rate = bounded_integer("RIFFDB_ENDURANCE_MAXIMUM_OPERATIONS_PER_SECOND", 1, 1_024)
+    modeled_bytes = bounded_integer(
+        "RIFFDB_ENDURANCE_MODELED_DURABLE_OPERATION_BYTES",
+        MODELED_DURABLE_OPERATION_BYTES,
+        MODELED_DURABLE_OPERATION_BYTES,
+    )
+    if modeled_bytes != MODELED_DURABLE_OPERATION_BYTES:
+        raise ValueError("Python endurance durable-operation charge differs from the manifest")
     seed = bounded_integer("RIFFDB_ENDURANCE_SEED", 1, 2**64 - 1)
     return root, clients, rate, seed
 
@@ -327,12 +335,16 @@ async def run_iteration(
                 organization_id=organization_id,
             )
         )
-        await metrics.record("writes", tenant, 512, operation_started)
+        await metrics.record(
+            "writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+        )
     elif slot < 70:
         item = await clients.agent.next_triage_ticket(
             triage_parameters, triage_consumer, 0
         )
-        await metrics.record("workflows", tenant, 0, operation_started)
+        await metrics.record(
+            "workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+        )
         operation_started = time.perf_counter_ns()
         if item is not None:
             reaction_identity = item.event_id
@@ -349,13 +361,17 @@ async def run_iteration(
                     organization_id=organization_id,
                 ),
             )
-            await metrics.record("workflows", tenant, 512, operation_started)
+            await metrics.record(
+                "workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+            )
             operation_started = time.perf_counter_ns()
             await clients.agent.ack_triage_ticket(
                 triage_parameters, triage_consumer, item
             )
             await metrics.consumer_acknowledged()
-            await metrics.record("workflows", tenant, 0, operation_started)
+            await metrics.record(
+                "workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+            )
     elif slot < 80:
         batch = await clients.agent.next_ticket_events(
             event_parameters,
@@ -365,14 +381,18 @@ async def run_iteration(
             lease_seconds=60,
             maximum_wait_nanos=0,
         )
-        await metrics.record("events", tenant, 0, operation_started)
+        await metrics.record(
+            "events", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+        )
         if batch.events:
             operation_started = time.perf_counter_ns()
             await clients.agent.ack_ticket_events(
                 event_parameters, event_consumer, batch.events[0]
             )
             await metrics.consumer_acknowledged()
-            await metrics.record("events", tenant, 0, operation_started)
+            await metrics.record(
+                "events", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+            )
     else:
         stream = clients.application.watch_ticket_queue_watch(
             TicketQueueWatchParams(
@@ -402,7 +422,9 @@ async def run_iteration(
         )
         if not created.replayed and isinstance(created.outcome, CreateTicketCreated):
             await metrics.event_emitted()
-        await metrics.record("workflows", tenant, 768, operation_started)
+        await metrics.record(
+            "workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+        )
 
 
 def transient_error(error: Exception) -> bool:
@@ -435,7 +457,9 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 512, operation_started)
+    await metrics.record(
+        "writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+    )
     operation_started = time.perf_counter_ns()
     await clients.seeder.create_user(
         CreateUserInput(
@@ -446,7 +470,9 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 512, operation_started)
+    await metrics.record(
+        "writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+    )
     operation_started = time.perf_counter_ns()
     await clients.seeder.create_project(
         CreateProjectInput(
@@ -456,7 +482,9 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 512, operation_started)
+    await metrics.record(
+        "writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+    )
     operation_started = time.perf_counter_ns()
     created = await clients.application.create_ticket(
         CreateTicketInput(
@@ -472,7 +500,9 @@ async def seed_client(
     )
     if not created.replayed and isinstance(created.outcome, CreateTicketCreated):
         await metrics.event_emitted()
-    await metrics.record("writes", tenant, 768, operation_started)
+    await metrics.record(
+        "writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operation_started
+    )
     await metrics.publish()
 
 

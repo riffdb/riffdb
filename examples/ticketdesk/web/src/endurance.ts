@@ -27,6 +27,7 @@ const LATENCY_BOUNDS_US = [
   12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, Number.MAX_SAFE_INTEGER,
 ] as const;
 const MAX_TRANSIENT_RETRIES = 90;
+const MODELED_DURABLE_OPERATION_BYTES = 32 * 1024;
 
 interface IdentityFile {
   readonly applicationManifestHash: string;
@@ -141,6 +142,11 @@ async function requireEnvironment(): Promise<{
   if (!Array.isArray(coverage) || REQUIRED_COVERAGE.some((name) => !coverage.includes(name))) {
     throw new Error("TypeScript endurance workload coverage is incomplete");
   }
+  boundedNumber(
+    "RIFFDB_ENDURANCE_MODELED_DURABLE_OPERATION_BYTES",
+    MODELED_DURABLE_OPERATION_BYTES,
+    MODELED_DURABLE_OPERATION_BYTES,
+  );
   return {
     artifactRoot,
     clients: boundedNumber("RIFFDB_ENDURANCE_CLIENTS", 4, 4),
@@ -239,10 +245,10 @@ async function runIteration(
       ticket_id: hotTicketId, comment_id: id(namespace, 10_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
       idempotency_key: `endurance-typescript-comment-${index}-${counter}`, organization_id: organizationId,
     });
-    await metrics.record("writes", tenant, 512, operationStarted);
+    await metrics.record("writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
   } else if (slot < 70) {
     const batch = await agent.reactive.nextTriageTicket(eventParameters, triageConsumer, 0);
-    await metrics.record("workflows", tenant, 0, operationStarted);
+    await metrics.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
     operationStarted = performance.now();
     const item = batch.items[0];
     if (item !== undefined) {
@@ -253,11 +259,11 @@ async function runIteration(
         comment_id: item.delivery.event.ticket_id,
         idempotency_key: `endurance-typescript-reaction-${reactionIdentity}`, organization_id: organizationId,
       });
-      await metrics.record("workflows", tenant, 512, operationStarted);
+      await metrics.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
       operationStarted = performance.now();
       await agent.reactive.ackTriageTicket(eventParameters, triageConsumer, item);
       metrics.consumerAcknowledged();
-      await metrics.record("workflows", tenant, 0, operationStarted);
+      await metrics.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
     }
   } else if (slot < 80) {
     const stream = agent.reactive.ticketEvents(eventParameters, eventConsumer, {
@@ -267,13 +273,13 @@ async function runIteration(
     const result = await iterator.next();
     await iterator.return?.();
     if (result.done === true) throw new Error("TypeScript event stream ended before a batch");
-    await metrics.record("events", tenant, 0, operationStarted);
+    await metrics.record("events", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
     operationStarted = performance.now();
     const delivery: TicketEventsDelivery | undefined = result.value.events[0];
     if (delivery !== undefined) {
       await agent.reactive.ackTicketEvents(eventParameters, eventConsumer, delivery);
       metrics.consumerAcknowledged();
-      await metrics.record("events", tenant, 0, operationStarted);
+      await metrics.record("events", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
     }
   } else {
     const abort = new AbortController();
@@ -299,7 +305,7 @@ async function runIteration(
       idempotency_key: `endurance-typescript-cold-${index}-${ordinal}`, organization_id: organizationId,
     });
     if (!created.replayed && created.outcome.outcome === "Created") metrics.eventEmitted();
-    await metrics.record("workflows", tenant, 768, operationStarted);
+    await metrics.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
   }
 }
 
@@ -316,17 +322,17 @@ async function seedClient(
 ): Promise<void> {
   let operationStarted = performance.now();
   await seeder.createOrganization({ name: `Endurance ${tenant}`, organization_id: organizationId, idempotency_key: `endurance-typescript-organization-${tenant}` });
-  await metrics.record("writes", tenant, 512, operationStarted);
+  await metrics.record("writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
   operationStarted = performance.now();
   await seeder.createUser({ email: `typescript-${index}@${tenant}.example.test`, user_id: userId, display_name: `TypeScript endurance ${index}`, idempotency_key: `endurance-typescript-user-${index}`, organization_id: organizationId });
-  await metrics.record("writes", tenant, 512, operationStarted);
+  await metrics.record("writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
   operationStarted = performance.now();
   await seeder.createProject({ name: `TypeScript endurance ${index}`, project_id: projectId, idempotency_key: `endurance-typescript-project-${index}`, organization_id: organizationId });
-  await metrics.record("writes", tenant, 512, operationStarted);
+  await metrics.record("writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
   operationStarted = performance.now();
   const created = await application.createTicket({ title: `TypeScript hot ticket ${index}`, status: "Open", ticket_id: ticketId, project_id: projectId, assignee_id: userId, reporter_id: userId, idempotency_key: `endurance-typescript-hot-${configuration.seed}-${index}`, organization_id: organizationId });
   if (!created.replayed && created.outcome.outcome === "Created") metrics.eventEmitted();
-  await metrics.record("writes", tenant, 768, operationStarted);
+  await metrics.record("writes", tenant, MODELED_DURABLE_OPERATION_BYTES, operationStarted);
   await metrics.publish();
 }
 

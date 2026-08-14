@@ -28,6 +28,7 @@ var latencyBoundsUS = [...]uint64{
 }
 
 const maxTransientRetries uint64 = 90
+const MODELED_DURABLE_OPERATION_BYTES uint64 = 32 * 1024
 
 type identityFile struct {
 	ApplicationManifestHash string `json:"applicationManifestHash"`
@@ -234,6 +235,10 @@ func requireEnvironment() (string, uint64, uint64, uint64, error) {
 	if err != nil {
 		return "", 0, 0, 0, err
 	}
+	modeledBytes, err := boundedUint("RIFFDB_ENDURANCE_MODELED_DURABLE_OPERATION_BYTES", MODELED_DURABLE_OPERATION_BYTES, MODELED_DURABLE_OPERATION_BYTES)
+	if err != nil || modeledBytes != MODELED_DURABLE_OPERATION_BYTES {
+		return "", 0, 0, 0, errors.New("Go endurance durable-operation charge differs from the manifest")
+	}
 	seed, err := boundedUint("RIFFDB_ENDURANCE_SEED", 1, ^uint64(0))
 	return root, clientsCount, rate, seed, err
 }
@@ -346,13 +351,13 @@ func runIteration(ctx context.Context, clientSet *clients, events *ticketdesk.Ti
 			IdempotencyKey: fmt.Sprintf("endurance-go-comment-%d-%d", index, counter), OrganizationId: organizationID,
 		})
 		if err == nil {
-			err = metric.record("writes", tenant, 512, &operationStarted)
+			err = metric.record("writes", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 		}
 	case slot < 70:
 		var batch ticketdesk.ContextualBatch[ticketdesk.TicketEventsEvent]
 		batch, err = triage.Next(ctx, 0)
 		if err == nil {
-			err = metric.record("workflows", tenant, 0, &operationStarted)
+			err = metric.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 		}
 		if err == nil && len(batch.Items) > 0 {
 			item := batch.Items[0]
@@ -376,27 +381,27 @@ func runIteration(ctx context.Context, clientSet *clients, events *ticketdesk.Ti
 				IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%s", item.Delivery.EventID), OrganizationId: organizationID,
 			})
 			if err == nil {
-				err = metric.record("workflows", tenant, 512, &operationStarted)
+				err = metric.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 			}
 			if err == nil {
 				_, err = triage.Ack(ctx, item)
 			}
 			if err == nil {
 				metric.consumerAcknowledged()
-				err = metric.record("workflows", tenant, 0, &operationStarted)
+				err = metric.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 			}
 		}
 	case slot < 80:
 		var batch ticketdesk.ConsumerBatch[ticketdesk.TicketEventsEvent]
 		batch, err = events.Next(ctx, ticketdesk.ConsumerOptions{BatchLimit: 1, InFlightLimit: 4, LeaseSeconds: 60})
 		if err == nil {
-			err = metric.record("events", tenant, 0, &operationStarted)
+			err = metric.record("events", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 		}
 		if err == nil && len(batch.Events) > 0 {
 			_, err = events.Ack(ctx, batch.Events[0])
 			if err == nil {
 				metric.consumerAcknowledged()
-				err = metric.record("events", tenant, 0, &operationStarted)
+				err = metric.record("events", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 			}
 		}
 	default:
@@ -427,7 +432,7 @@ func runIteration(ctx context.Context, clientSet *clients, events *ticketdesk.Ti
 				metric.eventEmitted()
 			}
 		}
-		return metric.record("workflows", tenant, 768, &operationStarted)
+		return metric.record("workflows", tenant, MODELED_DURABLE_OPERATION_BYTES, &operationStarted)
 	}
 	return nil
 }
@@ -456,15 +461,15 @@ func seedClient(ctx context.Context, clients *clients, metric *metrics, tenant, 
 		{func() error {
 			_, err := clients.seeder.CreateOrganization(ctx, ticketdesk.CreateOrganizationInput{Name: "Endurance " + tenant, OrganizationId: organizationID, IdempotencyKey: "endurance-go-organization-" + tenant})
 			return err
-		}, 512},
+		}, MODELED_DURABLE_OPERATION_BYTES},
 		{func() error {
 			_, err := clients.seeder.CreateUser(ctx, ticketdesk.CreateUserInput{Email: fmt.Sprintf("go-%d@%s.example.test", index, tenant), UserId: userID, DisplayName: fmt.Sprintf("Go endurance %d", index), IdempotencyKey: fmt.Sprintf("endurance-go-user-%d", index), OrganizationId: organizationID})
 			return err
-		}, 512},
+		}, MODELED_DURABLE_OPERATION_BYTES},
 		{func() error {
 			_, err := clients.seeder.CreateProject(ctx, ticketdesk.CreateProjectInput{Name: fmt.Sprintf("Go endurance %d", index), ProjectId: projectID, IdempotencyKey: fmt.Sprintf("endurance-go-project-%d", index), OrganizationId: organizationID})
 			return err
-		}, 512},
+		}, MODELED_DURABLE_OPERATION_BYTES},
 		{func() error {
 			created, err := clients.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{Title: fmt.Sprintf("Go hot ticket %d", index), Status: ticketdesk.TicketStatus("Open"), TicketId: ticketID, ProjectId: projectID, AssigneeId: userID, ReporterId: userID, IdempotencyKey: fmt.Sprintf("endurance-go-hot-%d-%d", seed, index), OrganizationId: organizationID})
 			if err == nil && !created.Replayed {
@@ -473,7 +478,7 @@ func seedClient(ctx context.Context, clients *clients, metric *metrics, tenant, 
 				}
 			}
 			return err
-		}, 768},
+		}, MODELED_DURABLE_OPERATION_BYTES},
 	}
 	for _, operation := range operations {
 		started := time.Now()

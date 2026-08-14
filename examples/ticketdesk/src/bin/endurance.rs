@@ -54,6 +54,7 @@ const LATENCY_BOUNDS_US: [u64; 16] = [
     9_007_199_254_740_991,
 ];
 const MAX_TRANSIENT_RETRIES: u64 = 90;
+const MODELED_DURABLE_OPERATION_BYTES: u64 = 32 * 1024;
 
 type WorkerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -180,6 +181,11 @@ async fn main() -> WorkerResult<()> {
     let maximum_rate = required_u64("RIFFDB_ENDURANCE_MAXIMUM_OPERATIONS_PER_SECOND")?;
     if !(1..=1_024).contains(&maximum_rate) {
         return Err("Rust endurance rate exceeds its checked bound".into());
+    }
+    if required_u64("RIFFDB_ENDURANCE_MODELED_DURABLE_OPERATION_BYTES")?
+        != MODELED_DURABLE_OPERATION_BYTES
+    {
+        return Err("Rust endurance durable-operation charge differs from the manifest".into());
     }
     let seed = required_u64("RIFFDB_ENDURANCE_SEED")?;
     let delay = Duration::from_nanos(
@@ -342,13 +348,27 @@ async fn run_iteration(
                 organization_id: organization_id.to_owned(),
             })
             .await?;
-        record(metrics, "writes", tenant, 512, &mut operation_started).await;
+        record(
+            metrics,
+            "writes",
+            tenant,
+            MODELED_DURABLE_OPERATION_BYTES,
+            &mut operation_started,
+        )
+        .await;
     } else if slot < 70 {
         let batch = clients
             .agent
             .next_triage_ticket(triage_consumer.clone(), 0)
             .await?;
-        record(metrics, "workflows", tenant, 0, &mut operation_started).await;
+        record(
+            metrics,
+            "workflows",
+            tenant,
+            MODELED_DURABLE_OPERATION_BYTES,
+            &mut operation_started,
+        )
+        .await;
         if let Some(item) = batch.items.first() {
             let TicketEventsEvent::TicketCreated(event) = &item.event;
             let event_id = item.evidence().delivery.event.id;
@@ -370,13 +390,27 @@ async fn run_iteration(
                     },
                 )
                 .await?;
-            record(metrics, "workflows", tenant, 512, &mut operation_started).await;
+            record(
+                metrics,
+                "workflows",
+                tenant,
+                MODELED_DURABLE_OPERATION_BYTES,
+                &mut operation_started,
+            )
+            .await;
             clients
                 .agent
                 .ack_triage_ticket(triage_consumer, item)
                 .await?;
             metrics.lock().await.consumer_acknowledged();
-            record(metrics, "workflows", tenant, 0, &mut operation_started).await;
+            record(
+                metrics,
+                "workflows",
+                tenant,
+                MODELED_DURABLE_OPERATION_BYTES,
+                &mut operation_started,
+            )
+            .await;
         }
     } else if slot < 80 {
         let batch = clients
@@ -391,14 +425,28 @@ async fn run_iteration(
                 },
             )
             .await?;
-        record(metrics, "events", tenant, 0, &mut operation_started).await;
+        record(
+            metrics,
+            "events",
+            tenant,
+            MODELED_DURABLE_OPERATION_BYTES,
+            &mut operation_started,
+        )
+        .await;
         if let Some(delivery) = batch.events.first() {
             clients
                 .agent
                 .ack_ticket_events(event_consumer, delivery)
                 .await?;
             metrics.lock().await.consumer_acknowledged();
-            record(metrics, "events", tenant, 0, &mut operation_started).await;
+            record(
+                metrics,
+                "events",
+                tenant,
+                MODELED_DURABLE_OPERATION_BYTES,
+                &mut operation_started,
+            )
+            .await;
         }
     } else {
         let mut stream = clients
@@ -436,7 +484,14 @@ async fn run_iteration(
         if !created.replayed && matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
             metrics.lock().await.event_emitted();
         }
-        record(metrics, "workflows", tenant, 768, &mut operation_started).await;
+        record(
+            metrics,
+            "workflows",
+            tenant,
+            MODELED_DURABLE_OPERATION_BYTES,
+            &mut operation_started,
+        )
+        .await;
     }
     Ok(())
 }
@@ -508,7 +563,14 @@ async fn seed_client(
             idempotency_key: format!("endurance-rust-organization-{tenant}"),
         })
         .await?;
-    record(metrics, "writes", tenant, 512, &mut operation_started).await;
+    record(
+        metrics,
+        "writes",
+        tenant,
+        MODELED_DURABLE_OPERATION_BYTES,
+        &mut operation_started,
+    )
+    .await;
     clients
         .seeder
         .create_user(CreateUserInput {
@@ -519,7 +581,14 @@ async fn seed_client(
             organization_id: organization_id.to_owned(),
         })
         .await?;
-    record(metrics, "writes", tenant, 512, &mut operation_started).await;
+    record(
+        metrics,
+        "writes",
+        tenant,
+        MODELED_DURABLE_OPERATION_BYTES,
+        &mut operation_started,
+    )
+    .await;
     clients
         .seeder
         .create_project(CreateProjectInput {
@@ -529,7 +598,14 @@ async fn seed_client(
             organization_id: organization_id.to_owned(),
         })
         .await?;
-    record(metrics, "writes", tenant, 512, &mut operation_started).await;
+    record(
+        metrics,
+        "writes",
+        tenant,
+        MODELED_DURABLE_OPERATION_BYTES,
+        &mut operation_started,
+    )
+    .await;
     let created = clients
         .application
         .create_ticket(CreateTicketInput {
@@ -546,7 +622,14 @@ async fn seed_client(
     if !created.replayed && matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
         metrics.lock().await.event_emitted();
     }
-    record(metrics, "writes", tenant, 768, &mut operation_started).await;
+    record(
+        metrics,
+        "writes",
+        tenant,
+        MODELED_DURABLE_OPERATION_BYTES,
+        &mut operation_started,
+    )
+    .await;
     Ok(())
 }
 

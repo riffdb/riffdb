@@ -10,7 +10,8 @@
       "command": ["scripts/endurance-worker", "--language", "go"],
       "seed": 2002,
       "clients": 4,
-      "maximum_operations_per_second": 1024,
+      "maximum_operations_per_second": 1,
+      "modeled_durable_operation_bytes": 32768,
       "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
       "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
     },
@@ -19,7 +20,8 @@
       "command": ["scripts/endurance-worker", "--language", "python"],
       "seed": 4004,
       "clients": 4,
-      "maximum_operations_per_second": 1024,
+      "maximum_operations_per_second": 1,
+      "modeled_durable_operation_bytes": 32768,
       "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
       "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
     },
@@ -28,7 +30,8 @@
       "command": ["scripts/endurance-worker", "--language", "rust"],
       "seed": 1001,
       "clients": 4,
-      "maximum_operations_per_second": 1024,
+      "maximum_operations_per_second": 1,
+      "modeled_durable_operation_bytes": 32768,
       "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
       "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
     },
@@ -37,7 +40,8 @@
       "command": ["scripts/endurance-worker", "--language", "typescript"],
       "seed": 3003,
       "clients": 4,
-      "maximum_operations_per_second": 1024,
+      "maximum_operations_per_second": 1,
+      "modeled_durable_operation_bytes": 32768,
       "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
       "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
     }

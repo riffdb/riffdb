@@ -166,6 +166,90 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
 }
 
 #[test]
+fn endurance_retention_uses_a_disjoint_event_free_lane() {
+    let root = repository_root();
+    let environment = fs::read_to_string(root.join("scripts/endurance-environment"))
+        .expect("environment source is readable");
+    for required in [
+        "[databases.default]",
+        "[databases.retention]",
+        "data/retention.redb",
+        "backups/retention",
+        "retention-seeder-client.toml",
+        "retention-seeder.credential",
+    ] {
+        assert!(
+            environment.contains(required),
+            "retention environment omits {required}"
+        );
+    }
+
+    let lifecycle = fs::read_to_string(root.join("scripts/endurance-lifecycle"))
+        .expect("lifecycle source is readable");
+    for required in [
+        "advance_retention_lane",
+        "data\" / \"retention.redb",
+        "UndeliveredOutboxLowWater",
+        "primary_fence_binding",
+        "retention_lane",
+        "if len(lines) != 2",
+    ] {
+        assert!(
+            lifecycle.contains(required),
+            "retention lifecycle omits {required}"
+        );
+    }
+    assert!(
+        !lifecycle.contains(
+            "database = environment / \"data\" / \"ticketdesk.redb\"\n    restarted = False\n    try:\n        status = run_json"
+        ),
+        "the event-bearing database must not be used as the advancing retention lane"
+    );
+}
+
+#[test]
+fn endurance_rate_accounting_and_backup_inventory_are_sustainable_for_seventy_two_hours() {
+    let root = repository_root();
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("fixtures/endurance/alpha-manifest-v1.json"))
+            .expect("endurance manifest is readable"),
+    )
+    .expect("endurance manifest is JSON");
+    assert_eq!(
+        manifest["workload"]["maximum_total_operations_per_second"],
+        4
+    );
+    assert_eq!(
+        manifest["workload"]["modeled_durable_operation_bytes"],
+        32 * 1024
+    );
+    assert_eq!(manifest["bounds"]["maximum_retained_backups"], 2);
+
+    let driver = fs::read_to_string(root.join("scripts/alpha-endurance"))
+        .expect("endurance driver is readable");
+    assert!(driver.contains("per_language_rate"));
+    assert!(!driver.contains("\"maximum_operations_per_second\": 1024"));
+
+    let lifecycle = fs::read_to_string(root.join("scripts/endurance-lifecycle"))
+        .expect("lifecycle source is readable");
+    assert!(lifecycle.contains("MAX_RETAINED_BACKUPS = 2"));
+    assert!(lifecycle.contains("retired_backup_names"));
+
+    for worker in [
+        "examples/ticketdesk/src/bin/endurance.rs",
+        "examples/ticketdesk/endurance/go/main.go",
+        "examples/ticketdesk/web/src/endurance.ts",
+        "examples/ticketdesk/endurance/python/main.py",
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains("MODELED_DURABLE_OPERATION_BYTES"),
+            "{worker} lacks durable-class growth accounting"
+        );
+    }
+}
+
+#[test]
 fn endurance_lifecycle_evidence_uses_durable_observations() {
     let root = repository_root();
     let output = Command::new(root.join("scripts/endurance-lifecycle"))

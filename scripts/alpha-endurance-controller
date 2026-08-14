@@ -122,6 +122,8 @@ def load_actions(candidate: Path) -> dict[str, Any]:
             fail("worker client count is invalid")
         if type(worker.get("maximum_operations_per_second")) is not int or not 1 <= worker["maximum_operations_per_second"] <= 100_000:
             fail("worker operation rate is invalid")
+        if worker.get("modeled_durable_operation_bytes") != 32 * 1024:
+            fail("worker durable-operation growth charge is invalid")
         if not isinstance(worker.get("tenants"), list) or not 2 <= len(worker["tenants"]) <= 32:
             fail("worker tenant inventory is invalid")
         if not isinstance(worker.get("coverage"), list):
@@ -376,6 +378,7 @@ def main() -> int:
                     "RIFFDB_ENDURANCE_SEED": str(worker["seed"]),
                     "RIFFDB_ENDURANCE_CLIENTS": str(worker["clients"]),
                     "RIFFDB_ENDURANCE_MAXIMUM_OPERATIONS_PER_SECOND": str(worker["maximum_operations_per_second"]),
+                    "RIFFDB_ENDURANCE_MODELED_DURABLE_OPERATION_BYTES": str(worker["modeled_durable_operation_bytes"]),
                     "RIFFDB_ENDURANCE_TENANTS_JSON": json.dumps(worker["tenants"], separators=(",", ":")),
                     "RIFFDB_ENDURANCE_WORKLOAD_COVERAGE_JSON": json.dumps(worker["coverage"], separators=(",", ":")),
                 }
