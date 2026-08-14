@@ -55,8 +55,10 @@ EXPECTED_PACKAGES = %w[
 ].freeze
 EXPECTED_BINS = {
   "benchmark" => "riffdb-ticketdesk",
+  "endurance" => "riffdb-ticketdesk",
   "riffdb" => "riffdb-cli",
   "riffdb-driverd" => "riffdb-driver-host",
+  "riffdb-operator-driverd" => "riffdb-driver-host",
   "riffdb-mcp" => "riffdb-mcp-stdio",
   "riffdbd" => "riffdb-server",
   "seed" => "riffdb-ticketdesk"
