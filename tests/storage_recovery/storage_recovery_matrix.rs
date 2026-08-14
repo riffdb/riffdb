@@ -47,13 +47,14 @@ use riffdb_storage_api::{
     PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
     PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-    SnapshotReader, SnapshotRequest, StartupValidationInputs, StorageScanLimit,
-    StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
-    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
-    StoredIndexEntryV2, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructuralEvidenceCursor,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StartupValidationInputs,
+    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredAdmissionStateV1,
+    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StoredServiceAuditRecordV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
+    StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
     ValidatedPrefixEntityTransitionCounts, command_write_set_upper_bound_v1, decode_index_entry_v1,
     decode_index_entry_v2, decode_index_migration_row, derive_event_hash_v1,
     encode_administration_sequence_allocator_v1, encode_index_entry_v1_fixture,
@@ -1932,6 +1933,151 @@ fn later_command_fence_drives_durable_predecessor_publication() {
             ServiceAuditPhaseV1::Succeeded,
         ]
     );
+}
+
+#[test]
+fn command_and_service_audit_fences_publish_one_interleaved_durable_prefix() {
+    let path = TestDatabasePath::new("interleaved-command-audit-publication-order");
+    prepare_command_database(&path.0);
+    let mut ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+
+    let first_audit = [standalone_audit_intent(0x91, 1_700_000_091)];
+    let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(first_audit_fence) = ports
+        .submit_service_audit_group(&first_audit)
+        .expect("submit audit predecessor")
+    else {
+        panic!("the standard profile must defer the audit predecessor");
+    };
+
+    let command = command_fixture_at(1);
+    let command_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin interleaved command epoch");
+    let command_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(command_epoch, &command))
+            .expect("seal interleaved command epoch");
+
+    let last_audit = [standalone_audit_intent(0x92, 1_700_000_092)];
+    let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(last_audit_fence) = ports
+        .submit_service_audit_group(&last_audit)
+        .expect("submit audit successor")
+    else {
+        panic!("the standard profile must defer the audit successor");
+    };
+
+    // Independent completion workers may observe the middle and tail receipts
+    // before the head. Either waiter must publish the complete journal prefix
+    // across both frame kinds without treating the other kind as a stale view.
+    let command_result = command_fence
+        .wait()
+        .expect("middle command publishes its audit predecessor");
+    let last_audit_result = last_audit_fence
+        .wait()
+        .expect("tail audit publishes after the command");
+    let first_audit_result = first_audit_fence
+        .wait()
+        .expect("head audit retains its typed result");
+
+    assert_eq!(command_result.len(), 1);
+    assert_eq!(first_audit_result.len(), 1);
+    assert_eq!(last_audit_result.len(), 1);
+    assert_postcommit_command_state(&ports, &command);
+}
+
+#[test]
+fn query_audit_lifecycle_can_span_an_unpublished_command_frame() {
+    let path = TestDatabasePath::new("query-audit-spans-command-publication");
+    prepare_command_database(&path.0);
+    let mut ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let request_id = RequestId::from_bytes(uuid_bytes(0x93)).expect("query audit request");
+    let started = ServiceAuditAppendIntentV1::new(
+        request_id,
+        Timestamp::new(1_700_000_093, 0).expect("query start timestamp"),
+        ServiceOperationV1::ExecuteQuery,
+        ServiceAuditPhaseV1::Started,
+        catalog_principal(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("query started audit");
+    let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(started_fence) = ports
+        .submit_service_audit_group(&[started])
+        .expect("submit query start")
+    else {
+        panic!("the standard profile must defer the query start");
+    };
+
+    let command = command_fixture_at(1);
+    let command_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin command between query audit phases");
+    let command_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(command_epoch, &command))
+            .expect("seal command between query audit phases");
+
+    let terminal = ServiceAuditAppendIntentV1::new(
+        request_id,
+        Timestamp::new(1_700_000_094, 0).expect("query terminal timestamp"),
+        ServiceOperationV1::ExecuteQuery,
+        ServiceAuditPhaseV1::Succeeded,
+        catalog_principal(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("query terminal audit");
+    let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(terminal_fence) = ports
+        .submit_service_audit_group(&[terminal])
+        .expect("submit query terminal")
+    else {
+        panic!("the standard profile must defer the query terminal");
+    };
+
+    let terminal_result = terminal_fence
+        .wait()
+        .expect("query terminal publishes the complete mixed prefix");
+    let command_result = command_fence
+        .wait()
+        .expect("interleaved command retains its typed result");
+    let started_result = started_fence
+        .wait()
+        .expect("query start retains its typed result");
+    assert_eq!(terminal_result.len(), 1);
+    assert_eq!(command_result.len(), 1);
+    assert_eq!(started_result.len(), 1);
+    assert_postcommit_command_state(&ports, &command);
+}
+
+#[test]
+fn direct_barrier_publishes_an_already_submitted_command_prefix() {
+    let path = TestDatabasePath::new("direct-barrier-publishes-command-prefix");
+    prepare_command_database(&path.0);
+    let mut ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let command = command_fixture_at(1);
+    let epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin command before direct barrier");
+    let command_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, &command))
+            .expect("submit command before direct barrier");
+
+    let audit = standalone_audit_intent(0x94, 1_700_000_094);
+    let direct_result = ports
+        .append_service_audit_group(&[audit])
+        .expect("direct barrier publishes and checkpoints the pending command");
+    assert!(matches!(
+        direct_result.as_slice(),
+        [ServiceAuditAppendResult::Appended(_)]
+    ));
+
+    let committed = command_fence
+        .wait()
+        .expect("original command caller retains its result after barrier publication");
+    assert_eq!(committed.len(), 1);
+    assert_postcommit_command_state(&ports, &command);
 }
 
 #[test]

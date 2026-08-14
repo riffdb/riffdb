@@ -3286,6 +3286,7 @@ impl RedbOperationalPorts {
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        self.shared.publish_pending_journal_prefix()?;
         self.shared.poll_async_checkpoint_locked(true)?;
         let journal_checkpoint = self.shared.take_published_journal_suffix_locked(true)?;
         let mut transaction = match self.shared.database.begin_write() {
@@ -4748,6 +4749,26 @@ impl SharedRedb {
             payload,
         });
         Ok(ticket)
+    }
+
+    /// Publishes the complete already-submitted journal prefix before a direct
+    /// redb transition checkpoints it.
+    ///
+    /// The caller owns the mutation gate, so no later journal frame can enter
+    /// the queue between selecting the tail and publishing through it. Fence
+    /// results remain retained on their tickets for the original callers.
+    fn publish_pending_journal_prefix(&self) -> Result<(), StorageError> {
+        let tail = self
+            .publication_queue
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+            .pending
+            .back()
+            .map(|pending| pending.ticket.clone());
+        match tail {
+            Some(tail) => self.publish_through(&tail),
+            None => Ok(()),
+        }
     }
 
     /// Publishes every durable predecessor through `target` while holding one
