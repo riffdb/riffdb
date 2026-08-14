@@ -261,6 +261,10 @@ pub struct RedbStructuralEvidenceSession {
     command_capsules:
         std::collections::BTreeMap<CommitSequence, riffdb_storage_api::StoredCommandCapsuleV1>,
     command_cache_built: bool,
+    /// Exact valid retained bundles collected once from the pinned startup
+    /// snapshot. Entity and index validation consult this bounded set instead
+    /// of reopening and decoding `CONTRACT_BUNDLES` for every retained row.
+    binding_bundles: BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
     entity_chains: Option<EntityChainState>,
     /// Reactive-module hashes a publication record names, collected in ONE
@@ -663,6 +667,7 @@ impl StructuralEvidenceOpen for RedbStore {
         // A new validation session invalidates any previous session's clean claim
         // until this one finishes with zero findings (checkpoint write gate).
         self.shared.set_startup_validation_clean(false);
+        let binding_bundles = collect_bundle_bindings(&transaction)?;
         let mut checkpoint = None;
         let mut checkpoint_verified = false;
         let mut checkpoint_ignored_reason = None;
@@ -746,6 +751,7 @@ impl StructuralEvidenceOpen for RedbStore {
             command_audit_bytes: 0,
             command_capsules: std::collections::BTreeMap::new(),
             command_cache_built: false,
+            binding_bundles,
             entity_chains: None,
             reactive_publication_witness: None,
             reactive_publication_audit_decodes: 0,
@@ -1335,7 +1341,10 @@ fn run_checkpoint_sample_windows(
     use std::ops::Bound::{Included, Unbounded};
 
     let mut inspected = 0_u64;
-    let cached_command_capsules = command_capsule_cache_from_segments(transaction)?;
+    // The sample is strictly bounded. Resolve only the sampled command members
+    // through their owning segments instead of decoding and retaining the
+    // complete command history before inspecting a handful of windows.
+    let sampled_command_capsules = std::collections::BTreeMap::new();
     if s > 0 {
         let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, s);
         for start in starts {
@@ -1407,7 +1416,7 @@ fn run_checkpoint_sample_windows(
                 inspected = inspected.saturating_add(1);
                 if let Some(finding) = inspect_event_row(
                     transaction,
-                    &cached_command_capsules,
+                    &sampled_command_capsules,
                     key.value(),
                     value.value(),
                 )? {
@@ -1417,7 +1426,6 @@ fn run_checkpoint_sample_windows(
         }
     }
     if audit_bound > 0 {
-        let cached_command_audits = command_audit_cache_from_segments(transaction)?;
         let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, audit_bound);
         for start in starts {
             if start == 0 || start > audit_bound {
@@ -1444,16 +1452,7 @@ fn run_checkpoint_sample_windows(
                 }
                 inspected = inspected.saturating_add(1);
                 let index = seq.get().saturating_sub(1);
-                let finding = match inspect_cached_command_audit_row(
-                    transaction,
-                    &cached_command_audits,
-                    index,
-                    key.value(),
-                    value.value(),
-                )? {
-                    Some(finding) => finding,
-                    None => inspect_audit_row(transaction, index, key.value(), value.value())?,
-                };
+                let finding = inspect_audit_row(transaction, index, key.value(), value.value())?;
                 if let Some(finding) = finding {
                     return Ok((inspected, Some(finding)));
                 }
@@ -1633,6 +1632,9 @@ impl RedbStructuralEvidenceSession {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
             return inspect_outbox_row(transaction, &self.command_capsules, &key, &value);
         }
+        if matches!(phase, 21 | 22) {
+            self.ensure_command_cache()?;
+        }
         if phase == 21
             && let Some(finding) = inspect_cached_command_audit_row(
                 self.validation_read.as_ref().ok_or_else(invariant)?,
@@ -1663,10 +1665,14 @@ impl RedbStructuralEvidenceSession {
             self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
         }
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let context = StructuralInspectContext {
+            inputs: &self.inputs,
+            binding_bundles: &self.binding_bundles,
+            database_id: self.database_id,
+        };
         let finding = inspect_table_row_from_bytes(
             transaction,
-            &self.inputs,
-            self.database_id,
+            &context,
             phase,
             inspect_index,
             &key,
@@ -1935,7 +1941,7 @@ impl RedbStructuralEvidenceSession {
             )));
         }
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        if !binding_bundle_exists(transaction, record.schema_binding())? {
+        if !self.binding_bundles.contains(record.schema_binding()) {
             self.maybe_queue_orphans_after_entity_row();
             return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
         }
@@ -2044,14 +2050,6 @@ impl RedbStructuralEvidenceSession {
                 .bytes
                 .is_none();
             if need_open {
-                // A validated-prefix checkpoint may skip every physical
-                // IDEMPOTENCY and COMMITS row, so phases 8 and 10 need not
-                // initialize the segment-owned command cache. The audit
-                // locator streams remain complete and must use that one-pass
-                // cache instead of decoding a predecessor segment per row.
-                if matches!(phase, 21 | 22) {
-                    self.ensure_command_cache()?;
-                }
                 // ENTITIES phase entry: build chains even when the table is empty so
                 // commit-referenced orphans are still validated.
                 if phase == 5 {
@@ -2176,10 +2174,15 @@ impl RedbStructuralEvidenceSession {
     }
 }
 
+struct StructuralInspectContext<'a> {
+    inputs: &'a StartupValidationInputs,
+    binding_bundles: &'a BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
+    database_id: DatabaseId,
+}
+
 fn inspect_table_row_from_bytes(
     transaction: &ReadTransaction,
-    inputs: &StartupValidationInputs,
-    database_id: DatabaseId,
+    context: &StructuralInspectContext<'_>,
     phase: usize,
     index: u64,
     key: &[u8],
@@ -2192,12 +2195,12 @@ fn inspect_table_row_from_bytes(
         4 => inspect_active_query_module_row(transaction, key, value),
         // Phase 5 (ENTITIES) is handled exclusively by
         // `inspect_entity_row_with_chains` in `inspect_structural_forward`.
-        6 => inspect_index_row(transaction, key, value),
-        7 => inspect_epoch_row(transaction, key, value),
+        6 => inspect_index_row(context.binding_bundles, key, value),
+        7 => inspect_epoch_row(context.binding_bundles, key, value),
         // Phase 8 (IDEMPOTENCY) is handled exclusively by
         // `inspect_terminal_row_with_census` in `inspect_structural_forward`,
         // which owns the single terminal-class decode.
-        9 => inspect_pending_row(transaction, inputs, database_id, key, value),
+        9 => inspect_pending_row(transaction, context.inputs, context.database_id, key, value),
         10 => Err(invariant()),
         11 => Err(invariant()),
         12..=14 => Err(invariant()),
@@ -2205,7 +2208,7 @@ fn inspect_table_row_from_bytes(
         16 => inspect_projection_state_row(transaction, key, value),
         17 => inspect_projection_control_row(transaction, key, value),
         18 => inspect_projection_apply_row(transaction, key, value),
-        19 => inspect_capability_row(transaction, inputs, database_id, key, value),
+        19 => inspect_capability_row(transaction, context.inputs, context.database_id, key, value),
         20 => inspect_capability_lookup_row(transaction, key, value),
         21 => inspect_audit_row(transaction, index, key, value),
         22 => inspect_audit_by_request_row(transaction, key, value),
@@ -2217,7 +2220,7 @@ fn inspect_table_row_from_bytes(
         // Phase 28 (REACTIVE_MODULES) is handled exclusively by
         // `inspect_reactive_module_row_with_witness` in
         // `inspect_structural_forward`, which owns the one-pass witness set.
-        29 => inspect_event_consumer_row(transaction, database_id, key, value),
+        29 => inspect_event_consumer_row(transaction, context.database_id, key, value),
         30 => inspect_event_consumer_delivery_row(transaction, key, value),
         31 => inspect_application_installation_campaign_row(key, value),
         _ => Err(invariant()),
@@ -2972,7 +2975,7 @@ fn inspect_active_query_module_row(
 }
 
 fn inspect_index_row(
-    transaction: &ReadTransaction,
+    binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2989,14 +2992,12 @@ fn inspect_index_row(
             return Ok(Some(authoritative(code)));
         }
     };
-    Ok(
-        (!binding_bundle_exists(transaction, record.row().schema_binding())?)
-            .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
-    )
+    Ok((!binding_bundles.contains(record.row().schema_binding()))
+        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
 }
 
 fn inspect_epoch_row(
-    transaction: &ReadTransaction,
+    binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -3004,9 +3005,10 @@ fn inspect_epoch_row(
         let Ok(key) = keys::decode_index_range_prefix_key(key) else {
             return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
         };
-        return Ok((record.target() != &key
-            || !binding_bundle_exists(transaction, record.schema_binding())?)
-        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)));
+        return Ok(
+            (record.target() != &key || !binding_bundles.contains(record.schema_binding()))
+                .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
+        );
     }
     let Ok(key) = keys::decode_partition_index_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
@@ -3016,7 +3018,7 @@ fn inspect_epoch_row(
         Err(code) => return Ok(Some(authoritative(code))),
     };
     Ok(
-        (record.target() != &key || !binding_bundle_exists(transaction, record.schema_binding())?)
+        (record.target() != &key || !binding_bundles.contains(record.schema_binding()))
             .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
     )
 }
@@ -3702,41 +3704,6 @@ fn command_audit_cache_from_segments(
         }
     }
     Ok(audits)
-}
-
-fn command_capsule_cache_from_segments(
-    transaction: &ReadTransaction,
-) -> Result<
-    std::collections::BTreeMap<CommitSequence, riffdb_storage_api::StoredCommandCapsuleV1>,
-    StorageError,
-> {
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let mut capsules = std::collections::BTreeMap::new();
-    let mut retained_bytes = 0usize;
-    for entry in commits.iter().map_err(precommit_storage_error)? {
-        let (_, value) = entry.map_err(precommit_storage_error)?;
-        let segment = match riffdb_storage_api::decode_command_segment_v1(value.value()) {
-            Ok(segment) => segment.into_parts().0,
-            // See `command_audit_cache_from_segments`: authoritative row
-            // inspection, not this accelerator, classifies corrupt bytes.
-            Err(_) => continue,
-        };
-        retained_bytes = retained_bytes
-            .checked_add(value.value().len())
-            .ok_or_else(limit_exceeded)?;
-        if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
-            return Err(limit_exceeded());
-        }
-        for command in segment.commands() {
-            if capsules
-                .insert(command.commit_sequence(), command.base().clone())
-                .is_some()
-            {
-                return Err(corrupt());
-            }
-        }
-    }
-    Ok(capsules)
 }
 
 fn inspect_cached_command_audit_row(
@@ -4738,18 +4705,6 @@ fn plan_bundle_exists(
     )
 }
 
-fn binding_bundle_exists(
-    transaction: &ReadTransaction,
-    binding: &riffdb_storage_api::DurableKeySchemaBindingV1,
-) -> Result<bool, StorageError> {
-    bundle_exists(
-        transaction,
-        binding.lineage(),
-        binding.contract_version(),
-        binding.bundle_hash(),
-    )
-}
-
 fn bundle_pointer_exists(
     transaction: &ReadTransaction,
     pointer: &riffdb_storage_api::ActiveCatalogPointerV1,
@@ -5061,6 +5016,43 @@ fn bundle_exists(
             && value.contract_version() == version
             && value.bundle_hash() == hash
             && hash_contract_bundle(value.canonical_bytes()) == hash))
+}
+
+fn collect_bundle_bindings(
+    transaction: &ReadTransaction,
+) -> Result<BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>, StorageError> {
+    let table = transaction
+        .open_table(CONTRACT_BUNDLES)
+        .map_err(table_error)?;
+    let mut bindings = BTreeSet::new();
+    let mut retained_bytes = 0_usize;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        retained_bytes = retained_bytes
+            .checked_add(key.value().len())
+            .and_then(|bytes| bytes.checked_add(value.value().len()))
+            .ok_or_else(limit_exceeded)?;
+        if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            return Err(limit_exceeded());
+        }
+        let Ok((lineage, version)) = keys::decode_contract_bundle_key(key.value()) else {
+            continue;
+        };
+        let Ok(bundle) = decoded(codec::decode_contract_bundle_v1(value.value())) else {
+            continue;
+        };
+        if bundle.lineage() == &lineage
+            && bundle.contract_version() == version
+            && hash_contract_bundle(bundle.canonical_bytes()) == bundle.bundle_hash()
+        {
+            bindings.insert(riffdb_storage_api::DurableKeySchemaBindingV1::new(
+                lineage,
+                version,
+                bundle.bundle_hash(),
+            ));
+        }
+    }
+    Ok(bindings)
 }
 
 fn commit_exists(
@@ -7185,6 +7177,35 @@ contract RedbMigration version 1 {
         let mut partition = PartitionKeyBuilder::new(aggregate.id());
         partition.push_u64(value).expect("partition key component");
         partition.finish().expect("partition key")
+    }
+
+    #[test]
+    fn cached_bundle_bindings_preserve_index_cross_link_verdicts() {
+        let path = TestDatabasePath::new("cached-index-bundle-binding");
+        let store = deployed_migration_store(&path, database_id(0xa4));
+        let transaction = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read deployed catalog");
+        let bindings = collect_bundle_bindings(&transaction).expect("collect exact bindings");
+        let row = compiled_migration_legacy_row(7);
+        let encoded = riffdb_storage_api::encode_index_entry_v1_fixture(&row)
+            .expect("encode legacy index row")
+            .into_bytes();
+
+        assert_eq!(
+            inspect_index_row(&bindings, row.key().as_bytes(), &encoded)
+                .expect("inspect bound index row"),
+            None,
+            "an exact retained bundle must satisfy the cached cross-link"
+        );
+        assert_eq!(
+            inspect_index_row(&BTreeSet::new(), row.key().as_bytes(), &encoded)
+                .expect("inspect unbound index row"),
+            Some(authoritative(StructuralFindingCode::MissingCrossLink)),
+            "absence from the exact cache must remain fail-closed"
+        );
     }
 
     fn stored_bundle(lineage: &str, version: u64, bytes: &[u8]) -> StoredContractBundleV1 {
