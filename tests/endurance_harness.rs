@@ -209,3 +209,26 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
         );
     }
 }
+
+#[test]
+fn endurance_conformance_reconciles_public_state_and_policy() {
+    let root = repository_root();
+    let source = fs::read_to_string(root.join("scripts/endurance-conformance"))
+        .expect("conformance source is readable");
+    for required in [
+        "riffdb.alpha-endurance-conformance-result/v1",
+        "riffdb.alpha-endurance-conformance-evidence/v1",
+        "TicketPageFound",
+        "ApplicationErrorCode.AUTHORIZATION_DENIED",
+        "adapter_conformance",
+        "row_policy_conformance",
+        "attempts != logical + retries",
+        "application_lock_sha256",
+    ] {
+        assert!(source.contains(required), "conformance omits {required}");
+    }
+    assert!(
+        !source.contains("GetEntity") && !source.contains("ScanIndex"),
+        "conformance must remain on generated application operations"
+    );
+}
