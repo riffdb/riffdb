@@ -18,7 +18,7 @@ from riffdb_application._binding import decode_variant, encode_record
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
-QUERY_MODULE_HASH: Final[str] = "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2"
+QUERY_MODULE_HASH: Final[str] = "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -409,6 +409,101 @@ class TicketPageIntegrityFailure:
     outcome: Literal["IntegrityFailure"] = field(default="IntegrityFailure", init=False)
 
 TicketPageResult: TypeAlias = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure
+
+TICKET_PAGE_PAGED_QUERY_PLAN_HASH: Final[str] = "9c70120d89323d7401b0225b82fd9f691da7e013b19f28f422f41f66ba45bd58"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedParams:
+    organization_id: UUID
+    ticket_id: UUID
+    comments_after: str | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundTicket:
+    ticket_id: UUID
+    project_id: UUID
+    title: str
+    status: TicketStatus
+    created_at: Timestamp
+    updated_at: Timestamp
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundProject:
+    project_id: UUID
+    name: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundOrganization:
+    organization_id: UUID
+    name: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundReporter:
+    user_id: UUID
+    display_name: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundAssignee:
+    user_id: UUID
+    display_name: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundComments:
+    comment_id: UUID
+    body: str
+    author_id: UUID
+    created_at: Timestamp
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFoundLabels:
+    label_id: UUID
+    name: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedFound:
+    ticket: TicketPagePagedFoundTicket
+    project: TicketPagePagedFoundProject
+    organization: TicketPagePagedFoundOrganization
+    reporter: TicketPagePagedFoundReporter
+    assignee: TicketPagePagedFoundAssignee | None
+    comments: tuple[TicketPagePagedFoundComments, ...]
+    labels: tuple[TicketPagePagedFoundLabels, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedNotFound:
+    outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPagePagedIntegrityFailure:
+    outcome: Literal["IntegrityFailure"] = field(default="IntegrityFailure", init=False)
+
+TicketPagePagedResult: TypeAlias = TicketPagePagedFound | TicketPagePagedNotFound | TicketPagePagedIntegrityFailure
+
+TICKET_QUEUE_QUERY_PLAN_HASH: Final[str] = "9b6c3f914d4a2a7abff328b9a3750dcc9b0c904688a8aae8b2bd1276a1c27e3d"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketQueueParams:
+    organization_id: UUID
+    project_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketQueueFoundTickets:
+    organization_id: UUID
+    ticket_id: UUID
+    project_id: UUID
+    title: str
+    status: TicketStatus
+    updated_at: Timestamp
+    reporter_id: UUID
+    assignee_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketQueueFound:
+    tickets: tuple[TicketQueueFoundTickets, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+TicketQueueResult: TypeAlias = TicketQueueFound
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberInput:
@@ -901,6 +996,32 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def ticket_page_paged(self, parameters: TicketPagePagedParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="TicketPagePaged", plan_hash=TICKET_PAGE_PAGED_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": TicketPagePagedFound,
+            "NotFound": TicketPagePagedNotFound,
+            "IntegrityFailure": TicketPagePagedIntegrityFailure,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def ticket_queue(self, parameters: TicketQueueParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="TicketQueue", plan_hash=TICKET_QUEUE_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": TicketQueueFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def add_project_member(self, input: AddProjectMemberInput) -> TypedCommandResult[AddProjectMemberOutcome]:
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -1259,6 +1380,32 @@ class AsyncTicketDeskClient:
             "Found": TicketPageFound,
             "NotFound": TicketPageNotFound,
             "IntegrityFailure": TicketPageIntegrityFailure,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def ticket_page_paged(self, parameters: TicketPagePagedParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="TicketPagePaged", plan_hash=TICKET_PAGE_PAGED_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": TicketPagePagedFound,
+            "NotFound": TicketPagePagedNotFound,
+            "IntegrityFailure": TicketPagePagedIntegrityFailure,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def ticket_queue(self, parameters: TicketQueueParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="TicketQueue", plan_hash=TICKET_QUEUE_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": TicketQueueFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 

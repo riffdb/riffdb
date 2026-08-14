@@ -34,15 +34,17 @@ const APPLICATION_SOURCE: &str = r#"{
     {"name":"ListTicketsByAssignee","source":"queries/ticketdesk/list_tickets_by_assignee.riffq"},
     {"name":"ProjectMembers","source":"queries/ticketdesk/project_members.riffq"},
     {"name":"ProjectSummary","source":"queries/ticketdesk/project_summary.riffq"},
-    {"name":"TicketPage","source":"queries/ticketdesk/ticket_page.riffq"}
+    {"name":"TicketPage","source":"queries/ticketdesk/ticket_page.riffq"},
+    {"name":"TicketPagePaged","source":"queries/ticketdesk/ticket_page_paged.riffq"},
+    {"name":"TicketQueue","source":"queries/ticketdesk/ticket_queue.riffq"}
   ]}],
   "roles":[
-    {"name":"TicketDeskAgent","environment":"development","tenant_scope":"global","queries":["BoardPage200","BoardPage450","BoardPage50","GetTicket","GetUser","ListComments","ListTickets","ListTicketsByAssignee","ProjectMembers","ProjectSummary","TicketPage"],"commands":["AddProjectMember","AttachLabel","CloseTicketWithComment","CreateComment","CreateLabel","CreateOrganization","CreateProject","CreateTicket","CreateUser","OpenTicketWithLabels","SwapMemberRoles"]},
-    {"name":"TicketDeskApplication","environment":"development","tenant_scope":"global","queries":["BoardPage200","BoardPage450","BoardPage50","GetTicket","GetUser","ListComments","ListTickets","ListTicketsByAssignee","ProjectMembers","ProjectSummary","TicketPage"],"commands":["AddProjectMember","AttachLabel","CloseTicketWithComment","CreateComment","CreateLabel","CreateOrganization","CreateProject","CreateTicket","CreateUser","OpenTicketWithLabels","SwapMemberRoles"]}
+    {"name":"TicketDeskAgent","environment":"development","tenant_scope":"global","queries":["BoardPage200","BoardPage450","BoardPage50","GetTicket","GetUser","ListComments","ListTickets","ListTicketsByAssignee","ProjectMembers","ProjectSummary","TicketPage","TicketPagePaged","TicketQueue"],"commands":["AddProjectMember","AttachLabel","CloseTicketWithComment","CreateComment","CreateLabel","CreateOrganization","CreateProject","CreateTicket","CreateUser","OpenTicketWithLabels","SwapMemberRoles"]},
+    {"name":"TicketDeskApplication","environment":"development","tenant_scope":"global","queries":["BoardPage200","BoardPage450","BoardPage50","GetTicket","GetUser","ListComments","ListTickets","ListTicketsByAssignee","ProjectMembers","ProjectSummary","TicketPage","TicketPagePaged","TicketQueue"],"commands":["AddProjectMember","AttachLabel","CloseTicketWithComment","CreateComment","CreateLabel","CreateOrganization","CreateProject","CreateTicket","CreateUser","OpenTicketWithLabels","SwapMemberRoles"]}
   ],
   "seed_inputs":["examples/ticketdesk/seed/dev.jsonl"]
 }"#;
-const QUERIES: [(&str, &str); 11] = [
+const QUERIES: [(&str, &str); 13] = [
     (
         "BoardPage200",
         include_str!("../../../queries/ticketdesk/board_page_200.riffq"),
@@ -86,6 +88,14 @@ const QUERIES: [(&str, &str); 11] = [
     (
         "TicketPage",
         include_str!("../../../queries/ticketdesk/ticket_page.riffq"),
+    ),
+    (
+        "TicketPagePaged",
+        include_str!("../../../queries/ticketdesk/ticket_page_paged.riffq"),
+    ),
+    (
+        "TicketQueue",
+        include_str!("../../../queries/ticketdesk/ticket_queue.riffq"),
     ),
 ];
 

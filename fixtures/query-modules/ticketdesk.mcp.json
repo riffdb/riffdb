@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "0302aaf9057017cfc0d849e2d2d6b7ba3ac5361ea5a179a507f74e1c9cac2181",
+  "application_manifest_hash": "0a5af00aee27a7197a248f7aba4bdbf509b1f7b2aa331c7e77bcb536269d79b7",
   "commands": [
     {
       "annotations": {
@@ -1747,7 +1747,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_board_page200",
       "operation_name": "BoardPage200",
       "result_schema": {
@@ -1836,7 +1836,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_board_page450",
       "operation_name": "BoardPage450",
       "result_schema": {
@@ -1925,7 +1925,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_board_page50",
       "operation_name": "BoardPage50",
       "result_schema": {
@@ -2010,7 +2010,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_get_ticket",
       "operation_name": "GetTicket",
       "result_schema": {
@@ -2104,7 +2104,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_get_user",
       "operation_name": "GetUser",
       "result_schema": {
@@ -2201,7 +2201,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_list_comments",
       "operation_name": "ListComments",
       "result_schema": {
@@ -2301,7 +2301,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_list_tickets",
       "operation_name": "ListTickets",
       "result_schema": {
@@ -2413,7 +2413,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_list_tickets_by_assignee",
       "operation_name": "ListTicketsByAssignee",
       "result_schema": {
@@ -2512,7 +2512,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_project_members",
       "operation_name": "ProjectMembers",
       "result_schema": {
@@ -2585,7 +2585,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_project_summary",
       "operation_name": "ProjectSummary",
       "result_schema": {
@@ -2692,7 +2692,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2",
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
       "name": "ticketdesk_ticket_page",
       "operation_name": "TicketPage",
       "result_schema": {
@@ -2898,6 +2898,341 @@
         ]
       },
       "title": "Run TicketPage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact TicketPagePaged named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "comments_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "ticket_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
+      "name": "ticketdesk_ticket_page_paged",
+      "operation_name": "TicketPagePaged",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "assignee": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "display_name": {
+                        "type": "string"
+                      },
+                      "user_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "user_id",
+                      "display_name"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "comments": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author_id": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "comment_id": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "comment_id",
+                    "body",
+                    "author_id",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              "labels": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "label_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label_id",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              "organization": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "name"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "project": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project_id",
+                  "name"
+                ],
+                "type": "object"
+              },
+              "reporter": {
+                "additionalProperties": false,
+                "properties": {
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "display_name"
+                ],
+                "type": "object"
+              },
+              "ticket": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ticket_id",
+                  "project_id",
+                  "title",
+                  "status",
+                  "created_at",
+                  "updated_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "ticket",
+              "project",
+              "organization",
+              "reporter",
+              "assignee",
+              "comments",
+              "labels"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "IntegrityFailure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run TicketPagePaged"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact TicketQueue named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "project_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c",
+      "name": "ticketdesk_ticket_queue",
+      "operation_name": "TicketQueue",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "tickets": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "assignee_id": {
+                      "type": "string"
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "reporter_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "ticket_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "ticket_id",
+                    "project_id",
+                    "title",
+                    "status",
+                    "updated_at",
+                    "reporter_id",
+                    "assignee_id"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "tickets"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run TicketQueue"
     }
   ]
 }

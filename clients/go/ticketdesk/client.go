@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "2519617fbb31d43b2625f23d53e1f150a847562719b14425586b6903501e3eb2"
+const QueryModuleHash = "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
 const ContractLineage = "TicketDesk"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
@@ -396,6 +396,87 @@ type TicketPageIntegrityFailure struct {
 }
 
 func (TicketPageIntegrityFailure) isTicketPageResult() {}
+
+type TicketPagePagedParams struct {
+	OrganizationId string
+	TicketId       string
+	CommentsAfter  *string
+}
+
+type TicketPagePagedResult interface{ isTicketPagePagedResult() }
+type TicketPagePagedFound struct {
+	Outcome string
+	Ticket  struct {
+		TicketId  string
+		ProjectId string
+		Title     string
+		Status    TicketStatus
+		CreatedAt riffdb.Instant
+		UpdatedAt riffdb.Instant
+	}
+	Project struct {
+		ProjectId string
+		Name      string
+	}
+	Organization struct {
+		OrganizationId string
+		Name           string
+	}
+	Reporter struct {
+		UserId      string
+		DisplayName string
+	}
+	Assignee *struct {
+		UserId      string
+		DisplayName string
+	}
+	Comments []struct {
+		CommentId string
+		Body      string
+		AuthorId  string
+		CreatedAt riffdb.Instant
+	}
+	Labels []struct {
+		LabelId string
+		Name    string
+	}
+}
+
+func (TicketPagePagedFound) isTicketPagePagedResult() {}
+
+type TicketPagePagedNotFound struct {
+	Outcome string
+}
+
+func (TicketPagePagedNotFound) isTicketPagePagedResult() {}
+
+type TicketPagePagedIntegrityFailure struct {
+	Outcome string
+}
+
+func (TicketPagePagedIntegrityFailure) isTicketPagePagedResult() {}
+
+type TicketQueueParams struct {
+	OrganizationId string
+	ProjectId      string
+}
+
+type TicketQueueResult interface{ isTicketQueueResult() }
+type TicketQueueFound struct {
+	Outcome string
+	Tickets []struct {
+		OrganizationId string
+		TicketId       string
+		ProjectId      string
+		Title          string
+		Status         TicketStatus
+		UpdatedAt      riffdb.Instant
+		ReporterId     string
+		AssigneeId     string
+	}
+}
+
+func (TicketQueueFound) isTicketQueueResult() {}
 
 type AddProjectMemberInput struct {
 	Role           string
@@ -2591,6 +2672,419 @@ func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParam
 		return QueryResult[TicketPageResult]{}, err
 	}
 	return QueryResult[TicketPageResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+
+var TicketPagePagedOperation = riffdb.Operation{Name: "ticketdesk_ticket_page_paged", InputSchemaHash: "f4ef29944234e1bef0c0a46448589cd8f29f3666f133ac022e8f11443c4193b0"}
+
+func decodeTicketPagePagedResult(value riffdb.Value) (TicketPagePagedResult, error) {
+	fields, err := riffdb.RecordFields(value)
+	if err != nil {
+		return nil, err
+	}
+	outcomeValue, err := requiredField(fields, "outcome")
+	if err != nil {
+		return nil, err
+	}
+	outcome, err := riffdb.EnumValue(outcomeValue)
+	if err != nil {
+		return nil, err
+	}
+	var raw riffdb.Value
+	switch outcome {
+	case "Found":
+		result := TicketPagePagedFound{Outcome: outcome}
+		raw, err = requiredField(fields, "ticket")
+		if err != nil {
+			return nil, err
+		}
+		result.Ticket, err = func() (struct {
+			TicketId  string
+			ProjectId string
+			Title     string
+			Status    TicketStatus
+			CreatedAt riffdb.Instant
+			UpdatedAt riffdb.Instant
+		}, error) { fields, err := riffdb.RecordFields(raw); if err != nil {
+			return struct {
+				TicketId  string
+				ProjectId string
+				Title     string
+				Status    TicketStatus
+				CreatedAt riffdb.Instant
+				UpdatedAt riffdb.Instant
+			}{}, err
+		}; var result struct {
+			TicketId  string
+			ProjectId string
+			Title     string
+			Status    TicketStatus
+			CreatedAt riffdb.Instant
+			UpdatedAt riffdb.Instant
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "ticket_id"); if err != nil {
+			return result, err
+		}; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "project_id"); if err != nil {
+			return result, err
+		}; result.ProjectId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "title"); if err != nil {
+			return result, err
+		}; result.Title, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "status"); if err != nil {
+			return result, err
+		}; result.Status, err = func() (TicketStatus, error) { raw, err := riffdb.EnumValue(raw); return TicketStatus(raw), err }(); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "created_at"); if err != nil {
+			return result, err
+		}; result.CreatedAt, err = riffdb.TimestampValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "updated_at"); if err != nil {
+			return result, err
+		}; result.UpdatedAt, err = riffdb.TimestampValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }()
+		if err != nil {
+			return nil, err
+		}
+		raw, err = requiredField(fields, "project")
+		if err != nil {
+			return nil, err
+		}
+		result.Project, err = func() (struct {
+			ProjectId string
+			Name      string
+		}, error) { fields, err := riffdb.RecordFields(raw); if err != nil {
+			return struct {
+				ProjectId string
+				Name      string
+			}{}, err
+		}; var result struct {
+			ProjectId string
+			Name      string
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "project_id"); if err != nil {
+			return result, err
+		}; result.ProjectId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "name"); if err != nil {
+			return result, err
+		}; result.Name, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }()
+		if err != nil {
+			return nil, err
+		}
+		raw, err = requiredField(fields, "organization")
+		if err != nil {
+			return nil, err
+		}
+		result.Organization, err = func() (struct {
+			OrganizationId string
+			Name           string
+		}, error) { fields, err := riffdb.RecordFields(raw); if err != nil {
+			return struct {
+				OrganizationId string
+				Name           string
+			}{}, err
+		}; var result struct {
+			OrganizationId string
+			Name           string
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "organization_id"); if err != nil {
+			return result, err
+		}; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "name"); if err != nil {
+			return result, err
+		}; result.Name, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }()
+		if err != nil {
+			return nil, err
+		}
+		raw, err = requiredField(fields, "reporter")
+		if err != nil {
+			return nil, err
+		}
+		result.Reporter, err = func() (struct {
+			UserId      string
+			DisplayName string
+		}, error) { fields, err := riffdb.RecordFields(raw); if err != nil {
+			return struct {
+				UserId      string
+				DisplayName string
+			}{}, err
+		}; var result struct {
+			UserId      string
+			DisplayName string
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "user_id"); if err != nil {
+			return result, err
+		}; result.UserId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "display_name"); if err != nil {
+			return result, err
+		}; result.DisplayName, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }()
+		if err != nil {
+			return nil, err
+		}
+		raw, err = requiredField(fields, "assignee")
+		if err != nil {
+			return nil, err
+		}
+		result.Assignee, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (struct {
+			UserId      string
+			DisplayName string
+		}, error) { return func() (struct {
+			UserId      string
+			DisplayName string
+		}, error) { fields, err := riffdb.RecordFields(item); if err != nil {
+			return struct {
+				UserId      string
+				DisplayName string
+			}{}, err
+		}; var result struct {
+			UserId      string
+			DisplayName string
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "user_id"); if err != nil {
+			return result, err
+		}; result.UserId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "display_name"); if err != nil {
+			return result, err
+		}; result.DisplayName, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }() })
+		if err != nil {
+			return nil, err
+		}
+		raw, err = requiredField(fields, "comments")
+		if err != nil {
+			return nil, err
+		}
+		result.Comments, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct {
+			CommentId string
+			Body      string
+			AuthorId  string
+			CreatedAt riffdb.Instant
+		}, error) { return func() (struct {
+			CommentId string
+			Body      string
+			AuthorId  string
+			CreatedAt riffdb.Instant
+		}, error) { fields, err := riffdb.RecordFields(item); if err != nil {
+			return struct {
+				CommentId string
+				Body      string
+				AuthorId  string
+				CreatedAt riffdb.Instant
+			}{}, err
+		}; var result struct {
+			CommentId string
+			Body      string
+			AuthorId  string
+			CreatedAt riffdb.Instant
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "comment_id"); if err != nil {
+			return result, err
+		}; result.CommentId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "body"); if err != nil {
+			return result, err
+		}; result.Body, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "author_id"); if err != nil {
+			return result, err
+		}; result.AuthorId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "created_at"); if err != nil {
+			return result, err
+		}; result.CreatedAt, err = riffdb.TimestampValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }() })
+		if err != nil {
+			return nil, err
+		}
+		raw, err = requiredField(fields, "labels")
+		if err != nil {
+			return nil, err
+		}
+		result.Labels, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct {
+			LabelId string
+			Name    string
+		}, error) { return func() (struct {
+			LabelId string
+			Name    string
+		}, error) { fields, err := riffdb.RecordFields(item); if err != nil {
+			return struct {
+				LabelId string
+				Name    string
+			}{}, err
+		}; var result struct {
+			LabelId string
+			Name    string
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "label_id"); if err != nil {
+			return result, err
+		}; result.LabelId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "name"); if err != nil {
+			return result, err
+		}; result.Name, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }() })
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "NotFound":
+		result := TicketPagePagedNotFound{Outcome: outcome}
+		return result, nil
+	case "IntegrityFailure":
+		result := TicketPagePagedIntegrityFailure{Outcome: outcome}
+		return result, nil
+	default:
+		return nil, errors.New("RiffDB driver returned unknown query outcome")
+	}
+}
+func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPagePagedParams, options QueryOptions) (QueryResult[TicketPagePagedResult], error) {
+	input := map[string]riffdb.Value{}
+	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
+	input["ticket_id"] = riffdb.UUID(parameters.TicketId)
+	if parameters.CommentsAfter != nil {
+		input["comments_after"] = riffdb.Optional(parameters.CommentsAfter, func(item string) riffdb.Value { return riffdb.String(item) })
+	}
+	response, err := client.session.Invoke(ctx, TicketPagePagedOperation, input, options)
+	if err != nil {
+		return QueryResult[TicketPagePagedResult]{}, err
+	}
+	if response.ApplicationHead == nil {
+		return QueryResult[TicketPagePagedResult]{}, errors.New("RiffDB driver omitted query frontier")
+	}
+	value, err := decodeTicketPagePagedResult(response.Value)
+	if err != nil {
+		return QueryResult[TicketPagePagedResult]{}, err
+	}
+	return QueryResult[TicketPagePagedResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+
+var TicketQueueOperation = riffdb.Operation{Name: "ticketdesk_ticket_queue", InputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68"}
+
+func decodeTicketQueueResult(value riffdb.Value) (TicketQueueResult, error) {
+	fields, err := riffdb.RecordFields(value)
+	if err != nil {
+		return nil, err
+	}
+	outcomeValue, err := requiredField(fields, "outcome")
+	if err != nil {
+		return nil, err
+	}
+	outcome, err := riffdb.EnumValue(outcomeValue)
+	if err != nil {
+		return nil, err
+	}
+	var raw riffdb.Value
+	switch outcome {
+	case "Found":
+		result := TicketQueueFound{Outcome: outcome}
+		raw, err = requiredField(fields, "tickets")
+		if err != nil {
+			return nil, err
+		}
+		result.Tickets, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct {
+			OrganizationId string
+			TicketId       string
+			ProjectId      string
+			Title          string
+			Status         TicketStatus
+			UpdatedAt      riffdb.Instant
+			ReporterId     string
+			AssigneeId     string
+		}, error) { return func() (struct {
+			OrganizationId string
+			TicketId       string
+			ProjectId      string
+			Title          string
+			Status         TicketStatus
+			UpdatedAt      riffdb.Instant
+			ReporterId     string
+			AssigneeId     string
+		}, error) { fields, err := riffdb.RecordFields(item); if err != nil {
+			return struct {
+				OrganizationId string
+				TicketId       string
+				ProjectId      string
+				Title          string
+				Status         TicketStatus
+				UpdatedAt      riffdb.Instant
+				ReporterId     string
+				AssigneeId     string
+			}{}, err
+		}; var result struct {
+			OrganizationId string
+			TicketId       string
+			ProjectId      string
+			Title          string
+			Status         TicketStatus
+			UpdatedAt      riffdb.Instant
+			ReporterId     string
+			AssigneeId     string
+		}; var raw riffdb.Value; raw, err = requiredField(fields, "organization_id"); if err != nil {
+			return result, err
+		}; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "ticket_id"); if err != nil {
+			return result, err
+		}; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "project_id"); if err != nil {
+			return result, err
+		}; result.ProjectId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "title"); if err != nil {
+			return result, err
+		}; result.Title, err = riffdb.StringValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "status"); if err != nil {
+			return result, err
+		}; result.Status, err = func() (TicketStatus, error) { raw, err := riffdb.EnumValue(raw); return TicketStatus(raw), err }(); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "updated_at"); if err != nil {
+			return result, err
+		}; result.UpdatedAt, err = riffdb.TimestampValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "reporter_id"); if err != nil {
+			return result, err
+		}; result.ReporterId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; raw, err = requiredField(fields, "assignee_id"); if err != nil {
+			return result, err
+		}; result.AssigneeId, err = riffdb.UUIDValue(raw); if err != nil {
+			return result, err
+		}; return result, nil }() })
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	default:
+		return nil, errors.New("RiffDB driver returned unknown query outcome")
+	}
+}
+func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueueParams, options QueryOptions) (QueryResult[TicketQueueResult], error) {
+	input := map[string]riffdb.Value{}
+	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
+	input["project_id"] = riffdb.UUID(parameters.ProjectId)
+	response, err := client.session.Invoke(ctx, TicketQueueOperation, input, options)
+	if err != nil {
+		return QueryResult[TicketQueueResult]{}, err
+	}
+	if response.ApplicationHead == nil {
+		return QueryResult[TicketQueueResult]{}, errors.New("RiffDB driver omitted query frontier")
+	}
+	value, err := decodeTicketQueueResult(response.Value)
+	if err != nil {
+		return QueryResult[TicketQueueResult]{}, err
+	}
+	return QueryResult[TicketQueueResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
 var AddProjectMemberOperation = riffdb.Operation{Name: "ticketdesk_add_project_member", InputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590"}

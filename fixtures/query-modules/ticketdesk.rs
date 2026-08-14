@@ -5,7 +5,7 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x25, 0x19, 0x61, 0x7f, 0xbb, 0x31, 0xd4, 0x3b, 0x26, 0x25, 0xf2, 0x3d, 0x53, 0xe1, 0xf1, 0x50, 0xa8, 0x47, 0x56, 0x27, 0x19, 0xb1, 0x44, 0x25, 0x58, 0x6b, 0x69, 0x03, 0x50, 0x1e, 0x3e, 0xb2];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x00, 0x16, 0x79, 0xe8, 0xe2, 0xe2, 0xe2, 0x9c, 0x46, 0xbe, 0x0b, 0xf8, 0xe8, 0x56, 0x74, 0xf8, 0x74, 0xf3, 0xe2, 0x55, 0xc3, 0x0b, 0x6a, 0x34, 0xc4, 0x0e, 0xd8, 0x24, 0xf4, 0x08, 0x96, 0x4c];
 pub const CONTRACT_LINEAGE: &str = "TicketDesk";
 pub const CONTRACT_VERSION: u64 = 1;
 
@@ -1056,6 +1056,294 @@ fn decode_ticket_page_found_labels_record(mut record: ApplicationRecord) -> Resu
     let value = TicketPageFoundLabels {
         label_id: application_uuid(take_application_value(&mut record.fields, "label_id")?)?,
         name: application_string(take_application_value(&mut record.fields, "name")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedParams {
+    pub organization_id: String,
+    pub ticket_id: String,
+    pub comments_after: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundTicket {
+    pub ticket_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub created_at: TimestampValue,
+    pub updated_at: TimestampValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundProject {
+    pub project_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundOrganization {
+    pub organization_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundReporter {
+    pub user_id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundAssignee {
+    pub user_id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundComments {
+    pub comment_id: String,
+    pub body: String,
+    pub author_id: String,
+    pub created_at: TimestampValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFoundLabels {
+    pub label_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedFound {
+    pub ticket: TicketPagePagedFoundTicket,
+    pub project: TicketPagePagedFoundProject,
+    pub organization: TicketPagePagedFoundOrganization,
+    pub reporter: TicketPagePagedFoundReporter,
+    pub assignee: Option<TicketPagePagedFoundAssignee>,
+    pub comments: Vec<TicketPagePagedFoundComments>,
+    pub labels: Vec<TicketPagePagedFoundLabels>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedNotFound {
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedIntegrityFailure {
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TicketPagePagedResult {
+    Found(Box<TicketPagePagedFound>),
+    NotFound(Box<TicketPagePagedNotFound>),
+    IntegrityFailure(Box<TicketPagePagedIntegrityFailure>),
+}
+
+pub const TICKET_PAGE_PAGED_QUERY_PLAN_HASH: [u8; 32] = [0x9c, 0x70, 0x12, 0x0d, 0x89, 0x32, 0x3d, 0x74, 0x01, 0xb0, 0x22, 0x5b, 0x82, 0xfd, 0x9f, 0x69, 0x1d, 0xa7, 0xe0, 0x13, 0xb1, 0x9f, 0x28, 0xf4, 0x22, 0xf4, 0x1f, 0x66, 0xba, 0x45, 0xbd, 0x58];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPagePagedQuery(pub TicketPagePagedParams);
+impl GeneratedQuery for TicketPagePagedQuery {
+    type Output = TicketPagePagedResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("ticket_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.ticket_id)?));
+        parameters.insert("comments_after".to_owned(), match self.0.comments_after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "TicketPagePaged",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(TICKET_PAGE_PAGED_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = TicketPagePagedFound {
+                    ticket: decode_ticket_page_paged_found_ticket_record(one_result_record(take_result_field(&mut response.fields, "ticket")?)?)?,
+                    project: decode_ticket_page_paged_found_project_record(one_result_record(take_result_field(&mut response.fields, "project")?)?)?,
+                    organization: decode_ticket_page_paged_found_organization_record(one_result_record(take_result_field(&mut response.fields, "organization")?)?)?,
+                    reporter: decode_ticket_page_paged_found_reporter_record(one_result_record(take_result_field(&mut response.fields, "reporter")?)?)?,
+                    assignee: optional_result_record(take_result_field(&mut response.fields, "assignee")?)?.map(decode_ticket_page_paged_found_assignee_record).transpose()?,
+                    comments: many_result_records(take_result_field(&mut response.fields, "comments")?)?.into_iter().map(decode_ticket_page_paged_found_comments_record).collect::<Result<Vec<_>, _>>()?,
+                    labels: many_result_records(take_result_field(&mut response.fields, "labels")?)?.into_iter().map(decode_ticket_page_paged_found_labels_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(TicketPagePagedResult::Found(Box::new(decoded)))
+            },
+            "NotFound" => {
+                let decoded = TicketPagePagedNotFound {
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(TicketPagePagedResult::NotFound(Box::new(decoded)))
+            },
+            "IntegrityFailure" => {
+                let decoded = TicketPagePagedIntegrityFailure {
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(TicketPagePagedResult::IntegrityFailure(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_ticket_page_paged_found_ticket_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundTicket, ApplicationClientError> {
+    let value = TicketPagePagedFoundTicket {
+        ticket_id: application_uuid(take_application_value(&mut record.fields, "ticket_id")?)?,
+        project_id: application_uuid(take_application_value(&mut record.fields, "project_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        status: application_enum(take_application_value(&mut record.fields, "status")?)?,
+        created_at: application_timestamp(take_application_value(&mut record.fields, "created_at")?)?,
+        updated_at: application_timestamp(take_application_value(&mut record.fields, "updated_at")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_paged_found_project_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundProject, ApplicationClientError> {
+    let value = TicketPagePagedFoundProject {
+        project_id: application_uuid(take_application_value(&mut record.fields, "project_id")?)?,
+        name: application_string(take_application_value(&mut record.fields, "name")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_paged_found_organization_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundOrganization, ApplicationClientError> {
+    let value = TicketPagePagedFoundOrganization {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        name: application_string(take_application_value(&mut record.fields, "name")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_paged_found_reporter_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundReporter, ApplicationClientError> {
+    let value = TicketPagePagedFoundReporter {
+        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
+        display_name: application_string(take_application_value(&mut record.fields, "display_name")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_paged_found_assignee_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundAssignee, ApplicationClientError> {
+    let value = TicketPagePagedFoundAssignee {
+        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
+        display_name: application_string(take_application_value(&mut record.fields, "display_name")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_paged_found_comments_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundComments, ApplicationClientError> {
+    let value = TicketPagePagedFoundComments {
+        comment_id: application_uuid(take_application_value(&mut record.fields, "comment_id")?)?,
+        body: application_string(take_application_value(&mut record.fields, "body")?)?,
+        author_id: application_uuid(take_application_value(&mut record.fields, "author_id")?)?,
+        created_at: application_timestamp(take_application_value(&mut record.fields, "created_at")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_paged_found_labels_record(mut record: ApplicationRecord) -> Result<TicketPagePagedFoundLabels, ApplicationClientError> {
+    let value = TicketPagePagedFoundLabels {
+        label_id: application_uuid(take_application_value(&mut record.fields, "label_id")?)?,
+        name: application_string(take_application_value(&mut record.fields, "name")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketQueueParams {
+    pub organization_id: String,
+    pub project_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketQueueFoundTickets {
+    pub organization_id: String,
+    pub ticket_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub updated_at: TimestampValue,
+    pub reporter_id: String,
+    pub assignee_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketQueueFound {
+    pub tickets: Vec<TicketQueueFoundTickets>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TicketQueueResult {
+    Found(Box<TicketQueueFound>),
+}
+
+pub const TICKET_QUEUE_QUERY_PLAN_HASH: [u8; 32] = [0x9b, 0x6c, 0x3f, 0x91, 0x4d, 0x4a, 0x2a, 0x7a, 0xbf, 0xf3, 0x28, 0xb9, 0xa3, 0x75, 0x0d, 0xcc, 0x9b, 0x0c, 0x90, 0x46, 0x88, 0xa8, 0xaa, 0xe8, 0xb2, 0xbd, 0x12, 0x76, 0xa1, 0xc2, 0x7e, 0x3d];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketQueueQuery(pub TicketQueueParams);
+impl GeneratedQuery for TicketQueueQuery {
+    type Output = TicketQueueResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "TicketQueue",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(TICKET_QUEUE_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = TicketQueueFound {
+                    tickets: many_result_records(take_result_field(&mut response.fields, "tickets")?)?.into_iter().map(decode_ticket_queue_found_tickets_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(TicketQueueResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_ticket_queue_found_tickets_record(mut record: ApplicationRecord) -> Result<TicketQueueFoundTickets, ApplicationClientError> {
+    let value = TicketQueueFoundTickets {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        ticket_id: application_uuid(take_application_value(&mut record.fields, "ticket_id")?)?,
+        project_id: application_uuid(take_application_value(&mut record.fields, "project_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        status: application_enum(take_application_value(&mut record.fields, "status")?)?,
+        updated_at: application_timestamp(take_application_value(&mut record.fields, "updated_at")?)?,
+        reporter_id: application_uuid(take_application_value(&mut record.fields, "reporter_id")?)?,
+        assignee_id: application_uuid(take_application_value(&mut record.fields, "assignee_id")?)?,
     };
     if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
     Ok(value)
@@ -2492,6 +2780,32 @@ impl TicketDeskClient {
     /// Executes `TicketPage` with generated pagination or read-fence options.
     pub async fn ticket_page_with_options(&mut self, parameters: TicketPageParams, options: QueryOptions) -> Result<TypedQueryResult<TicketPageResult>, ApplicationClientError> {
         self.client.execute_generated_query(TicketPageQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `TicketPagePaged` named query.
+    pub async fn ticket_page_paged(&mut self, parameters: TicketPagePagedParams) -> Result<TicketPagePagedResult, ApplicationClientError> {
+        Ok(self.ticket_page_paged_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `TicketPagePaged` against a snapshot at or after the supplied command commit.
+    pub async fn ticket_page_paged_after_commit(&mut self, parameters: TicketPagePagedParams, commit_sequence: u64) -> Result<TypedQueryResult<TicketPagePagedResult>, ApplicationClientError> {
+        self.ticket_page_paged_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `TicketPagePaged` with generated pagination or read-fence options.
+    pub async fn ticket_page_paged_with_options(&mut self, parameters: TicketPagePagedParams, options: QueryOptions) -> Result<TypedQueryResult<TicketPagePagedResult>, ApplicationClientError> {
+        self.client.execute_generated_query(TicketPagePagedQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `TicketQueue` named query.
+    pub async fn ticket_queue(&mut self, parameters: TicketQueueParams) -> Result<TicketQueueResult, ApplicationClientError> {
+        Ok(self.ticket_queue_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `TicketQueue` against a snapshot at or after the supplied command commit.
+    pub async fn ticket_queue_after_commit(&mut self, parameters: TicketQueueParams, commit_sequence: u64) -> Result<TypedQueryResult<TicketQueueResult>, ApplicationClientError> {
+        self.ticket_queue_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `TicketQueue` with generated pagination or read-fence options.
+    pub async fn ticket_queue_with_options(&mut self, parameters: TicketQueueParams, options: QueryOptions) -> Result<TypedQueryResult<TicketQueueResult>, ApplicationClientError> {
+        self.client.execute_generated_query(TicketQueueQuery(parameters), options, &self.metadata).await
     }
 
     pub async fn add_project_member(&mut self, input: AddProjectMemberInput) -> Result<TypedCommandResult<AddProjectMemberOutcome>, ApplicationClientError> {
