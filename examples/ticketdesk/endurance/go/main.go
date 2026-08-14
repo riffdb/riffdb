@@ -62,11 +62,25 @@ type metricFile struct {
 	TransportAttempts    uint64            `json:"transport_attempts"`
 	DeclaredRetries      uint64            `json:"declared_retries"`
 	ErrorCount           uint64            `json:"error_count"`
+	EventsEmitted        uint64            `json:"events_emitted"`
+	ConsumerAcks         uint64            `json:"consumer_acknowledgements"`
 	ModeledRetainedBytes uint64            `json:"modeled_retained_bytes"`
 	LatencyBoundsUS      []uint64          `json:"latency_bounds_us"`
 	LatencyCounts        []uint64          `json:"latency_counts"`
 	Workloads            map[string]uint64 `json:"workloads"`
 	Tenants              map[string]uint64 `json:"tenants"`
+}
+
+func (value *metrics) eventEmitted() {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	value.value.EventsEmitted++
+}
+
+func (value *metrics) consumerAcknowledged() {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	value.value.ConsumerAcks++
 }
 
 type metrics struct {
@@ -332,6 +346,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 					IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%d-%d", index, counter), OrganizationId: organizationID,
 				})
 				if err == nil {
+					metric.consumerAcknowledged()
 					err = metric.record("workflows", tenant, 512, &operationStarted)
 				}
 			}
@@ -344,6 +359,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 			if err == nil && len(batch.Events) > 0 {
 				_, err = events.Ack(ctx, batch.Events[0])
 				if err == nil {
+					metric.consumerAcknowledged()
 					err = metric.record("events", tenant, 0, &operationStarted)
 				}
 			}
@@ -361,7 +377,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 		}
 		if slot == 69 {
 			ordinal := (counter / 100) % 4096
-			_, err = clientSet.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{
+			created, err := clientSet.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{
 				Title: fmt.Sprintf("Go cold ticket %d-%d", index, ordinal), Status: ticketdesk.TicketStatus("Open"),
 				TicketId: id(seed+1, 30_000+index*4096+ordinal), ProjectId: projectID,
 				AssigneeId: userID, ReporterId: userID,
@@ -369,6 +385,11 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 			})
 			if err != nil {
 				return err
+			}
+			if !created.Replayed {
+				if _, ok := created.Outcome.(ticketdesk.CreateTicketCreated); ok {
+					metric.eventEmitted()
+				}
 			}
 			if err := metric.record("workflows", tenant, 768, &operationStarted); err != nil {
 				return err
@@ -396,7 +417,12 @@ func seedClient(ctx context.Context, clients *clients, metric *metrics, tenant, 
 			return err
 		}, 512},
 		{func() error {
-			_, err := clients.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{Title: fmt.Sprintf("Go hot ticket %d", index), Status: ticketdesk.TicketStatus("Open"), TicketId: ticketID, ProjectId: projectID, AssigneeId: userID, ReporterId: userID, IdempotencyKey: fmt.Sprintf("endurance-go-hot-%d-%d", seed, index), OrganizationId: organizationID})
+			created, err := clients.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{Title: fmt.Sprintf("Go hot ticket %d", index), Status: ticketdesk.TicketStatus("Open"), TicketId: ticketID, ProjectId: projectID, AssigneeId: userID, ReporterId: userID, IdempotencyKey: fmt.Sprintf("endurance-go-hot-%d-%d", seed, index), OrganizationId: organizationID})
+			if err == nil && !created.Replayed {
+				if _, ok := created.Outcome.(ticketdesk.CreateTicketCreated); ok {
+					metric.eventEmitted()
+				}
+			}
 			return err
 		}, 768},
 	}

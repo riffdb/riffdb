@@ -18,7 +18,7 @@ riffdb-invariant = { path = "../riffdb-invariant", version = "0.1.0", default-fe
 riffdb-runtime = { path = "../riffdb-runtime", version = "0.1.0", default-features = false }
 riffdb-scheduler = { path = "../riffdb-scheduler", version = "0.1.0", default-features = false }
 riffdb-storage-api = { path = "../riffdb-storage-api", version = "0.1.0" }
-riffdb-storage-redb = { path = "../riffdb-storage-redb", version = "0.1.0", default-features = false }
+riffdb-storage-redb = { path = "../riffdb-storage-redb", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
 
 [dev-dependencies]
@@ -134,6 +134,11 @@ test = false
 [[example]]
 name = "generate_adapter_conformance"
 path = "../../tests/generate_adapter_conformance.rs"
+test = false
+
+[[example]]
+name = "endurance_inspect"
+path = "../../tests/endurance_inspect.rs"
 test = false
 
 [[test]]

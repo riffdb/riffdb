@@ -49,6 +49,8 @@ class Metrics {
   readonly #started = Math.floor(Date.now() / 1000);
   #logicalOperations = 0;
   #retainedBytes = 0;
+  #eventsEmitted = 0;
+  #consumerAcknowledgements = 0;
   #publishing: Promise<void> = Promise.resolve();
   readonly #workloads: Record<Workload, number> = {
     events: 0, live_queries: 0, reads: 0, workflows: 0, writes: 0,
@@ -59,6 +61,10 @@ class Metrics {
   readonly #latencyCounts = Array.from({ length: LATENCY_BOUNDS_US.length }, () => 0);
 
   public constructor(path: string) { this.#path = path; }
+
+  public eventEmitted(): void { this.#eventsEmitted += 1; }
+
+  public consumerAcknowledged(): void { this.#consumerAcknowledgements += 1; }
 
   public async record(workload: Workload, tenant: Tenant, retainedBytes: number, startedAt: number): Promise<void> {
     this.#logicalOperations += 1;
@@ -81,6 +87,8 @@ class Metrics {
       transport_attempts: this.#logicalOperations,
       declared_retries: 0,
       error_count: 0,
+      events_emitted: this.#eventsEmitted,
+      consumer_acknowledgements: this.#consumerAcknowledgements,
       modeled_retained_bytes: this.#retainedBytes,
       latency_bounds_us: LATENCY_BOUNDS_US,
       latency_counts: this.#latencyCounts,
@@ -205,6 +213,7 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
             comment_id: id(namespace, 20_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
             idempotency_key: `endurance-typescript-reaction-${index}-${counter}`, organization_id: organizationId,
           });
+          metrics.consumerAcknowledged();
           await metrics.record("workflows", tenant, 512, operationStarted);
         }
       } else if (slot < 80) {
@@ -220,6 +229,7 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
         const delivery: TicketEventsDelivery | undefined = result.value.events[0];
         if (delivery !== undefined) {
           await agent.reactive.ackTicketEvents(eventParameters, eventConsumer, delivery);
+          metrics.consumerAcknowledged();
           await metrics.record("events", tenant, 0, operationStarted);
         }
       } else {
@@ -239,13 +249,14 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
       if (slot === 69) {
         operationStarted = performance.now();
         const ordinal = BigInt(Math.floor(counter / 100) % 4_096);
-        await application.generated.createTicket({
+      const created = await application.generated.createTicket({
           title: `TypeScript cold ticket ${index}-${ordinal}`, status: "Open",
           ticket_id: id(namespace, 30_000n + BigInt(index) * 4_096n + ordinal), project_id: projectId,
           assignee_id: userId, reporter_id: userId,
           idempotency_key: `endurance-typescript-cold-${index}-${ordinal}`, organization_id: organizationId,
-        });
-        await metrics.record("workflows", tenant, 768, operationStarted);
+      });
+      if (!created.replayed && created.outcome.outcome === "Created") metrics.eventEmitted();
+      await metrics.record("workflows", tenant, 768, operationStarted);
       }
       await new Promise<void>((resolve) => setTimeout(resolve, delayMilliseconds));
     }
@@ -268,7 +279,8 @@ async function seedClient(
   await seeder.createProject({ name: `TypeScript endurance ${index}`, project_id: projectId, idempotency_key: `endurance-typescript-project-${index}`, organization_id: organizationId });
   await metrics.record("writes", tenant, 512, operationStarted);
   operationStarted = performance.now();
-  await application.createTicket({ title: `TypeScript hot ticket ${index}`, status: "Open", ticket_id: ticketId, project_id: projectId, assignee_id: userId, reporter_id: userId, idempotency_key: `endurance-typescript-hot-${configuration.seed}-${index}`, organization_id: organizationId });
+  const created = await application.createTicket({ title: `TypeScript hot ticket ${index}`, status: "Open", ticket_id: ticketId, project_id: projectId, assignee_id: userId, reporter_id: userId, idempotency_key: `endurance-typescript-hot-${configuration.seed}-${index}`, organization_id: organizationId });
+  if (!created.replayed && created.outcome.outcome === "Created") metrics.eventEmitted();
   await metrics.record("writes", tenant, 768, operationStarted);
   await metrics.publish();
 }

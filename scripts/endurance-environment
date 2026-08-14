@@ -99,11 +99,13 @@ cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
-    -p riffdb-ticketdesk --bin endurance >&2
+    -p riffdb-ticketdesk --bin endurance \
+    -p riffdb-testkit --example endurance_inspect >&2
 cp target/debug/riffdbd "$environment_root/bin/riffdbd"
 cp target/debug/riffdb "$environment_root/bin/riffdb"
 cp target/debug/riffdb-driverd "$environment_root/bin/riffdb-driverd"
 cp target/debug/endurance "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
+cp target/debug/examples/endurance_inspect "$environment_root/bin/riffdb-endurance-inspect"
 (cd examples/ticketdesk && go build -o "$environment_root/bin/riffdb-ticketdesk-go-endurance" ./endurance/go)
 npm --prefix clients/typescript/runtime run build >/dev/null
 npm --prefix examples/ticketdesk/web run build >/dev/null
@@ -351,11 +353,7 @@ jq -nS \
     >"$state_path"
 chmod 0600 "$state_path"
 
-jq -nS \
-    --arg schema riffdb.alpha-endurance-lifecycle-state/v1 \
-    '{schema:$schema,journal_generation:0,retention_watermark:0,tombstone_count:0,writer_queue_depth:0,consumer_backlog:0,checkpoint_count:0,restart_count:0,lifecycle_microseconds:0}' \
-    >"$environment_root/lifecycle-state.json"
-chmod 0600 "$environment_root/lifecycle-state.json"
+"$repo_root/scripts/endurance-lifecycle" --initialize
 
 cleanup_partial=false
 trap - EXIT INT TERM

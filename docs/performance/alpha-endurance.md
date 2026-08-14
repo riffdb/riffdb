@@ -108,6 +108,25 @@ cannot hide growth by under-counting known process data. The observation names
 the authoritative application frontier separately and reports projection zero
 for TicketDesk because this workload deploys no projection.
 
+Journal generations are read from both checksummed extent-header slots; an
+absent, stale, malformed, or checksum-invalid header cannot be replaced by a
+harness counter. The four workers separately report newly emitted events and
+durably acknowledged normal/contextual deliveries. Consumer backlog is the
+closed TicketDesk relation `(two consumers × emitted TicketCreated) − durable
+acknowledgements`, and the checkpoint observation is the acknowledgement
+frontier rather than the number of event RPCs attempted.
+
+`scripts/endurance-lifecycle` serializes action state under a protected file
+lock and refuses every lifecycle name until that operation has a real evidence
+implementation. Checkpoint and restart actions gracefully drain the installed
+daemon, inspect the stopped database's proof-carrying checkpoint, parse the
+exact maximum deferred writer queue from the daemon's shutdown evidence, start
+a fresh installed daemon process, and require authenticated readiness at or
+after the checkpoint frontier. Journal-recycle actions wait for a checksummed
+on-disk generation advance; reactive-consumer actions require exact durable
+acknowledgement progress. Evidence files are atomically written and only their
+SHA-256 enters the bounded action result.
+
 `RIFFDB_ENDURANCE_ARTIFACT_ROOT` must be an absolute, non-symlink path and must
 name a fresh run root. The script never reuses or erases an existing
 `environment-v1` directory. The server's stdin is held open for the complete

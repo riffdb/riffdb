@@ -149,3 +149,56 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
         "the evidentiary environment must not fall back to loopback cleartext"
     );
 }
+
+#[test]
+fn endurance_lifecycle_evidence_uses_durable_observations() {
+    let root = repository_root();
+    let output = Command::new(root.join("scripts/endurance-lifecycle"))
+        .arg("--self-test")
+        .current_dir(&root)
+        .env("RIFFDB_TMP_ROOT", task_temporary_root())
+        .output()
+        .expect("endurance lifecycle self-test must launch");
+    assert!(
+        output.status.success(),
+        "lifecycle self-test failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lifecycle = fs::read_to_string(root.join("scripts/endurance-lifecycle"))
+        .expect("lifecycle source is readable");
+    for required in [
+        "RDBJEX03",
+        "checkpoint_commit_sequence",
+        "dispatch_deferred_max",
+        "consumer_acknowledgements",
+        "endurance lifecycle action is not implemented",
+    ] {
+        assert!(lifecycle.contains(required), "lifecycle omits {required}");
+    }
+    assert!(
+        !lifecycle.contains("generation_after\": before + 1")
+            && !lifecycle.contains("checkpoint_count\"] += 1"),
+        "lifecycle evidence must not manufacture durable frontiers"
+    );
+
+    let sampler = fs::read_to_string(root.join("scripts/endurance-sample"))
+        .expect("sampler source is readable");
+    assert!(sampler.contains("events_emitted * 2 - consumer_acknowledgements"));
+    for worker in [
+        "examples/ticketdesk/src/bin/endurance.rs",
+        "examples/ticketdesk/endurance/go/main.go",
+        "examples/ticketdesk/web/src/endurance.ts",
+        "examples/ticketdesk/endurance/python/main.py",
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains("consumer_acknowledgements"),
+            "{worker} omits exact consumer acknowledgements"
+        );
+        assert!(
+            source.contains("events_emitted"),
+            "{worker} omits exact emitted-event accounting"
+        );
+    }
+}

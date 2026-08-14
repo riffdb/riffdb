@@ -143,6 +143,7 @@ pub struct Observability {
     command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
     command_group_selected_total: AtomicU64,
     command_group_deferred_total: AtomicU64,
+    command_group_deferred_max: AtomicU64,
     compatibility_selected_total: AtomicU64,
     compatibility_group_total: AtomicU64,
     compatibility_conflict_key_split_total: AtomicU64,
@@ -171,6 +172,7 @@ impl Observability {
             command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
             command_group_selected_total: AtomicU64::new(0),
             command_group_deferred_total: AtomicU64::new(0),
+            command_group_deferred_max: AtomicU64::new(0),
             compatibility_selected_total: AtomicU64::new(0),
             compatibility_group_total: AtomicU64::new(0),
             compatibility_conflict_key_split_total: AtomicU64::new(0),
@@ -226,6 +228,7 @@ impl Observability {
                 .required_counter(RequiredCounter::WriterIdleMicroseconds),
             dispatch_selected: self.command_group_selected_total.load(Ordering::Relaxed),
             dispatch_deferred: self.command_group_deferred_total.load(Ordering::Relaxed),
+            dispatch_deferred_max: self.command_group_deferred_max.load(Ordering::Relaxed),
             compatibility_selected: self.compatibility_selected_total.load(Ordering::Relaxed),
             compatibility_groups: self.compatibility_group_total.load(Ordering::Relaxed),
             compatibility_conflict_key_splits: self
@@ -498,6 +501,8 @@ pub struct WriterEvidenceSnapshotV1 {
     pub dispatch_selected: u64,
     /// Messages left behind after intake selection, summed at dispatch edges.
     pub dispatch_deferred: u64,
+    /// Largest exact deferred queue observed at a dispatch edge.
+    pub dispatch_deferred_max: u64,
     /// Commands presented to exact compatibility partitioning.
     pub compatibility_selected: u64,
     /// Compatible durable groups emitted by partitioning.
@@ -526,11 +531,12 @@ pub struct WriterEvidenceSnapshotV1 {
 #[must_use]
 pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> String {
     let scalar = format!(
-        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};compatibility_commutative_shared_groups={};queue_delay_estimate_us={}",
+        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};dispatch_deferred_max={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};compatibility_commutative_shared_groups={};queue_delay_estimate_us={}",
         snapshot.writer_busy_us,
         snapshot.writer_idle_us,
         snapshot.dispatch_selected,
         snapshot.dispatch_deferred,
+        snapshot.dispatch_deferred_max,
         snapshot.compatibility_selected,
         snapshot.compatibility_groups,
         snapshot.compatibility_conflict_key_splits,
@@ -714,6 +720,8 @@ impl CommitTelemetry for Observability {
                 saturating_increment(&self.command_group_dispatch_reasons[reason_index]);
                 saturating_add(&self.command_group_selected_total, u64::from(selected));
                 saturating_add(&self.command_group_deferred_total, u64::from(deferred));
+                self.command_group_deferred_max
+                    .fetch_max(u64::from(deferred), Ordering::Relaxed);
                 self.metrics.record_command_group_dispatch(
                     reason,
                     u64::from(selected),
