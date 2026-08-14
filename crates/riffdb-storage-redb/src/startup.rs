@@ -151,11 +151,6 @@ struct EntityChain {
     intact: bool,
     /// Set when an ENTITIES structural row claims this chain.
     consumed: bool,
-    /// Seeded from a verified checkpoint's at-S map and never touched by a
-    /// suffix commit: the chain carries a fingerprint-verified version but no
-    /// post-image hash, so row matching accepts version-only for it. Hash
-    /// checks resume the moment a suffix reference touches the chain.
-    seeded: bool,
 }
 
 /// Cap on reported orphan targets (hostile COMMITS must not allocate unboundedly).
@@ -1878,13 +1873,13 @@ impl RedbStructuralEvidenceSession {
             .map_err(precommit_storage_error)?;
         let entity_identity_count = live_entity_count.max(chain_head_count);
         // Under a verified checkpoint the genesis COMMITS walk is replaced by
-        // seeding from the fingerprint-verified (target, version) map at S and
+        // seeding from the fingerprint-verified exact entity heads at S and
         // advancing across the suffix only. The seed map is consumed exactly
         // once; a second build attempt under a checkpoint is an invariant error.
         let seed = match self.checkpoint.as_mut() {
             Some(checkpoint) => Some((
                 checkpoint.checkpoint_commit_sequence,
-                checkpoint.entities_at_s.take().ok_or_else(invariant)?,
+                checkpoint.entity_heads_at_s.take().ok_or_else(invariant)?,
             )),
             None => None,
         };
@@ -5455,18 +5450,19 @@ where
 /// Builds entity continuity chains from one forward COMMITS pass.
 ///
 /// Without a seed the pass covers the complete history from genesis. With a
-/// verified-checkpoint seed `(S, entities_at_S)` the chains start from the
-/// fingerprint-verified `(target, version)` map at S — carrying no post-image
-/// hash and no pending migrations (any migration recorded at write time is
-/// already baked into the at-S versions; later migrations fail the fingerprint
-/// and fall back to full validation) — and the pass advances across the
-/// suffix `(S, head]` only.
+/// verified-checkpoint seed `(S, entity_heads_at_S)` the chains start from the
+/// fingerprint-verified exact chain-head map at S, including post-image and
+/// transition hashes. Any migration recorded at write time is already baked
+/// into those heads; the pass advances across the suffix `(S, head]` only.
 fn build_entity_chains(
     transaction: &ReadTransaction,
     entity_count: u64,
     seed: Option<(
         u64,
-        std::collections::BTreeMap<riffdb_storage_api::EntityTarget, riffdb_types::EntityVersion>,
+        std::collections::BTreeMap<
+            riffdb_storage_api::EntityTarget,
+            riffdb_storage_api::EntityChainHeadV1,
+        >,
     )>,
 ) -> Result<EntityChainState, StorageError> {
     let migrations = load_entity_migration_evidence(transaction)?;
@@ -5485,20 +5481,33 @@ fn build_entity_chains(
     let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
     let mut walk_lower_bound = None;
     let mut walk_after = 0_u64;
-    if let Some((s, entities_at_s)) = seed {
-        for (target, version) in entities_at_s {
+    if let Some((s, heads_at_s)) = seed {
+        for (target, head) in heads_at_s {
+            let (version, hash) = match head.state() {
+                riffdb_storage_api::EntityChainStateV1::Live {
+                    version,
+                    value_hash,
+                } => (version, Some(value_hash)),
+                // Recreate restarts entity-local versioning at one. The exact
+                // deleted predecessor remains in `transition_heads`; this
+                // placeholder is never used to authorize a transition.
+                riffdb_storage_api::EntityChainStateV1::Deleted => {
+                    (riffdb_types::EntityVersion::first(), None)
+                }
+                riffdb_storage_api::EntityChainStateV1::NeverExisted => return Err(corrupt()),
+            };
             chains.insert(
-                target,
+                target.clone(),
                 EntityChain {
                     version,
-                    hash: None,
+                    hash,
                     expected_bundle: None,
                     migration_cursor: migrations.len(),
                     intact: true,
                     consumed: false,
-                    seeded: true,
                 },
             );
+            transition_heads.insert(target, head);
         }
         if s > 0 {
             walk_after = s;
@@ -5578,7 +5587,6 @@ fn build_entity_chains(
                                 migration_cursor: 0,
                                 intact: false,
                                 consumed: false,
-                                seeded: false,
                             },
                         );
                     } else {
@@ -5611,7 +5619,6 @@ fn build_entity_chains(
                     chain.version = reference.entity_version();
                     chain.hash = Some(reference.post_image_hash());
                     chain.expected_bundle = None;
-                    chain.seeded = false;
                 } else if chains.len() < entity_count_usize {
                     // INVARIANT: slot allocation assumes ENTITIES rows are never
                     // removed (true today). If a removal path appears, a dead
@@ -5629,7 +5636,6 @@ fn build_entity_chains(
                             migration_cursor: 0,
                             intact,
                             consumed: false,
-                            seeded: false,
                         },
                     );
                 } else {
@@ -5750,7 +5756,6 @@ fn apply_entity_transitions_to_startup_chains(
             chain.version = version;
             chain.hash = hash;
             chain.expected_bundle = None;
-            chain.seeded = false;
         } else if chains.len() < capacity {
             chains.insert(
                 target.clone(),
@@ -5761,7 +5766,6 @@ fn apply_entity_transitions_to_startup_chains(
                     migration_cursor: 0,
                     intact: true,
                     consumed: false,
-                    seeded: false,
                 },
             );
         } else {
@@ -5785,6 +5789,12 @@ fn validate_transition_chain_heads(
         .open_table(crate::layout::ENTITY_CHAIN_HEADS)
         .map_err(table_error)?;
     let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+    if !expected_heads.is_empty()
+        && stored_heads.len().map_err(precommit_storage_error)?
+            != u64::try_from(expected_heads.len()).map_err(|_| limit_exceeded())?
+    {
+        return Err(corrupt());
+    }
     for (target, expected) in expected_heads {
         let key = keys::encode_entity_key(target.key());
         let actual = stored_heads
@@ -5973,11 +5983,7 @@ fn entity_row_matches_chain(
             (Some(expected), _) => riffdb_storage_api::derive_entity_record_hash_v1(current)
                 .is_ok_and(|hash| hash == expected),
             (None, Some(expected)) => current.schema_binding().bundle_hash() == expected,
-            // Prefix-only target under a verified checkpoint: the seeded chain
-            // carries the fingerprint-verified version but no post-image hash
-            // (ADR-0019 A1 assigns below-S content to proof + sample). Hash
-            // checks resume for any chain a suffix reference touched.
-            (None, None) => chain.seeded,
+            (None, None) => false,
         }
 }
 
@@ -7036,11 +7042,11 @@ mod tests {
         CapabilityBootstrapMarkerV1, CapabilityGrantV1, CapabilityPermissionKindV1,
         CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
         CatalogActivationIntentV1, CatalogAdministrationRepository, CommittedEntityReferenceV2,
-        DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
-        EntityChainHeadV1, EntityChainStateV1, EntityTarget, ExecutablePlanRef,
-        ExpectedEntityState, HistoricalEvidencePage, IdempotencyIdentity, IdempotencyKeyDigest,
-        PartitionScopeV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
-        PublishedApplyModeV1, ReactiveModuleAdministrationRepository,
+        CommittedEntityTransitionV1, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
+        DurableKeySchemaBindingV1, EntityChainHeadV1, EntityChainStateV1, EntityTarget,
+        ExecutablePlanRef, ExpectedEntityState, HistoricalEvidencePage, IdempotencyIdentity,
+        IdempotencyKeyDigest, PartitionScopeV1, ProjectionGenerationPosition,
+        ProjectionLifecycleV1, PublishedApplyModeV1, ReactiveModuleAdministrationRepository,
         ReactiveModulePublicationIntentV1, ReadDependencies, ReadDependency,
         ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, StoredAdministrationAuditRecordV1,
@@ -7056,7 +7062,7 @@ mod tests {
         ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
         Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityId,
         CapabilityTokenDigest, CommandId, CommitSequence, DigestKeyId, EntityKeyBuilder,
-        EntityTransitionHash, EntityTypeId, EntityVersion, Environment, FieldId,
+        EntityRecordHash, EntityTransitionHash, EntityTypeId, EntityVersion, Environment, FieldId,
         IndexEntryKeyBuilder, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
         ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration, ProjectionId,
         ProjectionIdentity, ProjectionPlanHash, ProvenanceId, RequestId, ScopedPartitionV1,
@@ -8471,6 +8477,105 @@ contract RedbMigration version 1 {
     }
 
     #[test]
+    fn checkpoint_head_seed_advances_update_delete_recreate_exactly() {
+        let bundle = stored_bundle("checkpoint-head-seed", 1, b"checkpoint-head-seed");
+        let entity = history_entity(1, EntityVersion::first(), b"v1", &bundle);
+        let target = entity.target().clone();
+        let v1_hash = derive_entity_record_hash_v1(&entity).expect("v1 hash");
+        let v2_hash = EntityRecordHash::from_bytes([0x22; 32]);
+        let recreated_hash = EntityRecordHash::from_bytes([0x44; 32]);
+        let create = CommittedEntityTransitionV1::new(
+            CommitSequence::first(),
+            0,
+            target.clone(),
+            EntityChainStateV1::NeverExisted,
+            0,
+            None,
+            EntityChainStateV1::Live {
+                version: EntityVersion::first(),
+                value_hash: v1_hash,
+            },
+        )
+        .expect("create transition");
+        let at_s = EntityChainHeadV1::from_genesis(&create).expect("head at S");
+        let update = CommittedEntityTransitionV1::new(
+            CommitSequence::new(2).expect("sequence 2"),
+            0,
+            target.clone(),
+            at_s.state(),
+            at_s.chain_revision(),
+            Some(at_s.last_transition_hash()),
+            EntityChainStateV1::Live {
+                version: EntityVersion::new(2).expect("version 2"),
+                value_hash: v2_hash,
+            },
+        )
+        .expect("update transition");
+        let updated = at_s.apply(&update).expect("updated head");
+        let delete = CommittedEntityTransitionV1::new(
+            CommitSequence::new(3).expect("sequence 3"),
+            0,
+            target.clone(),
+            updated.state(),
+            updated.chain_revision(),
+            Some(updated.last_transition_hash()),
+            EntityChainStateV1::Deleted,
+        )
+        .expect("delete transition");
+        let deleted = updated.apply(&delete).expect("deleted head");
+        let recreate = CommittedEntityTransitionV1::new(
+            CommitSequence::new(4).expect("sequence 4"),
+            0,
+            target.clone(),
+            deleted.state(),
+            deleted.chain_revision(),
+            Some(deleted.last_transition_hash()),
+            EntityChainStateV1::Live {
+                version: EntityVersion::first(),
+                value_hash: recreated_hash,
+            },
+        )
+        .expect("recreate transition");
+        let expected = deleted.apply(&recreate).expect("recreated head");
+
+        let mut chains = std::collections::BTreeMap::from([(
+            target.clone(),
+            EntityChain {
+                version: EntityVersion::first(),
+                hash: Some(v1_hash),
+                expected_bundle: None,
+                migration_cursor: 0,
+                intact: true,
+                consumed: false,
+            },
+        )]);
+        let mut heads = std::collections::BTreeMap::from([(target.clone(), at_s)]);
+        let mut orphans = Vec::new();
+        let mut overflow = false;
+        for transition in [&update, &delete, &recreate] {
+            apply_entity_transitions_to_startup_chains(
+                &mut chains,
+                &mut heads,
+                &mut orphans,
+                &mut overflow,
+                1,
+                1,
+                false,
+                transition.command_sequence(),
+                std::slice::from_ref(transition),
+            )
+            .expect("advance suffix transition");
+        }
+        assert_eq!(heads.get(&target), Some(&expected));
+        let chain = chains.get(&target).expect("materialized chain");
+        assert!(chain.intact);
+        assert_eq!(chain.version, EntityVersion::first());
+        assert_eq!(chain.hash, Some(recreated_hash));
+        assert!(orphans.is_empty());
+        assert!(!overflow);
+    }
+
+    #[test]
     fn entity_history_differential_oracle_agrees_on_populated_and_corrupted_histories() {
         let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
         let plan = ExecutablePlanRef::new(
@@ -9168,7 +9273,6 @@ contract RedbMigration version 1 {
                     migration_cursor: 0,
                     intact: true,
                     consumed: false,
-                    seeded: false,
                 },
             );
             keys.push(entity_key);
@@ -11068,7 +11172,7 @@ contract RedbMigration version 1 {
                 audit_count: 1,
                 audit_by_request_count: 0,
             },
-            entities_at_s: None,
+            entity_heads_at_s: None,
             checkpoint_hash: [0; 32],
         };
         let read = store
@@ -11169,6 +11273,65 @@ contract RedbMigration version 1 {
         session
             .finish(structural_end, historical_end)
             .expect("the metadata-derived counts must survive verification");
+    }
+
+    #[test]
+    fn missing_checkpoint_head_snapshot_row_falls_back_and_repairs() {
+        let path = TestDatabasePath::new("checkpoint-head-snapshot-corrupt");
+        let id = database_id(0x9f);
+        let (store, _bundle) = checkpointable_history_store(&path, id, 4);
+        let ports = open_cleanly(store);
+        assert!(
+            ports
+                .write_validated_prefix_checkpoint()
+                .expect("write checkpoint")
+        );
+        drop(ports);
+
+        let store = RedbStore::open(&path.0).expect("reopen before corruption");
+        let key = {
+            let read = store.shared.database.begin_read().expect("read snapshot");
+            let table = read
+                .open_table(crate::layout::VALIDATED_PREFIX_ENTITY_HEADS)
+                .expect("checkpoint heads");
+            let (key, _) = table.first().expect("first snapshot row").expect("row");
+            key.value().to_vec()
+        };
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("damage snapshot");
+        write
+            .open_table(crate::layout::VALIDATED_PREFIX_ENTITY_HEADS)
+            .expect("checkpoint heads")
+            .remove(key.as_slice())
+            .expect("remove snapshot row");
+        write.commit().expect("commit damage");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin fallback validation");
+        assert!(!session.checkpoint_verified());
+        assert_eq!(
+            session.checkpoint_ignored_reason(),
+            Some("entity_chain_mismatch")
+        );
+        let structural_end = finish_structural(&mut session);
+        let historical_end = drain_historical(&mut session);
+        session
+            .finish(structural_end, historical_end)
+            .expect("authoritative state remains intact");
+
+        let repaired = RedbStore::open(&path.0).expect("reopen repaired checkpoint");
+        let session = repaired
+            .begin_structural_evidence(inputs())
+            .expect("begin repaired validation");
+        assert!(
+            session.checkpoint_verified(),
+            "a full clean fallback must atomically repair the snapshot: {:?}",
+            session.checkpoint_ignored_reason()
+        );
     }
 
     /// The census the O(1) count source subtracts must advance with the lane that

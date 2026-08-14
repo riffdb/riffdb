@@ -794,6 +794,53 @@ fn the_shutdown_checkpoint_reads_row_counts_and_counts_every_terminal_failure_on
 }
 
 #[test]
+fn validated_prefix_entity_heads_are_anchored_at_s_and_advanced_through_the_suffix() {
+    let source_dir = crate_root().join("src");
+    let checkpoint = without_whitespace(&production_source(source_dir.join("validated_prefix.rs")));
+    let write = checkpoint
+        .split_once("fnwrite_validated_prefix_checkpoint(")
+        .expect("checkpoint write")
+        .1
+        .split_once("fnbuild_checkpoint_from_snapshot(")
+        .expect("checkpoint write end")
+        .0;
+    let snapshot = write
+        .find("replace_checkpoint_entity_heads(&write,&checkpoint)?")
+        .expect("atomic checkpoint-head snapshot");
+    let publish = write
+        .find("meta.insert(META_VALIDATED_PREFIX_CHECKPOINT")
+        .expect("checkpoint publication");
+    assert!(
+        snapshot < publish,
+        "head snapshot must precede meta publication"
+    );
+
+    let load = checkpoint
+        .split_once("fnload_active_checkpoint(")
+        .expect("checkpoint load")
+        .1
+        .split_once("fnsample_window_starts(")
+        .expect("checkpoint load end")
+        .0;
+    assert!(load.contains("load_checkpoint_entity_heads(transaction,&checkpoint_v2)?"));
+    assert!(
+        !load.contains("entity_transition_proof(transaction)"),
+        "an at-S checkpoint must never be compared directly with current heads"
+    );
+
+    let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
+    let chains = startup
+        .split_once("fnbuild_entity_chains(")
+        .expect("entity chain builder")
+        .1
+        .split_once("fnapply_entity_transitions_to_startup_chains(")
+        .expect("entity chain builder end")
+        .0;
+    assert!(chains.contains("transition_heads.insert(target,head)"));
+    assert!(chains.contains("Excluded(lower.as_slice())"));
+}
+
+#[test]
 fn live_migration_preflight_reads_the_published_overlay_not_the_checkpoint_alone() {
     // ADR-0104 section 2: every operational scan and point read of a table
     // named by `JournalTable` captures one published checkpoint-plus-overlay
