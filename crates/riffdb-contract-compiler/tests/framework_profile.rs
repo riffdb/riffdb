@@ -3,7 +3,9 @@
 //! Framework-agnostic identity/session acceptance profile (ADR-0117, WP-598).
 
 use riffdb_contract_compiler::{compile_contract_source, validate_contract_source};
-use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V9, ContractBundle, ExpressionKind, Instruction};
+use riffdb_contract_ir::{
+    BUNDLE_FORMAT_VERSION_V9, BindingMode, ContractBundle, ExpressionKind, Instruction,
+};
 use riffdb_types::CanonicalValue;
 
 const PROFILE: &str =
@@ -256,12 +258,11 @@ fn token_handout_flow_is_the_declared_secret_to_outcome_read_wp600_will_annotate
 }
 
 #[test]
-fn unique_entity_delete_remains_sealed_out_of_the_first_delete_format() {
-    // WP-598 escalation evidence: the profile's session sign-out-by-delete
-    // shape (entity delete on a unique-carrying entity) is refused at
-    // compile time by the sealed ADR-0107 first delete format. Lifting the
-    // seal is its own package; this pin keeps the boundary honest until it
-    // lands.
+fn unique_entity_delete_compiles_without_an_input_computable_release_conflict() {
+    // WP-607 unseals the profile's session sign-out-by-delete shape. The
+    // delete removes the exact snapshot-derived unique entry in the
+    // authoritative write transaction; it must not invent a caller-computable
+    // conflict for a value that is visible only in the deleted row.
     let source = PROFILE
         .replacen(
             "    unique session_token (organization_id, token_digest)",
@@ -271,33 +272,61 @@ fn unique_entity_delete_remains_sealed_out_of_the_first_delete_format() {
         .replacen(
             "  command RevokeSession {",
             concat!(
-                "  command DeleteSession {\n",
+                "  bulk command DeleteSessions {\n",
                 "    input request_id: uuid\n",
                 "    input organization_id: uuid\n",
                 "    input user_id: uuid\n",
-                "    input session_id: uuid\n",
+                "    input session_ids: list<uuid, 1..8>\n",
                 "    idempotency_key request_id\n",
-                "    delete Session(organization_id, user_id, session_id) as session\n",
-                "      else DeleteSessionMissing {}\n",
-                "    return SessionDeleted {}\n",
+                "    for session_id in session_ids {\n",
+                "      delete Session(organization_id, user_id, session_id) as session\n",
+                "        else DeleteSessionMissing {}\n",
+                "    }\n",
+                "    return SessionsDeleted {}\n",
                 "  }\n\n",
                 "  command RevokeSession {",
             ),
             1,
         );
-    let expected_start = source
-        .find("session_token (organization_id, token_digest)")
-        .expect("unique declaration marker");
-    let error = validate_contract_source(&source)
-        .expect_err("unique-carrying entity delete must stay refused");
+    let bundle = compile_contract_source(&source)
+        .expect("unique-carrying entity delete compiles after the audited unseal");
+    let delete = bundle
+        .commands()
+        .iter()
+        .find(|command| command.name() == "DeleteSessions")
+        .expect("DeleteSessions plan");
+    let binding = delete
+        .bindings()
+        .iter()
+        .find(|binding| binding.mode() == BindingMode::Delete)
+        .expect("DeleteSessions delete binding");
+    let session = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Session")
+        .expect("Session schema");
+    assert_eq!(binding.entity_type(), session.id());
+    assert!(
+        delete.unique_conflicts().is_empty(),
+        "snapshot-derived release is not represented as a caller-computable conflict"
+    );
+
+    let unsafe_source = source.replacen("\n    delete_policy no_inbound", "", 1);
+    let error = validate_contract_source(&unsafe_source)
+        .expect_err("unsealed unique delete still requires an explicit deletion policy");
     let diagnostic = error
         .semantic()
-        .expect("semantic diagnostic")
+        .expect("semantic delete-policy diagnostic")
         .as_slice()
         .iter()
-        .find(|diagnostic| diagnostic.code().as_str() == "RDB-C044")
-        .expect("sealed delete-format diagnostic");
-    assert_eq!(diagnostic.primary_span().start() as usize, expected_start);
+        .find(|diagnostic| diagnostic.code().as_str() == "RDB-C045")
+        .expect("unsafe delete has the retained policy-specific diagnostic");
+    let rejected_delete = unsafe_source
+        .find("delete Session(organization_id, user_id, session_id)")
+        .expect("unsafe delete source marker")
+        + "delete ".len();
+    assert_eq!(diagnostic.primary_span().start() as usize, rejected_delete);
 }
 
 #[test]

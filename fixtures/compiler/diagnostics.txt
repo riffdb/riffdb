@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=48
+count=47
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -131,21 +131,18 @@ code.41.help=keep the policy entity and relationship target in one declared aggr
 code.42.id=RDB-C043
 code.42.message=the row-policy relationship must use one exact local declared index
 code.42.help=name one declared target index and provide its complete partition-routed key
-code.43.id=RDB-C044
-code.43.message=the collection or delete command plan is unavailable in this compiler
-code.43.help=use a compiler with the ADR-0107 bounded collection and delete plan format enabled
-code.44.id=RDB-C045
-code.44.message=the deletion policy lacks a complete no-inbound or indexed-restrict proof
-code.44.help=declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation
-code.45.id=RDB-C201
-code.45.message=an identifier cannot form a valid MCP command tool-name segment
-code.45.help=start contract and command identifiers with an ASCII letter
-code.46.id=RDB-C202
-code.46.message=the complete MCP command tool name exceeds 128 bytes
-code.46.help=shorten the source contract or command identifier
-code.47.id=RDB-C203
-code.47.message=two commands normalize to the same MCP command tool name
-code.47.help=rename one command so lowercase identifiers remain distinct
+code.43.id=RDB-C045
+code.43.message=the deletion policy lacks a complete no-inbound or indexed-restrict proof
+code.43.help=declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation
+code.44.id=RDB-C201
+code.44.message=an identifier cannot form a valid MCP command tool-name segment
+code.44.help=start contract and command identifiers with an ASCII letter
+code.45.id=RDB-C202
+code.45.message=the complete MCP command tool name exceeds 128 bytes
+code.45.help=shorten the source contract or command identifier
+code.46.id=RDB-C203
+code.46.message=two commands normalize to the same MCP command tool name
+code.46.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -621,16 +618,6 @@ diagnostic.1.message=the row-policy relationship must use one exact local declar
 diagnostic.1.primary=358..368
 diagnostic.1.related=none
 diagnostic.1.help=name one declared target index and provide its complete partition-routed key
-
-[RDB-C044-unsupported-collection-mutation]
-expected=RDB-C044
-kind=semantic
-count=1
-diagnostic.0.code=RDB-C044
-diagnostic.0.message=the collection or delete command plan is unavailable in this compiler
-diagnostic.0.primary=92..98
-diagnostic.0.related=none
-diagnostic.0.help=use a compiler with the ADR-0107 bounded collection and delete plan format enabled
 
 [RDB-C045-invalid-delete-policy]
 expected=RDB-C045

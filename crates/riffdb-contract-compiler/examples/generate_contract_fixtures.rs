@@ -2852,21 +2852,6 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             .to_owned(),
         ),
         (
-            "RDB-C044-unsupported-collection-mutation",
-            CompilerDiagnosticCode::UnsupportedCollectionMutation,
-            concat!(
-                "contract BulkDiagnostic version 1 { ",
-                "entity Row { key (tenant_id: uuid, row_id: uuid) ",
-                "unique by_row (tenant_id, row_id) delete_policy no_inbound } ",
-                "aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id) } ",
-                "bulk command DeleteRows { input request_id: uuid input tenant_id: uuid ",
-                "input row_ids: list<uuid, 1..8> idempotency_key request_id ",
-                "for row_id in row_ids { delete Row(tenant_id, row_id) as row ",
-                "else Missing { row_id: row_id } } return Deleted {} } }",
-            )
-            .to_owned(),
-        ),
-        (
             "RDB-C045-invalid-delete-policy",
             CompilerDiagnosticCode::InvalidDeletePolicy,
             concat!(

@@ -58,10 +58,15 @@ whole bounded command and selects `Referenced`; it does not spin on an infrastru
 Grammar/IR v6 permits one indexed-restrict delete template per command.
 
 Cascade, set-null, orphaning, cross-partition deletion, physical history removal, nested loops,
-and caller-supplied callbacks are not part of this surface. Deleting an entity with a declared
-unique key is also rejected in the current compiler because its release conflict is not yet
-input-computable. Use a new command/contract shape; do not work around the rejection with a raw
-storage operation.
+and caller-supplied callbacks are not part of this surface. A bounded delete may target an entity
+with declared unique keys. RiffDB derives and removes each exact old index entry from the checked
+predecessor inside the authoritative write transaction; application input does not supply or
+guess a release conflict for a value visible only in that predecessor. Ordered execution is
+intentional: a create submitted before the delete still receives the typed unique conflict, while
+a create admitted after the committed delete may reuse the released value. `RDB-C044`, the former
+feature seal for this audited path, is retired; unsafe deletion policy remains the source-spanned
+`RDB-C045` refusal. Ordinary commands do not gain delete syntax—the accepted first delete format
+remains a compiler-bounded collection command.
 
 Duplicate collection keys reject the whole command. All expanded effects, the typed outcome,
 events, provenance, idempotency record, and commit record are one atomic command result. A crash

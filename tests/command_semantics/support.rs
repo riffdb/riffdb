@@ -64,6 +64,7 @@ contract UniqueUsers version 1 {
     key (organization_id: uuid, user_id: uuid)
     field email: string<128>
     unique user_email (organization_id, email)
+    delete_policy no_inbound
   }
   aggregate Users {
     root Organization
@@ -102,6 +103,17 @@ contract UniqueUsers version 1 {
       else UserMissing { user_id: user_id }
     set user.email = email
     return Changed { user: user }
+  }
+  bulk command DeleteUsers {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input user_ids: list<uuid, 1..8>
+    idempotency_key idempotency_key
+    for user_id in user_ids {
+      delete User(organization_id, user_id) as user
+        else DeleteUserMissing { user_id: user_id }
+    }
+    return UsersDeleted {}
   }
 }
 "#;
@@ -253,6 +265,13 @@ pub(crate) struct UniqueUserDatabase {
     user_entity_type: EntityTypeId,
     email_field: FieldId,
     _scratch: ScratchDir,
+}
+
+struct UniqueCommandAttempt<'a> {
+    caller_key: &'a str,
+    digest_seed: u8,
+    request_seed: u8,
+    audited: bool,
 }
 
 pub(crate) struct FrameworkProfileDatabase {
@@ -716,6 +735,29 @@ impl UniqueUserDatabase {
             caller_key,
             digest_seed,
             request_seed,
+            false,
+        )
+    }
+
+    pub(crate) fn prepare_audited(
+        &self,
+        ports: &RedbOperationalPorts,
+        user_id: [u8; 16],
+        email: &str,
+        caller_key: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        self.prepare_user_command(
+            ports,
+            "CreateUser",
+            ORGANIZATION_ID,
+            user_id,
+            email,
+            caller_key,
+            digest_seed,
+            request_seed,
+            true,
         )
     }
 
@@ -737,6 +779,46 @@ impl UniqueUserDatabase {
             caller_key,
             digest_seed,
             request_seed,
+            false,
+        )
+    }
+
+    pub(crate) fn prepare_delete(
+        &self,
+        ports: &RedbOperationalPorts,
+        user_id: [u8; 16],
+        caller_key: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("DeleteUsers");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(caller_key).expect("bounded caller key"),
+                ),
+                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                (
+                    "user_ids",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![CanonicalValue::Uuid(user_id)])
+                            .expect("one bounded user-id element"),
+                    ),
+                ),
+            ],
+        );
+        self.prepare_checked_user_command(
+            ports,
+            plan,
+            input,
+            UniqueCommandAttempt {
+                caller_key,
+                digest_seed,
+                request_seed,
+                audited: true,
+            },
         )
     }
 
@@ -760,6 +842,7 @@ impl UniqueUserDatabase {
             caller_key,
             digest_seed,
             request_seed,
+            false,
         )
     }
 
@@ -774,17 +857,9 @@ impl UniqueUserDatabase {
         caller_key: &str,
         digest_seed: u8,
         request_seed: u8,
+        audited: bool,
     ) -> CommandExecutionPreparation {
         let plan = self.command_plan(command_name);
-        let reference = ExecutablePlanRef::new(
-            self.checked_bundle.lineage().clone(),
-            self.checked_bundle.contract_version(),
-            self.checked_bundle.bundle_hash(),
-            plan.command_id(),
-            plan.plan_hash(),
-        );
-        let resolved =
-            resolve_executable_plan(ports, &reference).expect("deployed user command resolves");
         let input = input_record(
             plan.input().record(),
             [
@@ -800,9 +875,38 @@ impl UniqueUserDatabase {
                 ),
             ],
         );
+        self.prepare_checked_user_command(
+            ports,
+            plan,
+            input,
+            UniqueCommandAttempt {
+                caller_key,
+                digest_seed,
+                request_seed,
+                audited,
+            },
+        )
+    }
+
+    fn prepare_checked_user_command(
+        &self,
+        ports: &RedbOperationalPorts,
+        plan: &CommandPlan,
+        input: CanonicalRecord,
+        attempt: UniqueCommandAttempt<'_>,
+    ) -> CommandExecutionPreparation {
+        let reference = ExecutablePlanRef::new(
+            self.checked_bundle.lineage().clone(),
+            self.checked_bundle.contract_version(),
+            self.checked_bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let resolved =
+            resolve_executable_plan(ports, &reference).expect("deployed user command resolves");
         let facts = derive_input_command_facts(plan, input.clone())
             .expect("checked user command input facts");
-        let caller_key = IdempotencyKey::new(caller_key).expect("bounded caller key");
+        let caller_key = IdempotencyKey::new(attempt.caller_key).expect("bounded caller key");
         let scope = CommandIdempotencyScopeV1::new(
             database_id(),
             environment(),
@@ -811,9 +915,12 @@ impl UniqueUserDatabase {
             reference.contract_lineage().clone(),
             reference.command_id(),
         );
-        let lookup =
-            prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(digest_seed))
-                .expect("prepare unique caller-key lookup");
+        let lookup = prepare_idempotency_lookup(
+            &scope,
+            &caller_key,
+            &FixedDigestProvider(attempt.digest_seed),
+        )
+        .expect("prepare unique caller-key lookup");
         let idempotency = IdempotencyInspectionExecutor::new(ports)
             .inspect(lookup)
             .expect("inspect unique idempotency state")
@@ -831,13 +938,20 @@ impl UniqueUserDatabase {
             self.checked_bundle.lineage().clone(),
             facts.partition_key().clone(),
         );
+        let post_evaluation_authorization = attempt.audited.then(|| {
+            authorize_command(
+                plan,
+                self.checked_bundle.lineage().clone(),
+                facts.partition_key().clone(),
+            )
+        });
         let (control, _cancellation) = CommandRequestControl::new(
             Instant::now()
                 .checked_add(Duration::from_secs(30))
                 .expect("representable unique command deadline"),
         );
 
-        CommandExecutionPreparation::new(
+        let preparation = CommandExecutionPreparation::new(
             database_id(),
             &environment(),
             resolved,
@@ -845,11 +959,24 @@ impl UniqueUserDatabase {
             idempotency,
             facts,
             authorization,
-            request_id(request_seed),
+            request_id(attempt.request_seed),
             riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
-        .expect("join exact unique command preparation proofs")
+        .expect("join exact unique command preparation proofs");
+        if let Some(post_evaluation_authorization) = post_evaluation_authorization {
+            preparation
+                .with_audited_lifecycle(Box::new(StartedCommandAuditInput::new(request_id(
+                    attempt.request_seed,
+                ))))
+                .expect("attach exact unique command audit lifecycle")
+                .with_post_evaluation_authorizer(Box::new(
+                    FixedPostEvaluationCommandAuthorizer::new(post_evaluation_authorization),
+                ))
+                .expect("attach exact unique command post-evaluation authorization")
+        } else {
+            preparation
+        }
     }
 
     pub(crate) fn prepare_organization(
@@ -1978,7 +2105,7 @@ fn complete_structural_open(
             StructuralEvidencePage::Page { findings, next, .. } => {
                 assert!(
                     findings.is_empty(),
-                    "valid fixture has no findings: {findings:?}"
+                    "valid fixture has no findings at {structural_cursor:?}: {findings:?}"
                 );
                 structural_cursor = next;
             }

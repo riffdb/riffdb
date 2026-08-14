@@ -530,13 +530,25 @@ fn command_fixture() -> CommandFixture {
 /// Ordinal-parameterized committed command: ordinal 1 reproduces the original
 /// fixture exactly; ordinal N commits sequence N over a disjoint entity.
 fn command_fixture_at(ordinal: u64) -> CommandFixture {
-    build_command_fixture(ordinal, ordinal, None, AdmissionShape::VacantTerminal)
+    build_command_fixture(
+        ordinal,
+        ordinal,
+        None,
+        AdmissionShape::VacantTerminal,
+        false,
+    )
 }
 
 /// The same command as `command_fixture_at`, committed as the second phase of a
 /// two-phase admission instead of a fused vacant-terminal one.
 fn two_phase_command_fixture_at(ordinal: u64) -> CommandFixture {
-    build_command_fixture(ordinal, ordinal, None, AdmissionShape::ExistingPending)
+    build_command_fixture(
+        ordinal,
+        ordinal,
+        None,
+        AdmissionShape::ExistingPending,
+        false,
+    )
 }
 
 /// A second write to the SAME entity as `prior`, committed at `ordinal`.
@@ -556,6 +568,17 @@ fn superseding_command_fixture_at(
         target_ordinal,
         Some(prior),
         AdmissionShape::VacantTerminal,
+        false,
+    )
+}
+
+fn deleting_command_fixture_at(ordinal: u64, prior: &CommandFixture) -> CommandFixture {
+    build_command_fixture(
+        ordinal,
+        1,
+        Some(prior),
+        AdmissionShape::VacantTerminal,
+        true,
     )
 }
 
@@ -564,6 +587,7 @@ fn build_command_fixture(
     target_ordinal: u64,
     prior: Option<&CommandFixture>,
     admission_shape: AdmissionShape,
+    delete: bool,
 ) -> CommandFixture {
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
@@ -640,13 +664,28 @@ fn build_command_fixture(
     let declared_outcome =
         DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(payload))
             .expect("declared outcome");
-    let entity_mutation = prior_entity.as_ref().map_or_else(
-        || EntityMutation::Create(post_image.clone()),
-        |entity| EntityMutation::Replace {
+    let entity_mutation = if delete {
+        let entity = prior_entity
+            .as_ref()
+            .expect("delete requires a live predecessor");
+        EntityMutation::Delete {
             expected_version: entity.entity_version(),
-            post_image: post_image.clone(),
-        },
-    );
+            prior_image: EntityPostImage::new(
+                entity.target().clone(),
+                plan.contract_version(),
+                entity.fields().clone(),
+            )
+            .expect("delete predecessor image"),
+        }
+    } else {
+        prior_entity.as_ref().map_or_else(
+            || EntityMutation::Create(post_image.clone()),
+            |entity| EntityMutation::Replace {
+                expected_version: entity.entity_version(),
+                post_image: post_image.clone(),
+            },
+        )
+    };
     let evaluated = riffdb_storage_api::EvaluatedCommand::new(
         &snapshot,
         vec![entity_mutation],
@@ -691,15 +730,24 @@ fn build_command_fixture(
         record(payload),
     )
     .expect("stored entity");
-    let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
-        prior_entity
-            .as_ref()
-            .map_or(ExpectedEntityState::Absent, |entity| {
-                ExpectedEntityState::Present(entity.entity_version())
-            }),
-        stored_entity,
-    )
-    .expect("committed entity mutation");
+    let mutation = if delete {
+        let entity = prior_entity.as_ref().expect("delete predecessor");
+        riffdb_storage_api::CommittedEntityMutationV1::delete(
+            entity.entity_version(),
+            entity.clone(),
+        )
+        .expect("committed entity delete")
+    } else {
+        riffdb_storage_api::CommittedEntityMutationV1::new(
+            prior_entity
+                .as_ref()
+                .map_or(ExpectedEntityState::Absent, |entity| {
+                    ExpectedEntityState::Present(entity.entity_version())
+                }),
+            stored_entity,
+        )
+        .expect("committed entity mutation")
+    };
     let index_record = StoredIndexEntryV2::new(
         index_key.clone(),
         DurableKeySchemaBindingV1::from_plan(&plan),
@@ -707,7 +755,11 @@ fn build_command_fixture(
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
-    let index_mutation = IndexEntryMutationV1::Put(index_record);
+    let index_mutation = if delete {
+        IndexEntryMutationV1::Delete(index_key.clone())
+    } else {
+        IndexEntryMutationV1::Put(index_record)
+    };
     let generation = PartitionIndexTarget::new(partition.clone(), index_key.index_id());
     let affected_targets =
         AffectedIndexEpochTargets::new(vec![generation.clone()]).expect("affected targets");
@@ -806,9 +858,12 @@ fn build_command_fixture(
             .expect("stored dependencies"),
         mutations
             .iter()
-            .map(riffdb_storage_api::CommittedEntityReferenceV2::from_mutation)
+            .map(riffdb_storage_api::CommittedEntityReferenceV2::from_live_mutation)
             .collect::<Result<Vec<_>, _>>()
-            .expect("entity references"),
+            .expect("live entity references")
+            .into_iter()
+            .flatten()
+            .collect(),
         vec![event.clone()],
         declared_outcome,
         provenance_id,
@@ -5680,6 +5735,137 @@ fn v2_emitter_and_follower_resume_from_bootstrap_with_exact_entity_heads() {
         follower.applied_frontier().application(),
         CommitSequence::new(2)
     );
+}
+
+#[test]
+fn delete_removes_current_index_state_and_emits_reciprocal_v2_tombstone() {
+    let path = TestDatabasePath::new("delete-index-changelog-v2");
+    prepare_command_database(&path.0);
+    let predecessor = empty_entity_bootstrap_frontier(&path.0);
+    let receipt = ChangelogV2RotationReceipt::new(database_id(), 1, predecessor, [0x53; 32])
+        .expect("delete V2 bootstrap boundary");
+    let consumer = std::sync::Arc::new(RecordingChangelogConsumerV2::default());
+    let emitter = riffdb_storage_redb::start_changelog_emitter_v2(
+        std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumerV2>,
+        receipt,
+        64,
+    )
+    .expect("start delete-aware V2 emitter");
+
+    let create = command_fixture_at(1);
+    let delete = deleting_command_fixture_at(2, &create);
+    {
+        let ports = open_with_emitter(&path.0, emitter.port());
+        fence_deferred_epoch(&ports, std::slice::from_ref(&create));
+        fence_deferred_epoch(&ports, std::slice::from_ref(&delete));
+        assert_eq!(
+            emitter.emitter().wait_for_emitted(2),
+            ChangelogEmissionStateV1::Streaming
+        );
+        assert!(
+            ports
+                .read_entity(&create.target)
+                .expect("read deleted entity")
+                .is_none(),
+            "delete removes the authoritative current entity"
+        );
+        let page = ports
+            .scan_index(
+                AuthoritativeIndexScanRequest::new(
+                    create.range.clone(),
+                    None,
+                    StorageScanLimit::new(1).expect("delete index scan limit"),
+                )
+                .expect("delete index scan request"),
+            )
+            .expect("scan deleted index range");
+        assert!(matches!(
+            page,
+            AuthoritativeIndexScanPage::ExactEnd { entries, .. } if entries.is_empty()
+        ));
+    }
+
+    assert!(consumer.resyncs().is_empty());
+    let encoded = consumer.encoded();
+    assert_eq!(encoded.len(), 2);
+    let (delete_frame, _) = ChangelogFrameV2::decode(&encoded[1]).expect("decode delete frame");
+    assert_eq!(
+        delete_frame
+            .entries()
+            .iter()
+            .filter(|entry| entry.class() == ChangelogEntryClassV2::EntityDeleteTombstone)
+            .count(),
+        1,
+        "one deleted entity has one exact V2 tombstone"
+    );
+    assert_eq!(
+        delete_frame
+            .entries()
+            .iter()
+            .filter(|entry| entry.class() == ChangelogEntryClassV2::EntityChainHead)
+            .count(),
+        1,
+        "the tombstone is reciprocal with one final deleted chain head"
+    );
+
+    let empty_fingerprint = EntityTransitionFingerprint::from_sorted_heads(std::iter::empty())
+        .expect("empty delete follower fingerprint");
+    let manifest = EntityReplicaBootstrapManifestV2::new(
+        receipt,
+        predecessor,
+        receipt.v2_chain_anchor(),
+        ValidatedPrefixEntityTransitionCounts {
+            live_entity_count: 0,
+            deleted_entity_count: 0,
+            entity_transition_count: 0,
+        },
+        empty_fingerprint,
+    )
+    .expect("empty delete follower manifest");
+    let mut follower = DeleteAwareEntityFollowerV2::from_bootstrap(receipt, manifest)
+        .expect("delete follower bootstrap identity");
+    follower
+        .install_bootstrap_page(Vec::new(), true)
+        .expect("seal empty delete follower bootstrap");
+    for frame in &encoded {
+        follower
+            .apply_encoded(frame)
+            .expect("apply create/delete frame");
+    }
+    assert!(
+        follower
+            .entity_value(create.target.key().as_bytes())
+            .is_none(),
+        "the follower converges to deleted current state"
+    );
+    assert!(
+        follower
+            .chain_head_value(create.target.key().as_bytes())
+            .is_some(),
+        "the follower retains the deletion chain head"
+    );
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen deleted database"));
+    assert!(
+        ports
+            .read_entity(&create.target)
+            .expect("read deleted entity after recovery")
+            .is_none()
+    );
+    let page = ports
+        .scan_index(
+            AuthoritativeIndexScanRequest::new(
+                create.range.clone(),
+                None,
+                StorageScanLimit::new(1).expect("recovered delete index scan limit"),
+            )
+            .expect("recovered delete index scan request"),
+        )
+        .expect("scan deleted index after recovery");
+    assert!(matches!(
+        page,
+        AuthoritativeIndexScanPage::ExactEnd { entries, .. } if entries.is_empty()
+    ));
 }
 
 #[test]
