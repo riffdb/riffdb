@@ -1,0 +1,97 @@
+{
+  "schema": "riffdb-agent-application-alpha-campaign/v1",
+  "campaign_id": "campaign-02",
+  "bundle_hash": "a58585da8dd68b77fe70554cb16c89a4da1b1ded36da6ac8945b229d9f9058f3",
+  "status": "passed",
+  "immutable": true,
+  "runs": [
+    {
+      "run_id": "alpha2-blog-rust-20260814-rerun-01",
+      "domain": "blog",
+      "language": "rust",
+      "agent_identity": "terra-alpha2-blog-rust-20260814-rerun-01",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-rust-20260814-rerun-01/report.json",
+        "sha256": "6be942e77bc7eecba61ace917eb307ab41c63155eae6081f0395bba3fddc8ee1"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-rust-20260814-rerun-01/events.jsonl",
+        "sha256": "a9b45ead5616d400f3e4b34a9214d03cbff97bf3a0408bd1e41ad14728f9d0e0"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-rust-20260814-rerun-01/qualified-events.jsonl",
+        "sha256": "ab7ac383e6599d19ea65a3511d6332549ae0492cbc3481d0020bcc6012c8d688"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-rust-20260814-rerun-01/riffdb.application.lock.json",
+        "sha256": "39b3d96e9ca8a6fba3a17be3f182aacb10fc16bc5bf0b4b6c62326009d3dc66d"
+      }
+    },
+    {
+      "run_id": "alpha2-blog-typescript-20260814",
+      "domain": "blog",
+      "language": "typescript",
+      "agent_identity": "terra-alpha2-blog-typescript-20260814",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-typescript-20260814/report.json",
+        "sha256": "0ecfa23ea60d276510372f73cc69b0d7ca3038cb31323ff3cd17bf1b517b1ca1"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-typescript-20260814/events.jsonl",
+        "sha256": "1d85e57308cb0d5275f8ace01b192c5e52c5d94fcfde491d96e0d4c9c9ec9a89"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-typescript-20260814/qualified-events.jsonl",
+        "sha256": "5494a7c12799b9445ee97209685ca2b04fe3d2e648e7e76c7fbb7d200c6b0b10"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-blog-typescript-20260814/riffdb.application.lock.json",
+        "sha256": "b521503c3af8ba8aa84aec34253e920418c094d6ad3e701a298c217365954897"
+      }
+    },
+    {
+      "run_id": "alpha2-orders-rust-20260814-rerun-01",
+      "domain": "orders",
+      "language": "rust",
+      "agent_identity": "terra-alpha2-orders-rust-20260814-rerun-01",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-rust-20260814-rerun-01/report.json",
+        "sha256": "9119f0385b8db39640f4672aa2aaa8d43f2bec9fa16fd939f4420f869a329005"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-rust-20260814-rerun-01/events.jsonl",
+        "sha256": "cc6fbfbbc5605c43f48751c23d6ff3b3d00b8a8309fb9f5f2c814c0e68eedab8"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-rust-20260814-rerun-01/qualified-events.jsonl",
+        "sha256": "04086eb382623d43f9890b56b4b95beb2e6eeb4c8abe409f6d2bcd09c5afed50"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-rust-20260814-rerun-01/riffdb.application.lock.json",
+        "sha256": "422aeb2475a31b88cfd16a802036ca31d3ddee1fd27a729c912e1576dbc1f46e"
+      }
+    },
+    {
+      "run_id": "alpha2-orders-typescript-20260814",
+      "domain": "orders",
+      "language": "typescript",
+      "agent_identity": "terra-alpha2-orders-typescript-20260814",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-typescript-20260814/report.json",
+        "sha256": "a63625a01ddb9e08aeeeabbf06e836064dc2e14b04790ee8984dc58e13235590"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-typescript-20260814/events.jsonl",
+        "sha256": "3935edecd69a0d27466d19b82020f749115d56ca9dd6986f23d461c41fdce9af"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-typescript-20260814/qualified-events.jsonl",
+        "sha256": "9f25113061d8f304bfcb12fec198dae2b83b7b9d3eda5aa37cfbfde629cda40a"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/alpha2-orders-typescript-20260814/riffdb.application.lock.json",
+        "sha256": "719b21239f6443cd7dfbfd8a6e0e23434f1dc8c25df36505b12db52cfeb0bb6d"
+      }
+    }
+  ]
+}

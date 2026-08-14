@@ -1,0 +1,9 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"orders-typescript"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":1000,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":130000,"kind":"compiler_failure","operation":"contract_semantic","code":"RDB-C004"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":250000,"kind":"tool","operation":"riffdb.application.check"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":365000,"kind":"first_write","operation":"ReserveInventory"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":365000,"kind":"first_page_read","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":371000,"kind":"tool","operation":"check-application-boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":372000,"kind":"rating","operation":"orders-typescript"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":372000,"kind":"complete","operation":"orders-typescript"}

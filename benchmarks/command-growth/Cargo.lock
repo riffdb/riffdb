@@ -278,6 +278,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "getrandom"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi",
+ "wasip2",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -573,6 +585,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "r-efi"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
 name = "redb"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -618,6 +636,17 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "riffdb-auth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom",
+ "riffdb-storage-api",
+ "riffdb-types",
+ "zeroize",
+]
 
 [[package]]
 name = "riffdb-bench-root"
@@ -677,6 +706,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-policy"
+version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
+ "riffdb-contract-ir",
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-proto"
 version = "0.1.0"
 dependencies = [
@@ -702,6 +740,9 @@ dependencies = [
 name = "riffdb-query-executor"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
+ "riffdb-contract-ir",
+ "riffdb-policy",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",
@@ -728,6 +769,7 @@ dependencies = [
  "riffdb-riffql-syntax",
  "riffdb-types",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -746,6 +788,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-proto",
  "riffdb-types",
+ "sha2",
 ]
 
 [[package]]
@@ -755,6 +798,7 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
+ "riffdb-policy",
  "riffdb-query-executor",
  "riffdb-query-ir",
  "riffdb-storage-api",
@@ -961,6 +1005,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasip2"
+version = "1.0.4+wasi-0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1140,6 +1193,18 @@ dependencies = [
  "bitflags",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "wit-bindgen"
+version = "0.57.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "zeroize"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
 
 [[package]]
 name = "zmij"
