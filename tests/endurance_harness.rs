@@ -231,6 +231,46 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
             "{worker} counts contextual work without a durable acknowledgement"
         );
     }
+    for (worker, retry, classifier, limit) in [
+        (
+            "examples/ticketdesk/src/bin/endurance.rs",
+            "transient_retry",
+            "transient_error",
+            "MAX_TRANSIENT_RETRIES",
+        ),
+        (
+            "examples/ticketdesk/endurance/go/main.go",
+            "transientRetry",
+            "transientError",
+            "maxTransientRetries",
+        ),
+        (
+            "examples/ticketdesk/web/src/endurance.ts",
+            "transientRetry",
+            "transientError",
+            "MAX_TRANSIENT_RETRIES",
+        ),
+        (
+            "examples/ticketdesk/endurance/python/main.py",
+            "transient_retry",
+            "transient_error",
+            "MAX_TRANSIENT_RETRIES",
+        ),
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        for required in [
+            retry,
+            classifier,
+            limit,
+            "declared_retries",
+            "transport_attempts",
+        ] {
+            assert!(
+                source.contains(required),
+                "{worker} omits bounded visible retry evidence: {required}"
+            );
+        }
+    }
 }
 
 #[test]

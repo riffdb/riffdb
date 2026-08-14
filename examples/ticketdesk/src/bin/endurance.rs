@@ -11,8 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use riffdb_client_rust::{
-    AttemptBudget, CallMetadata, DatabaseAlias, EventConsumerOptions, StableApplicationClient,
-    load_protected_bearer_credential,
+    ApplicationClientError, ApplicationErrorCode, AttemptBudget, CallMetadata, ClientError,
+    DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, PublicErrorKind,
+    StableApplicationClient, TlsClientFailure, load_protected_bearer_credential,
 };
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
@@ -52,6 +53,7 @@ const LATENCY_BOUNDS_US: [u64; 16] = [
     819_200,
     9_007_199_254_740_991,
 ];
+const MAX_TRANSIENT_RETRIES: u64 = 3;
 
 type WorkerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -60,6 +62,7 @@ struct Metrics {
     started_seconds: u64,
     operations: u64,
     transport_attempts: u64,
+    declared_retries: u64,
     modeled_retained_bytes: u64,
     events_emitted: u64,
     consumer_acknowledgements: u64,
@@ -75,6 +78,7 @@ impl Metrics {
             started_seconds,
             operations: 0,
             transport_attempts: 0,
+            declared_retries: 0,
             modeled_retained_bytes: 0,
             events_emitted: 0,
             consumer_acknowledgements: 0,
@@ -90,6 +94,11 @@ impl Metrics {
 
     fn consumer_acknowledged(&mut self) {
         self.consumer_acknowledgements = self.consumer_acknowledgements.saturating_add(1);
+    }
+
+    fn transient_retry(&mut self) {
+        self.transport_attempts = self.transport_attempts.saturating_add(1);
+        self.declared_retries = self.declared_retries.saturating_add(1);
     }
 
     fn record(
@@ -117,7 +126,7 @@ impl Metrics {
                 "{{\"schema\":\"riffdb.alpha-endurance-worker/v1\",",
                 "\"language\":\"rust\",\"pid\":{},\"started_unix_seconds\":{},",
                 "\"logical_operations\":{},\"transport_attempts\":{},",
-                "\"declared_retries\":0,\"error_count\":0,",
+                "\"declared_retries\":{},\"error_count\":0,",
                 "\"events_emitted\":{},\"consumer_acknowledgements\":{},",
                 "\"modeled_retained_bytes\":{},",
                 "\"latency_bounds_us\":{:?},\"latency_counts\":{:?},",
@@ -130,6 +139,7 @@ impl Metrics {
             self.started_seconds,
             self.operations,
             self.transport_attempts,
+            self.declared_retries,
             self.events_emitted,
             self.consumer_acknowledgements,
             self.modeled_retained_bytes,
@@ -248,131 +258,224 @@ async fn run_client(
     };
     let mut counter = 0_u64;
     loop {
-        let mut operation_started = Instant::now();
-        let slot = counter % 100;
-        if slot < 35 {
-            let page = clients
-                .application
-                .ticket_page(TicketPageParams {
-                    organization_id: organization_id.clone(),
-                    ticket_id: hot_ticket_id.clone(),
-                })
-                .await?;
-            if !matches!(page, TicketPageResult::Found(_)) {
-                return Err("Rust endurance read lost its hot ticket".into());
+        let mut retries = 0_u64;
+        loop {
+            match run_iteration(
+                &mut clients,
+                &event_consumer,
+                &triage_consumer,
+                tenant,
+                &organization_id,
+                &user_id,
+                &project_id,
+                &hot_ticket_id,
+                seed,
+                client_index,
+                counter,
+                &metrics,
+            )
+            .await
+            {
+                Ok(()) => break,
+                Err(error)
+                    if retries < MAX_TRANSIENT_RETRIES && transient_error(error.as_ref()) =>
+                {
+                    retries = retries.saturating_add(1);
+                    metrics.lock().await.transient_retry();
+                    tokio::time::sleep(Duration::from_millis(100 * retries)).await;
+                }
+                Err(error) => return Err(error),
             }
-            record(&metrics, "reads", tenant, 0, &mut operation_started).await;
-        } else if slot < 60 {
-            clients
-                .application
-                .create_comment(CreateCommentInput {
-                    body: format!("rust endurance comment {counter}"),
-                    author_id: user_id.clone(),
-                    ticket_id: hot_ticket_id.clone(),
-                    comment_id: id(seed, 10_000 + client_index * 1_000_000 + counter),
-                    idempotency_key: format!("endurance-rust-comment-{client_index}-{counter}"),
-                    organization_id: organization_id.clone(),
-                })
-                .await?;
-            record(&metrics, "writes", tenant, 512, &mut operation_started).await;
-        } else if slot < 70 {
-            let batch = clients
-                .agent
-                .next_triage_ticket(triage_consumer.clone(), 0)
-                .await?;
-            record(&metrics, "workflows", tenant, 0, &mut operation_started).await;
-            if let Some(item) = batch.items.first() {
-                let TicketEventsEvent::TicketCreated(event) = &item.event;
-                clients
-                    .agent
-                    .react_comment(
-                        &triage_consumer,
-                        item,
-                        &CreateCommentInput {
-                            body: "rust contextual endurance reaction".to_owned(),
-                            author_id: event.reporter_id.clone(),
-                            ticket_id: event.ticket_id.clone(),
-                            comment_id: id(seed, 20_000 + client_index * 1_000_000 + counter),
-                            idempotency_key: format!(
-                                "endurance-rust-reaction-{client_index}-{counter}"
-                            ),
-                            organization_id: organization_id.clone(),
-                        },
-                    )
-                    .await?;
-                record(&metrics, "workflows", tenant, 512, &mut operation_started).await;
-                clients
-                    .agent
-                    .ack_triage_ticket(&triage_consumer, item)
-                    .await?;
-                metrics.lock().await.consumer_acknowledged();
-                record(&metrics, "workflows", tenant, 0, &mut operation_started).await;
-            }
-        } else if slot < 80 {
-            let batch = clients
-                .agent
-                .next_ticket_events(
-                    event_consumer.clone(),
-                    EventConsumerOptions {
-                        batch_limit: 1,
-                        in_flight_limit: 4,
-                        lease_seconds: 60,
-                        maximum_wait_nanos: 0,
-                    },
-                )
-                .await?;
-            record(&metrics, "events", tenant, 0, &mut operation_started).await;
-            if let Some(delivery) = batch.events.first() {
-                clients
-                    .agent
-                    .ack_ticket_events(&event_consumer, delivery)
-                    .await?;
-                metrics.lock().await.consumer_acknowledged();
-                record(&metrics, "events", tenant, 0, &mut operation_started).await;
-            }
-        } else {
-            let mut stream = clients
-                .application
-                .watch_ticket_queue_watch(
-                    TicketQueueWatchParams {
-                        organization_id: organization_id.clone(),
-                        project_id: project_id.clone(),
-                    },
-                    None,
-                )
-                .await?;
-            let update = tokio::time::timeout(Duration::from_secs(5), stream.message()).await??;
-            if update.is_none() {
-                return Err("Rust endurance live query ended before its snapshot".into());
-            }
-            record(&metrics, "live_queries", tenant, 0, &mut operation_started).await;
-        }
-
-        if slot == 69 {
-            let cold_ordinal = (counter / 100) % 4_096;
-            let created = clients
-                .application
-                .create_ticket(CreateTicketInput {
-                    title: format!("Rust cold ticket {client_index}-{cold_ordinal}"),
-                    status: "Open".to_owned(),
-                    ticket_id: id(seed, 30_000 + client_index * 4_096 + cold_ordinal),
-                    project_id: project_id.clone(),
-                    assignee_id: user_id.clone(),
-                    reporter_id: user_id.clone(),
-                    idempotency_key: format!("endurance-rust-cold-{client_index}-{cold_ordinal}"),
-                    organization_id: organization_id.clone(),
-                })
-                .await?;
-            if !created.replayed && matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
-                metrics.lock().await.event_emitted();
-            }
-            record(&metrics, "workflows", tenant, 768, &mut operation_started).await;
         }
         counter = counter.saturating_add(1);
         if counter.is_multiple_of(64) {
             publish_metrics(metrics_path, &metrics).await?;
         }
         tokio::time::sleep(delay).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_iteration(
+    clients: &mut Clients,
+    event_consumer: &TicketEventsConsumer,
+    triage_consumer: &TriageTicketConsumer,
+    tenant: &'static str,
+    organization_id: &str,
+    user_id: &str,
+    project_id: &str,
+    hot_ticket_id: &str,
+    seed: u64,
+    client_index: u64,
+    counter: u64,
+    metrics: &Arc<Mutex<Metrics>>,
+) -> WorkerResult<()> {
+    let mut operation_started = Instant::now();
+    let slot = counter % 100;
+    if slot < 35 {
+        let page = clients
+            .application
+            .ticket_page(TicketPageParams {
+                organization_id: organization_id.to_owned(),
+                ticket_id: hot_ticket_id.to_owned(),
+            })
+            .await?;
+        if !matches!(page, TicketPageResult::Found(_)) {
+            return Err("Rust endurance read lost its hot ticket".into());
+        }
+        record(metrics, "reads", tenant, 0, &mut operation_started).await;
+    } else if slot < 60 {
+        clients
+            .application
+            .create_comment(CreateCommentInput {
+                body: format!("rust endurance comment {counter}"),
+                author_id: user_id.to_owned(),
+                ticket_id: hot_ticket_id.to_owned(),
+                comment_id: id(seed, 10_000 + client_index * 1_000_000 + counter),
+                idempotency_key: format!("endurance-rust-comment-{client_index}-{counter}"),
+                organization_id: organization_id.to_owned(),
+            })
+            .await?;
+        record(metrics, "writes", tenant, 512, &mut operation_started).await;
+    } else if slot < 70 {
+        let batch = clients
+            .agent
+            .next_triage_ticket(triage_consumer.clone(), 0)
+            .await?;
+        record(metrics, "workflows", tenant, 0, &mut operation_started).await;
+        if let Some(item) = batch.items.first() {
+            let TicketEventsEvent::TicketCreated(event) = &item.event;
+            clients
+                .agent
+                .react_comment(
+                    triage_consumer,
+                    item,
+                    &CreateCommentInput {
+                        body: "rust contextual endurance reaction".to_owned(),
+                        author_id: event.reporter_id.clone(),
+                        ticket_id: event.ticket_id.clone(),
+                        comment_id: id(seed, 20_000 + client_index * 1_000_000 + counter),
+                        idempotency_key: format!(
+                            "endurance-rust-reaction-{client_index}-{counter}"
+                        ),
+                        organization_id: organization_id.to_owned(),
+                    },
+                )
+                .await?;
+            record(metrics, "workflows", tenant, 512, &mut operation_started).await;
+            clients
+                .agent
+                .ack_triage_ticket(triage_consumer, item)
+                .await?;
+            metrics.lock().await.consumer_acknowledged();
+            record(metrics, "workflows", tenant, 0, &mut operation_started).await;
+        }
+    } else if slot < 80 {
+        let batch = clients
+            .agent
+            .next_ticket_events(
+                event_consumer.clone(),
+                EventConsumerOptions {
+                    batch_limit: 1,
+                    in_flight_limit: 4,
+                    lease_seconds: 60,
+                    maximum_wait_nanos: 0,
+                },
+            )
+            .await?;
+        record(metrics, "events", tenant, 0, &mut operation_started).await;
+        if let Some(delivery) = batch.events.first() {
+            clients
+                .agent
+                .ack_ticket_events(event_consumer, delivery)
+                .await?;
+            metrics.lock().await.consumer_acknowledged();
+            record(metrics, "events", tenant, 0, &mut operation_started).await;
+        }
+    } else {
+        let mut stream = clients
+            .application
+            .watch_ticket_queue_watch(
+                TicketQueueWatchParams {
+                    organization_id: organization_id.to_owned(),
+                    project_id: project_id.to_owned(),
+                },
+                None,
+            )
+            .await?;
+        let update = tokio::time::timeout(Duration::from_secs(5), stream.message()).await??;
+        if update.is_none() {
+            return Err("Rust endurance live query ended before its snapshot".into());
+        }
+        record(metrics, "live_queries", tenant, 0, &mut operation_started).await;
+    }
+
+    if slot == 69 {
+        let cold_ordinal = (counter / 100) % 4_096;
+        let created = clients
+            .application
+            .create_ticket(CreateTicketInput {
+                title: format!("Rust cold ticket {client_index}-{cold_ordinal}"),
+                status: "Open".to_owned(),
+                ticket_id: id(seed, 30_000 + client_index * 4_096 + cold_ordinal),
+                project_id: project_id.to_owned(),
+                assignee_id: user_id.to_owned(),
+                reporter_id: user_id.to_owned(),
+                idempotency_key: format!("endurance-rust-cold-{client_index}-{cold_ordinal}"),
+                organization_id: organization_id.to_owned(),
+            })
+            .await?;
+        if !created.replayed && matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
+            metrics.lock().await.event_emitted();
+        }
+        record(metrics, "workflows", tenant, 768, &mut operation_started).await;
+    }
+    Ok(())
+}
+
+fn transient_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    if error
+        .downcast_ref::<tokio::time::error::Elapsed>()
+        .is_some()
+    {
+        return true;
+    }
+    let Some(error) = error.downcast_ref::<ApplicationClientError>() else {
+        return false;
+    };
+    if let Some(semantic) = error.semantic_error()
+        && matches!(
+            semantic.code(),
+            ApplicationErrorCode::StorageUnavailable
+                | ApplicationErrorCode::OutcomeUnknown
+                | ApplicationErrorCode::Overloaded
+                | ApplicationErrorCode::DeadlineExceeded
+        )
+    {
+        return true;
+    }
+    let ApplicationClientError::Client(error) = error else {
+        return false;
+    };
+    match error {
+        ClientError::ConnectionFailure
+        | ClientError::OutcomeUnknown(_)
+        | ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification)
+        | ClientError::DetailsFree(
+            DetailsFreeStatus::DeadlineExceeded | DetailsFreeStatus::TransportUnavailable,
+        ) => true,
+        ClientError::Public(public) => matches!(
+            public.kind(),
+            PublicErrorKind::StorageUnavailable
+                | PublicErrorKind::OutcomeUnknown
+                | PublicErrorKind::Overloaded
+                | PublicErrorKind::ConcurrencyDeadlineExceeded
+        ),
+        ClientError::Application(_)
+        | ClientError::DetailsFree(_)
+        | ClientError::Protocol(_)
+        | ClientError::IdentifierGeneration(_)
+        | ClientError::Tls(_) => false,
     }
 }
 

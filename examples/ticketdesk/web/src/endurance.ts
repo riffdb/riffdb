@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import {
+  DriverApplicationError,
   DriverApplicationTransport,
   DriverGeneratedApplicationTransport,
   type DriverApplicationIdentity,
@@ -25,6 +26,7 @@ const LATENCY_BOUNDS_US = [
   50, 100, 200, 400, 800, 1_600, 3_200, 6_400,
   12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, Number.MAX_SAFE_INTEGER,
 ] as const;
+const MAX_TRANSIENT_RETRIES = 3;
 
 interface IdentityFile {
   readonly applicationManifestHash: string;
@@ -48,6 +50,8 @@ class Metrics {
   readonly #path: string;
   readonly #started = Math.floor(Date.now() / 1000);
   #logicalOperations = 0;
+  #transportAttempts = 0;
+  #declaredRetries = 0;
   #retainedBytes = 0;
   #eventsEmitted = 0;
   #consumerAcknowledgements = 0;
@@ -66,8 +70,14 @@ class Metrics {
 
   public consumerAcknowledged(): void { this.#consumerAcknowledgements += 1; }
 
+  public transientRetry(): void {
+    this.#transportAttempts += 1;
+    this.#declaredRetries += 1;
+  }
+
   public async record(workload: Workload, tenant: Tenant, retainedBytes: number, startedAt: number): Promise<void> {
     this.#logicalOperations += 1;
+    this.#transportAttempts += 1;
     this.#retainedBytes += retainedBytes;
     this.#workloads[workload] += 1;
     this.#tenants[tenant] += 1;
@@ -84,8 +94,8 @@ class Metrics {
       pid: process.pid,
       started_unix_seconds: this.#started,
       logical_operations: this.#logicalOperations,
-      transport_attempts: this.#logicalOperations,
-      declared_retries: 0,
+      transport_attempts: this.#transportAttempts,
+      declared_retries: this.#declaredRetries,
       error_count: 0,
       events_emitted: this.#eventsEmitted,
       consumer_acknowledgements: this.#consumerAcknowledgements,
@@ -188,84 +198,115 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
     const eventConsumer = `endurance-typescript-events-${index}`;
     const triageConsumer = `endurance-typescript-triage-${index}`;
     for (let counter = 0; ; counter += 1) {
-      let operationStarted = performance.now();
-      const slot = counter % 100;
-      if (slot < 35) {
-        const result = await application.generated.ticketPage({ organization_id: organizationId, ticket_id: hotTicketId });
-        if (result.value.outcome !== "Found") throw new Error("TypeScript endurance read lost its hot ticket");
-        await metrics.record("reads", tenant, 0, operationStarted);
-      } else if (slot < 60) {
-        await application.generated.createComment({
-          body: `typescript endurance comment ${counter}`, author_id: userId,
-          ticket_id: hotTicketId, comment_id: id(namespace, 10_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
-          idempotency_key: `endurance-typescript-comment-${index}-${counter}`, organization_id: organizationId,
-        });
-        await metrics.record("writes", tenant, 512, operationStarted);
-      } else if (slot < 70) {
-        const batch = await agent.reactive.nextTriageTicket(eventParameters, triageConsumer, 0);
-        await metrics.record("workflows", tenant, 0, operationStarted);
-        operationStarted = performance.now();
-        const item = batch.items[0];
-        if (item !== undefined) {
-          await agent.reactive.reactComment(eventParameters, triageConsumer, item, {
-            body: "typescript contextual endurance reaction", author_id: item.delivery.event.reporter_id,
-            ticket_id: item.delivery.event.ticket_id,
-            comment_id: id(namespace, 20_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
-            idempotency_key: `endurance-typescript-reaction-${index}-${counter}`, organization_id: organizationId,
-          });
-          await metrics.record("workflows", tenant, 512, operationStarted);
-          operationStarted = performance.now();
-          await agent.reactive.ackTriageTicket(eventParameters, triageConsumer, item);
-          metrics.consumerAcknowledged();
-          await metrics.record("workflows", tenant, 0, operationStarted);
-        }
-      } else if (slot < 80) {
-        const stream = agent.reactive.ticketEvents(eventParameters, eventConsumer, {
-          batchLimit: 1, inFlightLimit: 4, leaseSeconds: 60, maximumWaitMs: 0,
-        });
-        const iterator = stream[Symbol.asyncIterator]();
-        const result = await iterator.next();
-        await iterator.return?.();
-        if (result.done === true) throw new Error("TypeScript event stream ended before a batch");
-        await metrics.record("events", tenant, 0, operationStarted);
-        operationStarted = performance.now();
-        const delivery: TicketEventsDelivery | undefined = result.value.events[0];
-        if (delivery !== undefined) {
-          await agent.reactive.ackTicketEvents(eventParameters, eventConsumer, delivery);
-          metrics.consumerAcknowledged();
-          await metrics.record("events", tenant, 0, operationStarted);
-        }
-      } else {
-        const abort = new AbortController();
-        const timer = setTimeout(() => abort.abort(), 5_000);
+      let retries = 0;
+      for (;;) {
         try {
-          const stream = application.reactive.watchTicketQueueWatch({ organization_id: organizationId, project_id: projectId }, undefined, abort.signal);
-          const iterator = stream[Symbol.asyncIterator]();
-          const result = await iterator.next();
-          await iterator.return?.();
-          if (result.done === true) throw new Error("TypeScript live query ended before its snapshot");
-          await metrics.record("live_queries", tenant, 0, operationStarted);
-        } finally {
-          clearTimeout(timer);
+          await runIteration(
+            tenant, index, counter, namespace, organizationId, userId, projectId,
+            hotTicketId, eventParameters, eventConsumer, triageConsumer,
+            application, agent,
+          );
+          break;
+        } catch (error: unknown) {
+          if (retries >= MAX_TRANSIENT_RETRIES || !transientError(error)) throw error;
+          retries += 1;
+          metrics.transientRetry();
+          await new Promise<void>((resolve) => setTimeout(resolve, 100 * retries));
         }
-      }
-      if (slot === 69) {
-        operationStarted = performance.now();
-        const ordinal = BigInt(Math.floor(counter / 100) % 4_096);
-      const created = await application.generated.createTicket({
-          title: `TypeScript cold ticket ${index}-${ordinal}`, status: "Open",
-          ticket_id: id(namespace, 30_000n + BigInt(index) * 4_096n + ordinal), project_id: projectId,
-          assignee_id: userId, reporter_id: userId,
-          idempotency_key: `endurance-typescript-cold-${index}-${ordinal}`, organization_id: organizationId,
-      });
-      if (!created.replayed && created.outcome.outcome === "Created") metrics.eventEmitted();
-      await metrics.record("workflows", tenant, 768, operationStarted);
       }
       await new Promise<void>((resolve) => setTimeout(resolve, delayMilliseconds));
     }
   } finally {
     await Promise.all([seeder.driver.shutdown(), application.driver.shutdown(), agent.driver.shutdown()]);
   }
+}
+
+async function runIteration(
+  tenant: Tenant, index: number, counter: number, namespace: bigint,
+  organizationId: string, userId: string, projectId: string, hotTicketId: string,
+  eventParameters: { readonly organization_id: string }, eventConsumer: string,
+  triageConsumer: string, application: ConnectedClient, agent: ConnectedClient,
+): Promise<void> {
+  let operationStarted = performance.now();
+  const slot = counter % 100;
+  if (slot < 35) {
+    const result = await application.generated.ticketPage({ organization_id: organizationId, ticket_id: hotTicketId });
+    if (result.value.outcome !== "Found") throw new Error("TypeScript endurance read lost its hot ticket");
+    await metrics.record("reads", tenant, 0, operationStarted);
+  } else if (slot < 60) {
+    await application.generated.createComment({
+      body: `typescript endurance comment ${counter}`, author_id: userId,
+      ticket_id: hotTicketId, comment_id: id(namespace, 10_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
+      idempotency_key: `endurance-typescript-comment-${index}-${counter}`, organization_id: organizationId,
+    });
+    await metrics.record("writes", tenant, 512, operationStarted);
+  } else if (slot < 70) {
+    const batch = await agent.reactive.nextTriageTicket(eventParameters, triageConsumer, 0);
+    await metrics.record("workflows", tenant, 0, operationStarted);
+    operationStarted = performance.now();
+    const item = batch.items[0];
+    if (item !== undefined) {
+      await agent.reactive.reactComment(eventParameters, triageConsumer, item, {
+        body: "typescript contextual endurance reaction", author_id: item.delivery.event.reporter_id,
+        ticket_id: item.delivery.event.ticket_id,
+        comment_id: id(namespace, 20_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
+        idempotency_key: `endurance-typescript-reaction-${index}-${counter}`, organization_id: organizationId,
+      });
+      await metrics.record("workflows", tenant, 512, operationStarted);
+      operationStarted = performance.now();
+      await agent.reactive.ackTriageTicket(eventParameters, triageConsumer, item);
+      metrics.consumerAcknowledged();
+      await metrics.record("workflows", tenant, 0, operationStarted);
+    }
+  } else if (slot < 80) {
+    const stream = agent.reactive.ticketEvents(eventParameters, eventConsumer, {
+      batchLimit: 1, inFlightLimit: 4, leaseSeconds: 60, maximumWaitMs: 0,
+    });
+    const iterator = stream[Symbol.asyncIterator]();
+    const result = await iterator.next();
+    await iterator.return?.();
+    if (result.done === true) throw new Error("TypeScript event stream ended before a batch");
+    await metrics.record("events", tenant, 0, operationStarted);
+    operationStarted = performance.now();
+    const delivery: TicketEventsDelivery | undefined = result.value.events[0];
+    if (delivery !== undefined) {
+      await agent.reactive.ackTicketEvents(eventParameters, eventConsumer, delivery);
+      metrics.consumerAcknowledged();
+      await metrics.record("events", tenant, 0, operationStarted);
+    }
+  } else {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 5_000);
+    try {
+      const stream = application.reactive.watchTicketQueueWatch({ organization_id: organizationId, project_id: projectId }, undefined, abort.signal);
+      const iterator = stream[Symbol.asyncIterator]();
+      const result = await iterator.next();
+      await iterator.return?.();
+      if (result.done === true) throw new Error("TypeScript live query ended before its snapshot");
+      await metrics.record("live_queries", tenant, 0, operationStarted);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (slot === 69) {
+    operationStarted = performance.now();
+    const ordinal = BigInt(Math.floor(counter / 100) % 4_096);
+    const created = await application.generated.createTicket({
+      title: `TypeScript cold ticket ${index}-${ordinal}`, status: "Open",
+      ticket_id: id(namespace, 30_000n + BigInt(index) * 4_096n + ordinal), project_id: projectId,
+      assignee_id: userId, reporter_id: userId,
+      idempotency_key: `endurance-typescript-cold-${index}-${ordinal}`, organization_id: organizationId,
+    });
+    if (!created.replayed && created.outcome.outcome === "Created") metrics.eventEmitted();
+    await metrics.record("workflows", tenant, 768, operationStarted);
+  }
+}
+
+function transientError(error: unknown): boolean {
+  if (error instanceof DriverApplicationError) {
+    return new Set(["RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003"]).has(error.details.code);
+  }
+  return error instanceof Error && (error.name === "AbortError" || (error as Error & { code?: string }).code === "ABORT_ERR");
 }
 
 async function seedClient(
