@@ -72,9 +72,13 @@ if [[ -e "$environment_root" ]]; then
     exit 1
 fi
 mkdir -m 0700 "$environment_root" "$environment_root/data" "$environment_root/backups" \
-    "$environment_root/application" "$environment_root/python-dist"
+    "$environment_root/application" "$environment_root/python-dist" \
+    "$environment_root/metrics" "$environment_root/bin"
 export UV_CACHE_DIR="$environment_root/uv-cache"
 mkdir -m 0700 "$UV_CACHE_DIR"
+export GOCACHE="$environment_root/go-cache"
+export GOPATH="$environment_root/go-path"
+mkdir -m 0700 "$GOCACHE" "$GOPATH"
 
 cleanup_partial=true
 server_pid=0
@@ -94,8 +98,18 @@ cd "$repo_root"
 cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
-    -p riffdb-driver-host --bin riffdb-driverd >&2
+    -p riffdb-driver-host --bin riffdb-driverd \
+    -p riffdb-ticketdesk --bin endurance >&2
+cp target/debug/endurance "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
+(cd examples/ticketdesk && go build -o "$environment_root/bin/riffdb-ticketdesk-go-endurance" ./endurance/go)
 npm --prefix clients/typescript/runtime run build >/dev/null
+npm --prefix examples/ticketdesk/web run build >/dev/null
+mkdir -m 0700 -p "$environment_root/typescript-worker/node_modules/@riffdb/application"
+cp -R examples/ticketdesk/web/dist/. "$environment_root/typescript-worker/"
+cp clients/typescript/runtime/package.json \
+    "$environment_root/typescript-worker/node_modules/@riffdb/application/package.json"
+cp -R clients/typescript/runtime/dist \
+    "$environment_root/typescript-worker/node_modules/@riffdb/application/dist"
 (
     cd clients/python/runtime
     python3 -m maturin build --quiet --interpreter python3 --compatibility linux \
@@ -105,6 +119,9 @@ python_wheel="$(find "$environment_root/python-dist" -maxdepth 1 -type f -name '
 [[ -n "$python_wheel" ]] || { echo "endurance Python wheel was not built" >&2; exit 1; }
 uv venv "$environment_root/python-venv" >/dev/null
 uv pip install --offline --python "$environment_root/python-venv/bin/python" "$python_wheel" >/dev/null
+mkdir -m 0700 "$environment_root/python-worker"
+cp examples/ticketdesk/endurance/python/main.py "$environment_root/python-worker/main.py"
+cp examples/ticketdesk/generated/python/client.py "$environment_root/python-worker/client.py"
 
 port="$($environment_root/python-venv/bin/python - <<'PY'
 import socket

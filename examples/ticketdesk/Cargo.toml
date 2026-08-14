@@ -8,7 +8,8 @@ publish.workspace = true
 
 [dependencies]
 riffdb-client-rust = { version = "0.1.0", path = "../../crates/riffdb-client-rust", default-features = false }
-tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread"] }
+riffdb-config = { version = "0.1.0", path = "../../crates/riffdb-config", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
 
 [lints]
