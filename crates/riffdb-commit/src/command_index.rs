@@ -2502,6 +2502,114 @@ contract WorkflowInitializedRows version 1 {
         );
     }
 
+    // WP-606 V10 audit evidence: the reimport invocation class (ADR-0119)
+    // changes no entity/index surface. Application commands on a V10 bundle
+    // derive ordinarily, and the bundle's reimport plan carries the exact
+    // structural guarantees that keep it out of the ordinary application
+    // path (server-derived idempotency, create-only shape, Reimport class).
+    const REIMPORT_ERA_SOURCE: &str = r#"
+contract ReimportEraRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  row policy RowAccess on Row {
+    allow read when true
+    allow create when true
+  }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Created { row: row }
+  }
+  reimport command ReconstituteRows {
+    input records: list<Row, 1..8>
+    reconstitute Row from records else RowExists {}
+    return RowsReconstituted {}
+  }
+}
+"#;
+
+    #[test]
+    fn reimport_era_v10_application_commands_derive_ordinarily() {
+        let fixture = fixture_from_source(
+            REIMPORT_ERA_SOURCE,
+            "CreateRow",
+            "reimport-era-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        // Non-empty trigger: the reimport command alone must place the
+        // bundle at the V10 era.
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V10
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V10
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("application commands on the V10 bundle derive ordinarily");
+        assert_eq!(derived.entry_mutations.len(), 2);
+        assert_eq!(derived.affected_targets.as_slice().len(), 2);
+
+        // Class-routing structural pins: the reimport plan cannot satisfy
+        // the ordinary preparation path (no caller-declared idempotency),
+        // is create-only by IR validation, and is marked Reimport. The
+        // ordinary-constructor refusals themselves are pinned in
+        // tests/command_preparation.rs.
+        let reimport = fixture
+            .resolved
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "ReconstituteRows")
+            .expect("reimport plan");
+        assert!(reimport.is_reimport());
+        assert!(
+            reimport.idempotency_input().is_none(),
+            "reimport idempotency must be server-derived"
+        );
+        assert!(
+            reimport
+                .bindings()
+                .iter()
+                .all(|binding| matches!(binding.mode(), BindingMode::Read | BindingMode::Create)),
+            "reimport plans must stay create-only"
+        );
+        let application = fixture
+            .resolved
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "CreateRow")
+            .expect("application plan");
+        assert!(!application.is_reimport());
+    }
+
     #[test]
     fn mutate_skips_unchanged_indexes_and_unions_changed_old_and_new_prefixes() {
         let unchanged = fixture(
