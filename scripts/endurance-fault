@@ -22,6 +22,7 @@ from uuid import UUID, uuid5
 RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 EVIDENCE_SCHEMA = "riffdb.alpha-endurance-fault-evidence/v1"
 CONSUMER_CLIENT_SCHEMA = "riffdb.alpha-endurance-consumer-fault-client/v1"
+CONSUMER_SEED_SCHEMA = "riffdb.alpha-endurance-consumer-fault-seed/v1"
 FAULTS = {
     "checkpoint_crash",
     "consumer_after_command_before_ack",
@@ -282,6 +283,9 @@ def consumer_command(
     mode: str,
     consumer: str,
     organization_id: UUID,
+    user_id: UUID,
+    project_id: UUID,
+    ticket_id: UUID,
     comment_id: UUID,
     idempotency_key: str,
     output: Path,
@@ -307,6 +311,12 @@ def consumer_command(
         consumer,
         "--organization-id",
         str(organization_id),
+        "--user-id",
+        str(user_id),
+        "--project-id",
+        str(project_id),
+        "--ticket-id",
+        str(ticket_id),
         "--comment-id",
         str(comment_id),
         "--idempotency-key",
@@ -338,7 +348,10 @@ def consumer_after_command_before_ack(
 ) -> tuple[int, int, dict[str, Any]]:
     before = module.health_frontier(environment)
     namespace = UUID("7b459bfd-f7fd-4d6a-87c9-0d496fbf9de2")
-    organization_id = UUID("0000000a-0000-8000-8000-000000000000")
+    organization_id = uuid5(namespace, f"endurance-consumer-fault-organization-{ordinal}")
+    user_id = uuid5(namespace, f"endurance-consumer-fault-user-{ordinal}")
+    project_id = uuid5(namespace, f"endurance-consumer-fault-project-{ordinal}")
+    ticket_id = uuid5(namespace, f"endurance-consumer-fault-ticket-{ordinal}")
     comment_id = uuid5(namespace, f"endurance-consumer-fault-{ordinal}")
     consumer = f"endurance-crash-after-command-{ordinal}"
     idempotency_key = f"endurance-crash-after-command-{ordinal}"
@@ -346,9 +359,42 @@ def consumer_after_command_before_ack(
     work_root.mkdir(mode=0o700, exist_ok=True)
     first_path = work_root / f"consumer-{ordinal:06d}-first.json"
     second_path = work_root / f"consumer-{ordinal:06d}-second.json"
-    for path in (first_path, second_path):
+    seed_path = work_root / f"consumer-{ordinal:06d}-seed.json"
+    for path in (seed_path, first_path, second_path):
         if path.exists() or path.is_symlink():
             fail("endurance consumer fault work evidence already exists")
+
+    seeded = subprocess.run(
+        consumer_command(
+            environment,
+            mode="seed-event",
+            consumer=consumer,
+            organization_id=organization_id,
+            user_id=user_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            comment_id=comment_id,
+            idempotency_key=idempotency_key,
+            output=seed_path,
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=60,
+        check=False,
+    )
+    if seeded.returncode != 0:
+        diagnostic = seeded.stderr.decode("utf-8", errors="replace")[:4096].strip()
+        fail(f"endurance consumer fault seed failed: {diagnostic}")
+    seed_result = module.read_object(seed_path)
+    if (
+        set(seed_result) != {"schema", "mode", "ticket_id", "command_replayed"}
+        or seed_result.get("schema") != CONSUMER_SEED_SCHEMA
+        or seed_result.get("mode") != "seed-event"
+        or seed_result.get("ticket_id") != str(ticket_id)
+        or seed_result.get("command_replayed") is not False
+    ):
+        fail("endurance consumer fault seed evidence is invalid")
 
     first = subprocess.Popen(
         consumer_command(
@@ -356,6 +402,9 @@ def consumer_after_command_before_ack(
             mode="commit-and-wait",
             consumer=consumer,
             organization_id=organization_id,
+            user_id=user_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
             comment_id=comment_id,
             idempotency_key=idempotency_key,
             output=first_path,
@@ -386,6 +435,9 @@ def consumer_after_command_before_ack(
             mode="redeliver-and-ack",
             consumer=consumer,
             organization_id=organization_id,
+            user_id=user_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
             comment_id=comment_id,
             idempotency_key=idempotency_key,
             expected_event_id=str(first_result["event_id"]),
@@ -415,6 +467,7 @@ def consumer_after_command_before_ack(
         "schema": EVIDENCE_SCHEMA,
         "fault": "consumer_after_command_before_ack",
         "consumer": consumer,
+        "seed_ticket_id": str(ticket_id),
         "event_id": first_result["event_id"],
         "first_attempt": first_result["attempt"],
         "redelivery_attempt": second_result["attempt"],

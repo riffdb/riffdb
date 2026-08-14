@@ -14,6 +14,7 @@ from uuid import UUID
 
 
 SCHEMA = "riffdb.alpha-endurance-consumer-fault-client/v1"
+SEED_SCHEMA = "riffdb.alpha-endurance-consumer-fault-seed/v1"
 MAX_JSON_BYTES = 1024 * 1024
 
 
@@ -53,8 +54,18 @@ async def run(arguments: argparse.Namespace) -> None:
         fail("endurance consumer fault environment is invalid")
     sys.path.insert(0, str(environment / "python-worker"))
     from client import (  # noqa: PLC0415
+        AsyncTicketDeskClient,
         AsyncTicketDeskReactiveClient,
         CreateCommentInput,
+        CreateOrganizationCreated,
+        CreateOrganizationInput,
+        CreateProjectCreated,
+        CreateProjectInput,
+        CreateTicketCreated,
+        CreateTicketInput,
+        CreateUserCreated,
+        CreateUserInput,
+        TicketStatus,
         TriageTicketParams,
     )
     from riffdb_application import (  # noqa: PLC0415
@@ -70,19 +81,88 @@ async def run(arguments: argparse.Namespace) -> None:
     endpoint = state.get("endpoint")
     if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
         fail("endurance consumer fault endpoint is invalid")
-    metadata = CallMetadata.authenticated(
-        BearerCredential.from_protected_file(str(environment / "agent.credential"))
-    ).with_database(DatabaseAlias("default"))
-    transport = await AsyncApplicationTransport.connect_verified_tls(
-        VerifiedTlsConfig(
-            endpoint=endpoint,
-            trust_root=str(environment / "ca.pem"),
-            server_name="127.0.0.1",
-            pool_connections=1,
-            streams_per_connection=4,
-        ),
-        metadata,
+    tls = VerifiedTlsConfig(
+        endpoint=endpoint,
+        trust_root=str(environment / "ca.pem"),
+        server_name="127.0.0.1",
+        pool_connections=1,
+        streams_per_connection=4,
     )
+
+    async def connect(role: str) -> AsyncApplicationTransport:
+        metadata = CallMetadata.authenticated(
+            BearerCredential.from_protected_file(str(environment / f"{role}.credential"))
+        ).with_database(DatabaseAlias("default"))
+        return await AsyncApplicationTransport.connect_verified_tls(tls, metadata)
+
+    if arguments.mode == "seed-event":
+        seeder_transport = await connect("seeder")
+        application_transport = await connect("application")
+        try:
+            seeder = AsyncTicketDeskClient(seeder_transport, AttemptBudget(1))
+            application = AsyncTicketDeskClient(application_transport, AttemptBudget(1))
+            organization_id = UUID(arguments.organization_id)
+            user_id = UUID(arguments.user_id)
+            project_id = UUID(arguments.project_id)
+            ticket_id = UUID(arguments.ticket_id)
+            organization = await seeder.create_organization(
+                CreateOrganizationInput(
+                    name="Endurance consumer fault",
+                    idempotency_key=f"{arguments.idempotency_key}-organization",
+                    organization_id=organization_id,
+                )
+            )
+            if not isinstance(organization.outcome, CreateOrganizationCreated):
+                fail("endurance consumer fault organization was not created")
+            user = await seeder.create_user(
+                CreateUserInput(
+                    email=f"consumer-fault-{arguments.idempotency_key}@example.invalid",
+                    user_id=user_id,
+                    display_name="Endurance consumer fault",
+                    idempotency_key=f"{arguments.idempotency_key}-user",
+                    organization_id=organization_id,
+                )
+            )
+            if not isinstance(user.outcome, CreateUserCreated):
+                fail("endurance consumer fault user was not created")
+            project = await seeder.create_project(
+                CreateProjectInput(
+                    name="Endurance consumer fault",
+                    project_id=project_id,
+                    idempotency_key=f"{arguments.idempotency_key}-project",
+                    organization_id=organization_id,
+                )
+            )
+            if not isinstance(project.outcome, CreateProjectCreated):
+                fail("endurance consumer fault project was not created")
+            created = await application.create_ticket(
+                CreateTicketInput(
+                    title="Endurance consumer fault",
+                    status=TicketStatus.OPEN,
+                    ticket_id=ticket_id,
+                    project_id=project_id,
+                    assignee_id=user_id,
+                    reporter_id=user_id,
+                    idempotency_key=f"{arguments.idempotency_key}-ticket",
+                    organization_id=organization_id,
+                )
+            )
+            if not isinstance(created.outcome, CreateTicketCreated):
+                fail("endurance consumer fault ticket was not created")
+            atomic_write(
+                Path(arguments.output),
+                {
+                    "schema": SEED_SCHEMA,
+                    "mode": arguments.mode,
+                    "ticket_id": str(ticket_id),
+                    "command_replayed": created.replayed,
+                },
+            )
+        finally:
+            await asyncio.gather(seeder_transport.close(), application_transport.close())
+        return
+
+    transport = await connect("agent")
     client = AsyncTicketDeskReactiveClient(transport, AttemptBudget(1))
     try:
         parameters = TriageTicketParams(organization_id=UUID(arguments.organization_id))
@@ -132,10 +212,17 @@ async def run(arguments: argparse.Namespace) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--environment", required=True)
-    parser.add_argument("--mode", choices=("commit-and-wait", "redeliver-and-ack"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("seed-event", "commit-and-wait", "redeliver-and-ack"),
+        required=True,
+    )
     parser.add_argument("--consumer", required=True)
     parser.add_argument("--organization-id", required=True)
     parser.add_argument("--comment-id", required=True)
+    parser.add_argument("--user-id", required=True)
+    parser.add_argument("--project-id", required=True)
+    parser.add_argument("--ticket-id", required=True)
     parser.add_argument("--idempotency-key", required=True)
     parser.add_argument("--expected-event-id", default="")
     parser.add_argument("--output", required=True)
