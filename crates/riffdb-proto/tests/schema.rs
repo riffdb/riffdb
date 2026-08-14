@@ -334,6 +334,14 @@ fn offline_maintenance_surface_is_exact_and_additive() {
             vec![("disposition", 1), ("operation", 2)],
         ),
         (
+            "riffdb.v1.RetireOfflineBackupRequest",
+            vec![("request_id", 1), ("operation_id", 2), ("backup_name", 3)],
+        ),
+        (
+            "riffdb.v1.RetireOfflineBackupResponse",
+            vec![("disposition", 1), ("operation", 2)],
+        ),
+        (
             "riffdb.v1.GetOfflineMaintenanceOperationRequest",
             vec![("request_id", 1), ("operation_id", 2)],
         ),
@@ -351,6 +359,7 @@ fn offline_maintenance_surface_is_exact_and_additive() {
                 ("OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED", 0),
                 ("OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP", 1),
                 ("OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP", 2),
+                ("OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP", 3),
             ],
         ),
         (
@@ -458,7 +467,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 65);
+    assert_eq!(methods.len(), 66);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -554,6 +563,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "ListPendingOutboxDeliveries",
             "CreateOfflineBackup",
             "RestoreOfflineBackup",
+            "RetireOfflineBackup",
             "GetOfflineMaintenanceOperation",
             "CheckContractMigration",
             "ApplyContractMigration",
@@ -648,6 +658,8 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "CreateOfflineBackupResponse",
         "RestoreOfflineBackupRequest",
         "RestoreOfflineBackupResponse",
+        "RetireOfflineBackupRequest",
+        "RetireOfflineBackupResponse",
         "GetOfflineMaintenanceOperationRequest",
         "GetOfflineMaintenanceOperationResponse",
         "ContractMigrationOperation",
@@ -733,7 +745,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        272
+        274
     );
     assert_eq!(
         messages
