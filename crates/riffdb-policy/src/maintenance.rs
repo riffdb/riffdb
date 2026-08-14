@@ -10,7 +10,7 @@ use riffdb_types::{
 
 use crate::{Obligations, PolicyCode};
 
-/// The three public offline-maintenance actions known to policy.
+/// The four public offline-maintenance actions known to policy.
 ///
 /// This is a process-local policy registry. It deliberately has no stable tag
 /// or serialization API and is not a [`riffdb_types::ServiceOperationV1`].
@@ -56,6 +56,21 @@ impl OfflineMaintenanceAuthorizationRequest {
             operation_id,
             operation: OfflineMaintenancePolicyOperation::Start(
                 OfflineMaintenanceOperationKind::RestoreBackup,
+            ),
+            input_hash: Some(input_hash),
+        }
+    }
+
+    /// Constructs authorization facts for immutable-backup retirement.
+    #[must_use]
+    pub const fn retire_backup(
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: OfflineMaintenanceInputHash,
+    ) -> Self {
+        Self {
+            operation_id,
+            operation: OfflineMaintenancePolicyOperation::Start(
+                OfflineMaintenanceOperationKind::RetireBackup,
             ),
             input_hash: Some(input_hash),
         }
@@ -237,6 +252,13 @@ mod tests {
     #[test]
     fn request_registry_is_closed_and_redacted() {
         let cases = [
+            (
+                OfflineMaintenanceAuthorizationRequest::retire_backup(operation_id(), input_hash()),
+                OfflineMaintenancePolicyOperation::Start(
+                    OfflineMaintenanceOperationKind::RetireBackup,
+                ),
+                Some(input_hash()),
+            ),
             (
                 OfflineMaintenanceAuthorizationRequest::create_backup(operation_id(), input_hash()),
                 OfflineMaintenancePolicyOperation::Start(

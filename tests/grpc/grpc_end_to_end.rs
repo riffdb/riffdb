@@ -316,6 +316,11 @@ enum ObservedMaintenanceInvocation {
     Restore {
         redacted_invocation: String,
     },
+    Retire {
+        request_id: RequestId,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: String,
+    },
     Get {
         request_id: RequestId,
         operation_id: OfflineMaintenanceOperationId,
@@ -890,6 +895,36 @@ impl OfflineMaintenanceApplication for ProjectionService {
                 redacted_invocation: format!("{invocation:?}"),
             });
         Box::pin(async { Ok(maintenance_restore_start_result()) })
+    }
+
+    fn retire_offline_backup(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::RetireOfflineBackupRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.maintenance_invocations
+            .lock()
+            .expect("maintenance observation lock remains available")
+            .push(ObservedMaintenanceInvocation::Retire {
+                request_id: context.request_id(),
+                operation_id: request.operation_id(),
+                backup_name: request.backup_name().as_str().to_owned(),
+            });
+        let observation = OfflineMaintenanceOperationObservation::new(
+            request.operation_id(),
+            OfflineMaintenanceOperationKind::RetireBackup,
+            request.backup_name().clone(),
+            request.input_hash(),
+            OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .expect("matching backup-retire observation");
+        let result = OfflineMaintenanceStartResult::new(
+            OfflineMaintenanceStartDisposition::Accepted,
+            observation,
+        )
+        .expect("matching accepted start result");
+        Box::pin(async move { Ok(result) })
     }
 
     fn get_offline_maintenance_operation(
@@ -1516,8 +1551,30 @@ async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_aut
         "ready restore authenticates the current database exactly once"
     );
 
-    let mut poll = Request::new(v1::GetOfflineMaintenanceOperationRequest {
+    let retire_operation_id = maintenance_operation_id(3);
+    let mut retire = Request::new(v1::RetireOfflineBackupRequest {
         request_id: request_id(23).into_bytes().to_vec(),
+        operation_id: retire_operation_id.into_bytes().to_vec(),
+        backup_name: "nightly".to_owned(),
+    });
+    authorize(&mut retire);
+    let retire = client
+        .retire_offline_backup(retire)
+        .await
+        .expect("ready retirement reaches shared service")
+        .into_inner();
+    assert_eq!(
+        retire.disposition,
+        v1::OfflineMaintenanceStartDisposition::Accepted as i32
+    );
+    assert_eq!(
+        retire.operation.expect("retire observation").operation_id,
+        retire_operation_id.as_bytes()
+    );
+    assert_eq!(authenticator.calls(), 3);
+
+    let mut poll = Request::new(v1::GetOfflineMaintenanceOperationRequest {
+        request_id: request_id(24).into_bytes().to_vec(),
         operation_id: create_operation_id.into_bytes().to_vec(),
     });
     authorize(&mut poll);
@@ -1530,7 +1587,7 @@ async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_aut
         poll.result,
         Some(v1::get_offline_maintenance_operation_response::Result::Found(_))
     ));
-    assert_eq!(authenticator.calls(), 3);
+    assert_eq!(authenticator.calls(), 4);
 
     assert_eq!(
         route.ready_admissions(),
@@ -1540,11 +1597,12 @@ async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_aut
                 operation_id: restore_operation_id,
                 input_hash: restore_input_hash("restore"),
             },
+            GrpcOfflineMaintenanceOperation::RetireBackup,
             GrpcOfflineMaintenanceOperation::GetOperation,
         ]
     );
     assert!(route.recovery_admissions().is_empty());
-    assert_eq!(route.security_fetches(), 3);
+    assert_eq!(route.security_fetches(), 4);
     assert_eq!(
         service.maintenance_invocations(),
         vec![
@@ -1556,8 +1614,13 @@ async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_aut
             ObservedMaintenanceInvocation::Restore {
                 redacted_invocation: "RestoreOfflineBackupInvocation([REDACTED])".to_owned(),
             },
-            ObservedMaintenanceInvocation::Get {
+            ObservedMaintenanceInvocation::Retire {
                 request_id: request_id(23),
+                operation_id: retire_operation_id,
+                backup_name: "nightly".to_owned(),
+            },
+            ObservedMaintenanceInvocation::Get {
+                request_id: request_id(24),
                 operation_id: create_operation_id,
             },
         ]

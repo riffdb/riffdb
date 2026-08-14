@@ -87,6 +87,7 @@ server.health.transport_unavailable.jsonl	server.health	transport_unavailable	st
 backup.create.accepted.jsonl	backup.create	accepted	stdout	0	320	5d287f7c5f78fdad85d9372fc4cade12a0dbee62eabdf845dfc9d3eab6c965ce
 backup.create.uncertain.jsonl	backup.create	uncertain	stdout	3	300	2ca60cc8c6a0d9c6591af0a49dace11b0e7780dd6435646c678963a1a66d66db
 backup.restore.terminal.jsonl	backup.restore	terminal	stdout	0	357	190f96d2254dcf89022a22db5ac223de90ba31166dea9a6331a2582e2fada955
+backup.retire.accepted.jsonl	backup.retire	accepted	stdout	0	320	541db9c49b692de02c5f35861fa8dfd36f984a6a4408ae52739be80a30153591
 backup.operation.found.jsonl	backup.operation	found	stdout	0	321	0f3a43fa6d75f190d7e3696ba8d18a5443b5a087f25b619a45821776ca50e3a9
 backup.operation.not_found.jsonl	backup.operation	not_found	stdout	0	105	15ff2bdc2cfd056597886723c5385f484f687885e5fb97cb237f96d87401714f
 demo.budget.checked_failure.jsonl	demo.budget	checked_failure	stdout	1	182	c5c03e3bf29e5631aed3aa1a3bfd2e6277f2bde25420007034bda0a40423f917

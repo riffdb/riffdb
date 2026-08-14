@@ -1141,6 +1141,13 @@ mod tests {
         }
 
         denied_operation!(
+            retire_offline_backup,
+            RequestContext,
+            riffdb_service::RetireOfflineBackupRequest,
+            riffdb_service::OfflineMaintenanceStartResult
+        );
+
+        denied_operation!(
             get_offline_maintenance_operation,
             RequestContext,
             riffdb_service::GetOfflineMaintenanceOperationRequest,

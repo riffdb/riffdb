@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_storage_api::{
@@ -12,10 +12,11 @@ use riffdb_storage_api::{
     ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1, DatabaseIdentityProbe,
     DatabaseIdentityProbePort, DatabaseInitializationPort, DatabaseInitializationResult,
     EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
-    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
+    OfflineBackupRetirementEvidenceV2, OfflineMaintenanceAdmissionV1,
+    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptCreateResultV2,
     OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, OfflineRestoreOverwritePolicyV1,
+    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
     ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
     StartupValidationInputs, StorageErrorKind, StructuralEvidenceCursor, StructuralEvidenceOpen,
     StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
@@ -105,6 +106,9 @@ fn receipt(seed: u8, kind: OfflineMaintenanceOperationKind) -> OfflineMaintenanc
         OfflineMaintenanceOperationKind::RestoreBackup => {
             OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
         }
+        OfflineMaintenanceOperationKind::RetireBackup => {
+            panic!("retire operations require V2 receipt evidence")
+        }
     };
     receipt_with_confirmation(seed, kind, confirmation)
 }
@@ -164,6 +168,49 @@ fn create_completed_named_backup(
         .replace_receipt(&create)
         .expect("persist create completion");
     (manifest, identity)
+}
+
+fn accepted_offline_retirement(
+    storage: &mut RedbMaintenanceStorage,
+    create_seed: u8,
+    retire_seed: u8,
+) -> OfflineMaintenanceReceiptV2 {
+    let (_, manifest) = create_completed_named_backup(storage, create_seed);
+    let (originating_create, prepared_manifest) = storage
+        .prepare_backup_retirement(&backup_name())
+        .expect("prepare retirement");
+    assert_eq!(prepared_manifest, manifest);
+    let name = backup_name();
+    let mut retirement = OfflineMaintenanceReceiptV2::accepted_retirement(
+        operation_id(retire_seed),
+        name.clone(),
+        offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RetireBackup,
+            &name,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        ),
+        admission(),
+        OfflineBackupRetirementEvidenceV2::new(originating_create, manifest),
+    )
+    .expect("accepted retirement");
+    assert_eq!(
+        storage
+            .create_or_read_retire_receipt(&retirement)
+            .expect("persist accepted retirement"),
+        OfflineMaintenanceReceiptCreateResultV2::Created
+    );
+    for phase in [
+        OfflineMaintenanceReceiptPhaseV1::Draining,
+        OfflineMaintenanceReceiptPhaseV1::Offline,
+    ] {
+        retirement
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+            .expect("advance retirement");
+    }
+    storage
+        .replace_retire_receipt(&retirement)
+        .expect("persist offline retirement");
+    retirement
 }
 
 fn advance_offline(receipt: &mut OfflineMaintenanceReceiptV1) {
@@ -919,6 +966,312 @@ fn receipt_codec_is_canonical_checksummed_and_version_closed() {
             .kind(),
         StorageErrorKind::IncompatibleFormat
     );
+}
+
+#[test]
+fn receipted_retirement_explains_absence_and_permanently_consumes_the_name() {
+    let root = TestRoot::new("receipted-retirement");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let (mut storage, _) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
+    let (_, manifest) = create_completed_named_backup(&mut storage, 0x31);
+    let (originating_create, prepared_manifest) = storage
+        .prepare_backup_retirement(&backup_name())
+        .expect("prepare retirement");
+    assert_eq!(prepared_manifest, manifest);
+
+    let operation_id = operation_id(0x32);
+    let name = backup_name();
+    let input_hash = offline_maintenance_input_hash(
+        OfflineMaintenanceOperationKind::RetireBackup,
+        &name,
+        OfflineMaintenanceReplacementConfirmation::NotProvided,
+    );
+    let mut retirement = OfflineMaintenanceReceiptV2::accepted_retirement(
+        operation_id,
+        name.clone(),
+        input_hash,
+        admission(),
+        OfflineBackupRetirementEvidenceV2::new(originating_create, manifest.clone()),
+    )
+    .expect("accepted retirement");
+    assert_eq!(
+        storage
+            .create_or_read_retire_receipt(&retirement)
+            .expect("persist accepted retirement"),
+        OfflineMaintenanceReceiptCreateResultV2::Created
+    );
+    for phase in [
+        OfflineMaintenanceReceiptPhaseV1::Draining,
+        OfflineMaintenanceReceiptPhaseV1::Offline,
+    ] {
+        retirement
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+            .expect("advance retirement");
+    }
+    storage
+        .replace_retire_receipt(&retirement)
+        .expect("persist offline retirement");
+    storage
+        .publish_backup_retirement(operation_id)
+        .expect("publish retire stage");
+    for phase in [
+        OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+        OfflineMaintenanceReceiptPhaseV1::Validating,
+    ] {
+        retirement
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+            .expect("advance published retirement");
+    }
+    storage
+        .replace_retire_receipt(&retirement)
+        .expect("persist validation");
+    storage
+        .delete_published_backup_retirement(operation_id)
+        .expect("delete fixed inventory");
+    retirement
+        .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+            OfflineMaintenanceReceiptPhaseV1::Succeeded,
+        ))
+        .expect("complete retirement");
+    storage
+        .replace_retire_receipt(&retirement)
+        .expect("persist completion");
+    assert!(!backup_root.join(name.as_str()).exists());
+    storage
+        .reconcile()
+        .expect("terminal receipt explains absence");
+    drop(storage);
+
+    let (mut reopened, _) = RedbMaintenanceStorage::open(&database, &backup_root)
+        .expect("startup accepts exactly receipted absence");
+    let duplicate = receipt(0x33, OfflineMaintenanceOperationKind::CreateBackup);
+    assert_eq!(
+        reopened
+            .create_or_read_receipt(&duplicate)
+            .expect_err("retired name remains consumed")
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+}
+
+#[test]
+fn missing_published_backup_without_terminal_retirement_fails_closed() {
+    let root = TestRoot::new("unreceipted-retirement");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let (mut storage, _) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
+    create_completed_named_backup(&mut storage, 0x41);
+    fs::remove_dir_all(backup_root.join(backup_name().as_str()))
+        .expect("simulate unexplained artifact loss");
+    assert_eq!(
+        storage
+            .reconcile()
+            .expect_err("absence without retirement must fail closed")
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+}
+
+#[test]
+fn every_retirement_rename_and_delete_boundary_is_retry_safe() {
+    for (ordinal, failpoint) in [
+        RedbMaintenanceFailpoint::BeforeRetirementPublication,
+        RedbMaintenanceFailpoint::AfterRetirementPublication,
+        RedbMaintenanceFailpoint::AfterRetirementNamedParentSync,
+        RedbMaintenanceFailpoint::AfterRetirementStageParentSync,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let root = TestRoot::new(&format!("retire-publish-{ordinal}"));
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        initialize(&database);
+        let controller = RedbMaintenanceTestController::return_at(failpoint);
+        let (mut storage, _) =
+            RedbMaintenanceStorage::open_with_test_controller(&database, &backup_root, controller)
+                .expect("open controlled maintenance");
+        let retirement = accepted_offline_retirement(&mut storage, 0x51, 0x52);
+        assert!(
+            storage
+                .publish_backup_retirement(retirement.operation_id())
+                .is_err(),
+            "armed publication boundary must return uncertainty"
+        );
+        storage.reconcile().unwrap_or_else(|error| {
+            panic!("publication uncertainty at {failpoint:?} remains reconcilable: {error:?}")
+        });
+        storage
+            .publish_backup_retirement(retirement.operation_id())
+            .expect("exact retry converges publication");
+    }
+
+    for (ordinal, failpoint) in [
+        RedbMaintenanceFailpoint::AfterRetirementDatabaseDelete,
+        RedbMaintenanceFailpoint::AfterRetirementFormatDelete,
+        RedbMaintenanceFailpoint::AfterRetirementJournalDelete,
+        RedbMaintenanceFailpoint::AfterRetirementManifestDelete,
+        RedbMaintenanceFailpoint::AfterRetirementStageDelete,
+        RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let root = TestRoot::new(&format!("retire-delete-{ordinal}"));
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        initialize(&database);
+        let controller = RedbMaintenanceTestController::return_at(failpoint);
+        let (mut storage, _) =
+            RedbMaintenanceStorage::open_with_test_controller(&database, &backup_root, controller)
+                .expect("open controlled maintenance");
+        let mut retirement = accepted_offline_retirement(&mut storage, 0x61, 0x62);
+        storage
+            .publish_backup_retirement(retirement.operation_id())
+            .expect("publish retirement");
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+            OfflineMaintenanceReceiptPhaseV1::Validating,
+        ] {
+            retirement
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .expect("advance retirement");
+        }
+        storage
+            .replace_retire_receipt(&retirement)
+            .expect("persist validating retirement");
+        assert!(
+            storage
+                .delete_published_backup_retirement(retirement.operation_id())
+                .is_err(),
+            "armed deletion boundary must return uncertainty"
+        );
+        storage.reconcile().unwrap_or_else(|error| {
+            panic!("partial deletion at {failpoint:?} remains reconcilable: {error:?}")
+        });
+        storage
+            .delete_published_backup_retirement(retirement.operation_id())
+            .expect("exact retry converges deletion");
+    }
+}
+
+#[test]
+fn retirement_process_crash_boundaries_recover_without_inventing_success() {
+    const CHILD_DATABASE: &str = "RIFFDB_WP610_RETIRE_CHILD_DATABASE";
+    const CHILD_BACKUP_ROOT: &str = "RIFFDB_WP610_RETIRE_CHILD_BACKUP_ROOT";
+    const CHILD_ACTION: &str = "RIFFDB_WP610_RETIRE_CHILD_ACTION";
+    const CHILD_FAILPOINT: &str = "RIFFDB_WP610_RETIRE_CHILD_FAILPOINT";
+
+    if let (Ok(database), Ok(backup_root), Ok(action), Ok(failpoint)) = (
+        std::env::var(CHILD_DATABASE),
+        std::env::var(CHILD_BACKUP_ROOT),
+        std::env::var(CHILD_ACTION),
+        std::env::var(CHILD_FAILPOINT),
+    ) {
+        let failpoint = match failpoint.as_str() {
+            "before-publication" => RedbMaintenanceFailpoint::BeforeRetirementPublication,
+            "after-publication" => RedbMaintenanceFailpoint::AfterRetirementPublication,
+            "after-named-sync" => RedbMaintenanceFailpoint::AfterRetirementNamedParentSync,
+            "after-stage-sync" => RedbMaintenanceFailpoint::AfterRetirementStageParentSync,
+            "after-database-delete" => RedbMaintenanceFailpoint::AfterRetirementDatabaseDelete,
+            "after-format-delete" => RedbMaintenanceFailpoint::AfterRetirementFormatDelete,
+            "after-journal-delete" => RedbMaintenanceFailpoint::AfterRetirementJournalDelete,
+            "after-manifest-delete" => RedbMaintenanceFailpoint::AfterRetirementManifestDelete,
+            "after-stage-delete" => RedbMaintenanceFailpoint::AfterRetirementStageDelete,
+            "after-delete-sync" => RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync,
+            _ => panic!("unknown closed retirement failpoint"),
+        };
+        let controller = RedbMaintenanceTestController::abort_at(failpoint);
+        let (mut storage, _) =
+            RedbMaintenanceStorage::open_with_test_controller(database, backup_root, controller)
+                .expect("child opens exact maintenance state");
+        let result = match action.as_str() {
+            "publish" => storage.publish_backup_retirement(operation_id(0x72)),
+            "delete" => storage.delete_published_backup_retirement(operation_id(0x72)),
+            _ => panic!("unknown closed retirement action"),
+        };
+        panic!("armed retirement child did not abort: {result:?}");
+    }
+
+    let cases = [
+        ("publish", "before-publication"),
+        ("publish", "after-publication"),
+        ("publish", "after-named-sync"),
+        ("publish", "after-stage-sync"),
+        ("delete", "after-database-delete"),
+        ("delete", "after-format-delete"),
+        ("delete", "after-journal-delete"),
+        ("delete", "after-manifest-delete"),
+        ("delete", "after-stage-delete"),
+        ("delete", "after-delete-sync"),
+    ];
+    for (ordinal, (action, failpoint)) in cases.into_iter().enumerate() {
+        let root = TestRoot::new(&format!("retire-process-{ordinal}"));
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        initialize(&database);
+        let (mut storage, _) =
+            RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
+        let mut retirement = accepted_offline_retirement(&mut storage, 0x71, 0x72);
+        if action == "delete" {
+            storage
+                .publish_backup_retirement(retirement.operation_id())
+                .expect("publish before delete crash");
+            for phase in [
+                OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+                OfflineMaintenanceReceiptPhaseV1::Validating,
+            ] {
+                retirement
+                    .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                    .expect("advance validating retirement");
+            }
+            storage
+                .replace_retire_receipt(&retirement)
+                .expect("persist validating retirement");
+        }
+        drop(storage);
+
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .arg("--exact")
+            .arg("retirement_process_crash_boundaries_recover_without_inventing_success")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE, &database)
+            .env(CHILD_BACKUP_ROOT, &backup_root)
+            .env(CHILD_ACTION, action)
+            .env(CHILD_FAILPOINT, failpoint)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run retirement crash child");
+        assert!(!status.success(), "armed retirement child must abort");
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(
+            status.signal(),
+            Some(6),
+            "armed retirement child must terminate at {failpoint}"
+        );
+
+        let (mut recovered, _) = RedbMaintenanceStorage::open(&database, &backup_root)
+            .expect("startup reconciles exact interrupted retirement");
+        recovered
+            .reconcile()
+            .expect("interrupted retirement remains exact");
+        if action == "publish" {
+            recovered
+                .publish_backup_retirement(retirement.operation_id())
+                .expect("publication retry converges");
+        } else {
+            recovered
+                .delete_published_backup_retirement(retirement.operation_id())
+                .expect("deletion retry converges");
+        }
+    }
 }
 
 #[test]

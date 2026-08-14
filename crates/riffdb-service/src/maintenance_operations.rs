@@ -29,8 +29,9 @@ use crate::{
     RecoveryRestoreOfflineBackupInvocation, RequestContext, RequestDeadlineScheduler,
     RestoreOfflineBackupInvocation, RestoreOfflineBackupRequest,
     RestoreRetryOfflineMaintenanceApplication, RestoreRetryOfflineMaintenanceCoordinatorPort,
-    RiffDbService, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
-    ServiceJobSpawner, ServiceResult, ensure_response_budget, port_completion_channel,
+    RetireOfflineBackupRequest, RiffDbService, ServiceDiagnostics, ServiceFailure, ServiceFuture,
+    ServiceHealthHooks, ServiceJobSpawner, ServiceResult, ensure_response_budget,
+    port_completion_channel,
 };
 
 impl OfflineMaintenanceApplication for RiffDbService {
@@ -57,6 +58,19 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let operation_submission = Arc::clone(&submission);
         self.spawn_tracked_maintenance_operation(submission, async move {
             start_restore_backup(service, context, request, credential, operation_submission).await
+        })
+    }
+
+    fn retire_offline_backup(
+        &self,
+        context: RequestContext,
+        request: RetireOfflineBackupRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let service = Arc::clone(&self.inner);
+        let submission = Arc::new(MaintenanceSubmissionState::new());
+        let operation_submission = Arc::clone(&submission);
+        self.spawn_tracked_maintenance_operation(submission, async move {
+            start_retire_backup(service, context, request, operation_submission).await
         })
     }
 
@@ -391,6 +405,58 @@ async fn start_restore_backup(
     Ok(result)
 }
 
+async fn start_retire_backup(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: RetireOfflineBackupRequest,
+    submission: Arc<MaintenanceSubmissionState>,
+) -> ServiceResult<OfflineMaintenanceStartResult> {
+    ensure_control_open(context.control())?;
+    let policy_request = OfflineMaintenanceAuthorizationRequest::retire_backup(
+        request.operation_id(),
+        request.input_hash(),
+    );
+    authorize_current(&service, &context, policy_request.clone())?;
+    let coordinator = service
+        .providers
+        .maintenance
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| ServiceFailure::from(PublicError::storage_unavailable()))?;
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        coordinator.reserve_start(context.control()),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(error)) => return Err(pre_submit_admission_failure(error)),
+        Err(error) => return Err(controlled_wait_failure(error)),
+    };
+    ensure_control_open(context.control())?;
+    let authorization = authorize_current(&service, &context, policy_request)?;
+    ensure_control_open(context.control())?;
+    let expected = request.clone();
+    submission.mark_submit_in_flight();
+    let receipt = match permit.submit(AuthorizedOfflineMaintenanceStart::RetireBackup {
+        request,
+        authorization,
+    }) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            submission.mark_submit_rejected();
+            return Err(pre_submit_admission_failure(error));
+        }
+    };
+    let result = await_start_result(&service, &context, receipt).await?;
+    if !observation_matches_retire(result.operation(), &expected) {
+        return Err(service.maintenance_internal_failure(MaintenanceInternalDefect::LowerIntegrity));
+    }
+    ensure_response_budget(&result)?;
+    Ok(result)
+}
+
 async fn get_operation(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
@@ -689,6 +755,16 @@ fn observation_matches_restore(
 ) -> bool {
     observation.operation_id() == request.operation_id()
         && observation.kind() == OfflineMaintenanceOperationKind::RestoreBackup
+        && observation.backup_name() == request.backup_name()
+        && observation.input_hash() == request.input_hash()
+}
+
+fn observation_matches_retire(
+    observation: &OfflineMaintenanceOperationObservation,
+    request: &RetireOfflineBackupRequest,
+) -> bool {
+    observation.operation_id() == request.operation_id()
+        && observation.kind() == OfflineMaintenanceOperationKind::RetireBackup
         && observation.backup_name() == request.backup_name()
         && observation.input_hash() == request.input_hash()
 }

@@ -284,6 +284,25 @@ pub fn validate_restore_offline_backup_exchange(
     )
 }
 
+/// Validates retire-backup request/response semantic identity.
+pub fn validate_retire_offline_backup_exchange(
+    request: &v1::RetireOfflineBackupRequest,
+    response: &v1::RetireOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    validate_offline_maintenance_exchange(
+        &request.operation_id,
+        &request.backup_name,
+        riffdb_types::OfflineMaintenanceOperationKind::RetireBackup,
+        riffdb_types::OfflineMaintenanceReplacementConfirmation::NotProvided,
+        response
+            .operation
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?,
+    )
+}
+
 /// Validates maintenance-poll request/response identity without expanding `not_found`.
 pub fn validate_get_offline_maintenance_operation_exchange(
     request: &v1::GetOfflineMaintenanceOperationRequest,
@@ -548,16 +567,17 @@ fn validate_offline_maintenance_exchange(
         BackupNameV1::new(backup_name.to_owned()).map_err(|_| PublicWireError::InvalidIdentity)?;
     let wire_kind = match expected_kind {
         riffdb_types::OfflineMaintenanceOperationKind::CreateBackup => {
-            v1::OfflineMaintenanceOperationKind::CreateBackup
+            v1::OfflineMaintenanceOperationKind::CreateBackup as i32
         }
         riffdb_types::OfflineMaintenanceOperationKind::RestoreBackup => {
-            v1::OfflineMaintenanceOperationKind::RestoreBackup
+            v1::OfflineMaintenanceOperationKind::RestoreBackup as i32
         }
+        riffdb_types::OfflineMaintenanceOperationKind::RetireBackup => 3,
     };
     let expected_hash =
         offline_maintenance_input_hash(expected_kind, &checked_name, confirmation).into_bytes();
     if operation.operation_id != operation_id
-        || operation.kind != wire_kind as i32
+        || operation.kind != wire_kind
         || operation.backup_name != backup_name
         || operation.input_hash != expected_hash
     {
@@ -3679,7 +3699,8 @@ fn validate_offline_maintenance_operation(
     if !matches!(
         v1::OfflineMaintenanceOperationKind::try_from(operation.kind),
         Ok(v1::OfflineMaintenanceOperationKind::CreateBackup
-            | v1::OfflineMaintenanceOperationKind::RestoreBackup)
+            | v1::OfflineMaintenanceOperationKind::RestoreBackup
+            | v1::OfflineMaintenanceOperationKind::RetireBackup)
     ) {
         return Err(PublicWireError::InvalidEnum);
     }
@@ -3757,6 +3778,20 @@ fn validate_restore_offline_backup_request(
 
 fn validate_restore_offline_backup_response(
     message: &v1::RestoreOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
+}
+
+fn validate_retire_offline_backup_request(
+    message: &v1::RetireOfflineBackupRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    offline_maintenance_operation_id(&message.operation_id)?;
+    validate_backup_name_v1(&message.backup_name)
+}
+
+fn validate_retire_offline_backup_response(
+    message: &v1::RetireOfflineBackupResponse,
 ) -> Result<(), PublicWireError> {
     validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
 }
@@ -10262,6 +10297,24 @@ impl_public_message!(
     &[],
     preflight_offline_maintenance_start_response,
     validate_restore_offline_backup_response
+);
+impl_public_message!(
+    v1::RetireOfflineBackupRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_noop,
+    validate_retire_offline_backup_request
+);
+impl_public_message!(
+    v1::RetireOfflineBackupResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_offline_maintenance_start_response,
+    validate_retire_offline_backup_response
 );
 impl_public_message!(
     v1::GetOfflineMaintenanceOperationRequest,

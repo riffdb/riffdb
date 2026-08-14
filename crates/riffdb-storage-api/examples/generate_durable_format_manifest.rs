@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 
 const RELEASE_PAIRS_PATH: &str = "fixtures/compatibility/release-pairs-v1.json";
 const PHYSICAL_FORMATS_PATH: &str = "fixtures/compatibility/physical-formats-v1.json";
+const RETIRE_RECEIPT_V2_FIXTURE_PATH: &str =
+    "fixtures/compatibility/offline-maintenance-retire-receipt-v2.hex";
 const INVENTORY_PATH: &str = "fixtures/compatibility/durable-fixture-inventory-v1.txt";
 const MANIFEST_PATH: &str = "release/durable-format-manifest-v1.json";
 
@@ -211,6 +213,10 @@ fn render_fixture_inventory(
     entries.push((
         PHYSICAL_FORMATS_PATH.to_owned(),
         Sha256::digest(physical_formats.as_bytes()).into(),
+    ));
+    entries.push((
+        RETIRE_RECEIPT_V2_FIXTURE_PATH.to_owned(),
+        Sha256::digest(fs::read(root.join(RETIRE_RECEIPT_V2_FIXTURE_PATH))?).into(),
     ));
     collect_files(root, &root.join("fixtures/proto"), &mut entries, |path| {
         path.file_name()

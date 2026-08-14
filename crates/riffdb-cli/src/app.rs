@@ -24,11 +24,11 @@ use riffdb_client_rust::{
     NormalCapabilityCreateTemplate, OfflineMaintenanceOperationId,
     OfflineMaintenanceReplacementConfirmation, ProjectedAggregate, ProjectedAggregateValue,
     ProjectedOrder, ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome,
-    ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup, RiffDbClient,
-    StartApplicationExport, StartApplicationInstallation, StartApplicationReimport, app_v1,
-    canonical_value_from_proto, canonical_value_to_proto, generate_application_export_operation_id,
-    generate_application_installation_campaign_id, generate_capability_id,
-    generate_offline_maintenance_operation_id, generate_request_id, v1,
+    ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup, RetireOfflineBackup,
+    RiffDbClient, StartApplicationExport, StartApplicationInstallation, StartApplicationReimport,
+    app_v1, canonical_value_from_proto, canonical_value_to_proto,
+    generate_application_export_operation_id, generate_application_installation_campaign_id,
+    generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -74,8 +74,8 @@ use crate::output::{
     render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
     render_entity, render_execution, render_health, render_installation_observation,
     render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
-    render_projection, render_restore_maintenance_start, render_revoke, success,
-    take_normal_create_disposition, uncertain,
+    render_projection, render_restore_maintenance_start, render_retire_maintenance_start,
+    render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::{CanonicalVectorComponents, format_uuid};
@@ -4596,6 +4596,7 @@ async fn backup_command(
     let identity = match command {
         BackupCommand::Create { .. } => CommandIdentity::BackupCreate,
         BackupCommand::Restore { .. } => CommandIdentity::BackupRestore,
+        BackupCommand::Retire { .. } => CommandIdentity::BackupRetire,
         BackupCommand::Operation { .. } => CommandIdentity::BackupOperation,
     };
     match command {
@@ -4661,6 +4662,38 @@ async fn backup_command(
                 .await
             {
                 Ok(response) => render_restore_maintenance_start(&response),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    maintenance_uncertain(identity, operation_id)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        BackupCommand::Retire { name } => {
+            let name = match BackupNameV1::new(name) {
+                Ok(name) => name,
+                Err(_) => return invalid_input(identity),
+            };
+            let operation_id = match generate_offline_maintenance_operation_id() {
+                Ok(operation_id) => operation_id,
+                Err(error) => {
+                    return client_error(identity, &ClientError::IdentifierGeneration(error));
+                }
+            };
+            let metadata = match required_metadata(identity, config, environment) {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(identity, &error),
+            };
+            let retire = RetireOfflineBackup::new(operation_id, name);
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            match client
+                .retire_offline_backup_with_retry(&retire, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_retire_maintenance_start(&response),
                 Err(ClientError::OutcomeUnknown(_)) => {
                     maintenance_uncertain(identity, operation_id)
                 }
@@ -10282,6 +10315,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Backup {
             command: BackupCommand::Restore { .. },
         } => CommandIdentity::BackupRestore,
+        TopLevel::Backup {
+            command: BackupCommand::Retire { .. },
+        } => CommandIdentity::BackupRetire,
         TopLevel::Backup {
             command: BackupCommand::Operation { .. },
         } => CommandIdentity::BackupOperation,

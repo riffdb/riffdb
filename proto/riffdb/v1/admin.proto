@@ -391,6 +391,7 @@ enum OfflineMaintenanceOperationKind {
   OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED = 0;
   OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP = 1;
   OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP = 2;
+  OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP = 3;
 }
 
 enum OfflineMaintenanceReplacementConfirmation {
@@ -456,6 +457,17 @@ message RestoreOfflineBackupRequest {
 }
 
 message RestoreOfflineBackupResponse {
+  OfflineMaintenanceStartDisposition disposition = 1;
+  OfflineMaintenanceOperation operation = 2;
+}
+
+message RetireOfflineBackupRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  string backup_name = 3;
+}
+
+message RetireOfflineBackupResponse {
   OfflineMaintenanceStartDisposition disposition = 1;
   OfflineMaintenanceOperation operation = 2;
 }

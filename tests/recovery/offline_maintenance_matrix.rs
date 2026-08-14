@@ -539,6 +539,11 @@ fn receipt(
         OfflineMaintenanceOperationKind::RestoreBackup => {
             OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
         }
+        OfflineMaintenanceOperationKind::RetireBackup => {
+            return Err(test_failure(
+                "retirement requires the V2 receipt helper and is not a V1 operation",
+            ));
+        }
     };
     Ok(OfflineMaintenanceReceiptV1::accepted(
         operation_id(seed),
@@ -633,6 +638,26 @@ const fn failpoint_name(failpoint: RedbMaintenanceFailpoint) -> &'static str {
         RedbMaintenanceFailpoint::BeforeTargetPublication => "before-target-publication",
         RedbMaintenanceFailpoint::AfterTargetPublication => "after-target-publication",
         RedbMaintenanceFailpoint::AfterTargetParentSync => "after-target-parent-sync",
+        RedbMaintenanceFailpoint::BeforeRetirementPublication => "before-retirement-publication",
+        RedbMaintenanceFailpoint::AfterRetirementPublication => "after-retirement-publication",
+        RedbMaintenanceFailpoint::AfterRetirementNamedParentSync => {
+            "after-retirement-named-parent-sync"
+        }
+        RedbMaintenanceFailpoint::AfterRetirementStageParentSync => {
+            "after-retirement-stage-parent-sync"
+        }
+        RedbMaintenanceFailpoint::AfterRetirementDatabaseDelete => {
+            "after-retirement-database-delete"
+        }
+        RedbMaintenanceFailpoint::AfterRetirementFormatDelete => "after-retirement-format-delete",
+        RedbMaintenanceFailpoint::AfterRetirementJournalDelete => "after-retirement-journal-delete",
+        RedbMaintenanceFailpoint::AfterRetirementManifestDelete => {
+            "after-retirement-manifest-delete"
+        }
+        RedbMaintenanceFailpoint::AfterRetirementStageDelete => "after-retirement-stage-delete",
+        RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync => {
+            "after-retirement-delete-parent-sync"
+        }
     }
 }
 
@@ -651,6 +676,26 @@ fn parse_failpoint(value: &str) -> Option<RedbMaintenanceFailpoint> {
         "before-target-publication" => RedbMaintenanceFailpoint::BeforeTargetPublication,
         "after-target-publication" => RedbMaintenanceFailpoint::AfterTargetPublication,
         "after-target-parent-sync" => RedbMaintenanceFailpoint::AfterTargetParentSync,
+        "before-retirement-publication" => RedbMaintenanceFailpoint::BeforeRetirementPublication,
+        "after-retirement-publication" => RedbMaintenanceFailpoint::AfterRetirementPublication,
+        "after-retirement-named-parent-sync" => {
+            RedbMaintenanceFailpoint::AfterRetirementNamedParentSync
+        }
+        "after-retirement-stage-parent-sync" => {
+            RedbMaintenanceFailpoint::AfterRetirementStageParentSync
+        }
+        "after-retirement-database-delete" => {
+            RedbMaintenanceFailpoint::AfterRetirementDatabaseDelete
+        }
+        "after-retirement-format-delete" => RedbMaintenanceFailpoint::AfterRetirementFormatDelete,
+        "after-retirement-journal-delete" => RedbMaintenanceFailpoint::AfterRetirementJournalDelete,
+        "after-retirement-manifest-delete" => {
+            RedbMaintenanceFailpoint::AfterRetirementManifestDelete
+        }
+        "after-retirement-stage-delete" => RedbMaintenanceFailpoint::AfterRetirementStageDelete,
+        "after-retirement-delete-parent-sync" => {
+            RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync
+        }
         _ => return None,
     })
 }

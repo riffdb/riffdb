@@ -285,6 +285,8 @@ impl Error for GrpcDatabaseRoutesError {}
 pub enum GrpcOfflineMaintenanceOperation {
     /// Start or resolve immutable backup creation.
     CreateBackup,
+    /// Start or resolve immutable backup retirement.
+    RetireBackup,
     /// Start or resolve staged restore with its checked receipt and semantic-input identity.
     RestoreBackup {
         /// Caller-stable receipt identity.
@@ -2452,6 +2454,26 @@ impl AdminService for GrpcApplication {
         };
         let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
         Ok(Response::new(v1::RestoreOfflineBackupResponse {
+            disposition,
+            operation,
+        }))
+    }
+
+    async fn retire_offline_backup(
+        &self,
+        request: Request<v1::RetireOfflineBackupRequest>,
+    ) -> Result<Response<v1::RetireOfflineBackupResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_maintenance_admission(
+            lifecycle.as_ref(),
+            GrpcOfflineMaintenanceOperation::RetireBackup,
+        )?;
+        let (request_id, request) = retire_offline_backup_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(service.retire_offline_backup(context, request).await)?;
+        let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
+        Ok(Response::new(v1::RetireOfflineBackupResponse {
             disposition,
             operation,
         }))

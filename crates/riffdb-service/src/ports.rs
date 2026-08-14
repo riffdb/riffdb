@@ -44,6 +44,7 @@ use crate::{
     OfflineMaintenanceStartResult, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
     OutboxStatusRequest, OutboxStatusSnapshot, ProjectionPortRequest, ProjectionPortResult,
     ProjectionStatusSnapshot, RequestControl, RestoreOfflineBackupRequest,
+    RetireOfflineBackupRequest,
 };
 
 /// One boxed, sendable future returned by a service consumer port.
@@ -986,6 +987,13 @@ pub enum AuthorizedOfflineMaintenanceStart {
         /// Move-only bearer retained for fresh staged authentication.
         credential: RetainedOpaqueCredential,
     },
+    /// Retire one exact immutable backup under the same global authority.
+    RetireBackup {
+        /// Checked semantic input and caller-stable receipt identity.
+        request: RetireOfflineBackupRequest,
+        /// Fresh current-database policy proof for this exact input hash.
+        authorization: Box<AuthorizedOfflineMaintenance>,
+    },
 }
 
 impl std::fmt::Debug for AuthorizedOfflineMaintenanceStart {
@@ -996,6 +1004,9 @@ impl std::fmt::Debug for AuthorizedOfflineMaintenanceStart {
             }
             Self::RestoreBackup { .. } => {
                 "AuthorizedOfflineMaintenanceStart::RestoreBackup([REDACTED])"
+            }
+            Self::RetireBackup { .. } => {
+                "AuthorizedOfflineMaintenanceStart::RetireBackup([REDACTED])"
             }
         })
     }

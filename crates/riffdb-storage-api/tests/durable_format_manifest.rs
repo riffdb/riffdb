@@ -31,11 +31,11 @@ fn current_manifest_names_every_closed_format_family() {
     assert_eq!(manifest.writable_receipt_versions(), &[1, 2]);
     assert_eq!(
         manifest.readable_offline_maintenance_receipt_versions(),
-        &[1]
+        &[1, 2]
     );
     assert_eq!(
         manifest.writable_offline_maintenance_receipt_versions(),
-        &[1]
+        &[1, 2]
     );
     assert_eq!(
         manifest.readable_contract_migration_check_receipt_versions(),

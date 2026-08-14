@@ -37,6 +37,7 @@ enum CommandIdentity {
     ServerHealth,         // "server.health"
     BackupCreate,         // "backup.create"
     BackupRestore,        // "backup.restore"
+    BackupRetire,         // "backup.retire"
     BackupOperation,      // "backup.operation"
     DemoBudget,           // "demo.budget"
 }

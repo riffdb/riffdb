@@ -2402,6 +2402,13 @@ messages
   riffdb.v1.RetireEventStreamConsumerRequest fields=2
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
+  riffdb.v1.RetireOfflineBackupRequest fields=3
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+  riffdb.v1.RetireOfflineBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
   riffdb.v1.RevokeCapabilityRequest fields=3
     1 request_id optional bytes
     2 capability_id optional bytes
@@ -3231,10 +3238,11 @@ enums
     6 OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED
     7 OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE
     8 OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE
-  riffdb.v1.OfflineMaintenanceOperationKind values=3
+  riffdb.v1.OfflineMaintenanceOperationKind values=4
     0 OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED
     1 OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP
     2 OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP
+    3 OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP
   riffdb.v1.OfflineMaintenancePhase values=8
     0 OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED
     1 OFFLINE_MAINTENANCE_PHASE_ACCEPTED
@@ -3345,6 +3353,7 @@ services
     ListPendingOutboxDeliveries .riffdb.v1.ListPendingOutboxDeliveriesRequest -> .riffdb.v1.ListPendingOutboxDeliveriesResponse (unary)
     CreateOfflineBackup .riffdb.v1.CreateOfflineBackupRequest -> .riffdb.v1.CreateOfflineBackupResponse (unary)
     RestoreOfflineBackup .riffdb.v1.RestoreOfflineBackupRequest -> .riffdb.v1.RestoreOfflineBackupResponse (unary)
+    RetireOfflineBackup .riffdb.v1.RetireOfflineBackupRequest -> .riffdb.v1.RetireOfflineBackupResponse (unary)
     GetOfflineMaintenanceOperation .riffdb.v1.GetOfflineMaintenanceOperationRequest -> .riffdb.v1.GetOfflineMaintenanceOperationResponse (unary)
     CheckContractMigration .riffdb.v1.CheckContractMigrationRequest -> .riffdb.v1.CheckContractMigrationResponse (unary)
     ApplyContractMigration .riffdb.v1.ApplyContractMigrationRequest -> .riffdb.v1.ApplyContractMigrationResponse (unary)

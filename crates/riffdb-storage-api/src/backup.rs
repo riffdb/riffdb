@@ -365,6 +365,9 @@ impl OfflineMaintenanceReceiptV1 {
         published_history_incarnation: Option<u64>,
         transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
     ) -> Result<Self, StorageValueError> {
+        if operation_kind == OfflineMaintenanceOperationKind::RetireBackup {
+            return Err(StorageValueError::InvalidShape);
+        }
         if offline_maintenance_input_hash(operation_kind, &backup_name, replacement_confirmation)
             != input_hash
         {
@@ -638,6 +641,256 @@ impl std::fmt::Debug for OfflineMaintenanceReceiptV1 {
     }
 }
 
+/// Exact immutable create-receipt evidence bound by one retirement receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineBackupRetirementEvidenceV2 {
+    originating_create_operation_id: OfflineMaintenanceOperationId,
+    manifest_identity: OfflineBackupManifestIdentityV1,
+}
+
+impl OfflineBackupRetirementEvidenceV2 {
+    /// Binds the succeeded create operation and its exact published manifest.
+    #[must_use]
+    pub const fn new(
+        originating_create_operation_id: OfflineMaintenanceOperationId,
+        manifest_identity: OfflineBackupManifestIdentityV1,
+    ) -> Self {
+        Self {
+            originating_create_operation_id,
+            manifest_identity,
+        }
+    }
+
+    /// Returns the exact succeeded create operation being retired.
+    #[must_use]
+    pub const fn originating_create_operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.originating_create_operation_id
+    }
+
+    /// Borrows the immutable manifest identity proven by that create receipt.
+    #[must_use]
+    pub const fn manifest_identity(&self) -> &OfflineBackupManifestIdentityV1 {
+        &self.manifest_identity
+    }
+}
+
+/// One complete retire-only maintenance receipt in external format V2.
+///
+/// V1 create and restore receipts remain separate and byte-frozen. This value
+/// cannot represent either operation and cannot omit the exact create/manifest
+/// evidence that makes artifact absence explainable after terminal success.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptV2 {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+    input_hash: OfflineMaintenanceInputHash,
+    admission: OfflineMaintenanceAdmissionV1,
+    retirement: OfflineBackupRetirementEvidenceV2,
+    transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
+}
+
+impl OfflineMaintenanceReceiptV2 {
+    /// Creates the accepted retire receipt with complete immutable evidence.
+    pub fn accepted_retirement(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        input_hash: OfflineMaintenanceInputHash,
+        admission: OfflineMaintenanceAdmissionV1,
+        retirement: OfflineBackupRetirementEvidenceV2,
+    ) -> Result<Self, StorageValueError> {
+        Self::from_canonical_parts(
+            operation_id,
+            backup_name,
+            input_hash,
+            admission,
+            retirement,
+            vec![OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Accepted,
+            )],
+        )
+    }
+
+    /// Reconstructs one canonical retire-only V2 receipt.
+    pub fn from_canonical_parts(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        input_hash: OfflineMaintenanceInputHash,
+        admission: OfflineMaintenanceAdmissionV1,
+        retirement: OfflineBackupRetirementEvidenceV2,
+        transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
+    ) -> Result<Self, StorageValueError> {
+        if offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RetireBackup,
+            &backup_name,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        ) != input_hash
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        validate_receipt_history(
+            OfflineMaintenanceOperationKind::RetireBackup,
+            Some(retirement.manifest_identity().database_id()),
+            &transitions,
+        )?;
+        Ok(Self {
+            operation_id,
+            backup_name,
+            input_hash,
+            admission,
+            retirement,
+            transitions,
+        })
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Returns the closed retire operation kind.
+    #[must_use]
+    pub const fn operation_kind(&self) -> OfflineMaintenanceOperationKind {
+        OfflineMaintenanceOperationKind::RetireBackup
+    }
+
+    /// Borrows the permanently consumed backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+
+    /// Borrows the narrow admitted audit identity.
+    #[must_use]
+    pub const fn admission(&self) -> &OfflineMaintenanceAdmissionV1 {
+        &self.admission
+    }
+
+    /// Borrows the exact originating create/manifest evidence.
+    #[must_use]
+    pub const fn retirement(&self) -> &OfflineBackupRetirementEvidenceV2 {
+        &self.retirement
+    }
+
+    /// Returns the complete bounded append-only phase history.
+    #[must_use]
+    pub fn transitions(&self) -> &[OfflineMaintenanceReceiptTransitionV1] {
+        &self.transitions
+    }
+
+    /// Returns the current durable phase.
+    #[must_use]
+    pub fn current_phase(&self) -> OfflineMaintenanceReceiptPhaseV1 {
+        self.transitions
+            .last()
+            .map_or(OfflineMaintenanceReceiptPhaseV1::Accepted, |entry| {
+                entry.receipt_phase()
+            })
+    }
+
+    /// Appends one legal monotonic retirement transition.
+    pub fn advance(
+        &mut self,
+        transition: OfflineMaintenanceReceiptTransitionV1,
+    ) -> Result<(), StorageValueError> {
+        if self.transitions.len() == MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let prior = self
+            .transitions
+            .last()
+            .copied()
+            .ok_or(StorageValueError::Empty)?;
+        if !valid_receipt_transition(
+            OfflineMaintenanceOperationKind::RetireBackup,
+            Some(self.retirement.manifest_identity().database_id()),
+            prior.receipt_phase(),
+            transition,
+        ) {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.transitions.push(transition);
+        Ok(())
+    }
+
+    /// Returns whether this is the same receipt or a monotonic extension.
+    #[must_use]
+    pub fn monotonically_extends(&self, prior: &Self) -> bool {
+        self.operation_id == prior.operation_id
+            && self.backup_name == prior.backup_name
+            && self.input_hash == prior.input_hash
+            && self.admission == prior.admission
+            && self.retirement == prior.retirement
+            && self.transitions.starts_with(&prior.transitions)
+    }
+}
+
+impl std::fmt::Debug for OfflineMaintenanceReceiptV2 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OfflineMaintenanceReceiptV2")
+            .field("operation_id", &self.operation_id)
+            .field(
+                "operation_kind",
+                &OfflineMaintenanceOperationKind::RetireBackup,
+            )
+            .field("phase", &self.current_phase())
+            .field("details", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Bounded canonical startup inventory of retire-only V2 receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptInventoryV2(Vec<OfflineMaintenanceReceiptV2>);
+
+impl OfflineMaintenanceReceiptInventoryV2 {
+    /// Sorts by operation ID and rejects duplicates or excessive receipts.
+    pub fn new(mut receipts: Vec<OfflineMaintenanceReceiptV2>) -> Result<Self, StorageValueError> {
+        if receipts.len() > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        receipts.sort_by_key(OfflineMaintenanceReceiptV2::operation_id);
+        if receipts
+            .windows(2)
+            .any(|pair| pair[0].operation_id == pair[1].operation_id)
+        {
+            return Err(StorageValueError::Duplicate);
+        }
+        Ok(Self(receipts))
+    }
+
+    /// Borrows receipts in canonical operation-ID order.
+    #[must_use]
+    pub fn receipts(&self) -> &[OfflineMaintenanceReceiptV2] {
+        &self.0
+    }
+}
+
+/// Result of atomically creating one retire-only V2 receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptCreateResultV2 {
+    /// The candidate became the first durable receipt for this operation.
+    Created,
+    /// A checked V2 receipt with the same operation ID already exists.
+    Existing(Box<OfflineMaintenanceReceiptV2>),
+}
+
+/// Result of atomically replacing one V2 receipt with a monotonic extension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptReplaceResultV2 {
+    /// The exact candidate was already durable.
+    AlreadyCurrent,
+    /// The monotonic extension replaced its predecessor.
+    Replaced,
+}
+
 /// Bounded canonical startup inventory of all external maintenance receipts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfflineMaintenanceReceiptInventoryV1(Vec<OfflineMaintenanceReceiptV1>);
@@ -707,6 +960,29 @@ pub trait OfflineMaintenanceReceiptPersistencePort {
     fn validate_receipt_inventory(
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV1, StorageError>;
+
+    /// Creates the retire-only V2 receipt or returns the existing checked value.
+    fn create_or_read_retire_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV2,
+    ) -> Result<OfflineMaintenanceReceiptCreateResultV2, StorageError>;
+
+    /// Atomically installs one checked monotonic V2 extension.
+    fn replace_retire_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV2,
+    ) -> Result<OfflineMaintenanceReceiptReplaceResultV2, StorageError>;
+
+    /// Reads one retire-only V2 receipt by caller-stable operation identity.
+    fn read_retire_receipt(
+        &mut self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<Option<OfflineMaintenanceReceiptV2>, StorageError>;
+
+    /// Validates and returns the complete bounded V2 receipt inventory.
+    fn validate_retire_receipt_inventory(
+        &mut self,
+    ) -> Result<OfflineMaintenanceReceiptInventoryV2, StorageError>;
 }
 
 /// Nonzero semantic version of the offline backup manifest.
@@ -1590,6 +1866,9 @@ fn validate_receipt_evidence(
             }
             OfflineMaintenanceOperationKind::CreateBackup
             | OfflineMaintenanceOperationKind::RestoreBackup => {}
+            OfflineMaintenanceOperationKind::RetireBackup => {
+                return Err(StorageValueError::InvalidShape);
+            }
         }
     }
     Ok(())
@@ -1787,6 +2066,29 @@ mod tests {
         .expect("accepted receipt")
     }
 
+    fn accepted_retire_receipt() -> OfflineMaintenanceReceiptV2 {
+        let backup_name = BackupNameV1::new("before-upgrade").expect("backup name");
+        OfflineMaintenanceReceiptV2::accepted_retirement(
+            operation_id(0x21),
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RetireBackup,
+                &backup_name,
+                OfflineMaintenanceReplacementConfirmation::NotProvided,
+            ),
+            admission(),
+            OfflineBackupRetirementEvidenceV2::new(
+                operation_id(0x20),
+                OfflineBackupManifestIdentityV1::new(
+                    BackupIntegrityChecksumV1::new(vec![0x77; 32]).expect("checksum"),
+                    database_id(0x22),
+                    Some(CommitSequence::first()),
+                ),
+            ),
+        )
+        .expect("accepted retire receipt")
+    }
+
     #[test]
     fn checksum_artifact_identity_is_opaque_and_one_based() {
         let value = BackupIntegrityChecksumV1::new(vec![0x55; 32]).expect("checksum");
@@ -1907,6 +2209,51 @@ mod tests {
         assert_eq!(
             receipt.advance(OfflineMaintenanceReceiptTransitionV1::failed(
                 OfflineMaintenanceReceiptFailureV1::InternalFailure
+            )),
+            Err(StorageValueError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn retirement_receipt_is_v2_only_evidence_bound_and_monotonic() {
+        let mut receipt = accepted_retire_receipt();
+        let name = receipt.backup_name().clone();
+        assert_eq!(
+            receipt.operation_kind(),
+            OfflineMaintenanceOperationKind::RetireBackup
+        );
+        assert_eq!(
+            OfflineMaintenanceReceiptV1::accepted(
+                operation_id(0x23),
+                OfflineMaintenanceOperationKind::RetireBackup,
+                name.clone(),
+                offline_maintenance_input_hash(
+                    OfflineMaintenanceOperationKind::RetireBackup,
+                    &name,
+                    OfflineMaintenanceReplacementConfirmation::NotProvided,
+                ),
+                OfflineMaintenanceReplacementConfirmation::NotProvided,
+                admission(),
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+        let accepted = receipt.clone();
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+            OfflineMaintenanceReceiptPhaseV1::Validating,
+            OfflineMaintenanceReceiptPhaseV1::Succeeded,
+        ] {
+            receipt
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .expect("forward retirement transition");
+        }
+        assert!(receipt.monotonically_extends(&accepted));
+        assert!(receipt.current_phase().is_terminal());
+        assert_eq!(
+            receipt.advance(OfflineMaintenanceReceiptTransitionV1::failed(
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
             )),
             Err(StorageValueError::InvalidShape)
         );

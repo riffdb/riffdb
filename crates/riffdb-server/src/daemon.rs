@@ -268,6 +268,32 @@ fn initial_database_action(
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
 ) -> Result<InitialDatabaseAction, DaemonError> {
+    let mut retirements = reconciliation
+        .retire_receipts()
+        .receipts()
+        .iter()
+        .filter(|receipt| !receipt.current_phase().is_terminal());
+    if let Some(retirement) = retirements.next() {
+        if retirements.next().is_some()
+            || incomplete_maintenance_operation(reconciliation)?.is_some()
+        {
+            return Err(DaemonError::MaintenanceDriver);
+        }
+        let create = reconciliation
+            .receipts()
+            .receipts()
+            .iter()
+            .find(|receipt| {
+                receipt.operation_id() == retirement.retirement().originating_create_operation_id()
+            })
+            .cloned()
+            .ok_or(DaemonError::MaintenanceDriver)?;
+        return Ok(InitialDatabaseAction::ResumeCurrent {
+            receipt: create,
+            request: MaintenanceDriverRequest::retire_backup(retirement.operation_id()),
+            validate_current_source: true,
+        });
+    }
     let Some(operation) = incomplete_maintenance_operation(reconciliation)? else {
         return if target_requires_recovery && has_recovery_backup(reconciliation) {
             Ok(InitialDatabaseAction::RecoveryOnly)
@@ -1913,6 +1939,10 @@ async fn await_multi_recovery(
             }
             RecoveryAttempt::Succeeded(success) => {
                 let (receipt, startup) = (*success).into_parts();
+                let crate::maintenance_driver::MaintenanceTerminalReceipt::V1(receipt) = receipt
+                else {
+                    return Err(DaemonError::MaintenanceDriver);
+                };
                 let result = start_result(OfflineMaintenanceStartDisposition::Terminal, &receipt)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
                 let _ = completion.complete(Ok(result));
@@ -2324,6 +2354,9 @@ fn normal_driver_request(
             request.operation_id(),
             credential,
         )),
+        MaintenanceTrigger::RetireBackup { request, .. } => Ok(
+            MaintenanceDriverRequest::retire_backup(request.operation_id()),
+        ),
         MaintenanceTrigger::RecoveryRestore { .. }
         | MaintenanceTrigger::ContractMigrationApply { .. } => Err(DaemonError::MaintenanceDriver),
     }
@@ -2736,6 +2769,10 @@ async fn run_recovery_until_ready(
             }
             RecoveryAttempt::Succeeded(success) => {
                 let (receipt, startup) = (*success).into_parts();
+                let crate::maintenance_driver::MaintenanceTerminalReceipt::V1(receipt) = receipt
+                else {
+                    return Err(DaemonError::MaintenanceDriver);
+                };
                 let result = start_result(OfflineMaintenanceStartDisposition::Terminal, &receipt)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
                 let _ = completion.complete(Ok(result));

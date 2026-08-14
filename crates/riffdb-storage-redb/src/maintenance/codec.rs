@@ -7,10 +7,13 @@ use riffdb_storage_api::{
     ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
     MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1,
     MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1,
-    OFFLINE_MAINTENANCE_RECEIPT_VERSION as RECEIPT_FORMAT_VERSION, OfflineBackupManifestIdentityV1,
+    OFFLINE_MAINTENANCE_RECEIPT_VERSION_V1 as RECEIPT_FORMAT_VERSION_V1,
+    OFFLINE_MAINTENANCE_RECEIPT_VERSION_V2 as RECEIPT_FORMAT_VERSION_V2,
+    OfflineBackupManifestIdentityV1, OfflineBackupRetirementEvidenceV2,
     OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptFailureV1,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind, StorageValueError,
+    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, StorageError, StorageErrorKind,
+    StorageValueError,
 };
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, ContractBundleHash,
@@ -25,6 +28,8 @@ use crate::error::storage_error;
 
 pub(super) const RECEIPT_FILE_SUFFIX: &str = ".receipt-v1";
 pub(super) const RECEIPT_TEMP_SUFFIX: &str = ".receipt-v1.tmp";
+pub(super) const RETIRE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v2";
+pub(super) const RETIRE_RECEIPT_TEMP_SUFFIX: &str = ".receipt-v2.tmp";
 pub(super) const MAX_RECEIPT_BYTES: usize = 4 * 1024;
 
 const RECEIPT_MAGIC: &[u8] = b"RIFFDB-MAINT-RECEIPT\0";
@@ -37,7 +42,7 @@ pub(super) fn encode_receipt(
 ) -> Result<Vec<u8>, StorageError> {
     let mut output = Encoder::new();
     output.bytes(RECEIPT_MAGIC)?;
-    output.u32(RECEIPT_FORMAT_VERSION)?;
+    output.u32(RECEIPT_FORMAT_VERSION_V1)?;
     output.bytes(receipt.operation_id().as_bytes())?;
     output.u8(operation_kind_tag(receipt.operation_kind()))?;
     output.framed_u16(receipt.backup_name().as_bytes())?;
@@ -133,7 +138,7 @@ fn decode_receipt_body(
     if input.bytes(RECEIPT_MAGIC.len())? != RECEIPT_MAGIC {
         return Err(incompatible());
     }
-    if input.u32()? != RECEIPT_FORMAT_VERSION {
+    if input.u32()? != RECEIPT_FORMAT_VERSION_V1 {
         return Err(incompatible());
     }
     let operation_id =
@@ -233,6 +238,147 @@ fn decode_receipt_body(
     .map_err(value_error)
 }
 
+pub(super) fn encode_retire_receipt(
+    receipt: &OfflineMaintenanceReceiptV2,
+) -> Result<Vec<u8>, StorageError> {
+    let mut output = Encoder::new();
+    output.bytes(RECEIPT_MAGIC)?;
+    output.u32(RECEIPT_FORMAT_VERSION_V2)?;
+    output.bytes(receipt.operation_id().as_bytes())?;
+    output.u8(0x03)?;
+    output.framed_u16(receipt.backup_name().as_bytes())?;
+    output.bytes(receipt.input_hash().as_bytes())?;
+
+    let admission = receipt.admission();
+    output.u8(admission.actor_kind().tag())?;
+    output.framed_u16(admission.principal_id().as_str().as_bytes())?;
+    output.bytes(admission.capability_id().as_bytes())?;
+    match admission.approval_id() {
+        None => output.u8(0)?,
+        Some(approval_id) => {
+            output.u8(1)?;
+            output.framed_u16(approval_id.as_bytes())?;
+        }
+    }
+
+    output.bytes(
+        receipt
+            .retirement()
+            .originating_create_operation_id()
+            .as_bytes(),
+    )?;
+    let identity = receipt.retirement().manifest_identity();
+    if identity.manifest_checksum().as_bytes().len() != SHA256_BYTES {
+        return Err(corrupt());
+    }
+    output.framed_u16(identity.manifest_checksum().as_bytes())?;
+    output.bytes(identity.database_id().as_bytes())?;
+    match identity.included_application_frontier() {
+        None => output.u8(0)?,
+        Some(sequence) => {
+            output.u8(1)?;
+            output.u64(sequence.get())?;
+        }
+    }
+
+    output.u8(u8::try_from(receipt.transitions().len()).map_err(|_| limit_exceeded())?)?;
+    for transition in receipt.transitions() {
+        output.u8(transition.receipt_phase().tag())?;
+        output.u8(transition.failure().map_or(0, |failure| failure.tag()))?;
+    }
+    let mut bytes = output.finish();
+    let checksum = Sha256::digest(&bytes);
+    reserve_bytes(&bytes, checksum.len())?;
+    bytes.extend_from_slice(&checksum);
+    Ok(bytes)
+}
+
+pub(super) fn decode_retire_receipt(
+    encoded: &[u8],
+) -> Result<OfflineMaintenanceReceiptV2, StorageError> {
+    if encoded.len() > MAX_RECEIPT_BYTES {
+        return Err(limit_exceeded());
+    }
+    let body_length = encoded
+        .len()
+        .checked_sub(SHA256_BYTES)
+        .ok_or_else(corrupt)?;
+    let (body, stored_checksum) = encoded.split_at(body_length);
+    if Sha256::digest(body).as_slice() != stored_checksum {
+        return Err(corrupt());
+    }
+    let mut input = Decoder::new(body);
+    if input.bytes(RECEIPT_MAGIC.len())? != RECEIPT_MAGIC
+        || input.u32()? != RECEIPT_FORMAT_VERSION_V2
+    {
+        return Err(incompatible());
+    }
+    let operation_id =
+        OfflineMaintenanceOperationId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    if input.u8()? != 0x03 {
+        return Err(corrupt());
+    }
+    let backup_name = BackupNameV1::new(input.text_u16(riffdb_types::MAX_BACKUP_NAME_V1_BYTES)?)
+        .map_err(|_| corrupt())?;
+    let input_hash = OfflineMaintenanceInputHash::from_bytes(input.array()?);
+    let actor_kind = ActorKind::from_tag(input.u8()?).ok_or_else(corrupt)?;
+    let principal_id = ActorId::new(input.text_u16(MAX_ACTOR_ID_BYTES)?).map_err(|_| corrupt())?;
+    let capability_id = CapabilityId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let approval_id = match input.u8()? {
+        0 => None,
+        1 => Some(ApprovalId::new(input.text_u16(MAX_APPROVAL_ID_BYTES)?).map_err(|_| corrupt())?),
+        _ => return Err(corrupt()),
+    };
+    let admission =
+        OfflineMaintenanceAdmissionV1::new(principal_id, actor_kind, capability_id, approval_id);
+    let originating_create_operation_id =
+        OfflineMaintenanceOperationId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let checksum = input.framed_u16(MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES)?;
+    if checksum.len() != SHA256_BYTES {
+        return Err(corrupt());
+    }
+    let checksum = BackupIntegrityChecksumV1::new(checksum.to_vec()).map_err(value_error)?;
+    let database_id = DatabaseId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let frontier = match input.u8()? {
+        0 => None,
+        1 => Some(CommitSequence::new(input.u64()?).ok_or_else(corrupt)?),
+        _ => return Err(corrupt()),
+    };
+    let transition_count = usize::from(input.u8()?);
+    if transition_count == 0 || transition_count > MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1 {
+        return Err(corrupt());
+    }
+    let mut transitions = Vec::with_capacity(transition_count);
+    for _ in 0..transition_count {
+        let phase = OfflineMaintenanceReceiptPhaseV1::from_tag(input.u8()?).ok_or_else(corrupt)?;
+        let failure_tag = input.u8()?;
+        transitions.push(match (phase, failure_tag) {
+            (OfflineMaintenanceReceiptPhaseV1::FailedClosed, tag) => {
+                OfflineMaintenanceReceiptTransitionV1::failed(
+                    OfflineMaintenanceReceiptFailureV1::from_tag(tag).ok_or_else(corrupt)?,
+                )
+            }
+            (_, 0) => OfflineMaintenanceReceiptTransitionV1::phase(phase),
+            _ => return Err(corrupt()),
+        });
+    }
+    input.finish()?;
+    let manifest = OfflineBackupManifestIdentityV1::new(checksum, database_id, frontier);
+    let receipt = OfflineMaintenanceReceiptV2::from_canonical_parts(
+        operation_id,
+        backup_name,
+        input_hash,
+        admission,
+        OfflineBackupRetirementEvidenceV2::new(originating_create_operation_id, manifest),
+        transitions,
+    )
+    .map_err(value_error)?;
+    if encode_retire_receipt(&receipt)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(receipt)
+}
+
 fn encode_receipt_pre_fence(
     receipt: &OfflineMaintenanceReceiptV1,
 ) -> Result<Vec<u8>, StorageError> {
@@ -241,7 +387,7 @@ fn encode_receipt_pre_fence(
     }
     let mut output = Encoder::new();
     output.bytes(RECEIPT_MAGIC)?;
-    output.u32(RECEIPT_FORMAT_VERSION)?;
+    output.u32(RECEIPT_FORMAT_VERSION_V1)?;
     output.bytes(receipt.operation_id().as_bytes())?;
     output.u8(operation_kind_tag(receipt.operation_kind()))?;
     output.framed_u16(receipt.backup_name().as_bytes())?;
@@ -300,7 +446,7 @@ pub(super) fn encode_migration_receipt(
     let mut output = Encoder::new_with_limit(MAX_MIGRATION_RECEIPT_BYTES);
     output.bytes(MIGRATION_RECEIPT_MAGIC)?;
     match receipt.operation_kind() {
-        ContractMigrationOperationKindV1::Apply => output.u32(RECEIPT_FORMAT_VERSION)?,
+        ContractMigrationOperationKindV1::Apply => output.u32(RECEIPT_FORMAT_VERSION_V1)?,
         ContractMigrationOperationKindV1::Check => {
             output.u32(MIGRATION_RECEIPT_CHECK_FORMAT_VERSION)?;
             output.u8(1)?;
@@ -376,7 +522,7 @@ pub(super) fn decode_migration_receipt(
         return Err(incompatible());
     }
     let operation_kind = match input.u32()? {
-        RECEIPT_FORMAT_VERSION => ContractMigrationOperationKindV1::Apply,
+        RECEIPT_FORMAT_VERSION_V1 => ContractMigrationOperationKindV1::Apply,
         MIGRATION_RECEIPT_CHECK_FORMAT_VERSION => match input.u8()? {
             1 => ContractMigrationOperationKindV1::Check,
             _ => return Err(incompatible()),
@@ -613,6 +759,7 @@ const fn operation_kind_tag(kind: OfflineMaintenanceOperationKind) -> u8 {
     match kind {
         OfflineMaintenanceOperationKind::CreateBackup => 0x01,
         OfflineMaintenanceOperationKind::RestoreBackup => 0x02,
+        OfflineMaintenanceOperationKind::RetireBackup => 0x03,
     }
 }
 
@@ -825,21 +972,27 @@ fn limit_exceeded() -> StorageError {
 #[cfg(test)]
 mod tests {
     use riffdb_storage_api::{
-        AuditPrincipalV1, ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1,
-        ContractMigrationArtifactsV1, ContractMigrationOperationArtifactsV1,
-        ContractMigrationOperationKindV1, ContractMigrationReceiptPhaseV1,
-        ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
+        AuditPrincipalV1, BackupIntegrityChecksumV1, ContractMigrationAdmissionV1,
+        ContractMigrationArtifactFileV1, ContractMigrationArtifactsV1,
+        ContractMigrationOperationArtifactsV1, ContractMigrationOperationKindV1,
+        ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
+        ContractMigrationReceiptV1, OfflineBackupManifestIdentityV1,
+        OfflineBackupRetirementEvidenceV2, OfflineMaintenanceAdmissionV1,
+        OfflineMaintenanceReceiptV2,
     };
     use riffdb_types::{
-        ActorId, ActorKind, ApprovalId, CapabilityId, ContractBundleHash,
-        ContractMigrationInputHash, ContractMigrationOperationId, DatabaseId, MigrationBundleHash,
-        RequestId, ServiceIngressKindV1, Timestamp,
+        ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence,
+        ContractBundleHash, ContractMigrationInputHash, ContractMigrationOperationId, DatabaseId,
+        MigrationBundleHash, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+        OfflineMaintenanceReplacementConfirmation, RequestId, ServiceIngressKindV1, Timestamp,
+        offline_maintenance_input_hash,
     };
 
     use sha2::{Digest, Sha256};
 
     use super::{
-        MIGRATION_RECEIPT_MAGIC, SHA256_BYTES, decode_migration_receipt, encode_migration_receipt,
+        MIGRATION_RECEIPT_MAGIC, SHA256_BYTES, decode_migration_receipt, decode_retire_receipt,
+        encode_migration_receipt, encode_retire_receipt,
     };
 
     fn uuid_v7(seed: u8) -> [u8; 16] {
@@ -851,6 +1004,36 @@ mod tests {
 
     fn accepted_receipt() -> ContractMigrationReceiptV1 {
         accepted_receipt_for(ContractMigrationOperationKindV1::Apply)
+    }
+
+    fn accepted_retire_receipt() -> OfflineMaintenanceReceiptV2 {
+        let operation_id =
+            OfflineMaintenanceOperationId::from_bytes(uuid_v7(11)).expect("maintenance operation");
+        let name = BackupNameV1::new("before-upgrade").expect("backup name");
+        OfflineMaintenanceReceiptV2::accepted_retirement(
+            operation_id,
+            name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RetireBackup,
+                &name,
+                OfflineMaintenanceReplacementConfirmation::NotProvided,
+            ),
+            OfflineMaintenanceAdmissionV1::new(
+                ActorId::new("operator").expect("actor"),
+                ActorKind::Human,
+                CapabilityId::from_bytes(uuid_v7(12)).expect("capability"),
+                Some(ApprovalId::new("approval").expect("approval")),
+            ),
+            OfflineBackupRetirementEvidenceV2::new(
+                OfflineMaintenanceOperationId::from_bytes(uuid_v7(13)).expect("originating create"),
+                OfflineBackupManifestIdentityV1::new(
+                    BackupIntegrityChecksumV1::new(vec![14; 32]).expect("checksum"),
+                    DatabaseId::from_bytes(uuid_v7(15)).expect("database"),
+                    Some(CommitSequence::new(16).expect("frontier")),
+                ),
+            ),
+        )
+        .expect("retire receipt")
     }
 
     fn accepted_receipt_for(
@@ -930,5 +1113,33 @@ mod tests {
         let checksum = Sha256::digest(&unknown[..body_len]);
         unknown[body_len..].copy_from_slice(&checksum);
         assert!(decode_migration_receipt(&unknown).is_err());
+    }
+
+    #[test]
+    fn retire_receipt_v2_round_trips_canonically_and_rejects_checksum_damage() {
+        let receipt = accepted_retire_receipt();
+        let encoded = encode_retire_receipt(&receipt).expect("encode");
+        let canonical_hex = encoded
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            canonical_hex,
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/compatibility/offline-maintenance-retire-receipt-v2.hex"
+            ))
+            .trim(),
+            "retire receipt V2 exact bytes are a compatibility boundary"
+        );
+        assert_eq!(decode_retire_receipt(&encoded).expect("decode"), receipt);
+        assert_eq!(
+            encode_retire_receipt(&decode_retire_receipt(&encoded).expect("decode"))
+                .expect("reencode"),
+            encoded
+        );
+        let mut corrupt = encoded;
+        corrupt[40] ^= 0x01;
+        assert!(decode_retire_receipt(&corrupt).is_err());
     }
 }

@@ -1027,6 +1027,11 @@ pub(crate) enum BackupCommand {
         #[arg(long)]
         confirm_replace_current_database: bool,
     },
+    /// Retires one exact immutable backup through the receipted public surface.
+    Retire {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
     Operation {
         #[arg(value_name = "MAINTENANCE_OPERATION_ID")]
         maintenance_operation_id: String,
@@ -2180,6 +2185,7 @@ mod tests {
             Cli::try_parse_from(["riffdb", "backup", "create", ".maintenance"]).is_ok(),
             "clap leaves semantic backup-name validation to the checked type"
         );
+        assert!(Cli::try_parse_from(["riffdb", "backup", "retire", "older"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "riffdb",

@@ -15,7 +15,7 @@ The service account needs permission to:
 
 - read and write the backup root;
 - create and synchronize `<backup-root>/.maintenance`;
-- create immutable named backup directories; and
+- create and retire immutable named backup directories; and
 - close, reopen, and, for restore, replace the configured database target.
 
 Do not place the database or secret key files beneath the backup root.
@@ -100,6 +100,35 @@ checksum rather than decoding storage-format bytes in application or operator
 code.
 
 An existing named backup is never silently replaced.
+
+## Retire a Backup
+
+Published immutable backups must not be deleted directly. Retire one exact
+checked name through the authorized public surface:
+
+```bash
+riffdb --config "$HOME/.config/riffdb/client.toml" \
+  backup retire before-upgrade
+```
+
+Retirement requires the same global `AdministerCapabilities` authority as
+create and restore. The server resolves the exact succeeded create receipt and
+manifest; the client never submits a path. It then renames the complete
+four-file inventory into an operation-private maintenance directory, syncs both
+parents, deletes only those four known regular files, and records terminal
+success. Poll the returned operation ID with `backup operation` exactly as for
+create and restore.
+
+A terminal retirement receipt is the only reason startup accepts a succeeded
+create receipt whose published artifact is absent. Missing artifacts without
+that exact receipt pair, symlinks, unknown files, manifest mismatches, and
+ambiguous staged state fail readiness closed. Retired names remain permanently
+consumed: neither create nor restore can silently reuse them.
+
+Do not remove a backup directory or any file beneath `.maintenance` with
+filesystem tools. Routine retention should invoke `backup retire` after a newer
+backup has been fully validated. An interrupted retirement is recovered from
+its durable phase and exact create/manifest evidence on restart.
 
 ## Restore a Backup
 
@@ -191,7 +220,7 @@ riffdb --config "$HOME/.config/riffdb/client.toml" \
   backup operation 01900000-0000-7000-8000-000000000000
 ```
 
-Do not rerun `backup create` or `backup restore` to resolve CLI uncertainty;
+Do not rerun `backup create`, `backup restore`, or `backup retire` to resolve CLI uncertainty;
 that would generate a different operation identity. Startup validates all
 receipts and reconciles incomplete work only from exact receipt, manifest,
 inventory, and checksum evidence. It does not infer success from a partial

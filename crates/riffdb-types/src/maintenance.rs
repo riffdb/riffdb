@@ -100,6 +100,8 @@ pub enum OfflineMaintenanceOperationKind {
     CreateBackup,
     /// Restore one immutable backup through private staging.
     RestoreBackup,
+    /// Permanently retire one previously published immutable backup.
+    RetireBackup,
 }
 
 impl OfflineMaintenanceOperationKind {
@@ -107,6 +109,7 @@ impl OfflineMaintenanceOperationKind {
         match self {
             Self::CreateBackup => 1,
             Self::RestoreBackup => 2,
+            Self::RetireBackup => 3,
         }
     }
 }
@@ -263,6 +266,14 @@ mod tests {
             baseline,
             offline_maintenance_input_hash(
                 OfflineMaintenanceOperationKind::RestoreBackup,
+                &name,
+                OfflineMaintenanceReplacementConfirmation::NotProvided,
+            )
+        );
+        assert_ne!(
+            baseline,
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RetireBackup,
                 &name,
                 OfflineMaintenanceReplacementConfirmation::NotProvided,
             )
