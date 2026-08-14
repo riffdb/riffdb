@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -181,6 +182,16 @@ def positive_decimal(value: Any, name: str) -> int:
     return int(value)
 
 
+def positive_decimal_or_zero(value: Any, name: str) -> int:
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or not value.isdigit()
+    ):
+        fail(f"endurance lifecycle {name} is invalid")
+    return int(value)
+
+
 def sha256_file(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         fail("endurance evidence artifact is not a regular file")
@@ -189,6 +200,27 @@ def sha256_file(path: Path) -> str:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def atomic_replace_file(source: Path, destination: Path, mode: int) -> None:
+    if source.is_symlink() or not source.is_file() or destination.is_symlink():
+        fail("endurance certificate rotation source is invalid")
+    pending = destination.with_name(f".{destination.name}.{os.getpid()}.pending")
+    try:
+        with source.open("rb") as reader, pending.open("xb") as writer:
+            os.chmod(pending, mode)
+            shutil.copyfileobj(reader, writer, length=64 * 1024)
+            writer.flush()
+            os.fsync(writer.fileno())
+        pending.replace(destination)
+        directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if pending.exists():
+            pending.unlink()
 
 
 def reactive_operations(environment: Path) -> tuple[int, int, int]:
@@ -248,13 +280,33 @@ def health_frontier(environment: Path) -> int:
     value = json.loads(result.stdout)
     payload = value.get("result") if isinstance(value, dict) else None
     frontier = payload.get("last_commit_sequence") if isinstance(payload, dict) else None
+    components = payload.get("components") if isinstance(payload, dict) else None
+    component_statuses: dict[str, str] = {}
+    if isinstance(components, list):
+        for component in components:
+            if not isinstance(component, dict):
+                fail("endurance server health component is invalid")
+            name = component.get("component")
+            status = component.get("status")
+            if (
+                not isinstance(name, str)
+                or not isinstance(status, str)
+                or name in component_statuses
+            ):
+                fail("endurance server health component is invalid")
+            component_statuses[name] = status
+    critical_components_healthy = all(
+        component_statuses.get(name) == "healthy"
+        for name in ("authoritative_storage", "catalog", "commit_coordinator")
+    )
     if (
         not isinstance(value, dict)
         or not isinstance(payload, dict)
         or value.get("schema") != "riffdb.cli.output/v1"
         or value.get("ok") is not True
-        or payload.get("status") != "ready"
+        or payload.get("status") not in ("ready", "degraded")
         or payload.get("database") != "default"
+        or not critical_components_healthy
         or (
             frontier is not None
             and (
@@ -265,7 +317,7 @@ def health_frontier(environment: Path) -> int:
             )
         )
     ):
-        fail("endurance server health is not an authenticated ready frontier")
+        fail("endurance server health is not an authenticated serving frontier")
     # Authenticated health omits the optional application head before the first
     # command commit. That is the canonical before-first position, not an
     # unavailable observation.
@@ -330,7 +382,9 @@ def wait_stopped(pid: int, timeout_seconds: int) -> None:
         time.sleep(0.05)
 
 
-def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int]:
+def stop_server(
+    environment: Path,
+) -> tuple[dict[str, Any], int, int, int]:
     process_state_path = environment / "state.json"
     process_state = read_object(process_state_path)
     old_pid = integer(process_state.get("server_pid"), "server_pid")
@@ -347,9 +401,16 @@ def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, i
     if checkpoint < before_frontier:
         fail("graceful shutdown checkpoint precedes the observed application frontier")
     queue_depth = shutdown_writer_queue_depth(stdout_path, stdout_offset)
+    return process_state, before_frontier, checkpoint, queue_depth
 
+
+def start_server(
+    environment: Path,
+    process_state: dict[str, Any],
+    minimum_frontier: int,
+) -> int:
     stdin = (environment / "server.input").open("rb", buffering=0)
-    stdout = stdout_path.open("ab", buffering=0)
+    stdout = (environment / "server.stdout").open("ab", buffering=0)
     stderr = (environment / "server.stderr").open("ab", buffering=0)
     process: subprocess.Popen[bytes] | None = None
     try:
@@ -379,7 +440,7 @@ def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, i
                 break
             except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError):
                 time.sleep(0.1)
-        if not ready or after_frontier < checkpoint:
+        if not ready or after_frontier < minimum_frontier:
             fail("restarted server did not publish the checkpoint frontier")
     except BaseException:
         if process.poll() is None:
@@ -387,7 +448,13 @@ def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, i
         raise
 
     process_state["server_pid"] = process.pid
-    atomic_write(process_state_path, process_state)
+    atomic_write(environment / "state.json", process_state)
+    return after_frontier
+
+
+def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int]:
+    process_state, before_frontier, checkpoint, queue_depth = stop_server(environment)
+    after_frontier = start_server(environment, process_state, checkpoint)
     lifecycle["writer_queue_depth"] = max(
         integer(lifecycle["writer_queue_depth"], "writer_queue_depth"), queue_depth
     )
@@ -667,6 +734,190 @@ def capability_rotation(
     }
 
 
+def deploy_under_load(
+    environment: Path, state: dict[str, Any]
+) -> tuple[int, int, dict[str, Any]]:
+    before = integer(state["deployment_count"], "deployment_count")
+    application = environment / "application"
+    manifest = application / "riffdb.application.json"
+    lock = application / "riffdb.application.lock.json"
+    if (
+        application.is_symlink()
+        or not application.is_dir()
+        or manifest.is_symlink()
+        or not manifest.is_file()
+        or lock.is_symlink()
+        or not lock.is_file()
+    ):
+        fail("endurance exact application package is invalid")
+    deployed = run_json(
+        cli(environment)
+        + [
+            "application",
+            "deploy",
+            manifest.name,
+            "--lock",
+            lock.name,
+            "--output",
+            "json",
+        ],
+        cwd=application,
+    )
+    if deployed is None:
+        fail("endurance application deploy unexpectedly returned no result")
+    result = deployed["result"]
+    if (
+        deployed.get("command") != "application.deploy"
+        or result.get("application") != "ticketdesk-reactive"
+        or result.get("contract_lineage") != "TicketDesk"
+        or result.get("contract_version") != "1"
+        or result.get("database") != "default"
+        or result.get("seeded") is not False
+    ):
+        fail("endurance exact application deploy result is invalid")
+    after = before + 1
+    state["deployment_count"] = after
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-deploy-evidence/v1",
+        "application": result.get("application"),
+        "contract_lineage": result.get("contract_lineage"),
+        "contract_version": result.get("contract_version"),
+        "database": result.get("database"),
+        "lock_hash": result.get("lock_hash"),
+        "exact_lock_sha256": sha256_file(lock),
+        "manifest_sha256": sha256_file(manifest),
+        "provisioned": result.get("provisioned"),
+        "seeded": result.get("seeded"),
+        "deployment_ordinal": after,
+    }
+
+
+def certificate_rotation(
+    environment: Path, state: dict[str, Any]
+) -> tuple[int, int, dict[str, Any]]:
+    before = integer(state["certificate_rotation_count"], "certificate_rotation_count")
+    slot = 2 if before % 2 == 0 else 1
+    active_certificate = environment / "server.pem"
+    active_key = environment / "server.key"
+    replacement_certificate = environment / f"server-{slot}.pem"
+    replacement_key = environment / f"server-{slot}.key"
+    old_certificate_sha256 = sha256_file(active_certificate)
+    new_certificate_sha256 = sha256_file(replacement_certificate)
+    if old_certificate_sha256 == new_certificate_sha256:
+        fail("endurance certificate rotation did not select a different leaf")
+    atomic_replace_file(replacement_certificate, active_certificate, 0o444)
+    atomic_replace_file(replacement_key, active_key, 0o600)
+    process_state, frontier_before, checkpoint, queue_depth = stop_server(environment)
+    frontier_after = start_server(environment, process_state, checkpoint)
+    if frontier_after < frontier_before:
+        fail("endurance certificate rotation regressed the application frontier")
+    after = before + 1
+    state["certificate_rotation_count"] = after
+    state["writer_queue_depth"] = max(
+        integer(state["writer_queue_depth"], "writer_queue_depth"), queue_depth
+    )
+    state["checkpoint_count"] = integer(state["checkpoint_count"], "checkpoint_count") + 1
+    state["checkpoint_frontier"] = checkpoint
+    state["restart_count"] = integer(state["restart_count"], "restart_count") + 1
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-certificate-rotation-evidence/v1",
+        "certificate_slot": slot,
+        "certificate_sha256_before": old_certificate_sha256,
+        "certificate_sha256_after": new_certificate_sha256,
+        "application_frontier_before": frontier_before,
+        "application_frontier_after": frontier_after,
+        "checkpoint_frontier": checkpoint,
+        "writer_queue_depth_max": queue_depth,
+    }
+
+
+def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
+    before = integer(state["retention_watermark"], "retention_watermark")
+    process_state, application_frontier, checkpoint, queue_depth = stop_server(environment)
+    database = environment / "data" / "ticketdesk.redb"
+    restarted = False
+    try:
+        status = run_json(
+            cli(environment)
+            + [
+                "retention",
+                "status",
+                "--database-path",
+                str(database),
+                "--output",
+                "json",
+            ]
+        )
+        if status is None or status.get("command") != "retention.status":
+            fail("endurance retention status unexpectedly returned no result")
+        current = status["result"]
+        current_watermark = positive_decimal_or_zero(
+            current.get("watermark_sequence"), "retention watermark"
+        )
+        if current_watermark != before:
+            fail("endurance retention watermark differs from lifecycle state")
+        target_raw = current.get("max_permissible_watermark")
+        target = (
+            positive_decimal(target_raw, "maximum permissible watermark")
+            if target_raw is not None
+            else 0
+        )
+        if target <= before:
+            fail("endurance retention fencing has not advanced beyond the watermark")
+        pruned = run_json(
+            cli(environment)
+            + [
+                "retention",
+                "prune",
+                "--database-path",
+                str(database),
+                "--target-sequence",
+                str(target),
+                "--output",
+                "json",
+            ],
+            timeout_seconds=300,
+        )
+        if pruned is None or pruned.get("command") != "retention.prune":
+            fail("endurance retention prune unexpectedly returned no result")
+        result = pruned["result"]
+        after = positive_decimal(result.get("watermark_sequence"), "pruned watermark")
+        tombstones = positive_decimal_or_zero(
+            result.get("tombstone_count"), "retention tombstone count"
+        )
+        if after != target or after <= before:
+            fail("endurance retention prune did not publish the fenced target")
+        after_frontier = start_server(environment, process_state, checkpoint)
+        restarted = True
+    finally:
+        if not restarted:
+            try:
+                start_server(environment, process_state, checkpoint)
+            except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError):
+                pass
+    if after_frontier < application_frontier:
+        fail("endurance retention restart regressed the application frontier")
+    state["retention_watermark"] = after
+    state["tombstone_count"] = tombstones
+    state["writer_queue_depth"] = max(
+        integer(state["writer_queue_depth"], "writer_queue_depth"), queue_depth
+    )
+    state["checkpoint_count"] = integer(state["checkpoint_count"], "checkpoint_count") + 1
+    state["checkpoint_frontier"] = checkpoint
+    state["restart_count"] = integer(state["restart_count"], "restart_count") + 1
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-retention-evidence/v1",
+        "watermark_before": before,
+        "watermark_after": after,
+        "tombstone_count": tombstones,
+        "fence_binding": result.get("fence_binding"),
+        "application_frontier_before": application_frontier,
+        "application_frontier_after": after_frontier,
+        "checkpoint_frontier": checkpoint,
+        "writer_queue_depth_max": queue_depth,
+    }
+
+
 def checkpoint_or_restart(
     environment: Path, state: dict[str, Any], name: str
 ) -> tuple[int, int, dict[str, Any]]:
@@ -701,6 +952,12 @@ def run_action(environment: Path, state_path: Path, name: str) -> dict[str, Any]
         before, after, evidence = backup(environment, state)
     elif name == "capability_rotation":
         before, after, evidence = capability_rotation(environment, state)
+    elif name == "certificate_rotation":
+        before, after, evidence = certificate_rotation(environment, state)
+    elif name == "deploy_under_load":
+        before, after, evidence = deploy_under_load(environment, state)
+    elif name == "retention":
+        before, after, evidence = retention(environment, state)
     elif name in {"checkpoint", "restart"}:
         before, after, evidence = checkpoint_or_restart(environment, state, name)
     else:
@@ -753,7 +1010,7 @@ def main() -> int:
             initialize(environment, state_path)
             return 0
         if len(sys.argv) != 2:
-            fail("usage: endurance-lifecycle <backup|capability_rotation|journal_recycle|reactive_consumer|checkpoint|restart> | --initialize | --self-test")
+            fail("usage: endurance-lifecycle <backup|capability_rotation|certificate_rotation|checkpoint|deploy_under_load|journal_recycle|reactive_consumer|restart|retention> | --initialize | --self-test")
         result = run_action(environment, state_path, sys.argv[1])
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
