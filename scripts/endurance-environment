@@ -100,6 +100,9 @@ cargo +1.97.0 build --quiet \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
     -p riffdb-ticketdesk --bin endurance >&2
+cp target/debug/riffdbd "$environment_root/bin/riffdbd"
+cp target/debug/riffdb "$environment_root/bin/riffdb"
+cp target/debug/riffdb-driverd "$environment_root/bin/riffdb-driverd"
 cp target/debug/endurance "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
 (cd examples/ticketdesk && go build -o "$environment_root/bin/riffdb-ticketdesk-go-endurance" ./endurance/go)
 npm --prefix clients/typescript/runtime run build >/dev/null
@@ -175,7 +178,7 @@ mkfifo "$environment_root/server.input"
 sleep infinity >"$environment_root/server.input" &
 stdin_keeper_pid=$!
 partial_pids+=("$stdin_keeper_pid")
-target/debug/riffdbd --config "$environment_root/riffdbd.toml" \
+"$environment_root/bin/riffdbd" --config "$environment_root/riffdbd.toml" \
     <"$environment_root/server.input" >"$environment_root/server.stdout" 2>"$environment_root/server.stderr" &
 server_pid=$!
 
@@ -211,7 +214,7 @@ rg -q '^riffdbd-ready-v1' "$environment_root/server.stdout" || {
 cat >"$environment_root/bootstrap.json" <<'EOF'
 {"principal_id":"alpha-endurance-operator","actor_kind":"human","requested_lifetime_seconds":86400,"audiences":["riffdb-alpha-endurance"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
 EOF
-if ! target/debug/riffdb --config "$environment_root/bootstrap-client.toml" capability bootstrap \
+if ! "$environment_root/bin/riffdb" --config "$environment_root/bootstrap-client.toml" capability bootstrap \
     --request "$environment_root/bootstrap.json" \
     --generate "$environment_root/bootstrap.credential" \
     --bearer-output "$environment_root/operator.credential" \
@@ -233,7 +236,7 @@ cp examples/ticketdesk/web/src/generated/client.ts \
     "$environment_root/application/web/src/generated/client.ts"
 (
     cd "$environment_root/application"
-    "$repo_root/target/debug/riffdb" --config "$environment_root/bootstrap-client.toml" \
+    "$environment_root/bin/riffdb" --config "$environment_root/bootstrap-client.toml" \
         application deploy riffdb.application.json --lock riffdb.application.lock.json \
         --provision-role TicketDeskApplication --lifetime-seconds 604800 \
         >"$environment_root/application-deploy.json"
@@ -250,7 +253,7 @@ cp "$application_credential" "$environment_root/application.credential"
 
 bind_role() {
     local role="$1" principal="$2" output="$3"
-    target/debug/riffdb --config "$environment_root/bootstrap-client.toml" role bind \
+    "$environment_root/bin/riffdb" --config "$environment_root/bootstrap-client.toml" role bind \
         "$environment_root/application/riffdb.application.json" \
         --role "$role" --principal "$principal" --actor-kind service \
         --audience riffdb-alpha-endurance --lifetime-seconds 604800 \
@@ -305,7 +308,7 @@ pool_connections = 4
 streams_per_connection = 64
 EOF
     chmod 0600 "$environment_root/$role_key-driver.toml"
-    target/debug/riffdb-driverd "$environment_root/$role_key-driver.toml" \
+    "$environment_root/bin/riffdb-driverd" "$environment_root/$role_key-driver.toml" \
         >"$environment_root/$role_key-driver.stdout" \
         2>"$environment_root/$role_key-driver.stderr" &
     driver_pids[$role_key]=$!
@@ -335,6 +338,7 @@ jq -nS \
     --arg root "$environment_root" \
     --arg endpoint "https://127.0.0.1:$port" \
     --arg trust_root "$environment_root/ca.pem" \
+    --arg riffdb "$environment_root/bin/riffdb" \
     --arg typescript_runtime "$repo_root/clients/typescript/runtime/dist/index.js" \
     --arg typescript_generated "$environment_root/typescript/client.js" \
     --arg python "$environment_root/python-venv/bin/python" \
@@ -343,9 +347,15 @@ jq -nS \
     --argjson application_pid "${driver_pids[application]}" \
     --argjson seeder_pid "${driver_pids[seeder]}" \
     --argjson agent_pid "${driver_pids[agent]}" \
-    '{schema:$schema,root:$root,endpoint:$endpoint,trust_root:$trust_root,typescript_runtime:$typescript_runtime,typescript_generated:$typescript_generated,python:$python,server_pid:$server_pid,stdin_keeper_pid:$stdin_keeper_pid,driver_pids:{application:$application_pid,seeder:$seeder_pid,agent:$agent_pid}}' \
+    '{schema:$schema,root:$root,endpoint:$endpoint,trust_root:$trust_root,riffdb:$riffdb,typescript_runtime:$typescript_runtime,typescript_generated:$typescript_generated,python:$python,server_pid:$server_pid,stdin_keeper_pid:$stdin_keeper_pid,driver_pids:{application:$application_pid,seeder:$seeder_pid,agent:$agent_pid}}' \
     >"$state_path"
 chmod 0600 "$state_path"
+
+jq -nS \
+    --arg schema riffdb.alpha-endurance-lifecycle-state/v1 \
+    '{schema:$schema,journal_generation:0,retention_watermark:0,tombstone_count:0,writer_queue_depth:0,consumer_backlog:0,checkpoint_count:0,restart_count:0,lifecycle_microseconds:0}' \
+    >"$environment_root/lifecycle-state.json"
+chmod 0600 "$environment_root/lifecycle-state.json"
 
 cleanup_partial=false
 trap - EXIT INT TERM

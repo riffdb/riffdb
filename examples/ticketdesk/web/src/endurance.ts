@@ -1,5 +1,6 @@
 import { lstat, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import {
   DriverApplicationTransport,
@@ -20,6 +21,10 @@ const REQUIRED_COVERAGE = [
 ] as const;
 type Workload = "events" | "live_queries" | "reads" | "workflows" | "writes";
 type Tenant = typeof TENANTS[number];
+const LATENCY_BOUNDS_US = [
+  50, 100, 200, 400, 800, 1_600, 3_200, 6_400,
+  12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, Number.MAX_SAFE_INTEGER,
+] as const;
 
 interface IdentityFile {
   readonly applicationManifestHash: string;
@@ -51,14 +56,18 @@ class Metrics {
   readonly #tenants: Record<Tenant, number> = {
     tenant_alpha: 0, tenant_beta: 0, tenant_gamma: 0, tenant_delta: 0,
   };
+  readonly #latencyCounts = Array.from({ length: LATENCY_BOUNDS_US.length }, () => 0);
 
   public constructor(path: string) { this.#path = path; }
 
-  public async record(workload: Workload, tenant: Tenant, retainedBytes: number): Promise<void> {
+  public async record(workload: Workload, tenant: Tenant, retainedBytes: number, startedAt: number): Promise<void> {
     this.#logicalOperations += 1;
     this.#retainedBytes += retainedBytes;
     this.#workloads[workload] += 1;
     this.#tenants[tenant] += 1;
+    const latencyUs = Math.max(0, Math.floor((performance.now() - startedAt) * 1_000));
+    const bucket = LATENCY_BOUNDS_US.findIndex((bound) => latencyUs <= bound);
+    this.#latencyCounts[bucket < 0 ? this.#latencyCounts.length - 1 : bucket]! += 1;
     if (this.#logicalOperations % 64 === 0) await this.publish();
   }
 
@@ -73,6 +82,8 @@ class Metrics {
       declared_retries: 0,
       error_count: 0,
       modeled_retained_bytes: this.#retainedBytes,
+      latency_bounds_us: LATENCY_BOUNDS_US,
+      latency_counts: this.#latencyCounts,
       workloads: this.#workloads,
       tenants: this.#tenants,
     })}\n`;
@@ -169,21 +180,23 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
     const eventConsumer = `endurance-typescript-events-${index}`;
     const triageConsumer = `endurance-typescript-triage-${index}`;
     for (let counter = 0; ; counter += 1) {
+      let operationStarted = performance.now();
       const slot = counter % 100;
       if (slot < 35) {
         const result = await application.generated.ticketPage({ organization_id: organizationId, ticket_id: hotTicketId });
         if (result.value.outcome !== "Found") throw new Error("TypeScript endurance read lost its hot ticket");
-        await metrics.record("reads", tenant, 0);
+        await metrics.record("reads", tenant, 0, operationStarted);
       } else if (slot < 60) {
         await application.generated.createComment({
           body: `typescript endurance comment ${counter}`, author_id: userId,
           ticket_id: hotTicketId, comment_id: id(namespace, 10_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
           idempotency_key: `endurance-typescript-comment-${index}-${counter}`, organization_id: organizationId,
         });
-        await metrics.record("writes", tenant, 512);
+        await metrics.record("writes", tenant, 512, operationStarted);
       } else if (slot < 70) {
         const batch = await agent.reactive.nextTriageTicket(eventParameters, triageConsumer, 0);
-        await metrics.record("workflows", tenant, 0);
+        await metrics.record("workflows", tenant, 0, operationStarted);
+        operationStarted = performance.now();
         const item = batch.items[0];
         if (item !== undefined) {
           await agent.reactive.reactComment(eventParameters, triageConsumer, item, {
@@ -192,7 +205,7 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
             comment_id: id(namespace, 20_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
             idempotency_key: `endurance-typescript-reaction-${index}-${counter}`, organization_id: organizationId,
           });
-          await metrics.record("workflows", tenant, 512);
+          await metrics.record("workflows", tenant, 512, operationStarted);
         }
       } else if (slot < 80) {
         const stream = agent.reactive.ticketEvents(eventParameters, eventConsumer, {
@@ -202,11 +215,12 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
         const result = await iterator.next();
         await iterator.return?.();
         if (result.done === true) throw new Error("TypeScript event stream ended before a batch");
-        await metrics.record("events", tenant, 0);
+        await metrics.record("events", tenant, 0, operationStarted);
+        operationStarted = performance.now();
         const delivery: TicketEventsDelivery | undefined = result.value.events[0];
         if (delivery !== undefined) {
           await agent.reactive.ackTicketEvents(eventParameters, eventConsumer, delivery);
-          await metrics.record("events", tenant, 0);
+          await metrics.record("events", tenant, 0, operationStarted);
         }
       } else {
         const abort = new AbortController();
@@ -217,12 +231,13 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
           const result = await iterator.next();
           await iterator.return?.();
           if (result.done === true) throw new Error("TypeScript live query ended before its snapshot");
-          await metrics.record("live_queries", tenant, 0);
+          await metrics.record("live_queries", tenant, 0, operationStarted);
         } finally {
           clearTimeout(timer);
         }
       }
       if (slot === 69) {
+        operationStarted = performance.now();
         const ordinal = BigInt(Math.floor(counter / 100) % 4_096);
         await application.generated.createTicket({
           title: `TypeScript cold ticket ${index}-${ordinal}`, status: "Open",
@@ -230,7 +245,7 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
           assignee_id: userId, reporter_id: userId,
           idempotency_key: `endurance-typescript-cold-${index}-${ordinal}`, organization_id: organizationId,
         });
-        await metrics.record("workflows", tenant, 768);
+        await metrics.record("workflows", tenant, 768, operationStarted);
       }
       await new Promise<void>((resolve) => setTimeout(resolve, delayMilliseconds));
     }
@@ -243,14 +258,18 @@ async function seedClient(
   seeder: TicketDeskClient, application: TicketDeskClient, tenant: Tenant, index: number,
   organizationId: string, userId: string, projectId: string, ticketId: string,
 ): Promise<void> {
+  let operationStarted = performance.now();
   await seeder.createOrganization({ name: `Endurance ${tenant}`, organization_id: organizationId, idempotency_key: `endurance-organization-${tenant}` });
-  await metrics.record("writes", tenant, 512);
+  await metrics.record("writes", tenant, 512, operationStarted);
+  operationStarted = performance.now();
   await seeder.createUser({ email: `typescript-${index}@${tenant}.example.test`, user_id: userId, display_name: `TypeScript endurance ${index}`, idempotency_key: `endurance-typescript-user-${index}`, organization_id: organizationId });
-  await metrics.record("writes", tenant, 512);
+  await metrics.record("writes", tenant, 512, operationStarted);
+  operationStarted = performance.now();
   await seeder.createProject({ name: `TypeScript endurance ${index}`, project_id: projectId, idempotency_key: `endurance-typescript-project-${index}`, organization_id: organizationId });
-  await metrics.record("writes", tenant, 512);
+  await metrics.record("writes", tenant, 512, operationStarted);
+  operationStarted = performance.now();
   await application.createTicket({ title: `TypeScript hot ticket ${index}`, status: "Open", ticket_id: ticketId, project_id: projectId, assignee_id: userId, reporter_id: userId, idempotency_key: `endurance-typescript-hot-${configuration.seed}-${index}`, organization_id: organizationId });
-  await metrics.record("writes", tenant, 768);
+  await metrics.record("writes", tenant, 768, operationStarted);
   await metrics.publish();
 }
 

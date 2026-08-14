@@ -8,7 +8,7 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use riffdb_client_rust::{
     AttemptBudget, CallMetadata, DatabaseAlias, EventConsumerOptions, StableApplicationClient,
@@ -34,6 +34,24 @@ const TENANTS: [&str; 4] = [
 const EXPECTED_TENANTS_JSON: &str =
     "[\"tenant_alpha\",\"tenant_beta\",\"tenant_gamma\",\"tenant_delta\"]";
 const WORKLOADS: [&str; 5] = ["events", "live_queries", "reads", "workflows", "writes"];
+const LATENCY_BOUNDS_US: [u64; 16] = [
+    50,
+    100,
+    200,
+    400,
+    800,
+    1_600,
+    3_200,
+    6_400,
+    12_800,
+    25_600,
+    51_200,
+    102_400,
+    204_800,
+    409_600,
+    819_200,
+    9_007_199_254_740_991,
+];
 
 type WorkerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -45,6 +63,7 @@ struct Metrics {
     modeled_retained_bytes: u64,
     workloads: BTreeMap<&'static str, u64>,
     tenants: BTreeMap<&'static str, u64>,
+    latency_counts: [u64; LATENCY_BOUNDS_US.len()],
 }
 
 impl Metrics {
@@ -57,15 +76,27 @@ impl Metrics {
             modeled_retained_bytes: 0,
             workloads: WORKLOADS.into_iter().map(|name| (name, 0)).collect(),
             tenants: TENANTS.into_iter().map(|name| (name, 0)).collect(),
+            latency_counts: [0; LATENCY_BOUNDS_US.len()],
         })
     }
 
-    fn record(&mut self, workload: &'static str, tenant: &'static str, retained_bytes: u64) {
+    fn record(
+        &mut self,
+        workload: &'static str,
+        tenant: &'static str,
+        retained_bytes: u64,
+        latency: Duration,
+    ) {
         self.operations = self.operations.saturating_add(1);
         self.transport_attempts = self.transport_attempts.saturating_add(1);
         self.modeled_retained_bytes = self.modeled_retained_bytes.saturating_add(retained_bytes);
         *self.workloads.get_mut(workload).expect("closed workload") += 1;
         *self.tenants.get_mut(tenant).expect("closed tenant") += 1;
+        let latency_us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX);
+        let bucket = LATENCY_BOUNDS_US
+            .partition_point(|bound| *bound < latency_us)
+            .min(LATENCY_BOUNDS_US.len() - 1);
+        self.latency_counts[bucket] = self.latency_counts[bucket].saturating_add(1);
     }
 
     fn json(&self) -> String {
@@ -76,6 +107,7 @@ impl Metrics {
                 "\"logical_operations\":{},\"transport_attempts\":{},",
                 "\"declared_retries\":0,\"error_count\":0,",
                 "\"modeled_retained_bytes\":{},",
+                "\"latency_bounds_us\":{:?},\"latency_counts\":{:?},",
                 "\"workloads\":{{\"events\":{},\"live_queries\":{},\"reads\":{},",
                 "\"workflows\":{},\"writes\":{}}},",
                 "\"tenants\":{{\"tenant_alpha\":{},\"tenant_beta\":{},",
@@ -86,6 +118,8 @@ impl Metrics {
             self.operations,
             self.transport_attempts,
             self.modeled_retained_bytes,
+            LATENCY_BOUNDS_US,
+            self.latency_counts,
             self.workloads["events"],
             self.workloads["live_queries"],
             self.workloads["reads"],
@@ -199,6 +233,7 @@ async fn run_client(
     };
     let mut counter = 0_u64;
     loop {
+        let mut operation_started = Instant::now();
         let slot = counter % 100;
         if slot < 35 {
             let page = clients
@@ -211,7 +246,7 @@ async fn run_client(
             if !matches!(page, TicketPageResult::Found(_)) {
                 return Err("Rust endurance read lost its hot ticket".into());
             }
-            record(&metrics, "reads", tenant, 0).await;
+            record(&metrics, "reads", tenant, 0, &mut operation_started).await;
         } else if slot < 60 {
             clients
                 .application
@@ -224,13 +259,13 @@ async fn run_client(
                     organization_id: organization_id.clone(),
                 })
                 .await?;
-            record(&metrics, "writes", tenant, 512).await;
+            record(&metrics, "writes", tenant, 512, &mut operation_started).await;
         } else if slot < 70 {
             let batch = clients
                 .agent
                 .next_triage_ticket(triage_consumer.clone(), 0)
                 .await?;
-            record(&metrics, "workflows", tenant, 0).await;
+            record(&metrics, "workflows", tenant, 0, &mut operation_started).await;
             if let Some(item) = batch.items.first() {
                 let TicketEventsEvent::TicketCreated(event) = &item.event;
                 clients
@@ -250,7 +285,7 @@ async fn run_client(
                         },
                     )
                     .await?;
-                record(&metrics, "workflows", tenant, 512).await;
+                record(&metrics, "workflows", tenant, 512, &mut operation_started).await;
             }
         } else if slot < 80 {
             let batch = clients
@@ -265,13 +300,13 @@ async fn run_client(
                     },
                 )
                 .await?;
-            record(&metrics, "events", tenant, 0).await;
+            record(&metrics, "events", tenant, 0, &mut operation_started).await;
             if let Some(delivery) = batch.events.first() {
                 clients
                     .agent
                     .ack_ticket_events(&event_consumer, delivery)
                     .await?;
-                record(&metrics, "events", tenant, 0).await;
+                record(&metrics, "events", tenant, 0, &mut operation_started).await;
             }
         } else {
             let mut stream = clients
@@ -288,7 +323,7 @@ async fn run_client(
             if update.is_none() {
                 return Err("Rust endurance live query ended before its snapshot".into());
             }
-            record(&metrics, "live_queries", tenant, 0).await;
+            record(&metrics, "live_queries", tenant, 0, &mut operation_started).await;
         }
 
         if slot == 69 {
@@ -306,7 +341,7 @@ async fn run_client(
                     organization_id: organization_id.clone(),
                 })
                 .await?;
-            record(&metrics, "workflows", tenant, 768).await;
+            record(&metrics, "workflows", tenant, 768, &mut operation_started).await;
         }
         counter = counter.saturating_add(1);
         if counter.is_multiple_of(64) {
@@ -328,6 +363,7 @@ async fn seed_client(
     client_index: u64,
     metrics: &Arc<Mutex<Metrics>>,
 ) -> WorkerResult<()> {
+    let mut operation_started = Instant::now();
     clients
         .seeder
         .create_organization(CreateOrganizationInput {
@@ -336,7 +372,7 @@ async fn seed_client(
             idempotency_key: format!("endurance-organization-{tenant}"),
         })
         .await?;
-    record(metrics, "writes", tenant, 512).await;
+    record(metrics, "writes", tenant, 512, &mut operation_started).await;
     clients
         .seeder
         .create_user(CreateUserInput {
@@ -347,7 +383,7 @@ async fn seed_client(
             organization_id: organization_id.to_owned(),
         })
         .await?;
-    record(metrics, "writes", tenant, 512).await;
+    record(metrics, "writes", tenant, 512, &mut operation_started).await;
     clients
         .seeder
         .create_project(CreateProjectInput {
@@ -357,7 +393,7 @@ async fn seed_client(
             organization_id: organization_id.to_owned(),
         })
         .await?;
-    record(metrics, "writes", tenant, 512).await;
+    record(metrics, "writes", tenant, 512, &mut operation_started).await;
     clients
         .application
         .create_ticket(CreateTicketInput {
@@ -371,7 +407,7 @@ async fn seed_client(
             organization_id: organization_id.to_owned(),
         })
         .await?;
-    record(metrics, "writes", tenant, 768).await;
+    record(metrics, "writes", tenant, 768, &mut operation_started).await;
     Ok(())
 }
 
@@ -401,11 +437,14 @@ async fn record(
     workload: &'static str,
     tenant: &'static str,
     retained_bytes: u64,
+    operation_started: &mut Instant,
 ) {
+    let latency = operation_started.elapsed();
+    *operation_started = Instant::now();
     metrics
         .lock()
         .await
-        .record(workload, tenant, retained_bytes);
+        .record(workload, tenant, retained_bytes, latency);
 }
 
 async fn publish_metrics(path: &Path, metrics: &Arc<Mutex<Metrics>>) -> WorkerResult<()> {
