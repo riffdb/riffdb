@@ -1,0 +1,26 @@
+{
+  "schema": "riffdb-agent-application-alpha-gate/v2",
+  "work_package": "WP-370",
+  "requirement": "AAA-012",
+  "campaign_id": "campaign-02",
+  "campaign_manifest": {
+    "path": "evaluations/agent-application-alpha/campaigns/campaign-02.json",
+    "sha256": "fee11bcececaaaeae708b7bf18c9750e3c41a7b7f3a5f69615538ff823a449f9"
+  },
+  "bundle_hash": "a58585da8dd68b77fe70554cb16c89a4da1b1ded36da6ac8945b229d9f9058f3",
+  "decision": "eligible",
+  "sealed_bundle_self_test": "passed",
+  "independent_runs_completed": 4,
+  "independent_runs_required": 4,
+  "thresholds": {
+    "handwritten_glue_lines": 0,
+    "human_interventions": 0,
+    "kernel_successes": 0,
+    "maximum_first_page_read_seconds": 3600,
+    "maximum_first_write_seconds": 1800,
+    "minimum_rating": 8.5,
+    "prohibited_source_access": true,
+    "unresolved_required_shapes": 0
+  },
+  "reason": "All four fresh sealed Blog and Orders evaluations completed through the public Rust and TypeScript application surfaces, passed the golden and boundary checks, required no human intervention or handwritten transport glue, avoided kernel and source access, reported no unsupported query shapes, and rated the experience from 9.2 to 9.4 out of 10."
+}

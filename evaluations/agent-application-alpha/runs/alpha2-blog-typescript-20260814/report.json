@@ -1,0 +1,29 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "alpha2-blog-typescript-20260814",
+  "bundle_hash": "a58585da8dd68b77fe70554cb16c89a4da1b1ded36da6ac8945b229d9f9058f3",
+  "agent_identity": "terra-alpha2-blog-typescript-20260814",
+  "domain": "blog",
+  "language": "typescript",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 4,
+  "runtime_failures": 0,
+  "unsupported_shapes": [],
+  "first_write_seconds": 418,
+  "first_page_read_seconds": 418,
+  "time_to_complete_seconds": 577,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": true,
+  "rating": 9.2,
+  "explanation": "The public scaffold, authoring guide, diagnostics, generated TypeScript client, bounded query model, development workflow, and boundary checker were sufficient to build and run the unfamiliar Blog/CMS workload without RiffDB adaptation code. The evaluator corrected four compiler-reported source issues through the documented symbolic workflow. The generated client directly observed a durable command result and a fenced page result with verified identities. Minor friction came from learning comma-separated enum syntax through a diagnostic and from the boundary checker exposing only positional roots in its help.",
+  "transcript_sha256": "1d85e57308cb0d5275f8ace01b192c5e52c5d94fcfde491d96e0d4c9c9ec9a89"
+}

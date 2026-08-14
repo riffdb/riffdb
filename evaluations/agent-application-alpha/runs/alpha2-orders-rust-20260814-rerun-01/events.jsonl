@@ -1,0 +1,5 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"orders-rust"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":185000,"kind":"first_write","operation":"ReserveInventory"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":185100,"kind":"first_page_read","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":188000,"kind":"rating","operation":"9.3"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":189000,"kind":"complete","operation":"orders-rust"}

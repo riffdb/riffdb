@@ -5949,6 +5949,7 @@ work_packages:
   - release/evidence/**
   - scripts/agent-application-alpha*
   - docs/agent-application-alpha.md
+  - benchmarks/command-growth/Cargo.lock
   deliverables:
   - New campaign ID, bundle hash, four fresh isolated agent identities, and exact domain/language coverage
   - Four immutable qualified reports/transcripts with exact generated-operation identity evidence and raw explanations
