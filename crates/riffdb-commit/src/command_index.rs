@@ -9,8 +9,11 @@ use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
     BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2,
     EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
-    EXECUTABLE_IR_VERSION_V6, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
-    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, IndexSchema,
+    EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
+    EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, ExecutionClass, GRAMMAR_VERSION_V1,
+    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
+    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
+    GRAMMAR_VERSION_V10, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -804,6 +807,22 @@ impl IndexDerivationBuilder {
     }
 }
 
+const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
+    matches!(
+        (grammar, ir),
+        (GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
+            | (GRAMMAR_VERSION_V2, EXECUTABLE_IR_VERSION_V2)
+            | (GRAMMAR_VERSION_V3, EXECUTABLE_IR_VERSION_V3)
+            | (GRAMMAR_VERSION_V4, EXECUTABLE_IR_VERSION_V4)
+            | (GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
+            | (GRAMMAR_VERSION_V6, EXECUTABLE_IR_VERSION_V6)
+            | (GRAMMAR_VERSION_V7, EXECUTABLE_IR_VERSION_V7)
+            | (GRAMMAR_VERSION_V8, EXECUTABLE_IR_VERSION_V8)
+            | (GRAMMAR_VERSION_V9, EXECUTABLE_IR_VERSION_V9)
+            | (GRAMMAR_VERSION_V10, EXECUTABLE_IR_VERSION_V10)
+    )
+}
+
 fn derive_grammar_v1_indexes(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
@@ -817,15 +836,8 @@ fn derive_grammar_v1_indexes(
     let request = evaluated.validation_request();
     let facts = derive_input_command_facts(plan, normalized_input.clone())
         .map_err(|_| CommandIndexError::internal_defect())?;
-    if !matches!(
-        (bundle.grammar_version(), bundle.ir_version()),
-        (GRAMMAR_VERSION_V1, EXECUTABLE_IR_VERSION_V1)
-            | (GRAMMAR_VERSION_V2, EXECUTABLE_IR_VERSION_V2)
-            | (GRAMMAR_VERSION_V3, EXECUTABLE_IR_VERSION_V3)
-            | (GRAMMAR_VERSION_V4, EXECUTABLE_IR_VERSION_V4)
-            | (GRAMMAR_VERSION_V5, EXECUTABLE_IR_VERSION_V5)
-            | (GRAMMAR_VERSION_V6, EXECUTABLE_IR_VERSION_V6)
-    ) || plan.execution_class() != ExecutionClass::IdempotentMutation
+    if !index_derivation_version_supported(bundle.grammar_version(), bundle.ir_version())
+        || plan.execution_class() != ExecutionClass::IdempotentMutation
         || resolved.reference() != evaluated.plan()
         || request.plan() != evaluated.plan()
         || evaluated.mutations().is_empty()
@@ -1097,6 +1109,17 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn index_derivation_accepts_every_catalog_bundle_era_and_rejects_cross_era_pairs() {
+        for version in 1..=10 {
+            assert!(index_derivation_version_supported(version, version));
+        }
+        assert!(!index_derivation_version_supported(0, 0));
+        assert!(!index_derivation_version_supported(10, 9));
+        assert!(!index_derivation_version_supported(9, 10));
+        assert!(!index_derivation_version_supported(11, 11));
+    }
 
     const INDEXED_SOURCE: &str = r#"
 contract IndexedRows version 1 {

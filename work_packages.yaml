@@ -10544,6 +10544,7 @@ work_packages:
     PYD-004, PYD-005, QRY-004, SAFE-007, SAFE-008, OQ-016]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0108]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+    crates/riffdb-commit/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
     crates/riffdb-api-mcp/**, crates/riffdb-query-module/**, crates/riffdb-testkit/**,
     clients/**, templates/**, fixtures/application-parity/**, fixtures/application-locks/**,
