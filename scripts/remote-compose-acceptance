@@ -315,7 +315,8 @@ if [[ "$backup_restore" == true ]]; then
             >"$work_root/adapter-before.json"
     jq -e '
         .schema == "riffdb.adapter-operational-observation/v1"
-        and .adapters == ["mlflow", "openfga", "payload", "woodpecker"]
+        and .adapters == ["mlflow", "openfga", "better-auth", "woodpecker"]
+        and .regression_adapters == ["payload"]
         and .catalog_preflight == true
         and .optional_filters == true
         and .stable_cursor == true
@@ -401,7 +402,8 @@ if [[ "$backup_restore" == true ]]; then
         --arg expectedDestroyedCapability "01900000-0000-7000-8000-000000000003" \
         '{
             schema: "riffdb.adapter-disaster-receipt/v1",
-            adapters: ["mlflow", "openfga", "payload", "woodpecker"],
+            adapters: ["mlflow", "openfga", "better-auth", "woodpecker"],
+            regression_adapters: ["payload"],
             backup_operation_id: $backupOperationId,
             restore_operation_id: $restoreOperationId,
             backup_input_hash: $backupInputHash,

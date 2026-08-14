@@ -104,7 +104,8 @@ async fn run_async() -> TestResult<()> {
             "null_predicate": true,
             "binary_prefix": true,
             "exact_aggregates": true,
-            "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
+            "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
+            "regression_adapters": ["payload"],
         })
     );
     Ok(())
@@ -167,6 +168,22 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
                 pipeline(41, "verify", "queued"),
                 pipeline(42, "publish", "running"),
             ],
+        })
+        .await?;
+    client
+        .create_auth_sessions(generated::CreateAuthSessionsInput {
+            request_id: id(5),
+            signups: vec![generated::AuthSignupInput {
+                organization_id: id(50),
+                user_id: id(51),
+                session_id: id(52),
+                email: "agent@example.test".to_owned(),
+                token_digest: "sha256:better-auth-secret".to_owned(),
+                expires_at: generated::TimestampValue {
+                    seconds: 1_800_000_000,
+                    nanos: 0,
+                },
+            }],
         })
         .await?;
     Ok(())
@@ -232,6 +249,22 @@ async fn verify_queries(
         .await?;
     let generated::ListPipelinesResult::Found(queued) = queued;
     expect(queued.pipelines.len() == 1, "Woodpecker optional state")?;
+
+    let auth_session = client
+        .get_auth_session(generated::GetAuthSessionParams {
+            organization_id: id(50),
+            user_id: id(51),
+            session_id: id(52),
+        })
+        .await?;
+    let generated::GetAuthSessionResult::Found(auth_session) = auth_session else {
+        return Err("Better Auth session was not restored".into());
+    };
+    expect(
+        auth_session.session.state == "AuthActive"
+            && auth_session.session.expires_at.seconds == 1_800_000_000,
+        "Better Auth typed session graph",
+    )?;
 
     let stale = client
         .list_fga_tuples_with_options(

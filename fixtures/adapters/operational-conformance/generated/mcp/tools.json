@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "b3920a3c7c970f8e2c615b37e25f20b49098ff1114f0b7ab607fb23970d77028",
+  "application_manifest_hash": "dae9d0f190cc960751843c7ea76e9206daeb3510c92cc0122982500c5440f862",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,116 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
+      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+      "description": "Execute the exact CreateAuthSessions compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "signups": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "email": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string"
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "token_digest": {
+                  "type": "string"
+                },
+                "user_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email",
+                "user_id",
+                "expires_at",
+                "session_id",
+                "token_digest",
+                "organization_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "signups",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_create_auth_sessions",
+      "operation_name": "CreateAuthSessions",
+      "plan_hash": "c8b6c48a1328622d67168392049a17d187ac1a571e79cc888e54896398cfe3f6",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SessionsCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "UserAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SessionAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateAuthSessions"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
       "description": "Execute the exact CreateDocuments compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -62,7 +171,7 @@
       },
       "name": "adapter_operational_conformance_create_documents",
       "operation_name": "CreateDocuments",
-      "plan_hash": "1a546abe56d6e6968d91b5e332e10d77cb09eb15b70689c33f7070f6ce30901f",
+      "plan_hash": "b16dfb609496f92a4a044aa9394d66a233ebb5a54b5b0e0944523f66cd138e53",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -103,7 +212,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
+      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
       "description": "Execute the exact CreatePipelines compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -150,7 +259,7 @@
       },
       "name": "adapter_operational_conformance_create_pipelines",
       "operation_name": "CreatePipelines",
-      "plan_hash": "055f86d2422f20cebeeda7d876e58442c147a21155253d5b5be5eb142e69c192",
+      "plan_hash": "7205fc0d74181a8d32b3ab6026d5917886a306cc232466ab0e6f872eed695236",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -191,7 +300,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
+      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -242,7 +351,7 @@
       },
       "name": "adapter_operational_conformance_log_metrics",
       "operation_name": "LogMetrics",
-      "plan_hash": "93f03c1e9f6393553eb6887d02d40c8fb3862aeb578b90112757af0a2f64ecca",
+      "plan_hash": "d63e61abfe0826f4bc7e7cf8765213affdbee68041336fbddd9f655c5d4d89ae",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -283,7 +392,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956",
+      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -334,7 +443,7 @@
       },
       "name": "adapter_operational_conformance_write_tuples",
       "operation_name": "WriteTuples",
-      "plan_hash": "db0ddb0fc7a0623be18557a100d6263241177ca3dabff405552596fdd7527c0a",
+      "plan_hash": "ab3ed2f7a70b35c12a74d45c6f8aea5b9114649828d8e4a1323712c2ca1b5fe0",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -379,6 +488,100 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
+      "description": "Execute the exact GetAuthSession named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "user_id",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "name": "adapter_operational_conformance_get_auth_session",
+      "operation_name": "GetAuthSession",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "session": {
+                "additionalProperties": false,
+                "properties": {
+                  "expires_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "user_id",
+                  "session_id",
+                  "state",
+                  "expires_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetAuthSession"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
       "description": "Execute the exact ListDraftDocuments named query from immutable module adapter_operational_conformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -393,7 +596,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
+      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
       "name": "adapter_operational_conformance_list_draft_documents",
       "operation_name": "ListDraftDocuments",
       "result_schema": {
@@ -489,7 +692,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
+      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
@@ -582,7 +785,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
+      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
@@ -651,7 +854,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
+      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
       "name": "adapter_operational_conformance_metric_dashboard",
       "operation_name": "MetricDashboard",
       "result_schema": {
@@ -756,7 +959,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640",
+      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {

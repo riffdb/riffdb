@@ -90,3 +90,51 @@ fn adapter_gate_binds_all_four_manifests_to_the_remote_drill() {
     assert!(script.contains("application conformance"));
     assert!(script.contains("./scripts/remote-compose-acceptance --backup-restore"));
 }
+
+#[test]
+fn remote_drill_exercises_better_auth_state_and_labels_payload_as_regression_only() {
+    let root = repository_root();
+    let contract = fs::read_to_string(
+        root.join("fixtures/adapters/operational-conformance/riffdb/contract.riff"),
+    )
+    .expect("operational contract is readable");
+    let client = fs::read_to_string(root.join("tests/adapter_operational_remote_client.rs"))
+        .expect("remote adapter client is readable");
+    let script = fs::read_to_string(root.join("scripts/remote-compose-acceptance"))
+        .expect("remote acceptance source is readable");
+
+    for required in [
+        "entity AuthUser",
+        "entity AuthSession",
+        "bulk command CreateAuthSessions",
+    ] {
+        assert!(
+            contract.contains(required),
+            "remote disaster corpus lacks Better Auth behavior: {required}"
+        );
+    }
+    for required in [".create_auth_sessions(", ".get_auth_session("] {
+        assert!(
+            client.contains(required),
+            "remote disaster client does not exercise Better Auth behavior: {required}"
+        );
+    }
+    for required in [
+        r#""adapters": ["mlflow", "openfga", "better-auth", "woodpecker"]"#,
+        r#""regression_adapters": ["payload"]"#,
+    ] {
+        assert!(
+            client.contains(required),
+            "remote observation does not classify adapter evidence exactly: {required}"
+        );
+    }
+    for required in [
+        r#"adapters: ["mlflow", "openfga", "better-auth", "woodpecker"]"#,
+        r#"regression_adapters: ["payload"]"#,
+    ] {
+        assert!(
+            script.contains(required),
+            "disaster receipt does not classify adapter evidence exactly: {required}"
+        );
+    }
+}

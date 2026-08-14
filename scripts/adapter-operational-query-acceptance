@@ -286,7 +286,7 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/operational-conformance/runner/python.py \
     >"$work_root/python.json"
 
-expected='{"adapters":["mlflow","openfga","payload","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"null_predicate":true,"optional_filters":true,"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
+expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"null_predicate":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
 for language in rust go typescript python; do
     observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
@@ -297,8 +297,11 @@ done
 
 jq -e '
   .schema == "riffdb-generated-application-operations/v2"
-  and (.tools | length) == 5
-  and ([.tools[].operation_name] | sort) == ["ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "SearchDocuments"]
+  and (.tools | length) == 6
+  and ([.tools[].operation_name] | sort) == ["GetAuthSession", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "SearchDocuments"]
+  and (.tools[] | select(.operation_name == "GetAuthSession")
+       | (.input_schema.required | sort) == ["organization_id", "session_id", "user_id"]
+         and (.result_schema.oneOf | map(.properties.outcome.const) | sort) == ["Found", "Missing"])
   and (.tools[] | select(.operation_name == "ListFgaTuples")
        | (.input_schema.properties | keys | sort) == ["after", "relation", "store_id"]
          and .result_schema.oneOf[0].properties.tuples.maxItems == 25)

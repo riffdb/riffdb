@@ -23,7 +23,8 @@
         { "name": "MetricDashboard", "source": "riffdb/queries/metric_dashboard.riffq" },
         { "name": "SearchDocuments", "source": "riffdb/queries/search_documents.riffq" },
         { "name": "ListDraftDocuments", "source": "riffdb/queries/list_draft_documents.riffq" },
-        { "name": "ListPipelines", "source": "riffdb/queries/list_pipelines.riffq" }
+        { "name": "ListPipelines", "source": "riffdb/queries/list_pipelines.riffq" },
+        { "name": "GetAuthSession", "source": "riffdb/queries/get_auth_session.riffq" }
       ]
     }
   ],
@@ -38,9 +39,10 @@
         "MetricDashboard",
         "SearchDocuments",
         "ListDraftDocuments",
-        "ListPipelines"
+        "ListPipelines",
+        "GetAuthSession"
       ],
-      "commands": ["WriteTuples", "LogMetrics", "CreateDocuments", "CreatePipelines"],
+      "commands": ["WriteTuples", "LogMetrics", "CreateDocuments", "CreatePipelines", "CreateAuthSessions"],
       "event_streams": [],
       "watch_queries": [],
       "agent_subscriptions": []

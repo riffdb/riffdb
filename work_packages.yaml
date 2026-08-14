@@ -11036,7 +11036,8 @@ work_packages:
     END-004]
   required_adrs: [ADR-0019, ADR-0050, ADR-0072, ADR-0085, ADR-0101,
     ADR-0103, ADR-0104, ADR-0105, ADR-0110, ADR-0112]
-  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/backup/**,
+  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/backup/**, fixtures/adapters/**,
+    fixtures/export/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
     crates/riffdb-server/**, crates/riffdb-cli/**, templates/**, examples/**,
     tests/**, scripts/**, docs/**, release/**, .github/**]

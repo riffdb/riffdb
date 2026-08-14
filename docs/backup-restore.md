@@ -73,10 +73,13 @@ creates and polls a backup from the separate operator container, creates a
 post-backup authority record, stops the database container, empties only its
 freshly allocated test data root, starts an empty replacement, and restores the
 backup through the public TLS endpoint. It then reruns the generated OpenFGA,
-MLflow, Payload, and Woodpecker observations, proves that the backed-up operator
-and application authorities work, and proves that the post-backup authority
-disappeared. The operator container receives no database or backup mount and
-never supplies a server filesystem path.
+MLflow, Better Auth, and Woodpecker observations, including a typed Better Auth
+user/session graph whose secret token is never placed in the observation or
+receipt. The retained Payload operational-query shape runs in the same corpus
+as a post-alpha regression and is labeled separately. The drill proves that the
+backed-up operator and application authorities work and that the post-backup
+authority disappeared. The operator container receives no database or backup
+mount and never supplies a server filesystem path.
 
 The complete adapter gate also validates each domain's immutable conformance
 manifest and installation/evolution plans before running that destructive
@@ -90,9 +93,11 @@ The drill writes a secret-free JSON receipt beneath
 `target/adapter-disaster-recovery/`. The receipt binds both maintenance
 operation identities and input hashes, the verified backup-manifest checksum,
 the destroyed post-backup suffix, the exact contract bundle, startup
-validation, and the reconciled adapter-observation digest. The backup manifest
-is the frontier-bearing durable artifact; the receipt binds its checksum rather
-than decoding storage-format bytes in application or operator code.
+validation, the accepted four-adapter inventory, the separately classified
+Payload regression, and the reconciled adapter-observation digest. The backup
+manifest is the frontier-bearing durable artifact; the receipt binds its
+checksum rather than decoding storage-format bytes in application or operator
+code.
 
 An existing named backup is never silently replaced.
 

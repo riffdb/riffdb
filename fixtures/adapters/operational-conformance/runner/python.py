@@ -6,6 +6,9 @@ from uuid import UUID
 
 from client import (
     AdapterOperationalConformanceClient,
+    AuthSessionState,
+    GetAuthSessionFound,
+    GetAuthSessionParams,
     ListDraftDocumentsParams,
     ListFgaTuplesParams,
     ListPipelinesParams,
@@ -75,6 +78,20 @@ def main() -> None:
         ).value
         require(len(pipelines.pipelines) == 1, "Woodpecker optional state page")
 
+        auth_session = client.get_auth_session(
+            GetAuthSessionParams(
+                organization_id=uid(50), user_id=uid(51), session_id=uid(52)
+            )
+        ).value
+        require(isinstance(auth_session, GetAuthSessionFound), "Better Auth session page")
+        if not isinstance(auth_session, GetAuthSessionFound):
+            raise RuntimeError("Python adapter assertion: Better Auth session page")
+        require(
+            auth_session.session.state is AuthSessionState.AUTH_ACTIVE
+            and auth_session.session.expires_at.seconds == 1_800_000_000,
+            "Better Auth typed session graph",
+        )
+
     print(
         json.dumps(
             {
@@ -86,7 +103,8 @@ def main() -> None:
                 "null_predicate": True,
                 "binary_prefix": True,
                 "exact_aggregates": True,
-                "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
+                "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
+                "regression_adapters": ["payload"],
             },
             separators=(",", ":"),
         )

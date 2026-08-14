@@ -33,6 +33,11 @@ try {
   const pipelines = await client.listPipelines({ organization_id: id(40), state: "queued" });
   assert(pipelines.value.outcome === "Found" && pipelines.value.pipelines.length === 1, "Woodpecker optional state page");
 
+  const authSession = await client.getAuthSession({ organization_id: id(50), user_id: id(51), session_id: id(52) });
+  assert(authSession.value.outcome === "Found", "Better Auth session page");
+  assert(authSession.value.state === undefined, "Better Auth result remains page-shaped");
+  assert(authSession.value.session.state === "AuthActive" && authSession.value.session.expires_at.seconds === 1800000000n, "Better Auth typed session graph");
+
   console.log(JSON.stringify({
     schema: "riffdb.adapter-operational-observation/v1",
     language: "typescript",
@@ -42,7 +47,8 @@ try {
     null_predicate: true,
     binary_prefix: true,
     exact_aggregates: true,
-    adapters: ["mlflow", "openfga", "payload", "woodpecker"],
+    adapters: ["mlflow", "openfga", "better-auth", "woodpecker"],
+    regression_adapters: ["payload"],
   }));
 } finally {
   await driver.shutdown();
