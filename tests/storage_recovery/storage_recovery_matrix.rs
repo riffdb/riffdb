@@ -1876,6 +1876,65 @@ fn multiple_sealed_epochs_publish_in_fifo_order_after_one_journal_flush() {
 }
 
 #[test]
+fn later_command_fence_drives_durable_predecessor_publication() {
+    let path = TestDatabasePath::new("deferred-command-publication-order");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    let first = command_fixture_at(1);
+    let second = command_fixture_at(2);
+
+    let first_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin first standard durability epoch");
+    let first_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(first_epoch, &first))
+            .expect("seal first standard durability epoch");
+    let second_epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin second standard durability epoch");
+    let second_fence =
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(second_epoch, &second))
+            .expect("seal second standard durability epoch");
+
+    // Independent coordinator work can observe the later durability receipt
+    // first. Waiting on it must advance the complete durable prefix rather
+    // than attempting a stale predecessor swap or requiring the first caller
+    // to run before it can make progress.
+    let second_committed = second_fence
+        .wait()
+        .expect("later fence publishes the durable prefix");
+    let first_committed = first_fence
+        .wait()
+        .expect("predecessor result remains available");
+
+    assert_eq!(first_committed.len(), 1);
+    assert_eq!(second_committed.len(), 1);
+    for fixture in [&first, &second] {
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read published entity"),
+            Some(fixture.records.entities()[0].post_image().clone())
+        );
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read published commit"),
+            Some(fixture.records.commit().clone())
+        );
+    }
+    assert_eq!(
+        command_audit_phases(&ports),
+        [
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditPhaseV1::Succeeded,
+        ]
+    );
+}
+
+#[test]
 fn direct_commit_reanchors_a_drained_journal_before_the_next_deferred_epoch() {
     let path = TestDatabasePath::new("journal-direct-journal-frontiers");
     prepare_command_database(&path.0);

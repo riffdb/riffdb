@@ -4012,6 +4012,36 @@ mod tests {
     }
 
     #[test]
+    fn later_durable_audit_fence_cannot_publish_before_its_predecessor() {
+        let (_path, mut ports) = initialized_ports("deferred-audit-publication-order");
+        let first = ports
+            .submit_service_audit_group(&[denied_audit(30)])
+            .expect("submit first deferred audit group");
+        let second = ports
+            .submit_service_audit_group(&[denied_audit(31)])
+            .expect("submit second deferred audit group");
+        let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(first) = first else {
+            panic!("standard redb must submit the first journal fence");
+        };
+        let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(second) = second else {
+            panic!("standard redb must submit the second journal fence");
+        };
+
+        // Both frames may share one durability flush, and independent
+        // coordinators are allowed to observe the later receipt first. The
+        // storage publication boundary must retain journal order rather than
+        // fencing the database because its caller happened to wake first.
+        let second_results = second
+            .wait()
+            .expect("later durable fence must preserve predecessor publication order");
+        let first_results = first.wait().expect("first durable fence publishes");
+
+        assert_eq!(first_results.len(), 1);
+        assert_eq!(second_results.len(), 1);
+        assert_eq!(audit_count(&ports), 2);
+    }
+
+    #[test]
     fn staged_audit_group_uses_exactly_one_begin_read_for_sequence_lookup() {
         let path = TestPath::new("audit-group-one-begin-read");
         let controller = crate::hooks::RedbTestController::count_audit_sequence_begin_reads();

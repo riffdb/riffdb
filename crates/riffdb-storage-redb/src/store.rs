@@ -1,7 +1,7 @@
 //! Dormant redb handle, identity probe, and atomic initialization.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -94,6 +94,10 @@ pub(crate) struct SharedRedb {
     /// Newest complete writer-private composite successor, including sealed
     /// epochs whose journal fence has not published yet.
     private_composite_frontier: Mutex<Option<Arc<crate::composite_view::RedbCompositeReadView>>>,
+    /// Journal frames awaiting public composite-view advancement, in the exact
+    /// order in which the sole writer submitted them.
+    publication_queue: Mutex<PublicationQueue>,
+    next_publication_ticket: AtomicU64,
     journal_runtime: Mutex<Option<JournalRuntime>>,
     journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
     test_controller: Option<RedbTestController>,
@@ -453,6 +457,72 @@ struct JournalRuntime {
     reanchor_required: bool,
 }
 
+#[derive(Default)]
+struct PublicationQueue {
+    pending: VecDeque<PendingPublication>,
+}
+
+#[derive(Clone)]
+struct PublicationTicket {
+    id: u64,
+    result: Arc<Mutex<Option<Result<(), StorageError>>>>,
+}
+
+impl PublicationTicket {
+    fn result(&self) -> Result<Option<()>, StorageError> {
+        self.result
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+            .clone()
+            .transpose()
+    }
+
+    fn complete(&self, result: Result<(), StorageError>) {
+        if let Ok(mut slot) = self.result.lock()
+            && slot.is_none()
+        {
+            *slot = Some(result);
+        }
+    }
+}
+
+struct PendingPublication {
+    ticket: PublicationTicket,
+    receipt: crate::journal::JournalFenceReceipt,
+    payload: PendingPublicationPayload,
+}
+
+enum PendingPublicationPayload {
+    Command(CommandPublication),
+    ServiceAudit(ServiceAuditPublication),
+}
+
+struct CommandPublication {
+    successor: Arc<ReadTransaction>,
+    transient_deltas: Vec<TransientIndexDelta>,
+    command_count: usize,
+    encoded_bytes: usize,
+    first_sequence: CommitSequence,
+    last_sequence: CommitSequence,
+    predecessor_administration_sequence: Option<AdministrationSequence>,
+    last_administration_sequence: Option<AdministrationSequence>,
+    audit_count: usize,
+    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+}
+
+struct ServiceAuditPublication {
+    successor: Arc<ReadTransaction>,
+    transition_count: usize,
+    encoded_bytes: usize,
+    predecessor_sequence: Option<CommitSequence>,
+    covered_sequence: Option<CommitSequence>,
+    predecessor_administration_sequence: Option<AdministrationSequence>,
+    covered_administration_sequence: Option<AdministrationSequence>,
+    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+}
+
 #[derive(Clone, Copy)]
 struct JournalCapacityCharge {
     checkpoint_transitions: usize,
@@ -527,30 +597,21 @@ pub struct RedbSubmittedCommandFence {
     applied: Vec<riffdb_storage_api::UnpublishedAuditedBatchV1>,
     transient_deltas: Vec<TransientIndexDelta>,
     command_count: usize,
-    encoded_bytes: usize,
     last_sequence: CommitSequence,
     predecessor_administration_sequence: Option<AdministrationSequence>,
     last_administration_sequence: Option<AdministrationSequence>,
-    audit_count: usize,
     journaled: bool,
-    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
-    composite_successor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
+    publication_ticket: Option<PublicationTicket>,
     completed: bool,
 }
 
 pub(crate) struct RedbSubmittedServiceAuditFence {
     shared: Arc<SharedRedb>,
     receipt: Option<crate::journal::JournalFenceReceipt>,
-    successor: Arc<ReadTransaction>,
     results: Option<Vec<riffdb_storage_api::ServiceAuditAppendResult>>,
-    transition_count: usize,
-    encoded_bytes: usize,
-    predecessor_sequence: Option<CommitSequence>,
     covered_sequence: Option<CommitSequence>,
-    predecessor_administration_sequence: Option<AdministrationSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
-    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
-    composite_successor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
+    publication_ticket: PublicationTicket,
     completed: bool,
 }
 
@@ -1079,6 +1140,8 @@ impl RedbStore {
                 durable_read_frontier: RwLock::new(None),
                 composite_publication: RwLock::new(None),
                 private_composite_frontier: Mutex::new(None),
+                publication_queue: Mutex::new(PublicationQueue::default()),
+                next_publication_ticket: AtomicU64::new(1),
                 journal_runtime: Mutex::new(None),
                 journal_checkpoint: Mutex::new(None),
                 test_controller,
@@ -4177,19 +4240,27 @@ impl RedbWriteAccess {
         self.shared
             .install_private_composite_successor(&composite_predecessor, &composite_successor)?;
         let successor = composite_predecessor.checkpoint_root_shared();
+        let publication_ticket = self.shared.register_publication(
+            receipt.clone(),
+            PendingPublicationPayload::ServiceAudit(ServiceAuditPublication {
+                successor: Arc::clone(&successor),
+                transition_count,
+                encoded_bytes,
+                predecessor_sequence,
+                covered_sequence,
+                predecessor_administration_sequence,
+                covered_administration_sequence,
+                composite_predecessor: Arc::clone(&composite_predecessor),
+                composite_successor,
+            }),
+        )?;
         let fence = RedbSubmittedServiceAuditFence {
             shared: Arc::clone(&self.shared),
             receipt: Some(receipt),
-            successor,
             results: Some(results),
-            transition_count,
-            encoded_bytes,
-            predecessor_sequence,
             covered_sequence,
-            predecessor_administration_sequence,
             covered_administration_sequence,
-            composite_predecessor,
-            composite_successor: Some(composite_successor),
+            publication_ticket,
             completed: false,
         };
         drop(ownership);
@@ -4341,7 +4412,7 @@ impl RedbDurabilityEpoch {
             audit_count,
             predecessor_administration_sequence,
             journaled,
-            composite_successor,
+            mut composite_successor,
         ) = {
             let (checkpoint_transitions, checkpoint_bytes) =
                 self.shared.async_checkpoint_charge()?;
@@ -4481,9 +4552,39 @@ impl RedbDurabilityEpoch {
                 }
             }
         }
+        let successor = self.composite_predecessor.checkpoint_root_shared();
+        let publication_ticket = if journaled {
+            let journal_receipt = receipt
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .clone();
+            let published = composite_successor
+                .take()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            Some(self.shared.register_publication(
+                journal_receipt,
+                PendingPublicationPayload::Command(CommandPublication {
+                    successor: Arc::clone(&successor),
+                    transient_deltas: std::mem::take(&mut self.transient_deltas),
+                    command_count: self.command_count,
+                    encoded_bytes,
+                    first_sequence,
+                    last_sequence,
+                    predecessor_administration_sequence,
+                    last_administration_sequence,
+                    audit_count,
+                    composite_predecessor: Arc::clone(&self.composite_predecessor),
+                    composite_successor: published,
+                }),
+            )?)
+        } else {
+            None
+        };
+        // Registration is part of sealing: releasing the sole-writer lease
+        // first would let a later service-audit frame enter the publication
+        // queue ahead of this already-submitted command frame.
         self.completed = true;
         drop(self.lease.take());
-        let successor = self.composite_predecessor.checkpoint_root_shared();
         Ok(RedbSubmittedCommandFence {
             shared: Arc::clone(&self.shared),
             receipt,
@@ -4491,14 +4592,11 @@ impl RedbDurabilityEpoch {
             applied: std::mem::take(&mut self.applied),
             transient_deltas: std::mem::take(&mut self.transient_deltas),
             command_count: self.command_count,
-            encoded_bytes,
             last_sequence,
             predecessor_administration_sequence,
             last_administration_sequence,
-            audit_count,
             journaled,
-            composite_predecessor: Arc::clone(&self.composite_predecessor),
-            composite_successor,
+            publication_ticket,
             completed: false,
         })
     }
@@ -4621,7 +4719,285 @@ impl SharedRedb {
         Ok(())
     }
 
+    fn register_publication(
+        &self,
+        receipt: crate::journal::JournalFenceReceipt,
+        payload: PendingPublicationPayload,
+    ) -> Result<PublicationTicket, StorageError> {
+        let id = self
+            .next_publication_ticket
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
+        let ticket = PublicationTicket {
+            id,
+            result: Arc::new(Mutex::new(None)),
+        };
+        let mut queue = self
+            .publication_queue
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if queue.pending.len() >= crate::journal::MAX_JOURNAL_TRANSITIONS {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        queue.pending.push_back(PendingPublication {
+            ticket: ticket.clone(),
+            receipt,
+            payload,
+        });
+        Ok(ticket)
+    }
+
+    /// Publishes every durable predecessor through `target` while holding one
+    /// process-local sequencing gate. Journal completion is shared between the
+    /// original fence and this queue, so a later waiter can advance an earlier
+    /// frame without consuming that earlier caller's typed result.
+    fn publish_through(&self, target: &PublicationTicket) -> Result<(), StorageError> {
+        if let Some(result) = target.result()? {
+            return Ok(result);
+        }
+        let mut queue = self
+            .publication_queue
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if let Some(result) = target.result()? {
+            return Ok(result);
+        }
+        loop {
+            let Some(pending) = queue.pending.pop_front() else {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            };
+            let id = pending.ticket.id;
+            let publication = pending
+                .receipt
+                .wait()
+                .map_err(journal_io_error)
+                .and_then(|fence| self.publish_pending(pending.payload, fence));
+            pending.ticket.complete(publication.clone());
+            if let Err(error) = publication {
+                self.fence_writes();
+                for unpublished in queue.pending.drain(..) {
+                    unpublished.ticket.complete(Err(error.clone()));
+                }
+                return Err(error);
+            }
+            if id == target.id {
+                return Ok(());
+            }
+            if id > target.id {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+    }
+
+    fn publish_pending(
+        &self,
+        payload: PendingPublicationPayload,
+        fence: crate::journal::JournalFence,
+    ) -> Result<(), StorageError> {
+        match payload {
+            PendingPublicationPayload::Command(command) => {
+                self.publish_pending_command(command, fence)
+            }
+            PendingPublicationPayload::ServiceAudit(audit) => {
+                self.publish_pending_service_audit(audit, fence)
+            }
+        }
+    }
+
+    fn publish_pending_command(
+        &self,
+        mut publication: CommandPublication,
+        fence: crate::journal::JournalFence,
+    ) -> Result<(), StorageError> {
+        if fence.covered_sequence != Some(publication.last_sequence)
+            || fence.covered_administration_sequence != publication.last_administration_sequence
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+        }
+        self.after_test_commit(RedbTestOperation::CommandEpochTail)?;
+        let published_snapshot = Arc::clone(&publication.composite_successor);
+        let mut transient = self
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let mut unpublished = self
+            .unpublished_command_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        for delta in publication.transient_deltas.drain(..) {
+            if let Some(segment) = delta.command_segment() {
+                unpublished.remove_segment(segment)?;
+            }
+            transient.apply_delta(delta);
+        }
+        if let Err(error) = self.publish_composite_successor(
+            &publication.composite_predecessor,
+            publication.composite_successor,
+        ) {
+            *transient = TransientIndexState::Invalid;
+            self.fence_writes();
+            return Err(error);
+        }
+        let mut frontier = self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if frontier.is_none() {
+            *transient = TransientIndexState::Invalid;
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *frontier = Some(Arc::clone(&publication.successor));
+        drop(frontier);
+        drop(unpublished);
+        drop(transient);
+
+        let predecessor_application;
+        {
+            let mut runtime_guard = self.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if next_commit_sequence(runtime.published_sequence) != Some(publication.first_sequence)
+                || runtime.published_administration_sequence
+                    != publication.predecessor_administration_sequence
+                || runtime.unpublished_transitions < publication.command_count
+                || runtime.unpublished_commands < publication.command_count
+                || runtime.unpublished_audits < publication.audit_count
+                || runtime.unpublished_bytes < publication.encoded_bytes
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            predecessor_application = runtime.published_sequence;
+            runtime.published_sequence = Some(publication.last_sequence);
+            runtime.published_administration_sequence = publication.last_administration_sequence;
+            runtime.published_hash = fence.frame_hash;
+            runtime.unpublished_transitions -= publication.command_count;
+            runtime.unpublished_commands -= publication.command_count;
+            runtime.unpublished_audits -= publication.audit_count;
+            runtime.unpublished_bytes -= publication.encoded_bytes;
+            if runtime.unpublished_transitions == 0
+                && runtime.unpublished_bytes == 0
+                && (runtime.published_sequence != runtime.last_sequence
+                    || runtime.published_administration_sequence
+                        != runtime.last_administration_sequence
+                    || runtime.published_hash != runtime.last_hash)
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        self.observe_changelog_publication(
+            riffdb_types::DualFrontier::new(
+                predecessor_application,
+                publication.predecessor_administration_sequence,
+            ),
+            riffdb_types::DualFrontier::new(
+                Some(publication.last_sequence),
+                publication.last_administration_sequence,
+            ),
+            fence.frame_hash,
+            publication.command_count,
+            true,
+            RedbReadAccess::Composite(published_snapshot),
+        );
+        Ok(())
+    }
+
+    fn publish_pending_service_audit(
+        &self,
+        publication: ServiceAuditPublication,
+        fence: crate::journal::JournalFence,
+    ) -> Result<(), StorageError> {
+        if fence.covered_sequence != publication.covered_sequence
+            || fence.covered_administration_sequence != publication.covered_administration_sequence
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+        }
+        self.after_test_commit(RedbTestOperation::ServiceAudit)?;
+        let published_snapshot = Arc::clone(&publication.composite_successor);
+        self.publish_composite_successor(
+            &publication.composite_predecessor,
+            publication.composite_successor,
+        )?;
+        let mut frontier = self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        if frontier.is_none() {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *frontier = Some(Arc::clone(&publication.successor));
+        drop(frontier);
+        {
+            let mut runtime_guard = self.journal_runtime()?;
+            let runtime = runtime_guard
+                .as_mut()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if runtime.published_sequence != publication.predecessor_sequence
+                || runtime.published_administration_sequence
+                    != publication.predecessor_administration_sequence
+                || runtime.unpublished_transitions < publication.transition_count
+                || runtime.unpublished_audits < publication.transition_count
+                || runtime.unpublished_bytes < publication.encoded_bytes
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            runtime.published_sequence = publication.covered_sequence;
+            runtime.published_administration_sequence = publication.covered_administration_sequence;
+            runtime.published_hash = fence.frame_hash;
+            runtime.unpublished_transitions -= publication.transition_count;
+            runtime.unpublished_audits -= publication.transition_count;
+            runtime.unpublished_bytes -= publication.encoded_bytes;
+            if runtime.unpublished_transitions == 0
+                && runtime.unpublished_bytes == 0
+                && (runtime.published_sequence != runtime.last_sequence
+                    || runtime.published_administration_sequence
+                        != runtime.last_administration_sequence
+                    || runtime.published_hash != runtime.last_hash)
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        self.observe_changelog_publication(
+            riffdb_types::DualFrontier::new(
+                publication.predecessor_sequence,
+                publication.predecessor_administration_sequence,
+            ),
+            riffdb_types::DualFrontier::new(
+                publication.covered_sequence,
+                publication.covered_administration_sequence,
+            ),
+            fence.frame_hash,
+            publication.transition_count,
+            true,
+            RedbReadAccess::Composite(published_snapshot),
+        );
+        Ok(())
+    }
+
     fn clear_composite_publication(&self) -> Result<(), StorageError> {
+        if !self
+            .publication_queue
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+            .pending
+            .is_empty()
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         *self
             .composite_publication
             .write()
@@ -5566,75 +5942,11 @@ impl RedbSubmittedCommandFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
-        // No public view may advance before the post-durability uncertainty
-        // hook has resolved. This preserves the predecessor view on an
-        // injected unknown result and matches the recovery contract.
-        self.shared
-            .after_test_commit(RedbTestOperation::CommandEpochTail)?;
-        let composite_successor = self
-            .composite_successor
-            .take()
+        let ticket = self
+            .publication_ticket
+            .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let published_snapshot = Arc::clone(&composite_successor);
-        self.publish_fenced_successor(composite_successor)?;
-
-        let predecessor_application;
-        {
-            let mut runtime_guard = self.shared.journal_runtime()?;
-            let runtime = runtime_guard
-                .as_mut()
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-            if next_commit_sequence(runtime.published_sequence)
-                != self
-                    .applied
-                    .first()
-                    .map(riffdb_storage_api::UnpublishedAuditedBatchV1::first_commit_sequence)
-                || runtime.published_administration_sequence
-                    != self.predecessor_administration_sequence
-                || runtime.unpublished_transitions < self.command_count
-                || runtime.unpublished_commands < self.command_count
-                || runtime.unpublished_audits < self.audit_count
-                || runtime.unpublished_bytes < self.encoded_bytes
-            {
-                self.shared.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            predecessor_application = runtime.published_sequence;
-            runtime.published_sequence = Some(self.last_sequence);
-            runtime.published_administration_sequence = self.last_administration_sequence;
-            runtime.published_hash = fenced.frame_hash;
-            runtime.unpublished_transitions -= self.command_count;
-            runtime.unpublished_commands -= self.command_count;
-            runtime.unpublished_audits -= self.audit_count;
-            runtime.unpublished_bytes -= self.encoded_bytes;
-            if runtime.unpublished_transitions == 0
-                && runtime.unpublished_bytes == 0
-                && (runtime.published_sequence != runtime.last_sequence
-                    || runtime.published_administration_sequence
-                        != runtime.last_administration_sequence
-                    || runtime.published_hash != runtime.last_hash)
-            {
-                self.shared.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-        }
-
-        // ADR-0101 §4 publication edge: one successful journal flush is one
-        // ADR-0100 changelog frame.
-        self.shared.observe_changelog_publication(
-            riffdb_types::DualFrontier::new(
-                predecessor_application,
-                self.predecessor_administration_sequence,
-            ),
-            riffdb_types::DualFrontier::new(
-                Some(self.last_sequence),
-                self.last_administration_sequence,
-            ),
-            fenced.frame_hash,
-            self.command_count,
-            true,
-            RedbReadAccess::Composite(published_snapshot),
-        );
+        self.shared.publish_through(ticket)?;
         self.finish_applied()
     }
 
@@ -5670,48 +5982,6 @@ impl RedbSubmittedCommandFence {
             }
             transient.apply_delta(delta);
         }
-        Ok(())
-    }
-
-    fn publish_fenced_successor(
-        &mut self,
-        composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
-    ) -> Result<(), StorageError> {
-        let mut transient = self
-            .shared
-            .transient_indexes
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        let mut unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        for delta in self.transient_deltas.drain(..) {
-            if let Some(segment) = delta.command_segment() {
-                unpublished.remove_segment(segment)?;
-            }
-            transient.apply_delta(delta);
-        }
-        if let Err(error) = self
-            .shared
-            .publish_composite_successor(&self.composite_predecessor, composite_successor)
-        {
-            *transient = TransientIndexState::Invalid;
-            self.shared.fence_writes();
-            return Err(error);
-        }
-        let mut frontier = self
-            .shared
-            .durable_read_frontier
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if frontier.is_none() {
-            *transient = TransientIndexState::Invalid;
-            self.shared.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        *frontier = Some(Arc::clone(&self.successor));
         Ok(())
     }
 
@@ -5789,79 +6059,7 @@ impl RedbSubmittedServiceAuditFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
-        // The uncertainty hook models a failure after the durability fence,
-        // not after private staging. On an injected unknown result, recovery
-        // must observe the complete journal frame while the in-process public
-        // view remains at its predecessor.
-        self.shared
-            .after_test_commit(RedbTestOperation::ServiceAudit)?;
-        let composite_successor = self
-            .composite_successor
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let published_snapshot = Arc::clone(&composite_successor);
-        self.shared
-            .publish_composite_successor(&self.composite_predecessor, composite_successor)?;
-        let mut frontier = self
-            .shared
-            .durable_read_frontier
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if frontier.is_none() {
-            self.shared.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        *frontier = Some(Arc::clone(&self.successor));
-        drop(frontier);
-        {
-            let mut runtime_guard = self.shared.journal_runtime()?;
-            let runtime = runtime_guard
-                .as_mut()
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-            if runtime.published_sequence != self.predecessor_sequence
-                || runtime.published_administration_sequence
-                    != self.predecessor_administration_sequence
-                || runtime.unpublished_transitions < self.transition_count
-                || runtime.unpublished_audits < self.transition_count
-                || runtime.unpublished_bytes < self.encoded_bytes
-            {
-                self.shared.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            runtime.published_sequence = self.covered_sequence;
-            runtime.published_administration_sequence = self.covered_administration_sequence;
-            runtime.published_hash = fenced.frame_hash;
-            runtime.unpublished_transitions -= self.transition_count;
-            runtime.unpublished_audits -= self.transition_count;
-            runtime.unpublished_bytes -= self.encoded_bytes;
-            if runtime.unpublished_transitions == 0
-                && runtime.unpublished_bytes == 0
-                && (runtime.published_sequence != runtime.last_sequence
-                    || runtime.published_administration_sequence
-                        != runtime.last_administration_sequence
-                    || runtime.published_hash != runtime.last_hash)
-            {
-                self.shared.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-        }
-        // The administration-sequence-only publication edge: a standalone
-        // service-audit flush is an ADR-0100 frame whose application component
-        // is explicitly unchanged.
-        self.shared.observe_changelog_publication(
-            riffdb_types::DualFrontier::new(
-                self.predecessor_sequence,
-                self.predecessor_administration_sequence,
-            ),
-            riffdb_types::DualFrontier::new(
-                self.covered_sequence,
-                self.covered_administration_sequence,
-            ),
-            fenced.frame_hash,
-            self.transition_count,
-            true,
-            RedbReadAccess::Composite(published_snapshot),
-        );
+        self.shared.publish_through(&self.publication_ticket)?;
         self.completed = true;
         self.results
             .take()

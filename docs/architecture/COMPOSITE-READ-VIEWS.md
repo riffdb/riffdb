@@ -44,6 +44,15 @@ frame against the equivalent successor view, and then retries admission. Reads
 continue from the last published composite view. RiffDB does not report an
 ordinary capacity race as a successful write or as permanent audit failure.
 
+Journal durability receipts may be observed by independent coordinator work in
+a different order from submission. RiffDB therefore registers every sealed
+frame in one bounded publication queue before releasing the sole-writer lease.
+Any waiter advances the complete durable prefix through its own frame in
+submission order; it cannot skip an earlier command or administration-audit
+frame. Publishing a predecessor on another waiter's behalf advances only the
+shared durable view. The predecessor's typed command or audit result remains
+available to its original caller.
+
 Physical checkpoint compaction copies a proven overlay prefix into redb. It
 does not advance a logical index generation, so a cursor is invalidated only by
 an actual application mutation, not by storage housekeeping.
