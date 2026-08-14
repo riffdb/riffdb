@@ -185,6 +185,8 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
         "certificate_sha256_after",
         "termination_signal\": \"SIGKILL",
         "unclean recovery regressed a durable frontier",
+        "if after_frontier >= minimum_frontier",
+        "required {minimum_frontier}, observed {after_frontier}",
         "payload.get(\"status\") not in (\"ready\", \"degraded\")",
         "authoritative_storage\", \"catalog\", \"commit_coordinator",
         "endurance lifecycle action is not implemented",
