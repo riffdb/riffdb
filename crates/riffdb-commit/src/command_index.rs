@@ -1542,6 +1542,174 @@ contract DeleteRestrict version 1 {
         }
     }
 
+    /// WP-606 generic evidence-fixture builder: like `fixture_from_source`
+    /// but with caller-supplied input fields and optional present-row
+    /// fields, so per-era contracts with different command shapes (deletes,
+    /// compiler-initialized workflow creates) reuse the exact same
+    /// evaluation path.
+    fn custom_fixture_from_source(
+        source: &str,
+        command_name: &str,
+        input_fields: &[(&str, CanonicalValue)],
+        old: Option<&[(&str, CanonicalValue)]>,
+    ) -> Fixture {
+        let compiled = compile_contract_source(source).expect("evidence source compiles");
+        let bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("evidence bundle validates");
+        let plan = bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|candidate| candidate.name() == command_name)
+            .expect("evidence command");
+        let reference = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let input = named_record(plan.input().record(), input_fields);
+        let facts = derive_input_command_facts(plan, input.clone()).expect("input facts");
+        let target = EntityTarget::new(
+            plan.bindings()[0].entity_type(),
+            facts.binding_entity_keys()[0].clone(),
+        )
+        .expect("binding target");
+        let entity = bundle
+            .bundle()
+            .schema()
+            .entity(target.entity_type_id())
+            .expect("row schema");
+        let observation = old.map_or_else(
+            || EntityObservation::Absent(target.clone()),
+            |old| {
+                EntityObservation::Present(
+                    StoredEntityRecordV1::new(
+                        target.clone(),
+                        EntityVersion::first(),
+                        plan.contract_version(),
+                        DurableKeySchemaBindingV1::from_plan(&reference),
+                        entity_record(entity, &target, old),
+                    )
+                    .expect("stored row"),
+                )
+            },
+        );
+        let request = SnapshotRequest::new(reference.clone(), vec![target], Vec::new(), Vec::new())
+            .expect("snapshot request");
+        let snapshot = ReadSnapshot::new(
+            &request,
+            None,
+            vec![observation.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("snapshot");
+        let actor = AdmittedActorContext::new(
+            ActorId::new("command-index-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        );
+        let logical_time = LogicalTime::new(Timestamp::new(100, 2).expect("logical time"));
+        let context = TransactionContext::new(
+            RequestId::from_unix_milliseconds_and_random(1, [0x31; 10]).expect("request ID"),
+            actor.clone(),
+            reference.clone(),
+            logical_time,
+            facts.partition_key().clone(),
+        );
+        let ExecutionResult::CommitRequired(evaluated) = execute_command(
+            bundle.bundle(),
+            &input,
+            &snapshot,
+            &context,
+            EvaluationBudget::v1(),
+        )
+        .expect("command evaluates") else {
+            panic!("evidence command must commit")
+        };
+        let current = TransactionCurrentState::new(
+            evaluated.validation_request(),
+            vec![observation],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("transaction-current state");
+        let identity = IdempotencyIdentity::new(
+            DatabaseId::from_bytes(uuid_bytes(0x41)).expect("database ID"),
+            Environment::new("test").expect("environment"),
+            TenantScope::Global,
+            actor.principal_id().clone(),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [0x42; 32],
+            ),
+        );
+        let pending = StoredPendingAdmissionV1::new(
+            identity,
+            CanonicalInputHash::from_bytes([0x43; 32]),
+            RequestId::from_bytes(uuid_bytes(0x44)).expect("admission request ID"),
+            reference.clone(),
+            logical_time,
+            actor,
+            facts.partition_key().clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )
+        .expect("pending admission");
+        let pre_evaluation = PreEvaluationCommitContext::new(
+            pending,
+            hash_partition_key(facts.partition_key().as_bytes()),
+            Vec::new(),
+        )
+        .expect("pre-evaluation context");
+        let intent = CommitIntent::new(
+            pre_evaluation,
+            evaluated.clone(),
+            ProvenanceId::from_bytes(uuid_bytes(0x45)).expect("provenance ID"),
+        )
+        .expect("commit intent");
+        Fixture {
+            resolved: crate::test_support::resolve_genesis_plan(&bundle, &reference)
+                .expect("resolved plan"),
+            input,
+            evaluated,
+            intent,
+            current,
+            partition: facts.partition_key().clone(),
+        }
+    }
+
+    fn delete_fixture_from_source(
+        source: &str,
+        command_name: &str,
+        request_key: &str,
+        old: ([u8; 16], &str, i64),
+    ) -> Fixture {
+        custom_fixture_from_source(
+            source,
+            command_name,
+            &[
+                ("request_key", string(request_key)),
+                (
+                    "ids",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![CanonicalValue::Uuid([0x11; 16])])
+                            .expect("bounded delete id list"),
+                    ),
+                ),
+            ],
+            Some(&[
+                ("tenant", CanonicalValue::Uuid(old.0)),
+                ("category", string(old.1)),
+                ("score", CanonicalValue::I64(old.2)),
+            ]),
+        )
+    }
+
     fn named_record(schema: &RecordSchema, supplied: &[(&str, CanonicalValue)]) -> CanonicalRecord {
         let supplied = supplied.iter().cloned().collect::<BTreeMap<_, _>>();
         CanonicalRecord::new(
@@ -2014,6 +2182,196 @@ contract AnchoredEventRows version 1 {
             expected_generation_ids(&[tenant, score])
         );
         assert_eq!(derived.affected_targets.as_slice().len(), 2);
+    }
+
+    // WP-606 V8 audit evidence: secret classification (ADR-0118) is schema
+    // metadata. §3 keeps index participation working and §4 keeps durable
+    // storage full-fidelity, so a secret index component must derive
+    // byte-identical entry keys to its unclassified twin.
+    const SECRET_INDEXED_SOURCE: &str = r#"
+contract SecretIndexedRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field secret category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Created { row: row }
+  }
+}
+"#;
+
+    #[test]
+    fn secret_classified_v8_index_entries_carry_exact_bytes_without_wrappers() {
+        let secret = fixture_from_source(
+            SECRET_INDEXED_SOURCE,
+            "CreateRow",
+            "secret-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        // Non-empty trigger: the classification alone must place the bundle
+        // at the V8 era. Falsifier transcript (WP-606): with `secret`
+        // removed this assertion fails at 1 != 8.
+        assert_eq!(
+            secret.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V8
+        );
+        assert_eq!(
+            secret.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V8
+        );
+        let derived = derive_grammar_v1_indexes(
+            &secret.resolved,
+            &secret.input,
+            &secret.evaluated,
+            &secret.current,
+            &[Some(0)],
+            &secret.partition,
+        )
+        .expect("secret-classified contracts retain ordinary index derivation");
+
+        // Full fidelity: byte-identical entry keys to the unclassified twin
+        // contract under identical input. Classification must not wrap,
+        // redact, or perturb a single at-rest byte.
+        let twin = fixture(
+            "CreateRow",
+            "secret-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        let twin_derived = derive_grammar_v1_indexes(
+            &twin.resolved,
+            &twin.input,
+            &twin.evaluated,
+            &twin.current,
+            &[Some(0)],
+            &twin.partition,
+        )
+        .expect("unclassified twin derivation");
+        assert_eq!(
+            actual_entry_kinds(&derived),
+            actual_entry_kinds(&twin_derived),
+            "secret classification must not alter derived entry bytes"
+        );
+        let category = index(&secret, "by_tenant_category");
+        let entity_key = secret.evaluated.mutations()[0].target().key().clone();
+        let expected_key = category
+            .key_schema()
+            .encode_index(
+                &[CanonicalValue::Uuid([0x21; 16]), string("new")],
+                entity_key,
+            )
+            .expect("secret index key");
+        assert!(
+            derived
+                .entry_mutations
+                .iter()
+                .any(|mutation| mutation.key().as_bytes() == expected_key.as_bytes()),
+            "the secret component's exact bytes must be present in the entry key"
+        );
+    }
+
+    // WP-606 V8 delete evidence: ADR-0107's delete-aware entry derivation on
+    // a V8 bundle — the `BindingMode::Delete` arm derives one exact old-key
+    // Delete per index, including a secret-classified component.
+    const SECRET_DELETE_SOURCE: &str = r#"
+contract SecretDeleteRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field secret category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+    delete_policy no_inbound
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  bulk command DeleteRows {
+    input request_key: string<128>
+    input ids: list<uuid, 1..4>
+    idempotency_key request_key
+    for row_id in ids {
+      delete Row(row_id) as row else Missing {}
+    }
+    return Deleted {}
+  }
+}
+"#;
+
+    #[test]
+    fn secret_classified_v8_delete_derives_the_exact_old_index_keys() {
+        let fixture = delete_fixture_from_source(
+            SECRET_DELETE_SOURCE,
+            "DeleteRows",
+            "secret-delete-1",
+            ([0x21; 16], "old", 10),
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V8
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V8
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("delete derivation on the V8 bundle");
+        let tenant = index(&fixture, "by_tenant_category");
+        let score = index(&fixture, "by_score");
+        let entity_key = fixture.evaluated.mutations()[0].target().key().clone();
+        assert_eq!(
+            actual_entry_kinds(&derived),
+            BTreeSet::from([
+                (
+                    tenant
+                        .key_schema()
+                        .encode_index(
+                            &[CanonicalValue::Uuid([0x21; 16]), string("old")],
+                            entity_key.clone(),
+                        )
+                        .expect("old tenant index key")
+                        .as_bytes()
+                        .to_vec(),
+                    false,
+                ),
+                (
+                    score
+                        .key_schema()
+                        .encode_index(&[CanonicalValue::I64(10)], entity_key)
+                        .expect("old score index key")
+                        .as_bytes()
+                        .to_vec(),
+                    false,
+                ),
+            ]),
+            "delete must derive exactly the old-key Delete per index (ADR-0107 format)"
+        );
+        assert_eq!(
+            actual_generation_ids(&derived),
+            expected_generation_ids(&[tenant, score])
+        );
     }
 
     #[test]
