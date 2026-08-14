@@ -10,6 +10,7 @@ from typing import Annotated
 from uuid import UUID
 
 from riffdb_application import (
+    ApplicationErrorCode,
     AsyncApplicationTransport,
     AttemptBudget,
     BearerCredential,
@@ -19,6 +20,7 @@ from riffdb_application import (
     InvalidInput,
     Money,
     ProtocolError,
+    RiffDbApplicationError,
     RiffDate,
     SyncApplicationTransport,
     Timestamp,
@@ -199,6 +201,30 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt) as raised:
             _translate_native(cancellation)
         self.assertIs(raised.exception, cancellation)
+
+    def test_checked_public_storage_failure_remains_typed_and_retryable(self) -> None:
+        encoded = json.dumps(
+            {
+                "code": "RDB-STORAGE-0101",
+                "message": "authoritative storage is temporarily unavailable",
+                "category": "storage",
+                "recovery_action": "retry",
+                "operation": "ApplicationRequest",
+                "contract_lineage": None,
+                "contract_version": None,
+                "operation_symbol": None,
+                "symbol_path": [],
+                "source_span": None,
+                "fixes": ["retry_later"],
+                "trace_id": None,
+                "incident_id": None,
+            }
+        )
+        translated = _translate_native(_native.NativeError("application", encoded))
+        self.assertIsInstance(translated, RiffDbApplicationError)
+        assert isinstance(translated, RiffDbApplicationError)
+        self.assertEqual(translated.details.code, ApplicationErrorCode.STORAGE_UNAVAILABLE)
+        self.assertEqual(translated.details.recovery_action, "retry")
 
     def test_generated_batch_concurrency_accepts_384_and_rejects_385(self) -> None:
         _validate_batch([object()], CommandBatchOptions(384))
