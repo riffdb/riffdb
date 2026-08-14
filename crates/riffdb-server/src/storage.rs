@@ -48,8 +48,8 @@ use riffdb_storage_api::{
     ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
     ReactiveModulePublicationResult, ReactiveModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
-    SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredApplicationExportOperationV1, StoredApplicationInstallationCampaignV1,
+    ServiceAuditGroupAppend, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredApplicationExportOperationV1, StoredApplicationInstallationCampaignV1,
     StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
@@ -903,6 +903,15 @@ impl ServiceAuditAppendRepository for SharedRedbOperationalPorts {
         })
     }
 
+    fn submit_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<ServiceAuditGroupAppend, StorageError> {
+        self.cell.with_mut(|ports| {
+            ServiceAuditAppendRepository::submit_service_audit_group(ports, intents)
+        })
+    }
+
     fn append_service_audit_fused_pair(
         &mut self,
         started: &ServiceAuditAppendIntentV1,
@@ -1622,14 +1631,17 @@ mod tests {
     use std::thread;
 
     use riffdb_storage_api::{
-        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
-        PartitionScopeV1,
+        AuditPrincipalV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+        CapabilityRequestedRecordV1, PartitionScopeV1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdministrationSequence, Audience, CapabilityGrantV1,
         ContractBundleHash, DatabaseId, DigestKeyId, Environment, RequestId,
-        RevocationReasonCodeV1, TenantScope, Timestamp,
+        RevocationReasonCodeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+        ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
     };
+
+    use crate::real_storage_support::RealStorage;
 
     use super::*;
 
@@ -2005,5 +2017,41 @@ mod tests {
         }
 
         assert_boundaries::<SharedRedbOperationalPorts>();
+    }
+
+    #[test]
+    fn production_bridge_preserves_deferred_service_audit_submission() {
+        let mut real = RealStorage::open("deferred-service-audit");
+        let principal = AuditPrincipalV1::new(
+            ActorId::new("audit-principal").expect("principal"),
+            ActorKind::Service,
+            CapabilityId::from_bytes(uuid_bytes(0x71)).expect("capability ID"),
+            NonZeroU64::MIN,
+        );
+        let intent = ServiceAuditAppendIntentV1::new(
+            RequestId::from_bytes(uuid_bytes(0x72)).expect("request ID"),
+            Timestamp::new(1_700_000_000, 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            principal,
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("audit intent");
+
+        let ServiceAuditGroupAppend::Submitted(fence) = real
+            .storage
+            .submit_service_audit_group(&[intent])
+            .expect("submit through production bridge")
+        else {
+            panic!("the production bridge must preserve deferred journal submission");
+        };
+        let results = fence.wait().expect("publish deferred audit group");
+        assert!(
+            matches!(results.as_slice(), [ServiceAuditAppendResult::Appended(_)]),
+            "the deferred append must publish its authoritative result"
+        );
     }
 }
