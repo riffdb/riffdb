@@ -2672,14 +2672,47 @@ pub(crate) fn reset_journal_with_media(
     path: &Path,
     header: &JournalFileHeader,
 ) -> Result<(), JournalIoError> {
+    reset_journal_after_generation_with_media(media, path, header, None)
+}
+
+/// Prepares one recyclable extent whose generation is strictly newer than the
+/// selected generation of `predecessor_path`.
+///
+/// The spare extent is deliberately non-authoritative and recovery may remove
+/// it. Recreating an absent spare at generation one would let the next
+/// checkpoint swap a lower generation over a much older active extent. Bind
+/// preparation to the current active generation so path recycling preserves
+/// ADR-0103's monotonic stale-residue fence across process recovery.
+pub(crate) fn reset_journal_after_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+    predecessor_path: &Path,
+) -> Result<(), JournalIoError> {
+    let mut predecessor_file = media
+        .open_read(predecessor_path)
+        .map_err(|_| JournalIoError::Io)?;
+    let predecessor = read_selected_extent_header(&mut predecessor_file)?;
+    if predecessor.logical.database_id() != header.database_id() {
+        return Err(JournalIoError::Corrupt);
+    }
+    reset_journal_after_generation_with_media(media, path, header, Some(predecessor.generation))
+}
+
+fn reset_journal_after_generation_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+    predecessor_generation: Option<u64>,
+) -> Result<(), JournalIoError> {
     let mut file = match media.open_read_write(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return create_extent_file_with_media(
-                media,
-                path,
-                &ExtentHeader::initial(header.clone()),
-            );
+            let mut initial = ExtentHeader::initial(header.clone());
+            if let Some(predecessor) = predecessor_generation {
+                initial.generation = predecessor.checked_add(1).ok_or(JournalIoError::Corrupt)?;
+            }
+            return create_extent_file_with_media(media, path, &initial);
         }
         Err(_) => return Err(JournalIoError::Io),
     };
@@ -2703,7 +2736,12 @@ pub(crate) fn reset_journal_with_media(
     if current.logical.database_id() != header.database_id() {
         return Err(JournalIoError::Corrupt);
     }
-    let successor = current.successor(header.clone())?;
+    let mut successor = current.successor(header.clone())?;
+    if let Some(predecessor) = predecessor_generation {
+        successor.generation = successor
+            .generation
+            .max(predecessor.checked_add(1).ok_or(JournalIoError::Corrupt)?);
+    }
     file.write_all_at(
         &successor.encode(),
         usize::from(successor.slot) * EXTENT_HEADER_SLOT_BYTES,
@@ -3246,6 +3284,37 @@ mod tests {
             .expect("extent exists");
         assert_eq!(tail.transition_count, 0);
         assert!(!tail.incomplete_tail);
+    }
+
+    #[test]
+    fn recreated_spare_generation_stays_ahead_of_recovered_active_extent() {
+        let active = TestPath::new("active-generation-predecessor");
+        let spare = TestPath::new("recreated-spare-generation");
+        let header = JournalFileHeader::new(database_id(44), None, [0; HASH_BYTES]);
+        initialize_or_validate_file(&active.0, &header).expect("initialize active extent");
+        for _ in 0..32 {
+            reset_journal(&active.0, &header).expect("advance active generation");
+        }
+        let active_generation = inspect_extent(&active.0)
+            .expect("inspect active generation")
+            .header
+            .generation;
+
+        reset_journal_after_with_media(&RealJournalMedia, &spare.0, &header, &active.0)
+            .expect("recreate spare after active generation");
+        let first_spare_generation = inspect_extent(&spare.0)
+            .expect("inspect recreated spare")
+            .header
+            .generation;
+        assert!(first_spare_generation > active_generation);
+
+        reset_journal_after_with_media(&RealJournalMedia, &spare.0, &header, &active.0)
+            .expect("prepare existing spare again");
+        let second_spare_generation = inspect_extent(&spare.0)
+            .expect("inspect advanced spare")
+            .header
+            .generation;
+        assert!(second_spare_generation > first_spare_generation);
     }
 
     #[test]

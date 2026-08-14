@@ -5158,12 +5158,6 @@ impl SharedRedb {
                 tail.last_administration_sequence,
                 tail.last_hash,
             );
-            crate::journal::reset_journal_with_media(
-                self.journal_media.as_ref(),
-                &crate::journal::spare_journal_path(&self.path),
-                &spare_header,
-            )
-            .map_err(journal_io_error)?;
             let lane = Arc::new(
                 crate::journal::JournalLane::open_with_media(
                     self.journal_media.as_ref(),
@@ -5172,6 +5166,13 @@ impl SharedRedb {
                 )
                 .map_err(journal_io_error)?,
             );
+            crate::journal::reset_journal_after_with_media(
+                self.journal_media.as_ref(),
+                &crate::journal::spare_journal_path(&self.path),
+                &spare_header,
+                &path,
+            )
+            .map_err(journal_io_error)?;
             *runtime = Some(JournalRuntime {
                 lane,
                 database_id,
@@ -5291,8 +5292,13 @@ impl SharedRedb {
             runtime.last_hash,
         );
         let media = self.journal_media.as_ref();
-        crate::journal::reset_journal_with_media(media, &spare_path, &next_header)
-            .map_err(journal_io_error)?;
+        crate::journal::reset_journal_after_with_media(
+            media,
+            &spare_path,
+            &next_header,
+            &active_path,
+        )
+        .map_err(journal_io_error)?;
         media
             .rename(&active_path, &checkpoint_path)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
@@ -5653,9 +5659,12 @@ impl SharedRedb {
             runtime.last_administration_sequence,
             runtime.last_hash,
         );
-        if let Err(error) =
-            crate::journal::reset_journal_with_media(media, &spare_path, &spare_header)
-        {
+        if let Err(error) = crate::journal::reset_journal_after_with_media(
+            media,
+            &spare_path,
+            &spare_header,
+            &crate::journal::journal_path(&self.path),
+        ) {
             self.fence_writes();
             return Err(journal_io_error(error));
         }
