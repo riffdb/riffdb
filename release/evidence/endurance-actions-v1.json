@@ -52,7 +52,8 @@
   },
   "conformance": {
     "command": ["scripts/endurance-conformance"],
-    "interval_seconds": 300
+    "interval_seconds": 300,
+    "initial_delay_seconds": 900
   },
   "lifecycles": [
     {"name": "backup", "command": ["scripts/endurance-lifecycle", "backup"], "interval_seconds": 1200, "initial_delay_seconds": 30},

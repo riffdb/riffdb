@@ -322,8 +322,30 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
     assert!(controller.contains("worker_exited_early[{language}]"));
     assert!(controller.contains("if worker_exited:\n                break"));
     assert!(controller.contains(
-        "next_conformance = started + action_manifest[\"conformance\"][\"interval_seconds\"]"
+        "next_conformance = started + action_manifest[\"conformance\"][\"initial_delay_seconds\"]"
     ));
+    let actions: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("release/evidence/endurance-actions-v1.json"))
+            .expect("closed endurance action manifest is readable"),
+    )
+    .expect("closed endurance action manifest is JSON");
+    assert_eq!(
+        actions["conformance"]["initial_delay_seconds"], 900,
+        "the first semantic reconciliation must follow one complete slowest-language workload cycle"
+    );
+
+    let fault =
+        fs::read_to_string(root.join("scripts/endurance-fault")).expect("fault source is readable");
+    let disable_bytecode = fault
+        .find("sys.dont_write_bytecode = True")
+        .expect("fault loader must disable repository bytecode writes");
+    let load_lifecycle = fault
+        .find("loader.exec_module(module)")
+        .expect("fault loader imports lifecycle support");
+    assert!(
+        disable_bytecode < load_lifecycle,
+        "bytecode writes must be disabled before importing lifecycle support"
+    );
     for worker in [
         "examples/ticketdesk/src/bin/endurance.rs",
         "examples/ticketdesk/endurance/go/main.go",

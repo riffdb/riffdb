@@ -54,6 +54,7 @@ REQUIRED_FAULTS = {
     "process_kill",
 }
 ACTION_INTERVAL_SECONDS = 1200
+CONFORMANCE_INITIAL_DELAY_SECONDS = 900
 ACTION_INITIAL_DELAYS = {
     "backup": 30,
     "checkpoint_crash": 105,
@@ -241,6 +242,12 @@ def validate_actions(actions: dict[str, Any], manifest: dict[str, Any]) -> None:
         argv = item.get("command")
         require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", f"{section} command is not a bounded argv")
         require(1 <= integer(item.get("interval_seconds"), "invalid_actions", f"{section}.interval_seconds") <= 86400, "invalid_actions", f"{section} interval is invalid")
+    require(
+        integer(actions["conformance"].get("initial_delay_seconds"), "invalid_actions", "conformance.initial_delay_seconds")
+        == CONFORMANCE_INITIAL_DELAY_SECONDS,
+        "invalid_actions",
+        "conformance initial delay differs from the closed workload warmup",
+    )
     require(exact_names(actions.get("workload_coverage"), REQUIRED_WORKLOADS), "invalid_actions", "action workload coverage is incomplete")
 
 
@@ -697,7 +704,11 @@ def base_actions(manifest: dict[str, Any]) -> dict[str, Any]:
         },
         "workers": workers,
         "sampler": {"command": ["scripts/endurance-sample"], "interval_seconds": 30},
-        "conformance": {"command": ["scripts/endurance-conformance"], "interval_seconds": 300},
+        "conformance": {
+            "command": ["scripts/endurance-conformance"],
+            "interval_seconds": 300,
+            "initial_delay_seconds": CONFORMANCE_INITIAL_DELAY_SECONDS,
+        },
         "lifecycles": [
             {"name": name, "command": ["scripts/endurance-lifecycle", name], "interval_seconds": ACTION_INTERVAL_SECONDS, "initial_delay_seconds": ACTION_INITIAL_DELAYS[name]}
             for name in sorted(REQUIRED_LIFECYCLES)

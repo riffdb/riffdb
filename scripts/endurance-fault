@@ -38,6 +38,9 @@ def fail(message: str) -> "None":
 
 
 def lifecycle_module() -> ModuleType:
+    # SourceFileLoader otherwise writes a repository-local __pycache__ entry.
+    # The release rehearsal must be observational with respect to its checkout.
+    sys.dont_write_bytecode = True
     source = Path(__file__).resolve().with_name("endurance-lifecycle")
     loader = importlib.machinery.SourceFileLoader("riffdb_endurance_lifecycle", str(source))
     specification = importlib.util.spec_from_loader(loader.name, loader)

@@ -21,6 +21,7 @@ MAX_ARGUMENTS = 64
 MAX_SAMPLES = 10000
 MAX_ACTION_RESULT_BYTES = 64 * 1024
 MAX_FAILURE_DIAGNOSTIC_BYTES = 4 * 1024
+CONFORMANCE_INITIAL_DELAY_SECONDS = 900
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
@@ -158,6 +159,8 @@ def load_actions(candidate: Path) -> dict[str, Any]:
         interval = value[section].get("interval_seconds")
         if type(interval) is not int or not 1 <= interval <= 86400:
             fail(f"{section} interval is invalid")
+    if value["conformance"].get("initial_delay_seconds") != CONFORMANCE_INITIAL_DELAY_SECONDS:
+        fail("conformance initial delay differs from the closed workload warmup")
     return value
 
 
@@ -399,7 +402,7 @@ def main() -> int:
         # The sampler proves immediate process and resource readiness. Give the
         # mixed workers one complete declared interval to reach every workload
         # class before the first periodic semantic reconciliation.
-        next_conformance = started + action_manifest["conformance"]["interval_seconds"]
+        next_conformance = started + action_manifest["conformance"]["initial_delay_seconds"]
         lifecycle_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["lifecycles"]}
         fault_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["faults"]}
         while time.monotonic() < deadline:
