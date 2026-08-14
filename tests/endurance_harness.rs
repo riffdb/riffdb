@@ -172,6 +172,8 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
         "checkpoint_commit_sequence",
         "dispatch_deferred_max",
         "consumer_acknowledgements",
+        "backup.operation",
+        "capability create administration sequence",
         "endurance lifecycle action is not implemented",
     ] {
         assert!(lifecycle.contains(required), "lifecycle omits {required}");

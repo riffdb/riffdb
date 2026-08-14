@@ -89,8 +89,13 @@ def initial_state(generation: int) -> dict[str, Any]:
         "tombstone_count": 0,
         "writer_queue_depth": 0,
         "consumer_backlog": 0,
+        "backup_count": 0,
+        "capability_administration_sequence": 0,
+        "certificate_rotation_count": 0,
+        "deployment_count": 0,
         "checkpoint_count": 0,
         "checkpoint_frontier": 0,
+        "recovery_count": 0,
         "restart_count": 0,
         "reactive_operations": 0,
         "lifecycle_microseconds": 0,
@@ -118,6 +123,72 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
     finally:
         if pending.exists():
             pending.unlink()
+
+
+def run_json(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout_seconds: int = 180,
+    allow_unavailable: bool = False,
+) -> dict[str, Any] | None:
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if result.returncode != 0:
+        if allow_unavailable:
+            return None
+        fail("endurance public operation failed")
+    if not 0 < len(result.stdout.encode()) <= MAX_JSON_BYTES:
+        fail("endurance public operation result exceeds its bound")
+    value = json.loads(result.stdout)
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "riffdb.cli.output/v1"
+        or value.get("ok") is not True
+        or not isinstance(value.get("result"), dict)
+    ):
+        fail("endurance public operation result is invalid")
+    return value
+
+
+def cli(environment: Path) -> list[str]:
+    state = read_object(environment / "state.json")
+    executable = Path(str(state.get("riffdb", "")))
+    if not executable.is_absolute() or executable.is_symlink() or not executable.is_file():
+        fail("endurance CLI installation is invalid")
+    return [
+        str(executable),
+        "--config",
+        str(environment / "bootstrap-client.toml"),
+    ]
+
+
+def positive_decimal(value: Any, name: str) -> int:
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or not value.isdigit()
+        or value == "0"
+    ):
+        fail(f"endurance lifecycle {name} is invalid")
+    return int(value)
+
+
+def sha256_file(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        fail("endurance evidence artifact is not a regular file")
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def reactive_operations(environment: Path) -> tuple[int, int, int]:
@@ -390,6 +461,212 @@ def reactive_consumer(environment: Path, state: dict[str, Any]) -> tuple[int, in
         time.sleep(0.1)
 
 
+def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
+    backup_root = environment / "backups" / "default"
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        fail("endurance backup root is invalid")
+    existing = sorted(
+        path.name
+        for path in backup_root.iterdir()
+        if path.name != ".maintenance" and path.is_dir() and not path.is_symlink()
+    )
+    before = len(existing)
+    if before != integer(state["backup_count"], "backup_count"):
+        fail("endurance backup inventory differs from lifecycle state")
+    name = f"endurance-{before + 1:06d}"
+    started = run_json(cli(environment) + ["backup", "create", name, "--output", "json"])
+    if started is None:
+        fail("endurance backup start unexpectedly returned no result")
+    started_result = started["result"]
+    if (
+        started.get("command") != "backup.create"
+        or started_result.get("status") != "accepted"
+        or started_result.get("kind") != "create_backup"
+        or started_result.get("backup_name") != name
+    ):
+        fail("endurance backup was not accepted with the exact identity")
+    operation_id = started_result.get("maintenance_operation_id")
+    if not isinstance(operation_id, str) or len(operation_id) != 36:
+        fail("endurance backup operation identity is invalid")
+
+    deadline = time.monotonic() + 180
+    terminal: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        polled = run_json(
+            cli(environment)
+            + ["backup", "operation", operation_id, "--output", "json"],
+            timeout_seconds=30,
+            allow_unavailable=True,
+        )
+        if polled is not None:
+            candidate = polled["result"]
+            if (
+                polled.get("command") == "backup.operation"
+                and candidate.get("status") == "found"
+                and candidate.get("maintenance_operation_id") == operation_id
+                and candidate.get("kind") == "create_backup"
+                and candidate.get("backup_name") == name
+            ):
+                if candidate.get("phase") == "succeeded":
+                    terminal = candidate
+                    break
+                if candidate.get("phase") in {"failed", "refused"}:
+                    fail("endurance backup reached a non-success terminal phase")
+        # Offline maintenance deliberately closes and reopens the listener;
+        # polling remains bounded and identity-stable across that interval.
+        time.sleep(0.1)
+    if terminal is None:
+        fail("endurance backup did not complete before its bounded deadline")
+
+    backup_path = backup_root / name
+    expected = {"database.redb", "journal.riffextent", "format.riffdb", "manifest.riffdb"}
+    actual = {
+        path.name
+        for path in backup_path.iterdir()
+        if path.is_file() and not path.is_symlink()
+    }
+    if actual != expected:
+        fail("endurance backup closed inventory is invalid")
+    inventory = [
+        {
+            "name": artifact,
+            "bytes": (backup_path / artifact).stat().st_size,
+            "sha256": sha256_file(backup_path / artifact),
+        }
+        for artifact in sorted(expected)
+    ]
+    after = len(
+        [
+            path
+            for path in backup_root.iterdir()
+            if path.name != ".maintenance" and path.is_dir() and not path.is_symlink()
+        ]
+    )
+    if after != before + 1:
+        fail("endurance backup did not publish exactly one immutable inventory")
+    state["backup_count"] = after
+    health_frontier(environment)
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-backup-evidence/v1",
+        "backup_name": name,
+        "maintenance_operation_id": operation_id,
+        "input_hash": terminal.get("input_hash"),
+        "phase": terminal.get("phase"),
+        "inventory": inventory,
+    }
+
+
+def capability_rotation(
+    environment: Path, state: dict[str, Any]
+) -> tuple[int, int, dict[str, Any]]:
+    before = integer(
+        state["capability_administration_sequence"],
+        "capability_administration_sequence",
+    )
+    rotation_path = environment / "capability-rotation.json"
+    previous = read_object(rotation_path) if rotation_path.exists() else None
+    ordinal = before + 1
+    request_path = environment / f"capability-rotation-{ordinal}.request.json"
+    credential_path = environment / f"capability-rotation-{ordinal}.credential"
+    atomic_write(
+        request_path,
+        {
+            "principal_id": f"alpha-endurance-rotation-{ordinal}",
+            "actor_kind": "service",
+            "requested_lifetime_seconds": 86400,
+            "audiences": ["riffdb-alpha-endurance"],
+            "grant": {
+                "tenant_scope": {"type": "global"},
+                "partition_scope": {"type": "all"},
+                "permissions": [{"type": "read_health"}],
+                "field_visibility": [],
+                "max_scan_rows": 1,
+                "approval_required": [],
+            },
+        },
+    )
+    created = run_json(
+        cli(environment)
+        + [
+            "capability",
+            "create",
+            "--request",
+            str(request_path),
+            "--credential-output",
+            str(credential_path),
+            "--output",
+            "json",
+        ]
+    )
+    if created is None:
+        fail("endurance capability create unexpectedly returned no result")
+    result = created["result"]
+    transition = result.get("transition")
+    identity = transition.get("identity") if isinstance(transition, dict) else None
+    capability_id = identity.get("capability_id") if isinstance(identity, dict) else None
+    if (
+        created.get("command") != "capability.create"
+        or result.get("status") != "created"
+        or not isinstance(capability_id, str)
+        or not credential_path.is_file()
+        or credential_path.is_symlink()
+    ):
+        fail("endurance replacement capability was not durably created")
+    after = positive_decimal(
+        transition.get("administration_sequence"),
+        "capability create administration sequence",
+    )
+    revoked_id: str | None = None
+    if previous is not None:
+        revoked_id = previous.get("capability_id")
+        if not isinstance(revoked_id, str):
+            fail("endurance prior rotation capability identity is invalid")
+        revoked = run_json(
+            cli(environment)
+            + [
+                "capability",
+                "revoke",
+                "--reason",
+                "replaced",
+                revoked_id,
+                "--output",
+                "json",
+            ]
+        )
+        if revoked is None:
+            fail("endurance capability revoke unexpectedly returned no result")
+        revoked_result = revoked["result"]
+        revoked_transition = revoked_result.get("transition")
+        if (
+            revoked.get("command") != "capability.revoke"
+            or revoked_result.get("status") not in {"revoked", "already_revoked"}
+            or not isinstance(revoked_transition, dict)
+        ):
+            fail("endurance prior rotation capability was not revoked")
+        after = positive_decimal(
+            revoked_transition.get("administration_sequence"),
+            "capability revoke administration sequence",
+        )
+    if after <= before:
+        fail("endurance capability rotation did not advance administration history")
+    atomic_write(
+        rotation_path,
+        {
+            "capability_id": capability_id,
+            "administration_sequence": after,
+            "credential_file": credential_path.name,
+        },
+    )
+    state["capability_administration_sequence"] = after
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-capability-rotation-evidence/v1",
+        "replacement_capability_id": capability_id,
+        "revoked_capability_id": revoked_id,
+        "administration_sequence": after,
+        "least_authority": ["read_health"],
+    }
+
+
 def checkpoint_or_restart(
     environment: Path, state: dict[str, Any], name: str
 ) -> tuple[int, int, dict[str, Any]]:
@@ -420,6 +697,10 @@ def run_action(environment: Path, state_path: Path, name: str) -> dict[str, Any]
         before, after, evidence = journal_recycle(environment, state)
     elif name == "reactive_consumer":
         before, after, evidence = reactive_consumer(environment, state)
+    elif name == "backup":
+        before, after, evidence = backup(environment, state)
+    elif name == "capability_rotation":
+        before, after, evidence = capability_rotation(environment, state)
     elif name in {"checkpoint", "restart"}:
         before, after, evidence = checkpoint_or_restart(environment, state, name)
     else:
@@ -472,7 +753,7 @@ def main() -> int:
             initialize(environment, state_path)
             return 0
         if len(sys.argv) != 2:
-            fail("usage: endurance-lifecycle <journal_recycle|reactive_consumer|checkpoint|restart> | --initialize | --self-test")
+            fail("usage: endurance-lifecycle <backup|capability_rotation|journal_recycle|reactive_consumer|checkpoint|restart> | --initialize | --self-test")
         result = run_action(environment, state_path, sys.argv[1])
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
