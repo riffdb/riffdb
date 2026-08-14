@@ -25,7 +25,11 @@ requires no dependency-resolution step.
 
 For TypeScript, `riffdb new --language typescript` materializes the exact
 compiler, Node types, product runtime, lockfile, build scripts, and HTTP starter
-from `$RIFFDB_TYPESCRIPT_RUNTIME`; no registry operation is required.
+from `$RIFFDB_TYPESCRIPT_RUNTIME`; no registry operation is required. The
+bundle also carries `riffdb-driverd` and a development-only loopback TLS
+identity. `riffdb dev --seed --run` retains the credential and verified remote
+transport in that Rust host and gives the TypeScript process only its protected
+socket and public exact-handshake identity.
 
 For Python, `riffdb new --language python` copies the architecture-matching
 `cp313-abi3` wheel from `public/python`, locks its SHA-256 in `uv.lock`, and

@@ -9,7 +9,11 @@ cleanup() {
         kill -TERM "$typescript_run_pid" 2>/dev/null || true
         wait "$typescript_run_pid" 2>/dev/null || true
     fi
-    rm -rf "$work_root"
+    if [[ "${RIFFDB_AGENT_ALPHA_PACKAGE_ACCEPTANCE_KEEP_WORKSPACE:-false}" == true ]]; then
+        echo "retained package-acceptance workspace: $work_root" >&2
+    else
+        rm -rf "$work_root"
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -38,6 +42,20 @@ cmp "$bundle/checksums.sha256" "$reproduced_bundle/checksums.sha256" || {
 rm -rf "$reproduced_bundle"
 [[ -x "$bundle/bin/riffdb-builder-mcp" ]] || {
     echo "sealed bundle is missing the credential-less builder MCP" >&2
+    exit 1
+}
+[[ -x "$bundle/bin/riffdb-driverd" ]] || {
+    echo "sealed bundle is missing the first-party application driver host" >&2
+    exit 1
+}
+for tls_asset in server.pem server.key ca.pem; do
+    [[ -s "$bundle/share/riffdb/dev-tls/$tls_asset" ]] || {
+        echo "sealed bundle is missing its loopback development TLS asset: $tls_asset" >&2
+        exit 1
+    }
+done
+[[ "$(stat -c '%a' "$bundle/share/riffdb/dev-tls/server.key")" == 600 ]] || {
+    echo "sealed bundle development TLS private key is not owner-only" >&2
     exit 1
 }
 
@@ -128,11 +146,20 @@ typescript_run_error="$work_root/typescript-run.stderr"
     "$bundle/bin/riffdb" dev --seed --run
 ) >"$typescript_run_log" 2>"$typescript_run_error" &
 typescript_run_pid=$!
+set +e
 typescript_ready="$(
     set +o pipefail
     timeout 60s tail -n +1 -F "$typescript_run_log" \
         | rg --line-buffered -m1 '^riffdb-app-ready-v1'
 )"
+typescript_ready_status=$?
+set -e
+if [[ "$typescript_ready_status" != 0 ]]; then
+    cat "$typescript_run_log" >&2
+    cat "$typescript_run_error" >&2
+    echo "installed TypeScript application did not become ready within 60 seconds" >&2
+    exit 1
+fi
 typescript_port="${typescript_ready#*$'\t'}"
 [[ "$typescript_port" =~ ^[0-9]+$ ]] || {
     cat "$typescript_run_log" >&2

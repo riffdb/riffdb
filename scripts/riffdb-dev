@@ -89,12 +89,23 @@ if ((acceptance)); then
     profile_args+=(--release)
 fi
 build_packages=(-p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb)
+driver_runner=0
+if ((generic_application && run)) && [[ -f "$application_root/package.json" ]]; then
+    driver_runner=1
+    build_packages+=(-p riffdb-driver-host --bin riffdb-driverd)
+    command -v sha256sum >/dev/null 2>&1 || {
+        echo "required development tool is missing: sha256sum" >&2
+        exit 1
+    }
+fi
 if ((generic_application == 0)); then
     build_packages+=(-p riffdb-ticketdesk --bin benchmark)
 fi
 cargo build --quiet "${profile_args[@]}" "${build_packages[@]}"
 riffdbd="$repo_root/target/$profile/riffdbd"
 riffdb="$repo_root/target/$profile/riffdb"
+driverd="$repo_root/target/$profile/riffdb-driverd"
+dev_tls_root="$repo_root/crates/riffdb-server/tests/fixtures"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
 if ((generic_application)); then
     application_source="$application_root/riffdb.application.json"
@@ -130,8 +141,22 @@ else
 fi
 
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-dev.XXXXXX")"
+dev_tls_key="$dev_tls_root/localhost-key.pem"
+if ((driver_runner)); then
+    dev_tls_key="$work_root/server.key"
+    cp "$dev_tls_root/localhost-key.pem" "$dev_tls_key"
+    chmod 0600 "$dev_tls_key"
+fi
 server_pid=
+driver_pid=
 cleanup() {
+    if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
+        kill -TERM "$driver_pid" 2>/dev/null || true
+        timeout 15s tail --pid="$driver_pid" -f /dev/null 2>/dev/null || {
+            kill -KILL "$driver_pid" 2>/dev/null || true
+        }
+        wait "$driver_pid" 2>/dev/null || true
+    fi
     if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
         kill -TERM "$server_pid" 2>/dev/null || true
         timeout 15s tail --pid="$server_pid" -f /dev/null 2>/dev/null || {
@@ -185,19 +210,45 @@ mkfifo "$work_root/ready.fifo"
     printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$idempotency_key" >"$work_root/idempotency.keys"
 )
 
-"$riffdbd" \
-    --database "$work_root/riffdb.redb" \
-    --listen 127.0.0.1:0 \
-    --environment local-dev \
-    --audience riffdb-grpc-loopback \
-    --backup-root "$work_root/backups" \
-    --capability-keys "$work_root/capability.keys" \
-    --idempotency-keys "$work_root/idempotency.keys" \
-    </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
+if ((driver_runner)); then
+    dev_port_hex="$(od -An -tx2 -N2 /dev/urandom | tr -d ' \n')"
+    dev_port=$((49152 + 0x$dev_port_hex % 16384))
+    cat >"$work_root/riffdbd.toml" <<EOF
+[server]
+database = "$work_root/riffdb.redb"
+environment = "local-dev"
+audience = "riffdb-grpc-loopback"
+capability_keys = "$work_root/capability.keys"
+idempotency_keys = "$work_root/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:$dev_port"
+public_endpoint = "https://127.0.0.1:$dev_port"
+certificate_chain = "$dev_tls_root/localhost-cert.pem"
+private_key = "$dev_tls_key"
+
+[maintenance]
+backup_root = "$work_root/backups"
+EOF
+    "$riffdbd" --config "$work_root/riffdbd.toml" \
+        </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
+else
+    "$riffdbd" \
+        --database "$work_root/riffdb.redb" \
+        --listen 127.0.0.1:0 \
+        --environment local-dev \
+        --audience riffdb-grpc-loopback \
+        --backup-root "$work_root/backups" \
+        --capability-keys "$work_root/capability.keys" \
+        --idempotency-keys "$work_root/idempotency.keys" \
+        </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
+fi
 server_pid=$!
 
 exec {ready_fd}<"$work_root/ready.fifo"
 IFS= read -r -t 30 ready_line <&"$ready_fd" || {
+    cat "$work_root/riffdbd.stderr" >&2
     echo "development server did not become ready" >&2
     exit 1
 }
@@ -209,7 +260,13 @@ case "$ready_line" in
         exit 1
         ;;
 esac
-endpoint="http://$address"
+if ((driver_runner)); then
+    endpoint="https://$address"
+    export RIFFDB_TLS_TRUST_ROOT="$dev_tls_root/test-ca.pem"
+    export RIFFDB_TLS_SERVER_NAME=127.0.0.1
+else
+    endpoint="http://$address"
+fi
 
 "$riffdb" --endpoint "$endpoint" --output json \
     capability bootstrap \
@@ -282,6 +339,43 @@ else case "$role" in
         jq -e '.ok == true and .command == "capability.create"' "$work_root/role.json" >/dev/null
         ;;
 esac
+fi
+
+driver_socket=
+if ((driver_runner)); then
+    driver_socket="$work_root/riffdb-driver.sock"
+    cat >"$work_root/driver.toml" <<EOF
+[driver]
+socket = "$driver_socket"
+
+[application]
+lock_file = "$application_root/riffdb.application.lock.json"
+manifest_file = "$application_manifest"
+operation_catalog_file = "$application_root/generated/mcp/tools.json"
+database = "default"
+role = "$role_symbol"
+
+[remote]
+endpoint = "$endpoint"
+tls_trust_root = "$dev_tls_root/test-ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$work_root/profile.credential"
+pool_connections = 2
+streams_per_connection = 64
+EOF
+    chmod 0600 "$work_root/driver.toml"
+    "$driverd" "$work_root/driver.toml" \
+        >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+    driver_pid=$!
+    driver_deadline=$((SECONDS + 30))
+    while [[ ! -S "$driver_socket" && "$SECONDS" -lt "$driver_deadline" ]]; do
+        kill -0 "$driver_pid" 2>/dev/null || break
+    done
+    [[ -S "$driver_socket" ]] || {
+        cat "$work_root/driver.stderr" >&2
+        echo "development TypeScript driver host did not become ready" >&2
+        exit 1
+    }
 fi
 
 profile_client=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/profile.credential")
@@ -606,8 +700,24 @@ if ((run)); then
         done
         (
             cd "$application_root"
+            unset RIFFDB_TLS_TRUST_ROOT RIFFDB_TLS_SERVER_NAME
             npm run --silent build
-            npm run --silent start -- "$endpoint" "$work_root/profile.credential" "$riffdb"
+            manifest_hash="$(jq -er '.exact_manifest_hash' riffdb.application.lock.json)"
+            catalog_hash="$(jq -er '.artifacts[] | select(.kind == "mcp") | .content_hash' riffdb.application.lock.json)"
+            role_hash="$(jq -er --arg role "$role_symbol" '.roles[] | select(.definition.name == $role) | .definition_hash' riffdb.application.lock.json)"
+            bundle_hash="$(jq -er '.contract.bundle_hash' riffdb.application.lock.json)"
+            remote_hash="$(printf '%s' "$endpoint|127.0.0.1" | sha256sum | cut -d' ' -f1)"
+            npm run --silent start -- \
+                "$driver_socket" \
+                "$manifest_hash" \
+                "$catalog_hash" \
+                default \
+                "$role_symbol" \
+                "$role_hash" \
+                "$remote_hash" \
+                "$contract_lineage" \
+                "$contract_version" \
+                "$bundle_hash"
         )
     elif [[ -f "$application_root/pyproject.toml" ]]; then
         command -v uv >/dev/null 2>&1 || {
