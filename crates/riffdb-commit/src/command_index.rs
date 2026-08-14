@@ -896,7 +896,9 @@ impl IndexDerivationBuilder {
 //   any plan without caller-declared idempotency
 //   (tests/command_preparation.rs
 //   `reimport_authority_and_server_identity_cannot_enter_the_ordinary_constructor`,
-//   `ordinary_command_authority_cannot_invoke_a_hidden_reimport_plan`), and
+//   `ordinary_command_authority_cannot_invoke_a_hidden_reimport_plan`,
+//   `application_authority_cannot_route_a_reimport_plan_through_ordinary_preparation`),
+//   and
 //   the service layer never resolves reimport plans for application calls
 //   (riffdb-service architecture pin on the `!plan.is_reimport()` filter).
 //   The V10 evidence test additionally pins the reimport plan's structural
