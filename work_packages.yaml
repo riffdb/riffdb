@@ -12068,3 +12068,95 @@ work_packages:
   - ./scripts/handbook check
   - ./scripts/check-requirement-coverage
   human_review_triggers: *id001
+- id: WP-601
+  name: Driver distribution — platform binaries and published runtimes across four registries
+  depends_on: []
+  objective: Publish the four-ecosystem toolchain per ADR-0120 section 1. CLI packages
+    carrying prebuilt platform binaries (npm, PyPI, Go, crates.io; esbuild-pattern platform
+    resolution), published runtime packages replacing generated-code vendoring, release
+    machinery with checksums and signatures, and the durable-format compatibility statement
+    surfaced at the package boundary. Rust remains the sole semantics implementation
+    (ADR-0106); packages are distribution vessels.
+  requirements: []
+  required_adrs: [ADR-0106, ADR-0112, ADR-0120]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, clients/**, scripts/**,
+    crates/riffdb-cli/**, crates/riffdb-client-*/**, release/**]
+  deliverables:
+  - Platform-binary CLI packages for npm and PyPI plus install paths for Go and Rust, with a
+    release build matrix, checksums, and signing
+  - Published runtime packages; generate emits registry imports instead of vendor copies,
+    with the vendored path retained for offline/sealed installs
+  - Package READMEs carrying the four-step story; package-arrival smoke scripts per ecosystem
+  acceptance_commands:
+  - ./scripts/check-generated
+  - cargo test -p riffdb-cli --all-features
+  human_review_triggers: *id001
+- id: WP-602
+  name: Database-shaped verbs — init, push, status, diff, migrate over riffdb.toml
+  depends_on: []
+  objective: Implement ADR-0120 section 2. riffdb init writes minimal config and schema into
+    new or existing projects without application scaffolding; push folds check/lock/deploy
+    with the acceptance ceremony surfaced only on compiler-owned identity change; status and
+    diff report installed-versus-local state; migrate surfaces the existing staged-migration
+    machinery for incompatible successors. No existing verb changes; no gate weakens.
+  requirements: []
+  required_adrs: [ADR-0057, ADR-0110, ADR-0120]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
+    crates/riffdb-client-rust/**]
+  deliverables:
+  - riffdb.toml (database alias or URL, schema path, generator targets) with typed
+    diagnostics; init idempotent in existing projects
+  - push with ceremony-on-change-only (no-op push prompts nothing; changed lock requires
+    acceptance; incompatible change refuses toward migrate with a typed pointer)
+  - status/diff against the configured database; migrate wrapping the staged path with its
+    existing gates
+  - Ceremony boundary tests for all three push outcomes
+  acceptance_commands:
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/handbook check
+  human_review_triggers: *id001
+- id: WP-603
+  name: Self-describing database — agent init, MCP guidance resources, generated teaching artifacts
+  depends_on: [WP-602]
+  objective: Implement ADR-0120 section 3. riffdb agent init installs the skill file, an
+    AGENTS.md section describing the schema-push-generate-query loop, and MCP configuration
+    into the invoking repository; the daemon serves version-exact application-specific
+    guidance as authorization-filtered MCP resources beside the existing catalog; the generic
+    surface distillation (llms.txt convention) and quickstarts are generated from one in-repo
+    source with a check-generated referee and shipped in packages and the docs site.
+  requirements: []
+  required_adrs: [ADR-0008, ADR-0046, ADR-0117, ADR-0120]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-service/**, scripts/**]
+  deliverables:
+  - riffdb agent init writing skill, AGENTS.md section, and MCP config, idempotent and
+    scoped to the invoking repository
+  - Guidance MCP resources generated from the deployed application's catalog, authorization-
+    filtered, bounded, with registry/schema fixtures per house MCP rules
+  - The single-source distillation generator with drift refereed by check-generated
+  acceptance_commands:
+  - cargo test -p riffdb-api-mcp --all-features
+  - ./scripts/check-generated
+  human_review_triggers: *id001
+- id: WP-604
+  name: One-story conformance — cross-driver matrix, pinned step counts, campaign-03
+  depends_on: [WP-601, WP-602, WP-603]
+  objective: Implement ADR-0120 section 4. A cross-driver conformance matrix proves the same
+    schema pushed and generated in all four languages yields agreeing operation identities,
+    outcomes, idempotency behavior, and public errors; quickstart step counts are pinned so
+    an added onboarding step reds conformance; the ADR-0056 sealed agent campaign re-runs
+    from package installation in an empty directory with time-to-first-committed-row,
+    ceremony count, and rescue count recorded as standing evidence.
+  requirements: []
+  required_adrs: [ADR-0056, ADR-0106, ADR-0120]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, tests/**, scripts/**,
+    clients/**]
+  deliverables:
+  - The four-language matrix over one schema with identity/outcome/error agreement assertions
+  - Pinned per-driver quickstart step counts wired as a conformance assertion
+  - Campaign-03 sealed runs from package install, cliff metrics recorded, friction ledger
+    filed as tracked items
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - cargo test --workspace --all-features
+  human_review_triggers: *id001
