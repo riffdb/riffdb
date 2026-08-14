@@ -339,7 +339,7 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         .split_once("fn inspect_cached_command_audit_row(")
         .expect("cached audit inspector")
         .1
-        .split_once("\nfn inspect_cached_command_audit_request_row(")
+        .split_once("\nfn inspect_audit_row(")
         .expect("cached audit inspector end")
         .0;
     assert!(audit.contains("embedded_command_authority.contains"));
@@ -364,8 +364,19 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
         .expect("terminal phase end")
         .0;
     assert!(!terminal_branch.contains("ensure_command_cache"));
-    assert!(dispatch.contains("matches!(phase, 21 | 22)"));
-    assert!(startup.contains("fn inspect_cached_command_audit_request_row("));
+    assert!(dispatch.contains("if phase == 21"));
+    assert!(!dispatch.contains("matches!(phase, 21 | 22)"));
+    assert!(!startup.contains("fn inspect_cached_command_audit_request_row("));
+
+    let request_index = startup
+        .split_once("fn inspect_audit_by_request_row(")
+        .expect("audit request inspector")
+        .1
+        .split_once("\nconst MAX_STARTUP_EVIDENCE_INDEX_BYTES")
+        .expect("audit request inspector end")
+        .0;
+    assert!(request_index.contains("service_link_is_valid"));
+    assert!(!request_index.contains("ensure_command_cache"));
 
     let terminal = startup
         .split_once("fn inspect_terminal_row_with_census(")
@@ -381,6 +392,20 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
         .find("self.ensure_command_cache()")
         .expect("suffix command cache");
     assert!(checkpoint_skip < command_cache);
+
+    let allocator = startup
+        .split_once("fn administration_allocator_matches(")
+        .expect("administration allocator")
+        .1
+        .split_once("\nfn read_active_pointer(")
+        .expect("administration allocator end")
+        .0;
+    assert!(allocator.contains("checkpoint.retained.next_administration_sequence"));
+    assert!(allocator.contains("checkpoint.checkpoint_commit_sequence"));
+    assert!(allocator.contains("Excluded(lower.as_slice()), Unbounded"));
+    assert!(
+        allocator.contains("command_audit_cache_from_segments(transaction, after_commit_sequence)")
+    );
 }
 
 #[test]

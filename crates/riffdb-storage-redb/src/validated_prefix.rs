@@ -57,6 +57,10 @@ pub(crate) const SAMPLE_WINDOW_SIZE: u64 = 128;
 pub(crate) struct ActiveCheckpoint {
     pub checkpoint_commit_sequence: u64,
     pub audit_sequence_bound: u64,
+    /// Allocator state proven with the validated prefix. Startup advances from
+    /// this exact state across the suffix rather than replaying retained
+    /// administration history from sequence one.
+    pub retained: ValidatedPrefixRetainedSnapshot,
     pub counts: ValidatedPrefixSequenceCounts,
     /// Fingerprint-verified `(target, version)` map at S; consumed once to seed
     /// suffix entity-chain advancement (`None` after consumption).
@@ -586,6 +590,7 @@ pub(crate) fn load_active_checkpoint(
     Ok(ActiveCheckpoint {
         checkpoint_commit_sequence: checkpoint.checkpoint_commit_sequence(),
         audit_sequence_bound: checkpoint.audit_sequence_bound(),
+        retained: checkpoint.retained(),
         counts,
         entities_at_s: Some(entities_at_s),
         checkpoint_hash: *checkpoint.checkpoint_hash().as_bytes(),
