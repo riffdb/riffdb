@@ -100,17 +100,17 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$repo_root"
-cargo +1.97.0 build --quiet \
+cargo +1.97.0 build --quiet --release \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
     -p riffdb-ticketdesk --bin endurance \
     -p riffdb-testkit --example endurance_inspect >&2
-cp target/debug/riffdbd "$environment_root/bin/riffdbd"
-cp target/debug/riffdb "$environment_root/bin/riffdb"
-cp target/debug/riffdb-driverd "$environment_root/bin/riffdb-driverd"
-cp target/debug/endurance "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
-cp target/debug/examples/endurance_inspect "$environment_root/bin/riffdb-endurance-inspect"
+cp target/release/riffdbd "$environment_root/bin/riffdbd"
+cp target/release/riffdb "$environment_root/bin/riffdb"
+cp target/release/riffdb-driverd "$environment_root/bin/riffdb-driverd"
+cp target/release/endurance "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
+cp target/release/examples/endurance_inspect "$environment_root/bin/riffdb-endurance-inspect"
 (cd examples/ticketdesk && go build -o "$environment_root/bin/riffdb-ticketdesk-go-endurance" ./endurance/go)
 npm --prefix clients/typescript/runtime run build >/dev/null
 npm --prefix examples/ticketdesk/web run build >/dev/null

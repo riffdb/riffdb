@@ -1564,7 +1564,6 @@ impl RedbStructuralEvidenceSession {
             return self.inspect_reactive_module_row_with_witness(&key, &value);
         }
         if phase == 8 {
-            self.ensure_command_cache()?;
             return self.inspect_terminal_row_with_census(&key, &value);
         }
         if let Some(checkpoint) = self.checkpoint.as_ref()
@@ -1930,6 +1929,11 @@ impl RedbStructuralEvidenceSession {
             self.walked_prefix_counts[8] = self.walked_prefix_counts[8].saturating_add(1);
             return Ok(None);
         }
+        // Only a suffix outcome or an execution-failure row needs the complete
+        // command-authority graph. Building it before the checkpoint test makes
+        // every clean restart decode and clone the entire retained command
+        // history merely to skip already-proved prefix outcomes.
+        self.ensure_command_cache()?;
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         let finding = inspect_terminal_row(
             transaction,
