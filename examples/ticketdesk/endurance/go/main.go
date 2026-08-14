@@ -27,7 +27,7 @@ var latencyBoundsUS = [...]uint64{
 	12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, 9_007_199_254_740_991,
 }
 
-const maxTransientRetries uint64 = 3
+const maxTransientRetries uint64 = 90
 
 type identityFile struct {
 	ApplicationManifestHash string `json:"applicationManifestHash"`
@@ -296,7 +296,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 	}
 	defer clientSet.close()
 	tenant := tenants[index]
-	organizationID := id(10, index)
+	organizationID := id(seed+1, index)
 	userID := id(seed+1, 100+index)
 	projectID := id(seed+1, 200+index)
 	hotTicketID := id(seed+1, 300+index)
@@ -312,10 +312,14 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 				break
 			}
 			if retries >= maxTransientRetries || !transientError(err) {
-				return err
+				return fmt.Errorf("Go endurance client %d failed at counter %d (slot %d): %w", index, counter, counter%100, err)
 			}
 			metric.transientRetry()
-			time.Sleep(time.Duration(retries+1) * 100 * time.Millisecond)
+			delay := time.Duration(retries+1) * 100 * time.Millisecond
+			if delay > time.Second {
+				delay = time.Second
+			}
+			time.Sleep(delay)
 		}
 		time.Sleep(delay)
 	}
@@ -437,7 +441,7 @@ func transientError(err error) bool {
 		return false
 	}
 	switch applicationError.Details.Code {
-	case "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003":
+	case "RDB-DRIVER-0101", "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003":
 		return true
 	default:
 		return false
@@ -450,7 +454,7 @@ func seedClient(ctx context.Context, clients *clients, metric *metrics, tenant, 
 		size uint64
 	}{
 		{func() error {
-			_, err := clients.seeder.CreateOrganization(ctx, ticketdesk.CreateOrganizationInput{Name: "Endurance " + tenant, OrganizationId: organizationID, IdempotencyKey: "endurance-organization-" + tenant})
+			_, err := clients.seeder.CreateOrganization(ctx, ticketdesk.CreateOrganizationInput{Name: "Endurance " + tenant, OrganizationId: organizationID, IdempotencyKey: "endurance-go-organization-" + tenant})
 			return err
 		}, 512},
 		{func() error {

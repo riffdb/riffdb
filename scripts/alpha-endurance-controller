@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -19,6 +20,7 @@ MAX_ACTIONS = 32
 MAX_ARGUMENTS = 64
 MAX_SAMPLES = 10000
 MAX_ACTION_RESULT_BYTES = 64 * 1024
+MAX_FAILURE_DIAGNOSTIC_BYTES = 4 * 1024
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
@@ -58,6 +60,39 @@ def command(value: Any, name: str) -> list[str]:
 
 def exact_names(value: Any, expected: set[str]) -> bool:
     return isinstance(value, list) and len(value) == len(expected) and all(isinstance(item, str) for item in value) and set(value) == expected
+
+
+def bounded_failure_diagnostic(value: str) -> str:
+    """Keep harness failures useful without allowing unbounded subprocess output."""
+    encoded = value.encode(errors="replace")[:MAX_FAILURE_DIAGNOSTIC_BYTES]
+    return encoded.decode(errors="replace").strip() or "subprocess emitted no diagnostic"
+
+
+def report_subprocess_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
+    print(f"{label}: {bounded_failure_diagnostic(result.stderr)}", file=sys.stderr)
+
+
+class BoundedStderrCapture:
+    """Drain a worker pipe continuously while retaining only a bounded prefix."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._buffer = bytearray()
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        while True:
+            chunk = self._stream.read(4096)
+            if not chunk:
+                return
+            remaining = MAX_FAILURE_DIAGNOSTIC_BYTES - len(self._buffer)
+            if remaining > 0:
+                self._buffer.extend(chunk[:remaining])
+
+    def finish(self) -> str:
+        self._thread.join(timeout=5)
+        return bytes(self._buffer).decode(errors="replace")
 
 
 def load_actions(candidate: Path) -> dict[str, Any]:
@@ -224,6 +259,10 @@ def parse_conformance_result(output: str) -> dict[str, Any]:
 
 
 def self_test() -> None:
+    diagnostic = bounded_failure_diagnostic("sampler reason\n" + "x" * MAX_FAILURE_DIAGNOSTIC_BYTES)
+    if not diagnostic.startswith("sampler reason\n") or len(diagnostic.encode()) > MAX_FAILURE_DIAGNOSTIC_BYTES:
+        fail("failure diagnostic is not bounded")
+    print("bounded_failure_diagnostic: passed")
     valid = json.dumps(
         {
             "schema": ACTION_RESULT_SCHEMA,
@@ -299,6 +338,7 @@ def main() -> int:
         environment,
     )
     if setup.returncode != 0:
+        report_subprocess_failure("environment_setup_failed", setup)
         run_checked(
             command(action_manifest["environment"]["teardown"], "environment teardown"),
             root,
@@ -317,7 +357,8 @@ def main() -> int:
 
     started = time.monotonic()
     deadline = started + duration
-    workers: list[tuple[str, subprocess.Popen[bytes]]] = []
+    workers: list[tuple[str, subprocess.Popen[bytes], BoundedStderrCapture]] = []
+    early_worker_languages: set[str] = set()
     lifecycle_counts = {name: 0 for name in sorted(REQUIRED_LIFECYCLES)}
     fault_counts = {name: 0 for name in sorted(REQUIRED_FAULTS)}
     errors: list[dict[str, Any]] = []
@@ -345,25 +386,38 @@ def main() -> int:
                 env=worker_environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
-            workers.append((worker["language"], process))
+            if process.stderr is None:
+                fail("worker stderr capture was not created")
+            workers.append((worker["language"], process, BoundedStderrCapture(process.stderr)))
 
         next_sample = started
-        next_conformance = started
+        # The sampler proves immediate process and resource readiness. Give the
+        # mixed workers one complete declared interval to reach every workload
+        # class before the first periodic semantic reconciliation.
+        next_conformance = started + action_manifest["conformance"]["interval_seconds"]
         lifecycle_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["lifecycles"]}
         fault_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["faults"]}
         while time.monotonic() < deadline:
             now = time.monotonic()
-            for language, process in workers:
+            worker_exited = False
+            for language, process, capture in workers:
                 status = process.poll()
                 if status is not None:
+                    diagnostic = bounded_failure_diagnostic(capture.finish())
+                    print(f"worker_exited_early[{language}]: {diagnostic}", file=sys.stderr)
                     errors.append({"code": "worker_exited_early", "language": language, "status": status})
+                    early_worker_languages.add(language)
                     deadline = now
+                    worker_exited = True
                     break
+            if worker_exited:
+                break
             if now >= next_sample:
                 result = run_checked(command(action_manifest["sampler"]["command"], "sampler command"), root, environment)
                 if result.returncode != 0:
+                    report_subprocess_failure("sampler_failed", result)
                     errors.append({"code": "sampler_failed", "status": result.returncode})
                     break
                 try:
@@ -380,6 +434,7 @@ def main() -> int:
             if now >= next_conformance:
                 result = run_checked(command(action_manifest["conformance"]["command"], "conformance command"), root, environment)
                 if result.returncode != 0:
+                    report_subprocess_failure("conformance_failed", result)
                     errors.append({"code": "conformance_failed", "status": result.returncode})
                     break
                 conformance_results.append(parse_conformance_result(result.stdout))
@@ -390,6 +445,7 @@ def main() -> int:
                     continue
                 result = run_checked(command(item["command"], "lifecycle command"), root, environment)
                 if result.returncode != 0:
+                    report_subprocess_failure(f"lifecycle_failed[{item['name']}]", result)
                     errors.append({"code": "lifecycle_failed", "lifecycle": item["name"], "status": result.returncode})
                     deadline = now
                     break
@@ -401,6 +457,7 @@ def main() -> int:
                     continue
                 result = run_checked(command(item["command"], "fault command"), root, environment)
                 if result.returncode != 0:
+                    report_subprocess_failure(f"fault_failed[{item['name']}]", result)
                     errors.append({"code": "fault_failed", "fault": item["name"], "status": result.returncode})
                     deadline = now
                     break
@@ -409,16 +466,18 @@ def main() -> int:
                 fault_due[item["name"]] = now + item["interval_seconds"]
             time.sleep(min(1.0, max(0.01, deadline - time.monotonic())))
     finally:
-        for _, process in workers:
+        for _, process, _ in workers:
             if process.poll() is None:
                 process.terminate()
-        for language, process in workers:
+        for language, process, capture in workers:
             try:
                 status = process.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 process.kill()
                 status = process.wait(timeout=10)
-            if status not in (0, -15):
+            diagnostic = bounded_failure_diagnostic(capture.finish())
+            if status not in (0, -15) and language not in early_worker_languages:
+                print(f"worker_shutdown_failed[{language}]: {diagnostic}", file=sys.stderr)
                 errors.append({"code": "worker_shutdown_failed", "language": language, "status": status})
         teardown = run_checked(
             command(action_manifest["environment"]["teardown"], "environment teardown"),
@@ -426,6 +485,7 @@ def main() -> int:
             environment,
         )
         if teardown.returncode != 0:
+            report_subprocess_failure("environment_teardown_failed", teardown)
             errors.append({"code": "environment_teardown_failed", "status": teardown.returncode})
         else:
             try:

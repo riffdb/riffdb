@@ -21,7 +21,7 @@ DOMAINS = ("better-auth", "mlflow", "openfga", "woodpecker")
 LANGUAGES = ("go", "python", "rust", "typescript")
 TENANTS = ("tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta")
 WORKLOADS = ("events", "live_queries", "reads", "workflows", "writes")
-SEEDS = (1001, 2002, 3003, 4004)
+APPLICATION_NAMESPACES = (1001, 2003, 3005, 4007)
 MAX_BYTES = 1024 * 1024
 
 
@@ -249,12 +249,12 @@ async def application_probes(environment: Path) -> int:
     seeder = AsyncTicketDeskClient(seeder_transport, AttemptBudget(1))
     verified = 0
     try:
-        for seed in SEEDS:
+        for namespace in APPLICATION_NAMESPACES:
             for client_index in range(4):
                 page = await application.ticket_page(
                     TicketPageParams(
-                        organization_id=identifier(10, client_index),
-                        ticket_id=identifier(seed, 300 + client_index),
+                        organization_id=identifier(namespace, client_index),
+                        ticket_id=identifier(namespace, 300 + client_index),
                     )
                 )
                 if not isinstance(page.value, TicketPageFound):
@@ -263,8 +263,8 @@ async def application_probes(environment: Path) -> int:
         try:
             await seeder.ticket_page(
                 TicketPageParams(
-                    organization_id=identifier(10, 0),
-                    ticket_id=identifier(SEEDS[0], 300),
+                    organization_id=identifier(APPLICATION_NAMESPACES[0], 0),
+                    ticket_id=identifier(APPLICATION_NAMESPACES[0], 300),
                 )
             )
         except RiffDbApplicationError as error:
