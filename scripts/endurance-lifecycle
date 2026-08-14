@@ -938,7 +938,7 @@ def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[
         primary_fence_binding = primary.get("fence_binding")
         primary_maximum_raw = primary.get("max_permissible_watermark")
         primary_maximum = (
-            positive_decimal(
+            positive_decimal_or_zero(
                 primary_maximum_raw, "primary maximum permissible watermark"
             )
             if primary_maximum_raw is not None

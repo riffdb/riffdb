@@ -379,6 +379,19 @@ pub struct RedbStore {
     pub(crate) shared: Arc<SharedRedb>,
 }
 
+/// Unforgeable crate-internal proof that an offline retention operation owns
+/// a recovered redb checkpoint and an empty rebased journal.
+pub(crate) struct RedbOfflineRetentionPreparation<'a> {
+    database: &'a Database,
+    _journal: crate::journal::RetentionJournalRebaseWitness,
+}
+
+impl RedbOfflineRetentionPreparation<'_> {
+    pub(crate) const fn database(&self) -> &Database {
+        self.database
+    }
+}
+
 /// Redb ports released by a complete structural evidence session.
 ///
 /// This value is still dormant: it exposes no storage trait implementation and
@@ -3110,6 +3123,34 @@ impl RedbDormantPorts {
 }
 
 impl RedbStore {
+    /// Proves the ADR-0085 Amendment 4 precondition before offline retention
+    /// is allowed to open its first write transaction.
+    pub(crate) fn prepare_offline_retention(
+        &self,
+    ) -> Result<RedbOfflineRetentionPreparation<'_>, StorageError> {
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let database_id = read_identity_from_read_transaction(&transaction)?;
+        let application_frontier = read_commit_tail(&transaction)?;
+        let administration_frontier = read_administration_tail(&transaction)?;
+        drop(transaction);
+        let journal = crate::journal::verify_retention_journal_rebase_with_media(
+            self.shared.journal_media.as_ref(),
+            &self.shared.path,
+            database_id,
+            application_frontier,
+            administration_frontier,
+        )
+        .map_err(recovery_journal_error)?;
+        Ok(RedbOfflineRetentionPreparation {
+            database: &self.shared.database,
+            _journal: journal,
+        })
+    }
+
     /// Releases ports only to the crate-private migration-stage recovery gate.
     pub(crate) fn into_contract_migration_ports(
         self,
@@ -5807,7 +5848,20 @@ pub(crate) fn read_commit_tail(
 ) -> Result<Option<CommitSequence>, StorageError> {
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    crate::command_authority::command_authority_head(&commits, &events)
+    let retained = crate::command_authority::command_authority_head(&commits, &events)?;
+    let watermark = crate::retention::load_watermark(transaction)?
+        .map(|watermark| watermark.watermark_sequence())
+        .unwrap_or(0);
+    if watermark == 0 {
+        return Ok(retained);
+    }
+    let pruned = CommitSequence::new(watermark)
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    match retained {
+        Some(retained) if retained <= pruned => Err(storage_error(StorageErrorKind::CorruptData)),
+        Some(retained) => Ok(Some(retained)),
+        None => Ok(Some(pruned)),
+    }
 }
 
 pub(crate) fn read_administration_tail(

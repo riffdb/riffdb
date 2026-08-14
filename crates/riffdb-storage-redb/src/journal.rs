@@ -2379,7 +2379,7 @@ fn read_redb_frontier(
     let commit = transaction
         .open_table(COMMITS)
         .map_err(|_| JournalIoError::Corrupt)?;
-    let (commit_sequence, command_audit_sequence) =
+    let (mut commit_sequence, command_audit_sequence) =
         match commit.last().map_err(|_| JournalIoError::Corrupt)? {
             None => (None, None),
             Some((key, value)) => {
@@ -2409,6 +2409,11 @@ fn read_redb_frontier(
                 }
             }
         };
+    if commit_sequence.is_none() {
+        commit_sequence = crate::retention::load_watermark(&transaction)
+            .map_err(|_| JournalIoError::Corrupt)?
+            .and_then(|watermark| CommitSequence::new(watermark.watermark_sequence()));
+    }
     let audit = transaction
         .open_table(AUDIT)
         .map_err(|_| JournalIoError::Corrupt)?;
@@ -2427,6 +2432,67 @@ fn read_redb_frontier(
         (None, None) => None,
     };
     Ok((commit_sequence, administration_sequence))
+}
+
+/// Storage-internal proof that ordinary recovery left no journal suffix for
+/// offline retention to race or discard (ADR-0085 Amendment 4).
+pub(crate) struct RetentionJournalRebaseWitness {
+    _database_id: DatabaseId,
+    _application_frontier: Option<CommitSequence>,
+    _administration_frontier: Option<AdministrationSequence>,
+    _terminal_frame_hash: [u8; HASH_BYTES],
+    _selected_generation: Option<u64>,
+}
+
+pub(crate) fn verify_retention_journal_rebase_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    application_frontier: Option<CommitSequence>,
+    administration_frontier: Option<AdministrationSequence>,
+) -> Result<RetentionJournalRebaseWitness, JournalIoError> {
+    for non_authoritative in [
+        checkpoint_journal_path(database_path),
+        spare_journal_path(database_path),
+    ] {
+        if media
+            .try_exists(&non_authoritative)
+            .map_err(|_| JournalIoError::Io)?
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+    }
+    let active = journal_path(database_path);
+    if !media.try_exists(&active).map_err(|_| JournalIoError::Io)? {
+        return Ok(RetentionJournalRebaseWitness {
+            _database_id: database_id,
+            _application_frontier: application_frontier,
+            _administration_frontier: administration_frontier,
+            _terminal_frame_hash: [0; HASH_BYTES],
+            _selected_generation: None,
+        });
+    }
+    let (header, tail, state) =
+        scan_extent_with_media(media, &active, Some(database_id), |_| Ok(()))?;
+    if header.checkpoint_sequence() != application_frontier
+        || header.checkpoint_administration_sequence() != administration_frontier
+        || tail.last_sequence != application_frontier
+        || tail.last_administration_sequence != administration_frontier
+        || tail.last_hash != header.checkpoint_frame_hash()
+        || tail.incomplete_tail
+        || tail.transition_count != 0
+        || tail.command_count != 0
+        || tail.audit_count != 0
+    {
+        return Err(JournalIoError::Corrupt);
+    }
+    Ok(RetentionJournalRebaseWitness {
+        _database_id: database_id,
+        _application_frontier: application_frontier,
+        _administration_frontier: administration_frontier,
+        _terminal_frame_hash: tail.last_hash,
+        _selected_generation: Some(state.header.generation),
+    })
 }
 
 fn replay_frames(database: &Database, frames: &[JournalFrame]) -> Result<(), JournalIoError> {
@@ -3692,6 +3758,61 @@ mod tests {
         assert_eq!(tail.command_count, 0);
         assert_eq!(tail.complete_bytes, EXTENT_DATA_OFFSET);
         assert!(!tail.incomplete_tail);
+    }
+
+    #[test]
+    fn retention_witness_requires_the_recovered_empty_extent_and_no_scratch_name() {
+        let database_path = TestPath::new("retention-rebase-witness");
+        let database = create_database(&database_path.0);
+        let database_id = database_id(27);
+        let frame = recovery_frame(database_id).encode().expect("encode frame");
+        write_recovery_journal(&database_path.0, database_id, &frame, None);
+
+        assert!(matches!(
+            verify_retention_journal_rebase_with_media(
+                &RealJournalMedia,
+                &database_path.0,
+                database_id,
+                Some(sequence(1)),
+                None,
+            ),
+            Err(JournalIoError::Corrupt)
+        ));
+
+        recover_journal(&database, &database_path.0, database_id).expect("recover and rebase");
+        let witness = verify_retention_journal_rebase_with_media(
+            &RealJournalMedia,
+            &database_path.0,
+            database_id,
+            Some(sequence(1)),
+            None,
+        )
+        .expect("empty successor extent proves preparation");
+        assert!(witness._selected_generation.is_some());
+
+        let active = journal_path(&database_path.0);
+        reset_journal_after_with_media(
+            &RealJournalMedia,
+            &spare_journal_path(&database_path.0),
+            &JournalFileHeader::with_frontiers(
+                database_id,
+                Some(sequence(1)),
+                None,
+                witness._terminal_frame_hash,
+            ),
+            &active,
+        )
+        .expect("prepare scratch extent");
+        assert!(matches!(
+            verify_retention_journal_rebase_with_media(
+                &RealJournalMedia,
+                &database_path.0,
+                database_id,
+                Some(sequence(1)),
+                None,
+            ),
+            Err(JournalIoError::Corrupt)
+        ));
     }
 
     #[test]
