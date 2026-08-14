@@ -84,6 +84,18 @@ publishes a protected state file plus a typed setup receipt. There is no broad
 endurance credential and no cleartext fallback. Teardown stops every recorded
 driver and server process without deleting the database, logs, or receipts.
 
+The installed `scripts/endurance-worker` dispatcher selects one compiled
+worker for `rust`, `go`, `typescript`, or `python`. Every worker independently
+revalidates the closed tenant inventory, workload coverage, four-client count,
+seed, and per-language rate ceiling before opening a session. Each worker uses
+the generated TicketDesk facade with one transport attempt per logical
+operation, separate seeder/application/agent authority, four tenant-owned
+client loops, and atomic bounded metric snapshots under
+`environment-v1/metrics`. The language implementations deliberately exercise
+the same weighted page read, comment write, contextual reaction, durable event
+acknowledgement, live-query snapshot, and cold-ticket growth shapes; none may
+substitute a kernel read or benchmark-only mutation.
+
 `RIFFDB_ENDURANCE_ARTIFACT_ROOT` must be an absolute, non-symlink path and must
 name a fresh run root. The script never reuses or erases an existing
 `environment-v1` directory. The server's stdin is held open for the complete

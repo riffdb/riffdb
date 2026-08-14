@@ -2269,6 +2269,7 @@ name = "riffdb-ticketdesk"
 version = "0.1.0"
 dependencies = [
  "riffdb-client-rust",
+ "riffdb-config",
  "tokio",
  "tonic",
 ]

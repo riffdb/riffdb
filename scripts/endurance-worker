@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+language=""
+if [[ "${1:-}" == "--language" && "$#" -eq 2 ]]; then
+    language="$2"
+else
+    echo "usage: ./scripts/endurance-worker --language <rust|go|typescript|python>" >&2
+    exit 2
+fi
+
+case "$language" in
+    rust|go|typescript|python) ;;
+    *) echo "unsupported endurance worker language" >&2; exit 2 ;;
+esac
+
+artifact_root="${RIFFDB_ENDURANCE_ARTIFACT_ROOT:-}"
+[[ -n "$artifact_root" && "$artifact_root" == /* && ! -L "$artifact_root" ]] || {
+    echo "RIFFDB_ENDURANCE_ARTIFACT_ROOT must be an absolute non-symlink directory" >&2
+    exit 2
+}
+environment_root="$artifact_root/environment-v1"
+state_path="$environment_root/state.json"
+[[ -f "$state_path" ]] || { echo "endurance environment state is absent" >&2; exit 1; }
+
+export RIFFDB_ENDURANCE_ENDPOINT
+RIFFDB_ENDURANCE_ENDPOINT="$(jq -er '.endpoint' "$state_path")"
+
+case "$language" in
+    rust)
+        exec "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
+        ;;
+    go)
+        exec "$environment_root/bin/riffdb-ticketdesk-go-endurance"
+        ;;
+    typescript)
+        exec node "$environment_root/typescript-worker/endurance.js"
+        ;;
+    python)
+        exec "$environment_root/python-venv/bin/python" "$environment_root/python-worker/main.py"
+        ;;
+esac
