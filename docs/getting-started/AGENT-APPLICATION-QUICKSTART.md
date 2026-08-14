@@ -144,11 +144,15 @@ With `--run`, the same product-owned workflow starts the repository's generated
 application after readiness. A repository must contain exactly one supported
 runner: `Cargo.toml` for Rust or `package.json` for TypeScript. RiffDB passes
 the loopback endpoint and scoped application credential directly to that child;
-the application does not need to parse the readiness line or keep a separate
-bootstrap process alive. Rust one-shot runners exit normally. TypeScript web
-runners remain attached and may print `riffdb-app-ready-v1` before accepting
-requests. Application stdout is caller-owned output and is streamed directly,
-not copied into RiffDB diagnostics or logs.
+the application does not need to parse the database-readiness line or keep a
+separate bootstrap process alive. Rust one-shot runners exit normally. A
+TypeScript web runner stays in the foreground. Leave it running after the
+application prints `riffdb-app-ready-v1<TAB>PORT`, then issue the application
+HTTP request from another terminal; the generated starter is exercised with
+`curl http://127.0.0.1:PORT/item`. The foreground command has not completed
+merely because the ready marker appeared. Stopping it shuts down the scoped
+driver and development daemon. Application stdout is caller-owned output and
+is streamed directly, not copied into RiffDB diagnostics or logs.
 
 A release installation places the reviewed `riffdb-dev` workflow beside the
 `riffdb` and `riffdbd` binaries. That installed workflow takes precedence over

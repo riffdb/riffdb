@@ -120,6 +120,18 @@ production credentials and the daemon never binds them to a non-loopback
 address. Remote and production deployments must supply their own TLS identity
 through the documented driver-host configuration.
 
+The command stays in the foreground for a web application. Once it prints
+`riffdb-app-ready-v1<TAB>PORT`, leave that terminal running and exercise the
+generated route from another terminal:
+
+```text
+curl http://127.0.0.1:PORT/item
+```
+
+The ready marker is an invitation to send requests, not command completion.
+Interrupting the foreground command closes the application, scoped driver, and
+development daemon together.
+
 Application Source V4 additionally generates typed event async iterators, live
 query update unions, a framework-neutral live store, and an application-server
 SSE relay. The relay retains the RiffDB credential server-side and requires an

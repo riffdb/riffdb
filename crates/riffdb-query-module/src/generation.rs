@@ -2000,6 +2000,17 @@ fn wire_bytes(value: Vec<u8>) -> v1::Value { v1::Value { kind: Some(WireKind::By
 fn wire_date(value: i32) -> v1::Value { v1::Value { kind: Some(WireKind::DateValue(v1::Date { days_since_unix_epoch: value })) } }
 fn wire_timestamp(value: &TimestampValue) -> Result<v1::Value, GeneratedCommandError> { if value.nanos >= 1_000_000_000 { return Err(GeneratedCommandError::InvalidInputShape); } Ok(v1::Value { kind: Some(WireKind::TimestampValue(v1::Timestamp { seconds: value.seconds, nanos: value.nanos })) }) }
 fn wire_decimal(value: &DecimalValue) -> v1::Value { v1::Value { kind: Some(WireKind::DecimalValue(v1::Decimal { coefficient_twos_complement: value.coefficient_twos_complement.clone(), scale: value.scale, precision: value.precision })) } }
+fn wire_money(value: &MoneyValue, expected_currency: &str) -> Result<v1::Value, GeneratedCommandError> {
+    if value.currency != expected_currency || value.amount.scale != 2 || value.amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidInputShape); }
+    Ok(v1::Value { kind: Some(WireKind::MoneyValue(v1::Money {
+        currency: value.currency.clone(),
+        amount: Some(v1::Decimal {
+            coefficient_twos_complement: value.amount.coefficient_twos_complement.clone(),
+            scale: value.amount.scale,
+            precision: value.amount.precision,
+        }),
+    })) })
+}
 fn wire_enum(value: String) -> v1::Value { v1::Value { kind: Some(WireKind::EnumValue(v1::EnumValue { type_id: 0, variant_id: 0, name: value })) } }
 fn wire_uuid(value: &str) -> Result<v1::Value, GeneratedCommandError> {
     if value.len() != 36 { return Err(GeneratedCommandError::InvalidInputShape); }
@@ -2043,6 +2054,12 @@ fn decode_wire_bytes(value: v1::Value) -> Result<Vec<u8>, GeneratedCommandError>
 fn decode_wire_date(value: v1::Value) -> Result<i32, GeneratedCommandError> { if let Some(WireKind::DateValue(value)) = value.kind { Ok(value.days_since_unix_epoch) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCommandError> { if let Some(WireKind::TimestampValue(value)) = value.kind { if value.nanos < 1_000_000_000 { Ok(TimestampValue { seconds: value.seconds, nanos: value.nanos }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_money(value: v1::Value, expected_currency: &str) -> Result<MoneyValue, GeneratedCommandError> {
+    let Some(WireKind::MoneyValue(value)) = value.kind else { return Err(GeneratedCommandError::InvalidOutcomeShape); };
+    let amount = value.amount.ok_or(GeneratedCommandError::InvalidOutcomeShape)?;
+    if value.currency != expected_currency || amount.scale != 2 || amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(MoneyValue { currency: value.currency, amount: DecimalValue { coefficient_twos_complement: amount.coefficient_twos_complement, scale: amount.scale, precision: amount.precision } })
+}
 "#,
     );
 }
@@ -2084,7 +2101,13 @@ fn rust_encode_wire_expr(
         ValueTypeTag::I64 => format!("wire_i64({copied})"),
         ValueTypeTag::U64 => format!("wire_u64({copied})"),
         ValueTypeTag::Decimal => format!("wire_decimal({access})"),
-        ValueTypeTag::Money => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
+        ValueTypeTag::Money => format!(
+            "wire_money({access}, {:?})?",
+            value_type
+                .currency()
+                .expect("validated money type has currency")
+                .to_string()
+        ),
         ValueTypeTag::String => format!("wire_string(Clone::clone({access}))"),
         ValueTypeTag::Bytes => format!("wire_bytes(Clone::clone({access}))"),
         ValueTypeTag::Timestamp => format!("wire_timestamp({access})?"),
@@ -2135,7 +2158,13 @@ fn rust_decode_wire_expr(
         ValueTypeTag::I64 => format!("decode_wire_i64({access})?"),
         ValueTypeTag::U64 => format!("decode_wire_u64({access})?"),
         ValueTypeTag::Decimal => format!("decode_wire_decimal({access})?"),
-        ValueTypeTag::Money => "return Err(GeneratedCommandError::InvalidOutcomeShape)".to_owned(),
+        ValueTypeTag::Money => format!(
+            "decode_wire_money({access}, {:?})?",
+            value_type
+                .currency()
+                .expect("validated money type has currency")
+                .to_string()
+        ),
         ValueTypeTag::String => format!("decode_wire_string({access})?"),
         ValueTypeTag::Bytes => format!("decode_wire_bytes({access})?"),
         ValueTypeTag::Timestamp => format!("decode_wire_timestamp({access})?"),
@@ -3707,6 +3736,8 @@ mod tests {
             generated.contains(r#"{"currency":"USD","kind":"money","precision":38,"scale":2}"#)
         );
         assert!(generated_rust.contains("pub price: MoneyValue,"));
+        assert!(generated_rust.contains("fn wire_money("));
+        assert!(generated_rust.contains("fn decode_wire_money("));
         assert!(generated_python.contains("    price: Money"));
         assert!(!generated_python.contains("    price: str"));
 
@@ -3723,6 +3754,18 @@ mod tests {
                     .find(|field| field.name() == "price")
             })
             .expect("price field");
+        assert_eq!(
+            rust_encode_wire_expr(price.value_type(), "&entity.price", &contract),
+            "wire_money(&entity.price, \"USD\")?"
+        );
+        assert_eq!(
+            rust_decode_wire_expr(
+                price.value_type(),
+                "take_wire_field(&mut fields, 2)?",
+                &contract
+            ),
+            "decode_wire_money(take_wire_field(&mut fields, 2)?, \"USD\")?"
+        );
         assert_eq!(
             ts_contract_value_schema(price.value_type(), &contract),
             json!({"kind": "money", "precision": 38, "scale": 2, "currency": "USD"})
