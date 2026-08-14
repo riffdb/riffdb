@@ -1901,6 +1901,121 @@ contract DeleteRestrict version 1 {
         assert_eq!(derived.entry_mutations.len(), 2);
     }
 
+    // WP-606 V7 audit evidence: the era adds event policy anchors (ADR-0116)
+    // in the EVENT schema only. Entity index derivation must be untouched by
+    // an anchored emit in the same mutating command.
+    const ANCHORED_EVENT_INDEXED_SOURCE: &str = r#"
+contract AnchoredEventRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  event RowTouched {
+    partition_by (id)
+    policy_anchor current Row(id: id)
+    id: uuid
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  row policy RowAccess on Row {
+    allow read when true
+    allow create when true
+  }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    emit RowTouched { id: id }
+    return Created { row: row }
+  }
+}
+"#;
+
+    #[test]
+    fn event_policy_anchor_v7_leaves_index_derivation_exact() {
+        let fixture = fixture_from_source(
+            ANCHORED_EVENT_INDEXED_SOURCE,
+            "CreateRow",
+            "anchored-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        // Non-empty trigger: this bundle must sit exactly at the V7 era.
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V7
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V7
+        );
+        assert!(
+            fixture
+                .resolved
+                .bundle()
+                .bundle()
+                .schema()
+                .events()
+                .iter()
+                .any(|event| event.policy_anchor().is_some()),
+            "the V7 evidence bundle must carry an anchored event"
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("anchored-event contracts retain ordinary index derivation");
+        let tenant = index(&fixture, "by_tenant_category");
+        let score = index(&fixture, "by_score");
+        let entity_key = fixture.evaluated.mutations()[0].target().key().clone();
+        assert_eq!(
+            actual_entry_kinds(&derived),
+            BTreeSet::from([
+                (
+                    tenant
+                        .key_schema()
+                        .encode_index(
+                            &[CanonicalValue::Uuid([0x21; 16]), string("new")],
+                            entity_key.clone(),
+                        )
+                        .expect("tenant index key")
+                        .as_bytes()
+                        .to_vec(),
+                    true,
+                ),
+                (
+                    score
+                        .key_schema()
+                        .encode_index(&[CanonicalValue::I64(10)], entity_key)
+                        .expect("score index key")
+                        .as_bytes()
+                        .to_vec(),
+                    true,
+                ),
+            ]),
+            "the anchored event must contribute zero index entries"
+        );
+        assert_eq!(
+            actual_generation_ids(&derived),
+            expected_generation_ids(&[tenant, score])
+        );
+        assert_eq!(derived.affected_targets.as_slice().len(), 2);
+    }
+
     #[test]
     fn mutate_skips_unchanged_indexes_and_unions_changed_old_and_new_prefixes() {
         let unchanged = fixture(
