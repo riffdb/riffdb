@@ -172,15 +172,42 @@ def network_interrupt(module: ModuleType, environment: Path) -> tuple[int, int, 
     }
 
 
-def checkpoint_crash(module: ModuleType, environment: Path) -> tuple[int, int, dict[str, Any]]:
+def checkpoint_crash(
+    module: ModuleType,
+    environment: Path,
+    ordinal: int,
+) -> tuple[int, int, dict[str, Any]]:
     process_state = module.read_object(environment / "state.json")
     pid = module.integer(process_state.get("server_pid"), "server_pid")
     lifecycle = module.read_object(environment / "lifecycle-state.json")
     known_checkpoint = module.integer(lifecycle.get("checkpoint_frontier"), "checkpoint_frontier")
-    deadline = time.monotonic() + 30
     before = module.health_frontier(environment)
-    while before <= known_checkpoint and time.monotonic() < deadline:
-        time.sleep(0.1)
+    checkpoint_suffix_source = "ambient_workload"
+    seed_ticket_id: str | None = None
+    if before <= known_checkpoint:
+        namespace = UUID("03792e08-6625-4499-b495-94d180cbeb65")
+        organization_id = uuid5(namespace, f"endurance-checkpoint-organization-{ordinal}")
+        user_id = uuid5(namespace, f"endurance-checkpoint-user-{ordinal}")
+        project_id = uuid5(namespace, f"endurance-checkpoint-project-{ordinal}")
+        ticket_id = uuid5(namespace, f"endurance-checkpoint-ticket-{ordinal}")
+        work_root = environment / "fault-work"
+        work_root.mkdir(mode=0o700, exist_ok=True)
+        seed_path = work_root / f"checkpoint-{ordinal:06d}-seed.json"
+        if seed_path.exists() or seed_path.is_symlink():
+            fail("endurance checkpoint fault work evidence already exists")
+        seed_result = run_seed_event(
+            environment,
+            consumer=f"endurance-checkpoint-suffix-{ordinal}",
+            organization_id=organization_id,
+            user_id=user_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            comment_id=uuid5(namespace, f"endurance-checkpoint-comment-{ordinal}"),
+            idempotency_key=f"endurance-checkpoint-suffix-{ordinal}",
+            output=seed_path,
+        )
+        seed_ticket_id = seed_result["ticket_id"]
+        checkpoint_suffix_source = "public_generated_client_seed"
         before = module.health_frontier(environment)
     if before <= known_checkpoint:
         fail("checkpoint-crash fault found no journal suffix beyond the known checkpoint")
@@ -206,6 +233,8 @@ def checkpoint_crash(module: ModuleType, environment: Path) -> tuple[int, int, d
         "termination_signal": "SIGKILL",
         "known_checkpoint_before": known_checkpoint,
         "stopped_checkpoint": checkpoint,
+        "checkpoint_suffix_source": checkpoint_suffix_source,
+        "seed_ticket_id": seed_ticket_id,
         "application_frontier_before": before,
         "application_frontier_after": after,
     }
@@ -280,6 +309,19 @@ def read_client_result(path: Path) -> dict[str, Any]:
     return value
 
 
+def read_seed_result(path: Path, ticket_id: UUID) -> dict[str, Any]:
+    value = read_client_state_file(path, "endurance fault seed evidence")
+    if (
+        set(value) != {"schema", "mode", "ticket_id", "command_replayed"}
+        or value.get("schema") != CONSUMER_SEED_SCHEMA
+        or value.get("mode") != "seed-event"
+        or value.get("ticket_id") != str(ticket_id)
+        or value.get("command_replayed") is not False
+    ):
+        fail("endurance fault seed evidence is invalid")
+    return value
+
+
 def consumer_command(
     environment: Path,
     *,
@@ -332,16 +374,56 @@ def consumer_command(
 
 
 def read_client_state(environment: Path) -> dict[str, Any]:
-    path = environment / "state.json"
+    return read_client_state_file(environment / "state.json", "endurance consumer fault state")
+
+
+def read_client_state_file(path: Path, label: str) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
-        fail("endurance consumer fault state is absent")
+        fail(f"{label} is absent")
     encoded = path.read_bytes()
     if not 0 < len(encoded) <= MAX_JSON_BYTES:
-        fail("endurance consumer fault state exceeds its byte bound")
+        fail(f"{label} exceeds its byte bound")
     value = json.loads(encoded)
     if not isinstance(value, dict):
-        fail("endurance consumer fault state is invalid")
+        fail(f"{label} is invalid")
     return value
+
+
+def run_seed_event(
+    environment: Path,
+    *,
+    consumer: str,
+    organization_id: UUID,
+    user_id: UUID,
+    project_id: UUID,
+    ticket_id: UUID,
+    comment_id: UUID,
+    idempotency_key: str,
+    output: Path,
+) -> dict[str, Any]:
+    seeded = subprocess.run(
+        consumer_command(
+            environment,
+            mode="seed-event",
+            consumer=consumer,
+            organization_id=organization_id,
+            user_id=user_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            comment_id=comment_id,
+            idempotency_key=idempotency_key,
+            output=output,
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=60,
+        check=False,
+    )
+    if seeded.returncode != 0:
+        diagnostic = seeded.stderr.decode("utf-8", errors="replace")[:4096].strip()
+        fail(f"endurance fault seed failed: {diagnostic}")
+    return read_seed_result(output, ticket_id)
 
 
 def consumer_after_command_before_ack(
@@ -367,37 +449,17 @@ def consumer_after_command_before_ack(
         if path.exists() or path.is_symlink():
             fail("endurance consumer fault work evidence already exists")
 
-    seeded = subprocess.run(
-        consumer_command(
-            environment,
-            mode="seed-event",
-            consumer=consumer,
-            organization_id=organization_id,
-            user_id=user_id,
-            project_id=project_id,
-            ticket_id=ticket_id,
-            comment_id=comment_id,
-            idempotency_key=idempotency_key,
-            output=seed_path,
-        ),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        timeout=60,
-        check=False,
+    run_seed_event(
+        environment,
+        consumer=consumer,
+        organization_id=organization_id,
+        user_id=user_id,
+        project_id=project_id,
+        ticket_id=ticket_id,
+        comment_id=comment_id,
+        idempotency_key=idempotency_key,
+        output=seed_path,
     )
-    if seeded.returncode != 0:
-        diagnostic = seeded.stderr.decode("utf-8", errors="replace")[:4096].strip()
-        fail(f"endurance consumer fault seed failed: {diagnostic}")
-    seed_result = module.read_object(seed_path)
-    if (
-        set(seed_result) != {"schema", "mode", "ticket_id", "command_replayed"}
-        or seed_result.get("schema") != CONSUMER_SEED_SCHEMA
-        or seed_result.get("mode") != "seed-event"
-        or seed_result.get("ticket_id") != str(ticket_id)
-        or seed_result.get("command_replayed") is not False
-    ):
-        fail("endurance consumer fault seed evidence is invalid")
 
     first = subprocess.Popen(
         consumer_command(
@@ -491,7 +553,7 @@ def run_action(module: ModuleType, environment: Path, name: str) -> dict[str, An
     elif name == "network_interrupt":
         before, after, evidence = network_interrupt(module, environment)
     elif name == "checkpoint_crash":
-        before, after, evidence = checkpoint_crash(module, environment)
+        before, after, evidence = checkpoint_crash(module, environment, ordinal)
     elif name == "journal_recycle_crash":
         before, after, evidence = journal_recycle_crash(module, environment)
     else:

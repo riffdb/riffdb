@@ -346,6 +346,17 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
         disable_bytecode < load_lifecycle,
         "bytecode writes must be disabled before importing lifecycle support"
     );
+    for required in [
+        "def run_seed_event(",
+        "if before <= known_checkpoint:",
+        "checkpoint_suffix_source = \"public_generated_client_seed\"",
+        "seed_result = run_seed_event(",
+    ] {
+        assert!(
+            fault.contains(required),
+            "checkpoint-crash must establish a missing journal suffix through the installed generated client: {required}"
+        );
+    }
     for worker in [
         "examples/ticketdesk/src/bin/endurance.rs",
         "examples/ticketdesk/endurance/go/main.go",

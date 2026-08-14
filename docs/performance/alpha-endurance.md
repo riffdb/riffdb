@@ -186,9 +186,14 @@ Process-kill and journal-recycle-crash cells kill the installed daemon and
 require recovery at or beyond the observed application and journal frontiers.
 The checkpoint-crash cell stops the daemon, leaves its graceful-termination
 checkpoint signal pending, kills it, inspects the unchanged stopped database,
-and requires suffix recovery. The network-interrupt cell stops only the server
-process, proves a public TLS health operation is unavailable, resumes that same
-process, and requires authenticated recovery.
+and requires suffix recovery. If the bounded deterministic workload is in a
+read-only segment when that cell becomes due, the fault first uses the
+installed generated application client to commit one identity-unique symbolic
+seed event. The receipt distinguishes that public-client seed from an ambient
+workload suffix; the harness never manufactures a storage record or edits a
+checkpoint to satisfy the precondition. The network-interrupt cell stops only
+the server process, proves a public TLS health operation is unavailable,
+resumes that same process, and requires authenticated recovery.
 
 The consumer fault uses the installed generated Python client as a disposable
 public-surface process. It receives a contextual item, commits its declared
