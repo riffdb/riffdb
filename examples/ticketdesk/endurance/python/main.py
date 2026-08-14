@@ -10,11 +10,15 @@ from typing import Final
 from uuid import UUID
 
 from riffdb_application import (
+    ApplicationErrorCode,
     AsyncApplicationTransport,
     AttemptBudget,
     BearerCredential,
     CallMetadata,
+    ConnectionFailure,
     DatabaseAlias,
+    OutcomeUnknown,
+    RiffDbApplicationError,
     VerifiedTlsConfig,
 )
 
@@ -51,6 +55,7 @@ LATENCY_BOUNDS_US: Final = (
     12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200,
     9_007_199_254_740_991,
 )
+MAX_TRANSIENT_RETRIES: Final = 3
 
 
 class Metrics:
@@ -59,6 +64,8 @@ class Metrics:
         self._lock = asyncio.Lock()
         self._started = int(time.time())
         self._operations = 0
+        self._transport_attempts = 0
+        self._declared_retries = 0
         self._retained_bytes = 0
         self._events_emitted = 0
         self._consumer_acknowledgements = 0
@@ -77,6 +84,7 @@ class Metrics:
     ) -> None:
         async with self._lock:
             self._operations += 1
+            self._transport_attempts += 1
             self._retained_bytes += retained_bytes
             self._workloads[workload] += 1
             self._tenants[tenant] += 1
@@ -101,6 +109,11 @@ class Metrics:
         async with self._lock:
             self._consumer_acknowledgements += 1
 
+    async def transient_retry(self) -> None:
+        async with self._lock:
+            self._transport_attempts += 1
+            self._declared_retries += 1
+
     def _publish_locked(self) -> None:
         value = {
             "schema": "riffdb.alpha-endurance-worker/v1",
@@ -108,8 +121,8 @@ class Metrics:
             "pid": os.getpid(),
             "started_unix_seconds": self._started,
             "logical_operations": self._operations,
-            "transport_attempts": self._operations,
-            "declared_retries": 0,
+            "transport_attempts": self._transport_attempts,
+            "declared_retries": self._declared_retries,
             "error_count": 0,
             "events_emitted": self._events_emitted,
             "consumer_acknowledgements": self._consumer_acknowledgements,
@@ -246,120 +259,159 @@ async def run_client(
         triage_consumer = f"endurance-python-triage-{client_index}"
         counter = 0
         while True:
-            operation_started = time.perf_counter_ns()
-            slot = counter % 100
-            if slot < 35:
-                result = await clients.application.ticket_page(
-                    TicketPageParams(
-                        organization_id=organization_id, ticket_id=hot_ticket_id
-                    )
-                )
-                if not isinstance(result.value, TicketPageFound):
-                    raise RuntimeError("Python endurance read lost its hot ticket")
-                await metrics.record("reads", tenant, 0, operation_started)
-            elif slot < 60:
-                await clients.application.create_comment(
-                    CreateCommentInput(
-                        body=f"python endurance comment {counter}",
-                        author_id=user_id,
-                        ticket_id=hot_ticket_id,
-                        comment_id=riff_id(
-                            namespace,
-                            10_000 + client_index * 1_000_000 + counter,
-                        ),
-                        idempotency_key=(
-                            f"endurance-python-comment-{client_index}-{counter}"
-                        ),
-                        organization_id=organization_id,
-                    )
-                )
-                await metrics.record("writes", tenant, 512, operation_started)
-            elif slot < 70:
-                item = await clients.agent.next_triage_ticket(
-                    triage_parameters, triage_consumer, 0
-                )
-                await metrics.record("workflows", tenant, 0, operation_started)
-                operation_started = time.perf_counter_ns()
-                if item is not None:
-                    await clients.agent.react_comment(
+            retries = 0
+            while True:
+                try:
+                    await run_iteration(
+                        clients,
+                        metrics,
+                        tenant,
+                        namespace,
+                        organization_id,
+                        user_id,
+                        project_id,
+                        hot_ticket_id,
+                        client_index,
+                        counter,
+                        event_parameters,
+                        event_consumer,
                         triage_parameters,
                         triage_consumer,
-                        item,
-                        CreateCommentInput(
-                            body="python contextual endurance reaction",
-                            author_id=item.event.reporter_id,
-                            ticket_id=item.event.ticket_id,
-                            comment_id=riff_id(
-                                namespace,
-                                20_000 + client_index * 1_000_000 + counter,
-                            ),
-                            idempotency_key=(
-                                f"endurance-python-reaction-{client_index}-{counter}"
-                            ),
-                            organization_id=organization_id,
-                        ),
                     )
-                    await metrics.record("workflows", tenant, 512, operation_started)
-                    operation_started = time.perf_counter_ns()
-                    await clients.agent.ack_triage_ticket(
-                        triage_parameters, triage_consumer, item
-                    )
-                    await metrics.consumer_acknowledged()
-                    await metrics.record("workflows", tenant, 0, operation_started)
-            elif slot < 80:
-                stream = clients.agent.ticket_events(
-                    event_parameters, event_consumer
-                )
-                try:
-                    async with asyncio.timeout(5):
-                        delivery = await anext(stream)
-                finally:
-                    await stream.aclose()
-                await metrics.record("events", tenant, 0, operation_started)
-                operation_started = time.perf_counter_ns()
-                await clients.agent.ack_ticket_events(
-                    event_parameters, event_consumer, delivery
-                )
-                await metrics.consumer_acknowledged()
-                await metrics.record("events", tenant, 0, operation_started)
-            else:
-                stream = clients.application.watch_ticket_queue_watch(
-                    TicketQueueWatchParams(
-                        organization_id=organization_id, project_id=project_id
-                    )
-                )
-                try:
-                    async with asyncio.timeout(5):
-                        await anext(stream)
-                finally:
-                    await stream.aclose()
-                await metrics.record("live_queries", tenant, 0, operation_started)
-            if slot == 69:
-                operation_started = time.perf_counter_ns()
-                ordinal = (counter // 100) % 4_096
-                created = await clients.application.create_ticket(
-                    CreateTicketInput(
-                        title=f"Python cold ticket {client_index}-{ordinal}",
-                        status=TicketStatus.OPEN,
-                        ticket_id=riff_id(
-                            namespace, 30_000 + client_index * 4_096 + ordinal
-                        ),
-                        project_id=project_id,
-                        assignee_id=user_id,
-                        reporter_id=user_id,
-                        idempotency_key=(
-                            f"endurance-python-cold-{client_index}-{ordinal}"
-                        ),
-                        organization_id=organization_id,
-                    )
-                )
-                if not created.replayed and isinstance(created.outcome, CreateTicketCreated):
-                    await metrics.event_emitted()
-                await metrics.record("workflows", tenant, 768, operation_started)
+                    break
+                except Exception as error:
+                    if retries >= MAX_TRANSIENT_RETRIES or not transient_error(error):
+                        raise
+                    retries += 1
+                    await metrics.transient_retry()
+                    await asyncio.sleep(0.1 * retries)
             counter += 1
             await asyncio.sleep(delay)
     finally:
         await clients.close()
+
+
+async def run_iteration(
+    clients: ClientSet,
+    metrics: Metrics,
+    tenant: str,
+    namespace: int,
+    organization_id: UUID,
+    user_id: UUID,
+    project_id: UUID,
+    hot_ticket_id: UUID,
+    client_index: int,
+    counter: int,
+    event_parameters: TicketEventsParams,
+    event_consumer: str,
+    triage_parameters: TriageTicketParams,
+    triage_consumer: str,
+) -> None:
+    operation_started = time.perf_counter_ns()
+    slot = counter % 100
+    if slot < 35:
+        result = await clients.application.ticket_page(
+            TicketPageParams(organization_id=organization_id, ticket_id=hot_ticket_id)
+        )
+        if not isinstance(result.value, TicketPageFound):
+            raise RuntimeError("Python endurance read lost its hot ticket")
+        await metrics.record("reads", tenant, 0, operation_started)
+    elif slot < 60:
+        await clients.application.create_comment(
+            CreateCommentInput(
+                body=f"python endurance comment {counter}",
+                author_id=user_id,
+                ticket_id=hot_ticket_id,
+                comment_id=riff_id(namespace, 10_000 + client_index * 1_000_000 + counter),
+                idempotency_key=f"endurance-python-comment-{client_index}-{counter}",
+                organization_id=organization_id,
+            )
+        )
+        await metrics.record("writes", tenant, 512, operation_started)
+    elif slot < 70:
+        item = await clients.agent.next_triage_ticket(
+            triage_parameters, triage_consumer, 0
+        )
+        await metrics.record("workflows", tenant, 0, operation_started)
+        operation_started = time.perf_counter_ns()
+        if item is not None:
+            await clients.agent.react_comment(
+                triage_parameters,
+                triage_consumer,
+                item,
+                CreateCommentInput(
+                    body="python contextual endurance reaction",
+                    author_id=item.event.reporter_id,
+                    ticket_id=item.event.ticket_id,
+                    comment_id=riff_id(
+                        namespace, 20_000 + client_index * 1_000_000 + counter
+                    ),
+                    idempotency_key=f"endurance-python-reaction-{client_index}-{counter}",
+                    organization_id=organization_id,
+                ),
+            )
+            await metrics.record("workflows", tenant, 512, operation_started)
+            operation_started = time.perf_counter_ns()
+            await clients.agent.ack_triage_ticket(
+                triage_parameters, triage_consumer, item
+            )
+            await metrics.consumer_acknowledged()
+            await metrics.record("workflows", tenant, 0, operation_started)
+    elif slot < 80:
+        stream = clients.agent.ticket_events(event_parameters, event_consumer)
+        try:
+            async with asyncio.timeout(5):
+                delivery = await anext(stream)
+        finally:
+            await stream.aclose()
+        await metrics.record("events", tenant, 0, operation_started)
+        operation_started = time.perf_counter_ns()
+        await clients.agent.ack_ticket_events(
+            event_parameters, event_consumer, delivery
+        )
+        await metrics.consumer_acknowledged()
+        await metrics.record("events", tenant, 0, operation_started)
+    else:
+        stream = clients.application.watch_ticket_queue_watch(
+            TicketQueueWatchParams(
+                organization_id=organization_id, project_id=project_id
+            )
+        )
+        try:
+            async with asyncio.timeout(5):
+                await anext(stream)
+        finally:
+            await stream.aclose()
+        await metrics.record("live_queries", tenant, 0, operation_started)
+    if slot == 69:
+        operation_started = time.perf_counter_ns()
+        ordinal = (counter // 100) % 4_096
+        created = await clients.application.create_ticket(
+            CreateTicketInput(
+                title=f"Python cold ticket {client_index}-{ordinal}",
+                status=TicketStatus.OPEN,
+                ticket_id=riff_id(namespace, 30_000 + client_index * 4_096 + ordinal),
+                project_id=project_id,
+                assignee_id=user_id,
+                reporter_id=user_id,
+                idempotency_key=f"endurance-python-cold-{client_index}-{ordinal}",
+                organization_id=organization_id,
+            )
+        )
+        if not created.replayed and isinstance(created.outcome, CreateTicketCreated):
+            await metrics.event_emitted()
+        await metrics.record("workflows", tenant, 768, operation_started)
+
+
+def transient_error(error: Exception) -> bool:
+    if isinstance(error, (ConnectionFailure, OutcomeUnknown, TimeoutError)):
+        return True
+    return isinstance(error, RiffDbApplicationError) and error.details.code in {
+        ApplicationErrorCode.STORAGE_UNAVAILABLE,
+        ApplicationErrorCode.OUTCOME_UNKNOWN,
+        ApplicationErrorCode.OVERLOADED,
+        ApplicationErrorCode.DEADLINE_EXCEEDED,
+    }
 
 
 async def seed_client(

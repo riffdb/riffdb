@@ -96,6 +96,15 @@ the same weighted page read, comment write, contextual reaction, durable event
 acknowledgement, live-query snapshot, and cold-ticket growth shapes; none may
 substitute a kernel read or benchmark-only mutation.
 
+Each worker permits at most three outer retries for the closed transient error
+set: storage unavailable, outcome uncertainty, overload, deadline expiry, and
+transport interruption. The same logical input and idempotency identity are
+retained across attempts. Every failed attempt increments both
+`transport_attempts` and `declared_retries`; successful public operations
+increment `logical_operations` and `transport_attempts`. Therefore
+`transport_attempts == logical_operations + declared_retries` is exact and a
+maintenance interruption cannot turn retries into hidden work.
+
 `scripts/endurance-sample` merges the four atomic worker snapshots with the
 installed daemon/driver process inventory, authenticated health frontier, and
 closed storage/backup/lifecycle artifacts. Per-operation latency uses one

@@ -27,6 +27,8 @@ var latencyBoundsUS = [...]uint64{
 	12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, 9_007_199_254_740_991,
 }
 
+const maxTransientRetries uint64 = 3
+
 type identityFile struct {
 	ApplicationManifestHash string `json:"applicationManifestHash"`
 	OperationCatalogHash    string `json:"operationCatalogHash"`
@@ -81,6 +83,13 @@ func (value *metrics) consumerAcknowledged() {
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	value.value.ConsumerAcks++
+}
+
+func (value *metrics) transientRetry() {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	value.value.TransportAttempts++
+	value.value.DeclaredRetries++
 }
 
 type metrics struct {
@@ -297,111 +306,141 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 	events := clientSet.agent.TicketEvents(ticketdesk.TicketEventsParams{OrganizationId: organizationID}, fmt.Sprintf("endurance-go-events-%d", index))
 	triage := clientSet.agent.TriageTicket(ticketdesk.TriageTicketParams{OrganizationId: organizationID}, fmt.Sprintf("endurance-go-triage-%d", index))
 	for counter := uint64(0); ; counter++ {
-		operationStarted := time.Now()
-		slot := counter % 100
-		switch {
-		case slot < 35:
-			result, err := clientSet.application.TicketPage(ctx, ticketdesk.TicketPageParams{OrganizationId: organizationID, TicketId: hotTicketID}, ticketdesk.QueryOptions{MaximumAttempts: 1})
-			if err != nil {
+		for retries := uint64(0); ; retries++ {
+			err = runIteration(ctx, clientSet, events, triage, metric, tenant, organizationID, userID, projectID, hotTicketID, seed, index, counter)
+			if err == nil {
+				break
+			}
+			if retries >= maxTransientRetries || !transientError(err) {
 				return err
 			}
+			metric.transientRetry()
+			time.Sleep(time.Duration(retries+1) * 100 * time.Millisecond)
+		}
+		time.Sleep(delay)
+	}
+}
+
+func runIteration(ctx context.Context, clientSet *clients, events *ticketdesk.TicketEventsIterator, triage *ticketdesk.TriageTicketConsumer, metric *metrics, tenant, organizationID, userID, projectID, hotTicketID string, seed, index, counter uint64) error {
+	operationStarted := time.Now()
+	slot := counter % 100
+	var err error
+	switch {
+	case slot < 35:
+		var result ticketdesk.QueryResult[ticketdesk.TicketPageResult]
+		result, err = clientSet.application.TicketPage(ctx, ticketdesk.TicketPageParams{OrganizationId: organizationID, TicketId: hotTicketID}, ticketdesk.QueryOptions{MaximumAttempts: 1})
+		if err == nil {
 			if _, ok := result.Value.(ticketdesk.TicketPageFound); !ok {
 				return errors.New("Go endurance read lost its hot ticket")
 			}
 			err = metric.record("reads", tenant, 0, &operationStarted)
-		case slot < 60:
-			_, err = clientSet.application.CreateComment(ctx, ticketdesk.CreateCommentInput{
-				Body: fmt.Sprintf("go endurance comment %d", counter), AuthorId: userID,
-				TicketId: hotTicketID, CommentId: id(seed+1, 10_000+index*1_000_000+counter),
-				IdempotencyKey: fmt.Sprintf("endurance-go-comment-%d-%d", index, counter), OrganizationId: organizationID,
+		}
+	case slot < 60:
+		_, err = clientSet.application.CreateComment(ctx, ticketdesk.CreateCommentInput{
+			Body: fmt.Sprintf("go endurance comment %d", counter), AuthorId: userID,
+			TicketId: hotTicketID, CommentId: id(seed+1, 10_000+index*1_000_000+counter),
+			IdempotencyKey: fmt.Sprintf("endurance-go-comment-%d-%d", index, counter), OrganizationId: organizationID,
+		})
+		if err == nil {
+			err = metric.record("writes", tenant, 512, &operationStarted)
+		}
+	case slot < 70:
+		var batch ticketdesk.ContextualBatch[ticketdesk.TicketEventsEvent]
+		batch, err = triage.Next(ctx, 0)
+		if err == nil {
+			err = metric.record("workflows", tenant, 0, &operationStarted)
+		}
+		if err == nil && len(batch.Items) > 0 {
+			item := batch.Items[0]
+			event, ok := item.Delivery.Event.(ticketdesk.TicketEventsTicketCreated)
+			if !ok {
+				return errors.New("Go endurance contextual event has the wrong type")
+			}
+			var reaction *ticketdesk.ContextualReaction
+			for reactionIndex := range item.AvailableReactions {
+				if item.AvailableReactions[reactionIndex].Name == "comment" {
+					reaction = &item.AvailableReactions[reactionIndex]
+					break
+				}
+			}
+			if reaction == nil {
+				return errors.New("Go endurance contextual reaction is absent")
+			}
+			_, err = triage.ReactComment(ctx, *reaction, ticketdesk.CreateCommentInput{
+				Body: "go contextual endurance reaction", AuthorId: event.ReporterId,
+				TicketId: event.TicketId, CommentId: id(seed+1, 20_000+index*1_000_000+counter),
+				IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%d-%d", index, counter), OrganizationId: organizationID,
 			})
 			if err == nil {
-				err = metric.record("writes", tenant, 512, &operationStarted)
+				err = metric.record("workflows", tenant, 512, &operationStarted)
 			}
-		case slot < 70:
-			var batch ticketdesk.ContextualBatch[ticketdesk.TicketEventsEvent]
-			batch, err = triage.Next(ctx, 0)
 			if err == nil {
+				_, err = triage.Ack(ctx, item)
+			}
+			if err == nil {
+				metric.consumerAcknowledged()
 				err = metric.record("workflows", tenant, 0, &operationStarted)
 			}
-			if err == nil && len(batch.Items) > 0 {
-				item := batch.Items[0]
-				event, ok := item.Delivery.Event.(ticketdesk.TicketEventsTicketCreated)
-				if !ok {
-					return errors.New("Go endurance contextual event has the wrong type")
-				}
-				var reaction *ticketdesk.ContextualReaction
-				for reactionIndex := range item.AvailableReactions {
-					if item.AvailableReactions[reactionIndex].Name == "comment" {
-						reaction = &item.AvailableReactions[reactionIndex]
-						break
-					}
-				}
-				if reaction == nil {
-					return errors.New("Go endurance contextual reaction is absent")
-				}
-				_, err = triage.ReactComment(ctx, *reaction, ticketdesk.CreateCommentInput{
-					Body: "go contextual endurance reaction", AuthorId: event.ReporterId,
-					TicketId: event.TicketId, CommentId: id(seed+1, 20_000+index*1_000_000+counter),
-					IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%d-%d", index, counter), OrganizationId: organizationID,
-				})
-				if err == nil {
-					err = metric.record("workflows", tenant, 512, &operationStarted)
-				}
-				if err == nil {
-					_, err = triage.Ack(ctx, item)
-				}
-				if err == nil {
-					metric.consumerAcknowledged()
-					err = metric.record("workflows", tenant, 0, &operationStarted)
-				}
-			}
-		case slot < 80:
-			var batch ticketdesk.ConsumerBatch[ticketdesk.TicketEventsEvent]
-			batch, err = events.Next(ctx, ticketdesk.ConsumerOptions{BatchLimit: 1, InFlightLimit: 4, LeaseSeconds: 60})
+		}
+	case slot < 80:
+		var batch ticketdesk.ConsumerBatch[ticketdesk.TicketEventsEvent]
+		batch, err = events.Next(ctx, ticketdesk.ConsumerOptions{BatchLimit: 1, InFlightLimit: 4, LeaseSeconds: 60})
+		if err == nil {
+			err = metric.record("events", tenant, 0, &operationStarted)
+		}
+		if err == nil && len(batch.Events) > 0 {
+			_, err = events.Ack(ctx, batch.Events[0])
 			if err == nil {
+				metric.consumerAcknowledged()
 				err = metric.record("events", tenant, 0, &operationStarted)
 			}
-			if err == nil && len(batch.Events) > 0 {
-				_, err = events.Ack(ctx, batch.Events[0])
-				if err == nil {
-					metric.consumerAcknowledged()
-					err = metric.record("events", tenant, 0, &operationStarted)
-				}
-			}
-		default:
-			watch := clientSet.application.WatchTicketQueueWatch(ticketdesk.TicketQueueWatchParams{OrganizationId: organizationID, ProjectId: projectID}, "")
-			watchContext, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err = watch.Next(watchContext)
-			cancel()
-			if err == nil {
-				err = metric.record("live_queries", tenant, 0, &operationStarted)
+		}
+	default:
+		watch := clientSet.application.WatchTicketQueueWatch(ticketdesk.TicketQueueWatchParams{OrganizationId: organizationID, ProjectId: projectID}, "")
+		watchContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err = watch.Next(watchContext)
+		cancel()
+		if err == nil {
+			err = metric.record("live_queries", tenant, 0, &operationStarted)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if slot == 69 {
+		ordinal := (counter / 100) % 4096
+		created, createErr := clientSet.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{
+			Title: fmt.Sprintf("Go cold ticket %d-%d", index, ordinal), Status: ticketdesk.TicketStatus("Open"),
+			TicketId: id(seed+1, 30_000+index*4096+ordinal), ProjectId: projectID,
+			AssigneeId: userID, ReporterId: userID,
+			IdempotencyKey: fmt.Sprintf("endurance-go-cold-%d-%d", index, ordinal), OrganizationId: organizationID,
+		})
+		if createErr != nil {
+			return createErr
+		}
+		if !created.Replayed {
+			if _, ok := created.Outcome.(ticketdesk.CreateTicketCreated); ok {
+				metric.eventEmitted()
 			}
 		}
-		if err != nil {
-			return err
-		}
-		if slot == 69 {
-			ordinal := (counter / 100) % 4096
-			created, err := clientSet.application.CreateTicket(ctx, ticketdesk.CreateTicketInput{
-				Title: fmt.Sprintf("Go cold ticket %d-%d", index, ordinal), Status: ticketdesk.TicketStatus("Open"),
-				TicketId: id(seed+1, 30_000+index*4096+ordinal), ProjectId: projectID,
-				AssigneeId: userID, ReporterId: userID,
-				IdempotencyKey: fmt.Sprintf("endurance-go-cold-%d-%d", index, ordinal), OrganizationId: organizationID,
-			})
-			if err != nil {
-				return err
-			}
-			if !created.Replayed {
-				if _, ok := created.Outcome.(ticketdesk.CreateTicketCreated); ok {
-					metric.eventEmitted()
-				}
-			}
-			if err := metric.record("workflows", tenant, 768, &operationStarted); err != nil {
-				return err
-			}
-		}
-		time.Sleep(delay)
+		return metric.record("workflows", tenant, 768, &operationStarted)
+	}
+	return nil
+}
+
+func transientError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var applicationError *riffdb.ApplicationError
+	if !errors.As(err, &applicationError) {
+		return false
+	}
+	switch applicationError.Details.Code {
+	case "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003":
+		return true
+	default:
+		return false
 	}
 }
 
