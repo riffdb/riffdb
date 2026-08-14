@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0xb7, 0xf7, 0x1f, 0xd4, 0xdb, 0x18, 0xcf, 0xbe, 0x03, 0x4f, 0x8e, 0x60, 0x75, 0x92, 0x5b, 0x75, 0x38, 0x29, 0x75, 0x8e, 0x36, 0x2c, 0x0b, 0x5c, 0xbc, 0x28, 0xb0, 0xbe, 0x93, 0x40, 0xa6, 0x40];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xf3, 0xa8, 0x5c, 0x2b, 0x47, 0x31, 0x68, 0xd7, 0x92, 0xf8, 0x82, 0x92, 0x89, 0xfc, 0xdd, 0xcb, 0xc2, 0x5b, 0xbe, 0x4d, 0x48, 0xe5, 0x5b, 0x9c, 0x93, 0xae, 0xe2, 0x31, 0x85, 0x58, 0xcd, 0x38];
 pub const CONTRACT_LINEAGE: &str = "AdapterOperationalConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xe6, 0xd9, 0x21, 0x45, 0x58, 0xea, 0x19, 0x19, 0x3a, 0xf9, 0x38, 0x6f, 0x93, 0xd6, 0xc4, 0x55, 0x9a, 0x3e, 0x4f, 0x1d, 0x07, 0xb9, 0x2e, 0x2f, 0x8b, 0xb3, 0x10, 0xd9, 0x60, 0x5e, 0x29, 0x56];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xb1, 0xfc, 0x11, 0x17, 0x57, 0x28, 0xc7, 0x47, 0xe7, 0x0a, 0xb0, 0x71, 0x37, 0x92, 0xeb, 0xcf, 0x7d, 0x76, 0xad, 0x16, 0x87, 0x46, 0x6d, 0x48, 0x99, 0xd3, 0x3d, 0x68, 0x02, 0x86, 0xd6, 0x76];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -26,6 +26,94 @@ pub struct MoneyValue {
 pub struct TimestampValue {
     pub seconds: i64,
     pub nanos: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetAuthSessionParams {
+    pub organization_id: String,
+    pub user_id: String,
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetAuthSessionFoundSession {
+    pub organization_id: String,
+    pub user_id: String,
+    pub session_id: String,
+    pub state: String,
+    pub expires_at: TimestampValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetAuthSessionFound {
+    pub session: GetAuthSessionFoundSession,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetAuthSessionMissing {
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetAuthSessionResult {
+    Found(Box<GetAuthSessionFound>),
+    Missing(Box<GetAuthSessionMissing>),
+}
+
+pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xfb, 0xa7, 0xa6, 0xf3, 0x7a, 0xde, 0xb8, 0x77, 0x26, 0x73, 0xda, 0x83, 0x37, 0xcf, 0x1b, 0x3f, 0x6e, 0x43, 0x64, 0x4e, 0x59, 0x61, 0x32, 0x24, 0xc1, 0xf5, 0x53, 0x85, 0xd7, 0xa4, 0xb8, 0x84];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetAuthSessionQuery(pub GetAuthSessionParams);
+impl GeneratedQuery for GetAuthSessionQuery {
+    type Output = GetAuthSessionResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("user_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.user_id)?));
+        parameters.insert("session_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.session_id)?));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "GetAuthSession",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(GET_AUTH_SESSION_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = GetAuthSessionFound {
+                    session: decode_get_auth_session_found_session_record(one_result_record(take_result_field(&mut response.fields, "session")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(GetAuthSessionResult::Found(Box::new(decoded)))
+            },
+            "Missing" => {
+                let decoded = GetAuthSessionMissing {
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(GetAuthSessionResult::Missing(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_get_auth_session_found_session_record(mut record: ApplicationRecord) -> Result<GetAuthSessionFoundSession, ApplicationClientError> {
+    let value = GetAuthSessionFoundSession {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
+        session_id: application_uuid(take_application_value(&mut record.fields, "session_id")?)?,
+        state: application_enum(take_application_value(&mut record.fields, "state")?)?,
+        expires_at: application_timestamp(take_application_value(&mut record.fields, "expires_at")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,7 +138,7 @@ pub enum ListDraftDocumentsResult {
     Found(Box<ListDraftDocumentsFound>),
 }
 
-pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x7b, 0xe5, 0x09, 0x68, 0x8c, 0x4c, 0x0d, 0xfb, 0x94, 0x56, 0xf7, 0x3b, 0x3e, 0xf8, 0xed, 0xc1, 0x10, 0x51, 0xb4, 0x55, 0xb6, 0x74, 0x10, 0x4f, 0xf5, 0x01, 0x25, 0x9e, 0x28, 0x72, 0x8d, 0x8a];
+pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x3d, 0x36, 0x19, 0xc4, 0xad, 0xbd, 0xd3, 0xfd, 0x33, 0x58, 0xc1, 0x03, 0xc6, 0x34, 0x11, 0x88, 0x0f, 0xd0, 0xa6, 0x64, 0xea, 0xf6, 0x22, 0xaa, 0x7e, 0xde, 0xe6, 0xf2, 0x84, 0xa3, 0x5e, 0x3f];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListDraftDocumentsQuery(pub ListDraftDocumentsParams);
 impl GeneratedQuery for ListDraftDocumentsQuery {
@@ -122,7 +210,7 @@ pub enum ListFgaTuplesResult {
     Found(Box<ListFgaTuplesFound>),
 }
 
-pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0x90, 0x24, 0xbd, 0x69, 0x14, 0x4f, 0xf4, 0x98, 0x1a, 0x34, 0x1f, 0xd3, 0x6b, 0x27, 0x2e, 0x15, 0xef, 0x89, 0x04, 0x4e, 0x85, 0x0f, 0xe3, 0x29, 0xda, 0x38, 0x6d, 0x3a, 0xd3, 0xd5, 0xc5, 0x52];
+pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0x0c, 0x35, 0xae, 0xa7, 0x4d, 0xbd, 0x55, 0x27, 0xac, 0x56, 0x94, 0x5c, 0xee, 0x31, 0xd2, 0xa3, 0x51, 0x53, 0x5f, 0xcd, 0xff, 0x8b, 0xa8, 0x62, 0xd5, 0xf8, 0x98, 0x2a, 0x33, 0x92, 0x76, 0xe7];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListFgaTuplesQuery(pub ListFgaTuplesParams);
 impl GeneratedQuery for ListFgaTuplesQuery {
@@ -196,7 +284,7 @@ pub enum ListPipelinesResult {
     Found(Box<ListPipelinesFound>),
 }
 
-pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0x9a, 0x7a, 0x71, 0xa2, 0x1b, 0x9c, 0x6a, 0x88, 0x40, 0x4d, 0xac, 0x0f, 0xec, 0x77, 0x88, 0x0e, 0xb5, 0x3a, 0x0b, 0x96, 0x40, 0x42, 0x16, 0xf2, 0xc1, 0x0a, 0x7e, 0x57, 0x36, 0x87, 0x18, 0x85];
+pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0xe1, 0x14, 0xac, 0x25, 0x75, 0x35, 0x79, 0x21, 0xf0, 0xd7, 0xc9, 0x88, 0x8b, 0xeb, 0x43, 0x3a, 0x9b, 0x14, 0xd5, 0x36, 0x0c, 0x89, 0xe5, 0xd7, 0x37, 0x2b, 0x63, 0x3d, 0x75, 0x0b, 0x65, 0x0b];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListPipelinesQuery(pub ListPipelinesParams);
 impl GeneratedQuery for ListPipelinesQuery {
@@ -269,7 +357,7 @@ pub enum MetricDashboardResult {
     Found(Box<MetricDashboardFound>),
 }
 
-pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0x67, 0xd9, 0x69, 0x6f, 0x74, 0xf9, 0x06, 0x20, 0x5a, 0xcb, 0x87, 0x79, 0xe5, 0xb8, 0x73, 0x1c, 0x65, 0x60, 0x25, 0x0d, 0x37, 0x25, 0x0b, 0x50, 0x12, 0x3d, 0x42, 0x12, 0x45, 0xf7, 0x58, 0xa2];
+pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0x00, 0xb8, 0x64, 0x0c, 0x9a, 0xfd, 0xae, 0x08, 0x48, 0x44, 0x25, 0xa7, 0xaf, 0x0e, 0x27, 0x00, 0x3a, 0x4e, 0x18, 0x1e, 0x76, 0x6e, 0xb0, 0x7f, 0xb4, 0xb6, 0x29, 0xad, 0x9f, 0xc2, 0x39, 0x87];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricDashboardQuery(pub MetricDashboardParams);
 impl GeneratedQuery for MetricDashboardQuery {
@@ -342,7 +430,7 @@ pub enum SearchDocumentsResult {
     Found(Box<SearchDocumentsFound>),
 }
 
-pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x0b, 0xf3, 0x8e, 0x1b, 0xa6, 0x2d, 0x09, 0x8f, 0xfb, 0x76, 0xa8, 0x0c, 0x65, 0x01, 0x22, 0xe4, 0x34, 0x11, 0x08, 0x22, 0x3a, 0x1b, 0x38, 0x49, 0xbe, 0x65, 0xe1, 0xed, 0xa5, 0x31, 0xdc, 0xf5];
+pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xab, 0x1b, 0x0a, 0xb4, 0xbb, 0xf7, 0x80, 0xc0, 0x97, 0x96, 0x48, 0xcf, 0x1a, 0xf6, 0x5e, 0xe5, 0x2f, 0xc7, 0xbd, 0x56, 0xc0, 0x10, 0x74, 0x65, 0xc3, 0x28, 0xce, 0xdb, 0x15, 0x30, 0xab, 0x9a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDocumentsQuery(pub SearchDocumentsParams);
 impl GeneratedQuery for SearchDocumentsQuery {
@@ -419,6 +507,33 @@ fn decode_metric_entity(value: v1::Value) -> Result<Metric, GeneratedCommandErro
         metric_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
         value_micros: decode_wire_i64(take_wire_field(&mut fields, 4)?)?,
         experiment_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthUser {
+    pub email: String,
+    pub user_id: String,
+    pub organization_id: String,
+}
+
+fn encode_auth_user_entity(value: &AuthUser) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.email))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.user_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_auth_user_entity(value: v1::Value) -> Result<AuthUser, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = AuthUser {
+        email: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        user_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -518,6 +633,129 @@ fn decode_pipeline_entity(value: v1::Value) -> Result<Pipeline, GeneratedCommand
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthSession {
+    pub state: String,
+    pub user_id: String,
+    pub expires_at: TimestampValue,
+    pub session_id: String,
+    pub token_digest: String,
+    pub organization_id: String,
+}
+
+fn encode_auth_session_entity(value: &AuthSession) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_enum(Clone::clone(&value.state))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.user_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.expires_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.session_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_string(Clone::clone(&value.token_digest))) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_auth_session_entity(value: v1::Value) -> Result<AuthSession, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = AuthSession {
+        state: decode_wire_enum(take_wire_field(&mut fields, 1)?)?,
+        user_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+        expires_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
+        session_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
+        token_digest: decode_wire_string(take_wire_field(&mut fields, 5)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthSignupInput {
+    pub email: String,
+    pub user_id: String,
+    pub expires_at: TimestampValue,
+    pub session_id: String,
+    pub token_digest: String,
+    pub organization_id: String,
+}
+
+fn encode_auth_signup_input_entity(value: &AuthSignupInput) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.email))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.user_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.expires_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.session_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_string(Clone::clone(&value.token_digest))) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_auth_signup_input_entity(value: v1::Value) -> Result<AuthSignupInput, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = AuthSignupInput {
+        email: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        user_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+        expires_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
+        session_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
+        token_digest: decode_wire_string(take_wire_field(&mut fields, 5)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateAuthSessionsInput {
+    pub signups: Vec<AuthSignupInput>,
+    pub request_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreateAuthSessionsOutcome {
+    SessionsCreated,
+
+    UserAlreadyExists,
+
+    SessionAlreadyExists,
+}
+
+const CREATE_AUTH_SESSIONS_PLAN_HASH: [u8; 32] = [0xc8, 0xb6, 0xc4, 0x8a, 0x13, 0x28, 0x62, 0x2d, 0x67, 0x16, 0x83, 0x92, 0x04, 0x9a, 0x17, 0xd1, 0x87, 0xac, 0x1a, 0x57, 0x1e, 0x79, 0xcc, 0x88, 0x8e, 0x54, 0x89, 0x63, 0x98, 0xcf, 0xe3, 0xf6];
+impl GeneratedCommand for CreateAuthSessionsInput {
+    type Outcome = CreateAuthSessionsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.signups.is_empty() || self.signups.len() > 8 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("signups", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.signups).iter().map(encode_auth_signup_input_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("CreateAuthSessions", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "CreateAuthSessions".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &CREATE_AUTH_SESSIONS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "SessionsCreated" => if fields.is_empty() { Ok(Self::Outcome::SessionsCreated) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "UserAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::UserAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "SessionAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::SessionAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateDocumentsInput {
     pub documents: Vec<Document>,
     pub request_id: String,
@@ -531,7 +769,7 @@ pub enum CreateDocumentsOutcome {
     DocumentAlreadyExists,
 }
 
-const CREATE_DOCUMENTS_PLAN_HASH: [u8; 32] = [0x1a, 0x54, 0x6a, 0xbe, 0x56, 0xd6, 0xe6, 0x96, 0x8d, 0x91, 0xb5, 0xe3, 0x32, 0xe1, 0x0d, 0x77, 0xcb, 0x09, 0xeb, 0x15, 0xb7, 0x06, 0x89, 0xc3, 0x3f, 0x70, 0x70, 0xf6, 0xce, 0x30, 0x90, 0x1f];
+const CREATE_DOCUMENTS_PLAN_HASH: [u8; 32] = [0xb1, 0x6d, 0xfb, 0x60, 0x94, 0x96, 0xf9, 0x2a, 0x4a, 0x04, 0x4a, 0xa9, 0x39, 0x4d, 0x66, 0xa2, 0x33, 0xeb, 0xb5, 0xa5, 0x4b, 0x5b, 0x0e, 0x09, 0x44, 0x52, 0x3f, 0x66, 0xcd, 0x13, 0x8e, 0x53];
 impl GeneratedCommand for CreateDocumentsInput {
     type Outcome = CreateDocumentsOutcome;
 
@@ -579,7 +817,7 @@ pub enum CreatePipelinesOutcome {
     PipelineAlreadyExists,
 }
 
-const CREATE_PIPELINES_PLAN_HASH: [u8; 32] = [0x05, 0x5f, 0x86, 0xd2, 0x42, 0x2f, 0x20, 0xce, 0xbe, 0xed, 0xa7, 0xd8, 0x76, 0xe5, 0x84, 0x42, 0xc1, 0x47, 0xa2, 0x11, 0x55, 0x25, 0x3d, 0x5b, 0x5b, 0xe5, 0xeb, 0x14, 0x2e, 0x69, 0xc1, 0x92];
+const CREATE_PIPELINES_PLAN_HASH: [u8; 32] = [0x72, 0x05, 0xfc, 0x0d, 0x74, 0x18, 0x1a, 0x8d, 0x32, 0xb3, 0xab, 0x60, 0x26, 0xd5, 0x91, 0x78, 0x86, 0xa3, 0x06, 0xcc, 0x23, 0x24, 0x66, 0xab, 0x0e, 0x6f, 0x87, 0x2e, 0xed, 0x69, 0x52, 0x36];
 impl GeneratedCommand for CreatePipelinesInput {
     type Outcome = CreatePipelinesOutcome;
 
@@ -627,7 +865,7 @@ pub enum LogMetricsOutcome {
     MetricAlreadyExists,
 }
 
-const LOG_METRICS_PLAN_HASH: [u8; 32] = [0x93, 0xf0, 0x3c, 0x1e, 0x9f, 0x63, 0x93, 0x55, 0x3e, 0xb6, 0x88, 0x7d, 0x02, 0xd4, 0x0c, 0x8f, 0xb3, 0x86, 0x2a, 0xeb, 0x57, 0x8b, 0x90, 0x11, 0x27, 0x57, 0xaf, 0x0a, 0x2f, 0x64, 0xec, 0xca];
+const LOG_METRICS_PLAN_HASH: [u8; 32] = [0xd6, 0x3e, 0x61, 0xab, 0xfe, 0x08, 0x26, 0xf4, 0xbc, 0x7e, 0x7c, 0xf8, 0x76, 0x52, 0x13, 0xaf, 0xfd, 0xbe, 0xe6, 0x80, 0x41, 0x33, 0x6f, 0xbd, 0xdd, 0x9f, 0x65, 0x5c, 0x5d, 0x4d, 0x89, 0xae];
 impl GeneratedCommand for LogMetricsInput {
     type Outcome = LogMetricsOutcome;
 
@@ -675,7 +913,7 @@ pub enum WriteTuplesOutcome {
     TupleAlreadyExists,
 }
 
-const WRITE_TUPLES_PLAN_HASH: [u8; 32] = [0xdb, 0x0d, 0xdb, 0x0f, 0xc7, 0xa0, 0x62, 0x3b, 0xe1, 0x85, 0x57, 0xa1, 0x00, 0xd6, 0x26, 0x32, 0x41, 0x17, 0x7c, 0xa3, 0xda, 0xbf, 0xf4, 0x05, 0x55, 0x25, 0x96, 0xfd, 0xd7, 0x52, 0x7c, 0x0a];
+const WRITE_TUPLES_PLAN_HASH: [u8; 32] = [0xab, 0x3e, 0xd2, 0xf7, 0xa7, 0x0b, 0x35, 0xc1, 0x2a, 0x74, 0xd4, 0x5c, 0x6f, 0x8a, 0xea, 0x5b, 0x91, 0x14, 0x64, 0x98, 0x28, 0xd8, 0xe4, 0xa1, 0x32, 0x37, 0x12, 0xc2, 0xca, 0x1b, 0x5f, 0xe0];
 impl GeneratedCommand for WriteTuplesInput {
     type Outcome = WriteTuplesOutcome;
 
@@ -717,6 +955,19 @@ pub struct AdapterOperationalConformanceClient {
 impl AdapterOperationalConformanceClient {
     pub const fn new(client: StableApplicationClient, metadata: CallMetadata, command_attempts: AttemptBudget) -> Self {
         Self { client, metadata, command_attempts }
+    }
+
+    /// Executes the generated `GetAuthSession` named query.
+    pub async fn get_auth_session(&mut self, parameters: GetAuthSessionParams) -> Result<GetAuthSessionResult, ApplicationClientError> {
+        Ok(self.get_auth_session_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `GetAuthSession` against a snapshot at or after the supplied command commit.
+    pub async fn get_auth_session_after_commit(&mut self, parameters: GetAuthSessionParams, commit_sequence: u64) -> Result<TypedQueryResult<GetAuthSessionResult>, ApplicationClientError> {
+        self.get_auth_session_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `GetAuthSession` with generated pagination or read-fence options.
+    pub async fn get_auth_session_with_options(&mut self, parameters: GetAuthSessionParams, options: QueryOptions) -> Result<TypedQueryResult<GetAuthSessionResult>, ApplicationClientError> {
+        self.client.execute_generated_query(GetAuthSessionQuery(parameters), options, &self.metadata).await
     }
 
     /// Executes the generated `ListDraftDocuments` named query.
@@ -782,6 +1033,21 @@ impl AdapterOperationalConformanceClient {
     /// Executes `SearchDocuments` with generated pagination or read-fence options.
     pub async fn search_documents_with_options(&mut self, parameters: SearchDocumentsParams, options: QueryOptions) -> Result<TypedQueryResult<SearchDocumentsResult>, ApplicationClientError> {
         self.client.execute_generated_query(SearchDocumentsQuery(parameters), options, &self.metadata).await
+    }
+
+    pub async fn create_auth_sessions(&mut self, input: CreateAuthSessionsInput) -> Result<TypedCommandResult<CreateAuthSessionsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn create_auth_sessions_batch(&self, inputs: Vec<CreateAuthSessionsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<CreateAuthSessionsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn create_auth_sessions_batch_with_progress<F>(&self, inputs: Vec<CreateAuthSessionsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateAuthSessionsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
     }
 
     pub async fn create_documents(&mut self, input: CreateDocumentsInput) -> Result<TypedCommandResult<CreateDocumentsOutcome>, ApplicationClientError> {

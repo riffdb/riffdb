@@ -78,7 +78,10 @@ The retained acceptance corpus is:
 
 It deploys one exact application over verified TLS, seeds through compiled
 commands, and checks OpenFGA tuple filtering, an MLflow exact metric dashboard,
-Payload binary-prefix and null pages, and a Woodpecker state queue through
-Rust, Go, TypeScript, Python, CLI, and generated MCP schemas. It also proves a
-malformed cursor fails closed and scans the application runners for kernel,
-storage, numeric-ID, raw-transaction, and client-filter escape hatches.
+Payload binary-prefix and null pages, a Woodpecker state queue, and a typed
+Better Auth session lookup through Rust, Go, TypeScript, Python, CLI, and
+generated MCP schemas. The accepted-alpha observation inventory names OpenFGA,
+MLflow, Better Auth, and Woodpecker; Payload is reported separately as a
+post-alpha regression. The corpus also proves a malformed cursor fails closed
+and scans the application runners for kernel, storage, numeric-ID,
+raw-transaction, and client-filter escape hatches.

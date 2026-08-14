@@ -119,6 +119,18 @@ func run() error {
 		return errors.New("Woodpecker optional state page")
 	}
 
+	authSession, err := client.GetAuthSession(ctx, generated.GetAuthSessionParams{
+		OrganizationId: id(50), UserId: id(51), SessionId: id(52),
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	authPage, ok := authSession.Value.(generated.GetAuthSessionFound)
+	if !ok || authPage.Session.State != generated.AuthSessionStateAuthActive ||
+		authPage.Session.ExpiresAt.Seconds != 1_800_000_000 {
+		return errors.New("Better Auth typed session graph")
+	}
+
 	return json.NewEncoder(os.Stdout).Encode(observation("go"))
 }
 
@@ -127,7 +139,8 @@ func observation(language string) map[string]any {
 		"schema": "riffdb.adapter-operational-observation/v1", "language": language,
 		"catalog_preflight": true, "optional_filters": true, "stable_cursor": true,
 		"null_predicate": true, "binary_prefix": true, "exact_aggregates": true,
-		"adapters": []string{"mlflow", "openfga", "payload", "woodpecker"},
+		"adapters":            []string{"mlflow", "openfga", "better-auth", "woodpecker"},
+		"regression_adapters": []string{"payload"},
 	}
 }
 

@@ -17,8 +17,12 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "e6d9214558ea19193af9386f93d6c4559a3e4f1d07b92e2f8bb310d9605e2956"
-QUERY_MODULE_HASH: Final[str] = "b7f71fd4db18cfbe034f8e6075925b753829758e362c0b5cbc28b0be9340a640"
+CONTRACT_BUNDLE_HASH: Final[str] = "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676"
+QUERY_MODULE_HASH: Final[str] = "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38"
+
+class AuthSessionState(StrEnum):
+    AUTH_ACTIVE = "AuthActive"
+    AUTH_REVOKED = "AuthRevoked"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metric:
@@ -27,6 +31,12 @@ class Metric:
     metric_id: UUID
     value_micros: Annotated[int, "i64"]
     experiment_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AuthUser:
+    email: str
+    user_id: UUID
+    organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Document:
@@ -50,7 +60,52 @@ class Pipeline:
     pipeline_id: UUID
     organization_id: UUID
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "7be509688c4c0dfb9456f73b3ef8edc11051b455b674104ff501259e28728d8a"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AuthSession:
+    state: AuthSessionState
+    user_id: UUID
+    expires_at: Timestamp
+    session_id: UUID
+    token_digest: str
+    organization_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AuthSignupInput:
+    email: str
+    user_id: UUID
+    expires_at: Timestamp
+    session_id: UUID
+    token_digest: str
+    organization_id: UUID
+
+GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "fba7a6f37adeb8772673da8337cf1b3f6e43644e59613224c1f55385d7a4b884"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetAuthSessionParams:
+    organization_id: UUID
+    user_id: UUID
+    session_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetAuthSessionFoundSession:
+    organization_id: UUID
+    user_id: UUID
+    session_id: UUID
+    state: AuthSessionState
+    expires_at: Timestamp
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetAuthSessionFound:
+    session: GetAuthSessionFoundSession
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetAuthSessionMissing:
+    outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
+
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "3d3619c4adbdd3fd3358c103c63411880fd0a664eaf622aa7edee6f284a35e3f"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -69,7 +124,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "9024bd69144ff4981a341fd36b272e15ef89044e850fe329da386d3ad3d5c552"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "0c35aea74dbd5527ac56945cee31d2a351535fcdff8ba862d5f8982a339276e7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -91,7 +146,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "9a7a71a21b9c6a88404dac0fec77880eb53a0b96404216f2c10a7e5736871885"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "e114ac2575357921f0d7c9888beb433a9b14d5360c89e5d7372b633d750b650b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:
@@ -112,7 +167,7 @@ class ListPipelinesFound:
 
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "67d9696f74f906205acb8779e5b8731c6560250d37250b50123d421245f758a2"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "00b8640c9afdae08484425a7af0e27003a4e181e766eb07fb4b629ad9fc23987"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -133,7 +188,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "0bf38e1ba62d098ffb76a80c650122e4341108223a1b3849be65e1eda531dcf5"
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "ab1b0ab4bbf780c0979648cf1af65ee52fc7bd56c0107465c328cedb1530ab9a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:
@@ -155,11 +210,31 @@ class SearchDocumentsFound:
 SearchDocumentsResult: TypeAlias = SearchDocumentsFound
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class CreateAuthSessionsInput:
+    signups: tuple[AuthSignupInput, ...]
+    request_id: UUID
+
+CREATE_AUTH_SESSIONS_PLAN_HASH: Final[str] = "c8b6c48a1328622d67168392049a17d187ac1a571e79cc888e54896398cfe3f6"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateAuthSessionsSessionsCreated:
+    outcome: Literal["SessionsCreated"] = field(default="SessionsCreated", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateAuthSessionsUserAlreadyExists:
+    outcome: Literal["UserAlreadyExists"] = field(default="UserAlreadyExists", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateAuthSessionsSessionAlreadyExists:
+    outcome: Literal["SessionAlreadyExists"] = field(default="SessionAlreadyExists", init=False)
+
+CreateAuthSessionsOutcome: TypeAlias = CreateAuthSessionsSessionsCreated | CreateAuthSessionsUserAlreadyExists | CreateAuthSessionsSessionAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentsInput:
     documents: tuple[Document, ...]
     request_id: UUID
 
-CREATE_DOCUMENTS_PLAN_HASH: Final[str] = "1a546abe56d6e6968d91b5e332e10d77cb09eb15b70689c33f7070f6ce30901f"
+CREATE_DOCUMENTS_PLAN_HASH: Final[str] = "b16dfb609496f92a4a044aa9394d66a233ebb5a54b5b0e0944523f66cd138e53"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentsDocumentsCreated:
     outcome: Literal["DocumentsCreated"] = field(default="DocumentsCreated", init=False)
@@ -175,7 +250,7 @@ class CreatePipelinesInput:
     pipelines: tuple[Pipeline, ...]
     request_id: UUID
 
-CREATE_PIPELINES_PLAN_HASH: Final[str] = "055f86d2422f20cebeeda7d876e58442c147a21155253d5b5be5eb142e69c192"
+CREATE_PIPELINES_PLAN_HASH: Final[str] = "7205fc0d74181a8d32b3ab6026d5917886a306cc232466ab0e6f872eed695236"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
@@ -191,7 +266,7 @@ class LogMetricsInput:
     metrics: tuple[Metric, ...]
     request_id: UUID
 
-LOG_METRICS_PLAN_HASH: Final[str] = "93f03c1e9f6393553eb6887d02d40c8fb3862aeb578b90112757af0a2f64ecca"
+LOG_METRICS_PLAN_HASH: Final[str] = "d63e61abfe0826f4bc7e7cf8765213affdbee68041336fbddd9f655c5d4d89ae"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsMetricsLogged:
     outcome: Literal["MetricsLogged"] = field(default="MetricsLogged", init=False)
@@ -207,7 +282,7 @@ class WriteTuplesInput:
     tuples: tuple[FgaTuple, ...]
     request_id: UUID
 
-WRITE_TUPLES_PLAN_HASH: Final[str] = "db0ddb0fc7a0623be18557a100d6263241177ca3dabff405552596fdd7527c0a"
+WRITE_TUPLES_PLAN_HASH: Final[str] = "ab3ed2f7a70b35c12a74d45c6f8aea5b9114649828d8e4a1323712c2ca1b5fe0"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesTuplesWritten:
     outcome: Literal["TuplesWritten"] = field(default="TuplesWritten", init=False)
@@ -222,6 +297,19 @@ class AdapterOperationalConformanceClient:
     def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+
+    def get_auth_session(self, parameters: GetAuthSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="GetAuthSession", plan_hash=GET_AUTH_SESSION_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": GetAuthSessionFound,
+            "Missing": GetAuthSessionMissing,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
         raw = self._transport._execute_named_query(
@@ -282,6 +370,30 @@ class AdapterOperationalConformanceClient:
             "Found": SearchDocumentsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def create_auth_sessions(self, input: CreateAuthSessionsInput) -> TypedCommandResult[CreateAuthSessionsOutcome]:
+        if not 1 <= len(input.signups) <= 8:
+            raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateAuthSessions", plan_hash=CREATE_AUTH_SESSIONS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "SessionsCreated": CreateAuthSessionsSessionsCreated,
+            "UserAlreadyExists": CreateAuthSessionsUserAlreadyExists,
+            "SessionAlreadyExists": CreateAuthSessionsSessionAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def create_auth_sessions_batch(
+        self, inputs: Sequence[CreateAuthSessionsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateAuthSessionsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.signups) <= 8:
+                raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
+        return self._transport._command_batch(inputs, options, self.create_auth_sessions, progress)
 
     def create_documents(self, input: CreateDocumentsInput) -> TypedCommandResult[CreateDocumentsOutcome]:
         if not 1 <= len(input.documents) <= 32:
@@ -380,6 +492,19 @@ class AsyncAdapterOperationalConformanceClient:
         self._transport = transport
         self._command_attempts = command_attempts
 
+    async def get_auth_session(self, parameters: GetAuthSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="GetAuthSession", plan_hash=GET_AUTH_SESSION_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": GetAuthSessionFound,
+            "Missing": GetAuthSessionMissing,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     async def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -439,6 +564,30 @@ class AsyncAdapterOperationalConformanceClient:
             "Found": SearchDocumentsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def create_auth_sessions(self, input: CreateAuthSessionsInput) -> TypedCommandResult[CreateAuthSessionsOutcome]:
+        if not 1 <= len(input.signups) <= 8:
+            raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateAuthSessions", plan_hash=CREATE_AUTH_SESSIONS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "SessionsCreated": CreateAuthSessionsSessionsCreated,
+            "UserAlreadyExists": CreateAuthSessionsUserAlreadyExists,
+            "SessionAlreadyExists": CreateAuthSessionsSessionAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def create_auth_sessions_batch(
+        self, inputs: Sequence[CreateAuthSessionsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateAuthSessionsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.signups) <= 8:
+                raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
+        return await self._transport._command_batch(inputs, options, self.create_auth_sessions, progress)
 
     async def create_documents(self, input: CreateDocumentsInput) -> TypedCommandResult[CreateDocumentsOutcome]:
         if not 1 <= len(input.documents) <= 32:

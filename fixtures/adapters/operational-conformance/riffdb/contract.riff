@@ -1,4 +1,6 @@
 contract AdapterOperationalConformance version 1 {
+  enum AuthSessionState { AuthActive, AuthRevoked }
+
   entity FgaTuple {
     key (store_id: uuid, tuple_id: uuid)
     field object: string<256>
@@ -32,6 +34,28 @@ contract AdapterOperationalConformance version 1 {
     index by_state (organization_id, state, pipeline_id)
   }
 
+  entity AuthUser {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<320>
+    unique auth_user_email (organization_id, email)
+  }
+
+  entity AuthSession {
+    key (organization_id: uuid, user_id: uuid, session_id: uuid)
+    field state: AuthSessionState
+    field secret token_digest: string<128>
+    field expires_at: timestamp
+    unique auth_session_token (organization_id, token_digest)
+    reference auth_session_user (organization_id, user_id) -> AuthUser(organization_id, user_id)
+  }
+
+  entity AuthSignupInput {
+    key (organization_id: uuid, user_id: uuid, session_id: uuid)
+    field email: string<320>
+    field secret token_digest: string<128>
+    field expires_at: timestamp
+  }
+
   aggregate FgaTuples {
     root FgaTuple
     partition_by store_id
@@ -54,6 +78,21 @@ contract AdapterOperationalConformance version 1 {
     root Pipeline
     partition_by organization_id
     conflict_key (organization_id, pipeline_id)
+  }
+
+  aggregate AuthSessions {
+    root AuthUser
+    child AuthSession
+    child AuthSignupInput
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+
+  workflow AuthSessionLifecycle {
+    entity AuthSession
+    state state
+    initial AuthActive
+    transition AuthRevoke from (AuthActive) to AuthRevoked
   }
 
   bulk command WriteTuples {
@@ -104,6 +143,20 @@ contract AdapterOperationalConformance version 1 {
       set stored.state = pipeline.state
     }
     return PipelinesCreated {}
+  }
+
+  bulk command CreateAuthSessions {
+    input request_id: uuid
+    input signups: list<AuthSignupInput, 1..8>
+    idempotency_key request_id
+    for signup in signups {
+      create AuthUser(signup.organization_id, signup.user_id) as user else UserAlreadyExists {}
+      create AuthSession(signup.organization_id, signup.user_id, signup.session_id) as session else SessionAlreadyExists {}
+      set user.email = signup.email
+      set session.token_digest = signup.token_digest
+      set session.expires_at = signup.expires_at
+    }
+    return SessionsCreated {}
   }
 
   reimport command ReconstituteFgaTuples {
