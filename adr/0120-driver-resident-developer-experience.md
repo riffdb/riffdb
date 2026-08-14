@@ -1,8 +1,8 @@
 # ADR-0120: Driver-Resident Developer Experience
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-13 (maintainer, in session)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes — 2026-08-13, maintainer acceptance as written
 - **Decision deadline:** Before any driver package is published to a public
   registry, and before the alpha's release-polish tier freezes CLI verbs
 
