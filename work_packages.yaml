@@ -12250,3 +12250,34 @@ work_packages:
   - cargo test -p riffdb-contract-compiler -p riffdb-commit --all-features
   - cargo test --test storage_recovery_matrix
   human_review_triggers: *id001
+- id: WP-608
+  name: Close mixed capsule and legacy command-history persistence
+  depends_on: [WP-606]
+  objective: Remove the storage-side trap where the legacy uncapsulated conformance path advances
+    ENTITY_CHAIN_HEADS without retaining walkable CommittedEntityTransitionV1 evidence, so a later
+    audited command on the same entity is accepted and then fails startup with MissingCrossLink.
+    Audit every caller and choose one explicit invariant-preserving disposition by either persisting
+    exact transition capsules on the legacy path or refusing a mixed target before mutation. Production
+    application commands remain capsule-authoritative and no startup check may be weakened to
+    tolerate an unprovable chain.
+  requirements: [REC-001, REC-002, STO-002]
+  required_adrs: [ADR-0102, ADR-0104]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**,
+    crates/riffdb-storage-redb/src/application.rs,
+    crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/tests/architecture.rs,
+    crates/riffdb-sim/tests/**, tests/command_semantics/**,
+    tests/storage_recovery/**]
+  deliverables:
+  - Caller and durable-history audit distinguishing the production capsule path from every retained
+    legacy/test/conformance path, with the selected compatibility disposition reviewed before code
+  - Deterministic both-order schedules for uncapsulated-then-audited and audited-then-uncapsulated
+    commands on one target; each must either retain one walkable exact chain or refuse before any
+    authoritative mutation
+  - Startup and crash/reopen evidence proving no accepted mixed history can later surface
+    MissingCrossLink, while genuinely missing transition evidence remains fail-closed
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --test command_concurrency --all-features
+  - cargo test -p riffdb-sim --test seeded_campaign --all-features
+  human_review_triggers: *id001
